@@ -1,0 +1,19 @@
+# CMake and Build Artifacts
+build/
+out/
+.vs/
+CMakeCache.txt
+CMakeFiles/
+*.cmake
+
+# Package Manager
+vcpkg_installed/
+vcpkg/
+
+# Local Database
+*.db
+*.db-journal
+
+# SSL Certificates (Security Requirement)
+*.key
+*.crt

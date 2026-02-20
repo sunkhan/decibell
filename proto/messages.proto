@@ -1,0 +1,68 @@
+syntax = "proto3";
+package chatproj;
+
+// outer envelope for all network traffic
+message Packet {
+  enum Type {
+    UNKNOWN = 0;
+    HANDSHAKE = 1;
+    REGISTER_REQ = 2;
+    REGISTER_RES = 3;
+    LOGIN_REQ = 4;
+    LOGIN_RES = 5;
+    CHAT_MSG = 6;
+    JOIN_CHANNEL = 7;
+  }
+
+  Type type = 1;
+  int64 timestamp = 2;         // Unix timestamp for latency checks
+  
+  
+  // oneof enforces that only one payload exists per packet
+  oneof payload {
+    Handshake handshake = 3;
+    RegisterRequest register_req = 4;
+    RegisterResponse register_res = 5;
+    LoginRequest login_req = 6;
+    LoginResponse login_res = 7;
+    ChatMessage chat_msg = 8;
+    JoinChannel join_channel = 9;
+  }
+}
+
+message JoinChannel {
+  string channel_name = 1;
+}
+
+message Handshake {
+  int32 protocol_version = 1;  // for version enforcement
+  string client_id = 2;         // temporary unique ID
+}
+
+message RegisterRequest {
+  string username = 1;
+  string password = 2; // In a real app, this should be sent over TLS
+}
+
+message RegisterResponse {
+  bool success = 1;
+  string message = 2; // e.g. "Username taken"
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ChatMessage {
+  string sender = 1;
+  string content = 2;
+  int64 timestamp = 3;
+  string recipient = 4; // Empty for broadcast, username for private
+  string channel = 5; // Default to "global"
+}
