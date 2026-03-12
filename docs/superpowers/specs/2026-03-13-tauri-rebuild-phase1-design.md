@@ -57,6 +57,7 @@ A comprehensive reference document at the repo root covering the existing codeba
 
 ### 1.3 Protobuf Message Catalog
 Complete listing of all `Packet.Type` values and their message structures from `proto/messages.proto`:
+- Connection: UNKNOWN, HANDSHAKE (protocol version negotiation at connect time)
 - Auth: REGISTER_REQ/RES, LOGIN_REQ/RES
 - Messaging: DIRECT_MSG, CHANNEL_MSG
 - Discovery: SERVER_LIST_REQ/RES, COMMUNITY_AUTH_REQ/RES
@@ -86,16 +87,16 @@ Packed structs from `udp_packet.hpp`:
 ### 1.6 Video Pipeline
 - Capture: DXGI Desktop Duplication (primary), WGC (windows), QScreen::grabWindow (fallback)
 - Color conversion: D3D11 Video Processor BGRA→NV12 (GPU)
-- Encode: VP8 (libvpx software) or H.264 (Media Foundation HW)
+- Encode: VP9 (libvpx software) or H.264 (Media Foundation HW)
 - Fragmentation: MTU 1400-byte chunks, FEC groups of 5, NACK retransmission ring buffer
-- Decode: VP9 (libvpx) or H.264 (MFT) per-user decoder state
+- Decode: VP9 (libvpx software) or H.264 (MFT HW) per-user decoder state
 - Adaptive bitrate: NACK ratio tracking, min 300kbps / max user-selected
 - Frame reassembly: fragment buffer keyed by (frame_id, packet_index)
 
 ### 1.7 QML UI Inventory
-Complete catalog of all 20 QML files with their screens, components, properties, and signals:
+Complete catalog of all 18 QML files with their screens, components, properties, and signals:
 - App.qml, LoginScreen.qml, LoginScreenForm.ui.qml
-- MainScreen.qml, MainScreenForm.ui.qml
+- MainScreen.qml, MainScreenForm.ui.qml, Main.qml (legacy prototype, not active)
 - ChannelsSidebarForm.ui.qml, ChatViewForm.ui.qml, VoiceChannelViewForm.ui.qml
 - StreamConfigDialog.qml, ProfilePopup.qml
 - DecibellButton.ui.qml, DecibellTextField.ui.qml, MessageDelegate.ui.qml
@@ -191,7 +192,7 @@ CSS custom properties and/or Tailwind config mapping Decibell colors:
 - `--success: #43B581`
 - `--error: #FF4C4C`
 - `--text-primary: #DCDDDE`
-- `--text-muted: #884f6a86`
+- `--text-muted: rgba(79, 106, 134, 0.53)` (note: QML source uses `#884f6a86` which is ARGB format; CSS equivalent is `#4f6a8688` or this rgba value)
 - `--border: #2D3245`
 
 ### 2.5 Tauri Configuration (tauri.conf.json)
