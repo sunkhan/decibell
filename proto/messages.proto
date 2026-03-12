@@ -1,7 +1,6 @@
 syntax = "proto3";
 package chatproj;
 
-// outer envelope for all network traffic
 message Packet {
   enum Type {
     UNKNOWN = 0;
@@ -10,43 +9,88 @@ message Packet {
     REGISTER_RES = 3;
     LOGIN_REQ = 4;
     LOGIN_RES = 5;
-    CHAT_MSG = 6;
-    JOIN_CHANNEL = 7;
+    DIRECT_MSG = 6;
+    PRESENCE_UPDATE = 7;
+    SERVER_LIST_REQ = 8;
+    SERVER_LIST_RES = 9;
+
+    // Community Server Specific Types
+    COMMUNITY_AUTH_REQ = 10;
+    COMMUNITY_AUTH_RES = 11;
+    CHANNEL_MSG = 12;
+    JOIN_CHANNEL_REQ = 13;
+    JOIN_CHANNEL_RES = 14;
+
+    // Friend System Types
+    FRIEND_ACTION_REQ = 15;
+    FRIEND_ACTION_RES = 16;
+    FRIEND_LIST_REQ = 17;
+    FRIEND_LIST_RES = 18;
+
+    JOIN_VOICE_REQ = 19;
+    LEAVE_VOICE_REQ = 20;
+    VOICE_PRESENCE_UPDATE = 21;
+
+    // Screen Sharing Signaling
+    STREAM_PRESENCE_UPDATE = 22;
+    START_STREAM_REQ = 23;
+    STOP_STREAM_REQ = 24;
+    WATCH_STREAM_REQ = 25;
+    STOP_WATCHING_REQ = 26;
   }
 
   Type type = 1;
-  int64 timestamp = 2;         // Unix timestamp for latency checks
+  int64 timestamp = 2;
+  string auth_token = 16; 
   
-  
-  // oneof enforces that only one payload exists per packet
   oneof payload {
     Handshake handshake = 3;
     RegisterRequest register_req = 4;
     RegisterResponse register_res = 5;
     LoginRequest login_req = 6;
     LoginResponse login_res = 7;
-    ChatMessage chat_msg = 8;
-    JoinChannel join_channel = 9;
+    DirectMessage direct_msg = 8;
+    PresenceUpdate presence_update = 9;
+    ServerListRequest server_list_req = 10;
+    ServerListResponse server_list_res = 11;
+
+    CommunityAuthRequest community_auth_req = 12;
+    CommunityAuthResponse community_auth_res = 13;
+    ChannelMessage channel_msg = 14;
+    JoinChannelRequest join_channel_req = 15;
+    JoinChannelResponse join_channel_res = 17;
+
+    FriendActionReq friend_action_req = 18;
+    FriendActionRes friend_action_res = 19;
+    FriendListReq friend_list_req = 20;
+    FriendListRes friend_list_res = 21;
+
+    JoinVoiceRequest join_voice_req = 22;
+    LeaveVoiceRequest leave_voice_req = 23;
+    VoicePresenceUpdate voice_presence_update = 24;
+
+    StreamPresenceUpdate stream_presence_update = 25;
+    StartStreamRequest start_stream_req = 26;
+    StopStreamRequest stop_stream_req = 27;
+    WatchStreamRequest watch_stream_req = 28;
+    StopWatchingRequest stop_watching_req = 29;
   }
 }
 
-message JoinChannel {
-  string channel_name = 1;
-}
-
 message Handshake {
-  int32 protocol_version = 1;  // for version enforcement
-  string client_id = 2;         // temporary unique ID
+  int32 protocol_version = 1;
+  string client_id = 2;
 }
 
 message RegisterRequest {
   string username = 1;
-  string password = 2; // In a real app, this should be sent over TLS
+  string password = 2;
+  string email = 3; 
 }
 
 message RegisterResponse {
   bool success = 1;
-  string message = 2; // e.g. "Username taken"
+  string message = 2;
 }
 
 message LoginRequest {
@@ -57,12 +101,151 @@ message LoginRequest {
 message LoginResponse {
   bool success = 1;
   string message = 2;
+  string jwt_token = 3; 
 }
 
-message ChatMessage {
+message DirectMessage {
   string sender = 1;
-  string content = 2;
-  int64 timestamp = 3;
-  string recipient = 4; // Empty for broadcast, username for private
-  string channel = 5; // Default to "global"
+  string recipient = 2;
+  string content = 3;
+  int64 timestamp = 4;
+}
+
+message PresenceUpdate {
+  repeated string online_users = 1;
+}
+
+message ServerListRequest {
+}
+
+message CommunityServerInfo {
+  int32 id = 1;
+  string name = 2;
+  string description = 3;
+  string host_ip = 4;
+  int32 port = 5;
+  int32 member_count = 6;
+}
+
+message ServerListResponse {
+  repeated CommunityServerInfo servers = 1;
+}
+
+// --- Friend System Messages ---
+
+enum FriendActionType {
+  ADD = 0;
+  REMOVE = 1;
+  BLOCK = 2;
+  ACCEPT = 3;
+  REJECT = 4;
+}
+
+message FriendActionReq {
+  FriendActionType action = 1;
+  string target_username = 2;
+}
+
+message FriendActionRes {
+  bool success = 1;
+  string message = 2;
+}
+
+message FriendInfo {
+  string username = 1;
+  enum Status {
+    ONLINE = 0;
+    OFFLINE = 1;
+    PENDING_INCOMING = 2;
+    PENDING_OUTGOING = 3;
+    BLOCKED = 4;
+  }
+  Status status = 2;
+}
+
+message FriendListReq {
+}
+
+message FriendListRes {
+  repeated FriendInfo friends = 1;
+}
+
+// --- Community Server Messages ---
+
+message ChannelInfo {
+  string id = 1;
+  string name = 2;
+  enum Type { TEXT = 0; VOICE = 1; }
+  Type type = 3;
+}
+
+message CommunityAuthRequest {
+  string jwt_token = 1;
+}
+
+message CommunityAuthResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ChannelInfo channels = 3;
+}
+
+message ChannelMessage {
+  string sender = 1;
+  string channel_id = 2;
+  string content = 3;
+  int64 timestamp = 4;
+}
+
+message JoinChannelRequest {
+  string channel_id = 1;
+}
+
+message JoinChannelResponse {
+  bool success = 1;
+  string channel_id = 2;
+  repeated string active_users = 3;
+}
+
+message JoinVoiceRequest {
+  string channel_id = 1;
+}
+
+message LeaveVoiceRequest {
+}
+
+message VoicePresenceUpdate {
+  string channel_id = 1;
+  repeated string active_users = 2;
+}
+
+message VideoStreamInfo {
+  string stream_id = 1;
+  string owner_username = 2;
+  bool has_audio = 3;
+}
+
+message StreamPresenceUpdate {
+  string channel_id = 1;
+  repeated VideoStreamInfo active_streams = 2;
+}
+
+message StartStreamRequest {
+  string channel_id = 1;
+  int32 target_fps = 2;
+  int32 target_bitrate_kbps = 3;
+  bool has_audio = 4;
+}
+
+message StopStreamRequest {
+  string channel_id = 1;
+}
+
+message WatchStreamRequest {
+  string channel_id = 1;
+  string target_username = 2;
+}
+
+message StopWatchingRequest {
+  string channel_id = 1;
+  string target_username = 2;
 }

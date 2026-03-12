@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(cmake:*)",
+      "Read(//c/dev/vcpkg/installed/x64-windows/include/**)",
+      "Read(//c/Program Files/NVIDIA GPU Computing Toolkit/**)",
+      "Read(//c/dev/**)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:forum.qt.io)",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}

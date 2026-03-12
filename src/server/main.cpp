@@ -13,26 +13,20 @@
 #include <boost/asio/ssl.hpp>
 #include "messages.pb.h"
 #include "../common/net_utils.hpp"
-#include "storage.hpp"
-#include "auth_utils.hpp" // Don't forget this!
+#include "auth_utils.hpp"
 #include "session_manager.hpp"
+#include "auth_manager.hpp"
 
 namespace ssl = boost::asio::ssl;
-
 using boost::asio::ip::tcp;
-
-// Global DB for now
-chatproj::Storage db("chat_server.db");
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
-    // Update constructor to take ssl::context
-    Session(tcp::socket socket, SessionManager& manager, ssl::context& context)
-        : socket_(std::move(socket), context), manager_(manager) {}
+    Session(tcp::socket socket, SessionManager& manager, ssl::context& context, AuthManager& auth_manager)
+        : socket_(std::move(socket), context), manager_(manager), auth_manager_(auth_manager) {}
 
     void start() {
         auto self(shared_from_this());
-        // Perform TLS Handshake before reading headers
         socket_.async_handshake(ssl::stream_base::server,
             [this, self](const boost::system::error_code& error) {
                 if (!error) {
@@ -48,7 +42,9 @@ public:
         auto self(shared_from_this());
         boost::asio::async_write(socket_, boost::asio::buffer(*framed_data),
             [this, self, framed_data](boost::system::error_code ec, std::size_t) {
-                // 'framed_data' in the capture list keeps the vector alive until this executes
+                if (ec) {
+                    manager_.leave(shared_from_this()); 
+                }
             });
     }
 
@@ -63,7 +59,6 @@ private:
             boost::asio::buffer(inbound_header_, 4),
             [this, self](boost::system::error_code ec, std::size_t /*length*/) {
                 if (!ec) {
-                    // ... (existing logic to process body length) ...
                     uint32_t net_len = *reinterpret_cast<uint32_t*>(inbound_header_);
                     uint32_t body_length = ntohl(net_len);
                     if (body_length > 2 * 1024 * 1024) return;
@@ -71,7 +66,6 @@ private:
                     do_read_body(body_length);
                 } 
                 else {
-                    // ERROR or DISCONNECT
                     std::cout << "[Session] Client disconnected: " << username_ << "\n";
                     manager_.leave(shared_from_this());
                 }
@@ -88,9 +82,8 @@ private:
                     do_read_header(); 
                 }
                 else {
-                    // ERROR or DISCONNECT
                     std::cout << "[Session] Error in body read: " << username_ << "\n";
-                    manager_.leave(shared_from_this()); // <--- ADD THIS
+                    manager_.leave(shared_from_this());
                 }
             });
     }
@@ -101,142 +94,163 @@ private:
             return;
         }
 
-        std::cout << "[Server] Packet type: " << packet.type() << std::endl;
+        // Log the raw integer type of every incoming packet
+        std::cout << "[Server] Raw packet received, type ID: " << packet.type() << "\n";
+
+        // --- ENFORCE JWT VALIDATION ---
+        if (packet.type() != chatproj::Packet::REGISTER_REQ && 
+            packet.type() != chatproj::Packet::LOGIN_REQ && 
+            packet.type() != chatproj::Packet::HANDSHAKE) {
+            
+            if (!auth_manager_.validateToken(packet.auth_token())) {
+                std::cout << "[Security] Dropped packet - Missing or invalid JWT.\n";
+                manager_.leave(shared_from_this());
+                return; 
+            }
+        }
 
         // --- REGISTRATION ---
         if (packet.type() == chatproj::Packet::REGISTER_REQ) {
             const auto& req = packet.register_req();
-            std::cout << "  -> Registering: " << req.username() << std::endl;
-            
-            std::string hashed_pw = chatproj::sha256(req.password());
-            bool success = db.create_user(req.username(), hashed_pw, "salt");
-            
-            send_response(chatproj::Packet::REGISTER_RES, success, success ? "Registered!" : "Username taken.");
+            std::string error_msg = auth_manager_.registerUser(req.username(), req.email(), req.password());
+            bool success = error_msg.empty();
+            send_response(chatproj::Packet::REGISTER_RES, success, success ? "Registration successful." : error_msg);
         }
         
         // --- LOGIN ---
         else if (packet.type() == chatproj::Packet::LOGIN_REQ) {
             const auto& req = packet.login_req();
-            std::cout << "  -> Login Attempt: " << req.username() << std::endl;
 
-            // FIX: Check if already online FIRST
             if (manager_.is_user_online(req.username())) {
-                std::cout << "  -> FAILED: " << req.username() << " is already connected.\n";
                 send_response(chatproj::Packet::LOGIN_RES, false, "User already logged in.");
                 return;
             }
 
-            std::string hashed_pw = chatproj::sha256(req.password());
+            auto token_opt = auth_manager_.authenticateUser(req.username(), req.password());
             
-            if (db.verify_user(req.username(), hashed_pw)) {
+            if (token_opt.has_value()) {
                 authenticated_ = true;
                 username_ = req.username();
-                std::cout << "  -> SUCCESS: " << username_ << " is online.\n";
-                send_response(chatproj::Packet::LOGIN_RES, true, "Login successful!");
-                manager_.join_channel(shared_from_this(), "global", "");
-                current_channel_ = "global";
-                
-                // Broadcast join to other users
-                manager_.broadcast_system_message(username_ + " joined the chat.");
+                send_response(chatproj::Packet::LOGIN_RES, true, "Login successful!", token_opt.value());
+                manager_.broadcast_presence();
             } else {
-                std::cout << "  -> FAILED: Bad password for " << req.username() << "\n";
                 send_response(chatproj::Packet::LOGIN_RES, false, "Invalid username or password.");
             }
         }
 
-        // --- CHAT MESSAGE ---
-        else if (packet.type() == chatproj::Packet::CHAT_MSG) {
+        // --- DIRECT MESSAGE ---
+        else if (packet.type() == chatproj::Packet::DIRECT_MSG) {
             if (!authenticated_) return; 
 
             auto now = std::chrono::system_clock::now();
             int64_t current_time = std::chrono::system_clock::to_time_t(now);
 
             chatproj::Packet routed_packet = packet;
-            auto* chat_msg = routed_packet.mutable_chat_msg();
-            chat_msg->set_sender(username_); 
-            chat_msg->set_timestamp(current_time);
-            
-            if (chat_msg->recipient().empty()) {
-                // Channel Broadcast
-                chat_msg->set_channel(current_channel_);
-                std::cout << "[#" << current_channel_ << "] " << username_ << ": " << chat_msg->content() << "\n";
-                
-                // Pass current_channel_ to storage
-                db.save_message(username_, current_channel_, chat_msg->content(), current_time); 
-                
-                manager_.broadcast_to_channel(routed_packet, current_channel_);
-            } else {
-                // Private Message
-                std::cout << "[Private] " << username_ << " -> " << chat_msg->recipient() << ": " << chat_msg->content() << "\n";
-                bool delivered = manager_.send_private(routed_packet, chat_msg->recipient());
-                
-                if (!delivered) {
-                    // Send error back to sender if user is offline
-                    chatproj::Packet error_packet;
-                    error_packet.set_type(chatproj::Packet::CHAT_MSG);
-                    auto* err_msg = error_packet.mutable_chat_msg();
-                    err_msg->set_sender("SYSTEM");
-                    err_msg->set_content("User " + chat_msg->recipient() + " is offline or does not exist.");
-                    err_msg->set_timestamp(current_time);
-                    
-                    std::string serialized;
-                    error_packet.SerializeToString(&serialized);
-                    auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-                    deliver(framed);
-                } else {
-                    // Echo the private message back to the sender so they see what they typed
-                    std::string serialized;
-                    routed_packet.SerializeToString(&serialized);
-                    auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-                    deliver(framed);
-                }
-            }
-        }
+            auto* dmsg = routed_packet.mutable_direct_msg();
+            dmsg->set_sender(username_); // Enforce sender identity
+            dmsg->set_timestamp(current_time);
 
-        // --- JOIN CHANNEL ---
-        else if (packet.type() == chatproj::Packet::JOIN_CHANNEL) {
-            if (!authenticated_) return;
-            std::string target_channel = packet.join_channel().channel_name();
+            bool delivered = manager_.send_private(routed_packet, dmsg->recipient());
             
-            manager_.join_channel(shared_from_this(), target_channel, current_channel_);
-            current_channel_ = target_channel;
-            
-            std::cout << "[Channel] " << username_ << " joined #" << target_channel << "\n";
-            
-            // System confirmation to the user
-            chatproj::Packet sys_packet;
-            sys_packet.set_type(chatproj::Packet::CHAT_MSG);
-            auto* sys_msg = sys_packet.mutable_chat_msg();
-            sys_msg->set_sender("SYSTEM");
-            sys_msg->set_content("You joined #" + target_channel);
-            sys_msg->set_channel(target_channel);
-            
-            std::string serialized;
-            sys_packet.SerializeToString(&serialized);
-            auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-            deliver(framed);
-
-            // Deliver history for the specific channel
-            auto history = db.get_recent_messages(target_channel, 50);
-            for (const auto& m : history) {
-                chatproj::Packet hist_packet;
-                hist_packet.set_type(chatproj::Packet::CHAT_MSG);
-                auto* cm = hist_packet.mutable_chat_msg();
-                cm->set_sender(m.sender);
-                cm->set_content(m.content);
-                cm->set_timestamp(m.timestamp);
-                cm->set_channel(target_channel);
+            if (!delivered) {
+                // Offline queuing to PostgreSQL will go here
+                chatproj::Packet error_packet;
+                error_packet.set_type(chatproj::Packet::DIRECT_MSG);
+                auto* err_msg = error_packet.mutable_direct_msg();
+                err_msg->set_sender("SYSTEM");
+                err_msg->set_content("User " + dmsg->recipient() + " is offline.");
+                err_msg->set_timestamp(current_time);
                 
                 std::string serialized;
-                hist_packet.SerializeToString(&serialized);
+                error_packet.SerializeToString(&serialized);
+                auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
+                deliver(framed);
+            } else {
+                // Echo back to sender
+                std::string serialized;
+                routed_packet.SerializeToString(&serialized);
                 auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
                 deliver(framed);
             }
         }
+
+        // --- SERVER LIST DIRECTORY ---
+        else if (packet.type() == chatproj::Packet::SERVER_LIST_REQ) {
+            if (!authenticated_) {
+                std::cout << "[Server] Dropped SERVER_LIST_REQ: User not authenticated.\n";
+                return;
+            }
+
+            std::cout << "[Server] Received SERVER_LIST_REQ from " << username_ << "\n";
+            auto servers = auth_manager_.getCommunityServers();
+            std::cout << "[Server] Found " << servers.size() << " community servers in DB.\n";
+
+            chatproj::Packet res_packet;
+            res_packet.set_type(chatproj::Packet::SERVER_LIST_RES);
+            auto* res = res_packet.mutable_server_list_res();
+
+            for (const auto& srv : servers) {
+                *res->add_servers() = srv;
+            }
+
+            std::string serialized;
+            res_packet.SerializeToString(&serialized);
+            auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
+            deliver(framed);
+        }
+
+        // --- FRIEND SYSTEM ---
+        else if (packet.type() == chatproj::Packet::FRIEND_ACTION_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.friend_action_req();
+            
+            std::string error_msg = auth_manager_.handleFriendAction(username_, req.action(), req.target_username());
+            bool success = error_msg.empty();
+            
+            chatproj::Packet res_packet;
+            res_packet.set_type(chatproj::Packet::FRIEND_ACTION_RES);
+            auto* res = res_packet.mutable_friend_action_res();
+            res->set_success(success);
+            res->set_message(success ? "Action successful" : error_msg);
+            
+            std::string serialized;
+            res_packet.SerializeToString(&serialized);
+            auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
+            deliver(framed);
+
+            // Notify target if they are online (and if action is not block to keep it silent)
+            if (success && req.action() != chatproj::FriendActionType::BLOCK && req.action() != chatproj::FriendActionType::REMOVE) {
+                // If action was successful, target should probably refresh their friends list
+                // For simplicity, we just rely on clients polling or future real-time updates.
+            }
+        }
+        else if (packet.type() == chatproj::Packet::FRIEND_LIST_REQ) {
+            if (!authenticated_) return;
+
+            auto friends = auth_manager_.getFriends(username_);
+            
+            chatproj::Packet res_packet;
+            res_packet.set_type(chatproj::Packet::FRIEND_LIST_RES);
+            auto* res = res_packet.mutable_friend_list_res();
+
+            for (auto& f : friends) {
+                // Determine online presence if they are ACCEPTED
+                if (f.status() == chatproj::FriendInfo::OFFLINE) {
+                    if (manager_.is_user_online(f.username())) {
+                        f.set_status(chatproj::FriendInfo::ONLINE);
+                    }
+                }
+                *res->add_friends() = f;
+            }
+
+            std::string serialized;
+            res_packet.SerializeToString(&serialized);
+            auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
+            deliver(framed);
+        }
     }
 
-    // Generic helper to send either Register or Login responses
-    void send_response(chatproj::Packet::Type type, bool success, const std::string& msg) {
+    void send_response(chatproj::Packet::Type type, bool success, const std::string& msg, const std::string& token = "") {
         chatproj::Packet resp_packet;
         resp_packet.set_type(type);
         
@@ -248,6 +262,9 @@ private:
             auto* resp = resp_packet.mutable_login_res();
             resp->set_success(success);
             resp->set_message(msg);
+            if (!token.empty()) {
+                resp->set_jwt_token(token);
+            }
         }
 
         std::string serialized;
@@ -258,7 +275,10 @@ private:
         auto self(shared_from_this());
         boost::asio::async_write(socket_, boost::asio::buffer(*framed),
             [this, self, framed](boost::system::error_code ec, std::size_t) {
-                if (ec) std::cerr << "Write failed.\n";
+                if (ec) {
+                    std::cerr << "Write failed.\n";
+                    manager_.leave(shared_from_this());
+                }
             });
     }
 
@@ -266,18 +286,17 @@ private:
     char inbound_header_[4];
     std::vector<uint8_t> inbound_body_;
     
-    // Session State
     bool authenticated_ = false;
     std::string username_;
-
-    std::string current_channel_ = "global";
+    AuthManager& auth_manager_;
 };
+
+
+// --- SessionManager Implementations ---
 
 void SessionManager::broadcast(const chatproj::Packet& packet) {
     std::string serialized;
     packet.SerializeToString(&serialized);
-    
-    // Allocate on the heap via shared_ptr
     auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -295,19 +314,37 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
         std::lock_guard<std::mutex> lock(mutex_);
         removed = sessions_.erase(session) > 0;
         total = sessions_.size();
-        
-        // Remove from any channels
-        for (auto& pair : channels_) {
-            pair.second.erase(session);
-        }
     }
     
     if (removed) {
         std::cout << "[Manager] Session left. Total: " << total << "\n";
         if (!user.empty()) {
-            broadcast_system_message(user + " left the chat.");
+            broadcast_presence();  
         }
     }
+}
+
+void SessionManager::broadcast_presence() {
+    chatproj::Packet packet;
+    packet.set_type(chatproj::Packet::PRESENCE_UPDATE);
+    auto* presence = packet.mutable_presence_update();
+    
+    std::vector<std::string> active_users;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& session : sessions_) {
+            std::string uname = session->username();
+            if (!uname.empty()) {
+                active_users.push_back(uname);
+            }
+        }
+    }
+    
+    for (const auto& u : active_users) {
+        presence->add_online_users(u);
+    }
+    
+    broadcast(packet);
 }
 
 bool SessionManager::is_user_online(const std::string& username) {
@@ -329,38 +366,23 @@ bool SessionManager::send_private(const chatproj::Packet& packet, const std::str
     for (auto& session : sessions_) {
         if (session->username() == target_username) {
             session->deliver(framed);
-            return true; // Found and delivered
+            return true;
         }
     }
-    return false; // Target user not online
+    return false;
 }
 
-void SessionManager::join_channel(std::shared_ptr<Session> session, const std::string& new_channel, const std::string& old_channel) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!old_channel.empty()) {
-        channels_[old_channel].erase(session);
-    }
-    channels_[new_channel].insert(session);
-}
 
-void SessionManager::broadcast_to_channel(const chatproj::Packet& packet, const std::string& channel_name) {
-    std::string serialized;
-    packet.SerializeToString(&serialized);
-    auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& session : channels_[channel_name]) {
-        session->deliver(framed);
-    }
-}
+// --- Server & Entry Point ---
 
 class Server {
 public:
-    Server(boost::asio::io_context& io_context, short port)
+    Server(boost::asio::io_context& io_context, short port, SessionManager& manager, AuthManager& auth_manager)
         : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
-          ssl_context_(ssl::context::tlsv12) { // Require TLS v1.2 minimum
+          ssl_context_(ssl::context::tlsv12),
+          manager_(manager),
+          auth_manager_(auth_manager) { 
 
-        // Configure strict SSL options
         ssl_context_.set_options(
             ssl::context::default_workarounds |
             ssl::context::no_sslv2 |
@@ -368,7 +390,6 @@ public:
             ssl::context::no_tlsv1 |
             ssl::context::no_tlsv1_1);
 
-        // Load the certificate and key (using absolute paths to avoid execution directory issues)
         ssl_context_.use_certificate_chain_file("C:/dev/chatproj-core/server.crt");
         ssl_context_.use_private_key_file("C:/dev/chatproj-core/server.key", ssl::context::pem);
 
@@ -379,8 +400,7 @@ private:
         acceptor_.async_accept(
             [this](boost::system::error_code ec, tcp::socket socket) {
                 if (!ec) {
-                    // Pass ssl_context_ to the new Session
-                    auto session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_);
+                    auto session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_, auth_manager_);
                     manager_.join(session);
                     session->start();
                 }
@@ -389,14 +409,23 @@ private:
     }
     tcp::acceptor acceptor_;
     ssl::context ssl_context_;
-    SessionManager manager_;
+    SessionManager& manager_; 
+    AuthManager& auth_manager_;
 };
 
 int main() {
     try {
+        std::string jwt_secret = "super_secret_decibell_key_change_in_production";
+        std::string db_conn = "dbname=decibell user=postgres password=sunadmin host=127.0.0.1 port=5432";
+        AuthManager auth_manager(jwt_secret, db_conn);
+
         boost::asio::io_context io_context;
-        Server s(io_context, 8080);
-        std::cout << "Server running on 8080...\n";
+        
+        SessionManager manager; 
+        Server s(io_context, 8080, manager, auth_manager);
+        
+        std::cout << "Central TCP Server running on port 8080...\n";
+        
         io_context.run();
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";
