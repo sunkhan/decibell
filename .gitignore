@@ -17,3 +17,9 @@ vcpkg/
 # SSL Certificates (Security Requirement)
 *.key
 *.crt
+
+# Tauri Build Artifacts
+tauri-client/node_modules/
+tauri-client/src-tauri/target/
+tauri-client/dist/
+.superpowers/
