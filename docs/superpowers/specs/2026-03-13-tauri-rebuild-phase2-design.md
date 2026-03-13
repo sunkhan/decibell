@@ -13,7 +13,7 @@ The Decibell client communicates with two types of servers over TCP/TLS:
 - **Central server** (`127.0.0.1:8080`): auth (login/register), friend system, DMs, presence, server directory
 - **Community servers** (per-server host:port): text channels, channel messages, authenticated via JWT from central
 
-Both use the same wire protocol: 4-byte big-endian length prefix followed by a Protobuf `Packet` body (defined in `proto/messages.proto`). The `Packet` has a `type` enum field and a `payload` bytes field containing the specific message.
+Both use the same wire protocol: 4-byte big-endian length prefix followed by a Protobuf `Packet` body (defined in `proto/messages.proto`). The `Packet` has a `type` enum field, an `auth_token` string field (field 16), and a `oneof payload` with typed variant fields for each message type (e.g., `login_req`, `login_res`, `direct_msg`). Prost generates this as `payload: Option<packet::Payload>` where `packet::Payload` is a Rust enum with one variant per oneof field.
 
 Reference: `ARCHITECTURE.md` sections 2-4 and 8.
 
@@ -31,7 +31,6 @@ rustls = { version = "0.23", features = ["ring"] }
 prost = "0.13"
 bytes = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
-webpki-roots = "1"
 
 [build-dependencies]
 prost-build = "0.13"
@@ -42,7 +41,6 @@ prost-build = "0.13"
 - **`prost`** + **`prost-build`** — protobuf code generation from `proto/messages.proto`
 - **`bytes`** — efficient byte buffer handling for framing
 - **`tokio-util`** (codec) — length-delimited framing codec
-- **`webpki-roots`** — Mozilla root certificates (needed by rustls as a base, even though we skip verification)
 
 ---
 
@@ -100,14 +98,14 @@ src-tauri/src/
 
 On reconnect: automatically re-sends `LoginRequest` with stored credentials.
 
-**`net/community.rs`** — `CommunityClient` struct wrapping a `Connection`. Methods:
+**`net/community.rs`** — `CommunityClient` struct wrapping a `Connection`. Tracks `joined_channels: Vec<String>` for reconnection. Methods:
 - `connect(server_id, host, port, jwt, app_handle)` — connect + send `CommunityAuthRequest`
-- `join_channel(channel_id)` — send `JoinChannelRequest`
+- `join_channel(channel_id)` — send `JoinChannelRequest`, add to `joined_channels`
 - `send_channel_message(channel_id, message)` — send `ChannelMessage`
-- `disconnect()` — close connection, stop reconnection
+- `disconnect()` — close connection, stop reconnection, clear `joined_channels`
 - Internal: packet routing for community-specific types, emits Tauri events
 
-On reconnect: automatically re-sends `CommunityAuthRequest` with stored JWT.
+On reconnect: automatically re-sends `CommunityAuthRequest` with stored JWT, then re-sends `JoinChannelRequest` for each channel in `joined_channels`.
 
 **`commands/*.rs`** — Thin Tauri command handlers. Each command:
 1. Extracts `AppState` from Tauri managed state
@@ -156,29 +154,56 @@ include!(concat!(env!("OUT_DIR"), "/chatproj.rs"));
 This generates Rust structs for all messages (`LoginRequest`, `LoginResponse`, `Packet`, etc.) with `prost::Message` derive for serialization.
 
 **Packet construction pattern:**
+
+The `oneof payload` generates a Rust enum `packet::Payload` with variants like `LoginReq(LoginRequest)`, `LoginRes(LoginResponse)`, etc. The `Packet` struct has `payload: Option<packet::Payload>`.
+
 ```rust
 use prost::Message;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-fn build_packet(msg_type: packet::Type, payload: &impl Message) -> Vec<u8> {
+fn build_packet(msg_type: packet::Type, payload: packet::Payload, auth_token: Option<&str>) -> Vec<u8> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
     let packet = Packet {
         r#type: msg_type as i32,
-        payload: payload.encode_to_vec(),
-        ..Default::default()
+        timestamp,
+        auth_token: auth_token.unwrap_or_default().to_string(),
+        payload: Some(payload),
     };
     packet.encode_to_vec()
 }
+
+// Usage:
+let bytes = build_packet(
+    packet::Type::LoginReq,
+    packet::Payload::LoginReq(LoginRequest {
+        username: "alice".into(),
+        password: "secret".into(),
+    }),
+    None, // no JWT yet for login
+);
 ```
 
 **Packet routing pattern (in read loop):**
+
+Match on the `oneof payload` enum directly — no manual decode needed since prost already deserializes the typed variant:
+
 ```rust
-match packet::Type::try_from(packet.r#type) {
-    Ok(packet::Type::LoginRes) => {
-        let resp = LoginResponse::decode(&packet.payload[..])?;
+match packet.payload {
+    Some(packet::Payload::LoginRes(resp)) => {
         emit_login_result(app, resp);
     }
-    Ok(packet::Type::ServerListRes) => { ... }
-    // ... other types
-    _ => { /* log unknown type */ }
+    Some(packet::Payload::ServerListRes(resp)) => {
+        emit_server_list(app, resp);
+    }
+    Some(packet::Payload::DirectMsg(msg)) => {
+        emit_message_received(app, msg);
+    }
+    // ... other variants
+    None => { /* no payload */ }
+    _ => { /* unhandled variant, log */ }
 }
 ```
 
@@ -193,8 +218,8 @@ All commands are `async` and take `State<'_, Mutex<AppState>>` + `AppHandle`.
 **`login(username, password)`**
 1. Create `CentralClient`, connect to `127.0.0.1:8080` via TLS
 2. Store credentials in `AppState` (for reconnection)
-3. Send `LoginRequest` packet
-4. Return `Ok(())` — `login_succeeded` or `login_failed` event fires when response arrives
+3. Send `LoginRequest` packet (no `auth_token` needed — not authenticated yet)
+4. Return `Ok(())` — when `LoginResponse` arrives with `success=true`, the read loop stores `jwt_token` in `AppState.token` and `username` in `AppState.username`, then emits `login_succeeded`. On failure, emits `login_failed`.
 
 **`register(username, email, password)`**
 1. If not connected to central, connect first
@@ -215,7 +240,7 @@ All commands are `async` and take `State<'_, Mutex<AppState>>` + `AppHandle`.
 
 **`connect_to_community(server_id, host, port)`**
 1. Create `CommunityClient`, connect via TLS
-2. Send `CommunityAuthRequest` with JWT from `AppState`
+2. Send `CommunityAuthRequest` with `jwt_token` from `AppState.token`. Also set `Packet.auth_token` on this and all subsequent packets to this server.
 3. Store in `AppState.communities` map
 4. `community_auth_responded` event fires
 
@@ -227,6 +252,7 @@ All commands are `async` and take `State<'_, Mutex<AppState>>` + `AppHandle`.
 **`join_channel(server_id, channel_id)`**
 1. Find community client by server_id
 2. Send `JoinChannelRequest`
+3. `join_channel_responded` event fires with success status and active users
 
 **`send_channel_message(server_id, channel_id, message)`**
 1. Find community client by server_id
@@ -264,11 +290,14 @@ All events emitted from the Rust read loops when server responses arrive.
 | `server_list_received` | `{ servers: [{ id, name, description, hostIp, port, memberCount }] }` | `ServerListResponse` |
 | `community_auth_responded` | `{ serverId: string, success: bool, message: string, channels: [{ id, name, type }] }` | `CommunityAuthResponse` |
 | `message_received` | `{ context: string, sender: string, content: string, timestamp: string }` | `DirectMessage` or `ChannelMessage` |
-| `presence_updated` | `{ users: string[] }` | `PresenceUpdate` |
-| `friend_list_received` | `{ friends: [{ username, status }] }` | `FriendListResponse` |
-| `friend_action_responded` | `{ success: bool, message: string }` | `FriendActionResponse` |
+| `user_list_updated` | `{ onlineUsers: string[] }` | `PresenceUpdate` (maps to C++ `userListUpdated` signal) |
+| `join_channel_responded` | `{ serverId: string, success: bool, channelId: string, activeUsers: string[] }` | `JoinChannelResponse` |
+| `friend_list_received` | `{ friends: [{ username, status }] }` | `FriendListRes` |
+| `friend_action_responded` | `{ success: bool, message: string }` | `FriendActionRes` |
 
 Event payloads are Rust structs with `#[derive(Serialize, Clone)]` emitted via `app_handle.emit("event_name", payload)`.
+
+**Note:** The C++ backend had a `statusMessageChanged` signal for UI status text ("Connecting...", "Connected", etc.). In the Tauri client, this is derived from `connection_lost` / `connection_restored` events — no separate event needed.
 
 ---
 
