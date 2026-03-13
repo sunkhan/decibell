@@ -91,8 +91,8 @@ src-tauri/src/
 - `register(username, email, password)` — send `RegisterRequest`
 - `request_server_list()` — send `ServerListRequest`
 - `send_private_message(recipient, message)` — send `DirectMessage`
-- `request_friend_list()` — send `FriendListRequest`
-- `send_friend_action(action, target)` — send `FriendActionRequest`
+- `request_friend_list()` — send `FriendListReq`
+- `send_friend_action(action, target)` — send `FriendActionReq`
 - `disconnect()` — close connection, stop reconnection
 - Internal: packet routing — matches `Packet.type` and emits corresponding Tauri events
 
@@ -261,11 +261,11 @@ All commands are `async` and take `State<'_, Mutex<AppState>>` + `AppHandle`.
 ### Friend Commands (`commands/friends.rs`)
 
 **`request_friend_list()`**
-1. Send `FriendListRequest` to central
+1. Send `FriendListReq` to central
 2. `friend_list_received` event fires
 
 **`send_friend_action(action, target_username)`**
-1. Send `FriendActionRequest` to central
+1. Send `FriendActionReq` to central
 2. `friend_action_responded` event fires
 
 ### Messaging Commands (`commands/messaging.rs`)
