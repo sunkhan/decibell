@@ -14,9 +14,9 @@
       {
         "title": "Decibell",
         "width": 1280,
-        "height": 800,
-        "minWidth": 940,
-        "minHeight": 560
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 600
       }
     ],
     "security": {
