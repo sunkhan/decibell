@@ -13,12 +13,15 @@ import { usePresenceEvents } from "../hooks/usePresenceEvents";
 import { useServerEvents } from "../features/servers/useServerEvents";
 import { useFriendsEvents } from "../features/friends/useFriendsEvents";
 import { useUiStore } from "../stores/uiStore";
+import VoicePanel from "../features/voice/VoicePanel";
+import { useVoiceEvents } from "../features/voice/useVoiceEvents";
 
 export default function MainLayout() {
   useConnectionEvents();
   usePresenceEvents();
   useServerEvents();
   useFriendsEvents();
+  useVoiceEvents();
 
   const connectionStatus = useUiStore((s) => s.connectionStatus);
   const activeView = useUiStore((s) => s.activeView);
@@ -48,8 +51,14 @@ export default function MainLayout() {
             ) : (
               <>
                 <ChannelSidebar />
-                <ChatPanel />
-                {activeView === "home" ? <FriendsList /> : <MembersList />}
+                {activeView === "voice" ? (
+                  <VoicePanel />
+                ) : (
+                  <>
+                    <ChatPanel />
+                    {activeView === "home" ? <FriendsList /> : <MembersList />}
+                  </>
+                )}
               </>
             )}
           </div>
