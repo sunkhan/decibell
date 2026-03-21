@@ -26,3 +26,5 @@ bytes = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 futures-util = { version = "0.3", features = ["sink"] }
 log = "0.4"
+cpal = "0.15"
+audiopus = "0.3.0-rc.0"
