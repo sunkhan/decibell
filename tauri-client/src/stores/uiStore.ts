@@ -4,12 +4,12 @@ interface UiState {
   sidebarCollapsed: boolean;
   activeModal: string | null;
   connectionStatus: "connected" | "reconnecting" | "disconnected";
-  activeView: "home" | "server" | "browse";
+  activeView: "home" | "server" | "browse" | "voice";
   toggleSidebar: () => void;
   openModal: (modalId: string) => void;
   closeModal: () => void;
   setConnectionStatus: (status: "connected" | "reconnecting" | "disconnected") => void;
-  setActiveView: (view: "home" | "server" | "browse") => void;
+  setActiveView: (view: "home" | "server" | "browse" | "voice") => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
