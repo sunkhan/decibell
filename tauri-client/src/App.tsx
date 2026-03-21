@@ -1,7 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import AppLayout from "./layouts/AppLayout";
-import LoginPage from "./pages/LoginPage";
-import HomePage from "./pages/HomePage";
+import LoginPage from "./features/auth/LoginPage";
 import SettingsPage from "./pages/SettingsPage";
 import { useAuthStore } from "./stores/authStore";
 
@@ -23,7 +22,9 @@ export default function App() {
             path="/"
             element={
               <ProtectedRoute>
-                <HomePage />
+                <div className="flex h-full w-full items-center justify-center text-text-muted">
+                  Main layout coming next...
+                </div>
               </ProtectedRoute>
             }
           />
