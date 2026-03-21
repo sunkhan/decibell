@@ -3,13 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import DmSidebar from "./DmSidebar";
 import ServerBar from "../features/servers/ServerBar";
 import ServerDiscoveryModal from "../features/servers/ServerDiscoveryModal";
+import ChannelSidebar from "../features/channels/ChannelSidebar";
+import ChatPanel from "../features/chat/ChatPanel";
+import FriendsList from "../features/friends/FriendsList";
+import MembersList from "../features/friends/MembersList";
 import { useConnectionEvents } from "../hooks/useConnectionEvents";
 import { usePresenceEvents } from "../hooks/usePresenceEvents";
 import { useServerEvents } from "../features/servers/useServerEvents";
 import { useFriendsEvents } from "../features/friends/useFriendsEvents";
 import { useUiStore } from "../stores/uiStore";
-import ChannelSidebar from "../features/channels/ChannelSidebar";
-import ChatPanel from "../features/chat/ChatPanel";
 
 export default function MainLayout() {
   useConnectionEvents();
@@ -18,6 +20,7 @@ export default function MainLayout() {
   useFriendsEvents();
 
   const connectionStatus = useUiStore((s) => s.connectionStatus);
+  const activeView = useUiStore((s) => s.activeView);
 
   useEffect(() => {
     invoke("request_friend_list").catch(console.error);
@@ -31,20 +34,21 @@ export default function MainLayout() {
           Connection lost. Reconnecting...
         </div>
       )}
+
       <div className="flex flex-1 overflow-hidden">
         <DmSidebar />
+
         <div className="flex flex-1 flex-col overflow-hidden">
           <ServerBar />
+
           <div className="flex flex-1 overflow-hidden">
             <ChannelSidebar />
             <ChatPanel />
-            {/* Right Panel placeholder - Task 9 */}
-            <div className="flex w-70 flex-shrink-0 flex-col border-l border-border bg-bg-primary p-4">
-              <span className="text-sm text-text-muted">Friends / Members...</span>
-            </div>
+            {activeView === "home" ? <FriendsList /> : <MembersList />}
           </div>
         </div>
       </div>
+
       <ServerDiscoveryModal />
     </div>
   );
