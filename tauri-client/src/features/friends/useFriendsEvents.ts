@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
 import { useFriendsStore } from "../../stores/friendsStore";
 
 export function useFriendsEvents() {
@@ -18,8 +17,13 @@ export function useFriendsEvents() {
 
     const unlistenAction = listen<{ success: boolean; message: string }>(
       "friend_action_responded",
-      () => {
-        invoke("request_friend_list").catch(console.error);
+      (event) => {
+        const { success, message } = event.payload;
+        if (!success) {
+          useFriendsStore.getState().setLastActionError(message);
+        } else {
+          useFriendsStore.getState().setLastActionError(null);
+        }
       }
     );
 

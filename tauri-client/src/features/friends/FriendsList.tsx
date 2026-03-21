@@ -60,6 +60,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
 
 export default function FriendsList() {
   const friends = useFriendsStore((s) => s.friends);
+  const lastActionError = useFriendsStore((s) => s.lastActionError);
   const [search, setSearch] = useState("");
   const [addUsername, setAddUsername] = useState("");
   const [showAdd, setShowAdd] = useState(false);
@@ -94,6 +95,7 @@ export default function FriendsList() {
   const handleAddFriend = async () => {
     if (!addUsername.trim()) return;
     setAddError(null);
+    useFriendsStore.getState().setLastActionError(null);
     try {
       await invoke("send_friend_action", {
         action: 0, // ADD
@@ -154,6 +156,12 @@ export default function FriendsList() {
           className="w-full rounded-md border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary outline-none placeholder:text-text-muted focus:border-accent"
         />
       </div>
+
+      {lastActionError && (
+        <div className="mx-3 mb-1 rounded-md bg-error/10 px-2.5 py-1.5 text-xs text-error">
+          {lastActionError}
+        </div>
+      )}
 
       {/* Friend sections */}
       <div className="flex-1 overflow-y-auto px-2 pb-2">

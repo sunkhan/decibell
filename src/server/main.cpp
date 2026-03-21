@@ -1,8 +1,10 @@
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
+#endif
 #endif
 
 #include <iostream>
@@ -218,10 +220,36 @@ private:
             auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
             deliver(framed);
 
-            // Notify target if they are online (and if action is not block to keep it silent)
-            if (success && req.action() != chatproj::FriendActionType::BLOCK && req.action() != chatproj::FriendActionType::REMOVE) {
-                // If action was successful, target should probably refresh their friends list
-                // For simplicity, we just rely on clients polling or future real-time updates.
+            // Push updated friend list to both users if the action was successful
+            if (success) {
+                // Send updated list to the requester
+                auto my_friends = auth_manager_.getFriends(username_);
+                chatproj::Packet my_list_pkt;
+                my_list_pkt.set_type(chatproj::Packet::FRIEND_LIST_RES);
+                auto* my_list = my_list_pkt.mutable_friend_list_res();
+                for (auto& f : my_friends) {
+                    if (f.status() == chatproj::FriendInfo::OFFLINE && manager_.is_user_online(f.username())) {
+                        f.set_status(chatproj::FriendInfo::ONLINE);
+                    }
+                    *my_list->add_friends() = f;
+                }
+                std::string my_ser;
+                my_list_pkt.SerializeToString(&my_ser);
+                auto my_framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(my_ser));
+                deliver(my_framed);
+
+                // Send updated list to the target user (if online)
+                auto target_friends = auth_manager_.getFriends(req.target_username());
+                chatproj::Packet target_list_pkt;
+                target_list_pkt.set_type(chatproj::Packet::FRIEND_LIST_RES);
+                auto* target_list = target_list_pkt.mutable_friend_list_res();
+                for (auto& f : target_friends) {
+                    if (f.status() == chatproj::FriendInfo::OFFLINE && manager_.is_user_online(f.username())) {
+                        f.set_status(chatproj::FriendInfo::ONLINE);
+                    }
+                    *target_list->add_friends() = f;
+                }
+                manager_.send_private(target_list_pkt, req.target_username());
             }
         }
         else if (packet.type() == chatproj::Packet::FRIEND_LIST_REQ) {
@@ -390,8 +418,8 @@ public:
             ssl::context::no_tlsv1 |
             ssl::context::no_tlsv1_1);
 
-        ssl_context_.use_certificate_chain_file("C:/dev/chatproj-core/server.crt");
-        ssl_context_.use_private_key_file("C:/dev/chatproj-core/server.key", ssl::context::pem);
+        ssl_context_.use_certificate_chain_file("server.crt");
+        ssl_context_.use_private_key_file("server.key", ssl::context::pem);
 
         do_accept();
     }
