@@ -1,6 +1,6 @@
 export interface User {
   username: string;
-  status: "online" | "offline" | "idle" | "dnd";
+  status: "online" | "offline";
 }
 
 export interface FriendInfo {

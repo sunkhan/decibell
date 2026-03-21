@@ -2,18 +2,25 @@ import { create } from "zustand";
 
 interface AuthState {
   username: string | null;
-  token: string | null;
   isAuthenticated: boolean;
-  login: (username: string, token: string) => void;
+  isLoggingIn: boolean;
+  loginError: string | null;
+  isRegistering: boolean;
+  registerResult: { success: boolean; message: string } | null;
+  login: (username: string) => void;
   logout: () => void;
+  setLoggingIn: (v: boolean) => void;
+  setLoginError: (msg: string | null) => void;
+  setRegistering: (v: boolean) => void;
+  setRegisterResult: (result: { success: boolean; message: string } | null) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
-  username: null,
-  token: null,
-  isAuthenticated: false,
-  login: (username, token) =>
-    set({ username, token, isAuthenticated: true }),
-  logout: () =>
-    set({ username: null, token: null, isAuthenticated: false }),
+  username: null, isAuthenticated: false, isLoggingIn: false, loginError: null, isRegistering: false, registerResult: null,
+  login: (username) => set({ username, isAuthenticated: true, isLoggingIn: false, loginError: null }),
+  logout: () => set({ username: null, isAuthenticated: false, isLoggingIn: false, loginError: null, registerResult: null }),
+  setLoggingIn: (v) => set({ isLoggingIn: v, loginError: null }),
+  setLoginError: (msg) => set({ loginError: msg, isLoggingIn: false }),
+  setRegistering: (v) => set({ isRegistering: v, registerResult: null }),
+  setRegisterResult: (result) => set({ registerResult: result, isRegistering: false }),
 }));
