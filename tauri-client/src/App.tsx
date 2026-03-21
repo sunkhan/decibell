@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import AppLayout from "./layouts/AppLayout";
+import MainLayout from "./layouts/MainLayout";
 import LoginPage from "./features/auth/LoginPage";
 import SettingsPage from "./pages/SettingsPage";
 import { useAuthStore } from "./stores/authStore";
@@ -18,24 +19,8 @@ export default function App() {
       <Routes>
         <Route element={<AppLayout />}>
           <Route path="/login" element={<LoginPage />} />
-          <Route
-            path="/"
-            element={
-              <ProtectedRoute>
-                <div className="flex h-full w-full items-center justify-center text-text-muted">
-                  Main layout coming next...
-                </div>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <ProtectedRoute>
-                <SettingsPage />
-              </ProtectedRoute>
-            }
-          />
+          <Route path="/" element={<ProtectedRoute><MainLayout /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
         </Route>
       </Routes>
     </BrowserRouter>
