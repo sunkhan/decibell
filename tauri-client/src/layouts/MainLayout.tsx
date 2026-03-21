@@ -8,6 +8,7 @@ import { usePresenceEvents } from "../hooks/usePresenceEvents";
 import { useServerEvents } from "../features/servers/useServerEvents";
 import { useFriendsEvents } from "../features/friends/useFriendsEvents";
 import { useUiStore } from "../stores/uiStore";
+import ChannelSidebar from "../features/channels/ChannelSidebar";
 
 export default function MainLayout() {
   useConnectionEvents();
@@ -34,10 +35,7 @@ export default function MainLayout() {
         <div className="flex flex-1 flex-col overflow-hidden">
           <ServerBar />
           <div className="flex flex-1 overflow-hidden">
-            {/* Channel Sidebar placeholder - Task 7 */}
-            <div className="flex w-60 flex-shrink-0 flex-col border-r border-border bg-bg-primary p-4">
-              <span className="text-sm text-text-muted">Channels...</span>
-            </div>
+            <ChannelSidebar />
             {/* Chat Panel placeholder - Task 8 */}
             <div className="flex flex-1 items-center justify-center bg-bg-secondary">
               <span className="text-sm text-text-muted">Select a channel to start chatting</span>
