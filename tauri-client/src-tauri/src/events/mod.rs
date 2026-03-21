@@ -224,3 +224,40 @@ pub fn emit_friend_action_responded(app: &AppHandle, success: bool, message: Str
         FriendActionRespondedPayload { success, message },
     );
 }
+
+pub const VOICE_PRESENCE_UPDATED: &str = "voice_presence_updated";
+pub const VOICE_STATE_CHANGED: &str = "voice_state_changed";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoicePresenceUpdatedPayload {
+    pub server_id: String,
+    pub channel_id: String,
+    pub participants: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceStateChangedPayload {
+    pub is_muted: bool,
+    pub is_deafened: bool,
+}
+
+pub fn emit_voice_presence_updated(
+    app: &AppHandle,
+    server_id: String,
+    channel_id: String,
+    participants: Vec<String>,
+) {
+    let _ = app.emit(
+        VOICE_PRESENCE_UPDATED,
+        VoicePresenceUpdatedPayload { server_id, channel_id, participants },
+    );
+}
+
+pub fn emit_voice_state_changed(app: &AppHandle, is_muted: bool, is_deafened: bool) {
+    let _ = app.emit(
+        VOICE_STATE_CHANGED,
+        VoiceStateChangedPayload { is_muted, is_deafened },
+    );
+}
