@@ -74,6 +74,7 @@ export default function FriendsList() {
   const [search, setSearch] = useState("");
   const [addUsername, setAddUsername] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
 
   const filtered = friends.filter((f) =>
     f.username.toLowerCase().includes(search.toLowerCase())
@@ -103,6 +104,7 @@ export default function FriendsList() {
 
   const handleAddFriend = async () => {
     if (!addUsername.trim()) return;
+    setAddError(null);
     try {
       await invoke("send_friend_action", {
         action: 0, // ADD
@@ -111,7 +113,7 @@ export default function FriendsList() {
       setAddUsername("");
       setShowAdd(false);
     } catch (err) {
-      console.error("Failed to add friend:", err);
+      setAddError(String(err));
     }
   };
 
@@ -130,22 +132,27 @@ export default function FriendsList() {
 
       {/* Add friend input */}
       {showAdd && (
-        <div className="flex gap-2 border-b border-border px-3 py-2">
-          <input
-            type="text"
-            value={addUsername}
-            onChange={(e) => setAddUsername(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleAddFriend()}
-            placeholder="Username"
-            className="flex-1 rounded-md border border-border bg-bg-primary px-2 py-1 text-sm text-text-primary outline-none focus:border-accent"
-          />
-          <button
-            onClick={handleAddFriend}
-            className="rounded-md bg-accent px-2 py-1 text-xs font-semibold text-white hover:bg-accent-hover"
-          >
-            Send
-          </button>
-        </div>
+        <>
+          <div className="flex gap-2 border-b border-border px-3 py-2">
+            <input
+              type="text"
+              value={addUsername}
+              onChange={(e) => setAddUsername(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleAddFriend()}
+              placeholder="Username"
+              className="flex-1 rounded-md border border-border bg-bg-primary px-2 py-1 text-sm text-text-primary outline-none focus:border-accent"
+            />
+            <button
+              onClick={handleAddFriend}
+              className="rounded-md bg-accent px-2 py-1 text-xs font-semibold text-white hover:bg-accent-hover"
+            >
+              Send
+            </button>
+          </div>
+          {addError && (
+            <p className="px-3 pb-1 text-xs text-error">{addError}</p>
+          )}
+        </>
       )}
 
       {/* Search */}
@@ -177,6 +184,11 @@ export default function FriendsList() {
         {friends.length === 0 && (
           <p className="mt-4 text-center text-xs text-text-muted">
             No friends yet. Add someone!
+          </p>
+        )}
+        {friends.length > 0 && filtered.length === 0 && (
+          <p className="mt-4 text-center text-xs text-text-muted">
+            No results found
           </p>
         )}
       </div>
