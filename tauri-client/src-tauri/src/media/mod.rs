@@ -3,4 +3,5 @@
 
 pub mod codec;
 pub mod packet;
+pub mod pipeline;
 pub mod speaking;
