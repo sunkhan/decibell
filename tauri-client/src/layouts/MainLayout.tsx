@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import DmSidebar from "./DmSidebar";
 import ServerBar from "../features/servers/ServerBar";
 import ServerDiscoveryModal from "../features/servers/ServerDiscoveryModal";
+import ServerBrowseView from "../features/servers/ServerBrowseView";
 import ChannelSidebar from "../features/channels/ChannelSidebar";
 import ChatPanel from "../features/chat/ChatPanel";
 import FriendsList from "../features/friends/FriendsList";
@@ -42,9 +43,15 @@ export default function MainLayout() {
           <ServerBar />
 
           <div className="flex flex-1 overflow-hidden">
-            <ChannelSidebar />
-            <ChatPanel />
-            {activeView === "home" ? <FriendsList /> : <MembersList />}
+            {activeView === "browse" ? (
+              <ServerBrowseView />
+            ) : (
+              <>
+                <ChannelSidebar />
+                <ChatPanel />
+                {activeView === "home" ? <FriendsList /> : <MembersList />}
+              </>
+            )}
           </div>
         </div>
       </div>
