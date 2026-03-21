@@ -14,7 +14,8 @@ function stringToColor(str: string): string {
 }
 
 function formatTimestamp(ts: string): string {
-  const date = new Date(parseInt(ts, 10) * 1000);
+  const asEpoch = parseInt(ts, 10);
+  const date = isNaN(asEpoch) ? new Date(ts) : new Date(asEpoch * 1000);
   if (isNaN(date.getTime())) return ts;
   const now = new Date();
   const isToday = date.toDateString() === now.toDateString();

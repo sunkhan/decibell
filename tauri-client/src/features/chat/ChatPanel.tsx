@@ -29,6 +29,12 @@ export default function ChatPanel() {
       )?.name
     : null;
 
+  // Clear input and error on channel switch
+  useEffect(() => {
+    setSendError(null);
+    setInput("");
+  }, [activeChannelId]);
+
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -89,7 +95,9 @@ export default function ChatPanel() {
             </p>
           </div>
         ) : (
-          messages.map((msg, i) => <MessageBubble key={i} message={msg} />)
+          messages.map((msg, i) => (
+            <MessageBubble key={`${msg.timestamp}-${msg.sender}-${i}`} message={msg} />
+          ))
         )}
         <div ref={messagesEndRef} />
       </div>
