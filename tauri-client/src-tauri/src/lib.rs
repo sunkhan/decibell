@@ -10,6 +10,10 @@ use state::{AppState, SharedState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Arc::new(Mutex::new(AppState::default())) as SharedState)
@@ -26,6 +30,10 @@ pub fn run() {
             commands::friends::request_friend_list,
             commands::friends::send_friend_action,
             commands::messaging::send_private_message,
+            commands::voice::join_voice_channel,
+            commands::voice::leave_voice_channel,
+            commands::voice::set_voice_mute,
+            commands::voice::set_voice_deafen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

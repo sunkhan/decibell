@@ -13,9 +13,9 @@ pub struct CommunityClient {
     router_task: Option<JoinHandle<()>>,
     reconnect_task: Option<JoinHandle<()>>,
     pub server_id: String,
-    host: String,
-    port: u16,
-    jwt: String,
+    pub host: String,
+    pub port: u16,
+    pub jwt: String,
     pub joined_channels: Vec<String>,
 }
 
@@ -106,6 +106,28 @@ impl CommunityClient {
                 content: content.into(),
                 timestamp,
             }),
+            Some(&self.jwt),
+        );
+        self.send(data).await
+    }
+
+    /// Join a voice channel.
+    pub async fn join_voice_channel(&self, channel_id: &str) -> Result<(), String> {
+        let data = build_packet(
+            packet::Type::JoinVoiceReq,
+            packet::Payload::JoinVoiceReq(JoinVoiceRequest {
+                channel_id: channel_id.into(),
+            }),
+            Some(&self.jwt),
+        );
+        self.send(data).await
+    }
+
+    /// Leave the current voice channel.
+    pub async fn leave_voice_channel(&self) -> Result<(), String> {
+        let data = build_packet(
+            packet::Type::LeaveVoiceReq,
+            packet::Payload::LeaveVoiceReq(LeaveVoiceRequest {}),
             Some(&self.jwt),
         );
         self.send(data).await
@@ -250,7 +272,7 @@ impl CommunityClient {
                     );
                 }
                 Some(packet::Payload::ChannelMsg(msg)) => {
-                    let context = format!("channel:{}:{}", server_id, msg.channel_id);
+                    let context = msg.channel_id.clone();
                     events::emit_message_received(
                         &app,
                         context,
@@ -266,6 +288,14 @@ impl CommunityClient {
                         resp.success,
                         resp.channel_id,
                         resp.active_users,
+                    );
+                }
+                Some(packet::Payload::VoicePresenceUpdate(update)) => {
+                    events::emit_voice_presence_updated(
+                        &app,
+                        server_id.clone(),
+                        update.channel_id,
+                        update.active_users,
                     );
                 }
                 _ => {
