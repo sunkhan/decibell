@@ -1,8 +1,10 @@
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
+#endif
 #endif
 
 #include <iostream>
@@ -39,6 +41,8 @@ public:
     void broadcast_voice_presence(const std::string& channel_id);
     void send_initial_voice_presences(std::shared_ptr<Session> session);
     std::shared_ptr<Session> find_session_by_token(const std::string& token, const std::string& jwt_secret);
+    std::vector<std::string> get_channel_usernames(const std::string& channel_id);
+    void broadcast_channel_members(const std::string& channel_id);
 
     // Screen Sharing 
     void start_stream(std::shared_ptr<Session> session, const std::string& channel_id, bool has_audio);
@@ -189,16 +193,31 @@ private:
         // --- JOIN CHANNEL ---
         if (packet.type() == chatproj::Packet::JOIN_CHANNEL_REQ) {
             std::string target_channel = packet.join_channel_req().channel_id();
-            manager_.join_channel(shared_from_this(), target_channel, current_channel_);
+            std::string old_channel = current_channel_;
+            manager_.join_channel(shared_from_this(), target_channel, old_channel);
             current_channel_ = target_channel;
 
-            chatproj::Packet res;
-            res.set_type(chatproj::Packet::JOIN_CHANNEL_RES);
-            auto* join_res = res.mutable_join_channel_res();
-            join_res->set_success(true);
-            join_res->set_channel_id(target_channel);
+            // Send join response directly to the joining user (ensures they always get members)
+            {
+                chatproj::Packet res_pkt;
+                res_pkt.set_type(chatproj::Packet::JOIN_CHANNEL_RES);
+                auto* res = res_pkt.mutable_join_channel_res();
+                res->set_success(true);
+                res->set_channel_id(target_channel);
+                for (const auto& name : manager_.get_channel_usernames(target_channel)) {
+                    res->add_active_users(name);
+                }
+                send_packet(res_pkt);
+            }
 
-            send_packet(res);
+            // Broadcast updated member list to other users in the channel
+            manager_.broadcast_channel_members(target_channel);
+
+            // Also broadcast updated list to old channel (user left it)
+            if (!old_channel.empty() && old_channel != target_channel) {
+                manager_.broadcast_channel_members(old_channel);
+            }
+
             std::cout << "[Community] " << username_ << " joined #" << target_channel << "\n";
         }
 
@@ -309,11 +328,14 @@ void SessionManager::join(std::shared_ptr<Session> session) {
 void SessionManager::leave(std::shared_ptr<Session> session) {
     std::vector<std::string> affected_voice_channels;
     std::vector<std::string> affected_stream_channels;
+    std::vector<std::string> affected_text_channels;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         sessions_.erase(session);
         for (auto& pair : channels_) {
-            pair.second.erase(session);
+            if (pair.second.erase(session) > 0) {
+                affected_text_channels.push_back(pair.first);
+            }
         }
         for (auto& pair : voice_channels_) {
             if (pair.second.erase(session) > 0) {
@@ -328,6 +350,9 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
         std::cout << "[Community] Session " << session->get_username() << " left. Total: " << sessions_.size() << "\n";
     }
     // Broadcast updated presence to remaining clients (outside lock to avoid deadlock)
+    for (const auto& ch : affected_text_channels) {
+        broadcast_channel_members(ch);
+    }
     for (const auto& ch : affected_voice_channels) {
         broadcast_voice_presence(ch);
     }
@@ -395,6 +420,30 @@ void SessionManager::join_channel(std::shared_ptr<Session> session, const std::s
         channels_[old_channel].erase(session);
     }
     channels_[new_channel].insert(session);
+}
+
+std::vector<std::string> SessionManager::get_channel_usernames(const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> usernames;
+    auto it = channels_.find(channel_id);
+    if (it != channels_.end()) {
+        for (const auto& session : it->second) {
+            usernames.push_back(session->get_username());
+        }
+    }
+    return usernames;
+}
+
+void SessionManager::broadcast_channel_members(const std::string& channel_id) {
+    chatproj::Packet pkt;
+    pkt.set_type(chatproj::Packet::JOIN_CHANNEL_RES);
+    auto* res = pkt.mutable_join_channel_res();
+    res->set_success(true);
+    res->set_channel_id(channel_id);
+    for (const auto& name : get_channel_usernames(channel_id)) {
+        res->add_active_users(name);
+    }
+    broadcast_to_channel(pkt, channel_id);
 }
 
 void SessionManager::join_voice_channel(std::shared_ptr<Session> session, const std::string& new_channel, const std::string& old_channel) {
@@ -607,8 +656,8 @@ public:
             ssl::context::no_tlsv1 |
             ssl::context::no_tlsv1_1);
 
-        ssl_context_.use_certificate_chain_file("C:/dev/chatproj-core/server.crt");
-        ssl_context_.use_private_key_file("C:/dev/chatproj-core/server.key", ssl::context::pem);
+        ssl_context_.use_certificate_chain_file("server.crt");
+        ssl_context_.use_private_key_file("server.key", ssl::context::pem);
 
         // Increase UDP socket buffers to handle video traffic bursts
         udp_socket_.set_option(boost::asio::socket_base::receive_buffer_size(2 * 1024 * 1024));
@@ -681,6 +730,15 @@ private:
                         if (!target.empty()) {
                             manager_.relay_nack(udp_buffer_, bytes_recvd, target, udp_socket_);
                         }
+                        do_receive_udp();
+                        return;
+                    } else if (packet_type == 5) { // PING
+                        // Echo the packet back to the sender
+                        auto echo_buf = std::make_shared<std::vector<uint8_t>>(
+                            udp_buffer_, udp_buffer_ + bytes_recvd);
+                        udp_socket_.async_send_to(
+                            boost::asio::buffer(*echo_buf), udp_sender_endpoint_,
+                            [echo_buf](boost::system::error_code, std::size_t) {});
                         do_receive_udp();
                         return;
                     }
