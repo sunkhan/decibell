@@ -21,7 +21,7 @@ export default function ChannelSidebar() {
   const serverName = servers.find((s) => s.id === activeServerId)?.name;
 
   const handleChannelClick = (channelId: string) => {
-    if (!activeServerId) return;
+    if (!activeServerId || channelId === activeChannelId) return;
     setActiveChannel(channelId);
     invoke("join_channel", {
       serverId: activeServerId,
@@ -88,7 +88,7 @@ export default function ChannelSidebar() {
               <div
                 key={ch.id}
                 className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-text-muted"
-                title="Voice channels available in Phase 4"
+                title="Voice channels coming soon"
               >
                 <span>🔊</span>
                 <span className="truncate">{ch.name}</span>
