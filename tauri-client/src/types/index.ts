@@ -30,6 +30,12 @@ export interface Message {
   channelId: string;
 }
 
+export interface DmMessage {
+  sender: string;
+  content: string;
+  timestamp: string;
+}
+
 export interface VoiceParticipant {
   username: string;
   isMuted: boolean;
