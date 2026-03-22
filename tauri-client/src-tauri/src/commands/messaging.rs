@@ -20,3 +20,18 @@ pub async fn send_private_message(
         None => Err("Not connected to central server".to_string()),
     }
 }
+
+#[tauri::command]
+pub async fn set_dm_privacy(
+    friends_only: bool,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    let token = s.token.clone();
+    match &s.central {
+        Some(client) => {
+            client.send_dm_privacy(friends_only, token.as_deref()).await
+        }
+        None => Err("Not connected to central server".to_string()),
+    }
+}

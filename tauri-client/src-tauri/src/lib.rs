@@ -30,6 +30,7 @@ pub fn run() {
             commands::friends::request_friend_list,
             commands::friends::send_friend_action,
             commands::messaging::send_private_message,
+            commands::messaging::set_dm_privacy,
             commands::voice::join_voice_channel,
             commands::voice::leave_voice_channel,
             commands::voice::set_voice_mute,

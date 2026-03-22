@@ -138,6 +138,18 @@ impl CentralClient {
         self.send(data).await
     }
 
+    /// Send a DmPrivacySetting to the central server.
+    pub async fn send_dm_privacy(&self, friends_only: bool, token: Option<&str>) -> Result<(), String> {
+        let data = build_packet(
+            packet::Type::DmPrivacy,
+            packet::Payload::DmPrivacy(DmPrivacySetting {
+                friends_only,
+            }),
+            token,
+        );
+        self.send(data).await
+    }
+
     /// Disconnect from the central server. Stops reconnection.
     pub fn disconnect(&mut self) {
         if let Some(task) = self.reconnect_task.take() {
