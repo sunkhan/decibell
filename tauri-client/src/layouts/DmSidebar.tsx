@@ -1,15 +1,33 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useNavigate } from "react-router-dom";
-import { useChatStore } from "../stores/chatStore";
 import { useUiStore } from "../stores/uiStore";
 import { useAuthStore } from "../stores/authStore";
+import { useDmStore } from "../stores/dmStore";
+import { useFriendsStore } from "../stores/friendsStore";
+import { useChatStore } from "../stores/chatStore";
+import { stringToGradient } from "../utils/colors";
+
 
 export default function DmSidebar() {
   const navigate = useNavigate();
-  const setActiveServer = useChatStore((s) => s.setActiveServer);
-  const setActiveChannel = useChatStore((s) => s.setActiveChannel);
+  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const setActiveView = useUiStore((s) => s.setActiveView);
-  const activeView = useUiStore((s) => s.activeView);
+
+  const conversations = useDmStore((s) => s.conversations);
+  const activeDmUser = useDmStore((s) => s.activeDmUser);
+  const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
+  const friends = useFriendsStore((s) => s.friends);
+  const onlineUsers = useChatStore((s) => s.onlineUsers);
+
+  const sortedConversations = Object.values(conversations).sort(
+    (a, b) => b.lastMessageTime - a.lastMessageTime
+  );
+
+  const handleDmClick = (username: string) => {
+    setActiveDmUser(username);
+    setActiveView("dm");
+  };
 
   const handleLogout = async () => {
     try {
@@ -21,32 +39,64 @@ export default function DmSidebar() {
     navigate("/login");
   };
 
-  const handleHomeClick = () => {
-    setActiveServer(null);
-    setActiveChannel(null);
-    setActiveView("home");
-  };
-
   return (
-    <div className="flex h-full w-[72px] flex-shrink-0 flex-col items-center border-r border-border bg-bg-primary pt-3">
+    <div
+      className={`flex h-full shrink-0 flex-col items-center border-r border-border bg-bg-dmbar pt-2.5 transition-all ease-[cubic-bezier(0.4,0,0.2,1)] ${
+        sidebarCollapsed ? "w-0 overflow-hidden border-r-0 opacity-0" : "w-[68px]"
+      }`}
+      style={{ transitionDuration: "300ms" }}
+    >
+      {/* Collapse toggle */}
       <button
-        onClick={handleHomeClick}
-        className={`flex h-12 w-12 items-center justify-center rounded-xl transition-colors ${
-          activeView === "home"
-            ? "bg-accent text-white"
-            : "bg-bg-tertiary text-text-muted hover:bg-white/10"
-        }`}
-        title="Home"
+        onClick={toggleSidebar}
+        className="mb-1 flex h-7 w-10 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+        title="Collapse DMs"
       >
-        <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
-          <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <polyline points="15 18 9 12 15 6" />
         </svg>
       </button>
-      <div className="my-2 h-px w-8 bg-border" />
-      <div className="flex flex-1 flex-col items-center gap-2 overflow-y-auto py-1" />
+
+      {/* DM label */}
+      <span className="mb-1 mt-3 shrink-0 text-[9px] font-bold uppercase tracking-widest text-text-muted">
+        DMs
+      </span>
+      <div className="mb-2 h-px w-8 shrink-0 bg-border-divider" />
+
+      {/* DM contacts */}
+      <div className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1">
+        {sortedConversations.map((conv) => {
+          const isOnline =
+            friends.some((f) => f.username === conv.username && f.status === "online") ||
+            onlineUsers.includes(conv.username);
+          const isActive = activeDmUser === conv.username;
+          return (
+            <button
+              key={conv.username}
+              onClick={() => handleDmClick(conv.username)}
+              className={`relative flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-xl text-sm font-bold text-white transition-all duration-200 hover:-translate-y-0.5 ${
+                isActive
+                  ? "shadow-[0_0_0_2px_var(--color-accent)]"
+                  : ""
+              }`}
+              style={{ background: stringToGradient(conv.username) }}
+              title={conv.username}
+            >
+              {conv.username.charAt(0).toUpperCase()}
+              <div
+                className={`absolute -bottom-px -right-px h-3 w-3 rounded-full border-[2.5px] border-bg-dmbar ${
+                  isOnline ? "bg-success" : "bg-text-muted"
+                }`}
+              />
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Logout */}
       <button
         onClick={handleLogout}
-        className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-bg-tertiary text-text-muted transition-colors hover:bg-error/20 hover:text-error"
+        className="mb-3 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-text-muted transition-all duration-200 hover:bg-error/20 hover:text-error"
         title="Log out"
       >
         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
