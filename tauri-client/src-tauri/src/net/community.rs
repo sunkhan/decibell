@@ -290,6 +290,7 @@ impl CommunityClient {
                         &app,
                         context,
                         msg.sender,
+                        String::new(),  // No recipient for channel messages
                         msg.content,
                         msg.timestamp.to_string(),
                     );

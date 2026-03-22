@@ -78,6 +78,7 @@ pub struct CommunityAuthRespondedPayload {
 pub struct MessageReceivedPayload {
     pub context: String,
     pub sender: String,
+    pub recipient: String,  // populated for DMs, empty for channel messages
     pub content: String,
     pub timestamp: String,
 }
@@ -178,6 +179,7 @@ pub fn emit_message_received(
     app: &AppHandle,
     context: String,
     sender: String,
+    recipient: String,  // NEW
     content: String,
     timestamp: String,
 ) {
@@ -186,6 +188,7 @@ pub fn emit_message_received(
         MessageReceivedPayload {
             context,
             sender,
+            recipient,  // NEW
             content,
             timestamp,
         },

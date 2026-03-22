@@ -257,6 +257,7 @@ impl CentralClient {
                         &app,
                         "dm".to_string(),
                         msg.sender,
+                        msg.recipient,  // NEW — pass recipient through
                         msg.content,
                         msg.timestamp.to_string(),
                     );
