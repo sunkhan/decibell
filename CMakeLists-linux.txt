@@ -8,12 +8,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 cmake_policy(SET CMP0167 NEW)
 find_package(Boost REQUIRED)
 find_package(Protobuf REQUIRED)
-find_package(absl REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)
 
-find_package(jwt-cpp REQUIRED PATHS /usr/lib/cmake NO_DEFAULT_PATH)
+pkg_check_modules(JWT_CPP REQUIRED IMPORTED_TARGET jwt-cpp)
 pkg_check_modules(LIBPQXX REQUIRED IMPORTED_TARGET libpqxx)
 
 find_package(nlohmann_json REQUIRED)
@@ -23,7 +22,7 @@ protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS proto/messages.proto)
 
 # Common Library
 add_library(chatproj_common ${PROTO_SRCS} ${PROTO_HDRS})
-target_link_libraries(chatproj_common PUBLIC protobuf::libprotobuf Boost::boost absl::log_internal_check_op)
+target_link_libraries(chatproj_common PUBLIC protobuf::libprotobuf Boost::boost)
 target_include_directories(chatproj_common PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 
 # --- CENTRAL SERVER ---
@@ -33,10 +32,10 @@ add_executable(chatproj_server
 )
 target_link_libraries(chatproj_server PRIVATE
     chatproj_common
-    SQLite3::SQLite3
+    SQLite::SQLite3
     OpenSSL::Crypto
     OpenSSL::SSL
-    jwt-cpp::jwt-cpp
+    PkgConfig::JWT_CPP
     PkgConfig::LIBPQXX
     nlohmann_json::nlohmann_json
 )
@@ -51,6 +50,6 @@ target_link_libraries(chatproj_community PRIVATE
     Boost::boost
     OpenSSL::SSL
     OpenSSL::Crypto
-    jwt-cpp::jwt-cpp
+    PkgConfig::JWT_CPP
     nlohmann_json::nlohmann_json
 )

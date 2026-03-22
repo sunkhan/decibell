@@ -11,6 +11,7 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <deque>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include "messages.pb.h"
@@ -41,13 +42,11 @@ public:
     }
 
     void deliver(std::shared_ptr<std::vector<uint8_t>> framed_data) {
-        auto self(shared_from_this());
-        boost::asio::async_write(socket_, boost::asio::buffer(*framed_data),
-            [this, self, framed_data](boost::system::error_code ec, std::size_t) {
-                if (ec) {
-                    manager_.leave(shared_from_this()); 
-                }
-            });
+        bool write_in_progress = !write_queue_.empty();
+        write_queue_.push_back(framed_data);
+        if (!write_in_progress) {
+            do_write();
+        }
     }
 
     std::string username() const { return username_; }
@@ -55,6 +54,21 @@ public:
     SessionManager& manager_;
 
 private:
+    void do_write() {
+        auto self(shared_from_this());
+        boost::asio::async_write(socket_, boost::asio::buffer(*write_queue_.front()),
+            [this, self](boost::system::error_code ec, std::size_t) {
+                if (ec) {
+                    manager_.leave(shared_from_this());
+                    return;
+                }
+                write_queue_.pop_front();
+                if (!write_queue_.empty()) {
+                    do_write();
+                }
+            });
+    }
+
     void do_read_header() {
         auto self(shared_from_this());
         boost::asio::async_read(socket_,
@@ -297,17 +311,9 @@ private:
 
         std::string serialized;
         resp_packet.SerializeToString(&serialized);
-        
+
         auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-        
-        auto self(shared_from_this());
-        boost::asio::async_write(socket_, boost::asio::buffer(*framed),
-            [this, self, framed](boost::system::error_code ec, std::size_t) {
-                if (ec) {
-                    std::cerr << "Write failed.\n";
-                    manager_.leave(shared_from_this());
-                }
-            });
+        deliver(framed);
     }
 
     ssl::stream<tcp::socket> socket_;
@@ -317,6 +323,7 @@ private:
     bool authenticated_ = false;
     std::string username_;
     AuthManager& auth_manager_;
+    std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
 };
 
 
