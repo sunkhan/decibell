@@ -76,7 +76,7 @@ export default function ServerBrowseView() {
                 key={i}
                 className="flex animate-pulse flex-col items-center rounded-xl border border-border bg-bg-primary p-5"
               >
-                <div className="mb-3 h-14 w-14 rounded-xl bg-bg-tertiary" />
+                <div className="mb-3 h-14 w-14 rounded-lg bg-bg-tertiary" />
                 <div className="mb-1.5 h-4 w-24 rounded bg-bg-tertiary" />
                 <div className="mb-2 h-3 w-32 rounded bg-bg-tertiary" />
                 <div className="h-3 w-16 rounded bg-bg-tertiary" />
@@ -99,7 +99,7 @@ export default function ServerBrowseView() {
                   className="flex flex-col items-center rounded-xl border border-border bg-bg-primary p-5 text-center transition-colors hover:border-accent/50 disabled:opacity-60"
                 >
                   <div
-                    className="mb-3 flex h-14 w-14 items-center justify-center rounded-xl text-xl font-bold text-white"
+                    className="mb-3 flex h-14 w-14 items-center justify-center rounded-lg text-xl font-bold text-white"
                     style={{ backgroundColor: stringToColor(server.name) }}
                   >
                     {server.name.charAt(0).toUpperCase()}

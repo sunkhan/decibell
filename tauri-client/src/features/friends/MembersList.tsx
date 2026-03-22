@@ -25,7 +25,7 @@ export default function MembersList() {
           >
             <div className="relative flex-shrink-0">
               <div
-                className="flex h-8 w-8 items-center justify-center rounded-xl text-xs font-bold text-white"
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-xs font-bold text-white"
                 style={{ backgroundColor: stringToColor(username) }}
               >
                 {username.charAt(0).toUpperCase()}

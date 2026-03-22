@@ -16,7 +16,7 @@ export default function MessageBubble({ message }: { message: Message }) {
     <div className="flex gap-3 px-4 py-1.5 hover:bg-white/[0.02]">
       {/* Avatar */}
       <div
-        className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl text-sm font-bold text-white"
+        className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg text-sm font-bold text-white"
         style={{ backgroundColor: stringToColor(message.sender) }}
       >
         {message.sender.charAt(0).toUpperCase()}
