@@ -31,6 +31,7 @@ message Packet {
     LEAVE_VOICE_REQ = 20;
     VOICE_PRESENCE_UPDATE = 21;
     VOICE_STATE_NOTIFY = 27;
+    DM_PRIVACY = 28;
 
     // Screen Sharing Signaling
     STREAM_PRESENCE_UPDATE = 22;
@@ -76,6 +77,7 @@ message Packet {
     StopStreamRequest stop_stream_req = 27;
     WatchStreamRequest watch_stream_req = 28;
     StopWatchingRequest stop_watching_req = 29;
+    DmPrivacySetting dm_privacy = 31;
   }
 }
 
@@ -262,4 +264,8 @@ message WatchStreamRequest {
 message StopWatchingRequest {
   string channel_id = 1;
   string target_username = 2;
+}
+
+message DmPrivacySetting {
+  bool friends_only = 1;
 }

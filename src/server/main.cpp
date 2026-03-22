@@ -50,6 +50,7 @@ public:
     }
 
     std::string username() const { return username_; }
+    bool dm_friends_only() const { return dm_friends_only_; }
 
     SessionManager& manager_;
 
@@ -165,6 +166,22 @@ private:
             auto* dmsg = routed_packet.mutable_direct_msg();
             dmsg->set_sender(username_); // Enforce sender identity
             dmsg->set_timestamp(current_time);
+
+            if (!manager_.check_dm_allowed(username_, dmsg->recipient(), auth_manager_)) {
+                chatproj::Packet error_packet;
+                error_packet.set_type(chatproj::Packet::DIRECT_MSG);
+                auto* err_msg = error_packet.mutable_direct_msg();
+                err_msg->set_sender(username_);
+                err_msg->set_recipient(dmsg->recipient());
+                err_msg->set_content("This user only accepts direct messages from users in their friends list.");
+                err_msg->set_timestamp(current_time);
+
+                std::string serialized;
+                error_packet.SerializeToString(&serialized);
+                auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
+                deliver(framed);
+                return;
+            }
 
             bool delivered = manager_.send_private(routed_packet, dmsg->recipient());
             
@@ -290,6 +307,13 @@ private:
             auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
             deliver(framed);
         }
+
+        // --- DM PRIVACY SETTING ---
+        else if (packet.type() == chatproj::Packet::DM_PRIVACY) {
+            if (!authenticated_) return;
+            dm_friends_only_ = packet.dm_privacy().friends_only();
+            std::cout << "[Server] User " << username_ << " set dm_friends_only to " << dm_friends_only_ << "\n";
+        }
     }
 
     void send_response(chatproj::Packet::Type type, bool success, const std::string& msg, const std::string& token = "") {
@@ -322,6 +346,7 @@ private:
     
     bool authenticated_ = false;
     std::string username_;
+    bool dm_friends_only_ = false;
     AuthManager& auth_manager_;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
 };
@@ -404,6 +429,40 @@ bool SessionManager::send_private(const chatproj::Packet& packet, const std::str
             return true;
         }
     }
+    return false;
+}
+
+bool SessionManager::check_dm_allowed(const std::string& sender, const std::string& recipient, AuthManager& auth_manager) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Find recipient's session
+    std::shared_ptr<Session> recipient_session;
+    for (const auto& session : sessions_) {
+        if (session->username() == recipient) {
+            recipient_session = session;
+            break;
+        }
+    }
+
+    // If recipient is offline, allow (offline queuing will handle later)
+    if (!recipient_session) {
+        return true;
+    }
+
+    // If recipient allows DMs from everyone, allow
+    if (!recipient_session->dm_friends_only()) {
+        return true;
+    }
+
+    // Recipient only allows DMs from friends — check friend list
+    auto friends = auth_manager.getFriends(recipient);
+    for (const auto& f : friends) {
+        if (f.username() == sender &&
+            (f.status() == chatproj::FriendInfo::ONLINE || f.status() == chatproj::FriendInfo::OFFLINE)) {
+            return true;
+        }
+    }
+
     return false;
 }
 

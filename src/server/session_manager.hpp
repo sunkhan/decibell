@@ -7,6 +7,7 @@
 #include "messages.pb.h"
 
 class Session;
+class AuthManager;
 
 class SessionManager {
 public:
@@ -39,6 +40,8 @@ public:
     bool send_private(const chatproj::Packet& packet, const std::string& target_username);
 
     bool is_user_online(const std::string& username);
+
+    bool check_dm_allowed(const std::string& sender, const std::string& recipient, AuthManager& auth_manager);
 
     void broadcast_presence();
 
