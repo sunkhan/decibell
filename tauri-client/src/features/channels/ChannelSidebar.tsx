@@ -1,12 +1,27 @@
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../stores/chatStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useChannelEvents } from "./useChannelEvents";
-import { stringToColor } from "../../utils/colors";
+import { stringToGradient } from "../../utils/colors";
 import { useVoiceStore } from "../../stores/voiceStore";
+import { useDmStore } from "../../stores/dmStore";
+import { useFriendsStore } from "../../stores/friendsStore";
 import VoiceControlBar from "../voice/VoiceControlBar";
 import VoiceParticipantList from "../voice/VoiceParticipantList";
+
+function formatRelativeTime(epochMs: number): string {
+  const diff = Date.now() - epochMs;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d`;
+  return `${Math.floor(days / 30)}mo`;
+}
 
 function UserPanel() {
   const username = useAuthStore((s) => s.username);
@@ -15,22 +30,25 @@ function UserPanel() {
   if (!username) return null;
 
   return (
-    <div className="flex items-center gap-2 border-t border-border px-3 py-2">
-      <div className="relative flex-shrink-0">
+    <div className="flex items-center gap-2.5 border-t border-border bg-black/15 px-3 py-2.5">
+      <div className="relative shrink-0">
         <div
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-xs font-bold text-white"
-          style={{ backgroundColor: stringToColor(username) }}
+          className="flex h-[34px] w-[34px] items-center justify-center rounded-lg text-sm font-bold text-white"
+          style={{ background: stringToGradient(username) }}
         >
           {username.charAt(0).toUpperCase()}
         </div>
-        <div className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-bg-primary bg-success" />
+        <div className="absolute -bottom-px -right-px h-3 w-3 rounded-full border-[2.5px] border-bg-secondary bg-success" />
       </div>
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-text-primary">
-        {username}
-      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] font-bold text-text-primary">
+          {username}
+        </div>
+        <div className="text-[11px] font-mono text-text-muted">Online</div>
+      </div>
       <button
         onClick={() => openModal("settings")}
-        className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-white/10 hover:text-text-primary"
+        className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
         title="Settings"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -54,6 +72,22 @@ export default function ChannelSidebar() {
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
   const channelPresence = useVoiceStore((s) => s.channelPresence);
   const setActiveView = useUiStore((s) => s.setActiveView);
+  const conversations = useDmStore((s) => s.conversations);
+  const activeDmUser = useDmStore((s) => s.activeDmUser);
+  const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
+  const friends = useFriendsStore((s) => s.friends);
+  const onlineUsers = useChatStore((s) => s.onlineUsers);
+  const [textCollapsed, setTextCollapsed] = useState(false);
+  const [voiceCollapsed, setVoiceCollapsed] = useState(false);
+
+  const sortedConversations = Object.values(conversations).sort(
+    (a, b) => b.lastMessageTime - a.lastMessageTime
+  );
+
+  const handleDmConversationClick = (username: string) => {
+    setActiveDmUser(username);
+    setActiveView("dm");
+  };
 
   const channels = activeServerId
     ? channelsByServer[activeServerId] ?? []
@@ -71,7 +105,6 @@ export default function ChannelSidebar() {
         channelId,
       }).catch(console.error);
     }
-    // Always switch back to server view (e.g. from voice view)
     if (activeView !== "server") {
       setActiveView("server");
     }
@@ -80,11 +113,9 @@ export default function ChannelSidebar() {
   const handleVoiceChannelClick = (channelId: string) => {
     if (!activeServerId) return;
     if (channelId === connectedChannelId) {
-      // Already connected — switch to voice view
       setActiveView("voice");
       return;
     }
-    // Join new voice channel
     useVoiceStore.getState().setConnectedChannel(activeServerId, channelId);
     invoke("join_voice_channel", {
       serverId: activeServerId,
@@ -96,16 +127,68 @@ export default function ChannelSidebar() {
     setActiveView("voice");
   };
 
-  if (activeView === "home") {
+  if (activeView === "home" || activeView === "dm") {
     return (
-      <div className="flex w-60 flex-shrink-0 flex-col border-r border-border bg-bg-primary">
-        <div className="border-b border-border px-4 py-3">
-          <h2 className="text-sm font-semibold text-text-primary">
+      <div className="flex w-60 shrink-0 flex-col border-r border-border bg-bg-secondary">
+        <div className="border-b border-border px-4 py-3.5">
+          <h2 className="text-[15px] font-extrabold text-text-bright">
             Direct Messages
           </h2>
         </div>
-        <div className="flex flex-1 items-center justify-center">
-          <p className="text-xs text-text-muted">Coming soon...</p>
+        <div className="flex-1 overflow-y-auto px-2 py-2.5">
+          {sortedConversations.length === 0 ? (
+            <div className="flex flex-1 items-center justify-center pt-8">
+              <p className="text-xs text-text-muted">No conversations yet</p>
+            </div>
+          ) : (
+            sortedConversations.map((conv) => {
+              const isOnline =
+                friends.some((f) => f.username === conv.username && f.status === "online") ||
+                onlineUsers.includes(conv.username);
+              const lastMsg = conv.messages[conv.messages.length - 1];
+              const isActive = activeDmUser === conv.username;
+              return (
+                <button
+                  key={conv.username}
+                  onClick={() => handleDmConversationClick(conv.username)}
+                  className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors ${
+                    isActive
+                      ? "bg-accent-soft text-text-bright"
+                      : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                  }`}
+                >
+                  <div className="relative shrink-0">
+                    <div
+                      className="flex h-[34px] w-[34px] items-center justify-center rounded-lg text-sm font-bold text-white"
+                      style={{ background: stringToGradient(conv.username) }}
+                    >
+                      {conv.username.charAt(0).toUpperCase()}
+                    </div>
+                    <div
+                      className={`absolute -bottom-px -right-px h-2.5 w-2.5 rounded-full border-2 border-bg-secondary ${
+                        isOnline ? "bg-success" : "bg-text-muted"
+                      }`}
+                    />
+                  </div>
+                  <div className="min-w-0 flex-1 text-left">
+                    <div className="truncate text-[13px] font-bold">
+                      {conv.username}
+                    </div>
+                    {lastMsg && (
+                      <div className="truncate text-[11px] text-text-muted">
+                        {lastMsg.content}
+                      </div>
+                    )}
+                  </div>
+                  {conv.lastMessageTime > 0 && (
+                    <span className="shrink-0 text-[10px] text-text-muted">
+                      {formatRelativeTime(conv.lastMessageTime)}
+                    </span>
+                  )}
+                </button>
+              );
+            })
+          )}
         </div>
         <VoiceControlBar />
         <UserPanel />
@@ -114,33 +197,52 @@ export default function ChannelSidebar() {
   }
 
   return (
-    <div className="flex w-60 flex-shrink-0 flex-col border-r border-border bg-bg-primary">
+    <div className="flex w-60 shrink-0 flex-col border-r border-border bg-bg-secondary">
       {/* Server name header */}
-      <div className="border-b border-border px-4 py-3">
-        <h2 className="truncate text-sm font-semibold text-text-primary">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3.5">
+        <h2 className="flex-1 truncate text-[15px] font-extrabold text-text-bright">
           {serverName ?? "Server"}
         </h2>
+        {servers.some((s) => s.id === activeServerId) ? (
+          <span className="rounded bg-success/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-success">
+            Public
+          </span>
+        ) : (
+          <span className="rounded bg-text-muted/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-text-secondary">
+            Private
+          </span>
+        )}
       </div>
 
       {/* Channel list */}
-      <div className="flex-1 overflow-y-auto px-2 py-3">
+      <div className="flex-1 overflow-y-auto px-2 py-2.5">
         {/* Text channels */}
         {textChannels.length > 0 && (
           <div className="mb-4">
-            <h3 className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
-              Text Channels
-            </h3>
-            {textChannels.map((ch) => (
+            <div
+              className="mb-1 flex cursor-pointer select-none items-center gap-1 px-2"
+              onClick={() => setTextCollapsed(!textCollapsed)}
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`text-text-muted ${textCollapsed ? "-rotate-90" : ""}`}>
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+              <h3 className="text-[11px] font-bold uppercase tracking-[0.08em] text-text-muted">
+                Text Channels
+              </h3>
+            </div>
+            {!textCollapsed && textChannels.map((ch) => (
               <button
                 key={ch.id}
                 onClick={() => handleChannelClick(ch.id)}
-                className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-sm transition-colors ${
-                  activeChannelId === ch.id
-                    ? "bg-white/10 text-accent"
-                    : "text-text-muted hover:bg-white/5 hover:text-text-primary"
+                className={`flex w-full items-center gap-2 rounded-md px-2.5 py-[7px] text-sm transition-colors ${
+                  activeChannelId === ch.id && activeView === "server"
+                    ? "bg-accent-soft text-text-bright font-semibold"
+                    : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
                 }`}
               >
-                <span className="text-text-muted">#</span>
+                <span className={`font-mono text-[17px] font-semibold ${activeChannelId === ch.id && activeView === "server" ? "text-accent" : "text-text-muted"}`}>
+                  #
+                </span>
                 <span className="truncate">{ch.name}</span>
               </button>
             ))}
@@ -150,22 +252,34 @@ export default function ChannelSidebar() {
         {/* Voice channels */}
         {voiceChannels.length > 0 && (
           <div>
-            <h3 className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
-              Voice Channels
-            </h3>
-            {voiceChannels.map((ch) => {
+            <div
+              className="mb-1 flex cursor-pointer select-none items-center gap-1 px-2"
+              onClick={() => setVoiceCollapsed(!voiceCollapsed)}
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`text-text-muted ${voiceCollapsed ? "-rotate-90" : ""}`}>
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+              <h3 className="text-[11px] font-bold uppercase tracking-[0.08em] text-text-muted">
+                Voice Channels
+              </h3>
+            </div>
+            {!voiceCollapsed && voiceChannels.map((ch) => {
               const presence = channelPresence[ch.id] ?? [];
               return (
                 <div key={ch.id}>
                   <button
                     onClick={() => handleVoiceChannelClick(ch.id)}
-                    className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-sm transition-colors ${
-                      connectedChannelId === ch.id
-                        ? "bg-white/10 text-accent"
-                        : "text-text-muted hover:bg-white/5 hover:text-text-primary"
+                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-[7px] text-sm transition-colors ${
+                      connectedChannelId === ch.id && activeView === "voice"
+                        ? "bg-accent-soft text-text-bright font-semibold"
+                        : connectedChannelId === ch.id
+                          ? "text-[#3fb950] font-semibold hover:bg-surface-hover"
+                          : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
                     }`}
                   >
-                    <span>🔊</span>
+                    <span className={`text-[15px] ${connectedChannelId === ch.id && activeView === "voice" ? "text-accent" : connectedChannelId === ch.id ? "text-[#3fb950]" : "text-text-muted"}`}>
+                      🔊
+                    </span>
                     <span className="truncate">{ch.name}</span>
                   </button>
                   {connectedChannelId === ch.id ? (
