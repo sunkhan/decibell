@@ -17,14 +17,20 @@ use super::speaking::SpeakingDetector;
 pub enum ControlMessage {
     SetMute(bool),
     SetDeafen(bool),
+    SetVoiceThreshold(f32), // dB threshold (-60 to 0); below this, send silence
     Shutdown,
 }
 
 pub enum VoiceEvent {
     SpeakingChanged(String, bool),
+    UserStateChanged(String, bool, bool), // username, muted, deafened
     PingMeasured(u32),
     Error(String),
 }
+
+// Flags byte prepended to audio payload
+const FLAG_MUTED: u8 = 0x01;
+const FLAG_DEAFENED: u8 = 0x02;
 
 // ── Per-remote-peer state ─────────────────────────────────────────────────────
 
@@ -187,6 +193,7 @@ pub fn run_audio_pipeline(
     let mut muted = false;
     let mut deafened = false;
     let mut was_muted_before_deafen = false;
+    let mut voice_threshold_db: f32 = -50.0; // dB threshold; below this, send silence
 
     let mut sequence: u16 = 0;
     let mut local_speaking = SpeakingDetector::new();
@@ -225,6 +232,9 @@ pub fn run_audio_pipeline(
                         muted = was_muted_before_deafen;
                     }
                 }
+                Ok(ControlMessage::SetVoiceThreshold(db)) => {
+                    voice_threshold_db = db;
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'main,
             }
@@ -245,14 +255,26 @@ pub fn run_audio_pipeline(
             };
 
             if let Some(frame) = frame_opt {
-                // Speaking detection on local audio
-                if let Some(state) = local_speaking.process(&frame) {
+                // Compute RMS in dB for threshold check
+                let rms = {
+                    let sum_sq: f64 = frame.iter().map(|&s| (s as f64) * (s as f64)).sum();
+                    (sum_sq / frame.len() as f64).sqrt() as f32
+                };
+                let rms_db = if rms > 0.0 {
+                    20.0 * (rms / 32768.0).log10()
+                } else {
+                    -96.0
+                };
+                let above_threshold = !muted && rms_db >= voice_threshold_db;
+
+                // Speaking detection based on threshold
+                if let Some(state) = local_speaking.process_threshold(above_threshold) {
                     let _ =
                         event_tx.send(VoiceEvent::SpeakingChanged("__local__".to_string(), state));
                 }
 
                 let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
-                let encode_result = if muted {
+                let encode_result = if muted || !above_threshold {
                     encoder.encode_silence(&mut opus_out)
                 } else {
                     encoder.encode(&frame, &mut opus_out)
@@ -260,8 +282,14 @@ pub fn run_audio_pipeline(
 
                 match encode_result {
                     Ok(len) => {
+                        // Prepend flags byte: muted | deafened
+                        let flags = if muted { FLAG_MUTED } else { 0 }
+                            | if deafened { FLAG_DEAFENED } else { 0 };
+                        let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
+                        flagged[0] = flags;
+                        flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
                         let packet =
-                            UdpAudioPacket::new_audio(&sender_id, sequence, &opus_out[..len]);
+                            UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len]);
                         let _ = socket.send(&packet.to_bytes());
                         sequence = sequence.wrapping_add(1);
                     }
@@ -273,8 +301,12 @@ pub fn run_audio_pipeline(
                 // No mic — still send silence to keep the UDP session alive
                 let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
                 if let Ok(len) = encoder.encode_silence(&mut opus_out) {
+                    let flags = FLAG_MUTED; // no mic = effectively muted
+                    let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
+                    flagged[0] = flags;
+                    flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
                     let packet =
-                        UdpAudioPacket::new_audio(&sender_id, sequence, &opus_out[..len]);
+                        UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len]);
                     let _ = socket.send(&packet.to_bytes());
                     sequence = sequence.wrapping_add(1);
                 }
@@ -299,10 +331,8 @@ pub fn run_audio_pipeline(
                 if let Some(pkt) = UdpAudioPacket::from_bytes(&recv_buf[..n]) {
                     let username = pkt.sender_username();
 
-                    // Ignore our own reflected packets
-                    if username == sender_id {
-                        // fall through — ignore
-                    } else if pkt.packet_type == PACKET_TYPE_PING {
+                    // Handle ping BEFORE sender_id filter (echoed pings have our own sender_id)
+                    if pkt.packet_type == PACKET_TYPE_PING {
                         // Measure RTT: payload[0..8] is the original send timestamp_ns
                         let payload = pkt.payload_data();
                         if payload.len() >= 8 {
@@ -314,6 +344,8 @@ pub fn run_audio_pipeline(
                             let rtt_ms = (now_ns.saturating_sub(sent_ns) / 1_000_000) as u32;
                             let _ = event_tx.send(VoiceEvent::PingMeasured(rtt_ms));
                         }
+                    } else if username == sender_id {
+                        // Ignore our own reflected audio packets
                     } else if pkt.packet_type == PACKET_TYPE_AUDIO {
                         // Sequence duplicate/out-of-order check
                         let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
@@ -339,12 +371,39 @@ pub fn run_audio_pipeline(
                             peer.last_seq = pkt.sequence;
                             peer.last_packet_time = Instant::now();
 
-                            let opus_data = pkt.payload_data();
+                            let raw_payload = pkt.payload_data();
+                            // Strip flags byte (first byte) from payload
+                            let (flags, opus_data) = if raw_payload.len() > 1 {
+                                (raw_payload[0], &raw_payload[1..])
+                            } else {
+                                (0u8, raw_payload)
+                            };
+                            let peer_muted = flags & FLAG_MUTED != 0;
+                            let peer_deafened = flags & FLAG_DEAFENED != 0;
+
+                            // Emit mute/deafen state for remote user
+                            let _ = event_tx.send(VoiceEvent::UserStateChanged(
+                                username.clone(),
+                                peer_muted,
+                                peer_deafened,
+                            ));
+
                             let mut pcm = [0i16; FRAME_SIZE];
                             match peer.decoder.decode(opus_data, &mut pcm) {
                                 Ok(_) => {
-                                    // Speaking detection on remote audio
-                                    if let Some(state) = peer.speaking.process(&pcm) {
+                                    // Speaking detection: compute RMS dB on decoded audio
+                                    let rms = {
+                                        let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
+                                        (sum_sq / pcm.len() as f64).sqrt() as f32
+                                    };
+                                    let rms_db = if rms > 0.0 {
+                                        20.0 * (rms / 32768.0).log10()
+                                    } else {
+                                        -96.0
+                                    };
+                                    // Remote is "speaking" if not muted and audio is above -50 dB
+                                    let above = !peer_muted && rms_db >= -50.0;
+                                    if let Some(state) = peer.speaking.process_threshold(above) {
                                         let _ = event_tx.send(VoiceEvent::SpeakingChanged(
                                             username.clone(),
                                             state,

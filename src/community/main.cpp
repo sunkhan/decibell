@@ -99,6 +99,10 @@ public:
     void set_udp_endpoint(const boost::asio::ip::udp::endpoint& ep) { udp_endpoint_ = ep; }
     boost::asio::ip::udp::endpoint get_udp_endpoint() const { return udp_endpoint_; }
     std::string get_current_voice_channel() const { return current_voice_channel_; }
+    bool is_muted() const { return is_muted_; }
+    bool is_deafened() const { return is_deafened_; }
+    void set_muted(bool m) { is_muted_ = m; }
+    void set_deafened(bool d) { is_deafened_ = d; }
 
 private:
     void do_write() {
@@ -235,6 +239,8 @@ private:
             manager_.leave_voice_channel(shared_from_this(), current_voice_channel_);
             std::cout << "[Community] " << username_ << " left voice channel " << current_voice_channel_ << "\n";
             current_voice_channel_ = "";
+            is_muted_ = false;
+            is_deafened_ = false;
         }
 
         // --- START STREAM ---
@@ -249,6 +255,16 @@ private:
             const auto& req = packet.stop_stream_req();
             manager_.stop_stream(shared_from_this(), req.channel_id());
             std::cout << "[Community] " << username_ << " stopped screen share in " << req.channel_id() << "\n";
+        }
+
+        // --- VOICE STATE NOTIFY (mute/deafen) ---
+        else if (packet.type() == chatproj::Packet::VOICE_STATE_NOTIFY) {
+            const auto& notify = packet.voice_state_notify();
+            is_muted_ = notify.is_muted();
+            is_deafened_ = notify.is_deafened();
+            if (!current_voice_channel_.empty()) {
+                manager_.broadcast_voice_presence(current_voice_channel_);
+            }
         }
 
         // --- CHANNEL MESSAGE ROUTING ---
@@ -313,6 +329,8 @@ private:
     std::string current_channel_;
     std::string current_voice_channel_;
     boost::asio::ip::udp::endpoint udp_endpoint_;
+    bool is_muted_ = false;
+    bool is_deafened_ = false;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
     std::mutex write_mutex_;
 };
@@ -550,9 +568,13 @@ void SessionManager::broadcast_voice_presence(const std::string& channel_id) {
         if (voice_channels_.find(channel_id) != voice_channels_.end()) {
             for (auto& session : voice_channels_[channel_id]) {
                 update->add_active_users(session->get_username());
+                auto* state = update->add_user_states();
+                state->set_username(session->get_username());
+                state->set_is_muted(session->is_muted());
+                state->set_is_deafened(session->is_deafened());
             }
         }
-        
+
         packet.SerializeToString(&serialized);
     } // release lock to send to everyone
 
@@ -581,6 +603,10 @@ void SessionManager::send_initial_voice_presences(std::shared_ptr<Session> sessi
         
         for (auto& s : pair.second) {
             update->add_active_users(s->get_username());
+            auto* state = update->add_user_states();
+            state->set_username(s->get_username());
+            state->set_is_muted(s->is_muted());
+            state->set_is_deafened(s->is_deafened());
         }
 
         std::string serialized;

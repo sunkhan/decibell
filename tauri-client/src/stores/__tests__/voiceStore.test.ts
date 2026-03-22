@@ -25,7 +25,7 @@ describe("voiceStore", () => {
 
   it("sets participants", () => {
     useVoiceStore.getState().setParticipants([
-      { username: "alice", isMuted: false, isSpeaking: false, audioLevel: 0 },
+      { username: "alice", isMuted: false, isDeafened: false, isSpeaking: false, audioLevel: 0 },
     ]);
     expect(useVoiceStore.getState().participants).toHaveLength(1);
   });

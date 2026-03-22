@@ -10,22 +10,34 @@ export function useVoiceEvents() {
   const setLatency = useVoiceStore((s) => s.setLatency);
   const setError = useVoiceStore((s) => s.setError);
   const setParticipants = useVoiceStore((s) => s.setParticipants);
+  const setChannelPresence = useVoiceStore((s) => s.setChannelPresence);
+  const setUserState = useVoiceStore((s) => s.setUserState);
   const username = useAuthStore((s) => s.username);
 
   useEffect(() => {
     const unlisten: (() => void)[] = [];
 
-    listen<{ serverId: string; channelId: string; participants: string[] }>(
+    listen<{ serverId: string; channelId: string; participants: string[]; userStates: { username: string; isMuted: boolean; isDeafened: boolean }[] }>(
       "voice_presence_updated",
       (event) => {
-        setParticipants(
-          event.payload.participants.map((u) => ({
-            username: u,
-            isMuted: false,
-            isSpeaking: useVoiceStore.getState().speakingUsers.includes(u),
-            audioLevel: 0,
-          }))
-        );
+        const { channelId, participants, userStates } = event.payload;
+        // Always update per-channel presence map with user states
+        setChannelPresence(channelId, participants, userStates);
+
+        // Update connected channel participants
+        const connectedId = useVoiceStore.getState().connectedChannelId;
+        if (channelId === connectedId) {
+          const stateMap = new Map(userStates?.map((s) => [s.username, s]) ?? []);
+          setParticipants(
+            participants.map((u) => ({
+              username: u,
+              isMuted: stateMap.get(u)?.isMuted ?? false,
+              isDeafened: stateMap.get(u)?.isDeafened ?? false,
+              isSpeaking: useVoiceStore.getState().speakingUsers.includes(u),
+              audioLevel: 0,
+            }))
+          );
+        }
       }
     ).then((u) => unlisten.push(u));
 
@@ -50,6 +62,13 @@ export function useVoiceEvents() {
       }
     ).then((u) => unlisten.push(u));
 
+    listen<{ username: string; isMuted: boolean; isDeafened: boolean }>(
+      "voice_user_state_changed",
+      (event) => {
+        setUserState(event.payload.username, event.payload.isMuted, event.payload.isDeafened);
+      }
+    ).then((u) => unlisten.push(u));
+
     listen<{ latencyMs: number }>("voice_ping_updated", (event) => {
       setLatency(event.payload.latencyMs);
     }).then((u) => unlisten.push(u));
@@ -61,5 +80,5 @@ export function useVoiceEvents() {
     return () => {
       unlisten.forEach((fn) => fn());
     };
-  }, [username, setSpeaking, setMuted, setDeafened, setLatency, setError, setParticipants]);
+  }, [username, setSpeaking, setMuted, setDeafened, setLatency, setError, setParticipants, setChannelPresence, setUserState]);
 }

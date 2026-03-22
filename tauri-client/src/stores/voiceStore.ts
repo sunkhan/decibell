@@ -11,6 +11,8 @@ interface VoiceState {
   speakingUsers: string[];
   latencyMs: number | null;
   error: string | null;
+  channelPresence: Record<string, string[]>;
+  channelUserStates: Record<string, Record<string, { isMuted: boolean; isDeafened: boolean }>>;
   setConnectedChannel: (serverId: string | null, channelId: string | null) => void;
   setParticipants: (participants: VoiceParticipant[]) => void;
   setActiveStreams: (streams: StreamInfo[]) => void;
@@ -19,6 +21,8 @@ interface VoiceState {
   setSpeaking: (username: string, speaking: boolean) => void;
   setLatency: (ms: number) => void;
   setError: (error: string | null) => void;
+  setChannelPresence: (channelId: string, users: string[], userStates?: { username: string; isMuted: boolean; isDeafened: boolean }[]) => void;
+  setUserState: (username: string, isMuted: boolean, isDeafened: boolean) => void;
   disconnect: () => void;
 }
 
@@ -32,9 +36,20 @@ export const useVoiceStore = create<VoiceState>((set) => ({
   speakingUsers: [],
   latencyMs: null,
   error: null,
+  channelPresence: {},
+  channelUserStates: {},
   setConnectedChannel: (serverId, channelId) =>
     set({ connectedServerId: serverId, connectedChannelId: channelId }),
-  setParticipants: (participants) => set({ participants }),
+  setParticipants: (participants) =>
+    set((state) => ({
+      participants: participants.map((p) => {
+        // Preserve existing mute/deafen state from remote updates
+        const existing = state.participants.find((e) => e.username === p.username);
+        return existing
+          ? { ...p, isMuted: existing.isMuted, isDeafened: existing.isDeafened }
+          : p;
+      }),
+    })),
   setActiveStreams: (streams) => set({ activeStreams: streams }),
   setMuted: (muted) => set({ isMuted: muted }),
   setDeafened: (deafened) =>
@@ -49,6 +64,25 @@ export const useVoiceStore = create<VoiceState>((set) => ({
     })),
   setLatency: (ms) => set({ latencyMs: ms }),
   setError: (error) => set({ error }),
+  setChannelPresence: (channelId, users, userStates) =>
+    set((state) => {
+      const stateMap: Record<string, { isMuted: boolean; isDeafened: boolean }> = {};
+      if (userStates) {
+        for (const s of userStates) {
+          stateMap[s.username] = { isMuted: s.isMuted, isDeafened: s.isDeafened };
+        }
+      }
+      return {
+        channelPresence: { ...state.channelPresence, [channelId]: users },
+        channelUserStates: { ...state.channelUserStates, [channelId]: stateMap },
+      };
+    }),
+  setUserState: (username, isMuted, isDeafened) =>
+    set((state) => ({
+      participants: state.participants.map((p) =>
+        p.username === username ? { ...p, isMuted, isDeafened } : p
+      ),
+    })),
   disconnect: () =>
     set({
       connectedServerId: null,

@@ -18,7 +18,7 @@ function UserPanel() {
     <div className="flex items-center gap-2 border-t border-border px-3 py-2">
       <div className="relative flex-shrink-0">
         <div
-          className="flex h-8 w-8 items-center justify-center rounded-xl text-xs font-bold text-white"
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-xs font-bold text-white"
           style={{ backgroundColor: stringToColor(username) }}
         >
           {username.charAt(0).toUpperCase()}
@@ -52,6 +52,7 @@ export default function ChannelSidebar() {
   const servers = useChatStore((s) => s.servers);
   const setActiveChannel = useChatStore((s) => s.setActiveChannel);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
+  const channelPresence = useVoiceStore((s) => s.channelPresence);
   const setActiveView = useUiStore((s) => s.setActiveView);
 
   const channels = activeServerId
@@ -62,12 +63,18 @@ export default function ChannelSidebar() {
   const serverName = servers.find((s) => s.id === activeServerId)?.name;
 
   const handleChannelClick = (channelId: string) => {
-    if (!activeServerId || channelId === activeChannelId) return;
-    setActiveChannel(channelId);
-    invoke("join_channel", {
-      serverId: activeServerId,
-      channelId,
-    }).catch(console.error);
+    if (!activeServerId) return;
+    if (channelId !== activeChannelId) {
+      setActiveChannel(channelId);
+      invoke("join_channel", {
+        serverId: activeServerId,
+        channelId,
+      }).catch(console.error);
+    }
+    // Always switch back to server view (e.g. from voice view)
+    if (activeView !== "server") {
+      setActiveView("server");
+    }
   };
 
   const handleVoiceChannelClick = (channelId: string) => {
@@ -100,6 +107,7 @@ export default function ChannelSidebar() {
         <div className="flex flex-1 items-center justify-center">
           <p className="text-xs text-text-muted">Coming soon...</p>
         </div>
+        <VoiceControlBar />
         <UserPanel />
       </div>
     );
@@ -145,22 +153,29 @@ export default function ChannelSidebar() {
             <h3 className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
               Voice Channels
             </h3>
-            {voiceChannels.map((ch) => (
-              <div key={ch.id}>
-                <button
-                  onClick={() => handleVoiceChannelClick(ch.id)}
-                  className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-sm transition-colors ${
-                    connectedChannelId === ch.id
-                      ? "bg-white/10 text-accent"
-                      : "text-text-muted hover:bg-white/5 hover:text-text-primary"
-                  }`}
-                >
-                  <span>🔊</span>
-                  <span className="truncate">{ch.name}</span>
-                </button>
-                {connectedChannelId === ch.id && <VoiceParticipantList />}
-              </div>
-            ))}
+            {voiceChannels.map((ch) => {
+              const presence = channelPresence[ch.id] ?? [];
+              return (
+                <div key={ch.id}>
+                  <button
+                    onClick={() => handleVoiceChannelClick(ch.id)}
+                    className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-sm transition-colors ${
+                      connectedChannelId === ch.id
+                        ? "bg-white/10 text-accent"
+                        : "text-text-muted hover:bg-white/5 hover:text-text-primary"
+                    }`}
+                  >
+                    <span>🔊</span>
+                    <span className="truncate">{ch.name}</span>
+                  </button>
+                  {connectedChannelId === ch.id ? (
+                    <VoiceParticipantList />
+                  ) : presence.length > 0 ? (
+                    <VoiceParticipantList usernames={presence} channelId={ch.id} />
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         )}
 

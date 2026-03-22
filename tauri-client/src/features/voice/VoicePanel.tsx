@@ -4,6 +4,8 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { stringToColor } from "../../utils/colors";
 
+const EMPTY_CHANNELS: never[] = [];
+
 export default function VoicePanel() {
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
   const participants = useVoiceStore((s) => s.participants);
@@ -15,14 +17,19 @@ export default function VoicePanel() {
   const setActiveView = useUiStore((s) => s.setActiveView);
   const channels = useChatStore((s) => {
     const serverId = s.activeServerId;
-    return serverId ? s.channelsByServer[serverId] ?? [] : [];
+    return serverId ? s.channelsByServer[serverId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
   });
 
   const channelName =
     channels.find((ch) => ch.id === connectedChannelId)?.name ?? "Voice";
 
   const handleMute = () => {
-    invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
+    if (isDeafened) {
+      invoke("set_voice_deafen", { deafened: false }).catch(console.error);
+      invoke("set_voice_mute", { muted: false }).catch(console.error);
+    } else {
+      invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
+    }
   };
 
   const handleDeafen = () => {
@@ -61,13 +68,10 @@ export default function VoicePanel() {
             <div key={p.username} className="w-[100px] text-center">
               <div className="relative mx-auto mb-2">
                 <div
-                  className="flex h-20 w-20 items-center justify-center rounded-2xl text-[28px] font-bold text-white transition-shadow duration-200"
-                  style={{
-                    backgroundColor: color,
-                    boxShadow: isSpeaking
-                      ? `0 0 0 3px ${color}, 0 0 12px rgba(74, 170, 119, 0.4)`
-                      : "none",
-                  }}
+                  className={`flex h-20 w-20 items-center justify-center rounded-xl text-[28px] font-bold text-white transition-all duration-200 ${
+                    isSpeaking ? "ring-[3px] ring-success" : ""
+                  }`}
+                  style={{ backgroundColor: color }}
                 >
                   {p.username.charAt(0).toUpperCase()}
                 </div>
@@ -79,13 +83,6 @@ export default function VoicePanel() {
               </div>
               <div className="text-xs font-medium text-text-primary">
                 {p.username}
-              </div>
-              <div className="mt-0.5 text-[10px]">
-                {isSpeaking ? (
-                  <span className="text-success">Speaking</span>
-                ) : p.isMuted ? (
-                  <span className="text-danger">Muted</span>
-                ) : null}
               </div>
             </div>
           );

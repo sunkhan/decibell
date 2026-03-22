@@ -67,7 +67,27 @@ pub async fn set_voice_mute(
     let mut s = state.lock().await;
     if let Some(ref mut engine) = s.voice_engine {
         engine.set_mute(muted);
-        events::emit_voice_state_changed(&app, engine.is_muted(), engine.is_deafened());
+        let is_muted = engine.is_muted();
+        let is_deafened = engine.is_deafened();
+        events::emit_voice_state_changed(&app, is_muted, is_deafened);
+        // Notify community server of state change
+        for client in s.communities.values() {
+            let _ = client.send_voice_state_notify(is_muted, is_deafened).await;
+        }
+        Ok(())
+    } else {
+        Err("Not in a voice channel".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn set_voice_threshold(
+    threshold_db: f32,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    if let Some(ref engine) = s.voice_engine {
+        engine.set_voice_threshold(threshold_db);
         Ok(())
     } else {
         Err("Not in a voice channel".to_string())
@@ -83,7 +103,13 @@ pub async fn set_voice_deafen(
     let mut s = state.lock().await;
     if let Some(ref mut engine) = s.voice_engine {
         engine.set_deafen(deafened);
-        events::emit_voice_state_changed(&app, engine.is_muted(), engine.is_deafened());
+        let is_muted = engine.is_muted();
+        let is_deafened = engine.is_deafened();
+        events::emit_voice_state_changed(&app, is_muted, is_deafened);
+        // Notify community server of state change
+        for client in s.communities.values() {
+            let _ = client.send_voice_state_notify(is_muted, is_deafened).await;
+        }
         Ok(())
     } else {
         Err("Not in a voice channel".to_string())

@@ -123,6 +123,19 @@ impl CommunityClient {
         self.send(data).await
     }
 
+    /// Notify server of mute/deafen state change.
+    pub async fn send_voice_state_notify(&self, is_muted: bool, is_deafened: bool) -> Result<(), String> {
+        let data = build_packet(
+            packet::Type::VoiceStateNotify,
+            packet::Payload::VoiceStateNotify(VoiceStateNotify {
+                is_muted,
+                is_deafened,
+            }),
+            Some(&self.jwt),
+        );
+        self.send(data).await
+    }
+
     /// Leave the current voice channel.
     pub async fn leave_voice_channel(&self) -> Result<(), String> {
         let data = build_packet(
@@ -291,11 +304,21 @@ impl CommunityClient {
                     );
                 }
                 Some(packet::Payload::VoicePresenceUpdate(update)) => {
+                    let user_states: Vec<events::VoiceUserStatePayload> = update
+                        .user_states
+                        .into_iter()
+                        .map(|s| events::VoiceUserStatePayload {
+                            username: s.username,
+                            is_muted: s.is_muted,
+                            is_deafened: s.is_deafened,
+                        })
+                        .collect();
                     events::emit_voice_presence_updated(
                         &app,
                         server_id.clone(),
                         update.channel_id,
                         update.active_users,
+                        user_states,
                     );
                 }
                 _ => {

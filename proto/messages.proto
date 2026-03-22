@@ -30,6 +30,7 @@ message Packet {
     JOIN_VOICE_REQ = 19;
     LEAVE_VOICE_REQ = 20;
     VOICE_PRESENCE_UPDATE = 21;
+    VOICE_STATE_NOTIFY = 27;
 
     // Screen Sharing Signaling
     STREAM_PRESENCE_UPDATE = 22;
@@ -68,6 +69,7 @@ message Packet {
     JoinVoiceRequest join_voice_req = 22;
     LeaveVoiceRequest leave_voice_req = 23;
     VoicePresenceUpdate voice_presence_update = 24;
+    VoiceStateNotify voice_state_notify = 30;
 
     StreamPresenceUpdate stream_presence_update = 25;
     StartStreamRequest start_stream_req = 26;
@@ -213,9 +215,21 @@ message JoinVoiceRequest {
 message LeaveVoiceRequest {
 }
 
+message VoiceUserState {
+  string username = 1;
+  bool is_muted = 2;
+  bool is_deafened = 3;
+}
+
 message VoicePresenceUpdate {
   string channel_id = 1;
   repeated string active_users = 2;
+  repeated VoiceUserState user_states = 3;
+}
+
+message VoiceStateNotify {
+  bool is_muted = 1;
+  bool is_deafened = 2;
 }
 
 message VideoStreamInfo {

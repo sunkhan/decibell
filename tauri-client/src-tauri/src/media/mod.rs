@@ -16,6 +16,7 @@ pub struct VoiceEngine {
     control_tx: mpsc::Sender<ControlMessage>,
     is_muted: bool,
     is_deafened: bool,
+    was_muted_before_deafen: bool,
 }
 
 impl VoiceEngine {
@@ -61,6 +62,13 @@ impl VoiceEngine {
                                 "speaking": speaking,
                             }));
                         }
+                        VoiceEvent::UserStateChanged(username, is_muted, is_deafened) => {
+                            let _ = app.emit("voice_user_state_changed", serde_json::json!({
+                                "username": username,
+                                "isMuted": is_muted,
+                                "isDeafened": is_deafened,
+                            }));
+                        }
                         VoiceEvent::PingMeasured(ms) => {
                             let _ = app.emit("voice_ping_updated", serde_json::json!({
                                 "latencyMs": ms,
@@ -84,6 +92,7 @@ impl VoiceEngine {
             control_tx,
             is_muted: false,
             is_deafened: false,
+            was_muted_before_deafen: false,
         })
     }
 
@@ -106,8 +115,15 @@ impl VoiceEngine {
         self.is_deafened = deafened;
         let _ = self.control_tx.send(ControlMessage::SetDeafen(deafened));
         if deafened {
+            self.was_muted_before_deafen = self.is_muted;
             self.is_muted = true;
+        } else {
+            self.is_muted = self.was_muted_before_deafen;
         }
+    }
+
+    pub fn set_voice_threshold(&self, db: f32) {
+        let _ = self.control_tx.send(ControlMessage::SetVoiceThreshold(db));
     }
 
     pub fn is_muted(&self) -> bool { self.is_muted }

@@ -34,6 +34,7 @@ pub fn run() {
             commands::voice::leave_voice_channel,
             commands::voice::set_voice_mute,
             commands::voice::set_voice_deafen,
+            commands::voice::set_voice_threshold,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -230,10 +230,19 @@ pub const VOICE_STATE_CHANGED: &str = "voice_state_changed";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct VoiceUserStatePayload {
+    pub username: String,
+    pub is_muted: bool,
+    pub is_deafened: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VoicePresenceUpdatedPayload {
     pub server_id: String,
     pub channel_id: String,
     pub participants: Vec<String>,
+    pub user_states: Vec<VoiceUserStatePayload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,10 +257,11 @@ pub fn emit_voice_presence_updated(
     server_id: String,
     channel_id: String,
     participants: Vec<String>,
+    user_states: Vec<VoiceUserStatePayload>,
 ) {
     let _ = app.emit(
         VOICE_PRESENCE_UPDATED,
-        VoicePresenceUpdatedPayload { server_id, channel_id, participants },
+        VoicePresenceUpdatedPayload { server_id, channel_id, participants, user_states },
     );
 }
 

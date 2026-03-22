@@ -3,6 +3,8 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 
+const EMPTY_CHANNELS: never[] = [];
+
 export default function VoiceControlBar() {
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
   const isMuted = useVoiceStore((s) => s.isMuted);
@@ -13,7 +15,7 @@ export default function VoiceControlBar() {
   const setActiveView = useUiStore((s) => s.setActiveView);
   const channels = useChatStore((s) => {
     const serverId = s.activeServerId;
-    return serverId ? s.channelsByServer[serverId] ?? [] : [];
+    return serverId ? s.channelsByServer[serverId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
   });
 
   if (!connectedChannelId) return null;
@@ -22,7 +24,12 @@ export default function VoiceControlBar() {
     channels.find((ch) => ch.id === connectedChannelId)?.name ?? "Voice";
 
   const handleMute = () => {
-    invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
+    if (isDeafened) {
+      invoke("set_voice_deafen", { deafened: false }).catch(console.error);
+      invoke("set_voice_mute", { muted: false }).catch(console.error);
+    } else {
+      invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
+    }
   };
 
   const handleDeafen = () => {
