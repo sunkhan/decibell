@@ -1,58 +1,51 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useFriendsStore } from "../../stores/friendsStore";
+import { useUiStore } from "../../stores/uiStore";
 import FriendActionButton from "./FriendActionButton";
 import type { FriendInfo } from "../../types";
-import { stringToColor } from "../../utils/colors";
+import { stringToGradient } from "../../utils/colors";
 
 function FriendRow({ friend }: { friend: FriendInfo }) {
+  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const isOnline = friend.status === "online";
   const isPendingIn = friend.status === "pending_incoming";
   const isPendingOut = friend.status === "pending_outgoing";
 
   return (
-    <div className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-white/5">
-      {/* Avatar with status dot */}
-      <div className="relative flex-shrink-0">
+    <div className="flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-hover">
+      <div className="relative shrink-0">
         <div
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-xs font-bold text-white"
-          style={{ backgroundColor: stringToColor(friend.username) }}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-[13px] font-bold text-white"
+          style={{ background: stringToGradient(friend.username) }}
         >
           {friend.username.charAt(0).toUpperCase()}
         </div>
         {(friend.status === "online" || friend.status === "offline") && (
           <div
-            className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-bg-primary ${
-              isOnline ? "bg-success" : "bg-[#4f6a86]"
+            className={`absolute -bottom-px -right-px h-[10px] w-[10px] rounded-full border-[2.5px] border-bg-secondary ${
+              isOnline ? "bg-success" : "bg-text-muted"
             }`}
           />
         )}
       </div>
-
-      {/* Username */}
-      <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
+      <span
+        className="min-w-0 flex-1 cursor-pointer truncate text-[13px] font-semibold text-text-primary hover:underline"
+        onClick={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          openProfilePopup(friend.username, { x: rect.right + 8, y: rect.top });
+        }}
+      >
         {friend.username}
       </span>
-
-      {/* Actions */}
       {isPendingIn && (
         <div className="flex gap-1">
-          <FriendActionButton
-            action="ACCEPT"
-            targetUsername={friend.username}
-            label="Accept"
-            variant="success"
-          />
-          <FriendActionButton
-            action="REJECT"
-            targetUsername={friend.username}
-            label="Reject"
-            variant="error"
-          />
+          <FriendActionButton action="ACCEPT" targetUsername={friend.username} label="Accept" variant="success" />
+          <FriendActionButton action="REJECT" targetUsername={friend.username} label="Reject" variant="error" />
         </div>
       )}
       {isPendingOut && (
-        <span className="text-xs text-text-muted">Pending</span>
+        <span className="text-[11px] text-text-muted">Pending</span>
       )}
     </div>
   );
@@ -71,25 +64,10 @@ export default function FriendsList() {
   );
 
   const sections: { label: string; items: FriendInfo[] }[] = [
-    {
-      label: "ONLINE",
-      items: filtered.filter((f) => f.status === "online"),
-    },
-    {
-      label: "OFFLINE",
-      items: filtered.filter((f) => f.status === "offline"),
-    },
-    {
-      label: "PENDING",
-      items: filtered.filter(
-        (f) =>
-          f.status === "pending_incoming" || f.status === "pending_outgoing"
-      ),
-    },
-    {
-      label: "BLOCKED",
-      items: filtered.filter((f) => f.status === "blocked"),
-    },
+    { label: "ONLINE", items: filtered.filter((f) => f.status === "online") },
+    { label: "OFFLINE", items: filtered.filter((f) => f.status === "offline") },
+    { label: "PENDING", items: filtered.filter((f) => f.status === "pending_incoming" || f.status === "pending_outgoing") },
+    { label: "BLOCKED", items: filtered.filter((f) => f.status === "blocked") },
   ];
 
   const handleAddFriend = async () => {
@@ -98,7 +76,7 @@ export default function FriendsList() {
     useFriendsStore.getState().setLastActionError(null);
     try {
       await invoke("send_friend_action", {
-        action: 0, // ADD
+        action: 0,
         targetUsername: addUsername.trim(),
       });
       setAddUsername("");
@@ -109,13 +87,13 @@ export default function FriendsList() {
   };
 
   return (
-    <div className="flex w-70 flex-shrink-0 flex-col border-l border-border bg-bg-primary">
+    <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-secondary">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-text-primary">Friends</h2>
+        <h2 className="text-[13px] font-bold text-text-bright">Friends</h2>
         <button
           onClick={() => setShowAdd(!showAdd)}
-          className="text-xs text-accent hover:underline"
+          className="text-[11px] font-semibold text-accent hover:text-accent-bright"
         >
           Add Friend
         </button>
@@ -124,18 +102,18 @@ export default function FriendsList() {
       {/* Add friend input */}
       {showAdd && (
         <>
-          <div className="flex gap-2 border-b border-border px-3 py-2">
+          <div className="flex gap-2 border-b border-border px-3 py-2.5">
             <input
               type="text"
               value={addUsername}
               onChange={(e) => setAddUsername(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleAddFriend()}
               placeholder="Username"
-              className="flex-1 rounded-md border border-border bg-bg-primary px-2 py-1 text-sm text-text-primary outline-none focus:border-accent"
+              className="flex-1 rounded-lg border border-border bg-bg-primary px-2.5 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-accent"
             />
             <button
               onClick={handleAddFriend}
-              className="rounded-md bg-accent px-2 py-1 text-xs font-semibold text-white hover:bg-accent-hover"
+              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-accent-hover"
             >
               Send
             </button>
@@ -153,12 +131,12 @@ export default function FriendsList() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search friends..."
-          className="w-full rounded-md border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary outline-none placeholder:text-text-muted focus:border-accent"
+          className="w-full rounded-lg border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary outline-none placeholder:text-text-muted focus:border-accent"
         />
       </div>
 
       {lastActionError && (
-        <div className="mx-3 mb-1 rounded-md bg-error/10 px-2.5 py-1.5 text-xs text-error">
+        <div className="mx-3 mb-1 rounded-lg bg-error/10 px-2.5 py-1.5 text-xs text-error">
           {lastActionError}
         </div>
       )}
@@ -169,7 +147,7 @@ export default function FriendsList() {
           (section) =>
             section.items.length > 0 && (
               <div key={section.label} className="mb-3">
-                <h3 className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+                <h3 className="mb-1 px-2 text-[11px] font-bold uppercase tracking-[0.08em] text-text-muted">
                   {section.label} — {section.items.length}
                 </h3>
                 {section.items.map((friend) => (
