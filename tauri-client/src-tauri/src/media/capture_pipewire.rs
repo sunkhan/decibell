@@ -55,6 +55,22 @@ pub async fn start_capture(
 
 // ─── XDG Desktop Portal D-Bus interaction ───────────────────────────────────
 
+/// Unwrap a zbus OwnedValue to an OwnedObjectPath.
+/// Handles Value::ObjectPath, Value::Str, and nested Value::Value wrapping.
+fn value_to_object_path(val: &zbus::zvariant::OwnedValue) -> Result<zbus::zvariant::OwnedObjectPath, String> {
+    use zbus::zvariant::{OwnedObjectPath, Value};
+    fn extract(v: &Value<'_>) -> Result<OwnedObjectPath, String> {
+        match v {
+            Value::ObjectPath(p) => Ok(OwnedObjectPath::from(p.clone())),
+            Value::Str(s) => s.as_str().try_into()
+                .map_err(|e: zbus::zvariant::Error| format!("{}", e)),
+            Value::Value(inner) => extract(inner),
+            other => Err(format!("unexpected type: {:?}", other)),
+        }
+    }
+    extract(<&Value>::from(val))
+}
+
 /// Run the full portal screencast session (blocking).
 /// Returns (PipeWire fd, node_id) on success.
 fn portal_screencast_session() -> Result<(OwnedFd, u32), String> {
@@ -104,11 +120,8 @@ fn portal_screencast_session() -> Result<(OwnedFd, u32), String> {
     let session_val = results
         .get("session_handle")
         .ok_or("No session_handle in response")?;
-    // The value is an object path wrapped in OwnedValue
-    let session: OwnedObjectPath = session_val
-        .clone()
-        .try_into()
-        .map_err(|e: zbus::zvariant::Error| format!("Parse session_handle: {}", e))?;
+    let session: OwnedObjectPath = value_to_object_path(session_val)
+        .map_err(|e| format!("Parse session_handle: {}", e))?;
 
     // ── SelectSources (shows portal picker dialog) ──
     let select_token = format!("u{}_sel", pid);
@@ -220,19 +233,29 @@ fn extract_node_id(
 
     let streams_val = results.get("streams").ok_or("No 'streams' in response")?;
 
+    // Unwrap nested Value::Value wrappers
+    fn unwrap_value<'a>(v: &'a Value<'a>) -> &'a Value<'a> {
+        match v {
+            Value::Value(inner) => unwrap_value(inner),
+            other => other,
+        }
+    }
+
     // streams is a(ua{sv}) — array of (node_id, properties) tuples
-    // OwnedValue derefs to Value
-    let val: &Value = streams_val;
+    let val = unwrap_value(<&Value>::from(streams_val));
     match val {
         Value::Array(arr) => {
             let first = arr.first().ok_or("Empty streams array")?;
+            let first = unwrap_value(first);
             match first {
                 Value::Structure(s) => {
                     let fields = s.fields();
-                    if let Some(Value::U32(node_id)) = fields.first() {
+                    let first_field = fields.first().ok_or("Empty struct")?;
+                    let first_field = unwrap_value(first_field);
+                    if let Value::U32(node_id) = first_field {
                         Ok(*node_id)
                     } else {
-                        Err(format!("Unexpected stream structure: {:?}", fields))
+                        Err(format!("Expected u32 node_id, got: {:?}", first_field))
                     }
                 }
                 _ => Err(format!("Unexpected stream element type: {:?}", first)),

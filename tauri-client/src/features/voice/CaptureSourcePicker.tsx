@@ -86,71 +86,88 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="flex border-b-2 border-border px-5">
-          <button
-            onClick={() => setTab("screen")}
-            className={`-mb-[2px] border-b-2 px-4 py-2.5 text-xs font-bold transition-colors ${
-              tab === "screen"
-                ? "border-accent text-accent"
-                : "border-transparent text-text-muted hover:text-text-secondary"
-            }`}
-          >
-            Screens
-          </button>
-          <button
-            onClick={() => setTab("window")}
-            className={`-mb-[2px] border-b-2 px-4 py-2.5 text-xs font-bold transition-colors ${
-              tab === "window"
-                ? "border-accent text-accent"
-                : "border-transparent text-text-muted hover:text-text-secondary"
-            }`}
-          >
-            Windows
-          </button>
-        </div>
-
-        {/* Source grid */}
-        <div className="grid grid-cols-2 gap-3 p-5">
-          {loading && (
-            <p className="col-span-2 py-8 text-center text-sm text-text-muted">
-              Loading sources...
+        {/* Source selection — on Linux, the OS portal handles picking */}
+        {!loading && sources.length === 1 && sources[0].id === "portal" ? (
+          <div className="px-5 py-6 text-center">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-accent/10 text-xl">
+              🖥
+            </div>
+            <p className="text-sm font-semibold text-text-bright">
+              Screen or window selection
             </p>
-          )}
-          {!loading && displayed.length === 0 && (
-            <p className="col-span-2 py-8 text-center text-sm text-text-muted">
-              No {tab === "screen" ? "screens" : "windows"} found
+            <p className="mt-1 text-xs text-text-muted">
+              A system dialog will appear after you click Go Live to choose what to share.
             </p>
-          )}
-          {displayed.map((source) => (
-            <button
-              key={source.id}
-              onClick={() => setSelected(source.id)}
-              className={`overflow-hidden rounded-lg border-2 text-left transition-all ${
-                selected === source.id
-                  ? "border-accent"
-                  : "border-border hover:border-text-muted"
-              }`}
-            >
-              <div className="flex h-20 items-center justify-center bg-bg-primary">
-                <span className="text-xs text-text-muted">
-                  {source.width > 0
-                    ? `${source.width} × ${source.height}`
-                    : "Preview"}
-                </span>
-              </div>
-              <div
-                className={`px-3 py-2 text-[11px] font-semibold ${
-                  selected === source.id
-                    ? "bg-accent/10 text-text-bright"
-                    : "text-text-secondary"
+          </div>
+        ) : (
+          <>
+            {/* Tabs */}
+            <div className="flex border-b-2 border-border px-5">
+              <button
+                onClick={() => setTab("screen")}
+                className={`-mb-[2px] border-b-2 px-4 py-2.5 text-xs font-bold transition-colors ${
+                  tab === "screen"
+                    ? "border-accent text-accent"
+                    : "border-transparent text-text-muted hover:text-text-secondary"
                 }`}
               >
-                {source.name}
-              </div>
-            </button>
-          ))}
-        </div>
+                Screens
+              </button>
+              <button
+                onClick={() => setTab("window")}
+                className={`-mb-[2px] border-b-2 px-4 py-2.5 text-xs font-bold transition-colors ${
+                  tab === "window"
+                    ? "border-accent text-accent"
+                    : "border-transparent text-text-muted hover:text-text-secondary"
+                }`}
+              >
+                Windows
+              </button>
+            </div>
+
+            {/* Source grid */}
+            <div className="grid grid-cols-2 gap-3 p-5">
+              {loading && (
+                <p className="col-span-2 py-8 text-center text-sm text-text-muted">
+                  Loading sources...
+                </p>
+              )}
+              {!loading && displayed.length === 0 && (
+                <p className="col-span-2 py-8 text-center text-sm text-text-muted">
+                  No {tab === "screen" ? "screens" : "windows"} found
+                </p>
+              )}
+              {displayed.map((source) => (
+                <button
+                  key={source.id}
+                  onClick={() => setSelected(source.id)}
+                  className={`overflow-hidden rounded-lg border-2 text-left transition-all ${
+                    selected === source.id
+                      ? "border-accent"
+                      : "border-border hover:border-text-muted"
+                  }`}
+                >
+                  <div className="flex h-20 items-center justify-center bg-bg-primary">
+                    <span className="text-xs text-text-muted">
+                      {source.width > 0
+                        ? `${source.width} × ${source.height}`
+                        : "Preview"}
+                    </span>
+                  </div>
+                  <div
+                    className={`px-3 py-2 text-[11px] font-semibold ${
+                      selected === source.id
+                        ? "bg-accent/10 text-text-bright"
+                        : "text-text-secondary"
+                    }`}
+                  >
+                    {source.name}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
 
         {/* Quality settings */}
         <div className="mx-5 flex gap-2.5 rounded-lg bg-bg-primary p-3">
