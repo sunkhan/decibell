@@ -146,6 +146,69 @@ impl CommunityClient {
         self.send(data).await
     }
 
+    /// Start screen sharing in a voice channel.
+    pub async fn start_stream(
+        &self,
+        channel_id: &str,
+        target_fps: i32,
+        target_bitrate_kbps: i32,
+        has_audio: bool,
+        resolution_width: u32,
+        resolution_height: u32,
+    ) -> Result<(), String> {
+        let data = build_packet(
+            packet::Type::StartStreamReq,
+            packet::Payload::StartStreamReq(StartStreamRequest {
+                channel_id: channel_id.into(),
+                target_fps,
+                target_bitrate_kbps,
+                has_audio,
+                resolution_width,
+                resolution_height,
+            }),
+            Some(&self.jwt),
+        );
+        self.send(data).await
+    }
+
+    /// Stop screen sharing.
+    pub async fn stop_stream(&self, channel_id: &str) -> Result<(), String> {
+        let data = build_packet(
+            packet::Type::StopStreamReq,
+            packet::Payload::StopStreamReq(StopStreamRequest {
+                channel_id: channel_id.into(),
+            }),
+            Some(&self.jwt),
+        );
+        self.send(data).await
+    }
+
+    /// Request to watch a user's stream.
+    pub async fn watch_stream(&self, channel_id: &str, target_username: &str) -> Result<(), String> {
+        let data = build_packet(
+            packet::Type::WatchStreamReq,
+            packet::Payload::WatchStreamReq(WatchStreamRequest {
+                channel_id: channel_id.into(),
+                target_username: target_username.into(),
+            }),
+            Some(&self.jwt),
+        );
+        self.send(data).await
+    }
+
+    /// Stop watching a user's stream.
+    pub async fn stop_watching(&self, channel_id: &str, target_username: &str) -> Result<(), String> {
+        let data = build_packet(
+            packet::Type::StopWatchingReq,
+            packet::Payload::StopWatchingReq(StopWatchingRequest {
+                channel_id: channel_id.into(),
+                target_username: target_username.into(),
+            }),
+            Some(&self.jwt),
+        );
+        self.send(data).await
+    }
+
     /// Disconnect from the community server. Stops reconnection.
     pub fn disconnect(&mut self) {
         if let Some(task) = self.reconnect_task.take() {
@@ -320,6 +383,21 @@ impl CommunityClient {
                         update.channel_id,
                         update.active_users,
                         user_states,
+                    );
+                }
+                Some(packet::Payload::StreamPresenceUpdate(update)) => {
+                    events::emit_stream_presence_updated(
+                        &app,
+                        server_id.clone(),
+                        update.channel_id,
+                        update.active_streams.into_iter().map(|s| events::StreamInfoPayload {
+                            stream_id: s.stream_id,
+                            owner_username: s.owner_username,
+                            has_audio: s.has_audio,
+                            resolution_width: s.resolution_width,
+                            resolution_height: s.resolution_height,
+                            fps: s.fps,
+                        }).collect(),
                     );
                 }
                 _ => {

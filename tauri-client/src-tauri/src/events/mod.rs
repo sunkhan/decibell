@@ -274,3 +274,40 @@ pub fn emit_voice_state_changed(app: &AppHandle, is_muted: bool, is_deafened: bo
         VoiceStateChangedPayload { is_muted, is_deafened },
     );
 }
+
+pub const STREAM_PRESENCE_UPDATED: &str = "stream_presence_updated";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamInfoPayload {
+    pub stream_id: String,
+    pub owner_username: String,
+    pub has_audio: bool,
+    pub resolution_width: u32,
+    pub resolution_height: u32,
+    pub fps: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamPresenceUpdatedPayload {
+    pub server_id: String,
+    pub channel_id: String,
+    pub streams: Vec<StreamInfoPayload>,
+}
+
+pub fn emit_stream_presence_updated(
+    app: &AppHandle,
+    server_id: String,
+    channel_id: String,
+    streams: Vec<StreamInfoPayload>,
+) {
+    let _ = app.emit(
+        STREAM_PRESENCE_UPDATED,
+        StreamPresenceUpdatedPayload {
+            server_id,
+            channel_id,
+            streams,
+        },
+    );
+}
