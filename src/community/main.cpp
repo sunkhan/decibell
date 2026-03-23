@@ -44,10 +44,17 @@ public:
     std::vector<std::string> get_channel_usernames(const std::string& channel_id);
     void broadcast_channel_members(const std::string& channel_id);
 
-    // Screen Sharing 
+    // Screen Sharing
     void start_stream(std::shared_ptr<Session> session, const std::string& channel_id, bool has_audio);
     void stop_stream(std::shared_ptr<Session> session, const std::string& channel_id);
     void broadcast_stream_presence(const std::string& channel_id);
+
+    // Watcher tracking
+    void add_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
+    void remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
+    void broadcast_to_watchers(const char* data, size_t length, const std::string& channel_id, const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket);
+    void set_udp_socket(boost::asio::ip::udp::socket* sock) { udp_socket_ptr_ = sock; }
+    void relay_keyframe_request_internal(const std::string& target_username);
 
 private:
     std::set<std::shared_ptr<Session>> sessions_;
@@ -57,6 +64,14 @@ private:
     // channel_id -> map of username -> stream info
     struct StreamInfo { bool has_audio; };
     std::unordered_map<std::string, std::unordered_map<std::string, StreamInfo>> active_streams_;
+
+    // channel_id -> streamer_username -> set of watcher sessions
+    std::unordered_map<std::string,
+        std::unordered_map<std::string, std::set<std::shared_ptr<Session>>>>
+        stream_watchers_;
+
+    uint32_t max_streams_per_channel_ = 8;  // 0 = unlimited
+    boost::asio::ip::udp::socket* udp_socket_ptr_ = nullptr;
 
     std::mutex mutex_;
 };
@@ -257,6 +272,22 @@ private:
             std::cout << "[Community] " << username_ << " stopped screen share in " << req.channel_id() << "\n";
         }
 
+        // --- WATCH STREAM ---
+        else if (packet.type() == chatproj::Packet::WATCH_STREAM_REQ) {
+            const auto& req = packet.watch_stream_req();
+            manager_.add_watcher(shared_from_this(), req.channel_id(), req.target_username());
+            std::cout << "[Community] " << username_ << " watching " << req.target_username() << "'s stream in " << req.channel_id() << "\n";
+            // Send PLI to streamer so new watcher gets a keyframe
+            manager_.relay_keyframe_request_internal(req.target_username());
+        }
+
+        // --- STOP WATCHING STREAM ---
+        else if (packet.type() == chatproj::Packet::STOP_WATCHING_REQ) {
+            const auto& req = packet.stop_watching_req();
+            manager_.remove_watcher(shared_from_this(), req.channel_id(), req.target_username());
+            std::cout << "[Community] " << username_ << " stopped watching " << req.target_username() << "'s stream\n";
+        }
+
         // --- VOICE STATE NOTIFY (mute/deafen) ---
         else if (packet.type() == chatproj::Packet::VOICE_STATE_NOTIFY) {
             const auto& notify = packet.voice_state_notify();
@@ -365,6 +396,12 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
                 affected_stream_channels.push_back(pair.first);
             }
         }
+        // Clean up any watcher entries for this session
+        for (auto& [ch_id, streamers] : stream_watchers_) {
+            for (auto& [streamer, watchers] : streamers) {
+                watchers.erase(session);
+            }
+        }
         std::cout << "[Community] Session " << session->get_username() << " left. Total: " << sessions_.size() << "\n";
     }
     // Broadcast updated presence to remaining clients (outside lock to avoid deadlock)
@@ -382,6 +419,11 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
 void SessionManager::start_stream(std::shared_ptr<Session> session, const std::string& channel_id, bool has_audio) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        // Enforce stream limit (0 = unlimited)
+        if (max_streams_per_channel_ > 0 && active_streams_[channel_id].size() >= max_streams_per_channel_) {
+            std::cout << "[Community] Stream limit reached in " << channel_id << ", rejecting " << session->get_username() << "\n";
+            return;
+        }
         active_streams_[channel_id][session->get_username()] = { has_audio };
     }
     broadcast_stream_presence(channel_id);
@@ -391,8 +433,18 @@ void SessionManager::stop_stream(std::shared_ptr<Session> session, const std::st
     bool removed = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (active_streams_[channel_id].erase(session->get_username()) > 0) {
-            removed = true;
+        auto it = active_streams_.find(channel_id);
+        if (it != active_streams_.end()) {
+            if (it->second.erase(session->get_username()) > 0) {
+                removed = true;
+            }
+            if (it->second.empty()) active_streams_.erase(it);
+        }
+        // Clean up watchers for this stream
+        auto wch = stream_watchers_.find(channel_id);
+        if (wch != stream_watchers_.end()) {
+            wch->second.erase(session->get_username());
+            if (wch->second.empty()) stream_watchers_.erase(wch);
         }
     }
     if (removed) {
@@ -556,6 +608,46 @@ void SessionManager::relay_nack(const char* data, size_t length, const std::stri
     }
 }
 
+void SessionManager::add_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stream_watchers_[channel_id][streamer_username].insert(watcher);
+}
+
+void SessionManager::remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto ch_it = stream_watchers_.find(channel_id);
+    if (ch_it != stream_watchers_.end()) {
+        auto st_it = ch_it->second.find(streamer_username);
+        if (st_it != ch_it->second.end()) {
+            st_it->second.erase(watcher);
+            if (st_it->second.empty()) ch_it->second.erase(st_it);
+            if (ch_it->second.empty()) stream_watchers_.erase(ch_it);
+        }
+    }
+}
+
+void SessionManager::broadcast_to_watchers(const char* data, size_t length, const std::string& channel_id,
+                                            const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket) {
+    auto buffer = std::make_shared<std::vector<char>>(data, data + length);
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto ch_it = stream_watchers_.find(channel_id);
+    if (ch_it == stream_watchers_.end()) return;
+    auto st_it = ch_it->second.find(streamer_username);
+    if (st_it == ch_it->second.end()) return;
+    for (auto& watcher : st_it->second) {
+        if (watcher->get_udp_endpoint().port() != 0) {
+            udp_socket.async_send_to(
+                boost::asio::buffer(*buffer), watcher->get_udp_endpoint(),
+                [buffer](boost::system::error_code, std::size_t) {});
+        }
+    }
+}
+
+void SessionManager::relay_keyframe_request_internal(const std::string& target_username) {
+    if (!udp_socket_ptr_) return;
+    relay_keyframe_request(target_username, *udp_socket_ptr_);
+}
+
 void SessionManager::broadcast_voice_presence(const std::string& channel_id) {
     chatproj::Packet packet;
     packet.set_type(chatproj::Packet::VOICE_PRESENCE_UPDATE);
@@ -689,6 +781,8 @@ public:
         udp_socket_.set_option(boost::asio::socket_base::receive_buffer_size(2 * 1024 * 1024));
         udp_socket_.set_option(boost::asio::socket_base::send_buffer_size(2 * 1024 * 1024));
 
+        manager_.set_udp_socket(&udp_socket_);
+
         std::cout << "Community Server TCP running on port " << port << "...\n";
         std::cout << "Community Server UDP running on port " << port + 1 << "...\n";
 
@@ -793,7 +887,12 @@ private:
                                     std::memcpy(udp_buffer_ + 1, uname.c_str(), std::min(uname.size(), size_t(chatproj::SENDER_ID_SIZE - 1)));
                                 }
 
-                                manager_.broadcast_to_voice_channel(udp_buffer_, bytes_recvd, channel, session, udp_socket_);
+                                // Route based on packet type: audio to all voice members, video/FEC to watchers only
+                                if (packet_type == chatproj::UdpPacketType::AUDIO) {
+                                    manager_.broadcast_to_voice_channel(udp_buffer_, bytes_recvd, channel, session, udp_socket_);
+                                } else if (packet_type == chatproj::UdpPacketType::VIDEO || packet_type == chatproj::UdpPacketType::FEC) {
+                                    manager_.broadcast_to_watchers(udp_buffer_, bytes_recvd, channel, session->get_username(), udp_socket_);
+                                }
                             }
                         }
                     }
