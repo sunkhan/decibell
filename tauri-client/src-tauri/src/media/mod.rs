@@ -96,6 +96,14 @@ impl VoiceEngine {
                                 "latencyMs": ms,
                             }));
                         }
+                        VoiceEvent::VideoFrameReady(frame) => {
+                            let _ = app.emit("stream_frame", serde_json::json!({
+                                "username": frame.streamer_username,
+                                "data": frame.data,
+                                "timestamp": frame.frame_id as u64 * 33_333, // ~30fps PTS in microseconds
+                                "keyframe": frame.is_keyframe,
+                            }));
+                        }
                         VoiceEvent::Error(msg) => {
                             let _ = app.emit("voice_error", serde_json::json!({
                                 "message": msg,

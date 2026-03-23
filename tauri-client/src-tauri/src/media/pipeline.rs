@@ -11,6 +11,8 @@ use super::packet::{
     UdpAudioPacket, PACKET_TOTAL_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
 };
 use super::speaking::SpeakingDetector;
+use super::video_packet::{UdpVideoPacket, PACKET_TYPE_VIDEO};
+use super::video_receiver::{VideoReceiver, ReassembledFrame};
 
 // ── Control / Event messages ──────────────────────────────────────────────────
 
@@ -25,6 +27,7 @@ pub enum VoiceEvent {
     SpeakingChanged(String, bool),
     UserStateChanged(String, bool, bool), // username, muted, deafened
     PingMeasured(u32),
+    VideoFrameReady(ReassembledFrame),
     Error(String),
 }
 
@@ -192,7 +195,13 @@ pub fn run_audio_pipeline(
     let mut last_ping_time = Instant::now();
     let ping_interval = Duration::from_secs(3);
 
-    let mut recv_buf = [0u8; PACKET_TOTAL_SIZE];
+    // Recv buffer sized for the largest packet type (video = 1445 > audio = 1437)
+    const VIDEO_PACKET_SIZE: usize = std::mem::size_of::<UdpVideoPacket>();
+    const RECV_BUF_SIZE: usize = if VIDEO_PACKET_SIZE > PACKET_TOTAL_SIZE { VIDEO_PACKET_SIZE } else { PACKET_TOTAL_SIZE };
+    let mut recv_buf = [0u8; RECV_BUF_SIZE];
+
+    let mut video_receiver = VideoReceiver::new();
+    let mut last_video_cleanup = Instant::now();
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     'main: loop {
@@ -317,111 +326,115 @@ pub fn run_audio_pipeline(
         // 4. Receive UDP packets ───────────────────────────────────────────────
         // The socket has a 5ms read timeout; this is non-blocking from the loop's perspective.
         match socket.recv(&mut recv_buf) {
-            Ok(n) if n == PACKET_TOTAL_SIZE => {
-                if let Some(pkt) = UdpAudioPacket::from_bytes(&recv_buf[..n]) {
-                    let username = pkt.sender_username();
+            Ok(n) if n >= 1 => {
+                let packet_type = recv_buf[0];
 
-                    // Handle ping BEFORE sender_id filter (echoed pings have our own sender_id)
-                    if pkt.packet_type == PACKET_TYPE_PING {
-                        // Measure RTT: payload[0..8] is the original send timestamp_ns
-                        let payload = pkt.payload_data();
-                        if payload.len() >= 8 {
-                            let sent_ns = u64::from_le_bytes(payload[..8].try_into().unwrap_or([0; 8]));
-                            let now_ns = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_nanos() as u64;
-                            let rtt_ms = (now_ns.saturating_sub(sent_ns) / 1_000_000) as u32;
-                            let _ = event_tx.send(VoiceEvent::PingMeasured(rtt_ms));
-                        }
-                    } else if username == sender_id {
-                        // Ignore our own reflected audio packets
-                    } else if pkt.packet_type == PACKET_TYPE_AUDIO {
-                        // Sequence duplicate/out-of-order check
-                        let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
-                            // First packet from this user
-                            RemotePeer {
-                                decoder: OpusDecoder::new().unwrap_or_else(|_| {
-                                    // We can't recover gracefully from decoder init failure here
-                                    // without making the control flow much more complex.
-                                    // Log and create a default anyway — decode will return errors.
-                                    OpusDecoder::new().expect("OpusDecoder::new failed twice")
-                                }),
-                                speaking: SpeakingDetector::new(),
-                                last_seq: pkt.sequence.wrapping_sub(1),
-                                last_packet_time: Instant::now(),
+                if packet_type == PACKET_TYPE_VIDEO && n == VIDEO_PACKET_SIZE {
+                    // ── Video packet ────────────────────────────────────────
+                    if let Some(pkt) = UdpVideoPacket::from_bytes(&recv_buf[..n]) {
+                        let username = pkt.sender_username();
+                        // Don't process our own reflected video packets
+                        if username != sender_id {
+                            if let Some(frame) = video_receiver.process_packet(&pkt) {
+                                let _ = event_tx.send(VoiceEvent::VideoFrameReady(frame));
                             }
-                        });
+                        }
+                    }
+                } else if n == PACKET_TOTAL_SIZE {
+                    // ── Audio or Ping packet ────────────────────────────────
+                    if let Some(pkt) = UdpAudioPacket::from_bytes(&recv_buf[..n]) {
+                        let username = pkt.sender_username();
 
-                        let diff = pkt.sequence.wrapping_sub(peer.last_seq);
-                        // diff == 0 → duplicate; diff > 32768 → out-of-order (wrapped)
-                        if diff == 0 || diff > 32768 {
-                            // skip stale/duplicate packet
-                        } else {
-                            peer.last_seq = pkt.sequence;
-                            peer.last_packet_time = Instant::now();
+                        // Handle ping BEFORE sender_id filter (echoed pings have our own sender_id)
+                        if pkt.packet_type == PACKET_TYPE_PING {
+                            let payload = pkt.payload_data();
+                            if payload.len() >= 8 {
+                                let sent_ns = u64::from_le_bytes(payload[..8].try_into().unwrap_or([0; 8]));
+                                let now_ns = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_nanos() as u64;
+                                let rtt_ms = (now_ns.saturating_sub(sent_ns) / 1_000_000) as u32;
+                                let _ = event_tx.send(VoiceEvent::PingMeasured(rtt_ms));
+                            }
+                        } else if username == sender_id {
+                            // Ignore our own reflected audio packets
+                        } else if pkt.packet_type == PACKET_TYPE_AUDIO {
+                            // Sequence duplicate/out-of-order check
+                            let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
+                                RemotePeer {
+                                    decoder: OpusDecoder::new().unwrap_or_else(|_| {
+                                        OpusDecoder::new().expect("OpusDecoder::new failed twice")
+                                    }),
+                                    speaking: SpeakingDetector::new(),
+                                    last_seq: pkt.sequence.wrapping_sub(1),
+                                    last_packet_time: Instant::now(),
+                                }
+                            });
 
-                            let raw_payload = pkt.payload_data();
-                            // Strip flags byte (first byte) from payload
-                            let (flags, opus_data) = if raw_payload.len() > 1 {
-                                (raw_payload[0], &raw_payload[1..])
+                            let diff = pkt.sequence.wrapping_sub(peer.last_seq);
+                            if diff == 0 || diff > 32768 {
+                                // skip stale/duplicate packet
                             } else {
-                                (0u8, raw_payload)
-                            };
-                            let peer_muted = flags & FLAG_MUTED != 0;
-                            let peer_deafened = flags & FLAG_DEAFENED != 0;
+                                peer.last_seq = pkt.sequence;
+                                peer.last_packet_time = Instant::now();
 
-                            // Emit mute/deafen state for remote user
-                            let _ = event_tx.send(VoiceEvent::UserStateChanged(
-                                username.clone(),
-                                peer_muted,
-                                peer_deafened,
-                            ));
+                                let raw_payload = pkt.payload_data();
+                                let (flags, opus_data) = if raw_payload.len() > 1 {
+                                    (raw_payload[0], &raw_payload[1..])
+                                } else {
+                                    (0u8, raw_payload)
+                                };
+                                let peer_muted = flags & FLAG_MUTED != 0;
+                                let peer_deafened = flags & FLAG_DEAFENED != 0;
 
-                            let mut pcm = [0i16; FRAME_SIZE];
-                            match peer.decoder.decode(opus_data, &mut pcm) {
-                                Ok(_) => {
-                                    // Speaking detection: compute RMS dB on decoded audio
-                                    let rms = {
-                                        let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
-                                        (sum_sq / pcm.len() as f64).sqrt() as f32
-                                    };
-                                    let rms_db = if rms > 0.0 {
-                                        20.0 * (rms / 32768.0).log10()
-                                    } else {
-                                        -96.0
-                                    };
-                                    // Remote is "speaking" if not muted and audio is above -50 dB
-                                    let above = !peer_muted && rms_db >= -50.0;
-                                    if let Some(state) = peer.speaking.process_threshold(above) {
-                                        let _ = event_tx.send(VoiceEvent::SpeakingChanged(
-                                            username.clone(),
-                                            state,
-                                        ));
-                                    }
+                                let _ = event_tx.send(VoiceEvent::UserStateChanged(
+                                    username.clone(),
+                                    peer_muted,
+                                    peer_deafened,
+                                ));
 
-                                    // Mix into playback buffer (only if not deafened)
-                                    if !deafened {
-                                        let mut pbuf = playback_buf.lock().unwrap();
-                                        let remaining = BUF_CAP.saturating_sub(pbuf.len());
-                                        let take = FRAME_SIZE.min(remaining);
-                                        for &s in &pcm[..take] {
-                                            pbuf.push_back(s);
+                                let mut pcm = [0i16; FRAME_SIZE];
+                                match peer.decoder.decode(opus_data, &mut pcm) {
+                                    Ok(_) => {
+                                        let rms = {
+                                            let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
+                                            (sum_sq / pcm.len() as f64).sqrt() as f32
+                                        };
+                                        let rms_db = if rms > 0.0 {
+                                            20.0 * (rms / 32768.0).log10()
+                                        } else {
+                                            -96.0
+                                        };
+                                        let above = !peer_muted && rms_db >= -50.0;
+                                        if let Some(state) = peer.speaking.process_threshold(above) {
+                                            let _ = event_tx.send(VoiceEvent::SpeakingChanged(
+                                                username.clone(),
+                                                state,
+                                            ));
+                                        }
+
+                                        if !deafened {
+                                            let mut pbuf = playback_buf.lock().unwrap();
+                                            let remaining = BUF_CAP.saturating_sub(pbuf.len());
+                                            let take = FRAME_SIZE.min(remaining);
+                                            for &s in &pcm[..take] {
+                                                pbuf.push_back(s);
+                                            }
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    let _ = event_tx
-                                        .send(VoiceEvent::Error(format!("Decode error: {}", e)));
+                                    Err(e) => {
+                                        let _ = event_tx
+                                            .send(VoiceEvent::Error(format!("Decode error: {}", e)));
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                // else: unknown packet size, ignore
             }
-            Ok(_) => {
-                // Short read — not a valid packet, ignore
-            }
+            Ok(_) => {}
             Err(ref e)
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
@@ -431,6 +444,12 @@ pub fn run_audio_pipeline(
             Err(e) => {
                 let _ = event_tx.send(VoiceEvent::Error(format!("UDP recv error: {}", e)));
             }
+        }
+
+        // 4b. Periodic video receiver maintenance ────────────────────────────
+        if last_video_cleanup.elapsed() > Duration::from_millis(100) {
+            video_receiver.cleanup_stale();
+            last_video_cleanup = Instant::now();
         }
 
         // 5. Clean up stale remote peers (no packet for > 5s) ─────────────────
