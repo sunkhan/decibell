@@ -1,0 +1,253 @@
+/// Rust equivalents of the C++ structs in src/common/udp_packet.hpp.
+/// Must be byte-compatible for UDP relay through the C++ community server.
+
+pub const SENDER_ID_SIZE: usize = 32;
+pub const UDP_MAX_PAYLOAD: usize = 1400;
+pub const NACK_MAX_ENTRIES: usize = 64;
+
+pub const PACKET_TYPE_VIDEO: u8 = 1;
+pub const PACKET_TYPE_KEYFRAME_REQUEST: u8 = 2;
+pub const PACKET_TYPE_NACK: u8 = 3;
+
+pub const CODEC_H264: u8 = 1;
+
+#[repr(C, packed)]
+#[derive(Clone)]
+pub struct UdpVideoPacket {
+    pub packet_type: u8,
+    pub sender_id: [u8; SENDER_ID_SIZE],
+    pub frame_id: u32,
+    pub packet_index: u16,
+    pub total_packets: u16,
+    pub payload_size: u16,
+    pub is_keyframe: bool,
+    pub codec: u8,
+    pub payload: [u8; UDP_MAX_PAYLOAD],
+}
+
+#[repr(C, packed)]
+#[derive(Clone)]
+pub struct UdpKeyframeRequest {
+    pub packet_type: u8,
+    pub sender_id: [u8; SENDER_ID_SIZE],
+    pub target_username: [u8; SENDER_ID_SIZE],
+}
+
+#[repr(C, packed)]
+#[derive(Clone)]
+pub struct UdpNackPacket {
+    pub packet_type: u8,
+    pub sender_id: [u8; SENDER_ID_SIZE],
+    pub target_username: [u8; SENDER_ID_SIZE],
+    pub frame_id: u32,
+    pub nack_count: u16,
+    pub missing_indices: [u16; NACK_MAX_ENTRIES],
+}
+
+fn fill_id(dest: &mut [u8; SENDER_ID_SIZE], src: &str) {
+    let bytes = src.as_bytes();
+    let len = bytes.len().min(SENDER_ID_SIZE);
+    dest[..len].copy_from_slice(&bytes[..len]);
+}
+
+impl UdpVideoPacket {
+    pub fn new(
+        sender_id_str: &str,
+        frame_id: u32,
+        packet_index: u16,
+        total_packets: u16,
+        is_keyframe: bool,
+        data: &[u8],
+    ) -> Self {
+        let mut sender_id = [0u8; SENDER_ID_SIZE];
+        fill_id(&mut sender_id, sender_id_str);
+
+        let mut payload = [0u8; UDP_MAX_PAYLOAD];
+        let data_len = data.len().min(UDP_MAX_PAYLOAD);
+        payload[..data_len].copy_from_slice(&data[..data_len]);
+
+        UdpVideoPacket {
+            packet_type: PACKET_TYPE_VIDEO,
+            sender_id,
+            frame_id,
+            packet_index,
+            total_packets,
+            payload_size: data_len as u16,
+            is_keyframe,
+            codec: CODEC_H264,
+            payload,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let total = std::mem::size_of::<Self>();
+        let mut buf = vec![0u8; total];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self as *const Self as *const u8,
+                buf.as_mut_ptr(),
+                total,
+            );
+        }
+        buf
+    }
+
+    pub fn from_bytes(buf: &[u8]) -> Option<Self> {
+        let expected = std::mem::size_of::<Self>();
+        if buf.len() < expected {
+            return None;
+        }
+        let mut pkt = Self {
+            packet_type: 0,
+            sender_id: [0; SENDER_ID_SIZE],
+            frame_id: 0,
+            packet_index: 0,
+            total_packets: 0,
+            payload_size: 0,
+            is_keyframe: false,
+            codec: 0,
+            payload: [0; UDP_MAX_PAYLOAD],
+        };
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                buf.as_ptr(),
+                &mut pkt as *mut Self as *mut u8,
+                expected,
+            );
+        }
+        Some(pkt)
+    }
+
+    pub fn sender_username(&self) -> String {
+        let end = self.sender_id.iter().position(|&b| b == 0).unwrap_or(SENDER_ID_SIZE);
+        String::from_utf8_lossy(&self.sender_id[..end]).to_string()
+    }
+
+    pub fn payload_data(&self) -> &[u8] {
+        // Copy from packed struct to avoid unaligned access
+        let size = { self.payload_size } as usize;
+        &self.payload[..size]
+    }
+}
+
+impl UdpKeyframeRequest {
+    pub fn new(sender_id_str: &str, target: &str) -> Self {
+        let mut sender_id = [0u8; SENDER_ID_SIZE];
+        fill_id(&mut sender_id, sender_id_str);
+        let mut target_username = [0u8; SENDER_ID_SIZE];
+        fill_id(&mut target_username, target);
+
+        UdpKeyframeRequest {
+            packet_type: PACKET_TYPE_KEYFRAME_REQUEST,
+            sender_id,
+            target_username,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let total = std::mem::size_of::<Self>();
+        let mut buf = vec![0u8; total];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self as *const Self as *const u8,
+                buf.as_mut_ptr(),
+                total,
+            );
+        }
+        buf
+    }
+}
+
+impl UdpNackPacket {
+    pub fn new(sender_id_str: &str, target: &str, frame_id: u32, missing: &[u16]) -> Self {
+        let mut sender_id = [0u8; SENDER_ID_SIZE];
+        fill_id(&mut sender_id, sender_id_str);
+        let mut target_username = [0u8; SENDER_ID_SIZE];
+        fill_id(&mut target_username, target);
+
+        let count = missing.len().min(NACK_MAX_ENTRIES);
+        let mut missing_indices = [0u16; NACK_MAX_ENTRIES];
+        missing_indices[..count].copy_from_slice(&missing[..count]);
+
+        UdpNackPacket {
+            packet_type: PACKET_TYPE_NACK,
+            sender_id,
+            target_username,
+            frame_id,
+            nack_count: count as u16,
+            missing_indices,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let total = std::mem::size_of::<Self>();
+        let mut buf = vec![0u8; total];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self as *const Self as *const u8,
+                buf.as_mut_ptr(),
+                total,
+            );
+        }
+        buf
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_packet_roundtrip() {
+        let data = b"hello video frame";
+        let pkt = UdpVideoPacket::new("testuser", 42, 0, 3, true, data);
+        let bytes = pkt.to_bytes();
+        let decoded = UdpVideoPacket::from_bytes(&bytes).unwrap();
+        // Copy fields from packed struct to avoid unaligned reference UB
+        let ptype = decoded.packet_type;
+        let fid = decoded.frame_id;
+        let pidx = decoded.packet_index;
+        let total = decoded.total_packets;
+        let kf = decoded.is_keyframe;
+        let codec = decoded.codec;
+        let psize = decoded.payload_size;
+        assert_eq!(ptype, PACKET_TYPE_VIDEO);
+        assert_eq!(fid, 42);
+        assert_eq!(pidx, 0);
+        assert_eq!(total, 3);
+        assert!(kf);
+        assert_eq!(codec, CODEC_H264);
+        assert_eq!(psize, data.len() as u16);
+        assert_eq!(decoded.payload_data(), data);
+        assert_eq!(decoded.sender_username(), "testuser");
+    }
+
+    #[test]
+    fn video_packet_size_matches_cpp() {
+        // C++ struct: 1 + 32 + 4 + 2 + 2 + 2 + 1 + 1 + 1400 = 1445 bytes
+        assert_eq!(std::mem::size_of::<UdpVideoPacket>(), 1445);
+    }
+
+    #[test]
+    fn keyframe_request_roundtrip() {
+        let req = UdpKeyframeRequest::new("viewer1", "streamer1");
+        let bytes = req.to_bytes();
+        assert_eq!(bytes[0], PACKET_TYPE_KEYFRAME_REQUEST);
+        let sender = String::from_utf8_lossy(&bytes[1..8]).trim_matches('\0').to_string();
+        assert_eq!(sender, "viewer1");
+    }
+
+    #[test]
+    fn nack_packet_stores_missing_indices() {
+        let missing = vec![2u16, 5, 7];
+        let nack = UdpNackPacket::new("viewer1", "streamer1", 100, &missing);
+        let count = nack.nack_count;
+        let m0 = nack.missing_indices[0];
+        let m1 = nack.missing_indices[1];
+        let m2 = nack.missing_indices[2];
+        assert_eq!(count, 3);
+        assert_eq!(m0, 2);
+        assert_eq!(m1, 5);
+        assert_eq!(m2, 7);
+    }
+}

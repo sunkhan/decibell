@@ -2,6 +2,7 @@ pub mod codec;
 pub mod packet;
 pub mod pipeline;
 pub mod speaking;
+pub mod video_packet;
 
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};

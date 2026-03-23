@@ -1,4 +1,7 @@
 pub const PACKET_TYPE_AUDIO: u8 = 0;
+pub const PACKET_TYPE_VIDEO: u8 = 1;
+pub const PACKET_TYPE_KEYFRAME_REQUEST: u8 = 2;
+pub const PACKET_TYPE_NACK: u8 = 3;
 pub const PACKET_TYPE_PING: u8 = 5;
 pub const PACKET_TOTAL_SIZE: usize = 1437;
 pub const SENDER_ID_SIZE: usize = 32;
