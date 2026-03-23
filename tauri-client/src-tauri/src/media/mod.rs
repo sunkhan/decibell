@@ -4,6 +4,7 @@ pub mod capture_pipewire;
 #[cfg(target_os = "windows")]
 pub mod capture_wgc;
 pub mod codec;
+pub mod encoder;
 pub mod packet;
 pub mod pipeline;
 pub mod speaking;
