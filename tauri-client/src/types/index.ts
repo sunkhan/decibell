@@ -48,4 +48,7 @@ export interface StreamInfo {
   streamId: string;
   ownerUsername: string;
   hasAudio: boolean;
+  resolutionWidth: number;
+  resolutionHeight: number;
+  fps: number;
 }

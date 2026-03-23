@@ -238,6 +238,9 @@ message VideoStreamInfo {
   string stream_id = 1;
   string owner_username = 2;
   bool has_audio = 3;
+  uint32 resolution_width = 4;
+  uint32 resolution_height = 5;
+  uint32 fps = 6;
 }
 
 message StreamPresenceUpdate {
@@ -250,6 +253,8 @@ message StartStreamRequest {
   int32 target_fps = 2;
   int32 target_bitrate_kbps = 3;
   bool has_audio = 4;
+  uint32 resolution_width = 5;
+  uint32 resolution_height = 6;
 }
 
 message StopStreamRequest {
