@@ -12,7 +12,8 @@ pub mod video_packet;
 pub mod video_pipeline;
 pub mod video_receiver;
 
-use std::sync::mpsc;
+use std::net::UdpSocket;
+use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 
 use tauri::{AppHandle, Emitter};
@@ -23,6 +24,8 @@ pub struct VoiceEngine {
     audio_thread: Option<JoinHandle<()>>,
     event_bridge: Option<tokio::task::JoinHandle<()>>,
     control_tx: mpsc::Sender<ControlMessage>,
+    socket: Arc<UdpSocket>,
+    sender_id: String,
     is_muted: bool,
     is_deafened: bool,
     was_muted_before_deafen: bool,
@@ -49,10 +52,20 @@ impl VoiceEngine {
             jwt.to_string()
         };
 
+        // Create and connect UDP socket (shared between audio + video pipelines)
+        let socket = UdpSocket::bind("0.0.0.0:0")
+            .map_err(|e| format!("UDP bind failed: {}", e))?;
+        socket
+            .connect(&udp_addr)
+            .map_err(|e| format!("UDP connect failed: {}", e))?;
+        let socket = Arc::new(socket);
+
+        let socket_for_audio = socket.clone();
+        let sender_id_for_audio = sender_id.clone();
         let audio_thread = thread::Builder::new()
             .name("decibell-audio".to_string())
             .spawn(move || {
-                pipeline::run_audio_pipeline(udp_addr, sender_id, control_rx, event_tx);
+                pipeline::run_audio_pipeline(socket_for_audio, sender_id_for_audio, control_rx, event_tx);
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
 
@@ -99,6 +112,8 @@ impl VoiceEngine {
             audio_thread: Some(audio_thread),
             event_bridge: Some(event_bridge),
             control_tx,
+            socket,
+            sender_id,
             is_muted: false,
             is_deafened: false,
             was_muted_before_deafen: false,
@@ -137,6 +152,8 @@ impl VoiceEngine {
 
     pub fn is_muted(&self) -> bool { self.is_muted }
     pub fn is_deafened(&self) -> bool { self.is_deafened }
+    pub fn socket(&self) -> Arc<UdpSocket> { self.socket.clone() }
+    pub fn sender_id(&self) -> &str { &self.sender_id }
 }
 
 impl Drop for VoiceEngine {
@@ -152,6 +169,59 @@ pub struct VideoEngine {
 }
 
 impl VideoEngine {
+    /// Start the video send pipeline: encode frames from capture and send via UDP.
+    pub fn start(
+        frame_rx: std::sync::mpsc::Receiver<capture::RawFrame>,
+        socket: Arc<UdpSocket>,
+        sender_id: String,
+        config: encoder::EncoderConfig,
+        target_fps: u32,
+        app: AppHandle,
+    ) -> Self {
+        let (control_tx, control_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+
+        let pipeline_thread = thread::Builder::new()
+            .name("decibell-video".to_string())
+            .spawn(move || {
+                video_pipeline::run_video_send_pipeline(
+                    frame_rx,
+                    control_rx,
+                    event_tx,
+                    socket,
+                    sender_id,
+                    config,
+                    target_fps,
+                );
+            })
+            .expect("spawn video pipeline thread");
+
+        // Bridge video pipeline events to Tauri
+        let event_bridge = tokio::spawn(async move {
+            loop {
+                let rx_result = tokio::task::block_in_place(|| {
+                    event_rx.recv_timeout(std::time::Duration::from_millis(50))
+                });
+                match rx_result {
+                    Ok(video_pipeline::VideoPipelineEvent::Error(msg)) => {
+                        let _ = app.emit("voice_error", serde_json::json!({
+                            "message": format!("Video: {}", msg),
+                        }));
+                    }
+                    Ok(_) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        });
+
+        VideoEngine {
+            pipeline_thread: Some(pipeline_thread),
+            event_bridge: Some(event_bridge),
+            pipeline_control_tx: control_tx,
+        }
+    }
+
     pub fn stop(&mut self) {
         let _ = self.pipeline_control_tx.send(video_pipeline::VideoPipelineControl::Shutdown);
         if let Some(h) = self.pipeline_thread.take() { let _ = h.join(); }

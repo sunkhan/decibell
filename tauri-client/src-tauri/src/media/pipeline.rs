@@ -44,24 +44,14 @@ struct RemotePeer {
 // ── Main blocking pipeline entry-point ───────────────────────────────────────
 
 /// Runs the audio pipeline on the calling thread (should be a dedicated OS thread).
+/// The socket must already be connected to the server (bind + connect done by caller).
 pub fn run_audio_pipeline(
-    server_addr: String,
+    socket: Arc<UdpSocket>,
     sender_id: String,
     control_rx: std::sync::mpsc::Receiver<ControlMessage>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
 ) {
-    // ── UDP socket ────────────────────────────────────────────────────────────
-    let socket = match UdpSocket::bind("0.0.0.0:0") {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = event_tx.send(VoiceEvent::Error(format!("UDP bind failed: {}", e)));
-            return;
-        }
-    };
-    if let Err(e) = socket.connect(&server_addr) {
-        let _ = event_tx.send(VoiceEvent::Error(format!("UDP connect failed: {}", e)));
-        return;
-    }
+    // Set read timeout for non-blocking recv in the audio loop
     if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(5))) {
         let _ = event_tx.send(VoiceEvent::Error(format!(
             "UDP set_read_timeout failed: {}",
