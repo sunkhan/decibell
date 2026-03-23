@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
+import type { StreamInfo } from "../../types";
 
 export function useVoiceEvents() {
   const setSpeaking = useVoiceStore((s) => s.setSpeaking);
@@ -76,6 +77,27 @@ export function useVoiceEvents() {
     listen<{ message: string }>("voice_error", (event) => {
       setError(event.payload.message);
     }).then((u) => unlisten.push(u));
+
+    listen<{ streams: { streamId: string; ownerUsername: string; hasAudio: boolean; resolutionWidth: number; resolutionHeight: number; fps: number }[] }>(
+      "stream_presence_updated",
+      (event) => {
+        const mapped: StreamInfo[] = event.payload.streams.map((s) => ({
+          streamId: s.streamId,
+          ownerUsername: s.ownerUsername,
+          hasAudio: s.hasAudio,
+          resolutionWidth: s.resolutionWidth || 0,
+          resolutionHeight: s.resolutionHeight || 0,
+          fps: s.fps || 0,
+        }));
+        useVoiceStore.getState().setActiveStreams(mapped);
+
+        // If we were watching someone who stopped streaming, clear watching
+        const watching = useVoiceStore.getState().watching;
+        if (watching && !mapped.some((s) => s.ownerUsername === watching)) {
+          useVoiceStore.getState().setWatching(null);
+        }
+      }
+    ).then((u) => unlisten.push(u));
 
     return () => {
       unlisten.forEach((fn) => fn());

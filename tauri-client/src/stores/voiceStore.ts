@@ -23,6 +23,17 @@ interface VoiceState {
   setError: (error: string | null) => void;
   setChannelPresence: (channelId: string, users: string[], userStates?: { username: string; isMuted: boolean; isDeafened: boolean }[]) => void;
   setUserState: (username: string, isMuted: boolean, isDeafened: boolean) => void;
+  watching: string | null;
+  isStreaming: boolean;
+  streamSettings: {
+    resolution: '1080p' | '720p' | 'source';
+    fps: 60 | 30 | 15;
+    quality: 'high' | 'medium' | 'low';
+    shareAudio: boolean;
+  };
+  setWatching: (username: string | null) => void;
+  setIsStreaming: (streaming: boolean) => void;
+  setStreamSettings: (settings: Partial<VoiceState['streamSettings']>) => void;
   disconnect: () => void;
 }
 
@@ -83,15 +94,32 @@ export const useVoiceStore = create<VoiceState>((set) => ({
         p.username === username ? { ...p, isMuted, isDeafened } : p
       ),
     })),
+  watching: null,
+  isStreaming: false,
+  streamSettings: {
+    resolution: '1080p',
+    fps: 60,
+    quality: 'high',
+    shareAudio: false,
+  },
+  setWatching: (username) => set({ watching: username }),
+  setIsStreaming: (streaming) => set({ isStreaming: streaming }),
+  setStreamSettings: (settings) =>
+    set((state) => ({
+      streamSettings: { ...state.streamSettings, ...settings },
+    })),
   disconnect: () =>
     set({
       connectedServerId: null,
       connectedChannelId: null,
       participants: [],
+      activeStreams: [],
       isMuted: false,
       isDeafened: false,
       speakingUsers: [],
       latencyMs: null,
       error: null,
+      watching: null,
+      isStreaming: false,
     }),
 }));
