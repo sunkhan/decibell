@@ -1,3 +1,8 @@
+pub mod capture;
+#[cfg(target_os = "linux")]
+pub mod capture_pipewire;
+#[cfg(target_os = "windows")]
+pub mod capture_wgc;
 pub mod codec;
 pub mod packet;
 pub mod pipeline;

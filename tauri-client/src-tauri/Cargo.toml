@@ -28,3 +28,10 @@ futures-util = { version = "0.3", features = ["sink"] }
 log = "0.4"
 cpal = "0.15"
 audiopus = "0.3.0-rc.0"
+ffmpeg-next = "8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = "0.9"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-capture = "1"
