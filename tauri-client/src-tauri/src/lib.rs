@@ -36,6 +36,12 @@ pub fn run() {
             commands::voice::set_voice_mute,
             commands::voice::set_voice_deafen,
             commands::voice::set_voice_threshold,
+            commands::streaming::list_capture_sources,
+            commands::streaming::start_screen_share,
+            commands::streaming::stop_screen_share,
+            commands::streaming::watch_stream,
+            commands::streaming::stop_watching,
+            commands::streaming::request_keyframe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -144,3 +144,27 @@ impl Drop for VoiceEngine {
         self.stop();
     }
 }
+
+pub struct VideoEngine {
+    pipeline_thread: Option<JoinHandle<()>>,
+    event_bridge: Option<tokio::task::JoinHandle<()>>,
+    pipeline_control_tx: mpsc::Sender<video_pipeline::VideoPipelineControl>,
+}
+
+impl VideoEngine {
+    pub fn stop(&mut self) {
+        let _ = self.pipeline_control_tx.send(video_pipeline::VideoPipelineControl::Shutdown);
+        if let Some(h) = self.pipeline_thread.take() { let _ = h.join(); }
+        if let Some(h) = self.event_bridge.take() { h.abort(); }
+    }
+
+    pub fn force_keyframe(&self) {
+        let _ = self.pipeline_control_tx.send(video_pipeline::VideoPipelineControl::ForceKeyframe);
+    }
+}
+
+impl Drop for VideoEngine {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}

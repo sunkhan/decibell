@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::media::VoiceEngine;
+use crate::media::{VoiceEngine, VideoEngine};
 use crate::net::central::CentralClient;
 use crate::net::community::CommunityClient;
 
@@ -14,6 +14,7 @@ pub struct AppState {
     pub token: Option<String>,
     pub credentials: Option<(String, String)>,
     pub voice_engine: Option<VoiceEngine>,
+    pub video_engine: Option<VideoEngine>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;
