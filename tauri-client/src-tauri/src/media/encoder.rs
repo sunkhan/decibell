@@ -222,7 +222,7 @@ impl H264Encoder {
             .open_with(opts)
             .map_err(|e| format!("Open encoder: {}", e))?;
 
-        eprintln!("[encoder] H.264 encoder opened: {}x{} @ {}fps, {}kbps", config.width, config.height, config.fps, config.bitrate_kbps);
+        eprintln!("[encoder] H.264 encoder opened: {} — {}x{} @ {}fps, {}kbps", codec_name, config.width, config.height, config.fps, config.bitrate_kbps);
 
         Ok(H264Encoder {
             encoder,

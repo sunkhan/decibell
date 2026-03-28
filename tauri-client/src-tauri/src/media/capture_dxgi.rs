@@ -429,20 +429,11 @@ fn dxgi_capture_thread(
         let start = std::time::Instant::now();
         let mut frame_count: u64 = 0;
         let acquire_timeout_ms = (frame_interval.as_millis() as u32).max(1);
-        let mut next_frame_time = std::time::Instant::now();
+        let mut last_nv12: Option<Vec<u8>> = None;
 
         loop {
-            // Frame pacing: skip GPU conversion if we're ahead of target FPS
-            let now = std::time::Instant::now();
-            if now < next_frame_time {
-                // Release any acquired frame without processing
-                let mut fi = DXGI_OUTDUPL_FRAME_INFO::default();
-                let mut dr: Option<IDXGIResource> = None;
-                if duplication.AcquireNextFrame(acquire_timeout_ms, &mut fi, &mut dr).is_ok() {
-                    let _ = duplication.ReleaseFrame();
-                }
-                continue;
-            }
+            let loop_start = std::time::Instant::now();
+
             let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut desktop_resource: Option<IDXGIResource> = None;
 
@@ -452,51 +443,52 @@ fn dxgi_capture_thread(
                 &mut desktop_resource,
             );
 
-            match hr {
-                Ok(()) => {}
+            // Try to acquire a new desktop frame. If the desktop hasn't changed,
+            // re-send the last converted NV12 data to keep the encoder fed.
+            let got_new_frame = match hr {
+                Ok(()) => desktop_resource.is_some(),
                 Err(e) => {
                     let code = e.code().0 as u32;
                     if code == 0x887A0027 {
-                        // DXGI_ERROR_WAIT_TIMEOUT
-                        continue;
-                    }
-                    if code == 0x887A0026 {
-                        // DXGI_ERROR_ACCESS_LOST
+                        false // DXGI_ERROR_WAIT_TIMEOUT — no desktop change
+                    } else if code == 0x887A0026 {
                         eprintln!("[capture-dxgi] Access lost, stopping");
                         break;
+                    } else {
+                        eprintln!("[capture-dxgi] AcquireNextFrame error: {}", e);
+                        break;
                     }
-                    eprintln!("[capture-dxgi] AcquireNextFrame error: {}", e);
-                    break;
-                }
-            }
-
-            let resource = match desktop_resource {
-                Some(r) => r,
-                None => {
-                    let _ = duplication.ReleaseFrame();
-                    continue;
                 }
             };
 
-            let bgra_texture: ID3D11Texture2D = resource
-                .cast()
-                .map_err(|e| format!("Cast to ID3D11Texture2D: {}", e))?;
+            let nv12 = if got_new_frame {
+                let resource = desktop_resource.unwrap();
+                let bgra_texture: ID3D11Texture2D = resource
+                    .cast()
+                    .map_err(|e| format!("Cast to ID3D11Texture2D: {}", e))?;
 
-            // Copy the restricted desktop texture into our intermediate texture
-            context.CopyResource(&intermediate_tex, &bgra_texture);
+                context.CopyResource(&intermediate_tex, &bgra_texture);
 
-            let nv12 = match video_proc.convert_and_readback(&context, &intermediate_tex) {
-                Ok(data) => data,
-                Err(e) => {
-                    eprintln!("[capture-dxgi] convert error: {}", e);
-                    let _ = duplication.ReleaseFrame();
-                    continue;
+                let data = match video_proc.convert_and_readback(&context, &intermediate_tex) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        eprintln!("[capture-dxgi] convert error: {}", e);
+                        let _ = duplication.ReleaseFrame();
+                        continue;
+                    }
+                };
+
+                let _ = duplication.ReleaseFrame();
+                last_nv12 = Some(data.clone());
+                data
+            } else {
+                // No new frame — re-send last frame to keep encoder producing output
+                match &last_nv12 {
+                    Some(data) => data.clone(),
+                    None => continue,
                 }
             };
 
-            let _ = duplication.ReleaseFrame();
-
-            next_frame_time = now + frame_interval;
             frame_count += 1;
             let timestamp_us = start.elapsed().as_micros() as u64;
 
@@ -522,6 +514,12 @@ fn dxgi_capture_thread(
                     eprintln!("[capture-dxgi] Channel closed, stopping");
                     break;
                 }
+            }
+
+            // Frame pacing: sleep for remainder of frame interval
+            let elapsed = loop_start.elapsed();
+            if elapsed < frame_interval {
+                std::thread::sleep(frame_interval - elapsed);
             }
         }
 
