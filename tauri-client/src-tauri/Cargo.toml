@@ -29,10 +29,26 @@ log = "0.4"
 cpal = "0.15"
 audiopus = "0.3.0-rc.0"
 ffmpeg-next = "8"
+base64 = "0.22"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = "0.9"
 zbus = { version = "5", default-features = false, features = ["blocking"] }
+libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-capture = "1"
+windows = { version = "0.58", features = [
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+    "Foundation",
+    "Win32_Networking_WinSock",
+] }
