@@ -115,6 +115,8 @@ struct VideoProcessor {
     output_height: u32,
 }
 
+// Safety: VideoProcessor is created and used on a single capture thread.
+// COM objects are moved once from the spawning thread to the capture thread.
 unsafe impl Send for VideoProcessor {}
 
 impl VideoProcessor {
@@ -274,9 +276,12 @@ impl VideoProcessor {
                     &self.processor,
                     &self.output_view,
                     0,
-                    &[stream],
+                    std::slice::from_ref(&stream),
                 )
                 .map_err(|e| format!("VideoProcessorBlt: {}", e))?;
+
+            // Release the COM reference that ManuallyDrop prevented from being dropped
+            std::mem::ManuallyDrop::into_inner(std::ptr::read(&stream.pInputSurface));
 
             context.CopyResource(&self.staging_texture, &self.nv12_texture);
 
@@ -403,8 +408,20 @@ fn dxgi_capture_thread(
         let start = std::time::Instant::now();
         let mut frame_count: u64 = 0;
         let acquire_timeout_ms = (frame_interval.as_millis() as u32).max(1);
+        let mut next_frame_time = std::time::Instant::now();
 
         loop {
+            // Frame pacing: skip GPU conversion if we're ahead of target FPS
+            let now = std::time::Instant::now();
+            if now < next_frame_time {
+                // Release any acquired frame without processing
+                let mut fi = DXGI_OUTDUPL_FRAME_INFO::default();
+                let mut dr: Option<IDXGIResource> = None;
+                if duplication.AcquireNextFrame(acquire_timeout_ms, &mut fi, &mut dr).is_ok() {
+                    let _ = duplication.ReleaseFrame();
+                }
+                continue;
+            }
             let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut desktop_resource: Option<IDXGIResource> = None;
 
@@ -455,6 +472,7 @@ fn dxgi_capture_thread(
 
             let _ = duplication.ReleaseFrame();
 
+            next_frame_time = now + frame_interval;
             frame_count += 1;
             let timestamp_us = start.elapsed().as_micros() as u64;
 

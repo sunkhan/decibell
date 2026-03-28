@@ -437,9 +437,12 @@ impl VideoProcessor {
                     &self.processor,
                     &self.output_view,
                     0,
-                    &[stream],
+                    std::slice::from_ref(&stream),
                 )
                 .map_err(|e| format!("VideoProcessorBlt: {}", e))?;
+
+            // Release the COM reference that ManuallyDrop prevented from being dropped
+            std::mem::ManuallyDrop::into_inner(std::ptr::read(&stream.pInputSurface));
 
             // Copy NV12 → staging for CPU readback
             context.CopyResource(&self.staging_texture, &self.nv12_texture);
