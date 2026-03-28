@@ -11,7 +11,7 @@ use super::packet::{
     UdpAudioPacket, PACKET_TOTAL_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
 };
 use super::speaking::SpeakingDetector;
-use super::video_packet::{UdpVideoPacket, PACKET_TYPE_VIDEO};
+use super::video_packet::{UdpVideoPacket, PACKET_TYPE_VIDEO, PACKET_TYPE_KEYFRAME_REQUEST};
 use super::video_receiver::{VideoReceiver, ReassembledFrame};
 
 // ── Control / Event messages ──────────────────────────────────────────────────
@@ -28,6 +28,7 @@ pub enum VoiceEvent {
     UserStateChanged(String, bool, bool), // username, muted, deafened
     PingMeasured(u32),
     VideoFrameReady(ReassembledFrame),
+    KeyframeRequested,
     Error(String),
 }
 
@@ -324,125 +325,154 @@ pub fn run_audio_pipeline(
         }
 
         // 4. Receive UDP packets ───────────────────────────────────────────────
-        // The socket has a 5ms read timeout; this is non-blocking from the loop's perspective.
-        match socket.recv(&mut recv_buf) {
-            Ok(n) if n >= 1 => {
-                let packet_type = recv_buf[0];
+        // Drain ALL available packets from the socket buffer each iteration.
+        // Video keyframes can be 200+ packets; reading only one per 5ms loop
+        // would overflow the OS socket buffer and drop most video data.
+        loop {
+            match socket.recv(&mut recv_buf) {
+                Ok(n) if n >= 1 => {
+                    let packet_type = recv_buf[0];
 
-                if packet_type == PACKET_TYPE_VIDEO && n == VIDEO_PACKET_SIZE {
-                    // ── Video packet ────────────────────────────────────────
-                    if let Some(pkt) = UdpVideoPacket::from_bytes(&recv_buf[..n]) {
-                        let username = pkt.sender_username();
-                        // Don't process our own reflected video packets
-                        if username != sender_id {
-                            if let Some(frame) = video_receiver.process_packet(&pkt) {
-                                let _ = event_tx.send(VoiceEvent::VideoFrameReady(frame));
+                    if packet_type == PACKET_TYPE_VIDEO && n == VIDEO_PACKET_SIZE {
+                        // ── Video packet ────────────────────────────────────
+                        if let Some(pkt) = UdpVideoPacket::from_bytes(&recv_buf[..n]) {
+                            let username = pkt.sender_username();
+                            // Don't process our own reflected video packets
+                            if username == sender_id {
+                                // Skip own reflected video - but log once
+                                static LOGGED_SELF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                                if !LOGGED_SELF.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                                    eprintln!("[video-recv] Ignoring own video (sender='{}' == our id)", username);
+                                }
+                            } else {
+                                let fid = { pkt.frame_id };
+                                let pidx = { pkt.packet_index };
+                                let total = { pkt.total_packets };
+                                if pidx == 0 {
+                                    eprintln!("[video-recv] Got video pkt from '{}': frame={} ({} total pkts)", username, fid, total);
+                                }
+                                if let Some(frame) = video_receiver.process_packet(&pkt) {
+                                    eprintln!("[video-recv] Frame {} reassembled: {} bytes, keyframe={}", frame.frame_id, frame.data.len(), frame.is_keyframe);
+                                    let _ = event_tx.send(VoiceEvent::VideoFrameReady(frame));
+                                }
                             }
                         }
-                    }
-                } else if n == PACKET_TOTAL_SIZE {
-                    // ── Audio or Ping packet ────────────────────────────────
-                    if let Some(pkt) = UdpAudioPacket::from_bytes(&recv_buf[..n]) {
-                        let username = pkt.sender_username();
+                    } else if n == PACKET_TOTAL_SIZE {
+                        // ── Audio or Ping packet ────────────────────────────
+                        if let Some(pkt) = UdpAudioPacket::from_bytes(&recv_buf[..n]) {
+                            let username = pkt.sender_username();
 
-                        // Handle ping BEFORE sender_id filter (echoed pings have our own sender_id)
-                        if pkt.packet_type == PACKET_TYPE_PING {
-                            let payload = pkt.payload_data();
-                            if payload.len() >= 8 {
-                                let sent_ns = u64::from_le_bytes(payload[..8].try_into().unwrap_or([0; 8]));
-                                let now_ns = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_nanos() as u64;
-                                let rtt_ms = (now_ns.saturating_sub(sent_ns) / 1_000_000) as u32;
-                                let _ = event_tx.send(VoiceEvent::PingMeasured(rtt_ms));
-                            }
-                        } else if username == sender_id {
-                            // Ignore our own reflected audio packets
-                        } else if pkt.packet_type == PACKET_TYPE_AUDIO {
-                            // Sequence duplicate/out-of-order check
-                            let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
-                                RemotePeer {
-                                    decoder: OpusDecoder::new().unwrap_or_else(|_| {
-                                        OpusDecoder::new().expect("OpusDecoder::new failed twice")
-                                    }),
-                                    speaking: SpeakingDetector::new(),
-                                    last_seq: pkt.sequence.wrapping_sub(1),
-                                    last_packet_time: Instant::now(),
+                            // Handle ping BEFORE sender_id filter (echoed pings have our own sender_id)
+                            if pkt.packet_type == PACKET_TYPE_PING {
+                                let payload = pkt.payload_data();
+                                if payload.len() >= 8 {
+                                    let sent_ns = u64::from_le_bytes(payload[..8].try_into().unwrap_or([0; 8]));
+                                    let now_ns = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_nanos() as u64;
+                                    let rtt_ms = (now_ns.saturating_sub(sent_ns) / 1_000_000) as u32;
+                                    let _ = event_tx.send(VoiceEvent::PingMeasured(rtt_ms));
                                 }
-                            });
+                            } else if username == sender_id {
+                                // Ignore our own reflected audio packets
+                            } else if pkt.packet_type == PACKET_TYPE_AUDIO {
+                                // Sequence duplicate/out-of-order check
+                                let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
+                                    RemotePeer {
+                                        decoder: OpusDecoder::new().unwrap_or_else(|_| {
+                                            OpusDecoder::new().expect("OpusDecoder::new failed twice")
+                                        }),
+                                        speaking: SpeakingDetector::new(),
+                                        last_seq: pkt.sequence.wrapping_sub(1),
+                                        last_packet_time: Instant::now(),
+                                    }
+                                });
 
-                            let diff = pkt.sequence.wrapping_sub(peer.last_seq);
-                            if diff == 0 || diff > 32768 {
-                                // skip stale/duplicate packet
-                            } else {
-                                peer.last_seq = pkt.sequence;
-                                peer.last_packet_time = Instant::now();
-
-                                let raw_payload = pkt.payload_data();
-                                let (flags, opus_data) = if raw_payload.len() > 1 {
-                                    (raw_payload[0], &raw_payload[1..])
+                                let diff = pkt.sequence.wrapping_sub(peer.last_seq);
+                                if diff == 0 || diff > 32768 {
+                                    // skip stale/duplicate packet
                                 } else {
-                                    (0u8, raw_payload)
-                                };
-                                let peer_muted = flags & FLAG_MUTED != 0;
-                                let peer_deafened = flags & FLAG_DEAFENED != 0;
+                                    peer.last_seq = pkt.sequence;
+                                    peer.last_packet_time = Instant::now();
 
-                                let _ = event_tx.send(VoiceEvent::UserStateChanged(
-                                    username.clone(),
-                                    peer_muted,
-                                    peer_deafened,
-                                ));
+                                    let raw_payload = pkt.payload_data();
+                                    let (flags, opus_data) = if raw_payload.len() > 1 {
+                                        (raw_payload[0], &raw_payload[1..])
+                                    } else {
+                                        (0u8, raw_payload)
+                                    };
+                                    let peer_muted = flags & FLAG_MUTED != 0;
+                                    let peer_deafened = flags & FLAG_DEAFENED != 0;
 
-                                let mut pcm = [0i16; FRAME_SIZE];
-                                match peer.decoder.decode(opus_data, &mut pcm) {
-                                    Ok(_) => {
-                                        let rms = {
-                                            let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
-                                            (sum_sq / pcm.len() as f64).sqrt() as f32
-                                        };
-                                        let rms_db = if rms > 0.0 {
-                                            20.0 * (rms / 32768.0).log10()
-                                        } else {
-                                            -96.0
-                                        };
-                                        let above = !peer_muted && rms_db >= -50.0;
-                                        if let Some(state) = peer.speaking.process_threshold(above) {
-                                            let _ = event_tx.send(VoiceEvent::SpeakingChanged(
-                                                username.clone(),
-                                                state,
-                                            ));
-                                        }
+                                    let _ = event_tx.send(VoiceEvent::UserStateChanged(
+                                        username.clone(),
+                                        peer_muted,
+                                        peer_deafened,
+                                    ));
 
-                                        if !deafened {
-                                            let mut pbuf = playback_buf.lock().unwrap();
-                                            let remaining = BUF_CAP.saturating_sub(pbuf.len());
-                                            let take = FRAME_SIZE.min(remaining);
-                                            for &s in &pcm[..take] {
-                                                pbuf.push_back(s);
+                                    let mut pcm = [0i16; FRAME_SIZE];
+                                    match peer.decoder.decode(opus_data, &mut pcm) {
+                                        Ok(_) => {
+                                            let rms = {
+                                                let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
+                                                (sum_sq / pcm.len() as f64).sqrt() as f32
+                                            };
+                                            let rms_db = if rms > 0.0 {
+                                                20.0 * (rms / 32768.0).log10()
+                                            } else {
+                                                -96.0
+                                            };
+                                            let above = !peer_muted && rms_db >= -50.0;
+                                            if let Some(state) = peer.speaking.process_threshold(above) {
+                                                let _ = event_tx.send(VoiceEvent::SpeakingChanged(
+                                                    username.clone(),
+                                                    state,
+                                                ));
+                                            }
+
+                                            if !deafened {
+                                                let mut pbuf = playback_buf.lock().unwrap();
+                                                let remaining = BUF_CAP.saturating_sub(pbuf.len());
+                                                let take = FRAME_SIZE.min(remaining);
+                                                for &s in &pcm[..take] {
+                                                    pbuf.push_back(s);
+                                                }
                                             }
                                         }
-                                    }
-                                    Err(e) => {
-                                        let _ = event_tx
-                                            .send(VoiceEvent::Error(format!("Decode error: {}", e)));
+                                        Err(e) => {
+                                            let _ = event_tx
+                                                .send(VoiceEvent::Error(format!("Decode error: {}", e)));
+                                        }
                                     }
                                 }
                             }
+                        }
+                    } else if packet_type == PACKET_TYPE_KEYFRAME_REQUEST {
+                        // Server relayed a PLI (keyframe request) from a watcher
+                        eprintln!("[recv] Keyframe request received, signaling encoder");
+                        let _ = event_tx.send(VoiceEvent::KeyframeRequested);
+                    } else {
+                        // Log unrecognized packets to help diagnose receive issues
+                        static UNKNOWN_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                        let count = UNKNOWN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if count < 5 || count % 100 == 0 {
+                            eprintln!("[recv] Unknown packet: type={}, size={} (expected video={} or audio={})",
+                                packet_type, n, VIDEO_PACKET_SIZE, PACKET_TOTAL_SIZE);
                         }
                     }
                 }
-                // else: unknown packet size, ignore
-            }
-            Ok(_) => {}
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                // Expected: 5ms timeout elapsed with no data
-            }
-            Err(e) => {
-                let _ = event_tx.send(VoiceEvent::Error(format!("UDP recv error: {}", e)));
+                Ok(_) => {}
+                Err(ref e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    break; // Socket buffer drained, continue main loop
+                }
+                Err(e) => {
+                    let _ = event_tx.send(VoiceEvent::Error(format!("UDP recv error: {}", e)));
+                    break;
+                }
             }
         }
 

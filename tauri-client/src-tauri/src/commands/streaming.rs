@@ -43,6 +43,9 @@ pub async fn start_screen_share(
         _ => 6000,
     };
 
+    eprintln!("[stream] start_screen_share: server='{}', channel='{}', source='{}', {}x{} @ {}fps",
+        server_id, channel_id, source_id, width, height, fps);
+
     // Start capture (triggers portal picker dialog on Linux, blocks until user selects)
     let capture_config = capture::CaptureConfig {
         target_fps: fps,
@@ -117,10 +120,14 @@ pub async fn watch_stream(
     target_username: String,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
+    eprintln!("[stream] watch_stream called: server='{}', channel='{}', target='{}'",
+        server_id, channel_id, target_username);
     let s = state.lock().await;
     let client = s.communities.get(&server_id)
         .ok_or(format!("Not connected to community {}", server_id))?;
-    client.watch_stream(&channel_id, &target_username).await
+    let result = client.watch_stream(&channel_id, &target_username).await;
+    eprintln!("[stream] watch_stream result: {:?}", result);
+    result
 }
 
 #[tauri::command]

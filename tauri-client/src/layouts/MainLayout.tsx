@@ -30,6 +30,8 @@ export default function MainLayout() {
 
   const connectionStatus = useUiStore((s) => s.connectionStatus);
   const activeView = useUiStore((s) => s.activeView);
+  const membersPanelVisible = useUiStore((s) => s.membersPanelVisible);
+  const dmFriendsPanelVisible = useUiStore((s) => s.dmFriendsPanelVisible);
 
   useEffect(() => {
     invoke("request_friend_list").catch(console.error);
@@ -60,11 +62,19 @@ export default function MainLayout() {
             {activeView === "voice" ? (
               <VoicePanel />
             ) : activeView === "dm" ? (
-              <DmChatPanel />
+              <>
+                <DmChatPanel />
+                {dmFriendsPanelVisible && <FriendsList />}
+              </>
+            ) : activeView === "home" ? (
+              <>
+                <ChatPanel />
+                <FriendsList />
+              </>
             ) : (
               <>
                 <ChatPanel />
-                {activeView === "home" ? <FriendsList /> : <MembersList />}
+                {membersPanelVisible && <MembersList />}
               </>
             )}
           </>

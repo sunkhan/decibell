@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
-import MessageBubble from "./MessageBubble";
+import MessageBubble, { shouldGroup } from "./MessageBubble";
 import { useChatEvents } from "./useChatEvents";
 
 export default function ChatPanel() {
@@ -13,11 +13,14 @@ export default function ChatPanel() {
   const messagesByChannel = useChatStore((s) => s.messagesByChannel);
   const channelsByServer = useChatStore((s) => s.channelsByServer);
   const activeView = useUiStore((s) => s.activeView);
+  const membersPanelVisible = useUiStore((s) => s.membersPanelVisible);
+  const toggleMembersPanel = useUiStore((s) => s.toggleMembersPanel);
 
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const messages = activeChannelId
     ? messagesByChannel[activeChannelId] ?? []
@@ -29,20 +32,27 @@ export default function ChatPanel() {
       )?.name
     : null;
 
-  // Clear input and error on channel switch
   useEffect(() => {
     setSendError(null);
     setInput("");
   }, [activeChannelId]);
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
 
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const id = requestAnimationFrame(() => {
+      el.style.height = "0";
+      el.style.height = Math.min(el.scrollHeight, 160) + "px";
+    });
+    return () => cancelAnimationFrame(id);
+  }, [input]);
+
   const handleSend = async () => {
     if (!input.trim() || !activeServerId || !activeChannelId) return;
-
     setSending(true);
     setSendError(null);
     try {
@@ -59,7 +69,7 @@ export default function ChatPanel() {
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -69,7 +79,7 @@ export default function ChatPanel() {
   // Empty state
   if (activeView === "home" || !activeChannelId) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-bg-secondary">
+      <div className="flex flex-1 items-center justify-center bg-bg-tertiary">
         <p className="text-sm text-text-muted">
           Select a channel to start chatting
         </p>
@@ -78,25 +88,62 @@ export default function ChatPanel() {
   }
 
   return (
-    <div className="flex flex-1 flex-col bg-bg-secondary">
+    <div className="flex min-w-0 flex-1 flex-col bg-bg-tertiary">
       {/* Channel header */}
-      <div className="flex h-12 items-center border-b border-border px-4">
-        <span className="text-sm font-semibold text-text-primary">
-          # {channelName ?? activeChannelId}
+      <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border px-4">
+        <span className="font-mono text-xl font-semibold text-text-muted">#</span>
+        <span className="text-[15px] font-bold text-text-bright">
+          {channelName ?? activeChannelId}
         </span>
+        <div className="h-5 w-px bg-border-divider" />
+        <span className="flex-1 text-[13px] text-text-muted">
+          The main hangout — say whatever
+        </span>
+        <div className="flex gap-1">
+          <button className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+          </button>
+          <button
+            onClick={toggleMembersPanel}
+            className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+              membersPanelVisible
+                ? "text-text-secondary bg-surface-hover"
+                : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+            }`}
+            title={membersPanelVisible ? "Hide members" : "Show members"}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto py-4">
+      <div className="flex-1 overflow-y-auto px-4 py-4">
         {messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center">
-            <p className="text-sm text-text-muted">
-              No messages yet. Be the first to say something!
-            </p>
+          <div className="animate-[fadeUp_0.4s_ease_both]">
+            <div className="border-b border-border pb-5 mb-5">
+              <div className="mb-3 flex h-[60px] w-[60px] items-center justify-center rounded-xl border border-accent/10 bg-gradient-to-br from-accent-soft to-accent/5 font-mono text-[26px] font-bold text-accent">
+                #
+              </div>
+              <h1 className="mb-1.5 text-[26px] font-extrabold tracking-tight text-text-bright">
+                Welcome to #{channelName ?? "channel"}
+              </h1>
+              <p className="text-sm text-text-secondary leading-relaxed">
+                This is the start of the #{channelName ?? "channel"} channel. Invite your squad and get the conversation going.
+              </p>
+            </div>
           </div>
         ) : (
           messages.map((msg, i) => (
-            <MessageBubble key={`${msg.timestamp}-${msg.sender}-${i}`} message={msg} />
+            <MessageBubble
+              key={`${msg.timestamp}-${msg.sender}-${i}`}
+              message={msg}
+              grouped={shouldGroup(messages[i - 1], msg)}
+            />
           ))
         )}
         <div ref={messagesEndRef} />
@@ -108,16 +155,32 @@ export default function ChatPanel() {
       )}
 
       {/* Input bar */}
-      <div className="px-4 pb-4">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={sending}
-          placeholder={`Message #${channelName ?? "channel"}`}
-          className="w-full rounded-lg bg-bg-tertiary px-4 py-2.5 text-sm text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
-        />
+      <div className="px-4 pb-[18px]">
+        <div className="flex items-center gap-2.5 rounded-xl border border-border bg-bg-secondary px-3.5 py-[11px] transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
+          <button className="flex h-7 w-7 shrink-0 self-end items-center justify-center rounded-full bg-surface-hover text-text-muted transition-colors hover:bg-accent-soft hover:text-accent">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" />
+            </svg>
+          </button>
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={sending}
+            placeholder={`Message #${channelName ?? "channel"}`}
+            className="flex-1 resize-none bg-transparent text-sm leading-snug text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
+            style={{ maxHeight: 160 }}
+          />
+          <div className="flex shrink-0 self-end gap-1">
+            <button className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:text-text-secondary">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
+              </svg>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

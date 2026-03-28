@@ -139,8 +139,20 @@ impl VideoReceiver {
     /// Clean up old frame assemblies.
     pub fn cleanup_stale(&mut self) {
         let cutoff = Duration::from_millis(500);
-        self.frames_in_progress.retain(|_, assembly| {
-            assembly.created_at.elapsed() < cutoff
+        self.frames_in_progress.retain(|frame_id, assembly| {
+            if assembly.created_at.elapsed() >= cutoff {
+                let received = assembly.received.len();
+                let total = assembly.total_packets as usize;
+                if received < total {
+                    eprintln!(
+                        "[video-recv] Dropping incomplete frame {}: {}/{} packets received, keyframe={}",
+                        frame_id, received, total, assembly.is_keyframe
+                    );
+                }
+                false // remove
+            } else {
+                true // keep
+            }
         });
     }
 }

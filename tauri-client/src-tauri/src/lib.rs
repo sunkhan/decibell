@@ -43,6 +43,25 @@ pub fn run() {
             commands::streaming::stop_watching,
             commands::streaming::request_keyframe,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // Explicitly stop voice & video engines before the app exits.
+                // Without this, the tokio runtime can shut down while background
+                // threads/tasks are still running, causing a hang.
+                use tauri::Manager;
+                let state = window.state::<SharedState>();
+                let state = state.clone();
+                tauri::async_runtime::block_on(async move {
+                    let mut s = state.lock().await;
+                    if let Some(mut engine) = s.video_engine.take() {
+                        engine.stop();
+                    }
+                    if let Some(mut engine) = s.voice_engine.take() {
+                        engine.stop();
+                    }
+                });
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

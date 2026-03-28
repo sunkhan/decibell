@@ -21,7 +21,7 @@ class ErrorBoundary extends Component<
       return (
         <div className="flex h-screen w-screen flex-col items-center justify-center gap-4 bg-bg-primary p-8 text-text-primary">
           <h1 className="text-xl font-bold text-error">Something went wrong</h1>
-          <pre className="max-w-[600px] overflow-auto rounded-lg bg-bg-secondary p-4 text-sm text-text-muted">
+          <pre className="max-w-[600px] overflow-auto rounded-xl bg-bg-secondary p-4 text-sm text-text-muted">
             {this.state.error.message}
             {"\n"}
             {this.state.error.stack}
@@ -31,7 +31,7 @@ class ErrorBoundary extends Component<
               this.setState({ error: null });
               window.location.reload();
             }}
-            className="rounded-md bg-accent px-4 py-2 text-sm text-white"
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover"
           >
             Reload
           </button>

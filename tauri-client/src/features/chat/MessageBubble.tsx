@@ -53,7 +53,7 @@ export default function MessageBubble({ message, grouped }: Props) {
           </span>
         </div>
         <div className="select-text min-w-0 flex-1">
-          <p className="break-words text-sm leading-snug text-text-primary">
+          <p className="break-all text-sm leading-snug text-text-primary [overflow-wrap:anywhere]">
             {message.content}
           </p>
         </div>
@@ -88,7 +88,7 @@ export default function MessageBubble({ message, grouped }: Props) {
             {formatTimestamp(message.timestamp)}
           </span>
         </div>
-        <p className="mt-0.5 break-words text-sm leading-relaxed text-text-primary">
+        <p className="mt-0.5 break-all text-sm leading-relaxed text-text-primary [overflow-wrap:anywhere]">
           {message.content}
         </p>
       </div>

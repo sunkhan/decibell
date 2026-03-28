@@ -190,8 +190,9 @@ private:
                 chatproj::Packet error_packet;
                 error_packet.set_type(chatproj::Packet::DIRECT_MSG);
                 auto* err_msg = error_packet.mutable_direct_msg();
-                err_msg->set_sender("SYSTEM");
-                err_msg->set_content("User " + dmsg->recipient() + " is offline.");
+                err_msg->set_sender(username_);
+                err_msg->set_recipient(dmsg->recipient());
+                err_msg->set_content("This user is currently offline. Your message could not be delivered.");
                 err_msg->set_timestamp(current_time);
                 
                 std::string serialized;

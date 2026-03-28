@@ -50,6 +50,11 @@ pub async fn leave_voice_channel(
         let _ = client.leave_voice_channel().await;
     }
 
+    // Stop video engine first (it depends on voice engine's socket)
+    if let Some(mut engine) = s.video_engine.take() {
+        engine.stop();
+    }
+
     if let Some(mut engine) = s.voice_engine.take() {
         engine.stop();
     }

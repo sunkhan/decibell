@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useFriendsStore } from "../../stores/friendsStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -59,6 +59,18 @@ export default function FriendsList() {
   const [showAdd, setShowAdd] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!addError) return;
+    const t = setTimeout(() => setAddError(null), 5000);
+    return () => clearTimeout(t);
+  }, [addError]);
+
+  useEffect(() => {
+    if (!lastActionError) return;
+    const t = setTimeout(() => useFriendsStore.getState().setLastActionError(null), 5000);
+    return () => clearTimeout(t);
+  }, [lastActionError]);
+
   const filtered = friends.filter((f) =>
     f.username.toLowerCase().includes(search.toLowerCase())
   );
@@ -102,18 +114,18 @@ export default function FriendsList() {
       {/* Add friend input */}
       {showAdd && (
         <>
-          <div className="flex gap-2 border-b border-border px-3 py-2.5">
+          <div className="flex gap-1.5 border-b border-border px-3 py-2.5">
             <input
               type="text"
               value={addUsername}
               onChange={(e) => setAddUsername(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleAddFriend()}
               placeholder="Username"
-              className="flex-1 rounded-lg border border-border bg-bg-primary px-2.5 py-1.5 text-sm text-text-primary outline-none transition-colors focus:border-accent"
+              className="min-w-0 flex-1 rounded-lg border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary outline-none transition-colors focus:border-accent"
             />
             <button
               onClick={handleAddFriend}
-              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-accent-hover"
+              className="shrink-0 rounded-lg bg-accent px-2.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-accent-hover"
             >
               Send
             </button>

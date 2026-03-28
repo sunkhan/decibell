@@ -43,6 +43,7 @@ pub fn run_video_send_pipeline(
     };
 
     let _ = event_tx.send(VideoPipelineEvent::Started);
+    eprintln!("[video-send] Pipeline started, target {}fps", target_fps);
 
     let mut frame_id: u32 = 0;
     let frame_interval = Duration::from_secs_f64(1.0 / target_fps as f64);
@@ -84,6 +85,13 @@ pub fn run_video_send_pipeline(
                 let chunks: Vec<&[u8]> = encoded.data.chunks(UDP_MAX_PAYLOAD).collect();
                 let total = chunks.len() as u16;
 
+                if frame_id % 30 == 0 {
+                    eprintln!("[video-send] Frame {} encoded: {} bytes, {} packets, keyframe={}",
+                        frame_id, encoded.data.len(), total, encoded.is_keyframe);
+                }
+
+                let mut send_ok = 0u32;
+                let mut send_err = 0u32;
                 for (i, chunk) in chunks.iter().enumerate() {
                     let pkt = UdpVideoPacket::new(
                         &sender_id,
@@ -93,12 +101,29 @@ pub fn run_video_send_pipeline(
                         encoded.is_keyframe,
                         chunk,
                     );
-                    let _ = socket.send(&pkt.to_bytes());
+                    match socket.send(&pkt.to_bytes()) {
+                        Ok(_) => send_ok += 1,
+                        Err(e) => {
+                            if send_err == 0 {
+                                eprintln!("[video-send] UDP send error on pkt {}/{}: {}", i, total, e);
+                            }
+                            send_err += 1;
+                        }
+                    }
+                    // Pace large frames to avoid overwhelming the server's UDP buffer.
+                    if total > 10 && i % 10 == 9 {
+                        std::thread::sleep(Duration::from_micros(500));
+                    }
+                }
+                if encoded.is_keyframe || send_err > 0 {
+                    eprintln!("[video-send] Frame {} sent: {}/{} ok, {} errors, keyframe={}",
+                        frame_id, send_ok, total, send_err, encoded.is_keyframe);
                 }
                 frame_id = frame_id.wrapping_add(1);
             }
-            Ok(None) => {} // encoder buffering
+            Ok(None) => {} // Encoder still buffering (startup)
             Err(e) => {
+                eprintln!("[video-send] Encode error: {}", e);
                 let _ = event_tx.send(VideoPipelineEvent::Error(format!("Encode: {}", e)));
             }
         }

@@ -12,6 +12,7 @@ export default function DmSidebar() {
   const navigate = useNavigate();
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
+  const activeView = useUiStore((s) => s.activeView);
   const setActiveView = useUiStore((s) => s.setActiveView);
 
   const conversations = useDmStore((s) => s.conversations);
@@ -64,17 +65,17 @@ export default function DmSidebar() {
       <div className="mb-2 h-px w-8 shrink-0 bg-border-divider" />
 
       {/* DM contacts */}
-      <div className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1">
+      <div className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto px-3 py-1">
         {sortedConversations.map((conv) => {
           const isOnline =
             friends.some((f) => f.username === conv.username && f.status === "online") ||
             onlineUsers.includes(conv.username);
-          const isActive = activeDmUser === conv.username;
+          const isActive = activeDmUser === conv.username && activeView === "dm";
           return (
             <button
               key={conv.username}
               onClick={() => handleDmClick(conv.username)}
-              className={`relative flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-xl text-sm font-bold text-white transition-all duration-200 hover:-translate-y-0.5 ${
+              className={`relative flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-xl text-sm font-bold text-white transition-all duration-200 hover:-translate-y-0.5 ${
                 isActive
                   ? "shadow-[0_0_0_2px_var(--color-accent)]"
                   : ""

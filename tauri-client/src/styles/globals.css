@@ -1,59 +1,94 @@
+/* ═══════════════════════════════════════
+   LOCAL FONTS
+   ═══════════════════════════════════════ */
+
 @font-face {
-  font-family: "Open Sans";
-  src: url("/fonts/OpenSans-Regular.ttf") format("truetype");
+  font-family: "Plus Jakarta Sans";
+  src: url("/fonts/PlusJakartaSans-Regular.ttf") format("truetype");
   font-weight: 400;
   font-style: normal;
 }
 
 @font-face {
-  font-family: "Open Sans";
-  src: url("/fonts/OpenSans-Bold.ttf") format("truetype");
+  font-family: "Plus Jakarta Sans";
+  src: url("/fonts/PlusJakartaSans-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  src: url("/fonts/PlusJakartaSans-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  src: url("/fonts/PlusJakartaSans-Bold.ttf") format("truetype");
   font-weight: 700;
   font-style: normal;
 }
 
 @font-face {
-  font-family: "Open Sans";
-  src: url("/fonts/OpenSans-Italic.ttf") format("truetype");
-  font-weight: 400;
-  font-style: italic;
-}
-
-@font-face {
-  font-family: "Open Sans";
-  src: url("/fonts/OpenSans-LightItalic.ttf") format("truetype");
-  font-weight: 300;
-  font-style: italic;
-}
-
-@font-face {
-  font-family: "Font Awesome 7 Free";
-  src: url("/fonts/FontAwesome7Free-Solid-900.otf") format("opentype");
-  font-weight: 900;
+  font-family: "Plus Jakarta Sans";
+  src: url("/fonts/PlusJakartaSans-ExtraBold.ttf") format("truetype");
+  font-weight: 800;
   font-style: normal;
 }
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+}
+
+/* ═══════════════════════════════════════
+   TAILWIND + THEME
+   ═══════════════════════════════════════ */
 
 @import "tailwindcss";
 
 @theme {
-  --color-bg-primary: #0C0D0F;
-  --color-bg-titlebar: #0C0E13;
-  --color-bg-secondary: #1A1B1E;
-  --color-bg-tertiary: #242528;
-  --color-border: #2D3245;
+  --color-bg-titlebar: #0a0b10;
+  --color-bg-primary: #0e0f16;
+  --color-bg-secondary: #14151e;
+  --color-bg-tertiary: #191a25;
+  --color-bg-input: #14151e;
+  --color-bg-dmbar: #101119;
+  --color-border: rgba(255,255,255,0.05);
+  --color-border-divider: rgba(255,255,255,0.07);
 
-  --color-accent: #2CA3E8;
-  --color-accent-hover: #4DB8F0;
-  --color-accent-pressed: #1E8BC3;
+  --color-accent: #388bfd;
+  --color-accent-bright: #58a6ff;
+  --color-accent-hover: #58a6ff;
+  --color-accent-pressed: #1a5fc9;
+  --color-accent-soft: rgba(56,139,253,0.10);
+  --color-accent-mid: rgba(56,139,253,0.16);
 
-  --color-success: #43B581;
-  --color-warning: #FAA61A;
-  --color-error: #FF4C4C;
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-error: #f85149;
+  --color-danger: #f85149;
 
-  --color-text-primary: #DCDDDE;
-  --color-text-muted: rgba(79, 106, 134, 0.53);
+  --color-text-primary: #d2d5da;
+  --color-text-bright: #f0f3f6;
+  --color-text-secondary: #8b949e;
+  --color-text-muted: #484f58;
 
-  --font-sans: "Open Sans", ui-sans-serif, system-ui, sans-serif;
+  --color-surface-hover: rgba(255,255,255,0.04);
+  --color-surface-active: rgba(255,255,255,0.07);
+
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
 
 @layer base {
@@ -65,6 +100,37 @@
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: theme(--color-bg-tertiary) transparent;
+    scrollbar-color: rgba(255,255,255,0.08) transparent;
   }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+}
+
+/* Disable text selection globally, allow only in message content and inputs */
+*, *::before, *::after {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
+input, textarea, [contenteditable], .select-text, .select-text * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+/* Snappy hover transitions globally */
+button, a, [class*="transition"] {
+  transition-duration: 75ms !important;
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }

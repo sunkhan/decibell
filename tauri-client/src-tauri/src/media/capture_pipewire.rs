@@ -31,16 +31,18 @@ pub async fn start_capture(
     // (portal dialog blocks until user picks a source)
     let rx = tokio::task::spawn_blocking(move || -> Result<_, String> {
         // Step 1: Portal D-Bus interaction (shows picker dialog)
-        let (pw_fd, node_id) = portal_screencast_session()?;
+        let (pw_fd, node_id, dbus_conn) = portal_screencast_session()?;
 
         // Step 2: Start PipeWire capture on a dedicated thread
+        // The D-Bus connection is moved into the thread to keep the portal
+        // session alive for the duration of the capture.
         let (tx, rx) = std::sync::mpsc::sync_channel::<RawFrame>(4);
 
         std::thread::Builder::new()
             .name("decibell-capture".to_string())
             .spawn(move || {
-                if let Err(e) = pipewire_capture_loop(pw_fd, node_id, tx, config) {
-                    log::error!("[capture] PipeWire: {}", e);
+                if let Err(e) = pipewire_capture_loop(pw_fd, node_id, tx, config, dbus_conn) {
+                    eprintln!("[capture] Capture loop error: {}", e);
                 }
             })
             .map_err(|e| format!("Spawn capture thread: {}", e))?;
@@ -72,8 +74,11 @@ fn value_to_object_path(val: &zbus::zvariant::OwnedValue) -> Result<zbus::zvaria
 }
 
 /// Run the full portal screencast session (blocking).
-/// Returns (PipeWire fd, node_id) on success.
-fn portal_screencast_session() -> Result<(OwnedFd, u32), String> {
+/// Returns (PipeWire fd, node_id, D-Bus connection) on success.
+/// IMPORTANT: The D-Bus connection must be kept alive for the duration of
+/// the capture — the portal cleans up the screencast session when the
+/// requesting client disconnects from D-Bus.
+fn portal_screencast_session() -> Result<(OwnedFd, u32, zbus::blocking::Connection), String> {
     use zbus::blocking::{Connection, Proxy};
     use zbus::zvariant::{OwnedObjectPath, Value};
 
@@ -177,7 +182,7 @@ fn portal_screencast_session() -> Result<(OwnedFd, u32), String> {
         .deserialize()
         .map_err(|e| format!("Parse PipeWire fd: {}", e))?;
 
-    Ok((fd.into(), node_id))
+    Ok((fd.into(), node_id, conn))
 }
 
 /// Make a portal method call and wait for the Response signal.
@@ -265,87 +270,197 @@ fn extract_node_id(
     }
 }
 
-// ─── PipeWire frame capture ─────────────────────────────────────────────────
+// ─── Direct PipeWire capture ─────────────────────────────────────────────────
+//
+// Uses pipewire-rs to connect directly to the PipeWire node, negotiating
+// SHM (shared memory) buffers to avoid NVIDIA DMA-BUF block-linear tiling
+// issues that cause horizontal shifts with GStreamer's videoconvert.
+
+use pipewire as pw;
+use pw::spa;
+use pw::spa::pod::Pod;
+
+struct CaptureData {
+    format: spa::param::video::VideoInfoRaw,
+    tx: SyncSender<RawFrame>,
+    target_width: u32,
+    target_height: u32,
+    frame_count: u64,
+    start: Instant,
+    quit_mainloop: pw::main_loop::MainLoopWeak,
+    scaler: Option<SwsScaler>,
+}
 
 fn pipewire_capture_loop(
     fd: OwnedFd,
     node_id: u32,
     tx: SyncSender<RawFrame>,
-    _config: CaptureConfig,
+    config: CaptureConfig,
+    _dbus_conn: zbus::blocking::Connection, // kept alive to preserve portal session
 ) -> Result<(), String> {
-    use pipewire::main_loop::MainLoopBox;
-    use pipewire::context::ContextBox;
-    use pipewire::stream::StreamBox;
+    let target_width = if config.target_width == 0 { 1920 } else { config.target_width };
+    let target_height = if config.target_height == 0 { 1080 } else { config.target_height };
 
-    pipewire::init();
+    eprintln!(
+        "[capture] Starting PipeWire capture (node={}, target={}x{}@{}fps)",
+        node_id, target_width, target_height, config.target_fps
+    );
 
-    let mainloop =
-        MainLoopBox::new(None).map_err(|e| format!("PW MainLoop: {:?}", e))?;
-    let context = ContextBox::new(mainloop.loop_(), None)
+    ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
+    pw::init();
+
+    let mainloop = pw::main_loop::MainLoopRc::new(None)
+        .map_err(|e| format!("PW MainLoop: {:?}", e))?;
+    let context = pw::context::ContextRc::new(&mainloop, None)
         .map_err(|e| format!("PW Context: {:?}", e))?;
-    let core = context
-        .connect_fd(fd, None)
+    let core = context.connect_fd_rc(fd, None)
         .map_err(|e| format!("PW connect_fd: {:?}", e))?;
 
-    let props = pipewire::properties::properties! {
-        *pipewire::keys::MEDIA_TYPE => "Video",
-        *pipewire::keys::MEDIA_CATEGORY => "Capture",
-    };
-    let stream = StreamBox::new(&core, "decibell-capture", props)
-        .map_err(|e| format!("PW Stream: {:?}", e))?;
-
-    // Quit flag — checked in process callback to stop mainloop when pipeline drops
-    let quit_flag = std::rc::Rc::new(std::cell::Cell::new(false));
-
-    struct CaptureData {
-        tx: SyncSender<RawFrame>,
-        start: Instant,
-        quit: std::rc::Rc<std::cell::Cell<bool>>,
-    }
-
-    let user_data = CaptureData {
+    let data = CaptureData {
+        format: Default::default(),
         tx,
+        target_width,
+        target_height,
+        frame_count: 0,
         start: Instant::now(),
-        quit: quit_flag.clone(),
+        quit_mainloop: mainloop.downgrade(),
+        scaler: None,
     };
+
+    let stream = pw::stream::StreamRc::new(
+        core,
+        "decibell-capture",
+        pw::properties::properties! {
+            *pw::keys::MEDIA_TYPE => "Video",
+            *pw::keys::MEDIA_CATEGORY => "Capture",
+            *pw::keys::MEDIA_ROLE => "Screen",
+        },
+    )
+    .map_err(|e| format!("PW Stream: {:?}", e))?;
+
+    let mainloop_weak = mainloop.downgrade();
 
     let _listener = stream
-        .add_local_listener_with_user_data(user_data)
-        .param_changed(|_stream: &pipewire::stream::Stream, _data: &mut CaptureData, _id: u32, _param: Option<&pipewire::spa::pod::Pod>| {
-            // Format negotiation callback — we extract dimensions from
-            // the buffer chunk stride/size instead of parsing the SPA pod.
+        .add_local_listener_with_user_data(data)
+        .state_changed(move |_stream, _data, old, new| {
+            eprintln!("[capture] PipeWire stream: {:?} -> {:?}", old, new);
+            if let pw::stream::StreamState::Error(msg) = &new {
+                eprintln!("[capture] Stream error: {}", msg);
+                if let Some(ml) = mainloop_weak.upgrade() {
+                    ml.quit();
+                }
+            }
         })
-        .process(|stream: &pipewire::stream::Stream, data: &mut CaptureData| {
-            if let Some(mut buffer) = stream.dequeue_buffer() {
-                let datas = buffer.datas_mut();
-                if let Some(d) = datas.first_mut() {
-                    let stride = d.chunk().stride() as u32;
-                    let size = d.chunk().size();
+        .param_changed(|_stream, data, id, param| {
+            let Some(param) = param else { return };
+            if id != spa::param::ParamType::Format.as_raw() {
+                return;
+            }
 
-                    if stride >= 4 && size > 0 {
-                        // Infer dimensions: BGRx/BGRA = 4 bytes per pixel
-                        let width = stride / 4;
-                        let height = size / stride;
+            let (media_type, media_subtype) =
+                match spa::param::format_utils::parse_format(param) {
+                    Ok(v) => v,
+                    Err(_) => return,
+                };
 
-                        if let Some(frame_bytes) = d.data() {
-                            let usable = (size as usize).min(frame_bytes.len());
-                            if usable >= (width * height * 4) as usize {
-                                let frame = RawFrame {
-                                    data: frame_bytes[..usable].to_vec(),
-                                    width,
-                                    height,
-                                    timestamp_us: data.start.elapsed().as_micros() as u64,
-                                };
+            if media_type != spa::param::format::MediaType::Video
+                || media_subtype != spa::param::format::MediaSubtype::Raw
+            {
+                return;
+            }
 
-                                match data.tx.try_send(frame) {
-                                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                                        // Video pipeline stopped — signal quit
-                                        data.quit.set(true);
-                                    }
-                                    _ => {} // OK or Full (drop frame if buffer full)
-                                }
-                            }
-                        }
+            data.format
+                .parse(param)
+                .expect("Failed to parse VideoInfoRaw");
+
+            let w = data.format.size().width;
+            let h = data.format.size().height;
+            let fmt = data.format.format();
+            eprintln!(
+                "[capture] Negotiated format: {:?} {}x{} @ {}/{}",
+                fmt, w, h,
+                data.format.framerate().num,
+                data.format.framerate().denom,
+            );
+
+            // Don't set buffer params — let PipeWire negotiate automatically.
+            // We handle stride correctly in the process callback using chunk metadata.
+        })
+        .process(|stream, data| {
+            let Some(mut buffer) = stream.dequeue_buffer() else {
+                return;
+            };
+
+            let datas = buffer.datas_mut();
+            if datas.is_empty() {
+                return;
+            }
+
+            let d = &mut datas[0];
+
+            // Extract chunk metadata before taking mutable borrow for data
+            let chunk_size = d.chunk().size() as usize;
+            let stride = d.chunk().stride() as usize;
+            let chunk_offset = d.chunk().offset() as usize;
+            let buf_type = d.type_();
+
+            if chunk_size == 0 || stride == 0 {
+                return;
+            }
+
+            let Some(raw_data) = d.data() else { return };
+            let raw_data = &raw_data[chunk_offset..][..chunk_size];
+
+            let src_w = data.format.size().width as usize;
+            let src_h = data.format.size().height as usize;
+            let fmt = data.format.format();
+            let dst_w = data.target_width as usize;
+            let dst_h = data.target_height as usize;
+
+            data.frame_count += 1;
+            if data.frame_count <= 3 || data.frame_count % 120 == 0 {
+                eprintln!(
+                    "[capture] Frame {} ({:?} {}x{}, stride={}, chunk={} bytes, buf_type={:?}, {:.1}s)",
+                    data.frame_count, fmt, src_w, src_h, stride, chunk_size,
+                    buf_type, data.start.elapsed().as_secs_f64()
+                );
+            }
+
+            // Convert BGRA/BGRx source to NV12 at target resolution
+            let is_bgra = fmt == spa::param::video::VideoFormat::BGRA
+                || fmt == spa::param::video::VideoFormat::BGRx;
+            let is_rgba = fmt == spa::param::video::VideoFormat::RGBA
+                || fmt == spa::param::video::VideoFormat::RGBx;
+
+            if !is_bgra && !is_rgba {
+                if data.frame_count <= 3 {
+                    eprintln!("[capture] Unsupported format {:?}, skipping", fmt);
+                }
+                return;
+            }
+
+            let nv12 = sws_rgba_to_nv12(
+                raw_data,
+                src_w as u32, src_h as u32,
+                stride, is_bgra,
+                dst_w as u32, dst_h as u32,
+                &mut data.scaler,
+            );
+
+            let frame = RawFrame {
+                data: nv12,
+                width: dst_w as u32,
+                height: dst_h as u32,
+                timestamp_us: data.start.elapsed().as_micros() as u64,
+            };
+
+            match data.tx.try_send(frame) {
+                Ok(()) => {}
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    eprintln!("[capture] Frame channel closed, stopping");
+                    if let Some(ml) = data.quit_mainloop.upgrade() {
+                        ml.quit();
                     }
                 }
             }
@@ -353,23 +468,201 @@ fn pipewire_capture_loop(
         .register()
         .map_err(|e| format!("PW listener: {:?}", e))?;
 
-    // Connect stream to the portal's PipeWire node
-    stream
-        .connect(
-            pipewire::spa::utils::Direction::Input,
-            Some(node_id),
-            pipewire::stream::StreamFlags::AUTOCONNECT
-                | pipewire::stream::StreamFlags::MAP_BUFFERS,
-            &mut [],
-        )
-        .map_err(|e| format!("PW stream connect: {:?}", e))?;
+    // Negotiate BGRA format (preferred for screen capture)
+    let format_obj = spa::pod::object!(
+        spa::utils::SpaTypes::ObjectParamFormat,
+        spa::param::ParamType::EnumFormat,
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaType,
+            Id,
+            spa::param::format::MediaType::Video
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaSubtype,
+            Id,
+            spa::param::format::MediaSubtype::Raw
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFormat,
+            Choice,
+            Enum,
+            Id,
+            spa::param::video::VideoFormat::BGRA,
+            spa::param::video::VideoFormat::BGRA,
+            spa::param::video::VideoFormat::BGRx,
+            spa::param::video::VideoFormat::RGBA,
+            spa::param::video::VideoFormat::RGBx
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoSize,
+            Choice,
+            Range,
+            Rectangle,
+            spa::utils::Rectangle {
+                width: target_width,
+                height: target_height,
+            },
+            spa::utils::Rectangle {
+                width: 1,
+                height: 1,
+            },
+            spa::utils::Rectangle {
+                width: 7680,
+                height: 4320,
+            }
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFramerate,
+            Choice,
+            Range,
+            Fraction,
+            spa::utils::Fraction { num: config.target_fps, denom: 1 },
+            spa::utils::Fraction { num: 0, denom: 1 },
+            spa::utils::Fraction { num: 1000, denom: 1 }
+        ),
+    );
 
-    // Run mainloop — iterate manually so we can check quit_flag
-    let loop_ref = mainloop.loop_();
-    while !quit_flag.get() {
-        loop_ref.iterate(std::time::Duration::from_millis(50));
+    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(format_obj),
+    )
+    .unwrap()
+    .0
+    .into_inner();
+
+    let mut params = [Pod::from_bytes(&values).unwrap()];
+
+    stream.connect(
+        spa::utils::Direction::Input,
+        Some(node_id),
+        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
+        &mut params,
+    )
+    .map_err(|e| format!("PW stream connect: {:?}", e))?;
+
+    eprintln!("[capture] PipeWire stream connected, running main loop");
+    mainloop.run();
+    eprintln!("[capture] PipeWire main loop exited");
+
+    Ok(())
+}
+
+// ─── BGRA/RGBA → NV12 conversion (SIMD-accelerated via FFmpeg's libswscale) ─
+
+/// Persistent scaler context to avoid re-creating it every frame.
+/// Stores the FFmpeg `SwsContext` and the last source/destination dimensions
+/// so we can detect when the format changes and rebuild.
+struct SwsScaler {
+    ctx: ffmpeg_next::software::scaling::Context,
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+    src_fmt: ffmpeg_next::format::Pixel,
+}
+
+impl SwsScaler {
+    fn new(
+        src_w: u32,
+        src_h: u32,
+        src_fmt: ffmpeg_next::format::Pixel,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Result<Self, String> {
+        let ctx = ffmpeg_next::software::scaling::Context::get(
+            src_fmt, src_w, src_h,
+            ffmpeg_next::format::Pixel::NV12, dst_w, dst_h,
+            ffmpeg_next::software::scaling::Flags::BILINEAR,
+        )
+        .map_err(|e| format!("sws_getContext: {}", e))?;
+        Ok(Self { ctx, src_w, src_h, dst_w, dst_h, src_fmt })
     }
 
-    log::info!("[capture] PipeWire capture stopped");
-    Ok(())
+    fn matches(&self, src_w: u32, src_h: u32, src_fmt: ffmpeg_next::format::Pixel, dst_w: u32, dst_h: u32) -> bool {
+        self.src_w == src_w && self.src_h == src_h && self.dst_w == dst_w && self.dst_h == dst_h && self.src_fmt == src_fmt
+    }
+}
+
+/// Convert BGRA/RGBA buffer (with stride) to tightly-packed NV12 using
+/// FFmpeg's libswscale. Handles scaling + color conversion in one pass
+/// with AVX2/SSE2 SIMD acceleration.
+fn sws_rgba_to_nv12(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    stride: usize,
+    is_bgra: bool,
+    dst_w: u32,
+    dst_h: u32,
+    scaler: &mut Option<SwsScaler>,
+) -> Vec<u8> {
+    let src_fmt = if is_bgra {
+        ffmpeg_next::format::Pixel::BGRA
+    } else {
+        ffmpeg_next::format::Pixel::RGBA
+    };
+
+    // Re-create scaler if dimensions or format changed
+    if scaler.as_ref().map_or(true, |s| !s.matches(src_w, src_h, src_fmt, dst_w, dst_h)) {
+        *scaler = SwsScaler::new(src_w, src_h, src_fmt, dst_w, dst_h).ok();
+    }
+    let Some(sws) = scaler.as_mut() else {
+        // Fallback: return black NV12 frame if scaler creation failed
+        let nv12_size = (dst_w * dst_h + dst_w * dst_h / 2) as usize;
+        let mut nv12 = vec![0u8; nv12_size];
+        // Set UV plane to 128 (neutral chroma) for black
+        let y_size = (dst_w * dst_h) as usize;
+        nv12[y_size..].fill(128);
+        return nv12;
+    };
+
+    // Build source frame wrapping the raw data (zero-copy)
+    let mut src_frame = ffmpeg_next::frame::Video::new(src_fmt, src_w, src_h);
+    // Copy row-by-row respecting source stride
+    let src_stride = src_frame.stride(0);
+    if stride == src_stride {
+        let copy_size = (src_h as usize) * stride;
+        src_frame.data_mut(0)[..copy_size].copy_from_slice(&src[..copy_size]);
+    } else {
+        let row_bytes = (src_w as usize) * 4;
+        for row in 0..src_h as usize {
+            let src_off = row * stride;
+            let dst_off = row * src_stride;
+            src_frame.data_mut(0)[dst_off..dst_off + row_bytes]
+                .copy_from_slice(&src[src_off..src_off + row_bytes]);
+        }
+    }
+
+    // Run the SIMD-accelerated conversion
+    let mut dst_frame = ffmpeg_next::frame::Video::new(
+        ffmpeg_next::format::Pixel::NV12, dst_w, dst_h,
+    );
+    sws.ctx.run(&src_frame, &mut dst_frame).expect("sws_scale");
+
+    // Copy NV12 planes into contiguous output buffer
+    let y_size = (dst_w * dst_h) as usize;
+    let uv_size = (dst_w * dst_h / 2) as usize;
+    let mut nv12 = Vec::with_capacity(y_size + uv_size);
+
+    let y_stride = dst_frame.stride(0);
+    if y_stride == dst_w as usize {
+        nv12.extend_from_slice(&dst_frame.data(0)[..y_size]);
+    } else {
+        for row in 0..dst_h as usize {
+            let off = row * y_stride;
+            nv12.extend_from_slice(&dst_frame.data(0)[off..off + dst_w as usize]);
+        }
+    }
+
+    let uv_stride = dst_frame.stride(1);
+    if uv_stride == dst_w as usize {
+        nv12.extend_from_slice(&dst_frame.data(1)[..uv_size]);
+    } else {
+        for row in 0..(dst_h / 2) as usize {
+            let off = row * uv_stride;
+            nv12.extend_from_slice(&dst_frame.data(1)[off..off + dst_w as usize]);
+        }
+    }
+
+    nv12
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../stores/chatStore";
 import { useAuthStore } from "../../stores/authStore";
@@ -26,6 +26,8 @@ function formatRelativeTime(epochMs: number): string {
 function UserPanel() {
   const username = useAuthStore((s) => s.username);
   const openModal = useUiStore((s) => s.openModal);
+  const speakingUsers = useVoiceStore((s) => s.speakingUsers);
+  const isSpeaking = username ? speakingUsers.includes(username) : false;
 
   if (!username) return null;
 
@@ -33,8 +35,11 @@ function UserPanel() {
     <div className="flex items-center gap-2.5 border-t border-border bg-black/15 px-3 py-2.5">
       <div className="relative shrink-0">
         <div
-          className="flex h-[34px] w-[34px] items-center justify-center rounded-lg text-sm font-bold text-white"
-          style={{ background: stringToGradient(username) }}
+          className="flex h-[34px] w-[34px] items-center justify-center rounded-lg text-sm font-bold text-white transition-shadow duration-200"
+          style={{
+            background: stringToGradient(username),
+            boxShadow: isSpeaking ? "0 0 0 2px #3fb950, 0 0 6px #3fb950" : "none",
+          }}
         >
           {username.charAt(0).toUpperCase()}
         </div>
@@ -62,6 +67,34 @@ function UserPanel() {
 
 export default function ChannelSidebar() {
   useChannelEvents();
+
+  const [sidebarWidth, setSidebarWidth] = useState(240);
+  const isResizing = useRef(false);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizing.current = true;
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = Math.min(480, Math.max(180, startWidth + (e.clientX - startX)));
+      setSidebarWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      isResizing.current = false;
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, [sidebarWidth]);
 
   const activeView = useUiStore((s) => s.activeView);
   const activeServerId = useChatStore((s) => s.activeServerId);
@@ -129,8 +162,8 @@ export default function ChannelSidebar() {
 
   if (activeView === "home" || activeView === "dm") {
     return (
-      <div className="flex w-60 shrink-0 flex-col border-r border-border bg-bg-secondary">
-        <div className="border-b border-border px-4 py-3.5">
+      <div className="relative flex shrink-0 flex-col border-r border-border bg-bg-secondary" style={{ width: sidebarWidth }}>
+        <div className="flex h-12 shrink-0 items-center border-b border-border px-4">
           <h2 className="text-[15px] font-extrabold text-text-bright">
             Direct Messages
           </h2>
@@ -192,14 +225,19 @@ export default function ChannelSidebar() {
         </div>
         <VoiceControlBar />
         <UserPanel />
+        {/* Resize handle */}
+        <div
+          onMouseDown={handleMouseDown}
+          className="absolute right-0 top-0 z-10 h-full w-1 cursor-col-resize hover:bg-accent/40 active:bg-accent/60"
+        />
       </div>
     );
   }
 
   return (
-    <div className="flex w-60 shrink-0 flex-col border-r border-border bg-bg-secondary">
+    <div className="relative flex shrink-0 flex-col border-r border-border bg-bg-secondary" style={{ width: sidebarWidth }}>
       {/* Server name header */}
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3.5">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
         <h2 className="flex-1 truncate text-[15px] font-extrabold text-text-bright">
           {serverName ?? "Server"}
         </h2>
@@ -299,6 +337,11 @@ export default function ChannelSidebar() {
       </div>
       <VoiceControlBar />
       <UserPanel />
+      {/* Resize handle */}
+      <div
+        onMouseDown={handleMouseDown}
+        className="absolute right-0 top-0 z-10 h-full w-1 cursor-col-resize hover:bg-accent/40 active:bg-accent/60"
+      />
     </div>
   );
 }
