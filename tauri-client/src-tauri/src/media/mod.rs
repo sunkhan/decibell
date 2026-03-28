@@ -3,6 +3,8 @@ pub mod capture;
 pub mod capture_pipewire;
 #[cfg(target_os = "windows")]
 pub mod capture_wgc;
+#[cfg(target_os = "windows")]
+pub mod capture_dxgi;
 pub mod codec;
 pub mod encoder;
 pub mod packet;
