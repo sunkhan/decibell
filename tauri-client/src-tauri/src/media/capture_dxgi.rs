@@ -397,6 +397,27 @@ fn dxgi_capture_thread(
             .DuplicateOutput(&device)
             .map_err(|e| format!("DuplicateOutput: {}", e))?;
 
+        // The desktop duplication texture is a KeyedMutex texture with no bind
+        // flags, so it can't be used directly as a video processor input view.
+        // Create an intermediate BGRA texture that we own and CopyResource into it.
+        let intermediate_desc = D3D11_TEXTURE2D_DESC {
+            Width: src_w,
+            Height: src_h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: 0,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut intermediate_tex: Option<ID3D11Texture2D> = None;
+        device
+            .CreateTexture2D(&intermediate_desc, None, Some(&mut intermediate_tex))
+            .map_err(|e| format!("CreateTexture2D (intermediate BGRA): {}", e))?;
+        let intermediate_tex = intermediate_tex.ok_or("CreateTexture2D (intermediate) returned None")?;
+
         let video_proc = VideoProcessor::new(&device, src_w, src_h, dst_w, dst_h)?;
 
         eprintln!(
@@ -461,7 +482,10 @@ fn dxgi_capture_thread(
                 .cast()
                 .map_err(|e| format!("Cast to ID3D11Texture2D: {}", e))?;
 
-            let nv12 = match video_proc.convert_and_readback(&context, &bgra_texture) {
+            // Copy the restricted desktop texture into our intermediate texture
+            context.CopyResource(&intermediate_tex, &bgra_texture);
+
+            let nv12 = match video_proc.convert_and_readback(&context, &intermediate_tex) {
                 Ok(data) => data,
                 Err(e) => {
                     eprintln!("[capture-dxgi] convert error: {}", e);
