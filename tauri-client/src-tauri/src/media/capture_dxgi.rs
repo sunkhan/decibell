@@ -126,6 +126,7 @@ impl VideoProcessor {
         src_h: u32,
         dst_w: u32,
         dst_h: u32,
+        is_hdr: bool,
     ) -> Result<Self, String> {
         unsafe {
             let video_device: ID3D11VideoDevice = device
@@ -158,6 +159,24 @@ impl VideoProcessor {
             let processor = video_device
                 .CreateVideoProcessor(&enumerator, 0)
                 .map_err(|e| format!("CreateVideoProcessor: {}", e))?;
+
+            // Set input/output color spaces for correct HDR→SDR tone mapping.
+            // Without this, HDR content appears blown out on SDR displays.
+            if let Ok(vc1) = video_context.cast::<ID3D11VideoContext1>() {
+                let input_cs = if is_hdr {
+                    DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+                } else {
+                    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709
+                };
+                vc1.VideoProcessorSetStreamColorSpace1(&processor, 0, input_cs);
+                vc1.VideoProcessorSetOutputColorSpace1(
+                    &processor,
+                    DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
+                );
+                if is_hdr {
+                    eprintln!("[capture-dxgi] HDR→SDR tone mapping enabled via video processor");
+                }
+            }
 
             let nv12_desc = D3D11_TEXTURE2D_DESC {
                 Width: dst_w,
@@ -397,15 +416,26 @@ fn dxgi_capture_thread(
             .DuplicateOutput(&device)
             .map_err(|e| format!("DuplicateOutput: {}", e))?;
 
+        // Query the duplication to find the actual desktop texture format.
+        // HDR monitors use R16G16B16A16_FLOAT or R10G10B10A2_UNORM instead of B8G8R8A8_UNORM.
+        let dupl_desc = duplication.GetDesc();
+        let src_format = dupl_desc.ModeDesc.Format;
+        let is_hdr = matches!(
+            src_format,
+            DXGI_FORMAT_R16G16B16A16_FLOAT
+                | DXGI_FORMAT_R10G10B10A2_UNORM
+                | DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM
+        );
+
         // The desktop duplication texture is a KeyedMutex texture with no bind
         // flags, so it can't be used directly as a video processor input view.
-        // Create an intermediate BGRA texture that we own and CopyResource into it.
+        // Create an intermediate texture matching the source format.
         let intermediate_desc = D3D11_TEXTURE2D_DESC {
             Width: src_w,
             Height: src_h,
             MipLevels: 1,
             ArraySize: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            Format: src_format,
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: 0,
@@ -415,14 +445,14 @@ fn dxgi_capture_thread(
         let mut intermediate_tex: Option<ID3D11Texture2D> = None;
         device
             .CreateTexture2D(&intermediate_desc, None, Some(&mut intermediate_tex))
-            .map_err(|e| format!("CreateTexture2D (intermediate BGRA): {}", e))?;
+            .map_err(|e| format!("CreateTexture2D (intermediate): {}", e))?;
         let intermediate_tex = intermediate_tex.ok_or("CreateTexture2D (intermediate) returned None")?;
 
-        let video_proc = VideoProcessor::new(&device, src_w, src_h, dst_w, dst_h)?;
+        let video_proc = VideoProcessor::new(&device, src_w, src_h, dst_w, dst_h, is_hdr)?;
 
         eprintln!(
-            "[capture-dxgi] Started: monitor {}:{}, {}x{} → {}x{} @ {}fps",
-            adapter_idx, output_idx, src_w, src_h, dst_w, dst_h, target_fps
+            "[capture-dxgi] Started: monitor {}:{}, {}x{} → {}x{} @ {}fps, format={:?}, hdr={}",
+            adapter_idx, output_idx, src_w, src_h, dst_w, dst_h, target_fps, src_format, is_hdr
         );
 
         let frame_interval = std::time::Duration::from_micros(1_000_000 / target_fps as u64);
