@@ -90,11 +90,34 @@ pub fn run_audio_pipeline(
         }
     };
 
-    let stream_config = cpal::StreamConfig {
-        channels: CHANNELS,
-        sample_rate: cpal::SampleRate(SAMPLE_RATE),
-        buffer_size: cpal::BufferSize::Default,
+    // Use the device's default output config — Windows WASAPI is picky about
+    // exact sample rate / channel count. We adapt in the callback instead.
+    use cpal::traits::DeviceTrait;
+    let (stream_config, output_channels) = match output_device.default_output_config() {
+        Ok(default_cfg) => {
+            let cfg = cpal::StreamConfig {
+                channels: default_cfg.channels(),
+                sample_rate: default_cfg.sample_rate(),
+                buffer_size: cpal::BufferSize::Default,
+            };
+            eprintln!(
+                "[pipeline] Output device: {}ch @ {}Hz (sample format: {:?})",
+                cfg.channels, cfg.sample_rate.0, default_cfg.sample_format()
+            );
+            (cfg, default_cfg.channels())
+        }
+        Err(e) => {
+            // Last resort: try 48kHz stereo
+            eprintln!("[pipeline] default_output_config failed ({}), trying 48kHz stereo", e);
+            let cfg = cpal::StreamConfig {
+                channels: 2,
+                sample_rate: cpal::SampleRate(SAMPLE_RATE),
+                buffer_size: cpal::BufferSize::Default,
+            };
+            (cfg, 2)
+        }
     };
+    let output_sample_rate = stream_config.sample_rate.0;
 
     // ── Shared buffers ────────────────────────────────────────────────────────
     let capture_buf: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
@@ -114,14 +137,47 @@ pub fn run_audio_pipeline(
             None
         }
         Some(input_device) => {
-            let cfg = stream_config.clone();
+            // Use device's default input config for best compatibility
+            let (input_cfg, input_channels) = match input_device.default_input_config() {
+                Ok(default_cfg) => {
+                    eprintln!(
+                        "[pipeline] Input device: {}ch @ {}Hz (sample format: {:?})",
+                        default_cfg.channels(), default_cfg.sample_rate().0, default_cfg.sample_format()
+                    );
+                    (cpal::StreamConfig {
+                        channels: default_cfg.channels(),
+                        sample_rate: default_cfg.sample_rate(),
+                        buffer_size: cpal::BufferSize::Default,
+                    }, default_cfg.channels())
+                }
+                Err(_) => {
+                    (cpal::StreamConfig {
+                        channels: 1,
+                        sample_rate: cpal::SampleRate(SAMPLE_RATE),
+                        buffer_size: cpal::BufferSize::Default,
+                    }, 1u16)
+                }
+            };
+
+            let in_ch = input_channels;
             match input_device.build_input_stream(
-                &cfg,
-                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                &input_cfg,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     if let Ok(mut buf) = cap_buf_in.lock() {
-                        let remaining = BUF_CAP.saturating_sub(buf.len());
-                        let take = data.len().min(remaining);
-                        buf.extend_from_slice(&data[..take]);
+                        if in_ch == 1 {
+                            for &s in data {
+                                if buf.len() >= BUF_CAP { break; }
+                                buf.push((s * 32767.0) as i16);
+                            }
+                        } else {
+                            // Stereo→mono: average channels, convert f32→i16
+                            for frame in data.chunks_exact(in_ch as usize) {
+                                if buf.len() >= BUF_CAP { break; }
+                                let sum: f32 = frame.iter().sum();
+                                let mono = sum / in_ch as f32;
+                                buf.push((mono * 32767.0) as i16);
+                            }
+                        }
                     }
                 },
                 |e| {
@@ -148,16 +204,29 @@ pub fn run_audio_pipeline(
     // ── Output (playback) stream ──────────────────────────────────────────────
     let play_buf_out = Arc::clone(&playback_buf);
 
+    let out_ch = output_channels;
+    // Use f32 output — Windows WASAPI defaults to f32; i16 is often unsupported.
     let output_stream = match output_device.build_output_stream(
         &stream_config,
-        move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             if let Ok(mut buf) = play_buf_out.lock() {
-                for sample in data.iter_mut() {
-                    *sample = buf.pop_front().unwrap_or(0);
+                if out_ch == 1 {
+                    for sample in data.iter_mut() {
+                        let s = buf.pop_front().unwrap_or(0);
+                        *sample = s as f32 / 32768.0;
+                    }
+                } else {
+                    // Mono→stereo: duplicate each sample to all channels
+                    for frame in data.chunks_exact_mut(out_ch as usize) {
+                        let s = buf.pop_front().unwrap_or(0) as f32 / 32768.0;
+                        for ch in frame.iter_mut() {
+                            *ch = s;
+                        }
+                    }
                 }
             } else {
                 for sample in data.iter_mut() {
-                    *sample = 0;
+                    *sample = 0.0;
                 }
             }
         },
@@ -465,7 +534,10 @@ pub fn run_audio_pipeline(
                 Ok(_) => {}
                 Err(ref e)
                     if e.kind() == std::io::ErrorKind::WouldBlock
-                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                        || e.kind() == std::io::ErrorKind::TimedOut
+                        // Windows non-blocking sockets can return ERROR_IO_PENDING (997)
+                        // instead of WouldBlock — treat it the same way.
+                        || e.raw_os_error() == Some(997) =>
                 {
                     break; // Socket buffer drained, continue main loop
                 }

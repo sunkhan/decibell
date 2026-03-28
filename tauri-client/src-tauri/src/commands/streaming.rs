@@ -52,7 +52,9 @@ pub async fn start_screen_share(
         target_width: width,
         target_height: height,
     };
-    let frame_rx = capture::start_capture(&source_id, &capture_config).await?;
+    let capture_output = capture::start_capture(&source_id, &capture_config).await?;
+    let enc_width = capture_output.width;
+    let enc_height = capture_output.height;
 
     // Lock state to get socket + sender_id and set up pipeline
     let mut s = state.lock().await;
@@ -66,11 +68,8 @@ pub async fn start_screen_share(
     // Notify community server
     let client = s.communities.get(&server_id)
         .ok_or(format!("Not connected to community {}", server_id))?;
-    client.start_stream(&channel_id, fps as i32, bitrate_kbps as i32, share_audio, width, height).await?;
+    client.start_stream(&channel_id, fps as i32, bitrate_kbps as i32, share_audio, enc_width, enc_height).await?;
 
-    // Encoder config — use source resolution if 0x0
-    let enc_width = if width == 0 { 1920 } else { width };
-    let enc_height = if height == 0 { 1080 } else { height };
     let encoder_config = EncoderConfig {
         width: enc_width,
         height: enc_height,
@@ -81,7 +80,7 @@ pub async fn start_screen_share(
 
     // Start video pipeline
     let video_engine = VideoEngine::start(
-        frame_rx,
+        capture_output.receiver,
         socket,
         sender_id,
         encoder_config,

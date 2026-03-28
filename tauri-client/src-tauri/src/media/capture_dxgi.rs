@@ -1,4 +1,4 @@
-use super::capture::{CaptureConfig, CaptureSource, CaptureSourceType, RawFrame};
+use super::capture::{CaptureConfig, CaptureOutput, CaptureSource, CaptureSourceType, RawFrame};
 
 use windows::{
     core::Interface,
@@ -6,8 +6,101 @@ use windows::{
     Win32::Graphics::Direct3D11::*,
     Win32::Graphics::Dxgi::*,
     Win32::Graphics::Dxgi::Common::*,
+    Win32::Graphics::Gdi::*,
     Win32::Foundation::*,
 };
+use base64::Engine;
+
+/// Encode raw BGRA pixels as a 32-bit BMP and return a base64 data URI.
+fn bgra_to_bmp_data_uri(width: u32, height: u32, bgra_pixels: &[u8]) -> String {
+    let pixel_bytes = (width * height * 4) as u32;
+    let file_size = 54 + pixel_bytes;
+    let mut bmp = Vec::with_capacity(file_size as usize);
+
+    // BMP file header (14 bytes)
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&file_size.to_le_bytes());
+    bmp.extend_from_slice(&[0u8; 4]); // reserved
+    bmp.extend_from_slice(&54u32.to_le_bytes()); // pixel data offset
+
+    // DIB header — BITMAPINFOHEADER (40 bytes)
+    bmp.extend_from_slice(&40u32.to_le_bytes());
+    bmp.extend_from_slice(&width.to_le_bytes());
+    bmp.extend_from_slice(&height.to_le_bytes()); // positive = bottom-up (matches GetDIBits)
+    bmp.extend_from_slice(&1u16.to_le_bytes()); // planes
+    bmp.extend_from_slice(&32u16.to_le_bytes()); // bpp
+    bmp.extend_from_slice(&[0u8; 4]); // compression (BI_RGB)
+    bmp.extend_from_slice(&pixel_bytes.to_le_bytes());
+    bmp.extend_from_slice(&[0u8; 16]); // ppm + colors
+
+    bmp.extend_from_slice(bgra_pixels);
+
+    format!(
+        "data:image/bmp;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&bmp)
+    )
+}
+
+/// Capture a GDI thumbnail of a screen region.
+fn capture_screen_thumbnail(left: i32, top: i32, width: u32, height: u32) -> Option<String> {
+    const MAX_THUMB_W: u32 = 240;
+    let (tw, th) = if width > MAX_THUMB_W {
+        let scale = MAX_THUMB_W as f64 / width as f64;
+        (MAX_THUMB_W, (height as f64 * scale) as u32)
+    } else {
+        (width, height)
+    };
+
+    unsafe {
+        let screen_dc = GetDC(HWND::default());
+        if screen_dc.is_invalid() { return None; }
+        let mem_dc = CreateCompatibleDC(screen_dc);
+        if mem_dc.is_invalid() {
+            ReleaseDC(HWND::default(), screen_dc);
+            return None;
+        }
+        let bmp_handle = CreateCompatibleBitmap(screen_dc, tw as i32, th as i32);
+        if bmp_handle.is_invalid() {
+            let _ = DeleteDC(mem_dc);
+            ReleaseDC(HWND::default(), screen_dc);
+            return None;
+        }
+        let old = SelectObject(mem_dc, bmp_handle);
+
+        let _ = SetStretchBltMode(mem_dc, HALFTONE);
+        let _ = StretchBlt(
+            mem_dc, 0, 0, tw as i32, th as i32,
+            screen_dc, left, top, width as i32, height as i32,
+            SRCCOPY,
+        );
+
+        let mut bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: tw as i32,
+                biHeight: th as i32,
+                biPlanes: 1,
+                biBitCount: 32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut pixels = vec![0u8; (tw * th * 4) as usize];
+        GetDIBits(
+            mem_dc, bmp_handle, 0, th,
+            Some(pixels.as_mut_ptr() as _),
+            &mut bi, DIB_RGB_COLORS,
+        );
+
+        SelectObject(mem_dc, old);
+        let _ = DeleteObject(bmp_handle);
+        let _ = DeleteDC(mem_dc);
+        ReleaseDC(HWND::default(), screen_dc);
+
+        Some(bgra_to_bmp_data_uri(tw, th, &pixels))
+    }
+}
 
 /// List available monitors via DXGI enumeration.
 pub fn list_sources() -> Result<Vec<CaptureSource>, String> {
@@ -52,12 +145,17 @@ pub fn list_sources() -> Result<Vec<CaptureSource>, String> {
                     format!("Monitor {}", sources.len() + 1)
                 };
 
+                let thumbnail = capture_screen_thumbnail(
+                    coords.left, coords.top, width, height,
+                );
+
                 sources.push(CaptureSource {
                     id: format!("monitor:{}:{}", adapter_idx, output_idx),
                     name,
                     source_type: CaptureSourceType::Screen,
                     width,
                     height,
+                    thumbnail,
                 });
 
                 output_idx += 1;
@@ -343,7 +441,7 @@ impl VideoProcessor {
 pub fn start_capture(
     source_id: &str,
     config: &CaptureConfig,
-) -> Result<std::sync::mpsc::Receiver<RawFrame>, String> {
+) -> Result<CaptureOutput, String> {
     let rest = source_id
         .strip_prefix("monitor:")
         .ok_or_else(|| format!("DXGI DD only supports monitor sources, got: {}", source_id))?;
@@ -351,6 +449,23 @@ pub fn start_capture(
     let mut parts = rest.splitn(2, ':');
     let adapter_idx: u32 = parts.next().and_then(|s| s.parse().ok()).ok_or("Invalid adapter_idx")?;
     let output_idx: u32 = parts.next().and_then(|s| s.parse().ok()).ok_or("Invalid output_idx")?;
+
+    // Resolve actual output dimensions (needed so the encoder matches the capture)
+    let (out_w, out_h) = unsafe {
+        let factory: IDXGIFactory1 =
+            CreateDXGIFactory1().map_err(|e| format!("CreateDXGIFactory1: {}", e))?;
+        let adapter: IDXGIAdapter1 = factory.EnumAdapters1(adapter_idx)
+            .map_err(|e| format!("EnumAdapters1: {}", e))?;
+        let output: IDXGIOutput = adapter.EnumOutputs(output_idx)
+            .map_err(|e| format!("EnumOutputs: {}", e))?;
+        let desc = output.GetDesc().map_err(|e| format!("GetDesc: {}", e))?;
+        let coords = desc.DesktopCoordinates;
+        let src_w = (coords.right - coords.left).unsigned_abs();
+        let src_h = (coords.bottom - coords.top).unsigned_abs();
+        let w = if config.target_width == 0 { src_w } else { config.target_width };
+        let h = if config.target_height == 0 { src_h } else { config.target_height };
+        (w, h)
+    };
 
     let target_fps = config.target_fps;
     let target_w = config.target_width;
@@ -367,7 +482,7 @@ pub fn start_capture(
         })
         .map_err(|e| format!("Spawn DXGI capture thread: {}", e))?;
 
-    Ok(rx)
+    Ok(CaptureOutput { receiver: rx, width: out_w, height: out_h })
 }
 
 // ─── Capture Thread ─────────────────────────────────────────────────────────

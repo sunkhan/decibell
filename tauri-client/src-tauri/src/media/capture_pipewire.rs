@@ -3,7 +3,7 @@ use std::os::fd::OwnedFd;
 use std::sync::mpsc::SyncSender;
 use std::time::Instant;
 
-use super::capture::{CaptureConfig, CaptureSource, CaptureSourceType, RawFrame};
+use super::capture::{CaptureConfig, CaptureOutput, CaptureSource, CaptureSourceType, RawFrame};
 
 /// On Linux, screen/window selection is handled by the XDG Desktop Portal.
 /// We return a single placeholder entry; the real picker dialog appears
@@ -15,6 +15,7 @@ pub async fn list_sources() -> Result<Vec<CaptureSource>, String> {
         source_type: CaptureSourceType::Screen,
         width: 0,
         height: 0,
+        thumbnail: None,
     }])
 }
 
@@ -24,7 +25,9 @@ pub async fn list_sources() -> Result<Vec<CaptureSource>, String> {
 pub async fn start_capture(
     _source_id: &str,
     config: &CaptureConfig,
-) -> Result<std::sync::mpsc::Receiver<RawFrame>, String> {
+) -> Result<CaptureOutput, String> {
+    let target_w = config.target_width;
+    let target_h = config.target_height;
     let config = config.clone();
 
     // Run portal dialog + PipeWire setup on a blocking thread
@@ -52,7 +55,12 @@ pub async fn start_capture(
     .await
     .map_err(|e| format!("Join error: {}", e))??;
 
-    Ok(rx)
+    // On Linux, actual dimensions aren't known until the first PipeWire frame arrives.
+    // Use target or default; the encoder will receive correctly-sized frames.
+    let width = if target_w == 0 { 1920 } else { target_w };
+    let height = if target_h == 0 { 1080 } else { target_h };
+
+    Ok(CaptureOutput { receiver: rx, width, height })
 }
 
 // ─── XDG Desktop Portal D-Bus interaction ───────────────────────────────────

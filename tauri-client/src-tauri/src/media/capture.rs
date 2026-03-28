@@ -8,6 +8,8 @@ pub struct CaptureSource {
     pub source_type: CaptureSourceType,
     pub width: u32,
     pub height: u32,
+    /// Base64-encoded BMP data URI for preview thumbnail.
+    pub thumbnail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +32,13 @@ pub struct RawFrame {
     pub width: u32,
     pub height: u32,
     pub timestamp_us: u64,
+}
+
+/// Result of starting a capture — the frame receiver plus the actual output dimensions.
+pub struct CaptureOutput {
+    pub receiver: std::sync::mpsc::Receiver<RawFrame>,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// List available capture sources (screens and windows).
@@ -56,11 +65,11 @@ pub async fn list_sources() -> Result<Vec<CaptureSource>, String> {
 }
 
 /// Start capturing from a source.
-/// Returns a channel that receives RawFrames.
+/// Returns a CaptureOutput with the frame receiver and resolved output dimensions.
 pub async fn start_capture(
     source_id: &str,
     config: &CaptureConfig,
-) -> Result<std::sync::mpsc::Receiver<RawFrame>, String> {
+) -> Result<CaptureOutput, String> {
     #[cfg(target_os = "linux")]
     {
         super::capture_pipewire::start_capture(source_id, config).await

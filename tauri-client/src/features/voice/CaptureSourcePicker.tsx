@@ -9,6 +9,7 @@ interface CaptureSource {
   sourceType: "screen" | "window";
   width: number;
   height: number;
+  thumbnail: string | null;
 }
 
 interface Props {
@@ -126,7 +127,7 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
             </div>
 
             {/* Source grid */}
-            <div className="grid grid-cols-2 gap-3 p-5">
+            <div className="grid max-h-[320px] grid-cols-2 gap-3 overflow-y-auto p-5">
               {loading && (
                 <p className="col-span-2 py-8 text-center text-sm text-text-muted">
                   Loading sources...
@@ -147,12 +148,21 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
                       : "border-border hover:border-text-muted"
                   }`}
                 >
-                  <div className="flex h-20 items-center justify-center bg-bg-primary">
-                    <span className="text-xs text-text-muted">
-                      {source.width > 0
-                        ? `${source.width} × ${source.height}`
-                        : "Preview"}
-                    </span>
+                  <div className="flex h-[120px] items-center justify-center bg-bg-primary overflow-hidden">
+                    {source.thumbnail ? (
+                      <img
+                        src={source.thumbnail}
+                        alt={source.name}
+                        className="h-full w-full object-cover"
+                        draggable={false}
+                      />
+                    ) : (
+                      <span className="text-xs text-text-muted">
+                        {source.width > 0
+                          ? `${source.width} × ${source.height}`
+                          : "Preview"}
+                      </span>
+                    )}
                   </div>
                   <div
                     className={`px-3 py-2 text-[11px] font-semibold ${
@@ -178,7 +188,7 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
             <select
               value={streamSettings.resolution}
               onChange={(e) => setStreamSettings({ resolution: e.target.value as any })}
-              className="w-full rounded-md bg-surface-hover px-2.5 py-1.5 text-xs text-text-bright outline-none"
+              className="w-full rounded-md border border-border bg-bg-tertiary px-2.5 py-1.5 text-xs text-text-bright outline-none"
             >
               <option value="source">Source</option>
               <option value="1080p">1080p</option>
@@ -192,7 +202,7 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
             <select
               value={streamSettings.fps}
               onChange={(e) => setStreamSettings({ fps: Number(e.target.value) as any })}
-              className="w-full rounded-md bg-surface-hover px-2.5 py-1.5 text-xs text-text-bright outline-none"
+              className="w-full rounded-md border border-border bg-bg-tertiary px-2.5 py-1.5 text-xs text-text-bright outline-none"
             >
               <option value={60}>60 FPS</option>
               <option value={30}>30 FPS</option>
@@ -206,7 +216,7 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
             <select
               value={streamSettings.quality}
               onChange={(e) => setStreamSettings({ quality: e.target.value as any })}
-              className="w-full rounded-md bg-surface-hover px-2.5 py-1.5 text-xs text-text-bright outline-none"
+              className="w-full rounded-md border border-border bg-bg-tertiary px-2.5 py-1.5 text-xs text-text-bright outline-none"
             >
               <option value="high">High</option>
               <option value="medium">Medium</option>

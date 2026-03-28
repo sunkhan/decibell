@@ -3,7 +3,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::capture::{CaptureConfig, CaptureSource, CaptureSourceType, RawFrame};
+use super::capture::{CaptureConfig, CaptureOutput, CaptureSource, CaptureSourceType, RawFrame};
 
 use windows::{
     core::{IInspectable, Interface},
@@ -16,10 +16,13 @@ use windows::{
     Win32::Graphics::Direct3D11::*,
     Win32::Graphics::Dxgi::*,
     Win32::Graphics::Dxgi::Common::*,
+    Win32::Graphics::Gdi::*,
+    Win32::Storage::Xps::*,
     Win32::System::WinRT::Direct3D11::*,
     Win32::System::WinRT::Graphics::Capture::*,
     Win32::UI::WindowsAndMessaging::*,
 };
+use base64::Engine;
 
 // Wrapper to send COM pointers across threads.
 // Safety: WGC capture objects are created on one thread and used on one thread;
@@ -42,11 +45,11 @@ pub fn list_window_sources() -> Result<Vec<CaptureSource>, String> {
     Ok(sources)
 }
 
-/// Start capturing from the given source. Returns a Receiver of RawFrames (NV12).
+/// Start capturing from the given source. Returns a CaptureOutput with receiver and dimensions.
 pub async fn start_capture(
     source_id: &str,
     config: &CaptureConfig,
-) -> Result<std::sync::mpsc::Receiver<RawFrame>, String> {
+) -> Result<CaptureOutput, String> {
     let source_id = source_id.to_string();
     let config = config.clone();
 
@@ -92,13 +95,143 @@ pub async fn start_capture(
             })
             .map_err(|e| format!("Spawn capture thread: {}", e))?;
 
-        Ok(rx)
+        Ok(CaptureOutput { receiver: rx, width: dst_w, height: dst_h })
     })
     .await
     .map_err(|e| format!("Join error: {}", e))?
 }
 
 // ─── Source Enumeration ───────────────────────────────────────────────────────
+
+/// Encode raw BGRA pixels as a 32-bit BMP and return a base64 data URI.
+fn bgra_to_bmp_data_uri(width: u32, height: u32, bgra_pixels: &[u8]) -> String {
+    let pixel_bytes = (width * height * 4) as u32;
+    let file_size = 54 + pixel_bytes;
+    let mut bmp = Vec::with_capacity(file_size as usize);
+
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&file_size.to_le_bytes());
+    bmp.extend_from_slice(&[0u8; 4]);
+    bmp.extend_from_slice(&54u32.to_le_bytes());
+
+    bmp.extend_from_slice(&40u32.to_le_bytes());
+    bmp.extend_from_slice(&width.to_le_bytes());
+    bmp.extend_from_slice(&height.to_le_bytes());
+    bmp.extend_from_slice(&1u16.to_le_bytes());
+    bmp.extend_from_slice(&32u16.to_le_bytes());
+    bmp.extend_from_slice(&[0u8; 4]);
+    bmp.extend_from_slice(&pixel_bytes.to_le_bytes());
+    bmp.extend_from_slice(&[0u8; 16]);
+
+    bmp.extend_from_slice(bgra_pixels);
+
+    format!(
+        "data:image/bmp;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&bmp)
+    )
+}
+
+/// Capture a thumbnail of a window via PrintWindow (avoids occlusion artifacts).
+fn capture_window_thumbnail(hwnd: HWND, width: u32, height: u32) -> Option<String> {
+    const MAX_THUMB_W: u32 = 240;
+    let (tw, th) = if width > MAX_THUMB_W {
+        let scale = MAX_THUMB_W as f64 / width as f64;
+        (MAX_THUMB_W, (height as f64 * scale) as u32)
+    } else {
+        (width, height)
+    };
+    if tw == 0 || th == 0 { return None; }
+
+    unsafe {
+        let screen_dc = GetDC(HWND::default());
+        if screen_dc.is_invalid() { return None; }
+
+        // Full-size bitmap for PrintWindow (renders at native window size)
+        let full_dc = CreateCompatibleDC(screen_dc);
+        if full_dc.is_invalid() {
+            ReleaseDC(HWND::default(), screen_dc);
+            return None;
+        }
+        let full_bmp = CreateCompatibleBitmap(screen_dc, width as i32, height as i32);
+        if full_bmp.is_invalid() {
+            let _ = DeleteDC(full_dc);
+            ReleaseDC(HWND::default(), screen_dc);
+            return None;
+        }
+        let old_full = SelectObject(full_dc, full_bmp);
+
+        // PW_RENDERFULLCONTENT (0x2) captures DWM-composited content correctly
+        let ok = PrintWindow(hwnd, full_dc, PRINT_WINDOW_FLAGS(2));
+        if !ok.as_bool() {
+            // Fallback without the flag (older windows)
+            if !PrintWindow(hwnd, full_dc, PRINT_WINDOW_FLAGS(0)).as_bool() {
+                SelectObject(full_dc, old_full);
+                let _ = DeleteObject(full_bmp);
+                let _ = DeleteDC(full_dc);
+                ReleaseDC(HWND::default(), screen_dc);
+                return None;
+            }
+        }
+
+        // Scale down to thumbnail size
+        let thumb_dc = CreateCompatibleDC(screen_dc);
+        if thumb_dc.is_invalid() {
+            SelectObject(full_dc, old_full);
+            let _ = DeleteObject(full_bmp);
+            let _ = DeleteDC(full_dc);
+            ReleaseDC(HWND::default(), screen_dc);
+            return None;
+        }
+        let thumb_bmp = CreateCompatibleBitmap(screen_dc, tw as i32, th as i32);
+        if thumb_bmp.is_invalid() {
+            let _ = DeleteDC(thumb_dc);
+            SelectObject(full_dc, old_full);
+            let _ = DeleteObject(full_bmp);
+            let _ = DeleteDC(full_dc);
+            ReleaseDC(HWND::default(), screen_dc);
+            return None;
+        }
+        let old_thumb = SelectObject(thumb_dc, thumb_bmp);
+
+        let _ = SetStretchBltMode(thumb_dc, HALFTONE);
+        let _ = StretchBlt(
+            thumb_dc, 0, 0, tw as i32, th as i32,
+            full_dc, 0, 0, width as i32, height as i32,
+            SRCCOPY,
+        );
+
+        // Read back thumbnail pixels
+        let mut bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: tw as i32,
+                biHeight: th as i32,
+                biPlanes: 1,
+                biBitCount: 32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut pixels = vec![0u8; (tw * th * 4) as usize];
+        GetDIBits(
+            thumb_dc, thumb_bmp, 0, th,
+            Some(pixels.as_mut_ptr() as _),
+            &mut bi, DIB_RGB_COLORS,
+        );
+
+        // Cleanup
+        SelectObject(thumb_dc, old_thumb);
+        let _ = DeleteObject(thumb_bmp);
+        let _ = DeleteDC(thumb_dc);
+        SelectObject(full_dc, old_full);
+        let _ = DeleteObject(full_bmp);
+        let _ = DeleteDC(full_dc);
+        ReleaseDC(HWND::default(), screen_dc);
+
+        Some(bgra_to_bmp_data_uri(tw, th, &pixels))
+    }
+}
 
 fn enumerate_windows(sources: &mut Vec<CaptureSource>) {
     let mut hwnds: Vec<HWND> = Vec::new();
@@ -132,12 +265,15 @@ fn enumerate_windows(sources: &mut Vec<CaptureSource>) {
                 continue;
             }
 
+            let thumbnail = capture_window_thumbnail(hwnd, width, height);
+
             sources.push(CaptureSource {
                 id: format!("window:{}", hwnd.0 as usize),
                 name: title,
                 source_type: CaptureSourceType::Window,
                 width,
                 height,
+                thumbnail,
             });
         }
     }
@@ -496,14 +632,12 @@ fn wgc_capture_loop(
     context: ID3D11DeviceContext,
     winrt_device: IDirect3DDevice,
     item: GraphicsCaptureItem,
-    video_proc: VideoProcessor,
+    mut video_proc: VideoProcessor,
     tx: SyncSender<RawFrame>,
     config: CaptureConfig,
     dst_w: u32,
     dst_h: u32,
 ) -> Result<(), String> {
-    let _ = config; // fps is controlled by WGC frame pool
-
     unsafe {
         // Closed flag shared between handler and poll loop
         let closed_flag = Arc::new(AtomicBool::new(false));
@@ -521,6 +655,8 @@ fn wgc_capture_loop(
 
         // Get source size for frame pool
         let item_size = item.Size().map_err(|e| format!("item.Size: {}", e))?;
+        let mut current_src_w = item_size.Width as u32;
+        let mut current_src_h = item_size.Height as u32;
 
         // Create free-threaded frame pool (2 frames, BGRA8)
         let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
@@ -552,11 +688,15 @@ fn wgc_capture_loop(
             item_size.Width, item_size.Height, dst_w, dst_h
         );
 
+        let frame_interval = std::time::Duration::from_micros(1_000_000 / config.target_fps as u64);
         let start = Instant::now();
         let mut frame_count: u64 = 0;
+        let mut last_nv12: Option<Vec<u8>> = None;
 
         // Poll loop
         loop {
+            let loop_start = Instant::now();
+
             // Check if the capture source was closed
             if closed_flag.load(Ordering::Relaxed) {
                 eprintln!("[capture-wgc] Capture item closed, stopping");
@@ -564,66 +704,107 @@ fn wgc_capture_loop(
             }
 
             // Try to get next frame — non-blocking
-            let frame = match frame_pool.TryGetNextFrame() {
-                Ok(f) => f,
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                    continue;
+            let got_new_frame = match frame_pool.TryGetNextFrame() {
+                Ok(frame) => {
+                    // Detect resize via ContentSize
+                    let content_size = frame.ContentSize()
+                        .map_err(|e| format!("ContentSize: {}", e))?;
+                    let new_w = content_size.Width as u32;
+                    let new_h = content_size.Height as u32;
+
+                    if new_w > 0 && new_h > 0 && (new_w != current_src_w || new_h != current_src_h) {
+                        eprintln!(
+                            "[capture-wgc] Resize detected: {}x{} → {}x{}",
+                            current_src_w, current_src_h, new_w, new_h
+                        );
+                        current_src_w = new_w;
+                        current_src_h = new_h;
+
+                        // Recreate frame pool with new size
+                        let new_size = windows::Graphics::SizeInt32 {
+                            Width: new_w as i32,
+                            Height: new_h as i32,
+                        };
+                        frame_pool.Recreate(
+                            &winrt_device,
+                            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                            2,
+                            new_size,
+                        ).map_err(|e| format!("Recreate frame pool: {}", e))?;
+
+                        // Recreate video processor for new source dimensions
+                        video_proc = VideoProcessor::new(&device, new_w, new_h, dst_w, dst_h)?;
+
+                        // Invalidate cached frame (old dimensions)
+                        last_nv12 = None;
+
+                        // Drop this frame (from old pool size), next iteration gets correct one
+                        drop(frame);
+                        false
+                    } else {
+                        // Get the underlying D3D11 texture from the frame surface
+                        let surface = frame
+                            .Surface()
+                            .map_err(|e| format!("frame.Surface: {}", e))?;
+
+                        let dxgi_access: IDirect3DDxgiInterfaceAccess = surface
+                            .cast()
+                            .map_err(|e| format!("Cast to IDirect3DDxgiInterfaceAccess: {}", e))?;
+
+                        let bgra_texture: ID3D11Texture2D = dxgi_access
+                            .GetInterface()
+                            .map_err(|e| format!("GetInterface (ID3D11Texture2D): {}", e))?;
+
+                        // Convert BGRA → NV12 via D3D11 video processor
+                        match video_proc.convert_and_readback(&context, &bgra_texture) {
+                            Ok(data) => {
+                                last_nv12 = Some(data);
+                                drop(frame);
+                                true
+                            }
+                            Err(e) => {
+                                eprintln!("[capture-wgc] convert error: {}", e);
+                                drop(frame);
+                                false
+                            }
+                        }
+                    }
                 }
+                Err(_) => false, // No new frame available
             };
 
-            // Get the underlying D3D11 texture from the frame surface
-            let surface = frame
-                .Surface()
-                .map_err(|e| format!("frame.Surface: {}", e))?;
+            // Send frame (new or cached) to keep encoder continuously fed
+            if let Some(ref nv12_data) = last_nv12 {
+                frame_count += 1;
+                if frame_count <= 3 || frame_count % 300 == 0 {
+                    eprintln!(
+                        "[capture-wgc] Frame {} ({:.1}s, src={}x{})",
+                        frame_count, start.elapsed().as_secs_f64(),
+                        current_src_w, current_src_h,
+                    );
+                }
 
-            let dxgi_access: IDirect3DDxgiInterfaceAccess = surface
-                .cast()
-                .map_err(|e| format!("Cast to IDirect3DDxgiInterfaceAccess: {}", e))?;
+                let raw_frame = RawFrame {
+                    data: nv12_data.clone(),
+                    width: dst_w,
+                    height: dst_h,
+                    timestamp_us: start.elapsed().as_micros() as u64,
+                };
 
-            let bgra_texture: ID3D11Texture2D = dxgi_access
-                .GetInterface()
-                .map_err(|e| format!("GetInterface (ID3D11Texture2D): {}", e))?;
-
-            frame_count += 1;
-            if frame_count <= 3 || frame_count % 120 == 0 {
-                eprintln!(
-                    "[capture-wgc] Frame {} ({:.1}s)",
-                    frame_count,
-                    start.elapsed().as_secs_f64()
-                );
+                match tx.try_send(raw_frame) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        eprintln!("[capture-wgc] Channel closed, stopping");
+                        break;
+                    }
+                }
             }
 
-            // Convert BGRA → NV12 via D3D11 video processor
-            let nv12 = match video_proc.convert_and_readback(&context, &bgra_texture) {
-                Ok(data) => data,
-                Err(e) => {
-                    eprintln!("[capture-wgc] convert_and_readback error: {}", e);
-                    // Drop frame explicitly before continuing
-                    drop(frame);
-                    continue;
-                }
-            };
-
-            let timestamp_us = start.elapsed().as_micros() as u64;
-
-            // Drop WGC frame before sending to avoid holding GPU resources
-            drop(frame);
-
-            let raw_frame = RawFrame {
-                data: nv12,
-                width: dst_w,
-                height: dst_h,
-                timestamp_us,
-            };
-
-            match tx.try_send(raw_frame) {
-                Ok(()) => {}
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {}
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    eprintln!("[capture-wgc] Frame channel closed, stopping");
-                    break;
-                }
+            // Frame pacing: sleep for remainder of frame interval
+            let elapsed = loop_start.elapsed();
+            if elapsed < frame_interval {
+                std::thread::sleep(frame_interval - elapsed);
             }
         }
 
