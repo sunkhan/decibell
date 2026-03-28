@@ -40,7 +40,14 @@ pub async fn list_sources() -> Result<Vec<CaptureSource>, String> {
     }
     #[cfg(target_os = "windows")]
     {
-        super::capture_wgc::list_sources().await
+        tokio::task::spawn_blocking(|| {
+            let mut sources = super::capture_dxgi::list_sources().unwrap_or_default();
+            let mut windows = super::capture_wgc::list_window_sources().unwrap_or_default();
+            sources.append(&mut windows);
+            Ok(sources)
+        })
+        .await
+        .map_err(|e| format!("Join error: {}", e))?
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
@@ -60,7 +67,17 @@ pub async fn start_capture(
     }
     #[cfg(target_os = "windows")]
     {
-        super::capture_wgc::start_capture(source_id, config).await
+        if source_id.starts_with("monitor:") {
+            let source_id = source_id.to_string();
+            let config = config.clone();
+            tokio::task::spawn_blocking(move || {
+                super::capture_dxgi::start_capture(&source_id, &config)
+            })
+            .await
+            .map_err(|e| format!("Join error: {}", e))?
+        } else {
+            super::capture_wgc::start_capture(source_id, config).await
+        }
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {

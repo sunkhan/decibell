@@ -1,4 +1,3 @@
-use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
@@ -7,7 +6,8 @@ use std::time::Instant;
 use super::capture::{CaptureConfig, CaptureSource, CaptureSourceType, RawFrame};
 
 use windows::{
-    core::*,
+    core::{IInspectable, Interface},
+    Foundation::TypedEventHandler,
     Graphics::Capture::*,
     Graphics::DirectX::Direct3D11::IDirect3DDevice,
     Graphics::DirectX::DirectXPixelFormat,
@@ -15,23 +15,31 @@ use windows::{
     Win32::Graphics::Direct3D::*,
     Win32::Graphics::Direct3D11::*,
     Win32::Graphics::Dxgi::*,
+    Win32::Graphics::Dxgi::Common::*,
     Win32::System::WinRT::Direct3D11::*,
     Win32::System::WinRT::Graphics::Capture::*,
     Win32::UI::WindowsAndMessaging::*,
 };
 
+// Wrapper to send COM pointers across threads.
+// Safety: WGC capture objects are created on one thread and used on one thread;
+// we only move them once (from spawn_blocking �� capture thread).
+struct SendPtr<T> {
+    inner: T,
+}
+impl<T> SendPtr<T> {
+    fn new(val: T) -> Self { Self { inner: val } }
+    fn into_inner(self) -> T { self.inner }
+}
+unsafe impl<T> Send for SendPtr<T> {}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-/// List available capture sources (monitors and windows).
-pub async fn list_sources() -> Result<Vec<CaptureSource>, String> {
-    tokio::task::spawn_blocking(|| {
-        let mut sources = Vec::new();
-        enumerate_monitors(&mut sources);
-        enumerate_windows(&mut sources);
-        Ok(sources)
-    })
-    .await
-    .map_err(|e| format!("Join error: {}", e))?
+/// List available window capture sources (monitors handled by DXGI DD).
+pub fn list_window_sources() -> Result<Vec<CaptureSource>, String> {
+    let mut sources = Vec::new();
+    enumerate_windows(&mut sources);
+    Ok(sources)
 }
 
 /// Start capturing from the given source. Returns a Receiver of RawFrames (NV12).
@@ -53,9 +61,7 @@ pub async fn start_capture(
         let item = create_capture_item(&source_id)?;
 
         // Determine source size
-        let item_size = unsafe {
-            item.Size().map_err(|e| format!("item.Size: {}", e))?
-        };
+        let item_size = item.Size().map_err(|e| format!("item.Size: {}", e))?;
         let src_w = item_size.Width as u32;
         let src_h = item_size.Height as u32;
 
@@ -65,13 +71,21 @@ pub async fn start_capture(
         // Video processor for BGRA → NV12 conversion + scale
         let video_proc = VideoProcessor::new(&device, src_w, src_h, dst_w, dst_h)?;
 
+        // Wrap COM objects for Send — they are created here and moved to one thread
+        let device = SendPtr::new(device);
+        let context = SendPtr::new(context);
+        let winrt_device = SendPtr::new(winrt_device);
+        let item = SendPtr::new(item);
+        let video_proc = SendPtr::new(video_proc);
+
         // Spawn capture thread
         std::thread::Builder::new()
             .name("decibell-capture".to_string())
             .spawn(move || {
                 if let Err(e) = wgc_capture_loop(
-                    device, context, winrt_device, item, video_proc,
-                    tx, config, dst_w, dst_h,
+                    device.into_inner(), context.into_inner(),
+                    winrt_device.into_inner(), item.into_inner(),
+                    video_proc.into_inner(), tx, config, dst_w, dst_h,
                 ) {
                     eprintln!("[capture-wgc] Capture loop error: {}", e);
                 }
@@ -85,68 +99,6 @@ pub async fn start_capture(
 }
 
 // ─── Source Enumeration ───────────────────────────────────────────────────────
-
-fn enumerate_monitors(sources: &mut Vec<CaptureSource>) {
-    unsafe {
-        let factory: IDXGIFactory1 = match CreateDXGIFactory1() {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("[capture-wgc] CreateDXGIFactory1 failed: {}", e);
-                return;
-            }
-        };
-
-        let mut adapter_idx: u32 = 0;
-        loop {
-            let adapter: IDXGIAdapter1 = match factory.EnumAdapters1(adapter_idx) {
-                Ok(a) => a,
-                Err(_) => break, // DXGI_ERROR_NOT_FOUND
-            };
-
-            let mut output_idx: u32 = 0;
-            loop {
-                let output: IDXGIOutput = match adapter.EnumOutputs(output_idx) {
-                    Ok(o) => o,
-                    Err(_) => break,
-                };
-
-                let desc = match output.GetDesc() {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!("[capture-wgc] GetDesc failed: {}", e);
-                        output_idx += 1;
-                        continue;
-                    }
-                };
-
-                let coords = desc.DesktopCoordinates;
-                let width = (coords.right - coords.left).unsigned_abs();
-                let height = (coords.bottom - coords.top).unsigned_abs();
-
-                // Decode null-terminated UTF-16 name
-                let name_raw = &desc.DeviceName;
-                let end = name_raw.iter().position(|&c| c == 0).unwrap_or(name_raw.len());
-                let name = if end > 0 {
-                    String::from_utf16_lossy(&name_raw[..end])
-                } else {
-                    format!("Monitor {}", sources.len() + 1)
-                };
-
-                sources.push(CaptureSource {
-                    id: format!("monitor:{}:{}", adapter_idx, output_idx),
-                    name,
-                    source_type: CaptureSourceType::Screen,
-                    width,
-                    height,
-                });
-
-                output_idx += 1;
-            }
-
-            adapter_idx += 1;
-        }
-    }
-}
 
 fn enumerate_windows(sources: &mut Vec<CaptureSource>) {
     let mut hwnds: Vec<HWND> = Vec::new();
@@ -275,55 +227,10 @@ fn create_winrt_device(device: &ID3D11Device) -> Result<IDirect3DDevice, String>
 // ─── Capture Item Creation ────────────────────────────────────────────────────
 
 fn create_capture_item(source_id: &str) -> Result<GraphicsCaptureItem, String> {
-    if let Some(rest) = source_id.strip_prefix("monitor:") {
-        create_capture_item_for_monitor(rest)
-    } else if let Some(rest) = source_id.strip_prefix("window:") {
+    if let Some(rest) = source_id.strip_prefix("window:") {
         create_capture_item_for_window(rest)
     } else {
-        Err(format!("Unknown source id format: {}", source_id))
-    }
-}
-
-fn create_capture_item_for_monitor(id: &str) -> Result<GraphicsCaptureItem, String> {
-    // id is "adapter_idx:output_idx"
-    let mut parts = id.splitn(2, ':');
-    let adapter_idx: u32 = parts
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or("Invalid adapter_idx")?;
-    let output_idx: u32 = parts
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or("Invalid output_idx")?;
-
-    // Re-enumerate DXGI to get the HMONITOR
-    let hmonitor = unsafe {
-        let factory: IDXGIFactory1 =
-            CreateDXGIFactory1().map_err(|e| format!("CreateDXGIFactory1: {}", e))?;
-
-        let adapter: IDXGIAdapter1 = factory
-            .EnumAdapters1(adapter_idx)
-            .map_err(|e| format!("EnumAdapters1({}): {}", adapter_idx, e))?;
-
-        let output: IDXGIOutput = adapter
-            .EnumOutputs(output_idx)
-            .map_err(|e| format!("EnumOutputs({}): {}", output_idx, e))?;
-
-        let desc = output
-            .GetDesc()
-            .map_err(|e| format!("output.GetDesc: {}", e))?;
-
-        desc.Monitor
-    };
-
-    let interop: IGraphicsCaptureItemInterop =
-        windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
-            .map_err(|e| format!("IGraphicsCaptureItemInterop factory: {}", e))?;
-
-    unsafe {
-        interop
-            .CreateForMonitor(hmonitor)
-            .map_err(|e| format!("CreateForMonitor: {}", e))
+        Err(format!("WGC capture only supports window: sources, got: {}", source_id))
     }
 }
 
@@ -343,7 +250,7 @@ fn create_capture_item_for_window(id: &str) -> Result<GraphicsCaptureItem, Strin
 
     unsafe {
         interop
-            .CreateForWindow(hwnd)
+            .CreateForWindow::<_, GraphicsCaptureItem>(hwnd)
             .map_err(|e| format!("CreateForWindow: {}", e))
     }
 }
@@ -362,6 +269,9 @@ struct VideoProcessor {
     output_height: u32,
 }
 
+// Safety: VideoProcessor is created and used on a single capture thread
+unsafe impl Send for VideoProcessor {}
+
 impl VideoProcessor {
     fn new(
         device: &ID3D11Device,
@@ -376,9 +286,9 @@ impl VideoProcessor {
                 .cast()
                 .map_err(|e| format!("Cast to ID3D11VideoDevice: {}", e))?;
 
-            let mut context_ptr: Option<ID3D11DeviceContext> = None;
-            device.GetImmediateContext(&mut context_ptr);
-            let base_context = context_ptr.ok_or("GetImmediateContext returned None")?;
+            let base_context = device
+                .GetImmediateContext()
+                .map_err(|e| format!("GetImmediateContext: {}", e))?;
 
             let video_context: ID3D11VideoContext = base_context
                 .cast()
@@ -418,9 +328,11 @@ impl VideoProcessor {
                 MiscFlags: 0,
             };
 
-            let nv12_texture = device
-                .CreateTexture2D(&nv12_desc, None)
+            let mut nv12_texture: Option<ID3D11Texture2D> = None;
+            device
+                .CreateTexture2D(&nv12_desc, None, Some(&mut nv12_texture))
                 .map_err(|e| format!("CreateTexture2D (NV12): {}", e))?;
+            let nv12_texture = nv12_texture.ok_or("CreateTexture2D (NV12) returned None")?;
 
             // Staging texture for CPU readback
             let staging_desc = D3D11_TEXTURE2D_DESC {
@@ -436,9 +348,11 @@ impl VideoProcessor {
                 MiscFlags: 0,
             };
 
-            let staging_texture = device
-                .CreateTexture2D(&staging_desc, None)
+            let mut staging_texture: Option<ID3D11Texture2D> = None;
+            device
+                .CreateTexture2D(&staging_desc, None, Some(&mut staging_texture))
                 .map_err(|e| format!("CreateTexture2D (staging): {}", e))?;
+            let staging_texture = staging_texture.ok_or("CreateTexture2D (staging) returned None")?;
 
             // Output view on the NV12 texture
             let output_view_desc = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
@@ -448,13 +362,16 @@ impl VideoProcessor {
                 },
             };
 
-            let output_view = video_device
+            let mut output_view: Option<ID3D11VideoProcessorOutputView> = None;
+            video_device
                 .CreateVideoProcessorOutputView(
                     &nv12_texture,
                     &enumerator,
                     &output_view_desc,
+                    Some(&mut output_view),
                 )
                 .map_err(|e| format!("CreateVideoProcessorOutputView: {}", e))?;
+            let output_view = output_view.ok_or("CreateVideoProcessorOutputView returned None")?;
 
             Ok(VideoProcessor {
                 video_device,
@@ -488,14 +405,16 @@ impl VideoProcessor {
                 },
             };
 
-            let input_view = self
-                .video_device
+            let mut input_view: Option<ID3D11VideoProcessorInputView> = None;
+            self.video_device
                 .CreateVideoProcessorInputView(
                     bgra_texture,
                     &self.enumerator,
                     &input_view_desc,
+                    Some(&mut input_view),
                 )
                 .map_err(|e| format!("CreateVideoProcessorInputView: {}", e))?;
+            let input_view = input_view.ok_or("CreateVideoProcessorInputView returned None")?;
 
             // Build the stream descriptor
             let stream = D3D11_VIDEO_PROCESSOR_STREAM {
@@ -505,10 +424,10 @@ impl VideoProcessor {
                 PastFrames: 0,
                 FutureFrames: 0,
                 ppPastSurfaces: std::ptr::null_mut(),
-                pInputSurface: ManuallyDrop::new(Some(input_view)),
+                pInputSurface: std::mem::ManuallyDrop::new(Some(input_view)),
                 ppFutureSurfaces: std::ptr::null_mut(),
                 ppPastSurfacesRight: std::ptr::null_mut(),
-                pInputSurfaceRight: ManuallyDrop::new(None),
+                pInputSurfaceRight: std::mem::ManuallyDrop::new(None),
                 ppFutureSurfacesRight: std::ptr::null_mut(),
             };
 
@@ -615,14 +534,10 @@ fn wgc_capture_loop(
             .map_err(|e| format!("CreateCaptureSession: {}", e))?;
 
         // Try to enable cursor capture (IGraphicsCaptureSession2)
-        if let Ok(s2) = session.cast::<IGraphicsCaptureSession2>() {
-            let _ = s2.SetIsCursorCaptureEnabled(true);
-        }
+        let _ = session.SetIsCursorCaptureEnabled(true);
 
         // Try to disable yellow border (IGraphicsCaptureSession3)
-        if let Ok(s3) = session.cast::<IGraphicsCaptureSession3>() {
-            let _ = s3.SetIsBorderRequired(false);
-        }
+        let _ = session.SetIsBorderRequired(false);
 
         // Start capturing
         session
