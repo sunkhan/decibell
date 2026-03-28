@@ -58,6 +58,48 @@ impl VoiceEngine {
         socket
             .connect(&udp_addr)
             .map_err(|e| format!("UDP connect failed: {}", e))?;
+        // Increase socket buffers to handle video keyframe bursts.
+        // Default ~208KB may be capped by net.core.rmem_max / wmem_max.
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let fd = socket.as_raw_fd();
+            let buf_size: libc::c_int = 4 * 1024 * 1024; // 4 MB (kernel may cap)
+            unsafe {
+                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
+                    &buf_size as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
+                    &buf_size as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket;
+            let sock = socket.as_raw_socket();
+            let buf_size: i32 = 4 * 1024 * 1024; // 4 MB
+            unsafe {
+                let _ = windows::Win32::Networking::WinSock::setsockopt(
+                    windows::Win32::Networking::WinSock::SOCKET(sock as usize),
+                    windows::Win32::Networking::WinSock::SOL_SOCKET as i32,
+                    windows::Win32::Networking::WinSock::SO_RCVBUF as i32,
+                    Some(std::slice::from_raw_parts(
+                        &buf_size as *const i32 as *const u8,
+                        std::mem::size_of::<i32>(),
+                    )),
+                );
+                let _ = windows::Win32::Networking::WinSock::setsockopt(
+                    windows::Win32::Networking::WinSock::SOCKET(sock as usize),
+                    windows::Win32::Networking::WinSock::SOL_SOCKET as i32,
+                    windows::Win32::Networking::WinSock::SO_SNDBUF as i32,
+                    Some(std::slice::from_raw_parts(
+                        &buf_size as *const i32 as *const u8,
+                        std::mem::size_of::<i32>(),
+                    )),
+                );
+            }
+        }
         let socket = Arc::new(socket);
 
         let socket_for_audio = socket.clone();
@@ -97,12 +139,38 @@ impl VoiceEngine {
                             }));
                         }
                         VoiceEvent::VideoFrameReady(frame) => {
+                            eprintln!("[video-bridge] Emitting stream_frame: user='{}', {} bytes, keyframe={}",
+                                frame.streamer_username, frame.data.len(), frame.is_keyframe);
+                            use base64::Engine;
+                            let b64_data = base64::engine::general_purpose::STANDARD.encode(&frame.data);
+                            // For keyframes, extract avcC description (SPS/PPS) from the
+                            // AVCC-formatted data. WebCodecs needs this to configure the decoder.
+                            let b64_desc = if frame.is_keyframe {
+                                encoder::extract_avcc_description_from_avcc(&frame.data)
+                                    .map(|d| {
+                                        eprintln!("[video-bridge] avcC description: {} bytes", d.len());
+                                        base64::engine::general_purpose::STANDARD.encode(&d)
+                                    })
+                            } else {
+                                None
+                            };
                             let _ = app.emit("stream_frame", serde_json::json!({
                                 "username": frame.streamer_username,
-                                "data": frame.data,
-                                "timestamp": frame.frame_id as u64 * 33_333, // ~30fps PTS in microseconds
+                                "data": b64_data,
+                                "timestamp": frame.frame_id as u64 * 33_333,
                                 "keyframe": frame.is_keyframe,
+                                "description": b64_desc,
                             }));
+                        }
+                        VoiceEvent::KeyframeRequested => {
+                            // Forward PLI to the video encoder if streaming
+                            use tauri::Manager;
+                            let state = app.state::<crate::state::SharedState>();
+                            let s = state.lock().await;
+                            if let Some(ref engine) = s.video_engine {
+                                engine.force_keyframe();
+                                eprintln!("[video-bridge] Keyframe request forwarded to encoder");
+                            }
                         }
                         VoiceEvent::Error(msg) => {
                             let _ = app.emit("voice_error", serde_json::json!({
