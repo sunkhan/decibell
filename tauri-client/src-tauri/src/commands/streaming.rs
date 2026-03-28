@@ -38,9 +38,9 @@ pub async fn start_screen_share(
     };
 
     let bitrate_kbps: u32 = match quality.as_str() {
-        "low" => 1500,
-        "medium" => 3000,
-        _ => 6000,
+        "low" => 3000,
+        "medium" => 6000,
+        _ => 10000,
     };
 
     eprintln!("[stream] start_screen_share: server='{}', channel='{}', source='{}', {}x{} @ {}fps",

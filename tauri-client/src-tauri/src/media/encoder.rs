@@ -170,7 +170,7 @@ impl H264Encoder {
     pub fn new(config: &EncoderConfig) -> Result<Self, String> {
         ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
 
-        let codec = Self::find_hw_encoder()?;
+        let (codec, codec_name) = Self::find_hw_encoder()?;
         let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
             .encoder()
             .video()
@@ -183,6 +183,9 @@ impl H264Encoder {
         context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
         context.set_format(ffmpeg_next::format::Pixel::NV12);
         context.set_gop(config.fps * config.keyframe_interval_secs);
+        // Disable B-frames for real-time streaming — B-frames require reordering
+        // which adds latency and can cause artifacts with simple decoders.
+        context.set_max_b_frames(0);
 
         // Signal BT.709 colorspace in SPS VUI so the decoder uses the correct
         // YUV→RGB matrix. Without this, decoders may assume BT.601 and produce
@@ -191,12 +194,29 @@ impl H264Encoder {
         context.set_color_range(ffmpeg_next::color::Range::MPEG);
 
         let mut opts = ffmpeg_next::Dictionary::new();
-        // forced_idr: NVENC produces IDR frames (not non-IDR I-frames) on keyframe requests
-        opts.set("forced_idr", "1");
-        // NVENC low-latency: p1 = fastest preset, ull = ultra low latency tune
-        // (sets rc-lookahead=0 internally, eliminates startup buffering delay)
-        opts.set("preset", "p1");
-        opts.set("tune", "ull");
+        match codec_name.as_str() {
+            "h264_nvenc" => {
+                opts.set("forced_idr", "1");
+                opts.set("preset", "p1");
+                opts.set("tune", "ull");
+            }
+            "h264_amf" => {
+                opts.set("usage", "ultralowlatency");
+                opts.set("quality", "speed");
+            }
+            "h264_qsv" => {
+                opts.set("preset", "veryfast");
+                opts.set("forced_idr", "1");
+            }
+            "h264_mf" => {
+                opts.set("rate_control", "cbr");
+                opts.set("scenario", "display_remoting");
+                opts.set("hw_encoding", "1");
+            }
+            _ => {
+                // h264_vaapi — use defaults
+            }
+        }
 
         let encoder = context
             .open_with(opts)
@@ -215,20 +235,20 @@ impl H264Encoder {
     }
 
     /// Find the best available hardware H.264 encoder.
-    fn find_hw_encoder() -> Result<ffmpeg_next::Codec, String> {
+    fn find_hw_encoder() -> Result<(ffmpeg_next::Codec, String), String> {
         let candidates = if cfg!(target_os = "linux") {
             vec!["h264_nvenc", "h264_vaapi"]
         } else {
-            vec!["h264_nvenc", "h264_amf", "h264_qsv"]
+            vec!["h264_nvenc", "h264_amf", "h264_qsv", "h264_mf"]
         };
 
         for name in &candidates {
             if let Some(codec) = ffmpeg_next::encoder::find_by_name(name) {
                 log::info!("Using H.264 encoder: {}", name);
-                return Ok(codec);
+                return Ok((codec, name.to_string()));
             }
         }
-        Err("No hardware H.264 encoder found. Install NVIDIA drivers (NVENC) or ensure VA-API is available.".to_string())
+        Err("No hardware H.264 encoder found. Install NVIDIA drivers (NVENC) or ensure VA-API/Media Foundation is available.".to_string())
     }
 
     /// Receive one encoded packet and convert to AVCC format.
