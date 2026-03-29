@@ -40,8 +40,8 @@ zbus = { version = "5", default-features = false, features = ["blocking"] }
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-core = "0.58"
-windows = { version = "0.58", features = [
+windows-core = "0.61"
+windows = { version = "0.61", features = [
     "Graphics_Capture",
     "Graphics_DirectX",
     "Graphics_DirectX_Direct3D11",

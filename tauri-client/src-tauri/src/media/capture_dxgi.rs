@@ -230,10 +230,9 @@ impl VideoProcessor {
                 .cast()
                 .map_err(|e| format!("Cast to ID3D11VideoDevice: {}", e))?;
 
-            let mut base_context_opt = None;
-            device.GetImmediateContext(&mut base_context_opt);
-            let base_context = base_context_opt
-                .ok_or("GetImmediateContext returned None")?;
+            let base_context = device
+                .GetImmediateContext()
+                .map_err(|e| format!("GetImmediateContext: {}", e))?;
 
             let video_context: ID3D11VideoContext = base_context
                 .cast()
@@ -279,7 +278,7 @@ impl VideoProcessor {
                 Format: DXGI_FORMAT_NV12,
                 SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
                 Usage: D3D11_USAGE_DEFAULT,
-                BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+                BindFlags: D3D11_BIND_RENDER_TARGET,
                 CPUAccessFlags: 0,
                 MiscFlags: 0,
             };
@@ -299,7 +298,7 @@ impl VideoProcessor {
                 SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
                 Usage: D3D11_USAGE_STAGING,
                 BindFlags: 0,
-                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ,
                 MiscFlags: 0,
             };
 

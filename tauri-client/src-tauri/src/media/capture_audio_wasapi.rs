@@ -5,9 +5,11 @@ use super::capture::AudioFrame;
 
 use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::*;
+use windows::Win32::System::Com::StructuredStorage::*;
 use windows::Win32::System::Threading::*;
+use windows::Win32::System::Variant::VT_BLOB;
 use windows::Win32::Foundation::*;
-use windows::core::{implement, Interface, Error, IUnknown, GUID, HRESULT};
+use windows::core::{implement, Interface, Error, IUnknown, GUID, HRESULT, Ref};
 
 // Constants not always exported by the windows crate
 const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xFFFE;
@@ -15,17 +17,6 @@ const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_GUID: GUID = GUID::from_values(
     0x00000003, 0x0000, 0x0010,
     [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71],
 );
-
-/// Raw PROPVARIANT layout for VT_BLOB on x64.
-/// Used to pass activation params to ActivateAudioInterfaceAsync.
-#[repr(C)]
-struct PropVariantBlob {
-    vt: u16,
-    _reserved: [u16; 3],
-    cb_size: u32,
-    _pad: u32,
-    p_blob_data: *const u8,
-}
 
 /// Start capturing audio from a specific process by PID.
 /// Uses WASAPI Process Loopback (INCLUDE_PROCESS_TREE) — requires Win10 2004+.
@@ -109,15 +100,14 @@ fn run_wasapi_capture(
             },
         };
 
-        // Build PROPVARIANT manually (the core PROPVARIANT type is opaque)
-        let raw_pv = PropVariantBlob {
-            vt: 0x0041, // VT_BLOB
-            _reserved: [0; 3],
-            cb_size: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
-            _pad: 0,
-            p_blob_data: &activation_params as *const _ as *const u8,
-        };
-        let prop_variant: windows::core::PROPVARIANT = std::mem::transmute(raw_pv);
+        // Wrap in PROPVARIANT for ActivateAudioInterfaceAsync
+        let mut prop_variant: PROPVARIANT = std::mem::zeroed();
+        {
+            let inner = &mut prop_variant.Anonymous.Anonymous;
+            inner.vt = VT_BLOB;
+            inner.Anonymous.blob.cbSize = std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
+            inner.Anonymous.blob.pBlobData = &activation_params as *const _ as *mut u8;
+        }
 
         // Create completion handler
         let inner = Arc::new(AudioActivationInner {
@@ -133,7 +123,7 @@ fn run_wasapi_capture(
         let _operation = ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &IAudioClient::IID,
-            Some(&prop_variant as *const windows::core::PROPVARIANT),
+            Some(&prop_variant as *const PROPVARIANT),
             &handler_ref,
         )
         .map_err(|e| format!("ActivateAudioInterfaceAsync: {}", e))?;
@@ -237,7 +227,7 @@ fn run_wasapi_capture(
                     let buffer_slice = std::slice::from_raw_parts(buffer_ptr, buffer_bytes);
 
                     // Convert to interleaved stereo f32
-                    let is_silent = flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
+                    let is_silent = (flags as i32) & AUDCLNT_BUFFERFLAGS_SILENT != 0;
 
                     let stereo_f32 = if is_silent {
                         vec![0.0f32; num_frames as usize * 2]
@@ -346,9 +336,10 @@ struct AudioActivationHandlerCom {
 impl IActivateAudioInterfaceCompletionHandler_Impl for AudioActivationHandlerCom_Impl {
     fn ActivateCompleted(
         &self,
-        activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
+        activateoperation: Ref<'_, IActivateAudioInterfaceAsyncOperation>,
     ) -> windows::core::Result<()> {
-        let operation = activateoperation.ok_or(Error::from(E_POINTER))?;
+        let operation: &IActivateAudioInterfaceAsyncOperation =
+            activateoperation.ok().map_err(|_| Error::from(E_POINTER))?;
 
         let mut activate_result = HRESULT(0);
         let mut activated_interface: Option<IUnknown> = None;
