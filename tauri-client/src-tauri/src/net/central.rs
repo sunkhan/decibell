@@ -8,7 +8,7 @@ use super::proto::*;
 use crate::events;
 use crate::state::AppState;
 
-const CENTRAL_HOST: &str = "127.0.0.1";
+const CENTRAL_HOST: &str = "93.131.255.82";
 const CENTRAL_PORT: u16 = 8080;
 
 pub struct CentralClient {
