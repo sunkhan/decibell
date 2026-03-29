@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - platform: ubuntu-22.04
+          - platform: ubuntu-24.04
             target: linux
           - platform: windows-latest
             target: windows
@@ -61,6 +61,7 @@ jobs:
             libavfilter-dev \
             libavdevice-dev \
             libasound2-dev \
+            libdbus-1-dev \
             pkg-config
 
       - name: Install frontend dependencies
