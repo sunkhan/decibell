@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - platform: ubuntu-24.04
@@ -63,6 +64,13 @@ jobs:
             libasound2-dev \
             libdbus-1-dev \
             pkg-config
+
+      - name: Install Windows system dependencies
+        if: matrix.target == 'windows'
+        run: |
+          vcpkg install ffmpeg[avcodec,avformat,avutil,swscale,swresample,avfilter,avdevice,nvcodec,amf,qsv]:x64-windows-static-md opus:x64-windows-static-md
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+        shell: pwsh
 
       - name: Install frontend dependencies
         working-directory: tauri-client
