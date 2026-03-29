@@ -71,8 +71,12 @@ jobs:
       - name: Install Windows system dependencies
         if: matrix.target == 'windows'
         run: |
-          vcpkg install ffmpeg[nvcodec,amf,qsv]:x64-windows-static-md opus:x64-windows-static-md
-          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+          vcpkg install ffmpeg[nvcodec,amf,qsv]:x64-windows opus:x64-windows
+          choco install pkgconfiglite -y
+          $installed = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          echo "FFMPEG_DIR=$installed" >> $env:GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$installed\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "$installed\bin" >> $env:GITHUB_PATH
         shell: pwsh
 
       - name: Install frontend dependencies
