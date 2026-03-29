@@ -13,10 +13,16 @@ pub async fn join_voice_channel(
 ) -> Result<(), String> {
     let mut s = state.lock().await;
 
-    // If already in voice, stop the existing engine
+    // If already in voice, stop existing engines in dependency order
     if s.voice_engine.is_some() {
         for client in s.communities.values() {
             let _ = client.leave_voice_channel().await;
+        }
+        if let Some(mut engine) = s.audio_stream_engine.take() {
+            engine.stop();
+        }
+        if let Some(mut engine) = s.video_engine.take() {
+            engine.stop();
         }
         if let Some(mut engine) = s.voice_engine.take() {
             engine.stop();
@@ -50,11 +56,13 @@ pub async fn leave_voice_channel(
         let _ = client.leave_voice_channel().await;
     }
 
-    // Stop video engine first (it depends on voice engine's socket)
+    // Stop engines in dependency order: audio stream → video → voice
+    if let Some(mut engine) = s.audio_stream_engine.take() {
+        engine.stop();
+    }
     if let Some(mut engine) = s.video_engine.take() {
         engine.stop();
     }
-
     if let Some(mut engine) = s.voice_engine.take() {
         engine.stop();
     }
@@ -93,6 +101,20 @@ pub async fn set_voice_threshold(
     let s = state.lock().await;
     if let Some(ref engine) = s.voice_engine {
         engine.set_voice_threshold(threshold_db);
+        Ok(())
+    } else {
+        Err("Not in a voice channel".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn set_stream_volume(
+    volume: f32,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    if let Some(ref engine) = s.voice_engine {
+        engine.set_stream_volume(volume.clamp(0.0, 1.0));
         Ok(())
     } else {
         Err("Not in a voice channel".to_string())

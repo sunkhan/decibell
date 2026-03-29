@@ -42,6 +42,7 @@ pub fn run() {
             commands::streaming::watch_stream,
             commands::streaming::stop_watching,
             commands::streaming::request_keyframe,
+            commands::voice::set_stream_volume,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
@@ -53,6 +54,9 @@ pub fn run() {
                 let state = state.clone();
                 tauri::async_runtime::block_on(async move {
                     let mut s = state.lock().await;
+                    if let Some(mut engine) = s.audio_stream_engine.take() {
+                        engine.stop();
+                    }
                     if let Some(mut engine) = s.video_engine.take() {
                         engine.stop();
                     }

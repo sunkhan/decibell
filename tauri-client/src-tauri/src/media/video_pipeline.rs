@@ -49,6 +49,12 @@ pub fn run_video_send_pipeline(
     let frame_interval = Duration::from_secs_f64(1.0 / target_fps as f64);
     let mut last_frame_time = Instant::now();
 
+    // Cache the last frame for re-sending during idle periods (e.g. PipeWire
+    // damage-based capture sends nothing when the screen is static). Re-sending
+    // at a low rate keeps keyframes flowing so new viewers can join.
+    let mut last_frame: Option<RawFrame> = None;
+    let repeat_interval = Duration::from_millis(500);
+
     loop {
         // Check control messages
         match control_rx.try_recv() {
@@ -70,10 +76,34 @@ pub fn run_video_send_pipeline(
             }
         }
 
-        // Receive frame
+        // Receive frame — or repeat the last frame if idle too long
         let frame = match frame_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(f) => f,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Ok(f) => {
+                last_frame = Some(RawFrame {
+                    data: f.data.clone(),
+                    width: f.width,
+                    height: f.height,
+                    timestamp_us: f.timestamp_us,
+                });
+                f
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // No new frame — re-send last frame if idle long enough
+                if last_frame_time.elapsed() >= repeat_interval {
+                    if let Some(ref cached) = last_frame {
+                        RawFrame {
+                            data: cached.data.clone(),
+                            width: cached.width,
+                            height: cached.height,
+                            timestamp_us: cached.timestamp_us,
+                        }
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
         last_frame_time = Instant::now();

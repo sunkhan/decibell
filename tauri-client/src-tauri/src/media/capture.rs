@@ -34,6 +34,15 @@ pub struct RawFrame {
     pub timestamp_us: u64,
 }
 
+/// Raw audio frame from platform audio capture.
+#[derive(Debug)]
+pub struct AudioFrame {
+    /// Interleaved stereo f32 PCM samples (L, R, L, R, ...)
+    pub data: Vec<f32>,
+    pub channels: u16,
+    pub sample_rate: u32,
+}
+
 /// Result of starting a capture — the frame receiver plus the actual output dimensions.
 pub struct CaptureOutput {
     pub receiver: std::sync::mpsc::Receiver<RawFrame>,

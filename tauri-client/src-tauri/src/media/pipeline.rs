@@ -5,10 +5,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::codec::{
-    OpusDecoder, OpusEncoder, CHANNELS, FRAME_SIZE, MAX_OPUS_FRAME_SIZE, SAMPLE_RATE,
+    OpusDecoder, OpusEncoder, StereoOpusDecoder, FRAME_SIZE, MAX_OPUS_FRAME_SIZE,
+    SAMPLE_RATE, STEREO_FRAME_SAMPLES, STEREO_FRAME_SIZE,
 };
 use super::packet::{
     UdpAudioPacket, PACKET_TOTAL_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
+    PACKET_TYPE_STREAM_AUDIO,
 };
 use super::speaking::SpeakingDetector;
 use super::video_packet::{UdpVideoPacket, PACKET_TYPE_VIDEO, PACKET_TYPE_KEYFRAME_REQUEST};
@@ -20,6 +22,7 @@ pub enum ControlMessage {
     SetMute(bool),
     SetDeafen(bool),
     SetVoiceThreshold(f32), // dB threshold (-60 to 0); below this, send silence
+    SetStreamVolume(f32),   // 0.0 to 1.0 — viewer-side stream audio volume
     Shutdown,
 }
 
@@ -43,6 +46,8 @@ struct RemotePeer {
     speaking: SpeakingDetector,
     last_seq: u16,
     last_packet_time: Instant,
+    stream_audio_decoder: Option<StereoOpusDecoder>,
+    stream_audio_seq: u16,
 }
 
 // ── Main blocking pipeline entry-point ───────────────────────────────────────
@@ -123,7 +128,9 @@ pub fn run_audio_pipeline(
     let capture_buf: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
     let playback_buf: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::new()));
 
-    const BUF_CAP: usize = FRAME_SIZE * 8;
+    // Buffer capacity sized for voice + stream audio mixed together.
+    // 16 frames (~320ms at 48kHz) prevents starvation when both are active.
+    const BUF_CAP: usize = FRAME_SIZE * 16;
 
     // ── Input (capture) stream ────────────────────────────────────────────────
     let input_device_opt = host.default_input_device();
@@ -257,6 +264,7 @@ pub fn run_audio_pipeline(
     let mut deafened = false;
     let mut was_muted_before_deafen = false;
     let mut voice_threshold_db: f32 = -50.0; // dB threshold; below this, send silence
+    let mut stream_volume: f32 = 1.0; // 0.0–1.0 viewer-side stream audio volume
 
     let mut sequence: u16 = 0;
     let mut local_speaking = SpeakingDetector::new();
@@ -303,6 +311,9 @@ pub fn run_audio_pipeline(
                 }
                 Ok(ControlMessage::SetVoiceThreshold(db)) => {
                     voice_threshold_db = db;
+                }
+                Ok(ControlMessage::SetStreamVolume(v)) => {
+                    stream_volume = v.clamp(0.0, 1.0);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'main,
@@ -455,6 +466,8 @@ pub fn run_audio_pipeline(
                                         speaking: SpeakingDetector::new(),
                                         last_seq: pkt.sequence.wrapping_sub(1),
                                         last_packet_time: Instant::now(),
+                                        stream_audio_decoder: None,
+                                        stream_audio_seq: 0,
                                     }
                                 });
 
@@ -512,6 +525,61 @@ pub fn run_audio_pipeline(
                                         Err(e) => {
                                             let _ = event_tx
                                                 .send(VoiceEvent::Error(format!("Decode error: {}", e)));
+                                        }
+                                    }
+                                }
+                            } else if pkt.packet_type == PACKET_TYPE_STREAM_AUDIO {
+                                // ── Stream audio packet ────────────────────────
+                                if username != sender_id {
+                                    let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
+                                        RemotePeer {
+                                            decoder: OpusDecoder::new().unwrap_or_else(|_| {
+                                                OpusDecoder::new().expect("OpusDecoder::new failed twice")
+                                            }),
+                                            speaking: SpeakingDetector::new(),
+                                            last_seq: 0,
+                                            last_packet_time: Instant::now(),
+                                            stream_audio_decoder: None,
+                                            stream_audio_seq: 0,
+                                        }
+                                    });
+
+                                    // Lazy-init stereo decoder on first stream audio packet
+                                    if peer.stream_audio_decoder.is_none() {
+                                        peer.stream_audio_decoder = StereoOpusDecoder::new().ok();
+                                        // Set seq so first packet is accepted (not skipped as diff==0)
+                                        peer.stream_audio_seq = pkt.sequence.wrapping_sub(1);
+                                    }
+
+                                    let diff = pkt.sequence.wrapping_sub(peer.stream_audio_seq);
+                                    if diff == 0 || diff > 32768 {
+                                        // skip stale/duplicate
+                                    } else {
+                                        peer.stream_audio_seq = pkt.sequence;
+                                        peer.last_packet_time = Instant::now();
+
+                                        if let Some(ref mut decoder) = peer.stream_audio_decoder {
+                                            let opus_data = pkt.payload_data();
+                                            let mut pcm = [0i16; STEREO_FRAME_SAMPLES];
+                                            match decoder.decode(opus_data, &mut pcm) {
+                                                Ok(_) => {
+                                                    if !deafened {
+                                                        let mut pbuf = playback_buf.lock().unwrap();
+                                                        let remaining = BUF_CAP.saturating_sub(pbuf.len());
+                                                        let take = STEREO_FRAME_SIZE.min(remaining);
+                                                        for i in 0..take {
+                                                            let l = pcm[i * 2] as i32;
+                                                            let r = pcm[i * 2 + 1] as i32;
+                                                            let mono = ((l + r) / 2) as i16;
+                                                            let scaled = ((mono as f32) * stream_volume) as i16;
+                                                            pbuf.push_back(scaled);
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("[stream-audio-recv] Decode error: {}", e);
+                                                }
+                                            }
                                         }
                                     }
                                 }

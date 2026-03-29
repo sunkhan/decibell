@@ -26,13 +26,11 @@ pub async fn start_capture(
     _source_id: &str,
     config: &CaptureConfig,
 ) -> Result<CaptureOutput, String> {
-    let target_w = config.target_width;
-    let target_h = config.target_height;
     let config = config.clone();
 
     // Run portal dialog + PipeWire setup on a blocking thread
     // (portal dialog blocks until user picks a source)
-    let rx = tokio::task::spawn_blocking(move || -> Result<_, String> {
+    let result = tokio::task::spawn_blocking(move || -> Result<_, String> {
         // Step 1: Portal D-Bus interaction (shows picker dialog)
         let (pw_fd, node_id, dbus_conn) = portal_screencast_session()?;
 
@@ -41,26 +39,36 @@ pub async fn start_capture(
         // session alive for the duration of the capture.
         let (tx, rx) = std::sync::mpsc::sync_channel::<RawFrame>(4);
 
+        // When target is 0x0 ("source" quality), the actual dimensions aren't
+        // known until PipeWire negotiates. Use a oneshot to communicate them back.
+        let (dim_tx, dim_rx) = std::sync::mpsc::sync_channel::<(u32, u32)>(1);
+
+        let needs_resolution = config.target_width == 0 || config.target_height == 0;
+        let known_dims = (config.target_width, config.target_height);
+
         std::thread::Builder::new()
             .name("decibell-capture".to_string())
             .spawn(move || {
-                if let Err(e) = pipewire_capture_loop(pw_fd, node_id, tx, config, dbus_conn) {
+                if let Err(e) = pipewire_capture_loop(pw_fd, node_id, tx, config, dbus_conn, dim_tx) {
                     eprintln!("[capture] Capture loop error: {}", e);
                 }
             })
             .map_err(|e| format!("Spawn capture thread: {}", e))?;
 
-        Ok(rx)
+        // Wait for resolved dimensions from PipeWire format negotiation
+        let (width, height) = if needs_resolution {
+            dim_rx.recv_timeout(std::time::Duration::from_secs(10))
+                .map_err(|_| "Timeout waiting for PipeWire format negotiation".to_string())?
+        } else {
+            known_dims
+        };
+
+        Ok(CaptureOutput { receiver: rx, width, height })
     })
     .await
     .map_err(|e| format!("Join error: {}", e))??;
 
-    // On Linux, actual dimensions aren't known until the first PipeWire frame arrives.
-    // Use target or default; the encoder will receive correctly-sized frames.
-    let width = if target_w == 0 { 1920 } else { target_w };
-    let height = if target_h == 0 { 1080 } else { target_h };
-
-    Ok(CaptureOutput { receiver: rx, width, height })
+    Ok(result)
 }
 
 // ─── XDG Desktop Portal D-Bus interaction ───────────────────────────────────
@@ -297,6 +305,8 @@ struct CaptureData {
     start: Instant,
     quit_mainloop: pw::main_loop::MainLoopWeak,
     scaler: Option<SwsScaler>,
+    /// Oneshot sender for resolved dimensions (used when target is 0x0 "source" quality).
+    dim_tx: Option<std::sync::mpsc::SyncSender<(u32, u32)>>,
 }
 
 fn pipewire_capture_loop(
@@ -305,9 +315,12 @@ fn pipewire_capture_loop(
     tx: SyncSender<RawFrame>,
     config: CaptureConfig,
     _dbus_conn: zbus::blocking::Connection, // kept alive to preserve portal session
+    dim_tx: std::sync::mpsc::SyncSender<(u32, u32)>,
 ) -> Result<(), String> {
-    let target_width = if config.target_width == 0 { 1920 } else { config.target_width };
-    let target_height = if config.target_height == 0 { 1080 } else { config.target_height };
+    // 0 means "source resolution" — will be resolved in param_changed once
+    // PipeWire negotiates the actual format.
+    let target_width = config.target_width;
+    let target_height = config.target_height;
 
     eprintln!(
         "[capture] Starting PipeWire capture (node={}, target={}x{}@{}fps)",
@@ -333,6 +346,7 @@ fn pipewire_capture_loop(
         start: Instant::now(),
         quit_mainloop: mainloop.downgrade(),
         scaler: None,
+        dim_tx: Some(dim_tx),
     };
 
     let stream = pw::stream::StreamRc::new(
@@ -384,9 +398,24 @@ fn pipewire_capture_loop(
             let w = data.format.size().width;
             let h = data.format.size().height;
             let fmt = data.format.format();
+
+            // Resolve "source" resolution (0x0) to the actual capture dimensions
+            if data.target_width == 0 {
+                data.target_width = w;
+            }
+            if data.target_height == 0 {
+                data.target_height = h;
+            }
+
+            // Notify start_capture() of the resolved dimensions (for encoder init)
+            if let Some(dim_tx) = data.dim_tx.take() {
+                let _ = dim_tx.send((data.target_width, data.target_height));
+            }
+
             eprintln!(
-                "[capture] Negotiated format: {:?} {}x{} @ {}/{}",
+                "[capture] Negotiated format: {:?} {}x{} -> {}x{} @ {}/{}",
                 fmt, w, h,
+                data.target_width, data.target_height,
                 data.format.framerate().num,
                 data.format.framerate().denom,
             );

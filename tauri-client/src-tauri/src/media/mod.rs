@@ -1,6 +1,11 @@
+pub mod audio_stream_pipeline;
 pub mod capture;
 #[cfg(target_os = "linux")]
+pub mod capture_audio_pipewire;
+#[cfg(target_os = "linux")]
 pub mod capture_pipewire;
+#[cfg(target_os = "windows")]
+pub mod capture_audio_wasapi;
 #[cfg(target_os = "windows")]
 pub mod capture_wgc;
 #[cfg(target_os = "windows")]
@@ -228,6 +233,10 @@ impl VoiceEngine {
         let _ = self.control_tx.send(ControlMessage::SetVoiceThreshold(db));
     }
 
+    pub fn set_stream_volume(&self, volume: f32) {
+        let _ = self.control_tx.send(ControlMessage::SetStreamVolume(volume));
+    }
+
     pub fn is_muted(&self) -> bool { self.is_muted }
     pub fn is_deafened(&self) -> bool { self.is_deafened }
     pub fn socket(&self) -> Arc<UdpSocket> { self.socket.clone() }
@@ -312,6 +321,85 @@ impl VideoEngine {
 }
 
 impl Drop for VideoEngine {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+pub struct AudioStreamEngine {
+    pipeline_thread: Option<JoinHandle<()>>,
+    event_bridge: Option<tokio::task::JoinHandle<()>>,
+    control_tx: mpsc::Sender<audio_stream_pipeline::AudioStreamControl>,
+    /// Linux-only: cleanup closure to restore PipeWire audio routing on stop.
+    #[cfg(target_os = "linux")]
+    cleanup: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl AudioStreamEngine {
+    pub fn start(
+        frame_rx: std::sync::mpsc::Receiver<capture::AudioFrame>,
+        socket: Arc<UdpSocket>,
+        sender_id: String,
+        bitrate_kbps: u32,
+        app: AppHandle,
+        #[cfg(target_os = "linux")] cleanup: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Self {
+        let (control_tx, control_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+
+        let pipeline_thread = thread::Builder::new()
+            .name("decibell-stream-audio".to_string())
+            .spawn(move || {
+                audio_stream_pipeline::run_audio_stream_pipeline(
+                    frame_rx,
+                    control_rx,
+                    event_tx,
+                    socket,
+                    sender_id,
+                    bitrate_kbps,
+                );
+            })
+            .expect("spawn audio stream pipeline thread");
+
+        let event_bridge = tokio::spawn(async move {
+            loop {
+                let rx_result = tokio::task::block_in_place(|| {
+                    event_rx.recv_timeout(std::time::Duration::from_millis(50))
+                });
+                match rx_result {
+                    Ok(audio_stream_pipeline::AudioStreamEvent::Error(msg)) => {
+                        let _ = app.emit("voice_error", serde_json::json!({
+                            "message": format!("Stream audio: {}", msg),
+                        }));
+                    }
+                    Ok(_) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        });
+
+        AudioStreamEngine {
+            pipeline_thread: Some(pipeline_thread),
+            event_bridge: Some(event_bridge),
+            control_tx,
+            #[cfg(target_os = "linux")]
+            cleanup,
+        }
+    }
+
+    pub fn stop(&mut self) {
+        let _ = self.control_tx.send(audio_stream_pipeline::AudioStreamControl::Shutdown);
+        if let Some(h) = self.pipeline_thread.take() { let _ = h.join(); }
+        if let Some(h) = self.event_bridge.take() { h.abort(); }
+        #[cfg(target_os = "linux")]
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup();
+        }
+    }
+}
+
+impl Drop for AudioStreamEngine {
     fn drop(&mut self) {
         self.stop();
     }

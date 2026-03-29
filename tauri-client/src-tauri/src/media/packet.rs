@@ -2,6 +2,7 @@ pub const PACKET_TYPE_AUDIO: u8 = 0;
 pub const PACKET_TYPE_VIDEO: u8 = 1;
 pub const PACKET_TYPE_KEYFRAME_REQUEST: u8 = 2;
 pub const PACKET_TYPE_NACK: u8 = 3;
+pub const PACKET_TYPE_STREAM_AUDIO: u8 = 4;
 pub const PACKET_TYPE_PING: u8 = 5;
 pub const PACKET_TOTAL_SIZE: usize = 1437;
 pub const SENDER_ID_SIZE: usize = 32;
@@ -29,6 +30,25 @@ impl UdpAudioPacket {
 
         UdpAudioPacket {
             packet_type: PACKET_TYPE_AUDIO,
+            sender_id,
+            sequence,
+            payload_size: data_len as u16,
+            payload,
+        }
+    }
+
+    pub fn new_stream_audio(sender_id_str: &str, sequence: u16, opus_data: &[u8]) -> Self {
+        let mut sender_id = [0u8; SENDER_ID_SIZE];
+        let bytes = sender_id_str.as_bytes();
+        let len = bytes.len().min(SENDER_ID_SIZE);
+        sender_id[..len].copy_from_slice(&bytes[..len]);
+
+        let mut payload = [0u8; MAX_PAYLOAD_SIZE];
+        let data_len = opus_data.len().min(MAX_PAYLOAD_SIZE);
+        payload[..data_len].copy_from_slice(&opus_data[..data_len]);
+
+        UdpAudioPacket {
+            packet_type: PACKET_TYPE_STREAM_AUDIO,
             sender_id,
             sequence,
             payload_size: data_len as u16,

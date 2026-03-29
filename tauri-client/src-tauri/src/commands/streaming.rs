@@ -1,6 +1,6 @@
 use tauri::{AppHandle, State};
 use crate::state::SharedState;
-use crate::media::{capture, encoder::EncoderConfig, VideoEngine};
+use crate::media::{capture, encoder::EncoderConfig, VideoEngine, AudioStreamEngine};
 
 #[tauri::command]
 pub async fn list_capture_sources() -> Result<Vec<capture::CaptureSource>, String> {
@@ -16,6 +16,7 @@ pub async fn start_screen_share(
     fps: u32,
     quality: String,
     share_audio: bool,
+    audio_bitrate_kbps: Option<u32>,
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
@@ -81,16 +82,98 @@ pub async fn start_screen_share(
     // Start video pipeline
     let video_engine = VideoEngine::start(
         capture_output.receiver,
-        socket,
-        sender_id,
+        socket.clone(),
+        sender_id.clone(),
         encoder_config,
         fps,
-        app,
+        app.clone(),
     );
 
     s.video_engine = Some(video_engine);
 
+    // Start audio stream capture if enabled
+    if share_audio {
+        let bitrate = audio_bitrate_kbps.unwrap_or(128);
+        eprintln!("[stream] Starting audio capture for source '{}', bitrate={}kbps", source_id, bitrate);
+
+        let is_window = is_window_source(&source_id);
+
+        #[cfg(target_os = "linux")]
+        {
+            let (audio_rx, cleanup) = if is_window {
+                // On Linux with portal, we don't have a PID for per-process capture.
+                // Use system-minus-self for all captures via portal.
+                crate::media::capture_audio_pipewire::start_system_audio_capture()?
+            } else {
+                crate::media::capture_audio_pipewire::start_system_audio_capture()?
+            };
+            let audio_engine = AudioStreamEngine::start(
+                audio_rx,
+                socket,
+                sender_id,
+                bitrate,
+                app,
+                Some(cleanup),
+            );
+            s.audio_stream_engine = Some(audio_engine);
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let audio_rx = if is_window {
+                let pid = get_pid_from_source_id(&source_id)?;
+                crate::media::capture_audio_wasapi::start_process_audio_capture(pid)?
+            } else {
+                crate::media::capture_audio_wasapi::start_system_audio_capture()?
+            };
+            let audio_engine = AudioStreamEngine::start(
+                audio_rx,
+                socket,
+                sender_id,
+                bitrate,
+                app,
+            );
+            s.audio_stream_engine = Some(audio_engine);
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            eprintln!("[stream] Audio capture not supported on this platform");
+        }
+    }
+
     Ok(())
+}
+
+/// Check if a source_id refers to a window (vs a screen/monitor).
+fn is_window_source(source_id: &str) -> bool {
+    // Linux portal: always "portal" (could be screen or window — we can't distinguish)
+    // Windows: monitors start with "monitor:", windows start with "window:"
+    !source_id.starts_with("monitor:") && source_id != "portal"
+}
+
+/// Extract the PID from a window source_id on Windows.
+/// Source IDs for windows are formatted as "window:<hwnd>" by capture_wgc.
+#[cfg(target_os = "windows")]
+fn get_pid_from_source_id(source_id: &str) -> Result<u32, String> {
+    let hwnd_str = source_id
+        .strip_prefix("window:")
+        .ok_or_else(|| format!("Invalid window source_id: {}", source_id))?;
+    let hwnd_val: isize = hwnd_str
+        .parse()
+        .map_err(|_| format!("Invalid HWND in source_id: {}", hwnd_str))?;
+
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    use windows::Win32::Foundation::HWND;
+    let hwnd = HWND(hwnd_val as *mut _);
+    let mut pid: u32 = 0;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    }
+    if pid == 0 {
+        return Err(format!("Could not get PID for HWND {}", hwnd_val));
+    }
+    Ok(pid)
 }
 
 #[tauri::command]
@@ -101,7 +184,12 @@ pub async fn stop_screen_share(
 ) -> Result<(), String> {
     let mut s = state.lock().await;
 
-    // Stop video engine if running
+    // Stop audio stream engine first
+    if let Some(mut engine) = s.audio_stream_engine.take() {
+        engine.stop();
+    }
+
+    // Stop video engine
     if let Some(mut engine) = s.video_engine.take() {
         engine.stop();
     }
