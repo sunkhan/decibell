@@ -7,7 +7,7 @@ use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::Foundation::*;
-use windows::core::{implement, Interface, Error, IUnknown, GUID};
+use windows::core::{implement, Interface, Error, IUnknown, GUID, HRESULT};
 
 // Constants not always exported by the windows crate
 const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xFFFE;
@@ -344,7 +344,7 @@ struct AudioActivationHandlerCom {
 }
 
 impl IActivateAudioInterfaceCompletionHandler_Impl for AudioActivationHandlerCom_Impl {
-    unsafe fn ActivateCompleted(
+    fn ActivateCompleted(
         &self,
         activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
     ) -> windows::core::Result<()> {
@@ -353,7 +353,9 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for AudioActivationHandlerCom
         let mut activate_result = HRESULT(0);
         let mut activated_interface: Option<IUnknown> = None;
 
-        operation.GetActivateResult(&mut activate_result, &mut activated_interface)?;
+        unsafe {
+            operation.GetActivateResult(&mut activate_result, &mut activated_interface)?;
+        }
 
         let result = if activate_result.is_ok() {
             match activated_interface {
