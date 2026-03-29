@@ -5,6 +5,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -68,7 +71,7 @@ jobs:
       - name: Install Windows system dependencies
         if: matrix.target == 'windows'
         run: |
-          vcpkg install ffmpeg[avcodec,avformat,avutil,swscale,swresample,avfilter,avdevice,nvcodec,amf,qsv]:x64-windows-static-md opus:x64-windows-static-md
+          vcpkg install ffmpeg[nvcodec,amf,qsv]:x64-windows-static-md opus:x64-windows-static-md
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
         shell: pwsh
 
