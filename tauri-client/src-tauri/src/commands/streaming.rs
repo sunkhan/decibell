@@ -15,6 +15,7 @@ pub async fn start_screen_share(
     resolution: String,
     fps: u32,
     quality: String,
+    video_bitrate_kbps: Option<u32>,
     share_audio: bool,
     audio_bitrate_kbps: Option<u32>,
     app: AppHandle,
@@ -38,11 +39,11 @@ pub async fn start_screen_share(
         _ => (1920, 1080),
     };
 
-    let bitrate_kbps: u32 = match quality.as_str() {
+    let bitrate_kbps: u32 = video_bitrate_kbps.unwrap_or_else(|| match quality.as_str() {
         "low" => 3000,
         "medium" => 6000,
         _ => 10000,
-    };
+    });
 
     eprintln!("[stream] start_screen_share: server='{}', channel='{}', source='{}', {}x{} @ {}fps",
         server_id, channel_id, source_id, width, height, fps);

@@ -5,10 +5,11 @@ import { invoke } from "@tauri-apps/api/core";
 import StreamVideoPlayer from "./StreamVideoPlayer";
 
 export default function StreamViewPanel() {
-  const watching = useVoiceStore((s) => s.watching);
+  const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
   const participants = useVoiceStore((s) => s.participants);
   const speakingUsers = useVoiceStore((s) => s.speakingUsers);
+  const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
 
@@ -16,7 +17,7 @@ export default function StreamViewPanel() {
   const [overlayVisible, setOverlayVisible] = useState(false);
   const overlayTimeout = useRef<ReturnType<typeof setTimeout>>();
 
-  const stream = activeStreams.find((s) => s.ownerUsername === watching);
+  const stream = activeStreams.find((s) => s.ownerUsername === fullscreenStream);
 
   const handleMouseMove = useCallback(() => {
     if (!theaterMode) return;
@@ -30,35 +31,29 @@ export default function StreamViewPanel() {
     setOverlayVisible(false);
   }, []);
 
-  const handleSwitchStream = async (username: string) => {
-    if (!connectedServerId || !connectedChannelId) return;
-    if (watching) {
-      await invoke("stop_watching", {
-        serverId: connectedServerId,
-        channelId: connectedChannelId,
-        targetUsername: watching,
-      }).catch(() => {});
-    }
-    await invoke("watch_stream", {
-      serverId: connectedServerId,
-      channelId: connectedChannelId,
-      targetUsername: username,
-    }).catch(() => {});
-    useVoiceStore.getState().setWatching(username);
+  // Click on stream → go back to cards view (keep watching)
+  const handleBackToCards = () => {
+    setTheaterMode(false);
+    useVoiceStore.getState().setFullscreenStream(null);
   };
 
+  // Stop watching this stream entirely
   const handleStopWatching = async () => {
-    if (!watching || !connectedServerId || !connectedChannelId) return;
+    if (!fullscreenStream || !connectedServerId || !connectedChannelId) return;
     await invoke("stop_watching", {
       serverId: connectedServerId,
       channelId: connectedChannelId,
-      targetUsername: watching,
+      targetUsername: fullscreenStream,
     }).catch(() => {});
-    useVoiceStore.getState().setWatching(null);
+    useVoiceStore.getState().removeWatching(fullscreenStream);
     setTheaterMode(false);
   };
 
-  if (!watching || !stream) return null;
+  const handleSwitchStream = (username: string) => {
+    useVoiceStore.getState().setFullscreenStream(username);
+  };
+
+  if (!fullscreenStream || !stream) return null;
 
   const resLabel = stream.resolutionWidth > 0
     ? `${stream.resolutionHeight}p`
@@ -72,13 +67,15 @@ export default function StreamViewPanel() {
         className="relative flex flex-1 cursor-none items-center justify-center bg-black"
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
+        onClick={handleBackToCards}
       >
-        <StreamVideoPlayer streamerUsername={watching} className="h-full w-full object-contain" />
+        <StreamVideoPlayer streamerUsername={fullscreenStream} className="h-full w-full object-contain" />
 
         <div
           className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent px-4 pb-3 pt-8 transition-opacity duration-300 ${
             overlayVisible ? "opacity-100" : "pointer-events-none opacity-0"
           }`}
+          onClick={(e) => e.stopPropagation()}
           onMouseEnter={() => {
             if (overlayTimeout.current) clearTimeout(overlayTimeout.current);
             setOverlayVisible(true);
@@ -88,12 +85,12 @@ export default function StreamViewPanel() {
             <div className="flex items-center gap-2">
               <div
                 className="flex h-[22px] w-[22px] items-center justify-center rounded-md text-[10px] font-bold text-white"
-                style={{ background: stringToGradient(watching) }}
+                style={{ background: stringToGradient(fullscreenStream) }}
               >
-                {watching.charAt(0).toUpperCase()}
+                {fullscreenStream.charAt(0).toUpperCase()}
               </div>
               <span className="text-xs font-semibold text-white">
-                {watching}'s screen
+                {fullscreenStream}'s screen
               </span>
               {qualityBadge && (
                 <span className="text-[10px] text-white/60">{qualityBadge}</span>
@@ -112,7 +109,7 @@ export default function StreamViewPanel() {
                 ))}
               </div>
               <button
-                onClick={() => setTheaterMode(false)}
+                onClick={(e) => { e.stopPropagation(); setTheaterMode(false); }}
                 className="flex h-7 w-7 items-center justify-center rounded-md border border-white/20 bg-bg-primary/50 text-sm transition-colors hover:bg-bg-primary"
                 title="Exit theater mode"
               >
@@ -131,17 +128,24 @@ export default function StreamViewPanel() {
         <div className="mb-1.5 flex items-center gap-2">
           <div
             className="flex h-5 w-5 items-center justify-center rounded-md text-[9px] font-bold text-white"
-            style={{ background: stringToGradient(watching) }}
+            style={{ background: stringToGradient(fullscreenStream) }}
           >
-            {watching.charAt(0).toUpperCase()}
+            {fullscreenStream.charAt(0).toUpperCase()}
           </div>
           <span className="text-xs font-bold text-text-bright">
-            {watching}'s screen
+            {fullscreenStream}'s screen
           </span>
           {qualityBadge && (
             <span className="text-[10px] text-text-muted">{qualityBadge}</span>
           )}
           <div className="ml-auto flex gap-1">
+            <button
+              onClick={handleBackToCards}
+              className="rounded-md px-2 py-1 text-[10px] font-semibold text-text-secondary transition-colors hover:bg-surface-hover"
+              title="Back to stream cards"
+            >
+              Back
+            </button>
             <button
               onClick={handleStopWatching}
               className="rounded-md px-2 py-1 text-[10px] font-semibold text-error transition-colors hover:bg-error/10"
@@ -158,8 +162,12 @@ export default function StreamViewPanel() {
           </div>
         </div>
 
-        <div className="flex flex-1 items-center justify-center rounded-lg border border-border bg-bg-tertiary">
-          <StreamVideoPlayer streamerUsername={watching} className="h-full w-full rounded-lg object-contain" />
+        {/* Clicking the stream area goes back to cards */}
+        <div
+          className="flex flex-1 cursor-pointer items-center justify-center rounded-lg border border-border bg-bg-tertiary"
+          onClick={handleBackToCards}
+        >
+          <StreamVideoPlayer streamerUsername={fullscreenStream} className="h-full w-full rounded-lg object-contain" />
         </div>
       </div>
 
@@ -198,12 +206,12 @@ export default function StreamViewPanel() {
             <h4 className="mb-1 px-1 text-[9px] font-bold uppercase tracking-wider text-text-muted">
               Streams
             </h4>
-            {activeStreams.map((s) => (
+            {activeStreams.filter((s) => watchingStreams.includes(s.ownerUsername)).map((s) => (
               <button
                 key={s.ownerUsername}
                 onClick={() => handleSwitchStream(s.ownerUsername)}
                 className={`w-full rounded-md px-2 py-1.5 text-left text-[10px] font-semibold transition-colors ${
-                  s.ownerUsername === watching
+                  s.ownerUsername === fullscreenStream
                     ? "border-l-2 border-accent bg-accent/10 text-accent"
                     : "text-text-secondary hover:bg-surface-hover"
                 }`}

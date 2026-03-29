@@ -4,6 +4,8 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
 import StreamViewPanel from "./StreamViewPanel";
+import StreamVideoPlayer from "./StreamVideoPlayer";
+import { useStreamThumbnails } from "./useStreamThumbnails";
 
 const EMPTY_CHANNELS: never[] = [];
 
@@ -13,10 +15,12 @@ export default function VoicePanel() {
   const participants = useVoiceStore((s) => s.participants);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
   const speakingUsers = useVoiceStore((s) => s.speakingUsers);
+  const streamThumbnails = useVoiceStore((s) => s.streamThumbnails);
   const isMuted = useVoiceStore((s) => s.isMuted);
   const isDeafened = useVoiceStore((s) => s.isDeafened);
   const latencyMs = useVoiceStore((s) => s.latencyMs);
-  const watching = useVoiceStore((s) => s.watching);
+  const watchingStreams = useVoiceStore((s) => s.watchingStreams);
+  const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const disconnect = useVoiceStore((s) => s.disconnect);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const channels = useChatStore((s) => {
@@ -24,8 +28,13 @@ export default function VoicePanel() {
     return serverId ? s.channelsByServer[serverId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
   });
 
+  // Generate thumbnails for active streams
+  useStreamThumbnails();
+
   const channelName =
     channels.find((ch) => ch.id === connectedChannelId)?.name ?? "Voice";
+
+  const hasStreams = activeStreams.length > 0;
 
   const handleMute = () => {
     if (isDeafened) {
@@ -42,15 +51,31 @@ export default function VoicePanel() {
 
   const handleWatchStream = async (username: string) => {
     if (!connectedServerId || !connectedChannelId) return;
-    await invoke("watch_stream", {
-      serverId: connectedServerId,
-      channelId: connectedChannelId,
-      targetUsername: username,
-    }).catch(() => {});
-    useVoiceStore.getState().setWatching(username);
+    const isAlreadyWatching = watchingStreams.includes(username);
+    if (!isAlreadyWatching) {
+      // Tell server to start forwarding this stream's frames
+      await invoke("watch_stream", {
+        serverId: connectedServerId,
+        channelId: connectedChannelId,
+        targetUsername: username,
+      }).catch(() => {});
+      useVoiceStore.getState().addWatching(username);
+    }
+    // Go fullscreen for this stream
+    useVoiceStore.getState().setFullscreenStream(username);
   };
 
-  const handleDisconnect = () => {
+  const handleDisconnect = async () => {
+    // Stop watching all streams
+    if (connectedServerId && connectedChannelId) {
+      for (const username of watchingStreams) {
+        await invoke("stop_watching", {
+          serverId: connectedServerId,
+          channelId: connectedChannelId,
+          targetUsername: username,
+        }).catch(() => {});
+      }
+    }
     invoke("leave_voice_channel").catch(console.error);
     disconnect();
     setActiveView("server");
@@ -67,17 +92,149 @@ export default function VoicePanel() {
           title={latencyMs != null ? `${latencyMs}ms` : undefined}
         >
           {participants.length} participant{participants.length !== 1 ? "s" : ""}
+          {latencyMs != null && (
+            <span className="ml-2 text-text-muted">{latencyMs}ms</span>
+          )}
         </span>
       </div>
 
-      {/* Main content: stream view or participant grid */}
-      {watching ? (
+      {/* Main content: fullscreen stream, stream cards, or participant grid */}
+      {fullscreenStream ? (
         <StreamViewPanel />
+      ) : hasStreams ? (
+        /* Two-column layout: Users left, Streams right */
+        <div className="flex flex-1 overflow-hidden">
+          {/* Left: Users */}
+          <div className="flex flex-col border-r border-border" style={{ width: "240px", minWidth: "240px" }}>
+            <div className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-text-muted">
+              Users — {participants.length}
+            </div>
+            <div className="flex-1 overflow-y-auto px-3 pb-3">
+              {participants.map((p) => {
+                const isSpeaking = speakingUsers.includes(p.username);
+                const isStreaming = activeStreams.some((s) => s.ownerUsername === p.username);
+                return (
+                  <div
+                    key={p.username}
+                    className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-surface-hover transition-colors"
+                  >
+                    <div
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white transition-all ${
+                        isSpeaking ? "ring-2 ring-success" : ""
+                      }`}
+                      style={{ background: stringToGradient(p.username) }}
+                    >
+                      {p.username.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium text-text-primary">
+                        {p.username}
+                      </div>
+                      {isStreaming && (
+                        <div className="text-[10px] font-medium text-accent">Streaming</div>
+                      )}
+                    </div>
+                    {p.isMuted && (
+                      <span className="text-[10px] text-error">🔇</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Right: Stream cards */}
+          <div className="flex flex-1 flex-col overflow-hidden">
+            <div className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-text-muted">
+              Live — {activeStreams.length}
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 pb-4">
+              <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
+                {activeStreams.map((stream) => {
+                  const isWatching = watchingStreams.includes(stream.ownerUsername);
+                  const thumbnail = streamThumbnails[stream.ownerUsername];
+                  return (
+                    <button
+                      key={stream.streamId}
+                      onClick={() => handleWatchStream(stream.ownerUsername)}
+                      className={`group relative overflow-hidden rounded-xl border transition-all hover:shadow-lg hover:shadow-accent/5 ${
+                        isWatching
+                          ? "border-accent/60 ring-1 ring-accent/30"
+                          : "border-border bg-bg-primary hover:border-accent/50"
+                      }`}
+                    >
+                      {/* Stream preview: live video if watching, thumbnail otherwise */}
+                      <div className="relative aspect-video w-full bg-bg-secondary">
+                        {isWatching ? (
+                          <StreamVideoPlayer
+                            streamerUsername={stream.ownerUsername}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : thumbnail ? (
+                          <img
+                            src={thumbnail}
+                            alt={`${stream.ownerUsername}'s stream`}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center">
+                            <div
+                              className="flex h-14 w-14 items-center justify-center rounded-2xl text-2xl font-bold text-white"
+                              style={{ background: stringToGradient(stream.ownerUsername) }}
+                            >
+                              {stream.ownerUsername.charAt(0).toUpperCase()}
+                            </div>
+                          </div>
+                        )}
+                        {/* Live / Watching badge */}
+                        <div className={`absolute left-2 top-2 flex items-center gap-1 rounded px-1.5 py-0.5 ${
+                          isWatching ? "bg-accent/90" : "bg-error/90"
+                        }`}>
+                          <div className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
+                          <span className="text-[10px] font-bold text-white">
+                            {isWatching ? "WATCHING" : "LIVE"}
+                          </span>
+                        </div>
+                        {/* Hover overlay */}
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/40">
+                          <span className="text-sm font-semibold text-white opacity-0 transition-opacity group-hover:opacity-100">
+                            {isWatching ? "Expand" : "Watch Stream"}
+                          </span>
+                        </div>
+                      </div>
+                      {/* Stream info */}
+                      <div className="flex items-center gap-2.5 px-3 py-2.5">
+                        <div
+                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
+                          style={{ background: stringToGradient(stream.ownerUsername) }}
+                        >
+                          {stream.ownerUsername.charAt(0).toUpperCase()}
+                        </div>
+                        <div className="min-w-0 flex-1 text-left">
+                          <div className="truncate text-sm font-semibold text-text-bright">
+                            {stream.ownerUsername}
+                          </div>
+                          <div className="text-[10px] text-text-muted">
+                            {stream.resolutionWidth > 0
+                              ? `${stream.resolutionWidth}x${stream.resolutionHeight}`
+                              : ""}
+                            {stream.fps > 0 ? ` · ${stream.fps}fps` : ""}
+                            {stream.hasAudio ? " · Audio" : ""}
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
       ) : (
+        /* No streams: centered participant grid (original layout) */
         <div className="flex flex-1 flex-wrap items-center justify-center gap-5 p-6">
           {participants.map((p) => {
             const isSpeaking = speakingUsers.includes(p.username);
-            const isStreaming = activeStreams.some((s) => s.ownerUsername === p.username);
             return (
               <div key={p.username} className="w-[100px] text-center">
                 <div className="relative mx-auto mb-2">
@@ -98,14 +255,6 @@ export default function VoicePanel() {
                 <div className="text-xs font-semibold text-text-primary">
                   {p.username}
                 </div>
-                {isStreaming && (
-                  <button
-                    onClick={() => handleWatchStream(p.username)}
-                    className="mt-1 rounded px-2 py-0.5 text-[10px] font-semibold bg-accent/20 text-accent hover:bg-accent/40 transition-colors"
-                  >
-                    Watch
-                  </button>
-                )}
               </div>
             );
           })}

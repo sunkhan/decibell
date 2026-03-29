@@ -18,6 +18,35 @@ interface Props {
   onClose: () => void;
 }
 
+/** A segmented control — row of buttons where exactly one is selected. */
+function SegmentedControl<T extends string | number>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="flex rounded-lg bg-bg-tertiary p-0.5">
+      {options.map((opt) => (
+        <button
+          key={String(opt.value)}
+          onClick={() => onChange(opt.value)}
+          className={`flex-1 rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+            value === opt.value
+              ? "bg-accent/15 text-accent"
+              : "text-text-muted hover:text-text-secondary"
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function CaptureSourcePicker({ serverId, channelId, onClose }: Props) {
   const [sources, setSources] = useState<CaptureSource[]>([]);
   const [tab, setTab] = useState<"screen" | "window">("screen");
@@ -55,7 +84,9 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
         resolution: streamSettings.resolution,
         fps: streamSettings.fps,
         quality: streamSettings.quality,
+        videoBitrateKbps: streamSettings.videoBitrateKbps,
         shareAudio: streamSettings.shareAudio,
+        audioBitrateKbps: streamSettings.audioBitrateKbps,
       });
       useVoiceStore.getState().setIsStreaming(true);
       onClose();
@@ -71,22 +102,6 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="w-[560px] rounded-xl border border-border bg-bg-secondary shadow-2xl">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-border px-5 py-4">
-          <h2 className="text-[15px] font-extrabold text-text-bright">
-            Share Your Screen
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-text-muted transition-colors hover:text-text-secondary"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-
         {/* Source selection — on Linux, the OS portal handles picking */}
         {!loading && sources.length === 1 && sources[0].id === "portal" ? (
           <div className="px-5 py-6 text-center">
@@ -179,50 +194,116 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
           </>
         )}
 
-        {/* Quality settings */}
-        <div className="mx-5 flex gap-2.5 rounded-lg bg-bg-primary p-3">
-          <div className="flex-1">
-            <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-              Resolution
-            </label>
-            <select
-              value={streamSettings.resolution}
-              onChange={(e) => setStreamSettings({ resolution: e.target.value as any })}
-              className="w-full rounded-md border border-border bg-bg-tertiary px-2.5 py-1.5 text-xs text-text-bright outline-none"
-            >
-              <option value="source">Source</option>
-              <option value="1080p">1080p</option>
-              <option value="720p">720p</option>
-            </select>
+        {/* Stream settings — segmented controls */}
+        <div className="mx-5 space-y-2.5 rounded-lg bg-bg-primary p-3.5">
+          {/* Row 1: Resolution, FPS */}
+          <div className="flex gap-2.5">
+            <div className="flex-1">
+              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                Resolution
+              </label>
+              <SegmentedControl
+                options={[
+                  { value: "source" as const, label: "Source" },
+                  { value: "1080p" as const, label: "1080p" },
+                  { value: "720p" as const, label: "720p" },
+                ]}
+                value={streamSettings.resolution}
+                onChange={(v) => setStreamSettings({ resolution: v })}
+              />
+            </div>
+            <div className="flex-1">
+              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                Frame Rate
+              </label>
+              <SegmentedControl
+                options={[
+                  { value: 60 as const, label: "60" },
+                  { value: 30 as const, label: "30" },
+                  { value: 15 as const, label: "15" },
+                ]}
+                value={streamSettings.fps}
+                onChange={(v) => setStreamSettings({ fps: v })}
+              />
+            </div>
           </div>
-          <div className="flex-1">
-            <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-              Frame Rate
+
+          {/* Row 2: Video quality — presets + custom */}
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              Video Quality
             </label>
-            <select
-              value={streamSettings.fps}
-              onChange={(e) => setStreamSettings({ fps: Number(e.target.value) as any })}
-              className="w-full rounded-md border border-border bg-bg-tertiary px-2.5 py-1.5 text-xs text-text-bright outline-none"
-            >
-              <option value={60}>60 FPS</option>
-              <option value={30}>30 FPS</option>
-              <option value={15}>15 FPS</option>
-            </select>
+            <div className="flex rounded-lg bg-bg-tertiary p-0.5">
+              {([
+                { key: "low" as const, label: "Low", sub: "3 Mbps", bitrate: 3000 },
+                { key: "medium" as const, label: "Medium", sub: "6 Mbps", bitrate: 6000 },
+                { key: "high" as const, label: "High", sub: "10 Mbps", bitrate: 10000 },
+                { key: "custom" as const, label: "Custom", sub: null, bitrate: null },
+              ]).map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => {
+                    if (opt.bitrate !== null) {
+                      setStreamSettings({ quality: opt.key, videoBitrateKbps: opt.bitrate });
+                    } else {
+                      setStreamSettings({ quality: "custom" });
+                    }
+                  }}
+                  className={`flex flex-1 flex-col items-center rounded-md px-2 py-1.5 transition-colors ${
+                    streamSettings.quality === opt.key
+                      ? "bg-accent/15 text-accent"
+                      : "text-text-muted hover:text-text-secondary"
+                  }`}
+                >
+                  <span className="text-[11px] font-semibold">{opt.label}</span>
+                  {opt.sub && (
+                    <span className={`text-[9px] ${
+                      streamSettings.quality === opt.key ? "text-accent/60" : "text-text-muted"
+                    }`}>
+                      {opt.sub}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {/* Custom bitrate slider */}
+            {streamSettings.quality === "custom" && (
+              <div className="mt-2 flex items-center gap-3 px-1">
+                <input
+                  type="range"
+                  min={1000}
+                  max={20000}
+                  step={500}
+                  value={streamSettings.videoBitrateKbps}
+                  onChange={(e) => setStreamSettings({ videoBitrateKbps: Number(e.target.value) })}
+                  className="custom-slider h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-surface-active accent-accent"
+                />
+                <span className="w-[60px] shrink-0 whitespace-nowrap text-right text-[11px] font-semibold tabular-nums text-text-secondary">
+                  {streamSettings.videoBitrateKbps >= 1000
+                    ? `${(streamSettings.videoBitrateKbps / 1000).toFixed(streamSettings.videoBitrateKbps % 1000 === 0 ? 0 : 1)} Mbps`
+                    : `${streamSettings.videoBitrateKbps} kbps`}
+                </span>
+              </div>
+            )}
           </div>
-          <div className="flex-1">
-            <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-              Quality
-            </label>
-            <select
-              value={streamSettings.quality}
-              onChange={(e) => setStreamSettings({ quality: e.target.value as any })}
-              className="w-full rounded-md border border-border bg-bg-tertiary px-2.5 py-1.5 text-xs text-text-bright outline-none"
-            >
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
-            </select>
-          </div>
+
+          {/* Row 3: Audio bitrate (only visible when audio sharing is on) */}
+          {streamSettings.shareAudio && (
+            <div>
+              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                Audio Bitrate
+              </label>
+              <SegmentedControl
+                options={[
+                  { value: 128 as const, label: "128 kbps" },
+                  { value: 192 as const, label: "192 kbps" },
+                ]}
+                value={streamSettings.audioBitrateKbps}
+                onChange={(v) => setStreamSettings({ audioBitrateKbps: v })}
+              />
+            </div>
+          )}
         </div>
 
         {/* Bottom bar */}

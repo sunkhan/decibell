@@ -39,6 +39,7 @@ message Packet {
     STOP_STREAM_REQ = 24;
     WATCH_STREAM_REQ = 25;
     STOP_WATCHING_REQ = 26;
+    STREAM_THUMBNAIL_UPDATE = 29;
   }
 
   Type type = 1;
@@ -78,6 +79,7 @@ message Packet {
     WatchStreamRequest watch_stream_req = 28;
     StopWatchingRequest stop_watching_req = 29;
     DmPrivacySetting dm_privacy = 31;
+    StreamThumbnailUpdate stream_thumbnail_update = 32;
   }
 }
 
@@ -269,6 +271,12 @@ message WatchStreamRequest {
 message StopWatchingRequest {
   string channel_id = 1;
   string target_username = 2;
+}
+
+message StreamThumbnailUpdate {
+  string channel_id = 1;
+  string owner_username = 2;
+  bytes thumbnail_data = 3;
 }
 
 message DmPrivacySetting {

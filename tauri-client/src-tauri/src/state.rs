@@ -16,6 +16,8 @@ pub struct AppState {
     pub voice_engine: Option<VoiceEngine>,
     pub video_engine: Option<VideoEngine>,
     pub audio_stream_engine: Option<AudioStreamEngine>,
+    pub connected_voice_server: Option<String>,
+    pub connected_voice_channel: Option<String>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;

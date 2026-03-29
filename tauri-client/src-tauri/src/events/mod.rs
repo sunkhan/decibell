@@ -311,3 +311,29 @@ pub fn emit_stream_presence_updated(
         },
     );
 }
+
+pub const STREAM_THUMBNAIL_UPDATED: &str = "stream_thumbnail_updated";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamThumbnailUpdatedPayload {
+    pub owner_username: String,
+    pub thumbnail_base64: String,
+}
+
+pub fn emit_stream_thumbnail_updated(
+    app: &AppHandle,
+    owner_username: String,
+    thumbnail_data: Vec<u8>,
+) {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&thumbnail_data);
+    let data_url = format!("data:image/jpeg;base64,{}", b64);
+    let _ = app.emit(
+        STREAM_THUMBNAIL_UPDATED,
+        StreamThumbnailUpdatedPayload {
+            owner_username,
+            thumbnail_base64: data_url,
+        },
+    );
+}

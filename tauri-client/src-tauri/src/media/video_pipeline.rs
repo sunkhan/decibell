@@ -1,3 +1,4 @@
+use std::io::Cursor;
 use std::net::UdpSocket;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,6 +16,61 @@ pub enum VideoPipelineEvent {
     Started,
     Stopped,
     Error(String),
+    ThumbnailReady(Vec<u8>),
+}
+
+/// Convert NV12 frame to a small JPEG thumbnail.
+/// NV12 layout: Y plane (W×H), UV plane (W×H/2, interleaved U,V).
+fn nv12_to_jpeg_thumbnail(nv12: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    let w = width as usize;
+    let h = height as usize;
+    let expected = w * h * 3 / 2;
+    if nv12.len() < expected {
+        return None;
+    }
+
+    // Target thumbnail width ~320px, preserving aspect ratio
+    let thumb_w = 320usize.min(w);
+    let thumb_h = (thumb_w * h) / w;
+    if thumb_w == 0 || thumb_h == 0 {
+        return None;
+    }
+
+    // Direct NV12→RGB downscale with nearest-neighbor sampling
+    let mut rgb = vec![0u8; thumb_w * thumb_h * 3];
+    let y_plane = &nv12[..w * h];
+    let uv_plane = &nv12[w * h..];
+
+    for ty in 0..thumb_h {
+        let sy = (ty * h) / thumb_h;
+        let uv_row = sy / 2;
+        for tx in 0..thumb_w {
+            let sx = (tx * w) / thumb_w;
+
+            let y_val = y_plane[sy * w + sx] as f32;
+            let uv_idx = uv_row * w + (sx & !1);
+            let u_val = uv_plane[uv_idx] as f32 - 128.0;
+            let v_val = uv_plane[uv_idx + 1] as f32 - 128.0;
+
+            let r = (y_val + 1.402 * v_val).clamp(0.0, 255.0) as u8;
+            let g = (y_val - 0.344 * u_val - 0.714 * v_val).clamp(0.0, 255.0) as u8;
+            let b = (y_val + 1.772 * u_val).clamp(0.0, 255.0) as u8;
+
+            let idx = (ty * thumb_w + tx) * 3;
+            rgb[idx] = r;
+            rgb[idx + 1] = g;
+            rgb[idx + 2] = b;
+        }
+    }
+
+    // Encode as JPEG
+    use image::ImageEncoder;
+    let mut buf = Cursor::new(Vec::with_capacity(16 * 1024));
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 60);
+    encoder
+        .write_image(&rgb, thumb_w as u32, thumb_h as u32, image::ColorType::Rgb8.into())
+        .ok()?;
+    Some(buf.into_inner())
 }
 
 /// Run the video send pipeline on a dedicated thread.
@@ -54,6 +110,10 @@ pub fn run_video_send_pipeline(
     // at a low rate keeps keyframes flowing so new viewers can join.
     let mut last_frame: Option<RawFrame> = None;
     let repeat_interval = Duration::from_millis(500);
+
+    // Thumbnail generation: every 5 seconds, encode a JPEG from the raw frame
+    let thumbnail_interval = Duration::from_secs(5);
+    let mut last_thumbnail_time = Instant::now() - thumbnail_interval; // generate first one immediately
 
     loop {
         // Check control messages
@@ -107,6 +167,15 @@ pub fn run_video_send_pipeline(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
         last_frame_time = Instant::now();
+
+        // Generate thumbnail periodically
+        if last_frame_time.duration_since(last_thumbnail_time) >= thumbnail_interval {
+            last_thumbnail_time = last_frame_time;
+            if let Some(jpeg) = nv12_to_jpeg_thumbnail(&frame.data, frame.width, frame.height) {
+                eprintln!("[video-send] Thumbnail generated: {} bytes", jpeg.len());
+                let _ = event_tx.send(VideoPipelineEvent::ThumbnailReady(jpeg));
+            }
+        }
 
         // Encode
         match encoder.encode_frame(&frame.data, frame.width, frame.height) {

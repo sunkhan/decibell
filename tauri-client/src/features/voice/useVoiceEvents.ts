@@ -91,10 +91,15 @@ export function useVoiceEvents() {
         }));
         useVoiceStore.getState().setActiveStreams(mapped);
 
-        // If we were watching someone who stopped streaming, clear watching
-        const watching = useVoiceStore.getState().watching;
-        if (watching && !mapped.some((s) => s.ownerUsername === watching)) {
-          useVoiceStore.getState().setWatching(null);
+        // Remove any watched streams that are no longer active
+        const { watchingStreams, fullscreenStream } = useVoiceStore.getState();
+        for (const w of watchingStreams) {
+          if (!mapped.some((s) => s.ownerUsername === w)) {
+            useVoiceStore.getState().removeWatching(w);
+          }
+        }
+        if (fullscreenStream && !mapped.some((s) => s.ownerUsername === fullscreenStream)) {
+          useVoiceStore.getState().setFullscreenStream(null);
         }
       }
     ).then((u) => unlisten.push(u));

@@ -120,6 +120,14 @@ input, textarea, [contenteditable], .select-text, .select-text * {
   user-select: text !important;
 }
 
+/* Style browser-native password field indicators to match accent color */
+input[type="password"]::-ms-reveal {
+  filter: invert(48%) sepia(79%) saturate(2476%) hue-rotate(203deg) brightness(100%) contrast(98%);
+}
+input[type="password"]::-webkit-caps-lock-indicator {
+  filter: invert(48%) sepia(79%) saturate(2476%) hue-rotate(203deg) brightness(100%) contrast(98%);
+}
+
 /* Snappy hover transitions globally */
 button, a, [class*="transition"] {
   transition-duration: 75ms !important;
@@ -133,4 +141,24 @@ button, a, [class*="transition"] {
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+/* Custom range slider */
+.custom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #388bfd;
+  border: 2px solid #0e0f16;
+  cursor: pointer;
+}
+.custom-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #388bfd;
+  border: 2px solid #0e0f16;
+  cursor: pointer;
 }

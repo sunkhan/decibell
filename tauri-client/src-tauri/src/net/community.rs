@@ -196,6 +196,20 @@ impl CommunityClient {
         self.send(data).await
     }
 
+    /// Send a stream thumbnail to all voice channel participants.
+    pub async fn send_stream_thumbnail(&self, channel_id: &str, jpeg_data: &[u8]) -> Result<(), String> {
+        let data = build_packet(
+            packet::Type::StreamThumbnailUpdate,
+            packet::Payload::StreamThumbnailUpdate(StreamThumbnailUpdate {
+                channel_id: channel_id.into(),
+                owner_username: String::new(), // Server enforces identity
+                thumbnail_data: jpeg_data.to_vec(),
+            }),
+            Some(&self.jwt),
+        );
+        self.send(data).await
+    }
+
     /// Stop watching a user's stream.
     pub async fn stop_watching(&self, channel_id: &str, target_username: &str) -> Result<(), String> {
         let data = build_packet(
@@ -398,6 +412,13 @@ impl CommunityClient {
                             resolution_height: s.resolution_height,
                             fps: s.fps,
                         }).collect(),
+                    );
+                }
+                Some(packet::Payload::StreamThumbnailUpdate(update)) => {
+                    events::emit_stream_thumbnail_updated(
+                        &app,
+                        update.owner_username,
+                        update.thumbnail_data,
                     );
                 }
                 _ => {

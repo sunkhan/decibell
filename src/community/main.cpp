@@ -36,6 +36,7 @@ public:
     void leave_voice_channel(std::shared_ptr<Session> session, const std::string& current_channel);
     void broadcast_to_channel(const chatproj::Packet& packet, const std::string& channel_id);
     void broadcast_to_voice_channel(const char* data, size_t length, const std::string& channel_id, std::shared_ptr<Session> sender, boost::asio::ip::udp::socket& udp_socket);
+    void broadcast_to_voice_channel_tcp(const chatproj::Packet& packet, const std::string& channel_id);
     void relay_keyframe_request(const std::string& target_username, boost::asio::ip::udp::socket& udp_socket);
     void relay_nack(const char* data, size_t length, const std::string& target_username, boost::asio::ip::udp::socket& udp_socket);
     void broadcast_voice_presence(const std::string& channel_id);
@@ -288,6 +289,15 @@ private:
             std::cout << "[Community] " << username_ << " stopped watching " << req.target_username() << "'s stream\n";
         }
 
+        // --- STREAM THUMBNAIL UPDATE ---
+        else if (packet.type() == chatproj::Packet::STREAM_THUMBNAIL_UPDATE) {
+            auto* update = packet.mutable_stream_thumbnail_update();
+            update->set_owner_username(username_); // Enforce identity
+            std::string channel_id = update->channel_id();
+            // Broadcast to all voice channel participants (not just watchers)
+            manager_.broadcast_to_voice_channel_tcp(packet, channel_id);
+        }
+
         // --- VOICE STATE NOTIFY (mute/deafen) ---
         else if (packet.type() == chatproj::Packet::VOICE_STATE_NOTIFY) {
             const auto& notify = packet.voice_state_notify();
@@ -521,6 +531,13 @@ void SessionManager::join_voice_channel(std::shared_ptr<Session> session, const 
         std::lock_guard<std::mutex> lock(mutex_);
         if (!old_channel.empty()) {
             voice_channels_[old_channel].erase(session);
+            // Clean up watcher entries from old channel
+            auto ch_it = stream_watchers_.find(old_channel);
+            if (ch_it != stream_watchers_.end()) {
+                for (auto& [streamer, watchers] : ch_it->second) {
+                    watchers.erase(session);
+                }
+            }
         }
         voice_channels_[new_channel].insert(session);
     }
@@ -528,6 +545,8 @@ void SessionManager::join_voice_channel(std::shared_ptr<Session> session, const 
         broadcast_voice_presence(old_channel);
     }
     broadcast_voice_presence(new_channel);
+    // Send current stream presence for the new channel to the joining user
+    broadcast_stream_presence(new_channel);
 }
 
 void SessionManager::leave_voice_channel(std::shared_ptr<Session> session, const std::string& current_channel) {
@@ -535,6 +554,13 @@ void SessionManager::leave_voice_channel(std::shared_ptr<Session> session, const
         std::lock_guard<std::mutex> lock(mutex_);
         if (!current_channel.empty()) {
             voice_channels_[current_channel].erase(session);
+            // Clean up any watcher entries for this session in this channel
+            auto ch_it = stream_watchers_.find(current_channel);
+            if (ch_it != stream_watchers_.end()) {
+                for (auto& [streamer, watchers] : ch_it->second) {
+                    watchers.erase(session);
+                }
+            }
         }
     }
     if (!current_channel.empty()) {
@@ -555,6 +581,24 @@ void SessionManager::broadcast_to_channel(const chatproj::Packet& packet, const 
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& session : channels_[channel_id]) {
         session->deliver(framed);
+    }
+}
+
+void SessionManager::broadcast_to_voice_channel_tcp(const chatproj::Packet& packet, const std::string& channel_id) {
+    std::string serialized;
+    packet.SerializeToString(&serialized);
+
+    uint32_t length = htonl(static_cast<uint32_t>(serialized.size()));
+    auto framed = std::make_shared<std::vector<uint8_t>>();
+    framed->resize(4 + serialized.size());
+    std::memcpy(framed->data(), &length, 4);
+    std::memcpy(framed->data() + 4, serialized.data(), serialized.size());
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (voice_channels_.find(channel_id) != voice_channels_.end()) {
+        for (auto& session : voice_channels_[channel_id]) {
+            session->deliver(framed);
+        }
     }
 }
 

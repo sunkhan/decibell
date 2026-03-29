@@ -23,15 +23,24 @@ interface VoiceState {
   setError: (error: string | null) => void;
   setChannelPresence: (channelId: string, users: string[], userStates?: { username: string; isMuted: boolean; isDeafened: boolean }[]) => void;
   setUserState: (username: string, isMuted: boolean, isDeafened: boolean) => void;
-  watching: string | null;
+  streamThumbnails: Record<string, string>;
+  setStreamThumbnail: (username: string, dataUrl: string) => void;
+  watching: string | null; // deprecated — use watchingStreams/fullscreenStream
+  watchingStreams: string[];
+  fullscreenStream: string | null;
   isStreaming: boolean;
   streamSettings: {
     resolution: '1080p' | '720p' | 'source';
     fps: 60 | 30 | 15;
-    quality: 'high' | 'medium' | 'low';
+    quality: 'high' | 'medium' | 'low' | 'custom';
+    videoBitrateKbps: number;
     shareAudio: boolean;
+    audioBitrateKbps: 128 | 192;
   };
   setWatching: (username: string | null) => void;
+  addWatching: (username: string) => void;
+  removeWatching: (username: string) => void;
+  setFullscreenStream: (username: string | null) => void;
   setIsStreaming: (streaming: boolean) => void;
   setStreamSettings: (settings: Partial<VoiceState['streamSettings']>) => void;
   disconnect: () => void;
@@ -94,15 +103,37 @@ export const useVoiceStore = create<VoiceState>((set) => ({
         p.username === username ? { ...p, isMuted, isDeafened } : p
       ),
     })),
+  streamThumbnails: {},
+  setStreamThumbnail: (username, dataUrl) =>
+    set((state) => ({
+      streamThumbnails: { ...state.streamThumbnails, [username]: dataUrl },
+    })),
   watching: null,
+  watchingStreams: [],
+  fullscreenStream: null,
   isStreaming: false,
   streamSettings: {
     resolution: '1080p',
     fps: 60,
     quality: 'high',
+    videoBitrateKbps: 10000,
     shareAudio: false,
+    audioBitrateKbps: 128,
   },
   setWatching: (username) => set({ watching: username }),
+  addWatching: (username) =>
+    set((state) => ({
+      watchingStreams: state.watchingStreams.includes(username)
+        ? state.watchingStreams
+        : [...state.watchingStreams, username],
+    })),
+  removeWatching: (username) =>
+    set((state) => ({
+      watchingStreams: state.watchingStreams.filter((u) => u !== username),
+      fullscreenStream:
+        state.fullscreenStream === username ? null : state.fullscreenStream,
+    })),
+  setFullscreenStream: (username) => set({ fullscreenStream: username }),
   setIsStreaming: (streaming) => set({ isStreaming: streaming }),
   setStreamSettings: (settings) =>
     set((state) => ({
@@ -120,6 +151,9 @@ export const useVoiceStore = create<VoiceState>((set) => ({
       latencyMs: null,
       error: null,
       watching: null,
+      watchingStreams: [],
+      fullscreenStream: null,
       isStreaming: false,
+      streamThumbnails: {},
     }),
 }));

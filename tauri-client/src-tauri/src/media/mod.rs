@@ -295,6 +295,21 @@ impl VideoEngine {
                             "message": format!("Video: {}", msg),
                         }));
                     }
+                    Ok(video_pipeline::VideoPipelineEvent::ThumbnailReady(jpeg)) => {
+                        // Send thumbnail to community server for broadcast
+                        use tauri::Manager;
+                        let state = app.state::<crate::state::SharedState>();
+                        let s = state.lock().await;
+                        // Find the connected server and channel
+                        if let (Some(server_id), Some(channel_id)) = (
+                            s.connected_voice_server.as_ref(),
+                            s.connected_voice_channel.as_ref(),
+                        ) {
+                            if let Some(client) = s.communities.get(server_id) {
+                                let _ = client.send_stream_thumbnail(channel_id, &jpeg).await;
+                            }
+                        }
+                    }
                     Ok(_) => {}
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,

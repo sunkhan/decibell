@@ -40,6 +40,8 @@ pub async fn join_voice_channel(
     // Start VoiceEngine
     let engine = VoiceEngine::start(&host, port, &jwt, app.clone())?;
     s.voice_engine = Some(engine);
+    s.connected_voice_server = Some(server_id);
+    s.connected_voice_channel = Some(channel_id);
 
     events::emit_voice_state_changed(&app, false, false);
     Ok(())
@@ -66,6 +68,8 @@ pub async fn leave_voice_channel(
     if let Some(mut engine) = s.voice_engine.take() {
         engine.stop();
     }
+    s.connected_voice_server = None;
+    s.connected_voice_channel = None;
 
     events::emit_voice_state_changed(&app, false, false);
     Ok(())
