@@ -230,9 +230,10 @@ impl VideoProcessor {
                 .cast()
                 .map_err(|e| format!("Cast to ID3D11VideoDevice: {}", e))?;
 
-            let base_context = device
-                .GetImmediateContext()
-                .map_err(|e| format!("GetImmediateContext: {}", e))?;
+            let mut base_context_opt = None;
+            device.GetImmediateContext(&mut base_context_opt);
+            let base_context = base_context_opt
+                .ok_or("GetImmediateContext returned None")?;
 
             let video_context: ID3D11VideoContext = base_context
                 .cast()

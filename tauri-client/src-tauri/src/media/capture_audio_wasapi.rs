@@ -1,4 +1,5 @@
 use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, Condvar, Mutex};
 
 use super::capture::AudioFrame;
 
@@ -6,7 +7,25 @@ use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::Foundation::*;
-use windows::core::*;
+use windows::core::{implement, Interface, Error, IUnknown, GUID};
+
+// Constants not always exported by the windows crate
+const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xFFFE;
+const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_GUID: GUID = GUID::from_values(
+    0x00000003, 0x0000, 0x0010,
+    [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71],
+);
+
+/// Raw PROPVARIANT layout for VT_BLOB on x64.
+/// Used to pass activation params to ActivateAudioInterfaceAsync.
+#[repr(C)]
+struct PropVariantBlob {
+    vt: u16,
+    _reserved: [u16; 3],
+    cb_size: u32,
+    _pad: u32,
+    p_blob_data: *const u8,
+}
 
 /// Start capturing audio from a specific process by PID.
 /// Uses WASAPI Process Loopback (INCLUDE_PROCESS_TREE) — requires Win10 2004+.
@@ -58,6 +77,7 @@ fn run_wasapi_capture(
     unsafe {
         // Initialize COM for this thread
         CoInitializeEx(None, COINIT_MULTITHREADED)
+            .ok()
             .map_err(|e| format!("CoInitializeEx: {}", e))?;
 
         let mode = if exclude {
@@ -89,30 +109,37 @@ fn run_wasapi_capture(
             },
         };
 
-        // Wrap in PROPVARIANT for ActivateAudioInterfaceAsync
-        let mut prop_variant: PROPVARIANT = std::mem::zeroed();
-        {
-            let blob = &mut prop_variant.Anonymous.Anonymous;
-            blob.vt = windows::Win32::System::Variant::VT_BLOB;
-            blob.Anonymous.blob.cbSize = std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
-            blob.Anonymous.blob.pBlobData = &activation_params as *const _ as *mut u8;
-        }
+        // Build PROPVARIANT manually (the core PROPVARIANT type is opaque)
+        let raw_pv = PropVariantBlob {
+            vt: 0x0041, // VT_BLOB
+            _reserved: [0; 3],
+            cb_size: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
+            _pad: 0,
+            p_blob_data: &activation_params as *const _ as *const u8,
+        };
+        let prop_variant: windows::core::PROPVARIANT = std::mem::transmute(raw_pv);
 
         // Create completion handler
-        let handler = AudioActivationHandler::new();
-        let handler_ref: IActivateAudioInterfaceCompletionHandler = handler.clone().into();
+        let inner = Arc::new(AudioActivationInner {
+            result: Mutex::new(None),
+            condvar: Condvar::new(),
+        });
+        let handler_ref: IActivateAudioInterfaceCompletionHandler = AudioActivationHandlerCom {
+            inner: inner.clone(),
+        }.into();
+        let waiter = AudioActivationWaiter { inner };
 
         // Activate the audio interface — keep the operation alive until completion
         let _operation = ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &IAudioClient::IID,
-            Some(&prop_variant),
+            Some(&prop_variant as *const windows::core::PROPVARIANT),
             &handler_ref,
         )
         .map_err(|e| format!("ActivateAudioInterfaceAsync: {}", e))?;
 
         // Wait for activation to complete
-        let audio_client: IAudioClient = handler
+        let audio_client: IAudioClient = waiter
             .wait_for_completion(std::time::Duration::from_secs(5))
             .map_err(|e| format!("Wait for audio client: {}", e))?;
 
@@ -135,9 +162,9 @@ fn run_wasapi_capture(
         );
 
         // Determine if format is float or integer
-        let is_float = if mix_format.wFormatTag == WAVE_FORMAT_EXTENSIBLE as u16 {
+        let is_float = if mix_format.wFormatTag == WAVE_FORMAT_EXTENSIBLE_TAG {
             let ext = &*(mix_format_ptr as *const WAVEFORMATEXTENSIBLE);
-            ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+            ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_GUID
         } else {
             mix_format.wFormatTag == 3 // WAVE_FORMAT_IEEE_FLOAT
         };
@@ -275,32 +302,20 @@ fn run_wasapi_capture(
 
 // ─── IActivateAudioInterfaceCompletionHandler implementation ────────────────
 
-use std::sync::{Arc, Condvar, Mutex};
-
-#[derive(Clone)]
-struct AudioActivationHandler {
-    inner: Arc<AudioActivationInner>,
-}
-
 struct AudioActivationInner {
-    result: Mutex<Option<Result<IUnknown, windows::core::Error>>>,
+    result: Mutex<Option<std::result::Result<IUnknown, Error>>>,
     condvar: Condvar,
 }
 
-impl AudioActivationHandler {
-    fn new() -> Self {
-        Self {
-            inner: Arc::new(AudioActivationInner {
-                result: Mutex::new(None),
-                condvar: Condvar::new(),
-            }),
-        }
-    }
+struct AudioActivationWaiter {
+    inner: Arc<AudioActivationInner>,
+}
 
+impl AudioActivationWaiter {
     fn wait_for_completion(
         &self,
         timeout: std::time::Duration,
-    ) -> Result<IAudioClient, String> {
+    ) -> std::result::Result<IAudioClient, String> {
         let mut guard = self.inner.result.lock().unwrap();
         let start = std::time::Instant::now();
         while guard.is_none() {
@@ -324,19 +339,21 @@ impl AudioActivationHandler {
 }
 
 #[implement(IActivateAudioInterfaceCompletionHandler)]
-impl AudioActivationHandler {
-    fn ActivateCompleted(
+struct AudioActivationHandlerCom {
+    inner: Arc<AudioActivationInner>,
+}
+
+impl IActivateAudioInterfaceCompletionHandler_Impl for AudioActivationHandlerCom_Impl {
+    unsafe fn ActivateCompleted(
         &self,
-        activate_operation: Option<&IActivateAudioInterfaceAsyncOperation>,
+        activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
     ) -> windows::core::Result<()> {
-        let operation = activate_operation.ok_or(Error::from(E_POINTER))?;
+        let operation = activateoperation.ok_or(Error::from(E_POINTER))?;
 
         let mut activate_result = HRESULT(0);
         let mut activated_interface: Option<IUnknown> = None;
 
-        unsafe {
-            operation.GetActivateResult(&mut activate_result, &mut activated_interface)?;
-        }
+        operation.GetActivateResult(&mut activate_result, &mut activated_interface)?;
 
         let result = if activate_result.is_ok() {
             match activated_interface {
