@@ -6,7 +6,7 @@ use std::time::Instant;
 use super::capture::{CaptureConfig, CaptureOutput, CaptureSource, CaptureSourceType, RawFrame};
 
 use windows::{
-    core::{IInspectable, Interface},
+    core::{IInspectable, Interface, BOOL},
     Foundation::TypedEventHandler,
     Graphics::Capture::*,
     Graphics::DirectX::Direct3D11::IDirect3DDevice,
@@ -143,22 +143,22 @@ fn capture_window_thumbnail(hwnd: HWND, width: u32, height: u32) -> Option<Strin
     if tw == 0 || th == 0 { return None; }
 
     unsafe {
-        let screen_dc = GetDC(HWND::default());
+        let screen_dc = GetDC(None);
         if screen_dc.is_invalid() { return None; }
 
         // Full-size bitmap for PrintWindow (renders at native window size)
-        let full_dc = CreateCompatibleDC(screen_dc);
+        let full_dc = CreateCompatibleDC(Some(screen_dc));
         if full_dc.is_invalid() {
-            ReleaseDC(HWND::default(), screen_dc);
+            ReleaseDC(None, screen_dc);
             return None;
         }
         let full_bmp = CreateCompatibleBitmap(screen_dc, width as i32, height as i32);
         if full_bmp.is_invalid() {
             let _ = DeleteDC(full_dc);
-            ReleaseDC(HWND::default(), screen_dc);
+            ReleaseDC(None, screen_dc);
             return None;
         }
-        let old_full = SelectObject(full_dc, full_bmp);
+        let old_full = SelectObject(full_dc, full_bmp.into());
 
         // PW_RENDERFULLCONTENT (0x2) captures DWM-composited content correctly
         let ok = PrintWindow(hwnd, full_dc, PRINT_WINDOW_FLAGS(2));
@@ -166,32 +166,32 @@ fn capture_window_thumbnail(hwnd: HWND, width: u32, height: u32) -> Option<Strin
             // Fallback without the flag (older windows)
             if !PrintWindow(hwnd, full_dc, PRINT_WINDOW_FLAGS(0)).as_bool() {
                 SelectObject(full_dc, old_full);
-                let _ = DeleteObject(full_bmp);
+                let _ = DeleteObject(full_bmp.into());
                 let _ = DeleteDC(full_dc);
-                ReleaseDC(HWND::default(), screen_dc);
+                ReleaseDC(None, screen_dc);
                 return None;
             }
         }
 
         // Scale down to thumbnail size
-        let thumb_dc = CreateCompatibleDC(screen_dc);
+        let thumb_dc = CreateCompatibleDC(Some(screen_dc));
         if thumb_dc.is_invalid() {
             SelectObject(full_dc, old_full);
-            let _ = DeleteObject(full_bmp);
+            let _ = DeleteObject(full_bmp.into());
             let _ = DeleteDC(full_dc);
-            ReleaseDC(HWND::default(), screen_dc);
+            ReleaseDC(None, screen_dc);
             return None;
         }
         let thumb_bmp = CreateCompatibleBitmap(screen_dc, tw as i32, th as i32);
         if thumb_bmp.is_invalid() {
             let _ = DeleteDC(thumb_dc);
             SelectObject(full_dc, old_full);
-            let _ = DeleteObject(full_bmp);
+            let _ = DeleteObject(full_bmp.into());
             let _ = DeleteDC(full_dc);
-            ReleaseDC(HWND::default(), screen_dc);
+            ReleaseDC(None, screen_dc);
             return None;
         }
-        let old_thumb = SelectObject(thumb_dc, thumb_bmp);
+        let old_thumb = SelectObject(thumb_dc, thumb_bmp.into());
 
         let _ = SetStretchBltMode(thumb_dc, HALFTONE);
         let _ = StretchBlt(
@@ -222,12 +222,12 @@ fn capture_window_thumbnail(hwnd: HWND, width: u32, height: u32) -> Option<Strin
 
         // Cleanup
         SelectObject(thumb_dc, old_thumb);
-        let _ = DeleteObject(thumb_bmp);
+        let _ = DeleteObject(thumb_bmp.into());
         let _ = DeleteDC(thumb_dc);
         SelectObject(full_dc, old_full);
-        let _ = DeleteObject(full_bmp);
+        let _ = DeleteObject(full_bmp.into());
         let _ = DeleteDC(full_dc);
-        ReleaseDC(HWND::default(), screen_dc);
+        ReleaseDC(None, screen_dc);
 
         Some(bgra_to_bmp_data_uri(tw, th, &pixels))
     }
@@ -300,13 +300,13 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
 
     // Must have WS_CAPTION style (both WS_BORDER and WS_DLGFRAME bits)
     let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-    if style & WS_CAPTION != WS_CAPTION {
+    if style & WS_CAPTION.0 != WS_CAPTION.0 {
         return TRUE;
     }
 
     // Must NOT be a tool window
     let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-    if ex_style & WS_EX_TOOLWINDOW != 0 {
+    if ex_style & WS_EX_TOOLWINDOW.0 != 0 {
         return TRUE;
     }
 
@@ -386,7 +386,7 @@ fn create_capture_item_for_window(id: &str) -> Result<GraphicsCaptureItem, Strin
 
     unsafe {
         interop
-            .CreateForWindow::<_, GraphicsCaptureItem>(hwnd)
+            .CreateForWindow::<GraphicsCaptureItem>(hwnd)
             .map_err(|e| format!("CreateForWindow: {}", e))
     }
 }
@@ -459,7 +459,7 @@ impl VideoProcessor {
                 Format: DXGI_FORMAT_NV12,
                 SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
                 Usage: D3D11_USAGE_DEFAULT,
-                BindFlags: D3D11_BIND_RENDER_TARGET,
+                BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
                 CPUAccessFlags: 0,
                 MiscFlags: 0,
             };
@@ -480,7 +480,7 @@ impl VideoProcessor {
                 SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
                 Usage: D3D11_USAGE_STAGING,
                 BindFlags: 0,
-                CPUAccessFlags: D3D11_CPU_ACCESS_READ,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
                 MiscFlags: 0,
             };
 

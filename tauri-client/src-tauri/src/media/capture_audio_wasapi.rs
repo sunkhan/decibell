@@ -203,10 +203,10 @@ fn run_wasapi_capture(
 
             // Get available frames
             loop {
-                let mut packet_length: u32 = 0;
-                if capture_client.GetNextPacketSize(&mut packet_length).is_err() {
-                    break;
-                }
+                let packet_length = match capture_client.GetNextPacketSize() {
+                    Ok(len) => len,
+                    Err(_) => break,
+                };
                 if packet_length == 0 {
                     break;
                 }
@@ -227,7 +227,7 @@ fn run_wasapi_capture(
                     let buffer_slice = std::slice::from_raw_parts(buffer_ptr, buffer_bytes);
 
                     // Convert to interleaved stereo f32
-                    let is_silent = (flags as i32) & AUDCLNT_BUFFERFLAGS_SILENT != 0;
+                    let is_silent = flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
 
                     let stereo_f32 = if is_silent {
                         vec![0.0f32; num_frames as usize * 2]

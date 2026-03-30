@@ -1,7 +1,7 @@
 use super::capture::{CaptureConfig, CaptureOutput, CaptureSource, CaptureSourceType, RawFrame};
 
 use windows::{
-    core::Interface,
+    core::{Interface, BOOL},
     Win32::Graphics::Direct3D::*,
     Win32::Graphics::Direct3D11::*,
     Win32::Graphics::Dxgi::*,
@@ -52,20 +52,20 @@ fn capture_screen_thumbnail(left: i32, top: i32, width: u32, height: u32) -> Opt
     };
 
     unsafe {
-        let screen_dc = GetDC(HWND::default());
+        let screen_dc = GetDC(None);
         if screen_dc.is_invalid() { return None; }
-        let mem_dc = CreateCompatibleDC(screen_dc);
+        let mem_dc = CreateCompatibleDC(Some(screen_dc));
         if mem_dc.is_invalid() {
-            ReleaseDC(HWND::default(), screen_dc);
+            ReleaseDC(None, screen_dc);
             return None;
         }
         let bmp_handle = CreateCompatibleBitmap(screen_dc, tw as i32, th as i32);
         if bmp_handle.is_invalid() {
             let _ = DeleteDC(mem_dc);
-            ReleaseDC(HWND::default(), screen_dc);
+            ReleaseDC(None, screen_dc);
             return None;
         }
-        let old = SelectObject(mem_dc, bmp_handle);
+        let old = SelectObject(mem_dc, bmp_handle.into());
 
         let _ = SetStretchBltMode(mem_dc, HALFTONE);
         let _ = StretchBlt(
@@ -94,9 +94,9 @@ fn capture_screen_thumbnail(left: i32, top: i32, width: u32, height: u32) -> Opt
         );
 
         SelectObject(mem_dc, old);
-        let _ = DeleteObject(bmp_handle);
+        let _ = DeleteObject(bmp_handle.into());
         let _ = DeleteDC(mem_dc);
-        ReleaseDC(HWND::default(), screen_dc);
+        ReleaseDC(None, screen_dc);
 
         Some(bgra_to_bmp_data_uri(tw, th, &pixels))
     }
@@ -278,7 +278,7 @@ impl VideoProcessor {
                 Format: DXGI_FORMAT_NV12,
                 SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
                 Usage: D3D11_USAGE_DEFAULT,
-                BindFlags: D3D11_BIND_RENDER_TARGET,
+                BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
                 CPUAccessFlags: 0,
                 MiscFlags: 0,
             };
@@ -298,7 +298,7 @@ impl VideoProcessor {
                 SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
                 Usage: D3D11_USAGE_STAGING,
                 BindFlags: 0,
-                CPUAccessFlags: D3D11_CPU_ACCESS_READ,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
                 MiscFlags: 0,
             };
 
