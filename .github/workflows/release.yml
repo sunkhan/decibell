@@ -79,6 +79,22 @@ jobs:
           echo "$installed\bin" >> $env:GITHUB_PATH
         shell: pwsh
 
+      - name: Bundle FFmpeg DLLs for Windows
+        if: matrix.target == 'windows'
+        run: |
+          $installed = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          $resDir = "tauri-client\src-tauri\ffmpeg-dlls"
+          New-Item -ItemType Directory -Force -Path $resDir
+          Copy-Item "$installed\bin\avutil*.dll" $resDir
+          Copy-Item "$installed\bin\avcodec*.dll" $resDir
+          Copy-Item "$installed\bin\avformat*.dll" $resDir
+          Copy-Item "$installed\bin\avdevice*.dll" $resDir
+          Copy-Item "$installed\bin\avfilter*.dll" $resDir
+          Copy-Item "$installed\bin\swresample*.dll" $resDir
+          Copy-Item "$installed\bin\swscale*.dll" $resDir
+          Get-ChildItem $resDir
+        shell: pwsh
+
       - name: Install frontend dependencies
         working-directory: tauri-client
         run: npm ci
