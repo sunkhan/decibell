@@ -4,6 +4,25 @@ import { stringToGradient } from "../../utils/colors";
 import { invoke } from "@tauri-apps/api/core";
 import StreamVideoPlayer from "./StreamVideoPlayer";
 
+function VolumeIcon({ muted }: { muted: boolean }) {
+  if (muted) {
+    return (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M11 5L6 9H2v6h4l5 4V5z" />
+        <line x1="23" y1="9" x2="17" y2="15" />
+        <line x1="17" y1="9" x2="23" y2="15" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 5L6 9H2v6h4l5 4V5z" />
+      <path d="M19.07 4.93a10 10 0 010 14.14" />
+      <path d="M15.54 8.46a5 5 0 010 7.07" />
+    </svg>
+  );
+}
+
 export default function StreamViewPanel() {
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
@@ -16,6 +35,22 @@ export default function StreamViewPanel() {
   const [theaterMode, setTheaterMode] = useState(false);
   const [overlayVisible, setOverlayVisible] = useState(false);
   const overlayTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const [streamVolume, setStreamVolume] = useState(100);
+  const prevVolume = useRef(100);
+
+  const handleVolumeChange = (value: number) => {
+    setStreamVolume(value);
+    invoke("set_stream_volume", { volume: value / 100 }).catch(console.error);
+  };
+
+  const toggleMute = () => {
+    if (streamVolume > 0) {
+      prevVolume.current = streamVolume;
+      handleVolumeChange(0);
+    } else {
+      handleVolumeChange(prevVolume.current || 100);
+    }
+  };
 
   const stream = activeStreams.find((s) => s.ownerUsername === fullscreenStream);
 
@@ -96,7 +131,26 @@ export default function StreamViewPanel() {
                 <span className="text-[10px] text-white/60">{qualityBadge}</span>
               )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleMute(); }}
+                  className="flex h-7 w-7 items-center justify-center rounded-md border border-white/20 bg-bg-primary/50 text-white/80 transition-colors hover:bg-bg-primary hover:text-white"
+                  title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
+                >
+                  <VolumeIcon muted={streamVolume === 0} />
+                </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={streamVolume}
+                  onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                  onClick={(e) => e.stopPropagation()}
+                  className="h-1 w-24 cursor-pointer appearance-none rounded-full bg-white/20 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent"
+                  title={`Stream volume: ${streamVolume}%`}
+                />
+              </div>
               <div className="flex -space-x-1.5">
                 {participants.slice(0, 4).map((p) => (
                   <div
@@ -138,7 +192,25 @@ export default function StreamViewPanel() {
           {qualityBadge && (
             <span className="text-[10px] text-text-muted">{qualityBadge}</span>
           )}
-          <div className="ml-auto flex gap-1">
+          <div className="ml-auto flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={toggleMute}
+                className="flex h-6 w-6 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
+              >
+                <VolumeIcon muted={streamVolume === 0} />
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={streamVolume}
+                onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                className="h-1 w-20 cursor-pointer appearance-none rounded-full bg-text-muted/20 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent"
+                title={`Stream volume: ${streamVolume}%`}
+              />
+            </div>
             <button
               onClick={handleBackToCards}
               className="rounded-md px-2 py-1 text-[10px] font-semibold text-text-secondary transition-colors hover:bg-surface-hover"

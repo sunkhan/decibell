@@ -164,12 +164,14 @@ fn run_wasapi_capture(
             mix_format.wFormatTag == 3 // WAVE_FORMAT_IEEE_FLOAT
         };
 
-        // Initialize the audio client for loopback capture
+        // Initialize the audio client for loopback capture.
+        // Do NOT use AUDCLNT_STREAMFLAGS_LOOPBACK with VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK —
+        // the virtual device already provides loopback; combining them crashes on some drivers.
         let buffer_duration = 200_000i64; // 20ms in 100ns units
         audio_client
             .Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                 buffer_duration,
                 0,
                 mix_format_ptr,
@@ -285,6 +287,7 @@ fn run_wasapi_capture(
 
         let _ = audio_client.Stop();
         let _ = CloseHandle(event);
+        CoTaskMemFree(Some(mix_format_ptr as *const _ as *mut _));
         CoUninitialize();
 
         eprintln!(

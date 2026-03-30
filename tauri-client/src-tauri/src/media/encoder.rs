@@ -181,6 +181,7 @@ impl H264Encoder {
         context.set_frame_rate(Some(ffmpeg_next::Rational::new(config.fps as i32, 1)));
         context.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
         context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
+        context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
         context.set_format(ffmpeg_next::format::Pixel::NV12);
         context.set_gop(config.fps * config.keyframe_interval_secs);
         // Disable B-frames for real-time streaming — B-frames require reordering
@@ -197,8 +198,11 @@ impl H264Encoder {
         match codec_name.as_str() {
             "h264_nvenc" => {
                 opts.set("forced_idr", "1");
-                opts.set("preset", "p1");
+                opts.set("preset", "p4");
                 opts.set("tune", "ull");
+                // VBV buffer for smoother rate control — prevents quality drops during
+                // high-motion transitions while keeping latency low.
+                opts.set("rc", "cbr");
             }
             "h264_amf" => {
                 opts.set("usage", "ultralowlatency");

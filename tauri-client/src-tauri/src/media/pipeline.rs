@@ -163,10 +163,10 @@ pub fn run_audio_pipeline(
     // ── Shared buffers ────────────────────────────────────────────────────────
     let capture_buf: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
     let playback_buf: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::new()));
+    // Separate buffer for stream audio so we can MIX (sum) it with voice
+    // instead of concatenating, which caused choppy alternating 20ms chunks.
+    let stream_playback_buf: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::new()));
 
-    // Buffer capacity sized for voice + stream audio mixed together.
-    // 32 frames (~640ms at 48kHz) gives enough headroom when both voice
-    // and stream audio are active, preventing silent drops during video bursts.
     const BUF_CAP: usize = FRAME_SIZE * 32;
 
     // ── Input (capture) stream ────────────────────────────────────────────────
@@ -265,6 +265,7 @@ pub fn run_audio_pipeline(
 
     // ── Output (playback) stream ──────────────────────────────────────────────
     let play_buf_out = Arc::clone(&playback_buf);
+    let stream_buf_out = Arc::clone(&stream_playback_buf);
 
     let out_ch = output_channels;
     let mut playback_resampler = LinearResampler::new(SAMPLE_RATE, output_sample_rate);
@@ -276,34 +277,52 @@ pub fn run_audio_pipeline(
 
             if playback_resampler.passthrough {
                 // No resampling needed — output is already 48kHz
-                if let Ok(mut buf) = play_buf_out.lock() {
-                    if out_ch == 1 {
-                        for sample in data.iter_mut() {
-                            let s = buf.pop_front().unwrap_or(0);
-                            *sample = s as f32 / 32768.0;
-                        }
-                    } else {
-                        for frame in data.chunks_exact_mut(out_ch as usize) {
-                            let s = buf.pop_front().unwrap_or(0) as f32 / 32768.0;
-                            for ch in frame.iter_mut() {
-                                *ch = s;
-                            }
-                        }
+                // Mix voice + stream audio by summing both buffers
+                let (mut voice_buf, mut stream_buf) = match (play_buf_out.lock(), stream_buf_out.lock()) {
+                    (Ok(v), Ok(s)) => (v, s),
+                    _ => {
+                        for sample in data.iter_mut() { *sample = 0.0; }
+                        return;
+                    }
+                };
+                if out_ch == 1 {
+                    for sample in data.iter_mut() {
+                        let v = voice_buf.pop_front().unwrap_or(0) as i32;
+                        let s = stream_buf.pop_front().unwrap_or(0) as i32;
+                        let mixed = (v + s).clamp(-32768, 32767);
+                        *sample = mixed as f32 / 32768.0;
                     }
                 } else {
-                    for sample in data.iter_mut() { *sample = 0.0; }
+                    for frame in data.chunks_exact_mut(out_ch as usize) {
+                        let v = voice_buf.pop_front().unwrap_or(0) as i32;
+                        let s = stream_buf.pop_front().unwrap_or(0) as i32;
+                        let mixed = (v + s).clamp(-32768, 32767) as f32 / 32768.0;
+                        for ch in frame.iter_mut() {
+                            *ch = mixed;
+                        }
+                    }
                 }
                 return;
             }
 
             // Resample 48kHz → output_sample_rate
+            // Drain from both voice and stream buffers, mix, then resample
             let needed_in = ((mono_frames_needed as f64) * playback_resampler.ratio + 2.0).ceil() as usize;
-            let input_48k: Vec<f64> = if let Ok(mut buf) = play_buf_out.lock() {
-                let take = needed_in.min(buf.len());
-                buf.drain(..take).map(|s| s as f64 / 32768.0).collect()
-            } else {
-                for sample in data.iter_mut() { *sample = 0.0; }
-                return;
+            let input_48k: Vec<f64> = match (play_buf_out.lock(), stream_buf_out.lock()) {
+                (Ok(mut voice_buf), Ok(mut stream_buf)) => {
+                    let voice_take = needed_in.min(voice_buf.len());
+                    let stream_take = needed_in.min(stream_buf.len());
+                    let take = voice_take.max(stream_take);
+                    (0..take).map(|_| {
+                        let v = voice_buf.pop_front().unwrap_or(0) as f64 / 32768.0;
+                        let s = stream_buf.pop_front().unwrap_or(0) as f64 / 32768.0;
+                        (v + s).clamp(-1.0, 1.0)
+                    }).collect()
+                }
+                _ => {
+                    for sample in data.iter_mut() { *sample = 0.0; }
+                    return;
+                }
             };
 
             let mut resampled = Vec::with_capacity(mono_frames_needed + 2);
@@ -660,15 +679,15 @@ pub fn run_audio_pipeline(
                                             match decoder.decode(opus_data, &mut pcm) {
                                                 Ok(_) => {
                                                     if !deafened {
-                                                        let mut pbuf = playback_buf.lock().unwrap();
-                                                        let remaining = BUF_CAP.saturating_sub(pbuf.len());
+                                                        let mut sbuf = stream_playback_buf.lock().unwrap();
+                                                        let remaining = BUF_CAP.saturating_sub(sbuf.len());
                                                         let take = STEREO_FRAME_SIZE.min(remaining);
                                                         for i in 0..take {
                                                             let l = pcm[i * 2] as i32;
                                                             let r = pcm[i * 2 + 1] as i32;
                                                             let mono = ((l + r) / 2) as i16;
                                                             let scaled = ((mono as f32) * stream_volume) as i16;
-                                                            pbuf.push_back(scaled);
+                                                            sbuf.push_back(scaled);
                                                         }
                                                     }
                                                 }

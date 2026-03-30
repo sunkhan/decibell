@@ -68,6 +68,11 @@ export default function SettingsModal() {
             </button>
           </div>
         </div>
+
+        {/* Version label */}
+        <div className="border-t border-border px-6 py-3">
+          <p className="text-center text-[11px] text-text-muted">Decibell 0.1.3</p>
+        </div>
       </div>
     </div>,
     document.body
