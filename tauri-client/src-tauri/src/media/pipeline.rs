@@ -13,8 +13,44 @@ use super::packet::{
     PACKET_TYPE_STREAM_AUDIO,
 };
 use super::speaking::SpeakingDetector;
-use super::video_packet::{UdpVideoPacket, PACKET_TYPE_VIDEO, PACKET_TYPE_KEYFRAME_REQUEST};
+use super::video_packet::{UdpVideoPacket, UdpKeyframeRequest, UdpNackPacket, PACKET_TYPE_VIDEO, PACKET_TYPE_KEYFRAME_REQUEST};
 use super::video_receiver::{VideoReceiver, ReassembledFrame};
+
+// ── Linear resampler ─────────────────────────────────────────────────────────
+
+/// Stateful linear-interpolation resampler. Carries fractional phase across
+/// calls so there is no drift even with non-integer rate ratios (e.g. 44100↔48000).
+struct LinearResampler {
+    ratio: f64, // from_rate / to_rate — input samples consumed per output sample
+    phase: f64,
+    prev_sample: f64,
+    passthrough: bool,
+}
+
+impl LinearResampler {
+    fn new(from_rate: u32, to_rate: u32) -> Self {
+        LinearResampler {
+            ratio: from_rate as f64 / to_rate as f64,
+            phase: 0.0,
+            prev_sample: 0.0,
+            passthrough: from_rate == to_rate,
+        }
+    }
+
+    fn process(&mut self, input: &[f64], output: &mut Vec<f64>) {
+        if input.is_empty() { return; }
+        while self.phase < input.len() as f64 {
+            let idx = self.phase as usize;
+            let frac = self.phase - idx as f64;
+            let s0 = if idx == 0 { self.prev_sample } else { input[idx - 1] };
+            let s1 = input[idx];
+            output.push(s0 + (s1 - s0) * frac);
+            self.phase += self.ratio;
+        }
+        self.phase -= input.len() as f64;
+        self.prev_sample = *input.last().unwrap();
+    }
+}
 
 // ── Control / Event messages ──────────────────────────────────────────────────
 
@@ -167,22 +203,40 @@ pub fn run_audio_pipeline(
             };
 
             let in_ch = input_channels;
+            let input_sample_rate = input_cfg.sample_rate.0;
+            let mut capture_resampler = LinearResampler::new(input_sample_rate, SAMPLE_RATE);
             match input_device.build_input_stream(
                 &input_cfg,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if let Ok(mut buf) = cap_buf_in.lock() {
-                        if in_ch == 1 {
-                            for &s in data {
+                    // Downmix to mono f64
+                    let mono: Vec<f64> = if in_ch == 1 {
+                        data.iter().map(|&s| s as f64).collect()
+                    } else {
+                        data.chunks_exact(in_ch as usize)
+                            .map(|frame| {
+                                let sum: f64 = frame.iter().map(|&s| s as f64).sum();
+                                sum / in_ch as f64
+                            })
+                            .collect()
+                    };
+
+                    // Resample to 48kHz if needed, then push i16 into capture_buf
+                    if capture_resampler.passthrough {
+                        if let Ok(mut buf) = cap_buf_in.lock() {
+                            for &s in &mono {
                                 if buf.len() >= BUF_CAP { break; }
                                 buf.push((s * 32767.0) as i16);
                             }
-                        } else {
-                            // Stereo→mono: average channels, convert f32→i16
-                            for frame in data.chunks_exact(in_ch as usize) {
+                        }
+                    } else {
+                        let mut resampled = Vec::with_capacity(
+                            (mono.len() as f64 / capture_resampler.ratio) as usize + 2
+                        );
+                        capture_resampler.process(&mono, &mut resampled);
+                        if let Ok(mut buf) = cap_buf_in.lock() {
+                            for &s in &resampled {
                                 if buf.len() >= BUF_CAP { break; }
-                                let sum: f32 = frame.iter().sum();
-                                let mono = sum / in_ch as f32;
-                                buf.push((mono * 32767.0) as i16);
+                                buf.push((s * 32767.0) as i16);
                             }
                         }
                     }
@@ -212,28 +266,61 @@ pub fn run_audio_pipeline(
     let play_buf_out = Arc::clone(&playback_buf);
 
     let out_ch = output_channels;
+    let mut playback_resampler = LinearResampler::new(SAMPLE_RATE, output_sample_rate);
     // Use f32 output — Windows WASAPI defaults to f32; i16 is often unsupported.
     let output_stream = match output_device.build_output_stream(
         &stream_config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            if let Ok(mut buf) = play_buf_out.lock() {
-                if out_ch == 1 {
-                    for sample in data.iter_mut() {
-                        let s = buf.pop_front().unwrap_or(0);
-                        *sample = s as f32 / 32768.0;
-                    }
-                } else {
-                    // Mono→stereo: duplicate each sample to all channels
-                    for frame in data.chunks_exact_mut(out_ch as usize) {
-                        let s = buf.pop_front().unwrap_or(0) as f32 / 32768.0;
-                        for ch in frame.iter_mut() {
-                            *ch = s;
+            let mono_frames_needed = data.len() / out_ch as usize;
+
+            if playback_resampler.passthrough {
+                // No resampling needed — output is already 48kHz
+                if let Ok(mut buf) = play_buf_out.lock() {
+                    if out_ch == 1 {
+                        for sample in data.iter_mut() {
+                            let s = buf.pop_front().unwrap_or(0);
+                            *sample = s as f32 / 32768.0;
+                        }
+                    } else {
+                        for frame in data.chunks_exact_mut(out_ch as usize) {
+                            let s = buf.pop_front().unwrap_or(0) as f32 / 32768.0;
+                            for ch in frame.iter_mut() {
+                                *ch = s;
+                            }
                         }
                     }
+                } else {
+                    for sample in data.iter_mut() { *sample = 0.0; }
+                }
+                return;
+            }
+
+            // Resample 48kHz → output_sample_rate
+            let needed_in = ((mono_frames_needed as f64) * playback_resampler.ratio + 2.0).ceil() as usize;
+            let input_48k: Vec<f64> = if let Ok(mut buf) = play_buf_out.lock() {
+                let take = needed_in.min(buf.len());
+                buf.drain(..take).map(|s| s as f64 / 32768.0).collect()
+            } else {
+                for sample in data.iter_mut() { *sample = 0.0; }
+                return;
+            };
+
+            let mut resampled = Vec::with_capacity(mono_frames_needed + 2);
+            playback_resampler.process(&input_48k, &mut resampled);
+
+            let mut i = 0;
+            if out_ch == 1 {
+                for sample in data.iter_mut() {
+                    *sample = if i < resampled.len() { resampled[i] as f32 } else { 0.0 };
+                    i += 1;
                 }
             } else {
-                for sample in data.iter_mut() {
-                    *sample = 0.0;
+                for frame in data.chunks_exact_mut(out_ch as usize) {
+                    let s = if i < resampled.len() { resampled[i] as f32 } else { 0.0 };
+                    for ch in frame.iter_mut() {
+                        *ch = s;
+                    }
+                    i += 1;
                 }
             }
         },
@@ -280,6 +367,8 @@ pub fn run_audio_pipeline(
 
     let mut video_receiver = VideoReceiver::new();
     let mut last_video_cleanup = Instant::now();
+    let mut video_streamer_username: Option<String> = None;
+    let mut last_pli_time = Instant::now() - Duration::from_secs(10);
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     'main: loop {
@@ -425,6 +514,7 @@ pub fn run_audio_pipeline(
                                     eprintln!("[video-recv] Ignoring own video (sender='{}' == our id)", username);
                                 }
                             } else {
+                                video_streamer_username = Some(username.clone());
                                 let fid = { pkt.frame_id };
                                 let pidx = { pkt.packet_index };
                                 let total = { pkt.total_packets };
@@ -618,6 +708,21 @@ pub fn run_audio_pipeline(
 
         // 4b. Periodic video receiver maintenance ────────────────────────────
         if last_video_cleanup.elapsed() > Duration::from_millis(100) {
+            // Check for missing packets and send NACKs / PLI
+            if let Some(ref target) = video_streamer_username {
+                let (nacks, need_pli) = video_receiver.check_missing();
+                for (frame_id, missing) in &nacks {
+                    let nack_pkt = UdpNackPacket::new(&sender_id, target, *frame_id, missing);
+                    let _ = socket.send(&nack_pkt.to_bytes());
+                }
+                // Rate-limit PLI to at most once per second
+                if need_pli && last_pli_time.elapsed() > Duration::from_secs(1) {
+                    eprintln!("[video-recv] Sending keyframe request (PLI) to '{}'", target);
+                    let pli_pkt = UdpKeyframeRequest::new(&sender_id, target);
+                    let _ = socket.send(&pli_pkt.to_bytes());
+                    last_pli_time = Instant::now();
+                }
+            }
             video_receiver.cleanup_stale();
             last_video_cleanup = Instant::now();
         }
