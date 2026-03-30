@@ -196,7 +196,7 @@ fn capture_window_thumbnail(hwnd: HWND, width: u32, height: u32) -> Option<Strin
         let _ = SetStretchBltMode(thumb_dc, HALFTONE);
         let _ = StretchBlt(
             thumb_dc, 0, 0, tw as i32, th as i32,
-            full_dc, 0, 0, width as i32, height as i32,
+            Some(full_dc), 0, 0, width as i32, height as i32,
             SRCCOPY,
         );
 
@@ -375,7 +375,7 @@ fn create_capture_item_for_window(id: &str) -> Result<GraphicsCaptureItem, Strin
     let hwnd = HWND(hwnd_val as *mut _);
 
     unsafe {
-        if !IsWindow(hwnd).as_bool() {
+        if !IsWindow(Some(hwnd)).as_bool() {
             return Err(format!("HWND {} is no longer valid", hwnd_val));
         }
     }

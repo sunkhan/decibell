@@ -154,7 +154,8 @@ fn run_wasapi_capture(
         // Determine if format is float or integer
         let is_float = if mix_format.wFormatTag == WAVE_FORMAT_EXTENSIBLE_TAG {
             let ext = &*(mix_format_ptr as *const WAVEFORMATEXTENSIBLE);
-            ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_GUID
+            let sub_format = std::ptr::addr_of!(ext.SubFormat).read_unaligned();
+            sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_GUID
         } else {
             mix_format.wFormatTag == 3 // WAVE_FORMAT_IEEE_FLOAT
         };

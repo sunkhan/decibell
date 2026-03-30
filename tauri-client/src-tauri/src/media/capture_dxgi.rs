@@ -70,7 +70,7 @@ fn capture_screen_thumbnail(left: i32, top: i32, width: u32, height: u32) -> Opt
         let _ = SetStretchBltMode(mem_dc, HALFTONE);
         let _ = StretchBlt(
             mem_dc, 0, 0, tw as i32, th as i32,
-            screen_dc, left, top, width as i32, height as i32,
+            Some(screen_dc), left, top, width as i32, height as i32,
             SRCCOPY,
         );
 
