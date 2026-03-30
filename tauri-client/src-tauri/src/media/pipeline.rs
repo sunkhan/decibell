@@ -165,8 +165,9 @@ pub fn run_audio_pipeline(
     let playback_buf: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::new()));
 
     // Buffer capacity sized for voice + stream audio mixed together.
-    // 16 frames (~320ms at 48kHz) prevents starvation when both are active.
-    const BUF_CAP: usize = FRAME_SIZE * 16;
+    // 32 frames (~640ms at 48kHz) gives enough headroom when both voice
+    // and stream audio are active, preventing silent drops during video bursts.
+    const BUF_CAP: usize = FRAME_SIZE * 32;
 
     // ── Input (capture) stream ────────────────────────────────────────────────
     let input_device_opt = host.default_input_device();
@@ -494,12 +495,17 @@ pub fn run_audio_pipeline(
         }
 
         // 4. Receive UDP packets ───────────────────────────────────────────────
-        // Drain ALL available packets from the socket buffer each iteration.
-        // Video keyframes can be 200+ packets; reading only one per 5ms loop
-        // would overflow the OS socket buffer and drop most video data.
+        // Process up to MAX_PACKETS_PER_LOOP packets per iteration to prevent
+        // video keyframe bursts (200+ packets) from starving audio processing.
+        // The OS socket buffer (4MB) can hold many frames, so short-term
+        // batching won't cause loss. We'll catch up in subsequent loop cycles.
+        const MAX_PACKETS_PER_LOOP: usize = 64;
+        let mut packets_this_loop = 0;
         loop {
+            if packets_this_loop >= MAX_PACKETS_PER_LOOP { break; }
             match socket.recv(&mut recv_buf) {
                 Ok(n) if n >= 1 => {
+                    packets_this_loop += 1;
                     let packet_type = recv_buf[0];
 
                     if packet_type == PACKET_TYPE_VIDEO && n == VIDEO_PACKET_SIZE {

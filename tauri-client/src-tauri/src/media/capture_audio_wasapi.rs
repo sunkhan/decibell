@@ -93,12 +93,15 @@ fn run_wasapi_capture(
             ProcessLoopbackMode: loopback_mode,
         };
 
-        let activation_params = AUDIOCLIENT_ACTIVATION_PARAMS {
+        // Box activation_params so it lives on the heap and outlives the async call.
+        // ActivateAudioInterfaceAsync may dereference the PROPVARIANT blob pointer
+        // on a COM callback thread after this function's stack frame has moved on.
+        let activation_params = Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
             ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
             Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
                 ProcessLoopbackParams: process_params,
             },
-        };
+        });
 
         // Wrap in PROPVARIANT for ActivateAudioInterfaceAsync
         let mut prop_variant: PROPVARIANT = std::mem::zeroed();
@@ -106,7 +109,7 @@ fn run_wasapi_capture(
             let inner = &mut prop_variant.Anonymous.Anonymous;
             inner.vt = VT_BLOB;
             inner.Anonymous.blob.cbSize = std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
-            inner.Anonymous.blob.pBlobData = &activation_params as *const _ as *mut u8;
+            inner.Anonymous.blob.pBlobData = &*activation_params as *const _ as *mut u8;
         }
 
         // Create completion handler
@@ -128,10 +131,11 @@ fn run_wasapi_capture(
         )
         .map_err(|e| format!("ActivateAudioInterfaceAsync: {}", e))?;
 
-        // Wait for activation to complete
+        // Wait for activation to complete (activation_params must stay alive until done)
         let audio_client: IAudioClient = waiter
             .wait_for_completion(std::time::Duration::from_secs(5))
             .map_err(|e| format!("Wait for audio client: {}", e))?;
+        drop(activation_params); // safe to free now that activation completed
 
         eprintln!("[audio-capture] Audio client activated");
 
