@@ -72,11 +72,14 @@ jobs:
         if: matrix.target == 'windows'
         run: |
           vcpkg install ffmpeg[nvcodec,amf,qsv]:x64-windows opus:x64-windows
-          choco install pkgconfiglite -y
           $installed = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          # Use vcpkg's bundled pkg-config from msys2 (more reliable than chocolatey pkgconfiglite)
+          $msys2 = Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\downloads\tools\msys2" -Directory | Select-Object -First 1
+          $pkgConfigDir = "$($msys2.FullName)\mingw64\bin"
           echo "FFMPEG_DIR=$installed" >> $env:GITHUB_ENV
           echo "PKG_CONFIG_PATH=$installed\lib\pkgconfig" >> $env:GITHUB_ENV
           echo "$installed\bin" >> $env:GITHUB_PATH
+          echo "$pkgConfigDir" >> $env:GITHUB_PATH
         shell: pwsh
 
       - name: Bundle FFmpeg DLLs for Windows
