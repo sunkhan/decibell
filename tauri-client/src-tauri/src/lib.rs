@@ -45,6 +45,7 @@ pub fn run() {
             commands::streaming::stop_watching,
             commands::streaming::request_keyframe,
             commands::voice::set_stream_volume,
+            commands::voice::set_user_volume,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {

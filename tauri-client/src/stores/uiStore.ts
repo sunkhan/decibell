@@ -9,6 +9,8 @@ interface UiState {
   dmFriendsPanelVisible: boolean;
   profilePopupUser: string | null;
   profilePopupAnchor: { x: number; y: number } | null;
+  contextMenuUser: string | null;
+  contextMenuAnchor: { x: number; y: number } | null;
   toggleSidebar: () => void;
   toggleMembersPanel: () => void;
   toggleDmFriendsPanel: () => void;
@@ -18,6 +20,8 @@ interface UiState {
   setActiveView: (view: "home" | "server" | "browse" | "voice" | "dm") => void;
   openProfilePopup: (username: string, anchor: { x: number; y: number }) => void;
   closeProfilePopup: () => void;
+  openContextMenu: (username: string, anchor: { x: number; y: number }) => void;
+  closeContextMenu: () => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -26,6 +30,8 @@ export const useUiStore = create<UiState>((set) => ({
   dmFriendsPanelVisible: true,
   profilePopupUser: null,
   profilePopupAnchor: null,
+  contextMenuUser: null,
+  contextMenuAnchor: null,
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   toggleMembersPanel: () => set((state) => ({ membersPanelVisible: !state.membersPanelVisible })),
   toggleDmFriendsPanel: () => set((state) => ({ dmFriendsPanelVisible: !state.dmFriendsPanelVisible })),
@@ -37,4 +43,8 @@ export const useUiStore = create<UiState>((set) => ({
     set({ profilePopupUser: username, profilePopupAnchor: anchor }),
   closeProfilePopup: () =>
     set({ profilePopupUser: null, profilePopupAnchor: null }),
+  openContextMenu: (username, anchor) =>
+    set({ contextMenuUser: username, contextMenuAnchor: anchor }),
+  closeContextMenu: () =>
+    set({ contextMenuUser: null, contextMenuAnchor: null }),
 }));

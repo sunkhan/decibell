@@ -17,6 +17,7 @@ import VoicePanel from "../features/voice/VoicePanel";
 import { useVoiceEvents } from "../features/voice/useVoiceEvents";
 import DmChatPanel from "../features/dm/DmChatPanel";
 import UserProfilePopup from "../features/dm/UserProfilePopup";
+import UserContextMenu from "../features/voice/UserContextMenu";
 import SettingsModal from "../features/settings/SettingsModal";
 import { useDmEvents } from "../features/dm/useDmEvents";
 
@@ -83,6 +84,7 @@ export default function MainLayout() {
 
       <ServerDiscoveryModal />
       <UserProfilePopup />
+      <UserContextMenu />
       <SettingsModal />
     </div>
   );

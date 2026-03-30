@@ -42,6 +42,7 @@ interface Props {
 
 export default function MessageBubble({ message, grouped }: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
+  const openContextMenu = useUiStore((s) => s.openContextMenu);
 
   if (grouped) {
     return (
@@ -80,6 +81,10 @@ export default function MessageBubble({ message, grouped }: Props) {
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
               openProfilePopup(message.sender, { x: rect.right + 8, y: rect.top });
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              openContextMenu(message.sender, { x: e.clientX, y: e.clientY });
             }}
           >
             {message.sender}

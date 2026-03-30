@@ -182,6 +182,12 @@ impl H264Encoder {
         context.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
         context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
         context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
+        // Constrain VBV buffer to ~3 frames worth of bits. This prevents keyframes
+        // from ballooning to 170+ UDP packets (which are nearly impossible to
+        // transmit intact over lossy connections). A tight VBV keeps all frame
+        // sizes in a narrow range at the cost of slightly lower keyframe quality.
+        let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 3;
+        unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
         context.set_format(ffmpeg_next::format::Pixel::NV12);
         context.set_gop(config.fps * config.keyframe_interval_secs);
         // Disable B-frames for real-time streaming — B-frames require reordering

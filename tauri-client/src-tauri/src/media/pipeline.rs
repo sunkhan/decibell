@@ -59,6 +59,7 @@ pub enum ControlMessage {
     SetDeafen(bool),
     SetVoiceThreshold(f32), // dB threshold (-60 to 0); below this, send silence
     SetStreamVolume(f32),   // 0.0 to 1.0 — viewer-side stream audio volume
+    SetUserVolume(String, f32), // username, linear gain (dB-converted on frontend)
     Shutdown,
 }
 
@@ -372,6 +373,7 @@ pub fn run_audio_pipeline(
     let mut was_muted_before_deafen = false;
     let mut voice_threshold_db: f32 = -50.0; // dB threshold; below this, send silence
     let mut stream_volume: f32 = 1.0; // 0.0–1.0 viewer-side stream audio volume
+    let mut user_volumes: HashMap<String, f32> = HashMap::new(); // username → linear gain
 
     let mut sequence: u16 = 0;
     let mut local_speaking = SpeakingDetector::new();
@@ -389,6 +391,7 @@ pub fn run_audio_pipeline(
     let mut last_video_cleanup = Instant::now();
     let mut video_streamer_username: Option<String> = None;
     let mut last_pli_time = Instant::now() - Duration::from_secs(10);
+    let mut has_received_keyframe = false;
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     'main: loop {
@@ -423,6 +426,9 @@ pub fn run_audio_pipeline(
                 }
                 Ok(ControlMessage::SetStreamVolume(v)) => {
                     stream_volume = v.clamp(0.0, 1.0);
+                }
+                Ok(ControlMessage::SetUserVolume(username, gain)) => {
+                    user_volumes.insert(username, gain);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'main,
@@ -539,6 +545,9 @@ pub fn run_audio_pipeline(
                                     eprintln!("[video-recv] Ignoring own video (sender='{}' == our id)", username);
                                 }
                             } else {
+                                if video_streamer_username.as_deref() != Some(&username) {
+                                    has_received_keyframe = false;
+                                }
                                 video_streamer_username = Some(username.clone());
                                 let fid = { pkt.frame_id };
                                 let pidx = { pkt.packet_index };
@@ -548,6 +557,7 @@ pub fn run_audio_pipeline(
                                 }
                                 if let Some(frame) = video_receiver.process_packet(&pkt) {
                                     eprintln!("[video-recv] Frame {} reassembled: {} bytes, keyframe={}", frame.frame_id, frame.data.len(), frame.is_keyframe);
+                                    if frame.is_keyframe { has_received_keyframe = true; }
                                     let _ = event_tx.send(VoiceEvent::VideoFrameReady(frame));
                                 }
                             }
@@ -629,11 +639,13 @@ pub fn run_audio_pipeline(
                                             }
 
                                             if !deafened {
+                                                let gain = user_volumes.get(&username).copied().unwrap_or(1.0);
                                                 let mut pbuf = playback_buf.lock().unwrap();
                                                 let remaining = BUF_CAP.saturating_sub(pbuf.len());
                                                 let take = FRAME_SIZE.min(remaining);
                                                 for &s in &pcm[..take] {
-                                                    pbuf.push_back(s);
+                                                    let scaled = ((s as f32) * gain) as i32;
+                                                    pbuf.push_back(scaled.clamp(-32768, 32767) as i16);
                                                 }
                                             }
                                         }
@@ -740,9 +752,15 @@ pub fn run_audio_pipeline(
                     let nack_pkt = UdpNackPacket::new(&sender_id, target, *frame_id, missing);
                     let _ = socket.send(&nack_pkt.to_bytes());
                 }
-                // Rate-limit PLI to at most once per second
-                if need_pli && last_pli_time.elapsed() > Duration::from_secs(1) {
-                    eprintln!("[video-recv] Sending keyframe request (PLI) to '{}'", target);
+                // PLI rate limit: 500ms if we haven't received a keyframe yet (decoder
+                // can't start without one), 1s once stream is running normally.
+                let pli_interval = if has_received_keyframe {
+                    Duration::from_secs(1)
+                } else {
+                    Duration::from_millis(500)
+                };
+                if need_pli && last_pli_time.elapsed() > pli_interval {
+                    eprintln!("[video-recv] Sending keyframe request (PLI) to '{}' (has_keyframe={})", target, has_received_keyframe);
                     let pli_pkt = UdpKeyframeRequest::new(&sender_id, target);
                     let _ = socket.send(&pli_pkt.to_bytes());
                     last_pli_time = Instant::now();

@@ -8,12 +8,23 @@ import { stringToGradient } from "../../utils/colors";
 
 function FriendRow({ friend }: { friend: FriendInfo }) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
+  const openContextMenu = useUiStore((s) => s.openContextMenu);
   const isOnline = friend.status === "online";
   const isPendingIn = friend.status === "pending_incoming";
   const isPendingOut = friend.status === "pending_outgoing";
 
   return (
-    <div className="flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-hover">
+    <div
+      className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-hover"
+      onClick={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        openProfilePopup(friend.username, { x: rect.right + 8, y: rect.top });
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        openContextMenu(friend.username, { x: e.clientX, y: e.clientY });
+      }}
+    >
       <div className="relative shrink-0">
         <div
           className="flex h-8 w-8 items-center justify-center rounded-lg text-[13px] font-bold text-white"
@@ -29,13 +40,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
           />
         )}
       </div>
-      <span
-        className="min-w-0 flex-1 cursor-pointer truncate text-[13px] font-semibold text-text-primary hover:underline"
-        onClick={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          openProfilePopup(friend.username, { x: rect.right + 8, y: rect.top });
-        }}
-      >
+      <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-text-primary">
         {friend.username}
       </span>
       {isPendingIn && (

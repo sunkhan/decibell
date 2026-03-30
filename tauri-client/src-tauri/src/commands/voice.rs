@@ -126,6 +126,21 @@ pub async fn set_stream_volume(
 }
 
 #[tauri::command]
+pub async fn set_user_volume(
+    username: String,
+    gain: f32,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    if let Some(ref engine) = s.voice_engine {
+        engine.set_user_volume(username, gain.max(0.0));
+        Ok(())
+    } else {
+        Err("Not in a voice channel".to_string())
+    }
+}
+
+#[tauri::command]
 pub async fn set_voice_deafen(
     deafened: bool,
     app: AppHandle,

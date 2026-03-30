@@ -237,6 +237,10 @@ impl VoiceEngine {
         let _ = self.control_tx.send(ControlMessage::SetStreamVolume(volume));
     }
 
+    pub fn set_user_volume(&self, username: String, gain: f32) {
+        let _ = self.control_tx.send(ControlMessage::SetUserVolume(username, gain));
+    }
+
     pub fn is_muted(&self) -> bool { self.is_muted }
     pub fn is_deafened(&self) -> bool { self.is_deafened }
     pub fn socket(&self) -> Arc<UdpSocket> { self.socket.clone() }

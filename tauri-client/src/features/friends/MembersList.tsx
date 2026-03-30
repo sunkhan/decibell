@@ -6,6 +6,7 @@ export default function MembersList() {
   const activeChannelId = useChatStore((s) => s.activeChannelId);
   const channelMembers = useChatStore((s) => s.channelMembers);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
+  const openContextMenu = useUiStore((s) => s.openContextMenu);
 
   const members = activeChannelId
     ? channelMembers[activeChannelId] ?? []
@@ -23,7 +24,15 @@ export default function MembersList() {
         {members.map((username) => (
           <div
             key={username}
-            className="flex items-center gap-2.5 rounded-md px-2 py-[7px] transition-colors hover:bg-surface-hover"
+            className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-[7px] transition-colors hover:bg-surface-hover"
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              openProfilePopup(username, { x: rect.right + 8, y: rect.top });
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              openContextMenu(username, { x: e.clientX, y: e.clientY });
+            }}
           >
             <div className="relative shrink-0">
               <div
@@ -34,13 +43,7 @@ export default function MembersList() {
               </div>
               <div className="absolute -bottom-px -right-px h-[11px] w-[11px] rounded-full border-[2.5px] border-bg-secondary bg-success" />
             </div>
-            <span
-              className="cursor-pointer truncate text-[13.5px] font-semibold text-text-secondary hover:underline"
-              onClick={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                openProfilePopup(username, { x: rect.right + 8, y: rect.top });
-              }}
-            >
+            <span className="truncate text-[13.5px] font-semibold text-text-secondary">
               {username}
             </span>
           </div>

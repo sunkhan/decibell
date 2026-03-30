@@ -1,5 +1,6 @@
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
+import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
 
 interface Props {
@@ -35,6 +36,8 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
   const isDeafened = useVoiceStore((s) => s.isDeafened);
   const channelUserStates = useVoiceStore((s) => s.channelUserStates);
   const localUsername = useAuthStore((s) => s.username);
+  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
+  const openContextMenu = useUiStore((s) => s.openContextMenu);
 
   if (usernames) {
     if (usernames.length === 0) return null;
@@ -44,7 +47,18 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
         {usernames.map((u) => {
           const userState = states[u];
           return (
-            <div key={u} className="flex items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary">
+            <div
+              key={u}
+              className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-hover"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                openProfilePopup(u, { x: rect.right + 8, y: rect.top });
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                openContextMenu(u, { x: e.clientX, y: e.clientY });
+              }}
+            >
               <div
                 className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-[10px] font-bold text-white"
                 style={{ background: stringToGradient(u) }}
@@ -70,7 +84,18 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
         const userMuted = isLocal ? isMuted : p.isMuted;
         const userDeafened = isLocal ? isDeafened : p.isDeafened;
         return (
-          <div key={p.username} className="flex items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary">
+          <div
+            key={p.username}
+            className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-hover"
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              openProfilePopup(p.username, { x: rect.right + 8, y: rect.top });
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              openContextMenu(p.username, { x: e.clientX, y: e.clientY });
+            }}
+          >
             <div
               className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-[10px] font-bold text-white transition-shadow duration-200"
               style={{

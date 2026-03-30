@@ -43,6 +43,8 @@ interface VoiceState {
   setFullscreenStream: (username: string | null) => void;
   setIsStreaming: (streaming: boolean) => void;
   setStreamSettings: (settings: Partial<VoiceState['streamSettings']>) => void;
+  userVolumes: Record<string, number>; // username → dB value (0 = default)
+  setUserVolume: (username: string, db: number) => void;
   disconnect: () => void;
 }
 
@@ -138,6 +140,11 @@ export const useVoiceStore = create<VoiceState>((set) => ({
   setStreamSettings: (settings) =>
     set((state) => ({
       streamSettings: { ...state.streamSettings, ...settings },
+    })),
+  userVolumes: {},
+  setUserVolume: (username, db) =>
+    set((state) => ({
+      userVolumes: { ...state.userVolumes, [username]: db },
     })),
   disconnect: () =>
     set({

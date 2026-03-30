@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 import { useVoiceStore } from "../../stores/voiceStore";
+import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
 import { invoke } from "@tauri-apps/api/core";
 import StreamVideoPlayer from "./StreamVideoPlayer";
@@ -31,6 +32,8 @@ export default function StreamViewPanel() {
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
+  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
+  const openContextMenu = useUiStore((s) => s.openContextMenu);
 
   const [theaterMode, setTheaterMode] = useState(false);
   const [overlayVisible, setOverlayVisible] = useState(false);
@@ -252,7 +255,18 @@ export default function StreamViewPanel() {
           const isStreaming = activeStreams.some((s) => s.ownerUsername === p.username);
           const isSpeaking = speakingUsers.includes(p.username);
           return (
-            <div key={p.username} className="flex items-center gap-1.5 rounded-md p-1.5">
+            <div
+              key={p.username}
+              className="flex cursor-pointer items-center gap-1.5 rounded-md p-1.5 transition-colors hover:bg-surface-hover"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                openProfilePopup(p.username, { x: rect.right + 8, y: rect.top });
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                openContextMenu(p.username, { x: e.clientX, y: e.clientY });
+              }}
+            >
               <div
                 className={`flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-bold text-white ${
                   isSpeaking ? "ring-2 ring-success ring-offset-1 ring-offset-bg-primary" : ""
