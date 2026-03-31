@@ -14,6 +14,7 @@
 #include <set>
 #include <unordered_map>
 #include <mutex>
+#include <utility>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <jwt-cpp/traits/nlohmann-json/defaults.h>
