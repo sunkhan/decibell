@@ -10,8 +10,6 @@ if(POLICY CMP0167)
 endif()
 find_package(Boost REQUIRED)
 find_package(Protobuf REQUIRED)
-find_package(absl REQUIRED)
-find_package(SQLite3 REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)
 
@@ -25,7 +23,7 @@ protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS proto/messages.proto)
 
 # Common Library
 add_library(decibell_common ${PROTO_SRCS} ${PROTO_HDRS})
-target_link_libraries(decibell_common PUBLIC protobuf::libprotobuf Boost::boost absl::log_internal_check_op)
+target_link_libraries(decibell_common PUBLIC protobuf::libprotobuf Boost::boost)
 target_include_directories(decibell_common PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 
 # --- CENTRAL SERVER ---
@@ -35,7 +33,6 @@ add_executable(decibell_server
 )
 target_link_libraries(decibell_server PRIVATE
     decibell_common
-    SQLite3::SQLite3
     OpenSSL::Crypto
     OpenSSL::SSL
     jwt-cpp::jwt-cpp
