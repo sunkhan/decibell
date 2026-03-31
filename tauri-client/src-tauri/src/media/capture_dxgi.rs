@@ -485,6 +485,114 @@ pub fn start_capture(
     Ok(CaptureOutput { receiver: rx, width: out_w, height: out_h })
 }
 
+// ─── HDR SDR White Level Query ──────────────────────────────────────────────
+
+/// Query the SDR white level for a display and return a brightness correction
+/// factor if HDR is active. Uses `DisplayConfigGetDeviceInfo` to read the
+/// user's "SDR content brightness" slider value.
+///
+/// Returns `Some(factor)` where factor = 80.0 / sdr_white_nits if correction
+/// is needed, or `None` for SDR displays.
+fn query_sdr_white_level(gdi_device_name: &[u16]) -> Option<f32> {
+    use windows::Win32::Devices::Display::*;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+
+    // Convert the GDI device name (null-terminated u16) to a Rust string for matching
+    let gdi_name: String = gdi_device_name
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8 as char)
+        .collect();
+
+    unsafe {
+        // Get all active display paths
+        let mut path_count = 0u32;
+        let mut mode_count = 0u32;
+        let flags = QDC_ONLY_ACTIVE_PATHS;
+        let result = GetDisplayConfigBufferSizes(flags, &mut path_count, &mut mode_count);
+        if result != ERROR_SUCCESS {
+            eprintln!("[capture-dxgi] GetDisplayConfigBufferSizes failed: {:?}", result);
+            return None;
+        }
+
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
+
+        let result = QueryDisplayConfig(
+            flags,
+            &mut path_count,
+            paths.as_mut_ptr(),
+            &mut mode_count,
+            modes.as_mut_ptr(),
+            None,
+        );
+        if result != ERROR_SUCCESS {
+            eprintln!("[capture-dxgi] QueryDisplayConfig failed: {:?}", result);
+            return None;
+        }
+        paths.truncate(path_count as usize);
+
+        // Find the path that matches our DXGI output's GDI device name
+        for path in &paths {
+            // Get the source device name to match against our GDI name
+            let mut source_name = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+            source_name.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            source_name.header.size = std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
+            source_name.header.adapterId = path.sourceInfo.adapterId;
+            source_name.header.id = path.sourceInfo.id;
+
+            if DisplayConfigGetDeviceInfo(&mut source_name.header) != 0 {
+                continue;
+            }
+
+            let source_gdi: String = source_name.viewGdiDeviceName
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| c as u8 as char)
+                .collect();
+
+            if source_gdi != gdi_name {
+                continue;
+            }
+
+            // Found matching path — query the SDR white level
+            let mut sdr_white = DISPLAYCONFIG_SDR_WHITE_LEVEL::default();
+            sdr_white.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+            sdr_white.header.size = std::mem::size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32;
+            sdr_white.header.adapterId = path.targetInfo.adapterId;
+            sdr_white.header.id = path.targetInfo.id;
+
+            if DisplayConfigGetDeviceInfo(&mut sdr_white.header) != 0 {
+                eprintln!("[capture-dxgi] SDR white level query failed for '{}'", gdi_name);
+                return None;
+            }
+
+            // SDRWhiteLevel is encoded as (nits / 80) * 1000
+            // Value 1000 = 80 nits (standard sRGB), no correction needed
+            let raw = sdr_white.SDRWhiteLevel;
+            let sdr_nits = (raw as f32) * 80.0 / 1000.0;
+            eprintln!("[capture-dxgi] SDR white level for '{}': {} nits (raw={})", gdi_name, sdr_nits, raw);
+
+            if sdr_nits > 80.0 + 1.0 {
+                // HDR is active with boosted SDR brightness.
+                // DuplicateOutput1 already does partial tone mapping, so a full
+                // 80/sdr correction over-darkens. Use a softer curve: square root
+                // of the raw ratio preserves natural brightness while fixing the
+                // blown-out look on SDR displays.
+                let factor = (80.0f32 / sdr_nits).sqrt();
+                eprintln!("[capture-dxgi] HDR→SDR brightness correction: factor={:.3} ({:.0}nits, sqrt curve)", factor, sdr_nits);
+                return Some(factor);
+            } else {
+                // SDR display or HDR with no boost — no correction needed
+                return None;
+            }
+        }
+
+        eprintln!("[capture-dxgi] Could not find display config for '{}'", gdi_name);
+        None
+    }
+}
+
 // ─── Capture Thread ─────────────────────────────────────────────────────────
 
 fn dxgi_capture_thread(
@@ -514,6 +622,13 @@ fn dxgi_capture_thread(
 
         let dst_w = if target_w == 0 { src_w } else { target_w };
         let dst_h = if target_h == 0 { src_h } else { target_h };
+
+        // Query SDR white level for HDR→SDR brightness correction.
+        // On HDR displays, DuplicateOutput1 tone-maps to SDR but the pixel
+        // values are relative to the display's SDR white level (often 200+
+        // nits). We need to scale down to the standard 80-nit sRGB reference
+        // so the stream looks correct on SDR displays.
+        let hdr_sdr_correction: Option<f32> = query_sdr_white_level(&desc.DeviceName);
 
         let (device, context) = create_device_for_adapter(&adapter)?;
 
@@ -616,7 +731,7 @@ fn dxgi_capture_thread(
 
                 context.CopyResource(&intermediate_tex, &bgra_texture);
 
-                let data = match video_proc.convert_and_readback(&context, &intermediate_tex) {
+                let mut data = match video_proc.convert_and_readback(&context, &intermediate_tex) {
                     Ok(data) => data,
                     Err(e) => {
                         eprintln!("[capture-dxgi] convert error: {}", e);
@@ -626,6 +741,20 @@ fn dxgi_capture_thread(
                 };
 
                 let _ = duplication.ReleaseFrame();
+
+                // Apply HDR→SDR brightness correction on the Y plane.
+                // NV12 layout: Y plane (w*h bytes) then UV plane (w*h/2 bytes).
+                // Y is in studio range [16..235]. We scale: Y' = 16 + (Y-16)*factor
+                // UV (chrominance) is left unchanged — pure brightness scaling.
+                if let Some(factor) = hdr_sdr_correction {
+                    let y_size = dst_w as usize * dst_h as usize;
+                    for y_val in data[..y_size].iter_mut() {
+                        let y = *y_val as f32;
+                        let corrected = 16.0 + (y - 16.0) * factor;
+                        *y_val = corrected.clamp(16.0, 235.0) as u8;
+                    }
+                }
+
                 last_nv12 = Some(data.clone());
                 data
             } else {

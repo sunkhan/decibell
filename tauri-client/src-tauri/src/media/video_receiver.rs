@@ -139,21 +139,22 @@ impl VideoReceiver {
     /// Clean up old frame assemblies.
     pub fn cleanup_stale(&mut self) {
         let cutoff = Duration::from_millis(500);
-        self.frames_in_progress.retain(|frame_id, assembly| {
+        let mut dropped = 0u32;
+        self.frames_in_progress.retain(|_frame_id, assembly| {
             if assembly.created_at.elapsed() >= cutoff {
-                let received = assembly.received.len();
-                let total = assembly.total_packets as usize;
-                if received < total {
-                    eprintln!(
-                        "[video-recv] Dropping incomplete frame {}: {}/{} packets received, keyframe={}",
-                        frame_id, received, total, assembly.is_keyframe
-                    );
+                if assembly.received.len() < assembly.total_packets as usize {
+                    dropped += 1;
                 }
                 false // remove
             } else {
                 true // keep
             }
         });
+        if dropped > 0 {
+            eprintln!("[video-recv] Dropped {} incomplete frames", dropped);
+        }
+        // Also prune stale NACK tracking entries
+        self.nack_tracking.retain(|&(fid, _), _| self.frames_in_progress.contains_key(&fid));
     }
 }
 

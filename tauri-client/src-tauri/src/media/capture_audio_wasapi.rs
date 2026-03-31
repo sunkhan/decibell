@@ -143,10 +143,30 @@ fn run_wasapi_capture(
 
         eprintln!("[audio-capture] Audio client activated");
 
-        // Get the mix format
-        let mix_format_ptr = audio_client
-            .GetMixFormat()
-            .map_err(|e| format!("GetMixFormat: {}", e))?;
+        // Get the mix format from the default render endpoint.
+        // The process loopback virtual device doesn't support GetMixFormat
+        // directly (returns E_NOTIMPL), so we query the real output device
+        // that the loopback mirrors.
+        let mix_format_ptr = match audio_client.GetMixFormat() {
+            Ok(ptr) => ptr,
+            Err(_) => {
+                eprintln!("[audio-capture] GetMixFormat not supported on virtual device, querying default render endpoint");
+                let enumerator: IMMDeviceEnumerator = CoCreateInstance(
+                    &MMDeviceEnumerator,
+                    None,
+                    CLSCTX_ALL,
+                ).map_err(|e| format!("CoCreateInstance MMDeviceEnumerator: {}", e))?;
+                let default_device = enumerator
+                    .GetDefaultAudioEndpoint(eRender, eConsole)
+                    .map_err(|e| format!("GetDefaultAudioEndpoint: {}", e))?;
+                let default_client: IAudioClient = default_device
+                    .Activate(CLSCTX_ALL, None)
+                    .map_err(|e| format!("Activate default device: {}", e))?;
+                default_client
+                    .GetMixFormat()
+                    .map_err(|e| format!("GetMixFormat (default device): {}", e))?
+            }
+        };
         let mix_format = &*mix_format_ptr;
 
         let channels = mix_format.nChannels as u32;
@@ -171,24 +191,20 @@ fn run_wasapi_capture(
         // Initialize the audio client for loopback capture.
         // Do NOT use AUDCLNT_STREAMFLAGS_LOOPBACK with VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK —
         // the virtual device already provides loopback; combining them crashes on some drivers.
+        // The process loopback virtual device doesn't support EVENTCALLBACK, so we use
+        // polling mode (no stream flags). Note: Initialize can only be called once per
+        // IAudioClient — a failed call leaves it in an unusable state.
         let buffer_duration = 200_000i64; // 20ms in 100ns units
         audio_client
             .Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                Default::default(), // no stream flags — polling mode
                 buffer_duration,
                 0,
                 mix_format_ptr,
                 None,
             )
             .map_err(|e| format!("Initialize: {}", e))?;
-
-        // Create and set event handle
-        let event = CreateEventW(None, false, false, None)
-            .map_err(|e| format!("CreateEvent: {}", e))?;
-        audio_client
-            .SetEventHandle(event)
-            .map_err(|e| format!("SetEventHandle: {}", e))?;
 
         // Get capture client
         let capture_client: IAudioCaptureClient = audio_client
@@ -206,11 +222,8 @@ fn run_wasapi_capture(
         let mut channel_closed = false;
 
         'capture: loop {
-            // Wait for data with 100ms timeout
-            let wait_result = WaitForSingleObject(event, 100);
-            if wait_result == WAIT_FAILED {
-                break;
-            }
+            // Polling mode: sleep ~10ms between buffer checks
+            std::thread::sleep(std::time::Duration::from_millis(10));
 
             // Get available frames
             loop {
@@ -290,7 +303,6 @@ fn run_wasapi_capture(
         }
 
         let _ = audio_client.Stop();
-        let _ = CloseHandle(event);
         CoTaskMemFree(Some(mix_format_ptr as *const _ as *mut _));
         CoUninitialize();
 

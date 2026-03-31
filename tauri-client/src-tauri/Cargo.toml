@@ -1,6 +1,6 @@
 [package]
 name = "decibell"
-version = "0.1.7"
+version = "0.1.8"
 description = "Decibell - decentralized text/voice chat and streaming app"
 authors = ["you"]
 edition = "2021"
@@ -60,6 +60,7 @@ windows = { version = "0.61", features = [
     "Win32_System_WinRT_Direct3D11",
     "Win32_System_WinRT_Graphics_Capture",
     "Win32_Storage_Xps",
+    "Win32_Devices_Display",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",
     "Foundation",

@@ -29,6 +29,7 @@ use pipeline::{ControlMessage, VoiceEvent};
 
 pub struct VoiceEngine {
     audio_thread: Option<JoinHandle<()>>,
+    video_recv_thread: Option<JoinHandle<()>>,
     event_bridge: Option<tokio::task::JoinHandle<()>>,
     control_tx: mpsc::Sender<ControlMessage>,
     socket: Arc<UdpSocket>,
@@ -109,14 +110,33 @@ impl VoiceEngine {
         }
         let socket = Arc::new(socket);
 
+        // Channel for forwarding raw video packets from the audio recv loop
+        // to a dedicated video processing thread (prevents video reassembly
+        // from blocking audio decode/playback).
+        let (video_packet_tx, video_packet_rx) = mpsc::channel::<Vec<u8>>();
+
+        // Clone event_tx before it's moved into the audio thread — the video
+        // recv thread needs its own sender into the same event channel.
+        let event_tx_video = event_tx.clone();
+
         let socket_for_audio = socket.clone();
         let sender_id_for_audio = sender_id.clone();
         let audio_thread = thread::Builder::new()
             .name("decibell-audio".to_string())
             .spawn(move || {
-                pipeline::run_audio_pipeline(socket_for_audio, sender_id_for_audio, control_rx, event_tx);
+                pipeline::run_audio_pipeline(socket_for_audio, sender_id_for_audio, control_rx, event_tx, video_packet_tx);
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
+
+        // Dedicated video recv thread: reassembles video frames, sends NACKs/PLI
+        let socket_for_video_recv = socket.clone();
+        let sender_id_for_video = sender_id.clone();
+        let video_recv_thread = thread::Builder::new()
+            .name("decibell-video-recv".to_string())
+            .spawn(move || {
+                run_video_recv_thread(video_packet_rx, socket_for_video_recv, sender_id_for_video, event_tx_video);
+            })
+            .map_err(|e| format!("Failed to spawn video recv thread: {}", e))?;
 
         // Voice event bridge: poll event_rx and emit Tauri events
         let event_bridge = tokio::spawn(async move {
@@ -146,8 +166,10 @@ impl VoiceEngine {
                             }));
                         }
                         VoiceEvent::VideoFrameReady(frame) => {
-                            eprintln!("[video-bridge] Emitting stream_frame: user='{}', {} bytes, keyframe={}",
-                                frame.streamer_username, frame.data.len(), frame.is_keyframe);
+                            if frame.is_keyframe {
+                                eprintln!("[video-bridge] Emitting keyframe: user='{}', {} bytes",
+                                    frame.streamer_username, frame.data.len());
+                            }
                             use base64::Engine;
                             let b64_data = base64::engine::general_purpose::STANDARD.encode(&frame.data);
                             // For keyframes, extract avcC description (SPS/PPS) from the
@@ -193,6 +215,7 @@ impl VoiceEngine {
 
         Ok(VoiceEngine {
             audio_thread: Some(audio_thread),
+            video_recv_thread: Some(video_recv_thread),
             event_bridge: Some(event_bridge),
             control_tx,
             socket,
@@ -206,6 +229,11 @@ impl VoiceEngine {
     pub fn stop(&mut self) {
         let _ = self.control_tx.send(ControlMessage::Shutdown);
         if let Some(handle) = self.audio_thread.take() {
+            let _ = handle.join();
+        }
+        // Video recv thread exits when its video_packet_rx channel is dropped
+        // (which happens when the audio thread exits and drops video_packet_tx).
+        if let Some(handle) = self.video_recv_thread.take() {
             let _ = handle.join();
         }
         if let Some(handle) = self.event_bridge.take() {
@@ -250,6 +278,108 @@ impl VoiceEngine {
 impl Drop for VoiceEngine {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// Dedicated thread for video packet reassembly, NACK/PLI.
+/// Receives raw video packet bytes from the audio recv loop via `packet_rx`,
+/// keeping video processing completely off the audio thread.
+fn run_video_recv_thread(
+    packet_rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    socket: Arc<UdpSocket>,
+    sender_id: String,
+    event_tx: std::sync::mpsc::Sender<pipeline::VoiceEvent>,
+) {
+    use video_packet::{UdpVideoPacket, UdpKeyframeRequest, UdpNackPacket};
+    use video_receiver::VideoReceiver;
+    use std::time::{Duration, Instant};
+
+    let mut video_receiver = VideoReceiver::new();
+    let mut video_streamer_username: Option<String> = None;
+    let mut last_pli_time = Instant::now() - Duration::from_secs(10);
+    let mut has_received_keyframe = false;
+    let mut video_frames_received: u64 = 0;
+    let mut last_maintenance = Instant::now();
+
+    loop {
+        // Drain available video packets (non-blocking after the first blocking recv)
+        match packet_rx.recv_timeout(Duration::from_millis(5)) {
+            Ok(buf) => {
+                if let Some(pkt) = UdpVideoPacket::from_bytes(&buf) {
+                    let username = pkt.sender_username();
+                    // Don't process our own reflected video packets
+                    if username == sender_id {
+                        static LOGGED_SELF: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !LOGGED_SELF.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            eprintln!("[video-recv] Ignoring own video (sender='{}' == our id)", username);
+                        }
+                    } else {
+                        if video_streamer_username.as_deref() != Some(&username) {
+                            has_received_keyframe = false;
+                        }
+                        video_streamer_username = Some(username.clone());
+                        if let Some(frame) = video_receiver.process_packet(&pkt) {
+                            video_frames_received += 1;
+                            if frame.is_keyframe || video_frames_received % 300 == 1 {
+                                eprintln!("[video-recv] Frame {} reassembled: {} bytes, keyframe={} (total={})",
+                                    frame.frame_id, frame.data.len(), frame.is_keyframe, video_frames_received);
+                            }
+                            if frame.is_keyframe { has_received_keyframe = true; }
+                            let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
+                        }
+                    }
+                }
+
+                // Drain any additional queued packets without blocking
+                while let Ok(buf) = packet_rx.try_recv() {
+                    if let Some(pkt) = UdpVideoPacket::from_bytes(&buf) {
+                        let username = pkt.sender_username();
+                        if username != sender_id {
+                            if video_streamer_username.as_deref() != Some(&username) {
+                                has_received_keyframe = false;
+                            }
+                            video_streamer_username = Some(username.clone());
+                            if let Some(frame) = video_receiver.process_packet(&pkt) {
+                                video_frames_received += 1;
+                                if frame.is_keyframe || video_frames_received % 300 == 1 {
+                                    eprintln!("[video-recv] Frame {} reassembled: {} bytes, keyframe={} (total={})",
+                                        frame.frame_id, frame.data.len(), frame.is_keyframe, video_frames_received);
+                                }
+                                if frame.is_keyframe { has_received_keyframe = true; }
+                                let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
+                            }
+                        }
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+
+        // Periodic maintenance: NACKs, PLI, stale cleanup
+        if last_maintenance.elapsed() > Duration::from_millis(100) {
+            if let Some(ref target) = video_streamer_username {
+                let (nacks, need_pli) = video_receiver.check_missing();
+                for (frame_id, missing) in &nacks {
+                    let nack_pkt = UdpNackPacket::new(&sender_id, target, *frame_id, missing);
+                    let _ = socket.send(&nack_pkt.to_bytes());
+                }
+                let pli_interval = if has_received_keyframe {
+                    Duration::from_secs(1)
+                } else {
+                    Duration::from_millis(500)
+                };
+                if need_pli && last_pli_time.elapsed() > pli_interval {
+                    eprintln!("[video-recv] Sending keyframe request (PLI) to '{}' (has_keyframe={})", target, has_received_keyframe);
+                    let pli_pkt = UdpKeyframeRequest::new(&sender_id, target);
+                    let _ = socket.send(&pli_pkt.to_bytes());
+                    last_pli_time = Instant::now();
+                }
+            }
+            video_receiver.cleanup_stale();
+            last_maintenance = Instant::now();
+        }
     }
 }
 

@@ -13,8 +13,8 @@ use super::packet::{
     PACKET_TYPE_STREAM_AUDIO,
 };
 use super::speaking::SpeakingDetector;
-use super::video_packet::{UdpVideoPacket, UdpKeyframeRequest, UdpNackPacket, PACKET_TYPE_VIDEO, PACKET_TYPE_KEYFRAME_REQUEST};
-use super::video_receiver::{VideoReceiver, ReassembledFrame};
+use super::video_packet::{UdpVideoPacket, PACKET_TYPE_VIDEO, PACKET_TYPE_KEYFRAME_REQUEST};
+use super::video_receiver::ReassembledFrame;
 
 // ── Linear resampler ─────────────────────────────────────────────────────────
 
@@ -91,11 +91,14 @@ struct RemotePeer {
 
 /// Runs the audio pipeline on the calling thread (should be a dedicated OS thread).
 /// The socket must already be connected to the server (bind + connect done by caller).
+/// Video packets are forwarded to `video_packet_tx` for processing on a separate thread,
+/// keeping the audio loop fast and preventing video reassembly from causing audio choppiness.
 pub fn run_audio_pipeline(
     socket: Arc<UdpSocket>,
     sender_id: String,
     control_rx: std::sync::mpsc::Receiver<ControlMessage>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
+    video_packet_tx: std::sync::mpsc::Sender<Vec<u8>>,
 ) {
     // Set read timeout for non-blocking recv in the audio loop
     if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(5))) {
@@ -387,11 +390,8 @@ pub fn run_audio_pipeline(
     const RECV_BUF_SIZE: usize = if VIDEO_PACKET_SIZE > PACKET_TOTAL_SIZE { VIDEO_PACKET_SIZE } else { PACKET_TOTAL_SIZE };
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
 
-    let mut video_receiver = VideoReceiver::new();
-    let mut last_video_cleanup = Instant::now();
-    let mut video_streamer_username: Option<String> = None;
-    let mut last_pli_time = Instant::now() - Duration::from_secs(10);
-    let mut has_received_keyframe = false;
+    // Video packets are forwarded to a dedicated thread via video_packet_tx.
+    // No video state is needed in this audio pipeline.
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     'main: loop {
@@ -428,6 +428,7 @@ pub fn run_audio_pipeline(
                     stream_volume = v.clamp(0.0, 1.0);
                 }
                 Ok(ControlMessage::SetUserVolume(username, gain)) => {
+                    eprintln!("[pipeline] SetUserVolume: '{}' → gain={:.3}", username, gain);
                     user_volumes.insert(username, gain);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -520,11 +521,10 @@ pub fn run_audio_pipeline(
         }
 
         // 4. Receive UDP packets ───────────────────────────────────────────────
-        // Process up to MAX_PACKETS_PER_LOOP packets per iteration to prevent
-        // video keyframe bursts (200+ packets) from starving audio processing.
-        // The OS socket buffer (4MB) can hold many frames, so short-term
-        // batching won't cause loss. We'll catch up in subsequent loop cycles.
-        const MAX_PACKETS_PER_LOOP: usize = 64;
+        // Drain up to MAX_PACKETS_PER_LOOP packets per iteration. This must be
+        // high enough to keep up with video keyframes (which can be 100+ packets)
+        // plus ongoing delta frames, without letting the OS socket buffer fill.
+        const MAX_PACKETS_PER_LOOP: usize = 512;
         let mut packets_this_loop = 0;
         loop {
             if packets_this_loop >= MAX_PACKETS_PER_LOOP { break; }
@@ -534,34 +534,8 @@ pub fn run_audio_pipeline(
                     let packet_type = recv_buf[0];
 
                     if packet_type == PACKET_TYPE_VIDEO && n == VIDEO_PACKET_SIZE {
-                        // ── Video packet ────────────────────────────────────
-                        if let Some(pkt) = UdpVideoPacket::from_bytes(&recv_buf[..n]) {
-                            let username = pkt.sender_username();
-                            // Don't process our own reflected video packets
-                            if username == sender_id {
-                                // Skip own reflected video - but log once
-                                static LOGGED_SELF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-                                if !LOGGED_SELF.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                                    eprintln!("[video-recv] Ignoring own video (sender='{}' == our id)", username);
-                                }
-                            } else {
-                                if video_streamer_username.as_deref() != Some(&username) {
-                                    has_received_keyframe = false;
-                                }
-                                video_streamer_username = Some(username.clone());
-                                let fid = { pkt.frame_id };
-                                let pidx = { pkt.packet_index };
-                                let total = { pkt.total_packets };
-                                if pidx == 0 {
-                                    eprintln!("[video-recv] Got video pkt from '{}': frame={} ({} total pkts)", username, fid, total);
-                                }
-                                if let Some(frame) = video_receiver.process_packet(&pkt) {
-                                    eprintln!("[video-recv] Frame {} reassembled: {} bytes, keyframe={}", frame.frame_id, frame.data.len(), frame.is_keyframe);
-                                    if frame.is_keyframe { has_received_keyframe = true; }
-                                    let _ = event_tx.send(VoiceEvent::VideoFrameReady(frame));
-                                }
-                            }
-                        }
+                        // ── Video packet → forward to dedicated video thread ─
+                        let _ = video_packet_tx.send(recv_buf[..n].to_vec());
                     } else if n == PACKET_TOTAL_SIZE {
                         // ── Audio or Ping packet ────────────────────────────
                         if let Some(pkt) = UdpAudioPacket::from_bytes(&recv_buf[..n]) {
@@ -640,6 +614,14 @@ pub fn run_audio_pipeline(
 
                                             if !deafened {
                                                 let gain = user_volumes.get(&username).copied().unwrap_or(1.0);
+                                                if gain != 1.0 {
+                                                    static GAIN_LOG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                                                    let count = GAIN_LOG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                                    if count < 3 || count % 500 == 0 {
+                                                        eprintln!("[pipeline] Applying gain={:.3} for user '{}' (volumes map has {} entries)",
+                                                            gain, username, user_volumes.len());
+                                                    }
+                                                }
                                                 let mut pbuf = playback_buf.lock().unwrap();
                                                 let remaining = BUF_CAP.saturating_sub(pbuf.len());
                                                 let take = FRAME_SIZE.min(remaining);
@@ -743,32 +725,7 @@ pub fn run_audio_pipeline(
             }
         }
 
-        // 4b. Periodic video receiver maintenance ────────────────────────────
-        if last_video_cleanup.elapsed() > Duration::from_millis(100) {
-            // Check for missing packets and send NACKs / PLI
-            if let Some(ref target) = video_streamer_username {
-                let (nacks, need_pli) = video_receiver.check_missing();
-                for (frame_id, missing) in &nacks {
-                    let nack_pkt = UdpNackPacket::new(&sender_id, target, *frame_id, missing);
-                    let _ = socket.send(&nack_pkt.to_bytes());
-                }
-                // PLI rate limit: 500ms if we haven't received a keyframe yet (decoder
-                // can't start without one), 1s once stream is running normally.
-                let pli_interval = if has_received_keyframe {
-                    Duration::from_secs(1)
-                } else {
-                    Duration::from_millis(500)
-                };
-                if need_pli && last_pli_time.elapsed() > pli_interval {
-                    eprintln!("[video-recv] Sending keyframe request (PLI) to '{}' (has_keyframe={})", target, has_received_keyframe);
-                    let pli_pkt = UdpKeyframeRequest::new(&sender_id, target);
-                    let _ = socket.send(&pli_pkt.to_bytes());
-                    last_pli_time = Instant::now();
-                }
-            }
-            video_receiver.cleanup_stale();
-            last_video_cleanup = Instant::now();
-        }
+        // 4b. (Video maintenance moved to dedicated video recv thread)
 
         // 5. Clean up stale remote peers (no packet for > 5s) ─────────────────
         let stale_timeout = Duration::from_secs(5);
