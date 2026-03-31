@@ -304,7 +304,6 @@ struct CaptureData {
     frame_count: u64,
     start: Instant,
     quit_mainloop: pw::main_loop::MainLoopWeak,
-    scaler: Option<SwsScaler>,
     /// Oneshot sender for resolved dimensions (used when target is 0x0 "source" quality).
     dim_tx: Option<std::sync::mpsc::SyncSender<(u32, u32)>>,
 }
@@ -327,7 +326,6 @@ fn pipewire_capture_loop(
         node_id, target_width, target_height, config.target_fps
     );
 
-    ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
     pw::init();
 
     let mainloop = pw::main_loop::MainLoopRc::new(None)
@@ -345,7 +343,6 @@ fn pipewire_capture_loop(
         frame_count: 0,
         start: Instant::now(),
         quit_mainloop: mainloop.downgrade(),
-        scaler: None,
         dim_tx: Some(dim_tx),
     };
 
@@ -451,8 +448,6 @@ fn pipewire_capture_loop(
             let src_w = data.format.size().width as usize;
             let src_h = data.format.size().height as usize;
             let fmt = data.format.format();
-            let dst_w = data.target_width as usize;
-            let dst_h = data.target_height as usize;
 
             data.frame_count += 1;
             if data.frame_count <= 3 || data.frame_count % 120 == 0 {
@@ -463,7 +458,8 @@ fn pipewire_capture_loop(
                 );
             }
 
-            // Convert BGRA/BGRx source to NV12 at target resolution
+            // Send raw pixel data — color conversion happens on the encoder thread
+            // to keep the PipeWire callback fast and avoid blocking the compositor.
             let is_bgra = fmt == spa::param::video::VideoFormat::BGRA
                 || fmt == spa::param::video::VideoFormat::BGRx;
             let is_rgba = fmt == spa::param::video::VideoFormat::RGBA
@@ -476,18 +472,18 @@ fn pipewire_capture_loop(
                 return;
             }
 
-            let nv12 = sws_rgba_to_nv12(
-                raw_data,
-                src_w as u32, src_h as u32,
-                stride, is_bgra,
-                dst_w as u32, dst_h as u32,
-                &mut data.scaler,
-            );
+            let pixel_format = if is_bgra {
+                super::capture::PixelFormat::BGRA
+            } else {
+                super::capture::PixelFormat::RGBA
+            };
 
             let frame = RawFrame {
-                data: nv12,
-                width: dst_w as u32,
-                height: dst_h as u32,
+                data: raw_data.to_vec(),
+                width: src_w as u32,
+                height: src_h as u32,
+                stride,
+                pixel_format,
                 timestamp_us: data.start.elapsed().as_micros() as u64,
             };
 
@@ -584,122 +580,3 @@ fn pipewire_capture_loop(
     Ok(())
 }
 
-// ─── BGRA/RGBA → NV12 conversion (SIMD-accelerated via FFmpeg's libswscale) ─
-
-/// Persistent scaler context to avoid re-creating it every frame.
-/// Stores the FFmpeg `SwsContext` and the last source/destination dimensions
-/// so we can detect when the format changes and rebuild.
-struct SwsScaler {
-    ctx: ffmpeg_next::software::scaling::Context,
-    src_w: u32,
-    src_h: u32,
-    dst_w: u32,
-    dst_h: u32,
-    src_fmt: ffmpeg_next::format::Pixel,
-}
-
-impl SwsScaler {
-    fn new(
-        src_w: u32,
-        src_h: u32,
-        src_fmt: ffmpeg_next::format::Pixel,
-        dst_w: u32,
-        dst_h: u32,
-    ) -> Result<Self, String> {
-        let ctx = ffmpeg_next::software::scaling::Context::get(
-            src_fmt, src_w, src_h,
-            ffmpeg_next::format::Pixel::NV12, dst_w, dst_h,
-            ffmpeg_next::software::scaling::Flags::BILINEAR,
-        )
-        .map_err(|e| format!("sws_getContext: {}", e))?;
-        Ok(Self { ctx, src_w, src_h, dst_w, dst_h, src_fmt })
-    }
-
-    fn matches(&self, src_w: u32, src_h: u32, src_fmt: ffmpeg_next::format::Pixel, dst_w: u32, dst_h: u32) -> bool {
-        self.src_w == src_w && self.src_h == src_h && self.dst_w == dst_w && self.dst_h == dst_h && self.src_fmt == src_fmt
-    }
-}
-
-/// Convert BGRA/RGBA buffer (with stride) to tightly-packed NV12 using
-/// FFmpeg's libswscale. Handles scaling + color conversion in one pass
-/// with AVX2/SSE2 SIMD acceleration.
-fn sws_rgba_to_nv12(
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-    stride: usize,
-    is_bgra: bool,
-    dst_w: u32,
-    dst_h: u32,
-    scaler: &mut Option<SwsScaler>,
-) -> Vec<u8> {
-    let src_fmt = if is_bgra {
-        ffmpeg_next::format::Pixel::BGRA
-    } else {
-        ffmpeg_next::format::Pixel::RGBA
-    };
-
-    // Re-create scaler if dimensions or format changed
-    if scaler.as_ref().map_or(true, |s| !s.matches(src_w, src_h, src_fmt, dst_w, dst_h)) {
-        *scaler = SwsScaler::new(src_w, src_h, src_fmt, dst_w, dst_h).ok();
-    }
-    let Some(sws) = scaler.as_mut() else {
-        // Fallback: return black NV12 frame if scaler creation failed
-        let nv12_size = (dst_w * dst_h + dst_w * dst_h / 2) as usize;
-        let mut nv12 = vec![0u8; nv12_size];
-        // Set UV plane to 128 (neutral chroma) for black
-        let y_size = (dst_w * dst_h) as usize;
-        nv12[y_size..].fill(128);
-        return nv12;
-    };
-
-    // Build source frame wrapping the raw data (zero-copy)
-    let mut src_frame = ffmpeg_next::frame::Video::new(src_fmt, src_w, src_h);
-    // Copy row-by-row respecting source stride
-    let src_stride = src_frame.stride(0);
-    if stride == src_stride {
-        let copy_size = (src_h as usize) * stride;
-        src_frame.data_mut(0)[..copy_size].copy_from_slice(&src[..copy_size]);
-    } else {
-        let row_bytes = (src_w as usize) * 4;
-        for row in 0..src_h as usize {
-            let src_off = row * stride;
-            let dst_off = row * src_stride;
-            src_frame.data_mut(0)[dst_off..dst_off + row_bytes]
-                .copy_from_slice(&src[src_off..src_off + row_bytes]);
-        }
-    }
-
-    // Run the SIMD-accelerated conversion
-    let mut dst_frame = ffmpeg_next::frame::Video::new(
-        ffmpeg_next::format::Pixel::NV12, dst_w, dst_h,
-    );
-    sws.ctx.run(&src_frame, &mut dst_frame).expect("sws_scale");
-
-    // Copy NV12 planes into contiguous output buffer
-    let y_size = (dst_w * dst_h) as usize;
-    let uv_size = (dst_w * dst_h / 2) as usize;
-    let mut nv12 = Vec::with_capacity(y_size + uv_size);
-
-    let y_stride = dst_frame.stride(0);
-    if y_stride == dst_w as usize {
-        nv12.extend_from_slice(&dst_frame.data(0)[..y_size]);
-    } else {
-        for row in 0..dst_h as usize {
-            let off = row * y_stride;
-            nv12.extend_from_slice(&dst_frame.data(0)[off..off + dst_w as usize]);
-        }
-    }
-
-    let uv_stride = dst_frame.stride(1);
-    if uv_stride == dst_w as usize {
-        nv12.extend_from_slice(&dst_frame.data(1)[..uv_size]);
-    } else {
-        for row in 0..(dst_h / 2) as usize {
-            let off = row * uv_stride;
-            nv12.extend_from_slice(&dst_frame.data(1)[off..off + dst_w as usize]);
-        }
-    }
-
-    nv12
-}

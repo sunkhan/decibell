@@ -788,6 +788,8 @@ fn wgc_capture_loop(
                     data: nv12_data.clone(),
                     width: dst_w,
                     height: dst_h,
+                    stride: dst_w as usize,
+                    pixel_format: super::capture::PixelFormat::NV12,
                     timestamp_us: start.elapsed().as_micros() as u64,
                 };
 

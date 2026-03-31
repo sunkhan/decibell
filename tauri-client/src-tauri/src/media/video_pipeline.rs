@@ -3,7 +3,7 @@ use std::net::UdpSocket;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::capture::RawFrame;
+use super::capture::{PixelFormat, RawFrame};
 use super::encoder::{EncoderConfig, H264Encoder};
 use super::video_packet::{UdpVideoPacket, UDP_MAX_PAYLOAD};
 
@@ -19,15 +19,11 @@ pub enum VideoPipelineEvent {
     ThumbnailReady(Vec<u8>),
 }
 
-/// Convert NV12 frame to a small JPEG thumbnail.
-/// NV12 layout: Y plane (W×H), UV plane (W×H/2, interleaved U,V).
-fn nv12_to_jpeg_thumbnail(nv12: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
-    let w = width as usize;
-    let h = height as usize;
-    let expected = w * h * 3 / 2;
-    if nv12.len() < expected {
-        return None;
-    }
+/// Convert a raw frame to a small JPEG thumbnail.
+/// Handles both NV12 (Windows) and BGRA/RGBA (Linux) input formats.
+fn frame_to_jpeg_thumbnail(frame: &RawFrame) -> Option<Vec<u8>> {
+    let w = frame.width as usize;
+    let h = frame.height as usize;
 
     // Target thumbnail width ~320px, preserving aspect ratio
     let thumb_w = 320usize.min(w);
@@ -36,34 +32,57 @@ fn nv12_to_jpeg_thumbnail(nv12: &[u8], width: u32, height: u32) -> Option<Vec<u8
         return None;
     }
 
-    // Direct NV12→RGB downscale with nearest-neighbor sampling
     let mut rgb = vec![0u8; thumb_w * thumb_h * 3];
-    let y_plane = &nv12[..w * h];
-    let uv_plane = &nv12[w * h..];
 
-    for ty in 0..thumb_h {
-        let sy = (ty * h) / thumb_h;
-        let uv_row = sy / 2;
-        for tx in 0..thumb_w {
-            let sx = (tx * w) / thumb_w;
+    match frame.pixel_format {
+        PixelFormat::NV12 => {
+            let expected = w * h * 3 / 2;
+            if frame.data.len() < expected {
+                return None;
+            }
+            let y_plane = &frame.data[..w * h];
+            let uv_plane = &frame.data[w * h..];
 
-            let y_val = y_plane[sy * w + sx] as f32;
-            let uv_idx = uv_row * w + (sx & !1);
-            let u_val = uv_plane[uv_idx] as f32 - 128.0;
-            let v_val = uv_plane[uv_idx + 1] as f32 - 128.0;
+            for ty in 0..thumb_h {
+                let sy = (ty * h) / thumb_h;
+                let uv_row = sy / 2;
+                for tx in 0..thumb_w {
+                    let sx = (tx * w) / thumb_w;
+                    let y_val = y_plane[sy * w + sx] as f32;
+                    let uv_idx = uv_row * w + (sx & !1);
+                    let u_val = uv_plane[uv_idx] as f32 - 128.0;
+                    let v_val = uv_plane[uv_idx + 1] as f32 - 128.0;
 
-            let r = (y_val + 1.402 * v_val).clamp(0.0, 255.0) as u8;
-            let g = (y_val - 0.344 * u_val - 0.714 * v_val).clamp(0.0, 255.0) as u8;
-            let b = (y_val + 1.772 * u_val).clamp(0.0, 255.0) as u8;
-
-            let idx = (ty * thumb_w + tx) * 3;
-            rgb[idx] = r;
-            rgb[idx + 1] = g;
-            rgb[idx + 2] = b;
+                    let idx = (ty * thumb_w + tx) * 3;
+                    rgb[idx]     = (y_val + 1.402 * v_val).clamp(0.0, 255.0) as u8;
+                    rgb[idx + 1] = (y_val - 0.344 * u_val - 0.714 * v_val).clamp(0.0, 255.0) as u8;
+                    rgb[idx + 2] = (y_val + 1.772 * u_val).clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        PixelFormat::BGRA | PixelFormat::RGBA => {
+            let stride = frame.stride;
+            let is_bgra = frame.pixel_format == PixelFormat::BGRA;
+            for ty in 0..thumb_h {
+                let sy = (ty * h) / thumb_h;
+                for tx in 0..thumb_w {
+                    let sx = (tx * w) / thumb_w;
+                    let src_idx = sy * stride + sx * 4;
+                    let idx = (ty * thumb_w + tx) * 3;
+                    if is_bgra {
+                        rgb[idx]     = frame.data[src_idx + 2]; // R
+                        rgb[idx + 1] = frame.data[src_idx + 1]; // G
+                        rgb[idx + 2] = frame.data[src_idx];     // B
+                    } else {
+                        rgb[idx]     = frame.data[src_idx];     // R
+                        rgb[idx + 1] = frame.data[src_idx + 1]; // G
+                        rgb[idx + 2] = frame.data[src_idx + 2]; // B
+                    }
+                }
+            }
         }
     }
 
-    // Encode as JPEG
     use image::ImageEncoder;
     let mut buf = Cursor::new(Vec::with_capacity(16 * 1024));
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 60);
@@ -143,6 +162,8 @@ pub fn run_video_send_pipeline(
                     data: f.data.clone(),
                     width: f.width,
                     height: f.height,
+                    stride: f.stride,
+                    pixel_format: f.pixel_format,
                     timestamp_us: f.timestamp_us,
                 });
                 f
@@ -155,6 +176,8 @@ pub fn run_video_send_pipeline(
                             data: cached.data.clone(),
                             width: cached.width,
                             height: cached.height,
+                            stride: cached.stride,
+                            pixel_format: cached.pixel_format,
                             timestamp_us: cached.timestamp_us,
                         }
                     } else {
@@ -171,14 +194,26 @@ pub fn run_video_send_pipeline(
         // Generate thumbnail periodically
         if last_frame_time.duration_since(last_thumbnail_time) >= thumbnail_interval {
             last_thumbnail_time = last_frame_time;
-            if let Some(jpeg) = nv12_to_jpeg_thumbnail(&frame.data, frame.width, frame.height) {
+            if let Some(jpeg) = frame_to_jpeg_thumbnail(&frame) {
                 eprintln!("[video-send] Thumbnail generated: {} bytes", jpeg.len());
                 let _ = event_tx.send(VideoPipelineEvent::ThumbnailReady(jpeg));
             }
         }
 
-        // Encode
-        match encoder.encode_frame(&frame.data, frame.width, frame.height) {
+        // Encode — dispatch based on pixel format
+        let encode_result = match frame.pixel_format {
+            PixelFormat::NV12 => {
+                encoder.encode_nv12_frame(&frame.data, frame.width, frame.height)
+            }
+            PixelFormat::BGRA | PixelFormat::RGBA => {
+                let is_bgra = frame.pixel_format == PixelFormat::BGRA;
+                encoder.encode_bgra_frame(
+                    &frame.data, frame.width, frame.height, frame.stride, is_bgra,
+                )
+            }
+        };
+
+        match encode_result {
             Ok(Some(encoded)) => {
                 // Packetize: split encoded data into UDP_MAX_PAYLOAD-sized chunks
                 let chunks: Vec<&[u8]> = encoded.data.chunks(UDP_MAX_PAYLOAD).collect();

@@ -134,6 +134,39 @@ fn extract_avcc_description(annexb_data: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// Persistent scaler context for BGRA/RGBA → NV12 conversion.
+/// Reused across frames to avoid re-creating the FFmpeg SwsContext each time.
+struct SwsScaler {
+    ctx: ffmpeg_next::software::scaling::Context,
+    src_frame: ffmpeg_next::frame::Video,
+    src_w: u32,
+    src_h: u32,
+    src_fmt: ffmpeg_next::format::Pixel,
+}
+
+impl SwsScaler {
+    fn new(
+        src_w: u32,
+        src_h: u32,
+        src_fmt: ffmpeg_next::format::Pixel,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Result<Self, String> {
+        let ctx = ffmpeg_next::software::scaling::Context::get(
+            src_fmt, src_w, src_h,
+            ffmpeg_next::format::Pixel::NV12, dst_w, dst_h,
+            ffmpeg_next::software::scaling::Flags::BILINEAR,
+        )
+        .map_err(|e| format!("sws_getContext: {}", e))?;
+        let src_frame = ffmpeg_next::frame::Video::new(src_fmt, src_w, src_h);
+        Ok(Self { ctx, src_frame, src_w, src_h, src_fmt })
+    }
+
+    fn matches(&self, src_w: u32, src_h: u32, src_fmt: ffmpeg_next::format::Pixel) -> bool {
+        self.src_w == src_w && self.src_h == src_h && self.src_fmt == src_fmt
+    }
+}
+
 /// H.264 hardware encoder using FFmpeg's C API via ffmpeg-next.
 pub struct H264Encoder {
     encoder: ffmpeg_next::encoder::Video,
@@ -142,6 +175,11 @@ pub struct H264Encoder {
     force_next_keyframe: bool,
     target_width: u32,
     target_height: u32,
+    /// Persistent NV12 frame buffer — reused across encode calls to avoid
+    /// allocating a new frame every time.
+    nv12_frame: ffmpeg_next::frame::Video,
+    /// Persistent scaler for BGRA→NV12 conversion (Linux).
+    scaler: Option<SwsScaler>,
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +269,10 @@ impl H264Encoder {
 
         eprintln!("[encoder] H.264 encoder opened: {} — {}x{} @ {}fps, {}kbps", codec_name, config.width, config.height, config.fps, config.bitrate_kbps);
 
+        let nv12_frame = ffmpeg_next::frame::Video::new(
+            ffmpeg_next::format::Pixel::NV12, config.width, config.height,
+        );
+
         Ok(H264Encoder {
             encoder,
             frame_count: 0,
@@ -238,6 +280,8 @@ impl H264Encoder {
             force_next_keyframe: false,
             target_width: config.width,
             target_height: config.height,
+            nv12_frame,
+            scaler: None,
         })
     }
 
@@ -289,15 +333,9 @@ impl H264Encoder {
     }
 
     /// Encode a raw NV12 frame into H.264 AVCC format.
-    /// NV12 data comes directly from GStreamer (which handles RGB→YUV with correct
-    /// colorspace) and is NVENC's native format — no FFmpeg conversion needed.
-    /// Returns None if the encoder is still buffering (startup only).
-    pub fn encode_frame(&mut self, nv12_data: &[u8], width: u32, height: u32) -> Result<Option<EncodedFrame>, String> {
-        let mut frame = ffmpeg_next::frame::Video::new(
-            ffmpeg_next::format::Pixel::NV12,
-            width,
-            height,
-        );
+    /// Used by Windows capture backends which output NV12 directly.
+    pub fn encode_nv12_frame(&mut self, nv12_data: &[u8], width: u32, height: u32) -> Result<Option<EncodedFrame>, String> {
+        let frame = &mut self.nv12_frame;
 
         // NV12 layout: Y plane (W×H bytes), UV plane (W×H/2 bytes, interleaved U,V)
         let y_size = (width * height) as usize;
@@ -331,23 +369,77 @@ impl H264Encoder {
             }
         }
 
-        frame.set_pts(Some(self.frame_count as i64));
+        self.prepare_and_encode()
+    }
+
+    /// Encode a raw BGRA/RGBA frame — converts to NV12 via sws_scale directly
+    /// into the encoder's frame buffer (no intermediate allocation).
+    /// Used by Linux PipeWire capture which outputs BGRA.
+    pub fn encode_bgra_frame(
+        &mut self,
+        rgba_data: &[u8],
+        src_width: u32,
+        src_height: u32,
+        stride: usize,
+        is_bgra: bool,
+    ) -> Result<Option<EncodedFrame>, String> {
+        let src_fmt = if is_bgra {
+            ffmpeg_next::format::Pixel::BGRA
+        } else {
+            ffmpeg_next::format::Pixel::RGBA
+        };
+
+        // Rebuild scaler if source dimensions or format changed
+        if self.scaler.as_ref().map_or(true, |s| !s.matches(src_width, src_height, src_fmt)) {
+            self.scaler = Some(SwsScaler::new(
+                src_width, src_height, src_fmt,
+                self.target_width, self.target_height,
+            )?);
+        }
+        let sws = self.scaler.as_mut().unwrap();
+
+        // Copy source data into the scaler's persistent src_frame (one copy)
+        let src_stride = sws.src_frame.stride(0);
+        if stride == src_stride {
+            let copy_size = (src_height as usize) * stride;
+            sws.src_frame.data_mut(0)[..copy_size].copy_from_slice(&rgba_data[..copy_size]);
+        } else {
+            let row_bytes = (src_width as usize) * 4;
+            for row in 0..src_height as usize {
+                let src_off = row * stride;
+                let dst_off = row * src_stride;
+                sws.src_frame.data_mut(0)[dst_off..dst_off + row_bytes]
+                    .copy_from_slice(&rgba_data[src_off..src_off + row_bytes]);
+            }
+        }
+
+        // sws_scale: BGRA→NV12, writes directly into self.nv12_frame (zero intermediate alloc)
+        sws.ctx.run(&sws.src_frame, &mut self.nv12_frame).expect("sws_scale");
+
+        self.prepare_and_encode()
+    }
+
+    /// Set PTS, keyframe flags, and send the prepared nv12_frame to the encoder.
+    fn prepare_and_encode(&mut self) -> Result<Option<EncodedFrame>, String> {
+        self.nv12_frame.set_pts(Some(self.frame_count as i64));
 
         // Force keyframe at interval or on demand (PLI)
         if self.frame_count % self.keyframe_interval == 0 || self.force_next_keyframe {
-            frame.set_kind(ffmpeg_next::picture::Type::I);
+            self.nv12_frame.set_kind(ffmpeg_next::picture::Type::I);
             self.force_next_keyframe = false;
+        } else {
+            self.nv12_frame.set_kind(ffmpeg_next::picture::Type::None);
         }
 
         self.frame_count += 1;
 
         // Standard FFmpeg encode pattern: send frame, then try to receive output.
         // If send returns EAGAIN, receive one packet first to free a buffer, then retry.
-        match self.encoder.send_frame(&frame) {
+        match self.encoder.send_frame(&self.nv12_frame) {
             Ok(()) => {}
             Err(ffmpeg_next::Error::Other { errno: ffmpeg_next::error::EAGAIN }) => {
                 let _ = self.receive_one_packet();
-                self.encoder.send_frame(&frame)
+                self.encoder.send_frame(&self.nv12_frame)
                     .map_err(|e| format!("Send frame (retry): {}", e))?;
             }
             Err(e) => return Err(format!("Send frame: {}", e)),

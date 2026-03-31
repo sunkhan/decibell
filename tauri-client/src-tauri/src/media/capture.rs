@@ -26,11 +26,24 @@ pub struct CaptureConfig {
     pub target_height: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// NV12 (Y + interleaved UV), tightly packed. Used by Windows capture.
+    NV12,
+    /// BGRA 32-bit, with per-row stride. Used by Linux PipeWire capture.
+    BGRA,
+    /// RGBA 32-bit, with per-row stride.
+    RGBA,
+}
+
 #[derive(Debug)]
 pub struct RawFrame {
     pub data: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    /// Row stride in bytes. Only meaningful for BGRA/RGBA formats.
+    pub stride: usize,
+    pub pixel_format: PixelFormat,
     pub timestamp_us: u64,
 }
 

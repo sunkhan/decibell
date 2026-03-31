@@ -651,6 +651,8 @@ fn dxgi_capture_thread(
                 data: nv12,
                 width: dst_w,
                 height: dst_h,
+                stride: dst_w as usize,
+                pixel_format: super::capture::PixelFormat::NV12,
                 timestamp_us,
             };
 
