@@ -956,10 +956,17 @@ private:
 
 int main() {
     try {
-        std::string jwt_secret = "super_secret_decibell_key_change_in_production";
+        const char* jwt_env = std::getenv("DECIBELL_JWT_SECRET");
+        if (!jwt_env) {
+            std::cerr << "Missing required environment variable: DECIBELL_JWT_SECRET\n";
+            return 1;
+        }
+
+        std::string jwt_secret = jwt_env;
         boost::asio::io_context io_context;
-        SessionManager manager; 
+        SessionManager manager;
         CommunityServer s(io_context, 8082, manager, jwt_secret);
+        std::cout << "Decibell Community Server running on port 8082...\n";
         io_context.run();
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";
