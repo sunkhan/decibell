@@ -103,8 +103,12 @@ fn run_wasapi_capture(
             },
         });
 
-        // Wrap in PROPVARIANT for ActivateAudioInterfaceAsync
-        let mut prop_variant: PROPVARIANT = std::mem::zeroed();
+        // Wrap in PROPVARIANT for ActivateAudioInterfaceAsync.
+        // Use ManuallyDrop to prevent PROPVARIANT's Drop (PropVariantClear) from
+        // calling CoTaskMemFree on our Rust-allocated blob data — that would cause
+        // heap corruption since the blob points to a Rust Box, not COM memory.
+        let mut prop_variant: std::mem::ManuallyDrop<PROPVARIANT> =
+            std::mem::ManuallyDrop::new(std::mem::zeroed());
         {
             let inner = &mut prop_variant.Anonymous.Anonymous;
             inner.vt = VT_BLOB;
@@ -126,7 +130,7 @@ fn run_wasapi_capture(
         let _operation = ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &IAudioClient::IID,
-            Some(&prop_variant as *const PROPVARIANT),
+            Some(&*prop_variant as *const PROPVARIANT),
             &handler_ref,
         )
         .map_err(|e| format!("ActivateAudioInterfaceAsync: {}", e))?;
