@@ -23,6 +23,7 @@ public:
     bool validateToken(const std::string& token);
 
     std::vector<chatproj::CommunityServerInfo> getCommunityServers();
+    void upsertCommunityServer(const std::string& name, const std::string& description, const std::string& host_ip, int port, int member_count);
 
     // Friend System
     std::string handleFriendAction(const std::string& requester, chatproj::FriendActionType action, const std::string& target);

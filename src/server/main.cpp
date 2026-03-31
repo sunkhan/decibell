@@ -316,6 +316,13 @@ private:
             dm_friends_only_ = packet.dm_privacy().friends_only();
             std::cout << "[Server] User " << username_ << " set dm_friends_only to " << dm_friends_only_ << "\n";
         }
+
+        // --- COMMUNITY SERVER HEARTBEAT ---
+        else if (packet.type() == chatproj::Packet::SERVER_HEARTBEAT) {
+            auto& hb = packet.server_heartbeat();
+            std::cout << "[Server] Heartbeat from community server: " << hb.name() << " at " << hb.host_ip() << ":" << hb.port() << "\n";
+            auth_manager_.upsertCommunityServer(hb.name(), hb.description(), hb.host_ip(), hb.port(), hb.member_count());
+        }
     }
 
     void send_response(chatproj::Packet::Type type, bool success, const std::string& msg, const std::string& token = "") {

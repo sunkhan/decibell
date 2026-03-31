@@ -155,6 +155,36 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
     return servers;
 }
 
+void AuthManager::upsertCommunityServer(const std::string& name, const std::string& description, const std::string& host_ip, int port, int member_count) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        txn.exec(
+            "CREATE TABLE IF NOT EXISTS community_servers ("
+            "  id SERIAL PRIMARY KEY,"
+            "  name VARCHAR(64) NOT NULL,"
+            "  description TEXT,"
+            "  host_ip VARCHAR(45) NOT NULL,"
+            "  port INTEGER NOT NULL,"
+            "  member_count INTEGER DEFAULT 0,"
+            "  last_heartbeat TIMESTAMP DEFAULT NOW(),"
+            "  UNIQUE(host_ip, port)"
+            ")"
+        );
+        txn.exec_params(
+            "INSERT INTO community_servers (name, description, host_ip, port, member_count, last_heartbeat) "
+            "VALUES ($1, $2, $3, $4, $5, NOW()) "
+            "ON CONFLICT (host_ip, port) DO UPDATE SET "
+            "name = EXCLUDED.name, description = EXCLUDED.description, "
+            "member_count = EXCLUDED.member_count, last_heartbeat = NOW()",
+            name, description, host_ip, port, member_count
+        );
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] upsertCommunityServer: " << e.what() << "\n";
+    }
+}
+
 // --- Friend System ---
 
 std::string AuthManager::handleFriendAction(const std::string& requester, chatproj::FriendActionType action, const std::string& target) {

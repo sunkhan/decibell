@@ -17,8 +17,10 @@
 #include <utility>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <jwt-cpp/traits/nlohmann-json/defaults.h>
 #include "messages.pb.h"
+#include "../common/net_utils.hpp"
 #include "../common/udp_packet.hpp"
 
 namespace ssl = boost::asio::ssl;
@@ -57,6 +59,7 @@ public:
     void broadcast_to_watchers(const char* data, size_t length, const std::string& channel_id, const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket);
     void set_udp_socket(boost::asio::ip::udp::socket* sock) { udp_socket_ptr_ = sock; }
     void relay_keyframe_request_internal(const std::string& target_username);
+    size_t session_count() { std::lock_guard<std::mutex> lock(mutex_); return sessions_.size(); }
 
 private:
     std::set<std::shared_ptr<Session>> sessions_;
@@ -954,19 +957,89 @@ private:
     std::string jwt_secret_;
 };
 
+void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_timer& timer,
+                    const std::string& central_host, int central_port,
+                    const std::string& server_name, const std::string& server_desc,
+                    const std::string& public_ip, int community_port,
+                    SessionManager& manager, const std::string& jwt_secret) {
+    // Build heartbeat packet
+    chatproj::Packet packet;
+    packet.set_type(chatproj::Packet::SERVER_HEARTBEAT);
+    packet.set_auth_token(jwt_secret);
+    auto* hb = packet.mutable_server_heartbeat();
+    hb->set_name(server_name);
+    hb->set_description(server_desc);
+    hb->set_host_ip(public_ip);
+    hb->set_port(community_port);
+    hb->set_member_count(static_cast<int>(manager.session_count()));
+
+    std::string serialized;
+    packet.SerializeToString(&serialized);
+    auto framed = chatproj::create_framed_packet(serialized);
+
+    // Connect to central server over TLS and send
+    try {
+        ssl::context ctx(ssl::context::tlsv12_client);
+        ctx.set_verify_mode(ssl::verify_none);
+
+        tcp::resolver resolver(io_context);
+        auto endpoints = resolver.resolve(central_host, std::to_string(central_port));
+
+        tcp::socket raw_socket(io_context);
+        boost::asio::connect(raw_socket, endpoints);
+
+        ssl::stream<tcp::socket> ssl_socket(std::move(raw_socket), ctx);
+        ssl_socket.handshake(ssl::stream_base::client);
+
+        boost::asio::write(ssl_socket, boost::asio::buffer(framed));
+        ssl_socket.lowest_layer().close();
+
+        std::cout << "[Heartbeat] Sent to central server (" << central_host << ":" << central_port << ")\n";
+    } catch (const std::exception& e) {
+        std::cerr << "[Heartbeat] Failed to send: " << e.what() << "\n";
+    }
+
+    // Schedule next heartbeat in 60 seconds
+    timer.expires_after(std::chrono::seconds(60));
+    timer.async_wait([&](boost::system::error_code ec) {
+        if (!ec) {
+            send_heartbeat(io_context, timer, central_host, central_port,
+                           server_name, server_desc, public_ip, community_port,
+                           manager, jwt_secret);
+        }
+    });
+}
+
 int main() {
     try {
         const char* jwt_env = std::getenv("DECIBELL_JWT_SECRET");
+        const char* central_host_env = std::getenv("DECIBELL_CENTRAL_HOST");
+        const char* server_name_env = std::getenv("DECIBELL_SERVER_NAME");
+        const char* server_desc_env = std::getenv("DECIBELL_SERVER_DESC");
+        const char* public_ip_env = std::getenv("DECIBELL_PUBLIC_IP");
+
         if (!jwt_env) {
             std::cerr << "Missing required environment variable: DECIBELL_JWT_SECRET\n";
             return 1;
         }
 
         std::string jwt_secret = jwt_env;
+        std::string central_host = central_host_env ? central_host_env : "127.0.0.1";
+        std::string server_name = server_name_env ? server_name_env : "Community Server";
+        std::string server_desc = server_desc_env ? server_desc_env : "";
+        std::string public_ip = public_ip_env ? public_ip_env : "127.0.0.1";
+
         boost::asio::io_context io_context;
         SessionManager manager;
         CommunityServer s(io_context, 8082, manager, jwt_secret);
         std::cout << "Decibell Community Server running on port 8082...\n";
+
+        // Start heartbeat timer
+        boost::asio::steady_timer heartbeat_timer(io_context);
+        send_heartbeat(io_context, heartbeat_timer, central_host, 8080,
+                       server_name, server_desc, public_ip, 8082,
+                       manager, jwt_secret);
+
         io_context.run();
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";

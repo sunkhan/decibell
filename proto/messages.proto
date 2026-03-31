@@ -40,6 +40,7 @@ message Packet {
     WATCH_STREAM_REQ = 25;
     STOP_WATCHING_REQ = 26;
     STREAM_THUMBNAIL_UPDATE = 29;
+    SERVER_HEARTBEAT = 30;
   }
 
   Type type = 1;
@@ -80,6 +81,7 @@ message Packet {
     StopWatchingRequest stop_watching_req = 29;
     DmPrivacySetting dm_privacy = 31;
     StreamThumbnailUpdate stream_thumbnail_update = 32;
+    ServerHeartbeat server_heartbeat = 33;
   }
 }
 
@@ -281,4 +283,12 @@ message StreamThumbnailUpdate {
 
 message DmPrivacySetting {
   bool friends_only = 1;
+}
+
+message ServerHeartbeat {
+  string name = 1;
+  string description = 2;
+  string host_ip = 3;
+  int32 port = 4;
+  int32 member_count = 5;
 }
