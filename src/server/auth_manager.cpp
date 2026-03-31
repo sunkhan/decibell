@@ -9,6 +9,13 @@ void AuthManager::initializeDatabase() {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         txn.exec(
+            "CREATE TABLE IF NOT EXISTS users ("
+            "  username VARCHAR(32) PRIMARY KEY,"
+            "  email VARCHAR(128) UNIQUE NOT NULL,"
+            "  password_hash VARCHAR(128) NOT NULL"
+            ")"
+        );
+        txn.exec(
             "CREATE TABLE IF NOT EXISTS friends ("
             "  user1 VARCHAR(32) NOT NULL,"
             "  user2 VARCHAR(32) NOT NULL,"
