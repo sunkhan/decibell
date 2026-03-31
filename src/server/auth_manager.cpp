@@ -1,5 +1,5 @@
 #include "auth_manager.hpp"
-#include "auth_utils.hpp" // Use your existing SHA256 utility
+#include "bcrypt.h"
 #include <chrono>
 #include <iostream>
 #include <algorithm>
@@ -127,11 +127,11 @@ std::optional<std::string> AuthManager::getPasswordHash(const std::string& usern
 }
 
 std::string AuthManager::hashPassword(const std::string& plain_password) {
-    return chatproj::sha256(plain_password);
+    return bcrypt::hash(plain_password);
 }
 
 bool AuthManager::verifyPassword(const std::string& plain_password, const std::string& hash) {
-    return chatproj::sha256(plain_password) == hash;
+    return bcrypt::verify(plain_password, hash);
 }
 
 std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {

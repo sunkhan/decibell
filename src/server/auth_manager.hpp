@@ -36,7 +36,7 @@ private:
 
     void initializeDatabase();
 
-    // Hashing functions using Argon2 or bcrypt
+    // Password hashing using bcrypt (cost factor 12)
     std::string hashPassword(const std::string& plain_password);
     bool verifyPassword(const std::string& plain_password, const std::string& hash);
 
