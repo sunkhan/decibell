@@ -22,6 +22,7 @@ public:
     // Verifies an incoming JWT from a client or community server
     bool validateToken(const std::string& token);
 
+    bool verifySharedSecret(const std::string& secret) const { return secret == secret_key_; }
     std::vector<chatproj::CommunityServerInfo> getCommunityServers();
     void upsertCommunityServer(const std::string& name, const std::string& description, const std::string& host_ip, int port, int member_count);
 

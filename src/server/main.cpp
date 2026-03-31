@@ -116,14 +116,15 @@ private:
         std::cout << "[Server] Raw packet received, type ID: " << packet.type() << "\n";
 
         // --- ENFORCE JWT VALIDATION ---
-        if (packet.type() != chatproj::Packet::REGISTER_REQ && 
-            packet.type() != chatproj::Packet::LOGIN_REQ && 
-            packet.type() != chatproj::Packet::HANDSHAKE) {
-            
+        if (packet.type() != chatproj::Packet::REGISTER_REQ &&
+            packet.type() != chatproj::Packet::LOGIN_REQ &&
+            packet.type() != chatproj::Packet::HANDSHAKE &&
+            packet.type() != chatproj::Packet::SERVER_HEARTBEAT) {
+
             if (!auth_manager_.validateToken(packet.auth_token())) {
                 std::cout << "[Security] Dropped packet - Missing or invalid JWT.\n";
                 manager_.leave(shared_from_this());
-                return; 
+                return;
             }
         }
 
@@ -319,6 +320,10 @@ private:
 
         // --- COMMUNITY SERVER HEARTBEAT ---
         else if (packet.type() == chatproj::Packet::SERVER_HEARTBEAT) {
+            if (!auth_manager_.verifySharedSecret(packet.auth_token())) {
+                std::cout << "[Security] Dropped heartbeat - invalid shared secret.\n";
+                return;
+            }
             auto& hb = packet.server_heartbeat();
             std::cout << "[Server] Heartbeat from community server: " << hb.name() << " at " << hb.host_ip() << ":" << hb.port() << "\n";
             auth_manager_.upsertCommunityServer(hb.name(), hb.description(), hb.host_ip(), hb.port(), hb.member_count());
