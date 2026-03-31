@@ -21,6 +21,7 @@ export default function VoicePanel() {
   const latencyMs = useVoiceStore((s) => s.latencyMs);
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
+  const isStreamFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
   const disconnect = useVoiceStore((s) => s.disconnect);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const channels = useChatStore((s) => {
@@ -53,7 +54,6 @@ export default function VoicePanel() {
     if (!connectedServerId || !connectedChannelId) return;
     const isAlreadyWatching = watchingStreams.includes(username);
     if (!isAlreadyWatching) {
-      // Tell server to start forwarding this stream's frames
       await invoke("watch_stream", {
         serverId: connectedServerId,
         channelId: connectedChannelId,
@@ -61,12 +61,10 @@ export default function VoicePanel() {
       }).catch(() => {});
       useVoiceStore.getState().addWatching(username);
     }
-    // Go fullscreen for this stream
     useVoiceStore.getState().setFullscreenStream(username);
   };
 
   const handleDisconnect = async () => {
-    // Stop watching all streams
     if (connectedServerId && connectedChannelId) {
       for (const username of watchingStreams) {
         await invoke("stop_watching", {
@@ -83,27 +81,33 @@ export default function VoicePanel() {
 
   return (
     <div className="flex flex-1 flex-col bg-bg-tertiary">
-      {/* Header */}
-      <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
-        <span className="text-accent">🔊</span>
-        <span className="text-sm font-bold text-text-bright">{channelName}</span>
-        <span
-          className="ml-auto text-xs text-text-muted"
-          title={latencyMs != null ? `${latencyMs}ms` : undefined}
-        >
-          {participants.length} participant{participants.length !== 1 ? "s" : ""}
-          {latencyMs != null && (
-            <span className="ml-2 text-text-muted">{latencyMs}ms</span>
-          )}
-        </span>
-      </div>
+      {/* Header - hidden when stream is in real fullscreen */}
+      {!isStreamFullscreen && (
+        <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
+          <span className="text-accent">🔊</span>
+          <span className="text-sm font-bold text-text-bright">{channelName}</span>
+          <span
+            className="ml-auto text-xs text-text-muted"
+            title={latencyMs != null ? `${latencyMs}ms` : undefined}
+          >
+            {participants.length} participant{participants.length !== 1 ? "s" : ""}
+            {latencyMs != null && (
+              <span className="ml-2 text-text-muted">{latencyMs}ms</span>
+            )}
+          </span>
+        </div>
+      )}
 
-      {/* Main content: fullscreen stream, stream cards, or participant grid */}
-      {fullscreenStream ? (
-        <StreamViewPanel />
-      ) : hasStreams ? (
-        /* Two-column layout: Users left, Streams right */
-        <div className="flex flex-1 overflow-hidden">
+      {/* StreamViewPanel - stays mounted while watching to preserve the decoder */}
+      {watchingStreams.length > 0 && (
+        <div className={fullscreenStream ? "flex flex-1" : "hidden"}>
+          <StreamViewPanel />
+        </div>
+      )}
+
+      {/* Stream cards - stays mounted (hidden when expanded) to preserve card decoders */}
+      {hasStreams && (
+        <div className={fullscreenStream ? "hidden" : "flex flex-1 overflow-hidden"}>
           {/* Left: Users */}
           <div className="flex flex-col border-r border-border" style={{ width: "240px", minWidth: "240px" }}>
             <div className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-text-muted">
@@ -230,8 +234,10 @@ export default function VoicePanel() {
             </div>
           </div>
         </div>
-      ) : (
-        /* No streams: centered participant grid (original layout) */
+      )}
+
+      {/* No streams: centered participant grid */}
+      {!fullscreenStream && !hasStreams && (
         <div className="flex flex-1 flex-wrap items-center justify-center gap-5 p-6">
           {participants.map((p) => {
             const isSpeaking = speakingUsers.includes(p.username);
@@ -261,35 +267,37 @@ export default function VoicePanel() {
         </div>
       )}
 
-      {/* Bottom controls */}
-      <div className="flex justify-center gap-3 border-t border-border bg-bg-primary px-5 py-3">
-        <button
-          onClick={handleMute}
-          className={`flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-semibold transition-colors ${
-            isMuted
-              ? "bg-error/20 text-error"
-              : "bg-surface-hover text-text-muted hover:bg-surface-active"
-          }`}
-        >
-          {isMuted ? "🔇 Unmute" : "🎤 Mute"}
-        </button>
-        <button
-          onClick={handleDeafen}
-          className={`flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-semibold transition-colors ${
-            isDeafened
-              ? "bg-error/20 text-error"
-              : "bg-surface-hover text-text-muted hover:bg-surface-active"
-          }`}
-        >
-          {isDeafened ? "🔇 Undeafen" : "🎧 Deafen"}
-        </button>
-        <button
-          onClick={handleDisconnect}
-          className="flex items-center gap-1.5 rounded-lg bg-error px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-error/80"
-        >
-          Disconnect
-        </button>
-      </div>
+      {/* Bottom controls - hidden when stream is in real fullscreen */}
+      {!isStreamFullscreen && (
+        <div className="flex justify-center gap-3 border-t border-border bg-bg-primary px-5 py-3">
+          <button
+            onClick={handleMute}
+            className={`flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-semibold transition-colors ${
+              isMuted
+                ? "bg-error/20 text-error"
+                : "bg-surface-hover text-text-muted hover:bg-surface-active"
+            }`}
+          >
+            {isMuted ? "🔇 Unmute" : "🎤 Mute"}
+          </button>
+          <button
+            onClick={handleDeafen}
+            className={`flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-semibold transition-colors ${
+              isDeafened
+                ? "bg-error/20 text-error"
+                : "bg-surface-hover text-text-muted hover:bg-surface-active"
+            }`}
+          >
+            {isDeafened ? "🔇 Undeafen" : "🎧 Deafen"}
+          </button>
+          <button
+            onClick={handleDisconnect}
+            className="flex items-center gap-1.5 rounded-lg bg-error px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-error/80"
+          >
+            Disconnect
+          </button>
+        </div>
+      )}
     </div>
   );
 }

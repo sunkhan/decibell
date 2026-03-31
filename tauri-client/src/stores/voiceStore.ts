@@ -40,7 +40,9 @@ interface VoiceState {
   setWatching: (username: string | null) => void;
   addWatching: (username: string) => void;
   removeWatching: (username: string) => void;
+  isStreamFullscreen: boolean;
   setFullscreenStream: (username: string | null) => void;
+  setStreamFullscreen: (fs: boolean) => void;
   setIsStreaming: (streaming: boolean) => void;
   setStreamSettings: (settings: Partial<VoiceState['streamSettings']>) => void;
   userVolumes: Record<string, number>; // username → dB value (0 = default)
@@ -135,7 +137,9 @@ export const useVoiceStore = create<VoiceState>((set) => ({
       fullscreenStream:
         state.fullscreenStream === username ? null : state.fullscreenStream,
     })),
+  isStreamFullscreen: false,
   setFullscreenStream: (username) => set({ fullscreenStream: username }),
+  setStreamFullscreen: (fs) => set({ isStreamFullscreen: fs }),
   setIsStreaming: (streaming) => set({ isStreaming: streaming }),
   setStreamSettings: (settings) =>
     set((state) => ({
@@ -160,6 +164,7 @@ export const useVoiceStore = create<VoiceState>((set) => ({
       watching: null,
       watchingStreams: [],
       fullscreenStream: null,
+      isStreamFullscreen: false,
       isStreaming: false,
       streamThumbnails: {},
     }),

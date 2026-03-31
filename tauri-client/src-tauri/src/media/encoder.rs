@@ -182,11 +182,10 @@ impl H264Encoder {
         context.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
         context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
         context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
-        // Constrain VBV buffer to ~3 frames worth of bits. This prevents keyframes
-        // from ballooning to 170+ UDP packets (which are nearly impossible to
-        // transmit intact over lossy connections). A tight VBV keeps all frame
-        // sizes in a narrow range at the cost of slightly lower keyframe quality.
-        let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 3;
+        // VBV buffer: ~4 frames of headroom. Balances quality on complex frames
+        // against UDP transport limits (avoids large bitrate spikes that cause
+        // packet loss).
+        let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
         unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
         context.set_format(ffmpeg_next::format::Pixel::NV12);
         context.set_gop(config.fps * config.keyframe_interval_secs);
@@ -204,10 +203,8 @@ impl H264Encoder {
         match codec_name.as_str() {
             "h264_nvenc" => {
                 opts.set("forced_idr", "1");
-                opts.set("preset", "p4");
+                opts.set("preset", "p5");
                 opts.set("tune", "ull");
-                // VBV buffer for smoother rate control — prevents quality drops during
-                // high-motion transitions while keeping latency low.
                 opts.set("rc", "cbr");
             }
             "h264_amf" => {

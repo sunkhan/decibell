@@ -209,7 +209,15 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
                   { value: "720p" as const, label: "720p" },
                 ]}
                 value={streamSettings.resolution}
-                onChange={(v) => setStreamSettings({ resolution: v })}
+                onChange={(v) => {
+                  setStreamSettings({ resolution: v });
+                  // Auto-scale bitrate preset when switching resolution
+                  if (streamSettings.quality !== "custom") {
+                    const isHighRes = v === "source";
+                    const presets = { low: isHighRes ? 6000 : 3000, medium: isHighRes ? 12000 : 6000, high: isHighRes ? 20000 : 10000 };
+                    setStreamSettings({ videoBitrateKbps: presets[streamSettings.quality] });
+                  }
+                }}
               />
             </div>
             <div className="flex-1">
@@ -234,12 +242,16 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
               Video Quality
             </label>
             <div className="flex rounded-lg bg-bg-tertiary p-0.5">
-              {([
-                { key: "low" as const, label: "Low", sub: "3 Mbps", bitrate: 3000 },
-                { key: "medium" as const, label: "Medium", sub: "6 Mbps", bitrate: 6000 },
-                { key: "high" as const, label: "High", sub: "10 Mbps", bitrate: 10000 },
-                { key: "custom" as const, label: "Custom", sub: null, bitrate: null },
-              ]).map((opt) => (
+              {(() => {
+                // Scale bitrate presets based on resolution — 1440p+ needs more headroom
+                const isHighRes = streamSettings.resolution === "source";
+                return [
+                  { key: "low" as const, label: "Low", sub: isHighRes ? "6 Mbps" : "3 Mbps", bitrate: isHighRes ? 6000 : 3000 },
+                  { key: "medium" as const, label: "Medium", sub: isHighRes ? "12 Mbps" : "6 Mbps", bitrate: isHighRes ? 12000 : 6000 },
+                  { key: "high" as const, label: "High", sub: isHighRes ? "20 Mbps" : "10 Mbps", bitrate: isHighRes ? 20000 : 10000 },
+                  { key: "custom" as const, label: "Custom", sub: null, bitrate: null },
+                ];
+              })().map((opt) => (
                 <button
                   key={opt.key}
                   onClick={() => {
@@ -273,7 +285,7 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
                 <input
                   type="range"
                   min={1000}
-                  max={20000}
+                  max={30000}
                   step={500}
                   value={streamSettings.videoBitrateKbps}
                   onChange={(e) => setStreamSettings({ videoBitrateKbps: Number(e.target.value) })}

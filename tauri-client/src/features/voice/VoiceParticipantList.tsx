@@ -10,7 +10,7 @@ interface Props {
 
 function MuteIcon() {
   return (
-    <svg className="ml-auto h-3.5 w-3.5 shrink-0 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg className="h-3.5 w-3.5 shrink-0 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <line x1="1" y1="1" x2="23" y2="23" />
       <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
       <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
@@ -22,7 +22,7 @@ function MuteIcon() {
 
 function DeafenIcon() {
   return (
-    <svg className="ml-auto h-3.5 w-3.5 shrink-0 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg className="h-3.5 w-3.5 shrink-0 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
       <line x1="1" y1="1" x2="23" y2="23" />
     </svg>
@@ -32,6 +32,7 @@ function DeafenIcon() {
 export default function VoiceParticipantList({ usernames, channelId }: Props) {
   const participants = useVoiceStore((s) => s.participants);
   const speakingUsers = useVoiceStore((s) => s.speakingUsers);
+  const activeStreams = useVoiceStore((s) => s.activeStreams);
   const isMuted = useVoiceStore((s) => s.isMuted);
   const isDeafened = useVoiceStore((s) => s.isDeafened);
   const channelUserStates = useVoiceStore((s) => s.channelUserStates);
@@ -65,8 +66,16 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
               >
                 {u.charAt(0).toUpperCase()}
               </div>
-              <span className="truncate">{u}</span>
-              {userState?.isDeafened ? <DeafenIcon /> : userState?.isMuted ? <MuteIcon /> : null}
+              <span className="min-w-0 truncate">{u}</span>
+              <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                {activeStreams.some((s) => s.ownerUsername === u) && (
+                  <div className="flex items-center gap-1 rounded bg-error/20 px-1.5 py-0.5">
+                    <div className="h-1.5 w-1.5 rounded-full bg-error" />
+                    <span className="text-[9px] font-bold text-error">LIVE</span>
+                  </div>
+                )}
+                {userState?.isDeafened ? <DeafenIcon /> : userState?.isMuted ? <MuteIcon /> : null}
+              </div>
             </div>
           );
         })}
@@ -105,8 +114,16 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
             >
               {p.username.charAt(0).toUpperCase()}
             </div>
-            <span className="truncate">{p.username}</span>
-            {userDeafened ? <DeafenIcon /> : userMuted ? <MuteIcon /> : null}
+            <span className="min-w-0 truncate">{p.username}</span>
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              {activeStreams.some((s) => s.ownerUsername === p.username) && (
+                <div className="flex items-center gap-1 rounded bg-error/20 px-1.5 py-0.5">
+                  <div className="h-1.5 w-1.5 rounded-full bg-error" />
+                  <span className="text-[9px] font-bold text-error">LIVE</span>
+                </div>
+              )}
+              {userDeafened ? <DeafenIcon /> : userMuted ? <MuteIcon /> : null}
+            </div>
           </div>
         );
       })}

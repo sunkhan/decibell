@@ -33,7 +33,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
 
   const configureDecoder = useCallback((decoder: VideoDecoder, description?: ArrayBuffer) => {
     const config: VideoDecoderConfig = {
-      codec: "avc1.640033", // High Profile, Level 5.1 (supports up to 4K@60fps)
+      codec: "avc1.640033",
       hardwareAcceleration: "prefer-hardware",
     };
     if (description) {
@@ -41,7 +41,6 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     }
     try {
       decoder.configure(config);
-      console.log("[StreamVideoPlayer] Decoder configured", description ? `with avcC (${description.byteLength} bytes)` : "without description");
     } catch (e) {
       console.error("[StreamVideoPlayer] Configure error:", e);
     }
@@ -63,6 +62,12 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
 
     ctxRef.current = canvas.getContext("2d");
 
+    // Clock sync: map encoder timestamps to local wall-clock time.
+    // firstRemoteTs/firstLocalTs establish the baseline; we drop frames
+    // whose local-adjusted timestamp is too far behind wall-clock (i.e. stale).
+    let firstRemoteTs = -1;
+    let firstLocalTs = -1;
+
     const decoder = new VideoDecoder({
       output: (frame: VideoFrame) => {
         const ctx = ctxRef.current;
@@ -70,7 +75,6 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
           if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
             canvas.width = frame.displayWidth;
             canvas.height = frame.displayHeight;
-            console.log(`[StreamVideoPlayer] Canvas resized to ${frame.displayWidth}x${frame.displayHeight}`);
           }
           ctx.drawImage(frame, 0, 0);
         }
@@ -79,39 +83,64 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       error: handleDecoderError,
     });
 
-    // Initial configure without description (will reconfigure when first keyframe arrives)
     configureDecoder(decoder);
     decoderRef.current = decoder;
     needsKeyframeRef.current = true;
 
-    let frameCount = 0;
+    invoke("request_keyframe", { targetUsername: streamerUsername }).catch(() => {});
+
     const unlisten = listen<StreamFramePayload>("stream_frame", (event) => {
       const { username, data, timestamp, keyframe, description } = event.payload;
       if (username !== streamerUsername) return;
       if (decoder.state === "closed") return;
 
-      // Configure decoder with avcC description on first keyframe only
-      // (reconfiguring on every keyframe causes visible freezes)
       if (keyframe && description && !descriptionRef.current) {
         const descBytes = base64ToBytes(description);
         descriptionRef.current = descBytes.buffer;
         decoder.reset();
         configureDecoder(decoder, descBytes.buffer);
         needsKeyframeRef.current = false;
-        console.log(`[StreamVideoPlayer] Configured with avcC description (${descBytes.length} bytes)`);
+        // Reset clock sync on first configure
+        firstRemoteTs = -1;
+        firstLocalTs = -1;
       }
 
-      // Skip delta frames until we have a keyframe
       if (needsKeyframeRef.current && !keyframe) return;
       if (keyframe) needsKeyframeRef.current = false;
 
+      const nowUs = performance.now() * 1000; // microseconds
+
+      // Establish clock baseline on first frame
+      if (firstRemoteTs < 0) {
+        firstRemoteTs = timestamp;
+        firstLocalTs = nowUs;
+      }
+
+      // How old is this frame relative to where playback should be?
+      const expectedLocalTs = firstLocalTs + (timestamp - firstRemoteTs);
+      const lagUs = nowUs - expectedLocalTs;
+
+      // If the decoder queue is backing up, drop non-keyframes to catch up.
+      // A queue > 3 frames means we're falling behind.
+      if (decoder.decodeQueueSize > 3 && !keyframe) {
+        return; // drop this delta frame to let the decoder catch up
+      }
+
+      // If this frame is more than 500ms behind wall-clock, drop it
+      // (unless it's a keyframe — we need those to keep decoding)
+      if (lagUs > 500_000 && !keyframe) {
+        return;
+      }
+
+      // If we're very far behind (>2s), reset the clock baseline
+      // so we re-sync from this point forward
+      if (lagUs > 2_000_000 && keyframe) {
+        firstRemoteTs = timestamp;
+        firstLocalTs = nowUs;
+      }
+
       try {
         const bytes = base64ToBytes(data);
-        frameCount++;
-        if (frameCount <= 5 || frameCount % 60 === 0) {
-          console.log(`[StreamVideoPlayer] Frame #${frameCount}: ${bytes.length} bytes, keyframe=${keyframe}, ts=${timestamp}`);
-        }
-
         const chunk = new EncodedVideoChunk({
           type: keyframe ? "key" : "delta",
           timestamp,
