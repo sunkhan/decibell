@@ -5,7 +5,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Dependencies
-cmake_policy(SET CMP0167 NEW)
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW)
+endif()
 find_package(Boost REQUIRED)
 find_package(Protobuf REQUIRED)
 find_package(absl REQUIRED)
@@ -13,7 +15,7 @@ find_package(SQLite3 REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)
 
-find_package(jwt-cpp REQUIRED PATHS /usr/lib/cmake NO_DEFAULT_PATH)
+find_package(jwt-cpp REQUIRED)
 pkg_check_modules(LIBPQXX REQUIRED IMPORTED_TARGET libpqxx)
 
 find_package(nlohmann_json REQUIRED)
