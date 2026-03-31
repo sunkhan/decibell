@@ -1001,7 +1001,9 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
 
     // Schedule next heartbeat in 60 seconds
     timer.expires_after(std::chrono::seconds(60));
-    timer.async_wait([&](boost::system::error_code ec) {
+    timer.async_wait([&io_context, &timer, &central_host, central_port,
+                      &server_name, &server_desc, &public_ip, community_port,
+                      &manager, &jwt_secret](boost::system::error_code ec) {
         if (!ec) {
             send_heartbeat(io_context, timer, central_host, central_port,
                            server_name, server_desc, public_ip, community_port,
