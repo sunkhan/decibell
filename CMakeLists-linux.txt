@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(chatproj VERSION 0.1.0 LANGUAGES CXX)
+project(decibell VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,17 +21,17 @@ find_package(nlohmann_json REQUIRED)
 protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS proto/messages.proto)
 
 # Common Library
-add_library(chatproj_common ${PROTO_SRCS} ${PROTO_HDRS})
-target_link_libraries(chatproj_common PUBLIC protobuf::libprotobuf Boost::boost)
-target_include_directories(chatproj_common PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
+add_library(decibell_common ${PROTO_SRCS} ${PROTO_HDRS})
+target_link_libraries(decibell_common PUBLIC protobuf::libprotobuf Boost::boost)
+target_include_directories(decibell_common PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 
 # --- CENTRAL SERVER ---
-add_executable(chatproj_server
+add_executable(decibell_server
     src/server/main.cpp
     src/server/auth_manager.cpp
 )
-target_link_libraries(chatproj_server PRIVATE
-    chatproj_common
+target_link_libraries(decibell_server PRIVATE
+    decibell_common
     SQLite::SQLite3
     OpenSSL::Crypto
     OpenSSL::SSL
@@ -41,11 +41,11 @@ target_link_libraries(chatproj_server PRIVATE
 )
 
 # --- COMMUNITY SERVER ---
-add_executable(chatproj_community
+add_executable(decibell_community
     src/community/main.cpp
 )
-target_link_libraries(chatproj_community PRIVATE
-    chatproj_common
+target_link_libraries(decibell_community PRIVATE
+    decibell_common
     protobuf::libprotobuf
     Boost::boost
     OpenSSL::SSL

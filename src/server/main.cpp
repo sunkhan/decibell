@@ -510,8 +510,18 @@ private:
 
 int main() {
     try {
-        std::string jwt_secret = "super_secret_decibell_key_change_in_production";
-        std::string db_conn = "dbname=decibell user=postgres password=sunadmin host=127.0.0.1 port=5432";
+        const char* jwt_env = std::getenv("DECIBELL_JWT_SECRET");
+        const char* db_env = std::getenv("DECIBELL_DB_CONN");
+
+        if (!jwt_env || !db_env) {
+            std::cerr << "Missing required environment variables:\n";
+            if (!jwt_env) std::cerr << "  DECIBELL_JWT_SECRET\n";
+            if (!db_env) std::cerr << "  DECIBELL_DB_CONN\n";
+            return 1;
+        }
+
+        std::string jwt_secret = jwt_env;
+        std::string db_conn = db_env;
         AuthManager auth_manager(jwt_secret, db_conn);
 
         boost::asio::io_context io_context;
@@ -519,7 +529,7 @@ int main() {
         SessionManager manager; 
         Server s(io_context, 8080, manager, auth_manager);
         
-        std::cout << "Central TCP Server running on port 8080...\n";
+        std::cout << "Decibell Central Server running on port 8080...\n";
         
         io_context.run();
     } catch (std::exception& e) {
