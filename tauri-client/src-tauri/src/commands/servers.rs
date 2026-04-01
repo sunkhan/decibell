@@ -65,8 +65,11 @@ pub async fn disconnect_from_community(
     server_id: String,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
-    let mut s = state.lock().await;
-    match s.communities.remove(&server_id) {
+    let removed = {
+        let mut s = state.lock().await;
+        s.communities.remove(&server_id)
+    };
+    match removed {
         Some(mut client) => {
             client.disconnect();
             Ok(())

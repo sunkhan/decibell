@@ -6,7 +6,6 @@ use super::capture::AudioFrame;
 use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::Com::StructuredStorage::*;
-use windows::Win32::System::Threading::*;
 use windows::Win32::System::Variant::VT_BLOB;
 use windows::Win32::Foundation::*;
 use windows::core::{implement, Interface, Error, IUnknown, GUID, HRESULT, Ref};
@@ -56,117 +55,98 @@ pub fn start_system_audio_capture() -> Result<std::sync::mpsc::Receiver<AudioFra
     Ok(rx)
 }
 
-/// Core WASAPI capture loop using Process Loopback.
-///
-/// If `exclude` is true, captures all system audio EXCEPT the given PID.
-/// If `exclude` is false, captures ONLY audio from the given PID.
+// ─── Activation helper ─────────────────────────────────────────────────────
+
+/// Activate an IAudioClient for process loopback capture.
+unsafe fn activate_loopback_client(
+    target_pid: u32,
+    exclude: bool,
+) -> Result<IAudioClient, String> {
+    let loopback_mode = if exclude {
+        PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE
+    } else {
+        PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE
+    };
+
+    let activation_params = Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
+        ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+        Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+            ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                TargetProcessId: target_pid,
+                ProcessLoopbackMode: loopback_mode,
+            },
+        },
+    });
+
+    // ManuallyDrop prevents PROPVARIANT's Drop (PropVariantClear) from calling
+    // CoTaskMemFree on our Rust-allocated blob — that would cause heap corruption.
+    let mut prop_variant: std::mem::ManuallyDrop<PROPVARIANT> =
+        std::mem::ManuallyDrop::new(std::mem::zeroed());
+    {
+        let inner = &mut prop_variant.Anonymous.Anonymous;
+        inner.vt = VT_BLOB;
+        inner.Anonymous.blob.cbSize = std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
+        inner.Anonymous.blob.pBlobData = &*activation_params as *const _ as *mut u8;
+    }
+
+    let inner = Arc::new(AudioActivationInner {
+        result: Mutex::new(None),
+        condvar: Condvar::new(),
+    });
+    let handler: IActivateAudioInterfaceCompletionHandler = AudioActivationHandlerCom {
+        inner: inner.clone(),
+    }.into();
+    let waiter = AudioActivationWaiter { inner };
+
+    let _operation = ActivateAudioInterfaceAsync(
+        VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+        &IAudioClient::IID,
+        Some(&*prop_variant as *const PROPVARIANT),
+        &handler,
+    )
+    .map_err(|e| format!("ActivateAudioInterfaceAsync: {}", e))?;
+
+    let client = waiter
+        .wait_for_completion(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("Wait for audio client: {}", e))?;
+    drop(activation_params);
+
+    Ok(client)
+}
+
+// ─── Core capture logic ────────────────────────────────────────────────────
+
+/// Core WASAPI capture using Process Loopback.
 fn run_wasapi_capture(
     tx: SyncSender<AudioFrame>,
     target_pid: u32,
     exclude: bool,
 ) -> Result<(), String> {
     unsafe {
-        // Initialize COM for this thread
         CoInitializeEx(None, COINIT_MULTITHREADED)
             .ok()
             .map_err(|e| format!("CoInitializeEx: {}", e))?;
 
-        let mode = if exclude {
-            "EXCLUDE_TARGET_PROCESS_TREE"
-        } else {
-            "INCLUDE_TARGET_PROCESS_TREE"
-        };
-        eprintln!(
-            "[audio-capture] Starting WASAPI Process Loopback: pid={}, mode={}",
-            target_pid, mode
-        );
+        let mode = if exclude { "EXCLUDE_TARGET_PROCESS_TREE" } else { "INCLUDE_TARGET_PROCESS_TREE" };
+        eprintln!("[audio-capture] Starting WASAPI Process Loopback: pid={}, mode={}", target_pid, mode);
 
-        // Build activation params for process loopback
-        let loopback_mode = if exclude {
-            PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE
-        } else {
-            PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE
-        };
-
-        let process_params = AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
-            TargetProcessId: target_pid,
-            ProcessLoopbackMode: loopback_mode,
-        };
-
-        // Box activation_params so it lives on the heap and outlives the async call.
-        // ActivateAudioInterfaceAsync may dereference the PROPVARIANT blob pointer
-        // on a COM callback thread after this function's stack frame has moved on.
-        let activation_params = Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
-            ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-            Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
-                ProcessLoopbackParams: process_params,
-            },
-        });
-
-        // Wrap in PROPVARIANT for ActivateAudioInterfaceAsync.
-        // Use ManuallyDrop to prevent PROPVARIANT's Drop (PropVariantClear) from
-        // calling CoTaskMemFree on our Rust-allocated blob data — that would cause
-        // heap corruption since the blob points to a Rust Box, not COM memory.
-        let mut prop_variant: std::mem::ManuallyDrop<PROPVARIANT> =
-            std::mem::ManuallyDrop::new(std::mem::zeroed());
-        {
-            let inner = &mut prop_variant.Anonymous.Anonymous;
-            inner.vt = VT_BLOB;
-            inner.Anonymous.blob.cbSize = std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
-            inner.Anonymous.blob.pBlobData = &*activation_params as *const _ as *mut u8;
-        }
-
-        // Create completion handler
-        let inner = Arc::new(AudioActivationInner {
-            result: Mutex::new(None),
-            condvar: Condvar::new(),
-        });
-        let handler_ref: IActivateAudioInterfaceCompletionHandler = AudioActivationHandlerCom {
-            inner: inner.clone(),
-        }.into();
-        let waiter = AudioActivationWaiter { inner };
-
-        // Activate the audio interface — keep the operation alive until completion
-        let _operation = ActivateAudioInterfaceAsync(
-            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-            &IAudioClient::IID,
-            Some(&*prop_variant as *const PROPVARIANT),
-            &handler_ref,
-        )
-        .map_err(|e| format!("ActivateAudioInterfaceAsync: {}", e))?;
-
-        // Wait for activation to complete (activation_params must stay alive until done)
-        let audio_client: IAudioClient = waiter
-            .wait_for_completion(std::time::Duration::from_secs(5))
-            .map_err(|e| format!("Wait for audio client: {}", e))?;
-        drop(activation_params); // safe to free now that activation completed
-
-        eprintln!("[audio-capture] Audio client activated");
-
-        // Get the mix format from the default render endpoint.
-        // The process loopback virtual device doesn't support GetMixFormat
-        // directly (returns E_NOTIMPL), so we query the real output device
-        // that the loopback mirrors.
-        let mix_format_ptr = match audio_client.GetMixFormat() {
-            Ok(ptr) => ptr,
-            Err(_) => {
-                eprintln!("[audio-capture] GetMixFormat not supported on virtual device, querying default render endpoint");
-                let enumerator: IMMDeviceEnumerator = CoCreateInstance(
-                    &MMDeviceEnumerator,
-                    None,
-                    CLSCTX_ALL,
-                ).map_err(|e| format!("CoCreateInstance MMDeviceEnumerator: {}", e))?;
-                let default_device = enumerator
-                    .GetDefaultAudioEndpoint(eRender, eConsole)
-                    .map_err(|e| format!("GetDefaultAudioEndpoint: {}", e))?;
-                let default_client: IAudioClient = default_device
-                    .Activate(CLSCTX_ALL, None)
-                    .map_err(|e| format!("Activate default device: {}", e))?;
-                default_client
-                    .GetMixFormat()
-                    .map_err(|e| format!("GetMixFormat (default device): {}", e))?
-            }
-        };
+        // Get the mix format from the default render endpoint — the process
+        // loopback virtual device mirrors this format but doesn't support
+        // GetMixFormat itself.
+        let enumerator: IMMDeviceEnumerator = CoCreateInstance(
+            &MMDeviceEnumerator,
+            None,
+            CLSCTX_ALL,
+        ).map_err(|e| format!("CoCreateInstance MMDeviceEnumerator: {}", e))?;
+        let default_device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|e| format!("GetDefaultAudioEndpoint: {}", e))?;
+        let default_client: IAudioClient = default_device
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|e| format!("Activate default device: {}", e))?;
+        let mix_format_ptr = default_client
+            .GetMixFormat()
+            .map_err(|e| format!("GetMixFormat: {}", e))?;
         let mix_format = &*mix_format_ptr;
 
         let channels = mix_format.nChannels as u32;
@@ -174,143 +154,159 @@ fn run_wasapi_capture(
         let bits_per_sample = mix_format.wBitsPerSample;
         let block_align = mix_format.nBlockAlign;
 
-        eprintln!(
-            "[audio-capture] Mix format: {}ch, {}Hz, {}bit, block_align={}",
-            channels, sample_rate, bits_per_sample, block_align
-        );
+        eprintln!("[audio-capture] Mix format: {}ch, {}Hz, {}bit, block_align={}",
+            channels, sample_rate, bits_per_sample, block_align);
 
-        // Determine if format is float or integer
         let is_float = if mix_format.wFormatTag == WAVE_FORMAT_EXTENSIBLE_TAG {
             let ext = &*(mix_format_ptr as *const WAVEFORMATEXTENSIBLE);
             let sub_format = std::ptr::addr_of!(ext.SubFormat).read_unaligned();
             sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_GUID
         } else {
-            mix_format.wFormatTag == 3 // WAVE_FORMAT_IEEE_FLOAT
+            mix_format.wFormatTag == 3
         };
 
-        // Initialize the audio client for loopback capture.
-        // Do NOT use AUDCLNT_STREAMFLAGS_LOOPBACK with VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK —
-        // the virtual device already provides loopback; combining them crashes on some drivers.
-        // The process loopback virtual device doesn't support EVENTCALLBACK, so we use
-        // polling mode (no stream flags). Note: Initialize can only be called once per
-        // IAudioClient — a failed call leaves it in an unusable state.
+        // Try each known-working flag combination with a fresh client.
+        // Initialize can only be called once per IAudioClient — a failed call
+        // leaves it in an unusable state, so we re-activate for each attempt.
         let buffer_duration = 200_000i64; // 20ms in 100ns units
-        audio_client
-            .Initialize(
+        let flag_attempts: &[(&str, u32)] = &[
+            ("no flags", 0),
+            ("LOOPBACK", AUDCLNT_STREAMFLAGS_LOOPBACK),
+            ("EVENTCALLBACK", AUDCLNT_STREAMFLAGS_EVENTCALLBACK),
+        ];
+
+        let mut last_err = String::new();
+        for &(label, flags) in flag_attempts {
+            let audio_client = activate_loopback_client(target_pid, exclude)?;
+
+            match audio_client.Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
-                Default::default(), // no stream flags — polling mode
+                flags,
                 buffer_duration,
                 0,
                 mix_format_ptr,
                 None,
-            )
-            .map_err(|e| format!("Initialize: {}", e))?;
-
-        // Get capture client
-        let capture_client: IAudioCaptureClient = audio_client
-            .GetService()
-            .map_err(|e| format!("GetService IAudioCaptureClient: {}", e))?;
-
-        // Start capturing
-        audio_client
-            .Start()
-            .map_err(|e| format!("Start: {}", e))?;
-
-        eprintln!("[audio-capture] WASAPI capture started");
-
-        let mut frame_count: u64 = 0;
-        let mut channel_closed = false;
-
-        'capture: loop {
-            // Polling mode: sleep ~10ms between buffer checks
-            std::thread::sleep(std::time::Duration::from_millis(10));
-
-            // Get available frames
-            loop {
-                let packet_length = match capture_client.GetNextPacketSize() {
-                    Ok(len) => len,
-                    Err(_) => break,
-                };
-                if packet_length == 0 {
-                    break;
+            ) {
+                Ok(()) => {
+                    eprintln!("[audio-capture] Initialize succeeded with {}", label);
+                    let result = run_capture_loop(
+                        tx, &audio_client, mix_format_ptr,
+                        channels, sample_rate, bits_per_sample, block_align, is_float,
+                    );
+                    CoTaskMemFree(Some(mix_format_ptr as *const _ as *mut _));
+                    CoUninitialize();
+                    return result;
                 }
-
-                let mut buffer_ptr: *mut u8 = std::ptr::null_mut();
-                let mut num_frames: u32 = 0;
-                let mut flags: u32 = 0;
-
-                if capture_client
-                    .GetBuffer(&mut buffer_ptr, &mut num_frames, &mut flags, None, None)
-                    .is_err()
-                {
-                    break;
+                Err(e) => {
+                    eprintln!("[audio-capture] Initialize with {} failed: {}", label, e);
+                    last_err = format!("Initialize ({}): {}", label, e);
                 }
-
-                if num_frames > 0 && !buffer_ptr.is_null() {
-                    let buffer_bytes = (num_frames * block_align as u32) as usize;
-                    let buffer_slice = std::slice::from_raw_parts(buffer_ptr, buffer_bytes);
-
-                    // Convert to interleaved stereo f32
-                    let is_silent = flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
-
-                    let stereo_f32 = if is_silent {
-                        vec![0.0f32; num_frames as usize * 2]
-                    } else if is_float && bits_per_sample == 32 {
-                        convert_float_to_stereo(buffer_slice, channels as usize)
-                    } else if !is_float && bits_per_sample == 16 {
-                        convert_s16_to_stereo(buffer_slice, channels as usize)
-                    } else if !is_float && bits_per_sample == 32 {
-                        convert_s32_to_stereo(buffer_slice, channels as usize)
-                    } else {
-                        vec![0.0f32; num_frames as usize * 2]
-                    };
-
-                    frame_count += 1;
-                    if frame_count == 1 || frame_count % 2400 == 0 {
-                        eprintln!(
-                            "[audio-capture] Frame {}: {} stereo samples",
-                            frame_count,
-                            stereo_f32.len() / 2
-                        );
-                    }
-
-                    let frame = AudioFrame {
-                        data: stereo_f32,
-                        channels: 2,
-                        sample_rate,
-                    };
-
-                    match tx.try_send(frame) {
-                        Ok(()) => {}
-                        Err(std::sync::mpsc::TrySendError::Full(_)) => {}
-                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                            let _ = capture_client.ReleaseBuffer(num_frames);
-                            eprintln!("[audio-capture] Channel closed, stopping");
-                            channel_closed = true;
-                            break;
-                        }
-                    }
-                }
-
-                if capture_client.ReleaseBuffer(num_frames).is_err() {
-                    break;
-                }
-            }
-
-            if channel_closed {
-                break 'capture;
             }
         }
 
-        let _ = audio_client.Stop();
         CoTaskMemFree(Some(mix_format_ptr as *const _ as *mut _));
         CoUninitialize();
-
-        eprintln!(
-            "[audio-capture] WASAPI capture stopped after {} frames",
-            frame_count
-        );
+        Err(last_err)
     }
+}
+
+/// Run the capture polling loop once the client is initialized.
+unsafe fn run_capture_loop(
+    tx: SyncSender<AudioFrame>,
+    audio_client: &IAudioClient,
+    _mix_format_ptr: *const WAVEFORMATEX,
+    channels: u32,
+    sample_rate: u32,
+    bits_per_sample: u16,
+    block_align: u16,
+    is_float: bool,
+) -> Result<(), String> {
+    let capture_client: IAudioCaptureClient = audio_client
+        .GetService()
+        .map_err(|e| format!("GetService IAudioCaptureClient: {}", e))?;
+
+    audio_client
+        .Start()
+        .map_err(|e| format!("Start: {}", e))?;
+
+    eprintln!("[audio-capture] WASAPI capture started");
+
+    let mut frame_count: u64 = 0;
+
+    'capture: loop {
+        // Polling mode: sleep ~10ms between buffer checks
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        loop {
+            let packet_length = match capture_client.GetNextPacketSize() {
+                Ok(len) => len,
+                Err(_) => break,
+            };
+            if packet_length == 0 {
+                break;
+            }
+
+            let mut buffer_ptr: *mut u8 = std::ptr::null_mut();
+            let mut num_frames: u32 = 0;
+            let mut flags: u32 = 0;
+
+            if capture_client
+                .GetBuffer(&mut buffer_ptr, &mut num_frames, &mut flags, None, None)
+                .is_err()
+            {
+                break;
+            }
+
+            if num_frames > 0 && !buffer_ptr.is_null() {
+                let buffer_bytes = (num_frames * block_align as u32) as usize;
+                let buffer_slice = std::slice::from_raw_parts(buffer_ptr, buffer_bytes);
+
+                let is_silent = flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
+
+                let stereo_f32 = if is_silent {
+                    vec![0.0f32; num_frames as usize * 2]
+                } else if is_float && bits_per_sample == 32 {
+                    convert_float_to_stereo(buffer_slice, channels as usize)
+                } else if !is_float && bits_per_sample == 16 {
+                    convert_s16_to_stereo(buffer_slice, channels as usize)
+                } else if !is_float && bits_per_sample == 32 {
+                    convert_s32_to_stereo(buffer_slice, channels as usize)
+                } else {
+                    vec![0.0f32; num_frames as usize * 2]
+                };
+
+                frame_count += 1;
+                if frame_count == 1 || frame_count % 2400 == 0 {
+                    eprintln!("[audio-capture] Frame {}: {} stereo samples",
+                        frame_count, stereo_f32.len() / 2);
+                }
+
+                let frame = AudioFrame {
+                    data: stereo_f32,
+                    channels: 2,
+                    sample_rate,
+                };
+
+                match tx.try_send(frame) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        let _ = capture_client.ReleaseBuffer(num_frames);
+                        eprintln!("[audio-capture] Channel closed, stopping");
+                        break 'capture;
+                    }
+                }
+            }
+
+            if capture_client.ReleaseBuffer(num_frames).is_err() {
+                break;
+            }
+        }
+    }
+
+    let _ = audio_client.Stop();
+
+    eprintln!("[audio-capture] WASAPI capture stopped after {} frames", frame_count);
     Ok(())
 }
 

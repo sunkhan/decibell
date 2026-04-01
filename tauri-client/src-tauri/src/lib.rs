@@ -47,26 +47,13 @@ pub fn run() {
             commands::voice::set_stream_volume,
             commands::voice::set_user_volume,
         ])
-        .on_window_event(|window, event| {
+        .on_window_event(|_window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // Explicitly stop voice & video engines before the app exits.
-                // Without this, the tokio runtime can shut down while background
-                // threads/tasks are still running, causing a hang.
-                use tauri::Manager;
-                let state = window.state::<SharedState>();
-                let state = state.clone();
-                tauri::async_runtime::block_on(async move {
-                    let mut s = state.lock().await;
-                    if let Some(mut engine) = s.audio_stream_engine.take() {
-                        engine.stop();
-                    }
-                    if let Some(mut engine) = s.video_engine.take() {
-                        engine.stop();
-                    }
-                    if let Some(mut engine) = s.voice_engine.take() {
-                        engine.stop();
-                    }
-                });
+                // Force-exit the process immediately. Graceful engine shutdown
+                // (thread joins) can deadlock when the Tokio runtime is already
+                // tearing down. The OS cleans up all threads, sockets, and memory.
+                // The server detects disconnect when the UDP/TCP connections drop.
+                std::process::exit(0);
             }
         })
         .run(tauri::generate_context!())

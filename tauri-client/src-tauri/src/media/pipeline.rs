@@ -239,6 +239,9 @@ pub fn run_audio_pipeline(
     const BUF_CAP: usize = FRAME_SIZE * 48; // ~1s at 48kHz, extra headroom for jitter buffer
 
     // ── Input (capture) stream ────────────────────────────────────────────────
+    // Open the input stream BEFORE the output stream to minimize the audio
+    // engine reconfiguration glitch. Also try to match the output sample rate
+    // to avoid WASAPI needing to reconfigure the shared audio graph.
     let input_device_opt = host.default_input_device();
     let cap_buf_in = Arc::clone(&capture_buf);
 
@@ -250,18 +253,47 @@ pub fn run_audio_pipeline(
             None
         }
         Some(input_device) => {
-            // Use device's default input config for best compatibility
+            // Use device's default input config for best compatibility.
+            // If the default input sample rate differs from output, try to
+            // use the output rate to avoid WASAPI audio graph reconfiguration
+            // which causes a brief glitch in all system audio.
             let (input_cfg, input_channels) = match input_device.default_input_config() {
                 Ok(default_cfg) => {
+                    let mut rate = default_cfg.sample_rate();
+                    let channels = default_cfg.channels();
+                    // Try to match output sample rate to reduce WASAPI glitch
+                    if rate != cpal::SampleRate(output_sample_rate) {
+                        let desired_cfg = cpal::StreamConfig {
+                            channels,
+                            sample_rate: cpal::SampleRate(output_sample_rate),
+                            buffer_size: cpal::BufferSize::Default,
+                        };
+                        if input_device.default_input_config().is_ok() {
+                            // Check if the device supports the output rate
+                            let supported = input_device.supported_input_configs();
+                            if let Ok(configs) = supported {
+                                let can_match = configs.into_iter().any(|c| {
+                                    c.channels() >= channels
+                                        && c.min_sample_rate() <= cpal::SampleRate(output_sample_rate)
+                                        && c.max_sample_rate() >= cpal::SampleRate(output_sample_rate)
+                                });
+                                if can_match {
+                                    eprintln!("[pipeline] Input device: matching output rate {}Hz to reduce glitch",
+                                        output_sample_rate);
+                                    rate = cpal::SampleRate(output_sample_rate);
+                                }
+                            }
+                        }
+                    }
                     eprintln!(
                         "[pipeline] Input device: {}ch @ {}Hz (sample format: {:?})",
-                        default_cfg.channels(), default_cfg.sample_rate().0, default_cfg.sample_format()
+                        channels, rate.0, default_cfg.sample_format()
                     );
                     (cpal::StreamConfig {
-                        channels: default_cfg.channels(),
-                        sample_rate: default_cfg.sample_rate(),
+                        channels,
+                        sample_rate: rate,
                         buffer_size: cpal::BufferSize::Default,
-                    }, default_cfg.channels())
+                    }, channels)
                 }
                 Err(_) => {
                     (cpal::StreamConfig {

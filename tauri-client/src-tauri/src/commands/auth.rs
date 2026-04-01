@@ -14,13 +14,14 @@ pub async fn login(
     let state_arc = state.inner().clone();
 
     // Disconnect existing central client if any
-    {
+    let old_central = {
         let mut s = state_arc.lock().await;
-        if let Some(mut old) = s.central.take() {
-            old.disconnect();
-        }
         // Store credentials for reconnection
         s.credentials = Some((username.clone(), password.clone()));
+        s.central.take()
+    };
+    if let Some(mut old) = old_central {
+        old.disconnect();
     }
 
     // Connect to central server
@@ -89,24 +90,25 @@ pub async fn logout(
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
-    let mut s = state.lock().await;
+    // Extract clients and clear state under lock, then disconnect outside
+    let (old_central, old_communities) = {
+        let mut s = state.lock().await;
+        let central = s.central.take();
+        let communities: Vec<_> = s.communities.drain().map(|(_, c)| c).collect();
+        s.username = None;
+        s.token = None;
+        s.credentials = None;
+        (central, communities)
+    };
 
-    // Disconnect central
-    if let Some(mut central) = s.central.take() {
+    // Disconnect outside the lock to avoid blocking other commands
+    if let Some(mut central) = old_central {
         central.disconnect();
     }
-
-    // Disconnect all communities
-    for (_, mut client) in s.communities.drain() {
+    for mut client in old_communities {
         client.disconnect();
     }
 
-    // Clear auth state
-    s.username = None;
-    s.token = None;
-    s.credentials = None;
-
-    drop(s);
     events::emit_logged_out(&app);
 
     Ok(())
