@@ -27,7 +27,7 @@ protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS proto/messages.proto)
 # Common Library
 add_library(decibell_common ${PROTO_SRCS} ${PROTO_HDRS})
 target_link_libraries(decibell_common PUBLIC protobuf::libprotobuf Boost::boost)
-if(absl_FOUND)
+if(TARGET absl::log_internal_check_op)
     target_link_libraries(decibell_common PUBLIC
         absl::log_internal_check_op absl::log_internal_message)
 endif()
