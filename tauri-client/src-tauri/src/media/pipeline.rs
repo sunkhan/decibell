@@ -133,14 +133,12 @@ impl JitterBuffer {
     /// Pop the next frame. Returns:
     /// - `Some(Some(data))` — packet present, decode normally
     /// - `Some(None)` — packet missing, caller should do PLC
-    /// - `None` — buffer not ready yet (still filling)
+    /// - `None` — buffer not ready yet (initial fill only)
     fn drain(&mut self) -> Option<Option<Vec<u8>>> {
         if !self.ready { return None; }
-        if self.packets.is_empty() {
-            // Buffer drained completely — require re-buffering
-            self.ready = false;
-            return None;
-        }
+        // Once initialized, always produce output — return PLC for missing
+        // packets instead of going silent. Re-buffering gaps cause loud pops
+        // at the silence→audio transition.
         let seq = self.next_seq;
         self.next_seq = self.next_seq.wrapping_add(1);
         Some(self.packets.remove(&seq))
@@ -232,7 +230,7 @@ pub fn run_audio_pipeline(
     let output_sample_rate = stream_config.sample_rate.0;
 
     // ── Shared buffers ────────────────────────────────────────────────────────
-    let capture_buf: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
+    let capture_buf: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::new()));
     let playback_buf: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::new()));
     // Separate buffer for stream audio so we can MIX (sum) it with voice
     // instead of concatenating, which caused choppy alternating 20ms chunks.
@@ -297,7 +295,7 @@ pub fn run_audio_pipeline(
                         if let Ok(mut buf) = cap_buf_in.lock() {
                             for &s in &mono {
                                 if buf.len() >= BUF_CAP { break; }
-                                buf.push((s * 32767.0) as i16);
+                                buf.push_back((s * 32767.0) as i16);
                             }
                         }
                     } else {
@@ -308,7 +306,7 @@ pub fn run_audio_pipeline(
                         if let Ok(mut buf) = cap_buf_in.lock() {
                             for &s in &resampled {
                                 if buf.len() >= BUF_CAP { break; }
-                                buf.push((s * 32767.0) as i16);
+                                buf.push_back((s * 32767.0) as i16);
                             }
                         }
                     }
@@ -518,8 +516,9 @@ pub fn run_audio_pipeline(
                 let mut buf = capture_buf.lock().unwrap();
                 if buf.len() >= FRAME_SIZE {
                     let mut frame = [0i16; FRAME_SIZE];
-                    frame.copy_from_slice(&buf[..FRAME_SIZE]);
-                    buf.drain(..FRAME_SIZE);
+                    for s in frame.iter_mut() {
+                        *s = buf.pop_front().unwrap();
+                    }
                     Some(frame)
                 } else {
                     None
