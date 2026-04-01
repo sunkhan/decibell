@@ -15,6 +15,7 @@ pub struct CentralClient {
     connection: Option<Connection>,
     router_task: Option<JoinHandle<()>>,
     reconnect_task: Option<JoinHandle<()>>,
+    ping_task: Option<JoinHandle<()>>,
 }
 
 impl CentralClient {
@@ -27,10 +28,39 @@ impl CentralClient {
 
         let router_task = tokio::spawn(Self::route_packets(read_rx, app.clone(), state.clone()));
 
+        // Keepalive ping every 30s so the central server knows we're alive.
+        // Without this, a dead connection can go undetected for minutes.
+        let ping_state = state.clone();
+        let ping_task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let s = ping_state.lock().await;
+                let sent = if let Some(ref central) = s.central {
+                    let data = build_packet(
+                        packet::Type::ClientPing,
+                        // Reuse Handshake as a lightweight no-op payload
+                        packet::Payload::Handshake(Handshake {
+                            protocol_version: 0,
+                            client_id: String::new(),
+                        }),
+                        None,
+                    );
+                    central.send(data).await.is_ok()
+                } else {
+                    false
+                };
+                drop(s);
+                if !sent {
+                    break;
+                }
+            }
+        });
+
         Ok(CentralClient {
             connection: Some(connection),
             router_task: Some(router_task),
             reconnect_task: None,
+            ping_task: Some(ping_task),
         })
     }
 
@@ -150,8 +180,11 @@ impl CentralClient {
         self.send(data).await
     }
 
-    /// Disconnect from the central server. Stops reconnection.
+    /// Disconnect from the central server. Stops reconnection and keepalive.
     pub fn disconnect(&mut self) {
+        if let Some(task) = self.ping_task.take() {
+            task.abort();
+        }
         if let Some(task) = self.reconnect_task.take() {
             task.abort();
         }
@@ -203,10 +236,38 @@ impl CentralClient {
                         let router =
                             tokio::spawn(Self::route_packets(read_rx, app.clone(), state.clone()));
 
+                        // Restart keepalive ping task
+                        let ping_state = state.clone();
+                        let ping_task = tokio::spawn(async move {
+                            loop {
+                                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                                let s = ping_state.lock().await;
+                                let sent = if let Some(ref central) = s.central {
+                                    let data = build_packet(
+                                        packet::Type::ClientPing,
+                                        packet::Payload::Handshake(Handshake {
+                                            protocol_version: 0,
+                                            client_id: String::new(),
+                                        }),
+                                        None,
+                                    );
+                                    central.send(data).await.is_ok()
+                                } else {
+                                    false
+                                };
+                                drop(s);
+                                if !sent { break; }
+                            }
+                        });
+
                         if let Some(ref mut central) = s.central {
+                            if let Some(old_ping) = central.ping_task.take() {
+                                old_ping.abort();
+                            }
                             central.connection = Some(connection);
                             central.router_task = Some(router);
                             central.reconnect_task = None;
+                            central.ping_task = Some(ping_task);
                         }
                         drop(s);
 

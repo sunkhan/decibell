@@ -17,13 +17,15 @@ find_package(jwt-cpp REQUIRED)
 pkg_check_modules(LIBPQXX REQUIRED IMPORTED_TARGET libpqxx)
 
 find_package(nlohmann_json REQUIRED)
+find_package(absl REQUIRED)
 
 # Generate Protocol Buffer Sources
 protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS proto/messages.proto)
 
 # Common Library
 add_library(decibell_common ${PROTO_SRCS} ${PROTO_HDRS})
-target_link_libraries(decibell_common PUBLIC protobuf::libprotobuf Boost::boost)
+target_link_libraries(decibell_common PUBLIC protobuf::libprotobuf Boost::boost
+    absl::log_internal_check_op absl::log_internal_message)
 target_include_directories(decibell_common PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 
 # --- CENTRAL SERVER ---

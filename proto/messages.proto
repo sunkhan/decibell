@@ -41,6 +41,7 @@ message Packet {
     STOP_WATCHING_REQ = 26;
     STREAM_THUMBNAIL_UPDATE = 29;
     SERVER_HEARTBEAT = 30;
+    CLIENT_PING = 31;       // Client→central keepalive (no payload needed)
   }
 
   Type type = 1;

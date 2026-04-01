@@ -45,6 +45,10 @@ public:
 
     void broadcast_presence();
 
+    void kick_user(const std::string& username);
+
+    void sweep_stale(std::chrono::seconds timeout);
+
 private:
     std::set<std::shared_ptr<Session>> sessions_;
     std::mutex mutex_;

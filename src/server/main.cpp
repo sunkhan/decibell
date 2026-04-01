@@ -13,6 +13,7 @@
 #include <vector>
 #include <deque>
 #include <utility>
+#include <functional>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include "messages.pb.h"
@@ -27,7 +28,11 @@ using boost::asio::ip::tcp;
 class Session : public std::enable_shared_from_this<Session> {
 public:
     Session(tcp::socket socket, SessionManager& manager, ssl::context& context, AuthManager& auth_manager)
-        : socket_(std::move(socket), context), manager_(manager), auth_manager_(auth_manager) {}
+        : socket_(std::move(socket), context), manager_(manager), auth_manager_(auth_manager),
+          last_activity_(std::chrono::steady_clock::now()) {}
+
+    std::chrono::steady_clock::time_point last_activity() const { return last_activity_; }
+    void touch() { last_activity_ = std::chrono::steady_clock::now(); }
 
     void start() {
         auto self(shared_from_this());
@@ -107,8 +112,15 @@ private:
     }
 
     void process_packet() {
+        touch(); // Update activity timestamp for stale session detection
+
         chatproj::Packet packet;
         if (!packet.ParseFromArray(inbound_body_.data(), static_cast<int>(inbound_body_.size()))) {
+            return;
+        }
+
+        // Client keepalive — no processing needed, touch() already updated timestamp
+        if (packet.type() == chatproj::Packet::CLIENT_PING) {
             return;
         }
 
@@ -119,7 +131,8 @@ private:
         if (packet.type() != chatproj::Packet::REGISTER_REQ &&
             packet.type() != chatproj::Packet::LOGIN_REQ &&
             packet.type() != chatproj::Packet::HANDSHAKE &&
-            packet.type() != chatproj::Packet::SERVER_HEARTBEAT) {
+            packet.type() != chatproj::Packet::SERVER_HEARTBEAT &&
+            packet.type() != chatproj::Packet::CLIENT_PING) {
 
             if (!auth_manager_.validateToken(packet.auth_token())) {
                 std::cout << "[Security] Dropped packet - Missing or invalid JWT.\n";
@@ -140,10 +153,10 @@ private:
         else if (packet.type() == chatproj::Packet::LOGIN_REQ) {
             const auto& req = packet.login_req();
 
-            if (manager_.is_user_online(req.username())) {
-                send_response(chatproj::Packet::LOGIN_RES, false, "User already logged in.");
-                return;
-            }
+            // If the user already has a session, force-kick the stale one.
+            // This handles the case where the previous connection died without
+            // a clean TCP close (e.g. client crashed, network dropped).
+            manager_.kick_user(req.username());
 
             auto token_opt = auth_manager_.authenticateUser(req.username(), req.password());
             
@@ -363,6 +376,7 @@ private:
     bool dm_friends_only_ = false;
     AuthManager& auth_manager_;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
+    std::chrono::steady_clock::time_point last_activity_;
 };
 
 
@@ -429,6 +443,40 @@ bool SessionManager::is_user_online(const std::string& username) {
         }
     }
     return false;
+}
+
+void SessionManager::kick_user(const std::string& username) {
+    std::shared_ptr<Session> stale;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& session : sessions_) {
+            if (session->username() == username) {
+                stale = session;
+                break;
+            }
+        }
+    }
+    if (stale) {
+        std::cout << "[Manager] Kicking stale session for: " << username << "\n";
+        leave(stale);
+    }
+}
+
+void SessionManager::sweep_stale(std::chrono::seconds timeout) {
+    auto now = std::chrono::steady_clock::now();
+    std::vector<std::shared_ptr<Session>> stale;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& session : sessions_) {
+            if (now - session->last_activity() > timeout) {
+                stale.push_back(session);
+            }
+        }
+    }
+    for (auto& s : stale) {
+        std::cout << "[Manager] Sweeping stale session: " << s->username() << "\n";
+        leave(s);
+    }
 }
 
 bool SessionManager::send_private(const chatproj::Packet& packet, const std::string& target_username) {
@@ -539,11 +587,24 @@ int main() {
 
         boost::asio::io_context io_context;
         
-        SessionManager manager; 
+        SessionManager manager;
         Server s(io_context, 8080, manager, auth_manager);
-        
+
+        // Periodic sweep of stale sessions (no activity for 60s).
+        // Catches dead connections where TCP FIN was never sent (e.g. client crash).
+        boost::asio::steady_timer sweep_timer(io_context);
+        std::function<void(const boost::system::error_code&)> sweep_fn;
+        sweep_fn = [&](const boost::system::error_code& ec) {
+            if (ec) return;
+            manager.sweep_stale(std::chrono::seconds(60));
+            sweep_timer.expires_after(std::chrono::seconds(30));
+            sweep_timer.async_wait(sweep_fn);
+        };
+        sweep_timer.expires_after(std::chrono::seconds(30));
+        sweep_timer.async_wait(sweep_fn);
+
         std::cout << "Decibell Central Server running on port 8080...\n";
-        
+
         io_context.run();
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";
