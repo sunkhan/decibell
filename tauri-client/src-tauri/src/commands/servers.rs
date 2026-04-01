@@ -1,17 +1,33 @@
 use tauri::{AppHandle, State};
 
 use crate::net::community::CommunityClient;
+use crate::net::connection::build_packet;
+use crate::net::proto::*;
 use crate::state::SharedState;
 
 #[tauri::command]
 pub async fn request_server_list(
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
-    let s = state.lock().await;
-    let token = s.token.clone();
-    match &s.central {
-        Some(client) => client.request_server_list(token.as_deref()).await,
-        None => Err("Not connected to central server".to_string()),
+    let (write_tx, data) = {
+        let s = state.lock().await;
+        let token = s.token.clone();
+        let tx = s.central.as_ref()
+            .ok_or("Not connected to central server")?
+            .connection_write_tx()
+            .ok_or("Central connection lost")?;
+        let pkt = build_packet(
+            packet::Type::ServerListReq,
+            packet::Payload::ServerListReq(ServerListRequest {}),
+            token.as_deref(),
+        );
+        (tx, pkt)
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("Connection closed".to_string()),
+        Err(_) => Err("Send timed out".to_string()),
     }
 }
 

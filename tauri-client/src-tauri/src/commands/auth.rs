@@ -57,13 +57,30 @@ pub async fn register(
         }
     }
 
-    let s = state_arc.lock().await;
-    match &s.central {
-        Some(client) => {
-            client.register(&username, &email, &password).await?;
-            Ok(())
-        }
-        None => Err("Not connected to central server".to_string()),
+    let (write_tx, data) = {
+        let s = state_arc.lock().await;
+        let client = s.central.as_ref()
+            .ok_or("Not connected to central server")?;
+        let tx = client.connection_write_tx()
+            .ok_or("Central connection lost")?;
+        use crate::net::connection::build_packet;
+        use crate::net::proto::*;
+        let pkt = build_packet(
+            packet::Type::RegisterReq,
+            packet::Payload::RegisterReq(RegisterRequest {
+                username: username.into(),
+                password: password.into(),
+                email: email.into(),
+            }),
+            None,
+        );
+        (tx, pkt)
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("Connection closed".to_string()),
+        Err(_) => Err("Send timed out".to_string()),
     }
 }
 

@@ -27,6 +27,9 @@ namespace ssl = boost::asio::ssl;
 using boost::asio::ip::tcp;
 
 #include <deque>
+#ifdef __linux__
+#include <netinet/tcp.h>
+#endif
 
 class Session;
 
@@ -85,8 +88,16 @@ class Session : public std::enable_shared_from_this<Session> {
 public:
     Session(tcp::socket socket, SessionManager& manager, ssl::context& context, const std::string& jwt_secret)
         : socket_(std::move(socket), context), manager_(manager), jwt_secret_(jwt_secret) {
-        // Enable TCP keepalive to detect dead client connections
+        // Enable TCP keepalive to detect dead client connections.
+        // Tighten from system defaults (~2h) to 15s idle + 5s interval + 3 retries = ~30s detection.
         socket_.lowest_layer().set_option(boost::asio::socket_base::keep_alive(true));
+#ifdef __linux__
+        int fd = socket_.lowest_layer().native_handle();
+        int idle = 15, interval = 5, count = 3;
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+#endif
     }
 
     void start() {
@@ -208,6 +219,12 @@ private:
                 send_auth_response(false, "Invalid token.");
                 manager_.leave(shared_from_this());
             }
+            return;
+        }
+
+        // Client keepalive ping — just acknowledge, no response needed.
+        // Skip auth check: pings may arrive before auth completes.
+        if (packet.type() == chatproj::Packet::CLIENT_PING) {
             return;
         }
 

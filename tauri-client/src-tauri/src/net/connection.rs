@@ -30,6 +30,11 @@ impl Connection {
             .await
             .map_err(|e| format!("TCP connect to {} failed: {}", addr, e))?;
 
+        // Enable TCP keepalive so dead connections are detected within ~30s
+        // instead of hanging for minutes (or forever with NAT timeouts).
+        // First probe after 15s idle, retry every 5s, give up after 3 failures.
+        Self::set_tcp_keepalive(&tcp);
+
         let connector = create_tls_connector();
         let domain = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| format!("Invalid server name '{}': {}", host, e))?;
@@ -89,12 +94,90 @@ impl Connection {
         ))
     }
 
+    /// Clone the write channel sender for direct use (e.g. keepalive pings).
+    /// Avoids needing to lock AppState just to send a packet.
+    pub fn clone_write_tx(&self) -> mpsc::Sender<Vec<u8>> {
+        self.write_tx.clone()
+    }
+
     /// Send a serialized packet over the connection.
+    /// Times out after 5s to prevent indefinite blocking when the write
+    /// channel is full (dead TCP connection with stuck write task).
     pub async fn send(&self, data: Vec<u8>) -> Result<(), String> {
-        self.write_tx
-            .send(data)
-            .await
-            .map_err(|_| "Connection closed".to_string())
+        match tokio::time::timeout(Duration::from_secs(5), self.write_tx.send(data)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err("Connection closed".to_string()),
+            Err(_) => Err("Send timed out".to_string()),
+        }
+    }
+
+    /// Configure TCP keepalive on the socket so dead connections are detected
+    /// within ~30 seconds instead of relying on TCP's default timeout (minutes).
+    fn set_tcp_keepalive(tcp: &TcpStream) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = tcp.as_raw_fd();
+            let enable: libc::c_int = 1;
+            let idle: libc::c_int = 15;     // first probe after 15s idle
+            let interval: libc::c_int = 5;  // probe every 5s
+            let count: libc::c_int = 3;     // give up after 3 failures
+            unsafe {
+                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE,
+                    &enable as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+                libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_KEEPIDLE,
+                    &idle as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+                libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_KEEPINTVL,
+                    &interval as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+                libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_KEEPCNT,
+                    &count as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket;
+            use windows::Win32::Networking::WinSock;
+            let sock = WinSock::SOCKET(tcp.as_raw_socket() as usize);
+            let enable: i32 = 1;
+            unsafe {
+                let _ = WinSock::setsockopt(sock,
+                    WinSock::SOL_SOCKET as i32, WinSock::SO_KEEPALIVE as i32,
+                    Some(std::slice::from_raw_parts(
+                        &enable as *const i32 as *const u8,
+                        std::mem::size_of::<i32>(),
+                    )),
+                );
+            }
+            // Windows keepalive defaults: 2h idle, 1s interval, 10 retries.
+            // Override via SIO_KEEPALIVE_VALS ioctl for tighter timing.
+            #[repr(C)]
+            struct TcpKeepAlive {
+                on_off: u32,
+                keepalive_time: u32,   // ms before first probe
+                keepalive_interval: u32, // ms between probes
+            }
+            let vals = TcpKeepAlive {
+                on_off: 1,
+                keepalive_time: 15_000,    // 15s
+                keepalive_interval: 5_000, // 5s
+            };
+            let mut bytes_returned: u32 = 0;
+            unsafe {
+                let _ = WinSock::WSAIoctl(
+                    sock,
+                    WinSock::SIO_KEEPALIVE_VALS,
+                    Some(&vals as *const _ as *const std::ffi::c_void),
+                    std::mem::size_of::<TcpKeepAlive>() as u32,
+                    None, 0,
+                    &mut bytes_returned,
+                    None, None,
+                );
+            }
+        }
     }
 
     /// Check if the connection is still alive.

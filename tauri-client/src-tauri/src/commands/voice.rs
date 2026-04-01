@@ -1,8 +1,33 @@
 use tauri::{AppHandle, State};
 
 use crate::events;
-use crate::media::VoiceEngine;
+use crate::media::{VoiceEngine, VideoEngine, AudioStreamEngine};
+use crate::net::connection::build_packet;
+use crate::net::proto::*;
 use crate::state::SharedState;
+
+/// Send a pre-built packet via a cloned write channel with timeout.
+async fn send_raw(tx: &tokio::sync::mpsc::Sender<Vec<u8>>, data: Vec<u8>) -> Result<(), String> {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("Connection closed".to_string()),
+        Err(_) => Err("Send timed out".to_string()),
+    }
+}
+
+/// Stop engines on a blocking thread so thread::join() doesn't block a
+/// Tokio worker (which would hold the AppState mutex and freeze the app).
+fn stop_engines_background(
+    audio_stream: Option<AudioStreamEngine>,
+    video: Option<VideoEngine>,
+    voice: Option<VoiceEngine>,
+) {
+    tokio::task::spawn_blocking(move || {
+        if let Some(mut e) = audio_stream { e.stop(); }
+        if let Some(mut e) = video { e.stop(); }
+        if let Some(mut e) = voice { e.stop(); }
+    });
+}
 
 #[tauri::command]
 pub async fn join_voice_channel(
@@ -11,37 +36,60 @@ pub async fn join_voice_channel(
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
-    let mut s = state.lock().await;
+    // Take old engines and collect packets under the lock, then release
+    let (old_audio_stream, old_video, old_voice, leave_sends, join_tx, join_data) = {
+        let mut s = state.lock().await;
 
-    // If already in voice, stop existing engines in dependency order
-    if s.voice_engine.is_some() {
-        for client in s.communities.values() {
-            let _ = client.leave_voice_channel().await;
-        }
-        if let Some(mut engine) = s.audio_stream_engine.take() {
-            engine.stop();
-        }
-        if let Some(mut engine) = s.video_engine.take() {
-            engine.stop();
-        }
-        if let Some(mut engine) = s.voice_engine.take() {
-            engine.stop();
-        }
-    }
+        let mut leave_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
+        let old_audio_stream = s.audio_stream_engine.take();
+        let old_video = s.video_engine.take();
+        let old_voice = if s.voice_engine.is_some() {
+            for client in s.communities.values() {
+                if let Some(tx) = client.connection_write_tx() {
+                    let data = build_packet(
+                        packet::Type::LeaveVoiceReq,
+                        packet::Payload::LeaveVoiceReq(LeaveVoiceRequest {}),
+                        Some(&client.jwt),
+                    );
+                    leave_sends.push((tx, data));
+                }
+            }
+            s.voice_engine.take()
+        } else {
+            None
+        };
 
-    // Send JOIN_VOICE_REQ over TCP and get connection details
-    let (host, port, jwt) = {
         let client = s.communities.get(&server_id)
             .ok_or(format!("Not connected to community {}", server_id))?;
-        client.join_voice_channel(&channel_id).await?;
-        (client.host.clone(), client.port, client.jwt.clone())
-    };
+        let join_tx = client.connection_write_tx()
+            .ok_or("Community connection lost")?;
+        let join_data = build_packet(
+            packet::Type::JoinVoiceReq,
+            packet::Payload::JoinVoiceReq(JoinVoiceRequest {
+                channel_id: channel_id.clone().into(),
+            }),
+            Some(&client.jwt),
+        );
+        let host = client.host.clone();
+        let port = client.port;
+        let jwt = client.jwt.clone();
 
-    // Start VoiceEngine
-    let engine = VoiceEngine::start(&host, port, &jwt, app.clone())?;
-    s.voice_engine = Some(engine);
-    s.connected_voice_server = Some(server_id);
-    s.connected_voice_channel = Some(channel_id);
+        // Start VoiceEngine (spawns threads, no blocking I/O)
+        let engine = VoiceEngine::start(&host, port, &jwt, app.clone())?;
+        s.voice_engine = Some(engine);
+        s.connected_voice_server = Some(server_id);
+        s.connected_voice_channel = Some(channel_id);
+
+        (old_audio_stream, old_video, old_voice, leave_sends, join_tx, join_data)
+    }; // Lock released here
+
+    // Stop old engines on a background thread (thread::join blocks)
+    stop_engines_background(old_audio_stream, old_video, old_voice);
+
+    for (tx, data) in leave_sends {
+        let _ = send_raw(&tx, data).await;
+    }
+    send_raw(&join_tx, join_data).await?;
 
     events::emit_voice_state_changed(&app, false, false);
     Ok(())
@@ -52,24 +100,37 @@ pub async fn leave_voice_channel(
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
-    let mut s = state.lock().await;
+    // Take engines and collect packets under the lock
+    let (old_audio_stream, old_video, old_voice, leave_sends) = {
+        let mut s = state.lock().await;
 
-    for client in s.communities.values() {
-        let _ = client.leave_voice_channel().await;
-    }
+        let mut leave_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
+        for client in s.communities.values() {
+            if let Some(tx) = client.connection_write_tx() {
+                let data = build_packet(
+                    packet::Type::LeaveVoiceReq,
+                    packet::Payload::LeaveVoiceReq(LeaveVoiceRequest {}),
+                    Some(&client.jwt),
+                );
+                leave_sends.push((tx, data));
+            }
+        }
 
-    // Stop engines in dependency order: audio stream → video → voice
-    if let Some(mut engine) = s.audio_stream_engine.take() {
-        engine.stop();
+        let old_audio_stream = s.audio_stream_engine.take();
+        let old_video = s.video_engine.take();
+        let old_voice = s.voice_engine.take();
+        s.connected_voice_server = None;
+        s.connected_voice_channel = None;
+
+        (old_audio_stream, old_video, old_voice, leave_sends)
+    }; // Lock released here
+
+    // Stop engines on a background thread (thread::join blocks)
+    stop_engines_background(old_audio_stream, old_video, old_voice);
+
+    for (tx, data) in leave_sends {
+        let _ = send_raw(&tx, data).await;
     }
-    if let Some(mut engine) = s.video_engine.take() {
-        engine.stop();
-    }
-    if let Some(mut engine) = s.voice_engine.take() {
-        engine.stop();
-    }
-    s.connected_voice_server = None;
-    s.connected_voice_channel = None;
 
     events::emit_voice_state_changed(&app, false, false);
     Ok(())
@@ -82,19 +143,33 @@ pub async fn set_voice_mute(
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     let mut s = state.lock().await;
-    if let Some(ref mut engine) = s.voice_engine {
-        engine.set_mute(muted);
-        let is_muted = engine.is_muted();
-        let is_deafened = engine.is_deafened();
-        events::emit_voice_state_changed(&app, is_muted, is_deafened);
-        // Notify community server of state change
-        for client in s.communities.values() {
-            let _ = client.send_voice_state_notify(is_muted, is_deafened).await;
+    let engine = s.voice_engine.as_mut()
+        .ok_or("Not in a voice channel")?;
+    engine.set_mute(muted);
+    let is_muted = engine.is_muted();
+    let is_deafened = engine.is_deafened();
+
+    let mut notify_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
+    for client in s.communities.values() {
+        if let Some(tx) = client.connection_write_tx() {
+            let data = build_packet(
+                packet::Type::VoiceStateNotify,
+                packet::Payload::VoiceStateNotify(VoiceStateNotify {
+                    is_muted,
+                    is_deafened,
+                }),
+                Some(&client.jwt),
+            );
+            notify_sends.push((tx, data));
         }
-        Ok(())
-    } else {
-        Err("Not in a voice channel".to_string())
     }
+    drop(s);
+
+    for (tx, data) in notify_sends {
+        let _ = send_raw(&tx, data).await;
+    }
+    events::emit_voice_state_changed(&app, is_muted, is_deafened);
+    Ok(())
 }
 
 #[tauri::command]
@@ -147,17 +222,31 @@ pub async fn set_voice_deafen(
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     let mut s = state.lock().await;
-    if let Some(ref mut engine) = s.voice_engine {
-        engine.set_deafen(deafened);
-        let is_muted = engine.is_muted();
-        let is_deafened = engine.is_deafened();
-        events::emit_voice_state_changed(&app, is_muted, is_deafened);
-        // Notify community server of state change
-        for client in s.communities.values() {
-            let _ = client.send_voice_state_notify(is_muted, is_deafened).await;
+    let engine = s.voice_engine.as_mut()
+        .ok_or("Not in a voice channel")?;
+    engine.set_deafen(deafened);
+    let is_muted = engine.is_muted();
+    let is_deafened = engine.is_deafened();
+
+    let mut notify_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
+    for client in s.communities.values() {
+        if let Some(tx) = client.connection_write_tx() {
+            let data = build_packet(
+                packet::Type::VoiceStateNotify,
+                packet::Payload::VoiceStateNotify(VoiceStateNotify {
+                    is_muted,
+                    is_deafened,
+                }),
+                Some(&client.jwt),
+            );
+            notify_sends.push((tx, data));
         }
-        Ok(())
-    } else {
-        Err("Not in a voice channel".to_string())
     }
+    drop(s);
+
+    for (tx, data) in notify_sends {
+        let _ = send_raw(&tx, data).await;
+    }
+    events::emit_voice_state_changed(&app, is_muted, is_deafened);
+    Ok(())
 }

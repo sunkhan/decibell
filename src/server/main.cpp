@@ -14,6 +14,9 @@
 #include <deque>
 #include <utility>
 #include <functional>
+#ifdef __linux__
+#include <netinet/tcp.h>
+#endif
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include "messages.pb.h"
@@ -29,7 +32,17 @@ class Session : public std::enable_shared_from_this<Session> {
 public:
     Session(tcp::socket socket, SessionManager& manager, ssl::context& context, AuthManager& auth_manager)
         : socket_(std::move(socket), context), manager_(manager), auth_manager_(auth_manager),
-          last_activity_(std::chrono::steady_clock::now()) {}
+          last_activity_(std::chrono::steady_clock::now()) {
+        // Tighten TCP keepalive: 15s idle, 5s interval, 3 retries (~30s detection)
+        socket_.lowest_layer().set_option(boost::asio::socket_base::keep_alive(true));
+#ifdef __linux__
+        int fd = socket_.lowest_layer().native_handle();
+        int idle = 15, interval = 5, count = 3;
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+#endif
+    }
 
     std::chrono::steady_clock::time_point last_activity() const { return last_activity_; }
     void touch() { last_activity_ = std::chrono::steady_clock::now(); }

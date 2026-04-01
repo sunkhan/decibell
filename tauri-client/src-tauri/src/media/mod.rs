@@ -37,6 +37,9 @@ pub struct VoiceEngine {
     is_muted: bool,
     is_deafened: bool,
     was_muted_before_deafen: bool,
+    /// Set when VideoEngine starts so the voice event bridge can forward
+    /// keyframe requests without locking AppState.
+    keyframe_tx: Arc<std::sync::Mutex<Option<mpsc::Sender<video_pipeline::VideoPipelineControl>>>>,
 }
 
 impl VoiceEngine {
@@ -138,14 +141,18 @@ impl VoiceEngine {
             })
             .map_err(|e| format!("Failed to spawn video recv thread: {}", e))?;
 
-        // Voice event bridge: poll event_rx and emit Tauri events
-        let event_bridge = tokio::spawn(async move {
-            loop {
-                let rx_result = tokio::task::block_in_place(|| {
-                    event_rx.recv_timeout(std::time::Duration::from_millis(50))
-                });
+        // Shared slot for forwarding keyframe requests to the video encoder.
+        // Set by set_keyframe_sender() when VideoEngine starts.
+        let keyframe_tx: Arc<std::sync::Mutex<Option<mpsc::Sender<video_pipeline::VideoPipelineControl>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let keyframe_tx_for_bridge = keyframe_tx.clone();
 
-                match rx_result {
+        // Voice event bridge: runs on Tokio's blocking thread pool so it never
+        // consumes a worker thread. Previous `tokio::spawn` + `block_in_place`
+        // permanently stole a Tokio worker, starving the runtime over time.
+        let event_bridge = tokio::task::spawn_blocking(move || {
+            loop {
+                match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                     Ok(event) => match event {
                         VoiceEvent::SpeakingChanged(username, speaking) => {
                             let _ = app.emit("voice_user_speaking", serde_json::json!({
@@ -172,8 +179,6 @@ impl VoiceEngine {
                             }
                             use base64::Engine;
                             let b64_data = base64::engine::general_purpose::STANDARD.encode(&frame.data);
-                            // For keyframes, extract avcC description (SPS/PPS) from the
-                            // AVCC-formatted data. WebCodecs needs this to configure the decoder.
                             let b64_desc = if frame.is_keyframe {
                                 encoder::extract_avcc_description_from_avcc(&frame.data)
                                     .map(|d| {
@@ -192,13 +197,11 @@ impl VoiceEngine {
                             }));
                         }
                         VoiceEvent::KeyframeRequested => {
-                            // Forward PLI to the video encoder if streaming
-                            use tauri::Manager;
-                            let state = app.state::<crate::state::SharedState>();
-                            let s = state.lock().await;
-                            if let Some(ref engine) = s.video_engine {
-                                engine.force_keyframe();
-                                eprintln!("[video-bridge] Keyframe request forwarded to encoder");
+                            if let Ok(guard) = keyframe_tx_for_bridge.lock() {
+                                if let Some(ref tx) = *guard {
+                                    let _ = tx.send(video_pipeline::VideoPipelineControl::ForceKeyframe);
+                                    eprintln!("[video-bridge] Keyframe request forwarded to encoder");
+                                }
                             }
                         }
                         VoiceEvent::Error(msg) => {
@@ -223,6 +226,7 @@ impl VoiceEngine {
             is_muted: false,
             is_deafened: false,
             was_muted_before_deafen: false,
+            keyframe_tx,
         })
     }
 
@@ -267,6 +271,21 @@ impl VoiceEngine {
 
     pub fn set_user_volume(&self, username: String, gain: f32) {
         let _ = self.control_tx.send(ControlMessage::SetUserVolume(username, gain));
+    }
+
+    /// Set the video encoder's control channel so keyframe requests from
+    /// remote viewers can be forwarded without locking AppState.
+    pub fn set_keyframe_sender(&self, tx: mpsc::Sender<video_pipeline::VideoPipelineControl>) {
+        if let Ok(mut guard) = self.keyframe_tx.lock() {
+            *guard = Some(tx);
+        }
+    }
+
+    /// Clear the keyframe sender (when VideoEngine stops).
+    pub fn clear_keyframe_sender(&self) {
+        if let Ok(mut guard) = self.keyframe_tx.lock() {
+            *guard = None;
+        }
     }
 
     pub fn is_muted(&self) -> bool { self.is_muted }
@@ -391,6 +410,8 @@ pub struct VideoEngine {
 
 impl VideoEngine {
     /// Start the video send pipeline: encode frames from capture and send via UDP.
+    /// `thumbnail_write_tx` is a cloned mpsc sender for the community server connection,
+    /// allowing the event bridge to send thumbnails without locking AppState.
     pub fn start(
         frame_rx: std::sync::mpsc::Receiver<capture::RawFrame>,
         socket: Arc<UdpSocket>,
@@ -398,6 +419,8 @@ impl VideoEngine {
         config: encoder::EncoderConfig,
         target_fps: u32,
         app: AppHandle,
+        thumbnail_write_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+        thumbnail_channel_id: Option<String>,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
@@ -417,31 +440,32 @@ impl VideoEngine {
             })
             .expect("spawn video pipeline thread");
 
-        // Bridge video pipeline events to Tauri
-        let event_bridge = tokio::spawn(async move {
+        // Bridge video pipeline events to Tauri — runs on the blocking pool
+        // to avoid consuming a Tokio worker thread.
+        let event_bridge = tokio::task::spawn_blocking(move || {
             loop {
-                let rx_result = tokio::task::block_in_place(|| {
-                    event_rx.recv_timeout(std::time::Duration::from_millis(50))
-                });
-                match rx_result {
+                match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                     Ok(video_pipeline::VideoPipelineEvent::Error(msg)) => {
                         let _ = app.emit("voice_error", serde_json::json!({
                             "message": format!("Video: {}", msg),
                         }));
                     }
                     Ok(video_pipeline::VideoPipelineEvent::ThumbnailReady(jpeg)) => {
-                        // Send thumbnail to community server for broadcast
-                        use tauri::Manager;
-                        let state = app.state::<crate::state::SharedState>();
-                        let s = state.lock().await;
-                        // Find the connected server and channel
-                        if let (Some(server_id), Some(channel_id)) = (
-                            s.connected_voice_server.as_ref(),
-                            s.connected_voice_channel.as_ref(),
-                        ) {
-                            if let Some(client) = s.communities.get(server_id) {
-                                let _ = client.send_stream_thumbnail(channel_id, &jpeg).await;
-                            }
+                        // Send thumbnail via cloned write_tx. Use try_send (non-blocking)
+                        // since we're on the blocking pool and can't use .await.
+                        if let (Some(ref tx), Some(ref ch_id)) = (&thumbnail_write_tx, &thumbnail_channel_id) {
+                            use super::net::connection::build_packet;
+                            use super::net::proto::*;
+                            let data = build_packet(
+                                packet::Type::StreamThumbnailUpdate,
+                                packet::Payload::StreamThumbnailUpdate(StreamThumbnailUpdate {
+                                    channel_id: ch_id.clone(),
+                                    owner_username: String::new(),
+                                    thumbnail_data: jpeg,
+                                }),
+                                None,
+                            );
+                            let _ = tx.try_send(data);
                         }
                     }
                     Ok(_) => {}
@@ -466,6 +490,12 @@ impl VideoEngine {
 
     pub fn force_keyframe(&self) {
         let _ = self.pipeline_control_tx.send(video_pipeline::VideoPipelineControl::ForceKeyframe);
+    }
+
+    /// Clone the pipeline control sender so external code can forward keyframe
+    /// requests without holding a reference to VideoEngine.
+    pub fn pipeline_control_tx(&self) -> mpsc::Sender<video_pipeline::VideoPipelineControl> {
+        self.pipeline_control_tx.clone()
     }
 }
 
@@ -510,12 +540,9 @@ impl AudioStreamEngine {
             })
             .expect("spawn audio stream pipeline thread");
 
-        let event_bridge = tokio::spawn(async move {
+        let event_bridge = tokio::task::spawn_blocking(move || {
             loop {
-                let rx_result = tokio::task::block_in_place(|| {
-                    event_rx.recv_timeout(std::time::Duration::from_millis(50))
-                });
-                match rx_result {
+                match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                     Ok(audio_stream_pipeline::AudioStreamEvent::Error(msg)) => {
                         let _ = app.emit("voice_error", serde_json::json!({
                             "message": format!("Stream audio: {}", msg),

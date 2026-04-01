@@ -1,6 +1,8 @@
 use tauri::{AppHandle, State};
 use crate::state::SharedState;
 use crate::media::{capture, encoder::EncoderConfig, VideoEngine, AudioStreamEngine};
+use crate::net::connection::build_packet;
+use crate::net::proto::*;
 
 #[tauri::command]
 pub async fn list_capture_sources() -> Result<Vec<capture::CaptureSource>, String> {
@@ -58,7 +60,7 @@ pub async fn start_screen_share(
     let enc_width = capture_output.width;
     let enc_height = capture_output.height;
 
-    // Lock state to get socket + sender_id and set up pipeline
+    // Lock state to extract needed data, set up engines, then drop before sending
     let mut s = state.lock().await;
 
     // Re-check after portal dialog (user may have disconnected)
@@ -67,10 +69,23 @@ pub async fn start_screen_share(
     let socket = voice_engine.socket();
     let sender_id = voice_engine.sender_id().to_string();
 
-    // Notify community server
+    // Get community connection write channel and build the start_stream packet
     let client = s.communities.get(&server_id)
         .ok_or(format!("Not connected to community {}", server_id))?;
-    client.start_stream(&channel_id, fps as i32, bitrate_kbps as i32, share_audio, enc_width, enc_height).await?;
+    let start_stream_tx = client.connection_write_tx()
+        .ok_or("Community connection lost")?;
+    let start_stream_data = build_packet(
+        packet::Type::StartStreamReq,
+        packet::Payload::StartStreamReq(StartStreamRequest {
+            channel_id: channel_id.clone().into(),
+            target_fps: fps as i32,
+            target_bitrate_kbps: bitrate_kbps as i32,
+            has_audio: share_audio,
+            resolution_width: enc_width,
+            resolution_height: enc_height,
+        }),
+        Some(&client.jwt),
+    );
 
     let encoder_config = EncoderConfig {
         width: enc_width,
@@ -80,6 +95,11 @@ pub async fn start_screen_share(
         keyframe_interval_secs: 2,
     };
 
+    // Clone the community connection's write channel so the video event bridge
+    // can send thumbnails without locking AppState (avoids Tokio deadlock).
+    let thumbnail_write_tx = client.connection_write_tx();
+    let thumbnail_channel_id = Some(channel_id.clone());
+
     // Start video pipeline
     let video_engine = VideoEngine::start(
         capture_output.receiver,
@@ -88,7 +108,14 @@ pub async fn start_screen_share(
         encoder_config,
         fps,
         app.clone(),
+        thumbnail_write_tx,
+        thumbnail_channel_id,
     );
+
+    // Wire up keyframe forwarding: voice bridge → video encoder
+    if let Some(ref ve) = s.voice_engine {
+        ve.set_keyframe_sender(video_engine.pipeline_control_tx());
+    }
 
     s.video_engine = Some(video_engine);
 
@@ -102,8 +129,6 @@ pub async fn start_screen_share(
         #[cfg(target_os = "linux")]
         {
             let (audio_rx, cleanup) = if is_window {
-                // On Linux with portal, we don't have a PID for per-process capture.
-                // Use system-minus-self for all captures via portal.
                 crate::media::capture_audio_pipewire::start_system_audio_capture()?
             } else {
                 crate::media::capture_audio_pipewire::start_system_audio_capture()?
@@ -143,7 +168,17 @@ pub async fn start_screen_share(
         }
     }
 
-    Ok(())
+    drop(s); // Release lock BEFORE sending
+
+    // Notify community server (outside lock)
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        start_stream_tx.send(start_stream_data),
+    ).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("Connection closed".to_string()),
+        Err(_) => Err("Send timed out".to_string()),
+    }
 }
 
 /// Check if a source_id refers to a window (vs a screen/monitor).
@@ -183,22 +218,47 @@ pub async fn stop_screen_share(
     channel_id: String,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
-    let mut s = state.lock().await;
+    // Take engines and build packet under the lock, then release immediately.
+    // engine.stop() calls thread::join() which blocks — must not hold the mutex.
+    let (old_audio_stream, old_video, stop_tx, stop_data) = {
+        let mut s = state.lock().await;
 
-    // Stop audio stream engine first
-    if let Some(mut engine) = s.audio_stream_engine.take() {
-        engine.stop();
+        if let Some(ref ve) = s.voice_engine {
+            ve.clear_keyframe_sender();
+        }
+
+        let old_audio_stream = s.audio_stream_engine.take();
+        let old_video = s.video_engine.take();
+
+        let client = s.communities.get(&server_id)
+            .ok_or(format!("Not connected to community {}", server_id))?;
+        let stop_tx = client.connection_write_tx()
+            .ok_or("Community connection lost")?;
+        let stop_data = build_packet(
+            packet::Type::StopStreamReq,
+            packet::Payload::StopStreamReq(StopStreamRequest {
+                channel_id: channel_id.into(),
+            }),
+            Some(&client.jwt),
+        );
+
+        (old_audio_stream, old_video, stop_tx, stop_data)
+    }; // Lock released here
+
+    // Stop engines on a background thread (thread::join blocks)
+    tokio::task::spawn_blocking(move || {
+        if let Some(mut e) = old_audio_stream { e.stop(); }
+        if let Some(mut e) = old_video { e.stop(); }
+    });
+
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stop_tx.send(stop_data),
+    ).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("Connection closed".to_string()),
+        Err(_) => Err("Send timed out".to_string()),
     }
-
-    // Stop video engine
-    if let Some(mut engine) = s.video_engine.take() {
-        engine.stop();
-    }
-
-    // Notify community server
-    let client = s.communities.get(&server_id)
-        .ok_or(format!("Not connected to community {}", server_id))?;
-    client.stop_stream(&channel_id).await
 }
 
 #[tauri::command]
@@ -210,10 +270,32 @@ pub async fn watch_stream(
 ) -> Result<(), String> {
     eprintln!("[stream] watch_stream called: server='{}', channel='{}', target='{}'",
         server_id, channel_id, target_username);
-    let s = state.lock().await;
-    let client = s.communities.get(&server_id)
-        .ok_or(format!("Not connected to community {}", server_id))?;
-    let result = client.watch_stream(&channel_id, &target_username).await;
+
+    let (write_tx, data) = {
+        let s = state.lock().await;
+        let client = s.communities.get(&server_id)
+            .ok_or(format!("Not connected to community {}", server_id))?;
+        let tx = client.connection_write_tx()
+            .ok_or("Community connection lost")?;
+        let pkt = build_packet(
+            packet::Type::WatchStreamReq,
+            packet::Payload::WatchStreamReq(WatchStreamRequest {
+                channel_id: channel_id.into(),
+                target_username: target_username.into(),
+            }),
+            Some(&client.jwt),
+        );
+        (tx, pkt)
+    };
+
+    let result = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        write_tx.send(data),
+    ).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("Connection closed".to_string()),
+        Err(_) => Err("Send timed out".to_string()),
+    };
     eprintln!("[stream] watch_stream result: {:?}", result);
     result
 }
@@ -225,10 +307,28 @@ pub async fn stop_watching(
     target_username: String,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
-    let s = state.lock().await;
-    let client = s.communities.get(&server_id)
-        .ok_or(format!("Not connected to community {}", server_id))?;
-    client.stop_watching(&channel_id, &target_username).await
+    let (write_tx, data) = {
+        let s = state.lock().await;
+        let client = s.communities.get(&server_id)
+            .ok_or(format!("Not connected to community {}", server_id))?;
+        let tx = client.connection_write_tx()
+            .ok_or("Community connection lost")?;
+        let pkt = build_packet(
+            packet::Type::StopWatchingReq,
+            packet::Payload::StopWatchingReq(StopWatchingRequest {
+                channel_id: channel_id.into(),
+                target_username: target_username.into(),
+            }),
+            Some(&client.jwt),
+        );
+        (tx, pkt)
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("Connection closed".to_string()),
+        Err(_) => Err("Send timed out".to_string()),
+    }
 }
 
 #[tauri::command]

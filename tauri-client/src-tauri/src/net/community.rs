@@ -12,6 +12,7 @@ pub struct CommunityClient {
     connection: Option<Connection>,
     router_task: Option<JoinHandle<()>>,
     reconnect_task: Option<JoinHandle<()>>,
+    ping_task: Option<JoinHandle<()>>,
     pub server_id: String,
     pub host: String,
     pub port: u16,
@@ -49,16 +50,49 @@ impl CommunityClient {
             sid,
         ));
 
+        // Keepalive ping every 30s — detects dead connections at the
+        // application layer (complements TCP keepalive). Uses cloned
+        // write_tx so it never touches AppState.
+        let ping_write_tx = connection.clone_write_tx();
+        let ping_jwt = jwt.clone();
+        let ping_task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let data = build_packet(
+                    packet::Type::ClientPing,
+                    packet::Payload::Handshake(Handshake {
+                        protocol_version: 0,
+                        client_id: String::new(),
+                    }),
+                    Some(&ping_jwt),
+                );
+                let send_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    ping_write_tx.send(data),
+                ).await;
+                match send_result {
+                    Ok(Ok(())) => {}
+                    _ => break, // connection dead
+                }
+            }
+        });
+
         Ok(CommunityClient {
             connection: Some(connection),
             router_task: Some(router_task),
             reconnect_task: None,
+            ping_task: Some(ping_task),
             server_id,
             host,
             port,
             jwt,
             joined_channels: Vec::new(),
         })
+    }
+
+    /// Clone the underlying write channel for direct sends that bypass AppState lock.
+    pub fn connection_write_tx(&self) -> Option<mpsc::Sender<Vec<u8>>> {
+        self.connection.as_ref().map(|c| c.clone_write_tx())
     }
 
     /// Send a raw packet.
@@ -223,8 +257,11 @@ impl CommunityClient {
         self.send(data).await
     }
 
-    /// Disconnect from the community server. Stops reconnection.
+    /// Disconnect from the community server. Stops reconnection and keepalive.
     pub fn disconnect(&mut self) {
+        if let Some(task) = self.ping_task.take() {
+            task.abort();
+        }
         if let Some(task) = self.reconnect_task.take() {
             task.abort();
         }
@@ -297,11 +334,40 @@ impl CommunityClient {
                             sid,
                         ));
 
+                        // Restart keepalive ping task
+                        let ping_write_tx = connection.clone_write_tx();
+                        let ping_jwt = jwt.clone();
+                        let ping_task = tokio::spawn(async move {
+                            loop {
+                                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                                let data = build_packet(
+                                    packet::Type::ClientPing,
+                                    packet::Payload::Handshake(Handshake {
+                                        protocol_version: 0,
+                                        client_id: String::new(),
+                                    }),
+                                    Some(&ping_jwt),
+                                );
+                                let send_result = tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    ping_write_tx.send(data),
+                                ).await;
+                                match send_result {
+                                    Ok(Ok(())) => {}
+                                    _ => break,
+                                }
+                            }
+                        });
+
                         let mut s = state.lock().await;
                         if let Some(client) = s.communities.get_mut(&sid_for_task) {
+                            if let Some(old_ping) = client.ping_task.take() {
+                                old_ping.abort();
+                            }
                             client.connection = Some(connection);
                             client.router_task = Some(router);
                             client.reconnect_task = None;
+                            client.ping_task = Some(ping_task);
                         }
                         drop(s);
 

@@ -30,28 +30,32 @@ impl CentralClient {
 
         // Keepalive ping every 30s so the central server knows we're alive.
         // Without this, a dead connection can go undetected for minutes.
-        let ping_state = state.clone();
+        //
+        // IMPORTANT: We must NOT hold the AppState lock while calling send(),
+        // because send() writes to a bounded channel (cap 64). If the TCP
+        // connection dies silently, the write task blocks, the channel fills,
+        // send() blocks, and if we're holding AppState the entire UI deadlocks.
+        // Instead, clone the write_tx sender and send directly without the lock.
+        let ping_write_tx = connection.clone_write_tx();
         let ping_task = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                let s = ping_state.lock().await;
-                let sent = if let Some(ref central) = s.central {
-                    let data = build_packet(
-                        packet::Type::ClientPing,
-                        // Reuse Handshake as a lightweight no-op payload
-                        packet::Payload::Handshake(Handshake {
-                            protocol_version: 0,
-                            client_id: String::new(),
-                        }),
-                        None,
-                    );
-                    central.send(data).await.is_ok()
-                } else {
-                    false
-                };
-                drop(s);
-                if !sent {
-                    break;
+                let data = build_packet(
+                    packet::Type::ClientPing,
+                    packet::Payload::Handshake(Handshake {
+                        protocol_version: 0,
+                        client_id: String::new(),
+                    }),
+                    None,
+                );
+                // Use timeout to avoid blocking indefinitely on a dead connection
+                let send_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    ping_write_tx.send(data),
+                ).await;
+                match send_result {
+                    Ok(Ok(())) => {}          // sent successfully
+                    _ => break,               // timeout or channel closed
                 }
             }
         });
@@ -62,6 +66,11 @@ impl CentralClient {
             reconnect_task: None,
             ping_task: Some(ping_task),
         })
+    }
+
+    /// Clone the underlying write channel for direct sends that bypass AppState lock.
+    pub fn connection_write_tx(&self) -> Option<mpsc::Sender<Vec<u8>>> {
+        self.connection.as_ref().map(|c| c.clone_write_tx())
     }
 
     /// Send a raw packet over the connection.
@@ -219,47 +228,53 @@ impl CentralClient {
                     Ok((connection, read_rx)) => {
                         log::info!("Reconnected to central server");
 
-                        // Re-authenticate with stored credentials
-                        let mut s = state.lock().await;
-                        if let Some((ref user, ref pass)) = s.credentials {
-                            let login_data = build_packet(
-                                packet::Type::LoginReq,
-                                packet::Payload::LoginReq(LoginRequest {
-                                    username: user.clone(),
-                                    password: pass.clone(),
-                                }),
-                                None,
-                            );
-                            let _ = connection.send(login_data).await;
+                        // Re-authenticate with stored credentials.
+                        // Send BEFORE locking AppState — connection.send() writes
+                        // to a bounded channel that can block on a dead socket.
+                        {
+                            let s = state.lock().await;
+                            if let Some((ref user, ref pass)) = s.credentials {
+                                let login_data = build_packet(
+                                    packet::Type::LoginReq,
+                                    packet::Payload::LoginReq(LoginRequest {
+                                        username: user.clone(),
+                                        password: pass.clone(),
+                                    }),
+                                    None,
+                                );
+                                drop(s); // Release lock BEFORE sending
+                                let _ = connection.send(login_data).await;
+                            }
                         }
 
                         let router =
                             tokio::spawn(Self::route_packets(read_rx, app.clone(), state.clone()));
 
-                        // Restart keepalive ping task
-                        let ping_state = state.clone();
+                        // Restart keepalive ping task (lock-free, see connect())
+                        let ping_write_tx = connection.clone_write_tx();
                         let ping_task = tokio::spawn(async move {
                             loop {
                                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                                let s = ping_state.lock().await;
-                                let sent = if let Some(ref central) = s.central {
-                                    let data = build_packet(
-                                        packet::Type::ClientPing,
-                                        packet::Payload::Handshake(Handshake {
-                                            protocol_version: 0,
-                                            client_id: String::new(),
-                                        }),
-                                        None,
-                                    );
-                                    central.send(data).await.is_ok()
-                                } else {
-                                    false
-                                };
-                                drop(s);
-                                if !sent { break; }
+                                let data = build_packet(
+                                    packet::Type::ClientPing,
+                                    packet::Payload::Handshake(Handshake {
+                                        protocol_version: 0,
+                                        client_id: String::new(),
+                                    }),
+                                    None,
+                                );
+                                let send_result = tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    ping_write_tx.send(data),
+                                ).await;
+                                match send_result {
+                                    Ok(Ok(())) => {}
+                                    _ => break,
+                                }
                             }
                         });
 
+                        let mut s = state.lock().await;
                         if let Some(ref mut central) = s.central {
                             if let Some(old_ping) = central.ping_task.take() {
                                 old_ping.abort();
