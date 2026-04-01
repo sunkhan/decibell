@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
@@ -5,6 +6,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
 import StreamViewPanel from "./StreamViewPanel";
 import StreamVideoPlayer from "./StreamVideoPlayer";
+import CaptureSourcePicker from "./CaptureSourcePicker";
 import { useStreamThumbnails } from "./useStreamThumbnails";
 
 const EMPTY_CHANNELS: never[] = [];
@@ -22,12 +24,17 @@ export default function VoicePanel() {
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const isStreamFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
+  const isStreaming = useVoiceStore((s) => s.isStreaming);
   const disconnect = useVoiceStore((s) => s.disconnect);
   const setActiveView = useUiStore((s) => s.setActiveView);
+  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
+  const openContextMenu = useUiStore((s) => s.openContextMenu);
   const channels = useChatStore((s) => {
     const serverId = s.activeServerId;
     return serverId ? s.channelsByServer[serverId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
   });
+
+  const [showPicker, setShowPicker] = useState(false);
 
   // Generate thumbnails for active streams
   useStreamThumbnails();
@@ -62,6 +69,14 @@ export default function VoicePanel() {
       useVoiceStore.getState().addWatching(username);
     }
     useVoiceStore.getState().setFullscreenStream(username);
+  };
+
+  const handleStopSharing = () => {
+    invoke("stop_screen_share", {
+      serverId: connectedServerId,
+      channelId: connectedChannelId,
+    }).catch(console.error);
+    useVoiceStore.getState().setIsStreaming(false);
   };
 
   const handleDisconnect = async () => {
@@ -139,7 +154,13 @@ export default function VoicePanel() {
                       )}
                     </div>
                     {p.isMuted && (
-                      <span className="text-[10px] text-error">🔇</span>
+                      <svg className="h-3.5 w-3.5 shrink-0 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="1" y1="1" x2="23" y2="23" />
+                        <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                        <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
+                        <line x1="12" y1="19" x2="12" y2="23" />
+                        <line x1="8" y1="23" x2="16" y2="23" />
+                      </svg>
                     )}
                   </div>
                 );
@@ -242,8 +263,19 @@ export default function VoicePanel() {
           {participants.map((p) => {
             const isSpeaking = speakingUsers.includes(p.username);
             return (
-              <div key={p.username} className="w-[100px] text-center">
-                <div className="relative mx-auto mb-2">
+              <div
+                key={p.username}
+                className="flex cursor-pointer flex-col items-center rounded-2xl px-4 py-3 transition-all duration-200 hover:bg-surface-hover hover:shadow-[0_0_12px_rgba(255,255,255,0.04)]"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  openProfilePopup(p.username, { x: rect.right + 8, y: rect.top });
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  openContextMenu(p.username, { x: e.clientX, y: e.clientY });
+                }}
+              >
+                <div className="relative mb-2">
                   <div
                     className={`flex h-20 w-20 items-center justify-center rounded-xl text-[28px] font-bold text-white transition-all duration-200 ${
                       isSpeaking ? "ring-[3px] ring-success" : ""
@@ -253,12 +285,18 @@ export default function VoicePanel() {
                     {p.username.charAt(0).toUpperCase()}
                   </div>
                   {p.isMuted && (
-                    <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-2 border-bg-tertiary bg-error text-[10px]">
-                      🔇
+                    <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-2 border-bg-tertiary bg-error">
+                      <svg className="h-3 w-3 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="1" y1="1" x2="23" y2="23" />
+                        <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                        <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
+                        <line x1="12" y1="19" x2="12" y2="23" />
+                        <line x1="8" y1="23" x2="16" y2="23" />
+                      </svg>
                     </div>
                   )}
                 </div>
-                <div className="text-xs font-semibold text-text-primary">
+                <div className="max-w-full truncate text-center text-xs font-semibold text-text-primary">
                   {p.username}
                 </div>
               </div>
@@ -278,7 +316,25 @@ export default function VoicePanel() {
                 : "bg-surface-hover text-text-muted hover:bg-surface-active"
             }`}
           >
-            {isMuted ? "🔇 Unmute" : "🎤 Mute"}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {isMuted ? (
+                <>
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                  <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                  <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                  <line x1="8" y1="23" x2="16" y2="23" />
+                </>
+              ) : (
+                <>
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                  <line x1="8" y1="23" x2="16" y2="23" />
+                </>
+              )}
+            </svg>
+            {isMuted ? "Unmute" : "Mute"}
           </button>
           <button
             onClick={handleDeafen}
@@ -288,7 +344,41 @@ export default function VoicePanel() {
                 : "bg-surface-hover text-text-muted hover:bg-surface-active"
             }`}
           >
-            {isDeafened ? "🔇 Undeafen" : "🎧 Deafen"}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {isDeafened ? (
+                <>
+                  <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </>
+              ) : (
+                <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+              )}
+            </svg>
+            {isDeafened ? "Undeafen" : "Deafen"}
+          </button>
+          <button
+            onClick={isStreaming ? handleStopSharing : () => setShowPicker(true)}
+            className={`flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-semibold transition-colors ${
+              isStreaming
+                ? "bg-accent/20 text-accent hover:bg-accent/30"
+                : "bg-surface-hover text-text-muted hover:bg-surface-active"
+            }`}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {isStreaming ? (
+                <>
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  <rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" stroke="none" />
+                </>
+              ) : (
+                <>
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                  <line x1="8" y1="21" x2="16" y2="21" />
+                  <line x1="12" y1="17" x2="12" y2="21" />
+                </>
+              )}
+            </svg>
+            {isStreaming ? "Stop" : "Stream"}
           </button>
           <button
             onClick={handleDisconnect}
@@ -297,6 +387,13 @@ export default function VoicePanel() {
             Disconnect
           </button>
         </div>
+      )}
+      {showPicker && connectedServerId && connectedChannelId && (
+        <CaptureSourcePicker
+          serverId={connectedServerId}
+          channelId={connectedChannelId}
+          onClose={() => setShowPicker(false)}
+        />
       )}
     </div>
   );

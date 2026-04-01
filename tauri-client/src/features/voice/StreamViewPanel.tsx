@@ -40,6 +40,8 @@ export default function StreamViewPanel() {
   const currentUsername = useAuthStore((s) => s.username);
   const isFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
   const setIsFullscreen = useVoiceStore((s) => s.setStreamFullscreen);
+  const isMuted = useVoiceStore((s) => s.isMuted);
+  const isDeafened = useVoiceStore((s) => s.isDeafened);
   const [overlayVisible, setOverlayVisible] = useState(false);
   const overlayTimeout = useRef<ReturnType<typeof setTimeout>>();
   const [streamVolume, setStreamVolume] = useState(100);
@@ -86,6 +88,19 @@ export default function StreamViewPanel() {
     } else {
       handleVolumeChange(prevVolume.current || 100);
     }
+  };
+
+  const handleMute = () => {
+    if (isDeafened) {
+      invoke("set_voice_deafen", { deafened: false }).catch(console.error);
+      invoke("set_voice_mute", { muted: false }).catch(console.error);
+    } else {
+      invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
+    }
+  };
+
+  const handleDeafen = () => {
+    invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
   };
 
   const stream = activeStreams.find((s) => s.ownerUsername === displayUser);
@@ -163,7 +178,7 @@ export default function StreamViewPanel() {
                 <span className="text-[10px] text-text-muted">{qualityBadge}</span>
               )}
               <div className="ml-auto flex items-center gap-2">
-                {!isOwnStream && (
+                {!isOwnStream && stream?.hasAudio && (
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={toggleMute}
@@ -210,7 +225,7 @@ export default function StreamViewPanel() {
           <div
             className={`relative flex flex-1 items-center justify-center ${
               isFullscreen
-                ? "cursor-default"
+                ? `overflow-hidden ${overlayVisible ? "cursor-default" : "cursor-none"}`
                 : "cursor-pointer rounded-lg border border-border bg-bg-tertiary"
             }`}
             onClick={handleBackToCards}
@@ -222,11 +237,11 @@ export default function StreamViewPanel() {
               className={`h-full w-full object-contain ${isFullscreen ? "" : "rounded-lg"}`}
             />
 
-            {/* Fullscreen hover overlay controls */}
+            {/* Fullscreen bottom control bar — slides up/down */}
             {isFullscreen && (
               <div
-                className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent px-4 pb-3 pt-8 transition-opacity duration-300 ${
-                  overlayVisible ? "opacity-100" : "pointer-events-none opacity-0"
+                className={`absolute inset-x-0 bottom-0 flex flex-col items-center transition-transform duration-300 ease-in-out ${
+                  overlayVisible ? "translate-y-0" : "translate-y-full"
                 }`}
                 onClick={(e) => e.stopPropagation()}
                 onMouseEnter={() => {
@@ -234,62 +249,141 @@ export default function StreamViewPanel() {
                   setOverlayVisible(true);
                 }}
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="flex h-[22px] w-[22px] items-center justify-center rounded-md text-[10px] font-bold text-white"
-                      style={{ background: stringToGradient(displayUser) }}
-                    >
-                      {displayUser.charAt(0).toUpperCase()}
-                    </div>
-                    <span className="text-xs font-semibold text-white">
-                      {displayUser}'s screen
-                    </span>
-                    {qualityBadge && (
-                      <span className="text-[10px] text-white/60">{qualityBadge}</span>
-                    )}
+                {/* Info row */}
+                <div className="mb-2 flex items-center gap-2">
+                  <div
+                    className="flex h-[22px] w-[22px] items-center justify-center rounded-md text-[10px] font-bold text-white"
+                    style={{ background: stringToGradient(displayUser) }}
+                  >
+                    {displayUser.charAt(0).toUpperCase()}
                   </div>
-                  <div className="flex items-center gap-3">
-                    {!isOwnStream && (
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); toggleMute(); }}
-                          className="flex h-7 w-7 items-center justify-center rounded-md border border-white/20 bg-bg-primary/50 text-white/80 transition-colors hover:bg-bg-primary hover:text-white"
-                          title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
-                        >
-                          <VolumeIcon muted={streamVolume === 0} />
-                        </button>
-                        <input
-                          type="range"
-                          min={0}
-                          max={100}
-                          value={streamVolume}
-                          onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                          onClick={(e) => e.stopPropagation()}
-                          className="h-1 w-24 cursor-pointer appearance-none rounded-full bg-white/20 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent"
-                          title={`Stream volume: ${streamVolume}%`}
-                        />
+                  <span className="text-xs font-semibold text-white">
+                    {displayUser}'s screen
+                  </span>
+                  {qualityBadge && (
+                    <span className="text-[10px] text-white/60">{qualityBadge}</span>
+                  )}
+                  <div className="ml-2 flex -space-x-1.5">
+                    {participants.slice(0, 4).map((p) => (
+                      <div
+                        key={p.username}
+                        className="flex h-6 w-6 items-center justify-center rounded-md border-2 border-black text-[9px] font-bold text-white"
+                        style={{ background: stringToGradient(p.username) }}
+                      >
+                        {p.username.charAt(0).toUpperCase()}
                       </div>
-                    )}
-                    <div className="flex -space-x-1.5">
-                      {participants.slice(0, 4).map((p) => (
-                        <div
-                          key={p.username}
-                          className="flex h-6 w-6 items-center justify-center rounded-md border-2 border-black text-[9px] font-bold text-white"
-                          style={{ background: stringToGradient(p.username) }}
-                        >
-                          {p.username.charAt(0).toUpperCase()}
-                        </div>
-                      ))}
-                    </div>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); exitFullscreen(); }}
-                      className="flex h-7 w-7 items-center justify-center rounded-md border border-white/20 bg-bg-primary/50 text-sm transition-colors hover:bg-bg-primary"
-                      title="Exit fullscreen"
-                    >
-                      &#x26F6;
-                    </button>
+                    ))}
                   </div>
+                </div>
+
+                {/* Control bar */}
+                <div className="mb-4 flex items-center gap-2 rounded-xl border border-white/10 bg-[#1e1f22]/95 px-3 py-2 shadow-2xl backdrop-blur-sm">
+                  {/* Mute */}
+                  <button
+                    onClick={handleMute}
+                    className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                      isMuted
+                        ? "bg-white/15 text-error hover:bg-white/20"
+                        : "text-white/80 hover:bg-white/10 hover:text-white"
+                    }`}
+                    title={isMuted ? "Unmute" : "Mute"}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      {isMuted ? (
+                        <>
+                          <line x1="1" y1="1" x2="23" y2="23" />
+                          <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                          <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
+                          <line x1="12" y1="19" x2="12" y2="23" />
+                          <line x1="8" y1="23" x2="16" y2="23" />
+                        </>
+                      ) : (
+                        <>
+                          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                          <line x1="12" y1="19" x2="12" y2="23" />
+                          <line x1="8" y1="23" x2="16" y2="23" />
+                        </>
+                      )}
+                    </svg>
+                  </button>
+
+                  {/* Deafen */}
+                  <button
+                    onClick={handleDeafen}
+                    className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                      isDeafened
+                        ? "bg-white/15 text-error hover:bg-white/20"
+                        : "text-white/80 hover:bg-white/10 hover:text-white"
+                    }`}
+                    title={isDeafened ? "Undeafen" : "Deafen"}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      {isDeafened ? (
+                        <>
+                          <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+                          <line x1="1" y1="1" x2="23" y2="23" />
+                        </>
+                      ) : (
+                        <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+                      )}
+                    </svg>
+                  </button>
+
+                  {/* Divider */}
+                  <div className="mx-1 h-6 w-px bg-white/15" />
+
+                  {/* Stream volume */}
+                  {!isOwnStream && stream?.hasAudio && (
+                    <>
+                      <button
+                        onClick={toggleMute}
+                        className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                          streamVolume === 0
+                            ? "bg-white/15 text-error hover:bg-white/20"
+                            : "text-white/80 hover:bg-white/10 hover:text-white"
+                        }`}
+                        title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
+                      >
+                        <VolumeIcon muted={streamVolume === 0} />
+                      </button>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={streamVolume}
+                        onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                        onClick={(e) => e.stopPropagation()}
+                        className="h-1 w-20 cursor-pointer appearance-none rounded-full bg-white/20 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent"
+                        title={`Stream volume: ${streamVolume}%`}
+                      />
+                      <div className="mx-1 h-6 w-px bg-white/15" />
+                    </>
+                  )}
+
+                  {/* Stop watching */}
+                  <button
+                    onClick={handleStopWatching}
+                    className="flex h-9 items-center gap-1.5 rounded-lg bg-error/80 px-3 text-[12px] font-semibold text-white transition-colors hover:bg-error"
+                    title="Stop watching"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                      <rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" stroke="none" />
+                    </svg>
+                    Stop Watching
+                  </button>
+
+                  {/* Exit fullscreen */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); exitFullscreen(); }}
+                    className="flex h-9 w-9 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                    title="Exit fullscreen"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+                    </svg>
+                  </button>
                 </div>
               </div>
             )}

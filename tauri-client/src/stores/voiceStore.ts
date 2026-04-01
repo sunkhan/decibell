@@ -47,6 +47,8 @@ interface VoiceState {
   setStreamSettings: (settings: Partial<VoiceState['streamSettings']>) => void;
   userVolumes: Record<string, number>; // username → dB value (0 = default)
   setUserVolume: (username: string, db: number) => void;
+  localMutedUsers: Set<string>; // users muted locally by this client
+  toggleLocalMute: (username: string) => void;
   disconnect: () => void;
 }
 
@@ -150,6 +152,17 @@ export const useVoiceStore = create<VoiceState>((set) => ({
     set((state) => ({
       userVolumes: { ...state.userVolumes, [username]: db },
     })),
+  localMutedUsers: new Set(),
+  toggleLocalMute: (username) =>
+    set((state) => {
+      const next = new Set(state.localMutedUsers);
+      if (next.has(username)) {
+        next.delete(username);
+      } else {
+        next.add(username);
+      }
+      return { localMutedUsers: next };
+    }),
   disconnect: () =>
     set({
       connectedServerId: null,

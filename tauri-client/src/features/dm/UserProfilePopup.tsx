@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useUiStore } from "../../stores/uiStore";
+import { useAuthStore } from "../../stores/authStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
 import { useChatStore } from "../../stores/chatStore";
@@ -13,6 +14,7 @@ export default function UserProfilePopup() {
   const closePopup = useUiStore((s) => s.closeProfilePopup);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
+  const currentUsername = useAuthStore((s) => s.username);
   const friends = useFriendsStore((s) => s.friends);
   const onlineUsers = useChatStore((s) => s.onlineUsers);
 
@@ -129,24 +131,26 @@ export default function UserProfilePopup() {
           </div>
         </div>
 
-        {/* Divider */}
-        <div className="mx-5 my-3.5 h-px bg-border" />
-
-        {/* Message input */}
-        <div className="px-3.5 pb-3.5">
-          <div className="flex items-center rounded-xl border border-border bg-bg-tertiary px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={sending}
-              placeholder={`Message @${username}`}
-              className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
-              autoFocus
-            />
-          </div>
-        </div>
+        {/* Message input — hidden for own user */}
+        {username !== currentUsername && (
+          <>
+            <div className="mx-5 my-3.5 h-px bg-border" />
+            <div className="px-3.5 pb-3.5">
+              <div className="flex items-center rounded-xl border border-border bg-bg-tertiary px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
+                <input
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  disabled={sending}
+                  placeholder={`Message @${username}`}
+                  className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
+                  autoFocus
+                />
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>,
     document.body

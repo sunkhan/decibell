@@ -20,6 +20,16 @@ function MuteIcon() {
   );
 }
 
+function LocalMuteIcon() {
+  return (
+    <svg className="h-3.5 w-3.5 shrink-0 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" title="Muted by you">
+      <path d="M11 5L6 9H2v6h4l5 4V5z" />
+      <line x1="23" y1="9" x2="17" y2="15" />
+      <line x1="17" y1="9" x2="23" y2="15" />
+    </svg>
+  );
+}
+
 function DeafenIcon() {
   return (
     <svg className="h-3.5 w-3.5 shrink-0 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -36,6 +46,7 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
   const isMuted = useVoiceStore((s) => s.isMuted);
   const isDeafened = useVoiceStore((s) => s.isDeafened);
   const channelUserStates = useVoiceStore((s) => s.channelUserStates);
+  const localMutedUsers = useVoiceStore((s) => s.localMutedUsers);
   const localUsername = useAuthStore((s) => s.username);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
@@ -74,6 +85,7 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
                     <span className="text-[9px] font-bold text-error">LIVE</span>
                   </div>
                 )}
+                {localMutedUsers.has(u) && <LocalMuteIcon />}
                 {userState?.isDeafened ? <DeafenIcon /> : userState?.isMuted ? <MuteIcon /> : null}
               </div>
             </div>
@@ -122,6 +134,7 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
                   <span className="text-[9px] font-bold text-error">LIVE</span>
                 </div>
               )}
+              {localMutedUsers.has(p.username) && <LocalMuteIcon />}
               {userDeafened ? <DeafenIcon /> : userMuted ? <MuteIcon /> : null}
             </div>
           </div>
