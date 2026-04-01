@@ -76,15 +76,88 @@ pub enum VoiceEvent {
 const FLAG_MUTED: u8 = 0x01;
 const FLAG_DEAFENED: u8 = 0x02;
 
+// ── Jitter buffer ────────────────────────────────────────────────────────────
+//
+// Holds incoming packets for a short time before decoding, so that late/
+// out-of-order packets can be reordered. When a packet is truly lost, the
+// Opus decoder's PLC (Packet Loss Concealment) fills the gap smoothly.
+
+const JITTER_DEPTH: usize = 3; // packets to buffer before starting playback (60ms)
+const JITTER_MAX: usize = 20;  // safety cap — force-drain if buffer grows past this
+
+struct JitterBuffer {
+    packets: HashMap<u16, Vec<u8>>,
+    next_seq: u16,
+    initialized: bool,
+    ready: bool,
+}
+
+impl JitterBuffer {
+    fn new() -> Self {
+        Self { packets: HashMap::new(), next_seq: 0, initialized: false, ready: false }
+    }
+
+    /// Insert a packet. Ignores packets behind the play cursor.
+    fn push(&mut self, seq: u16, data: Vec<u8>) {
+        if !self.initialized {
+            self.next_seq = seq;
+            self.initialized = true;
+        }
+        // Only accept if seq is at or ahead of the play cursor
+        let diff = seq.wrapping_sub(self.next_seq);
+        if diff < 32768 {
+            self.packets.insert(seq, data);
+        }
+        if !self.ready && self.packets.len() >= JITTER_DEPTH {
+            self.ready = true;
+        }
+        // Force-drain excess so the buffer can't grow unbounded.
+        // If next_seq points to a gap (no packet), jump to the earliest actual
+        // entry first — otherwise the while loop would spin through thousands
+        // of empty sequence numbers before hitting a real packet.
+        while self.packets.len() > JITTER_MAX {
+            if !self.packets.contains_key(&self.next_seq) {
+                if let Some(&earliest) = self.packets.keys()
+                    .min_by_key(|&&s| s.wrapping_sub(self.next_seq))
+                {
+                    self.next_seq = earliest;
+                } else {
+                    break;
+                }
+            }
+            self.packets.remove(&self.next_seq);
+            self.next_seq = self.next_seq.wrapping_add(1);
+        }
+    }
+
+    /// Pop the next frame. Returns:
+    /// - `Some(Some(data))` — packet present, decode normally
+    /// - `Some(None)` — packet missing, caller should do PLC
+    /// - `None` — buffer not ready yet (still filling)
+    fn drain(&mut self) -> Option<Option<Vec<u8>>> {
+        if !self.ready { return None; }
+        if self.packets.is_empty() {
+            // Buffer drained completely — require re-buffering
+            self.ready = false;
+            return None;
+        }
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        Some(self.packets.remove(&seq))
+    }
+}
+
 // ── Per-remote-peer state ─────────────────────────────────────────────────────
 
 struct RemotePeer {
     decoder: OpusDecoder,
     speaking: SpeakingDetector,
-    last_seq: u16,
     last_packet_time: Instant,
+    voice_jitter: JitterBuffer,
+    voice_drain_time: Instant,
     stream_audio_decoder: Option<StereoOpusDecoder>,
-    stream_audio_seq: u16,
+    stream_jitter: JitterBuffer,
+    stream_drain_time: Instant,
 }
 
 // ── Main blocking pipeline entry-point ───────────────────────────────────────
@@ -100,14 +173,8 @@ pub fn run_audio_pipeline(
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
     video_packet_tx: std::sync::mpsc::Sender<Vec<u8>>,
 ) {
-    // Set read timeout for non-blocking recv in the audio loop
-    if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(5))) {
-        let _ = event_tx.send(VoiceEvent::Error(format!(
-            "UDP set_read_timeout failed: {}",
-            e
-        )));
-        return;
-    }
+    // Socket timeout is set by the dedicated recv thread — not needed here.
+    // The audio loop uses channel-based recv (non-blocking try_recv).
 
     // ── Opus encoder ──────────────────────────────────────────────────────────
     let encoder = match OpusEncoder::new() {
@@ -171,7 +238,7 @@ pub fn run_audio_pipeline(
     // instead of concatenating, which caused choppy alternating 20ms chunks.
     let stream_playback_buf: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::new()));
 
-    const BUF_CAP: usize = FRAME_SIZE * 32;
+    const BUF_CAP: usize = FRAME_SIZE * 48; // ~1s at 48kHz, extra headroom for jitter buffer
 
     // ── Input (capture) stream ────────────────────────────────────────────────
     let input_device_opt = host.default_input_device();
@@ -281,8 +348,10 @@ pub fn run_audio_pipeline(
 
             if playback_resampler.passthrough {
                 // No resampling needed — output is already 48kHz
-                // Mix voice + stream audio by summing both buffers
-                let (mut voice_buf, mut stream_buf) = match (play_buf_out.lock(), stream_buf_out.lock()) {
+                // Mix voice + stream audio by summing both buffers.
+                // Use try_lock to avoid blocking the real-time audio thread —
+                // output silence if the recv loop is currently writing.
+                let (mut voice_buf, mut stream_buf) = match (play_buf_out.try_lock(), stream_buf_out.try_lock()) {
                     (Ok(v), Ok(s)) => (v, s),
                     _ => {
                         for sample in data.iter_mut() { *sample = 0.0; }
@@ -312,7 +381,7 @@ pub fn run_audio_pipeline(
             // Resample 48kHz → output_sample_rate
             // Drain from both voice and stream buffers, mix, then resample
             let needed_in = ((mono_frames_needed as f64) * playback_resampler.ratio + 2.0).ceil() as usize;
-            let input_48k: Vec<f64> = match (play_buf_out.lock(), stream_buf_out.lock()) {
+            let input_48k: Vec<f64> = match (play_buf_out.try_lock(), stream_buf_out.try_lock()) {
                 (Ok(mut voice_buf), Ok(mut stream_buf)) => {
                     let voice_take = needed_in.min(voice_buf.len());
                     let stream_take = needed_in.min(stream_buf.len());
@@ -385,13 +454,20 @@ pub fn run_audio_pipeline(
     let mut last_ping_time = Instant::now();
     let ping_interval = Duration::from_secs(3);
 
-    // Recv buffer sized for the largest packet type (video = 1445 > audio = 1437)
-    const VIDEO_PACKET_SIZE: usize = std::mem::size_of::<UdpVideoPacket>();
-    const RECV_BUF_SIZE: usize = if VIDEO_PACKET_SIZE > PACKET_TOTAL_SIZE { VIDEO_PACKET_SIZE } else { PACKET_TOTAL_SIZE };
-    let mut recv_buf = [0u8; RECV_BUF_SIZE];
-
-    // Video packets are forwarded to a dedicated thread via video_packet_tx.
-    // No video state is needed in this audio pipeline.
+    // ── Dedicated UDP recv thread ───────────────────────────────────────────
+    // Reads all incoming packets and dispatches by type into separate channels.
+    // This keeps the audio processing loop free from socket I/O and prevents
+    // video packet floods (100+ per keyframe) from stalling audio decode.
+    let (audio_pkt_tx, audio_pkt_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(256);
+    let recv_socket = Arc::clone(&socket);
+    let recv_video_tx = video_packet_tx.clone();
+    let recv_event_tx = event_tx.clone();
+    std::thread::Builder::new()
+        .name("decibell-udp-recv".to_string())
+        .spawn(move || {
+            udp_recv_thread(recv_socket, audio_pkt_tx, recv_video_tx, recv_event_tx);
+        })
+        .expect("spawn recv thread");
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     'main: loop {
@@ -520,28 +596,17 @@ pub fn run_audio_pipeline(
             last_ping_time = Instant::now();
         }
 
-        // 4. Receive UDP packets ───────────────────────────────────────────────
-        // Drain up to MAX_PACKETS_PER_LOOP packets per iteration. This must be
-        // high enough to keep up with video keyframes (which can be 100+ packets)
-        // plus ongoing delta frames, without letting the OS socket buffer fill.
-        const MAX_PACKETS_PER_LOOP: usize = 512;
-        let mut packets_this_loop = 0;
+        // 4. Drain audio packets from recv thread ─────────────────────────────
+        // The dedicated recv thread reads the UDP socket and dispatches packets
+        // by type. We only see audio/ping/keyframe-request packets here — video
+        // packets go directly to the video thread, never touching this loop.
         loop {
-            if packets_this_loop >= MAX_PACKETS_PER_LOOP { break; }
-            match socket.recv(&mut recv_buf) {
-                Ok(n) if n >= 1 => {
-                    packets_this_loop += 1;
-                    let packet_type = recv_buf[0];
-
-                    if packet_type == PACKET_TYPE_VIDEO && n == VIDEO_PACKET_SIZE {
-                        // ── Video packet → forward to dedicated video thread ─
-                        let _ = video_packet_tx.send(recv_buf[..n].to_vec());
-                    } else if n == PACKET_TOTAL_SIZE {
-                        // ── Audio or Ping packet ────────────────────────────
-                        if let Some(pkt) = UdpAudioPacket::from_bytes(&recv_buf[..n]) {
+            match audio_pkt_rx.try_recv() {
+                Ok(raw) => {
+                    if raw.len() == PACKET_TOTAL_SIZE {
+                        if let Some(pkt) = UdpAudioPacket::from_bytes(&raw) {
                             let username = pkt.sender_username();
 
-                            // Handle ping BEFORE sender_id filter (echoed pings have our own sender_id)
                             if pkt.packet_type == PACKET_TYPE_PING {
                                 let payload = pkt.payload_data();
                                 if payload.len() >= 8 {
@@ -556,176 +621,152 @@ pub fn run_audio_pipeline(
                             } else if username == sender_id {
                                 // Ignore our own reflected audio packets
                             } else if pkt.packet_type == PACKET_TYPE_AUDIO {
-                                // Sequence duplicate/out-of-order check
+                                let now = Instant::now();
                                 let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
                                     RemotePeer {
                                         decoder: OpusDecoder::new().unwrap_or_else(|_| {
                                             OpusDecoder::new().expect("OpusDecoder::new failed twice")
                                         }),
                                         speaking: SpeakingDetector::new(),
-                                        last_seq: pkt.sequence.wrapping_sub(1),
-                                        last_packet_time: Instant::now(),
+                                        last_packet_time: now,
+                                        voice_jitter: JitterBuffer::new(),
+                                        voice_drain_time: now,
                                         stream_audio_decoder: None,
-                                        stream_audio_seq: 0,
+                                        stream_jitter: JitterBuffer::new(),
+                                        stream_drain_time: now,
                                     }
                                 });
+                                peer.last_packet_time = now;
 
-                                let diff = pkt.sequence.wrapping_sub(peer.last_seq);
-                                if diff == 0 || diff > 32768 {
-                                    // skip stale/duplicate packet
+                                let raw_payload = pkt.payload_data();
+                                let (flags, opus_data) = if raw_payload.len() > 1 {
+                                    (raw_payload[0], &raw_payload[1..])
                                 } else {
-                                    peer.last_seq = pkt.sequence;
-                                    peer.last_packet_time = Instant::now();
+                                    (0u8, raw_payload)
+                                };
+                                let peer_muted = flags & FLAG_MUTED != 0;
+                                let peer_deafened = flags & FLAG_DEAFENED != 0;
+                                let _ = event_tx.send(VoiceEvent::UserStateChanged(
+                                    username.clone(), peer_muted, peer_deafened,
+                                ));
 
-                                    let raw_payload = pkt.payload_data();
-                                    let (flags, opus_data) = if raw_payload.len() > 1 {
-                                        (raw_payload[0], &raw_payload[1..])
-                                    } else {
-                                        (0u8, raw_payload)
-                                    };
-                                    let peer_muted = flags & FLAG_MUTED != 0;
-                                    let peer_deafened = flags & FLAG_DEAFENED != 0;
-
-                                    let _ = event_tx.send(VoiceEvent::UserStateChanged(
-                                        username.clone(),
-                                        peer_muted,
-                                        peer_deafened,
-                                    ));
-
-                                    let mut pcm = [0i16; FRAME_SIZE];
-                                    match peer.decoder.decode(opus_data, &mut pcm) {
-                                        Ok(_) => {
-                                            let rms = {
-                                                let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
-                                                (sum_sq / pcm.len() as f64).sqrt() as f32
-                                            };
-                                            let rms_db = if rms > 0.0 {
-                                                20.0 * (rms / 32768.0).log10()
-                                            } else {
-                                                -96.0
-                                            };
-                                            let above = !peer_muted && rms_db >= -50.0;
-                                            if let Some(state) = peer.speaking.process_threshold(above) {
-                                                let _ = event_tx.send(VoiceEvent::SpeakingChanged(
-                                                    username.clone(),
-                                                    state,
-                                                ));
-                                            }
-
-                                            if !deafened {
-                                                let gain = user_volumes.get(&username).copied().unwrap_or(1.0);
-                                                if gain != 1.0 {
-                                                    static GAIN_LOG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                                                    let count = GAIN_LOG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                                    if count < 3 || count % 500 == 0 {
-                                                        eprintln!("[pipeline] Applying gain={:.3} for user '{}' (volumes map has {} entries)",
-                                                            gain, username, user_volumes.len());
-                                                    }
-                                                }
-                                                let mut pbuf = playback_buf.lock().unwrap();
-                                                let remaining = BUF_CAP.saturating_sub(pbuf.len());
-                                                let take = FRAME_SIZE.min(remaining);
-                                                for &s in &pcm[..take] {
-                                                    let scaled = ((s as f32) * gain) as i32;
-                                                    pbuf.push_back(scaled.clamp(-32768, 32767) as i16);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            let _ = event_tx
-                                                .send(VoiceEvent::Error(format!("Decode error: {}", e)));
-                                        }
-                                    }
-                                }
+                                peer.voice_jitter.push(pkt.sequence, opus_data.to_vec());
                             } else if pkt.packet_type == PACKET_TYPE_STREAM_AUDIO {
-                                // ── Stream audio packet ────────────────────────
                                 if username != sender_id {
+                                    let now = Instant::now();
                                     let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
                                         RemotePeer {
                                             decoder: OpusDecoder::new().unwrap_or_else(|_| {
                                                 OpusDecoder::new().expect("OpusDecoder::new failed twice")
                                             }),
                                             speaking: SpeakingDetector::new(),
-                                            last_seq: 0,
-                                            last_packet_time: Instant::now(),
+                                            last_packet_time: now,
+                                            voice_jitter: JitterBuffer::new(),
+                                            voice_drain_time: now,
                                             stream_audio_decoder: None,
-                                            stream_audio_seq: 0,
+                                            stream_jitter: JitterBuffer::new(),
+                                            stream_drain_time: now,
                                         }
                                     });
+                                    peer.last_packet_time = now;
 
-                                    // Lazy-init stereo decoder on first stream audio packet
                                     if peer.stream_audio_decoder.is_none() {
                                         peer.stream_audio_decoder = StereoOpusDecoder::new().ok();
-                                        // Set seq so first packet is accepted (not skipped as diff==0)
-                                        peer.stream_audio_seq = pkt.sequence.wrapping_sub(1);
                                     }
 
-                                    let diff = pkt.sequence.wrapping_sub(peer.stream_audio_seq);
-                                    if diff == 0 || diff > 32768 {
-                                        // skip stale/duplicate
-                                    } else {
-                                        peer.stream_audio_seq = pkt.sequence;
-                                        peer.last_packet_time = Instant::now();
-
-                                        if let Some(ref mut decoder) = peer.stream_audio_decoder {
-                                            let opus_data = pkt.payload_data();
-                                            let mut pcm = [0i16; STEREO_FRAME_SAMPLES];
-                                            match decoder.decode(opus_data, &mut pcm) {
-                                                Ok(_) => {
-                                                    if !deafened {
-                                                        let mut sbuf = stream_playback_buf.lock().unwrap();
-                                                        let remaining = BUF_CAP.saturating_sub(sbuf.len());
-                                                        let take = STEREO_FRAME_SIZE.min(remaining);
-                                                        for i in 0..take {
-                                                            let l = pcm[i * 2] as i32;
-                                                            let r = pcm[i * 2 + 1] as i32;
-                                                            let mono = ((l + r) / 2) as i16;
-                                                            let scaled = ((mono as f32) * stream_volume) as i16;
-                                                            sbuf.push_back(scaled);
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("[stream-audio-recv] Decode error: {}", e);
-                                                }
-                                            }
-                                        }
-                                    }
+                                    peer.stream_jitter.push(pkt.sequence, pkt.payload_data().to_vec());
                                 }
                             }
                         }
-                    } else if packet_type == PACKET_TYPE_KEYFRAME_REQUEST {
-                        // Server relayed a PLI (keyframe request) from a watcher
+                    } else if !raw.is_empty() && raw[0] == PACKET_TYPE_KEYFRAME_REQUEST {
                         eprintln!("[recv] Keyframe request received, signaling encoder");
                         let _ = event_tx.send(VoiceEvent::KeyframeRequested);
-                    } else {
-                        // Log unrecognized packets to help diagnose receive issues
-                        static UNKNOWN_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                        let count = UNKNOWN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if count < 5 || count % 100 == 0 {
-                            eprintln!("[recv] Unknown packet: type={}, size={} (expected video={} or audio={})",
-                                packet_type, n, VIDEO_PACKET_SIZE, PACKET_TOTAL_SIZE);
-                        }
                     }
                 }
-                Ok(_) => {}
-                Err(ref e)
-                    if e.kind() == std::io::ErrorKind::WouldBlock
-                        || e.kind() == std::io::ErrorKind::TimedOut
-                        // Windows non-blocking sockets can return ERROR_IO_PENDING (997)
-                        // instead of WouldBlock — treat it the same way.
-                        || e.raw_os_error() == Some(997) =>
-                {
-                    break; // Socket buffer drained, continue main loop
-                }
-                Err(e) => {
-                    let _ = event_tx.send(VoiceEvent::Error(format!("UDP recv error: {}", e)));
-                    break;
-                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'main,
             }
         }
 
-        // 4b. (Video maintenance moved to dedicated video recv thread)
+        // 4b. Drain jitter buffers → decode → push to playback ──────────────
+        let drain_now = Instant::now();
+        let frame_dur = Duration::from_millis(20);
+        // Cap how far behind drain times can fall. Without this, a peer whose
+        // jitter buffer empties (e.g. network stutter) accumulates a large
+        // time debt, and when packets resume the loop fires dozens of PLC
+        // frames in a single burst — audible as a glitch.
+        let max_behind = Duration::from_millis(100);
+        for (username, peer) in remote_peers.iter_mut() {
+            if drain_now.duration_since(peer.voice_drain_time) > max_behind {
+                peer.voice_drain_time = drain_now - max_behind;
+            }
+            if drain_now.duration_since(peer.stream_drain_time) > max_behind {
+                peer.stream_drain_time = drain_now - max_behind;
+            }
+            // ── Voice jitter buffer ──
+            while drain_now.duration_since(peer.voice_drain_time) >= frame_dur {
+                peer.voice_drain_time += frame_dur;
+                let opus_opt = match peer.voice_jitter.drain() {
+                    Some(v) => v,
+                    None => break, // not ready or empty
+                };
+                let mut pcm = [0i16; FRAME_SIZE];
+                let decode_ok = match &opus_opt {
+                    Some(data) => peer.decoder.decode(data, &mut pcm).is_ok(),
+                    None => peer.decoder.decode(&[], &mut pcm).is_ok(), // PLC
+                };
+                if decode_ok {
+                    let rms = {
+                        let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
+                        (sum_sq / pcm.len() as f64).sqrt() as f32
+                    };
+                    let rms_db = if rms > 0.0 { 20.0 * (rms / 32768.0).log10() } else { -96.0 };
+                    if let Some(state) = peer.speaking.process_threshold(rms_db >= -50.0) {
+                        let _ = event_tx.send(VoiceEvent::SpeakingChanged(username.clone(), state));
+                    }
+                    if !deafened {
+                        let gain = user_volumes.get(username.as_str()).copied().unwrap_or(1.0);
+                        if let Ok(mut pbuf) = playback_buf.lock() {
+                            let remaining = BUF_CAP.saturating_sub(pbuf.len());
+                            let take = FRAME_SIZE.min(remaining);
+                            for &s in &pcm[..take] {
+                                let scaled = ((s as f32) * gain) as i32;
+                                pbuf.push_back(scaled.clamp(-32768, 32767) as i16);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Stream audio jitter buffer ──
+            if let Some(ref mut decoder) = peer.stream_audio_decoder {
+                while drain_now.duration_since(peer.stream_drain_time) >= frame_dur {
+                    peer.stream_drain_time += frame_dur;
+                    let opus_opt = match peer.stream_jitter.drain() {
+                        Some(v) => v,
+                        None => break,
+                    };
+                    let mut pcm = [0i16; STEREO_FRAME_SAMPLES];
+                    let decode_ok = match &opus_opt {
+                        Some(data) => decoder.decode(data, &mut pcm).is_ok(),
+                        None => decoder.decode(&[], &mut pcm).is_ok(), // PLC
+                    };
+                    if decode_ok && !deafened {
+                        if let Ok(mut sbuf) = stream_playback_buf.lock() {
+                            let remaining = BUF_CAP.saturating_sub(sbuf.len());
+                            let take = STEREO_FRAME_SIZE.min(remaining);
+                            for i in 0..take {
+                                let l = pcm[i * 2] as i32;
+                                let r = pcm[i * 2 + 1] as i32;
+                                let mono = ((l + r) / 2) as i16;
+                                let scaled = ((mono as f32) * stream_volume) as i16;
+                                sbuf.push_back(scaled);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // 5. Clean up stale remote peers (no packet for > 5s) ─────────────────
         let stale_timeout = Duration::from_secs(5);
@@ -755,6 +796,81 @@ pub fn run_audio_pipeline(
     }
 
     // Streams are dropped here, which stops CPAL.
+    // Dropping audio_pkt_rx disconnects the channel, causing the recv thread to exit.
+    drop(audio_pkt_rx);
     drop(output_stream);
     drop(input_stream_opt);
+}
+
+// ── Dedicated UDP receive thread ─────────────────────────────────────────────
+//
+// Reads all incoming packets from the shared UDP socket and dispatches them
+// by type into separate channels. This thread does NO processing — it just
+// classifies and forwards, keeping the socket buffer drained at all times.
+//
+// Architecture (matching Discord's model):
+//   recv thread → audio channel → audio processing thread
+//                → video channel → video reassembly thread
+
+fn udp_recv_thread(
+    socket: Arc<UdpSocket>,
+    audio_tx: std::sync::mpsc::SyncSender<Vec<u8>>,
+    video_tx: std::sync::mpsc::Sender<Vec<u8>>,
+    event_tx: std::sync::mpsc::Sender<VoiceEvent>,
+) {
+    const VIDEO_PACKET_SIZE: usize = std::mem::size_of::<UdpVideoPacket>();
+    const RECV_BUF_SIZE: usize = if VIDEO_PACKET_SIZE > PACKET_TOTAL_SIZE {
+        VIDEO_PACKET_SIZE
+    } else {
+        PACKET_TOTAL_SIZE
+    };
+
+    // Short timeout so we notice channel disconnection promptly
+    if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(1))) {
+        let _ = event_tx.send(VoiceEvent::Error(format!("recv thread: set_read_timeout: {}", e)));
+        return;
+    }
+
+    let mut buf = [0u8; RECV_BUF_SIZE];
+
+    loop {
+        match socket.recv(&mut buf) {
+            Ok(n) if n >= 1 => {
+                let packet_type = buf[0];
+
+                if packet_type == PACKET_TYPE_VIDEO && n == VIDEO_PACKET_SIZE {
+                    // Video → video reassembly thread
+                    if video_tx.send(buf[..n].to_vec()).is_err() {
+                        break; // video thread gone
+                    }
+                } else {
+                    // Audio, ping, stream audio, keyframe request → audio thread
+                    match audio_tx.try_send(buf[..n].to_vec()) {
+                        Ok(()) => {}
+                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                            // Audio thread is behind — drop this packet.
+                            // The jitter buffer's PLC will smooth the gap.
+                        }
+                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                            break; // audio thread exited
+                        }
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut
+                    || e.raw_os_error() == Some(997) =>
+            {
+                // No data available — loop back to check for more
+            }
+            Err(e) => {
+                eprintln!("[recv-thread] Socket error: {}", e);
+                break;
+            }
+        }
+    }
+
+    eprintln!("[recv-thread] Exiting");
 }

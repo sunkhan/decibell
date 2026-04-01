@@ -19,9 +19,13 @@ pub struct OpusEncoder {
 
 impl OpusEncoder {
     pub fn new() -> Result<Self, String> {
-        let encoder =
+        let mut encoder =
             Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::Voip)
                 .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
+        // Enable in-band FEC so the decoder can recover from packet loss.
+        // The ~10% bitrate overhead is negligible for voice.
+        let _ = encoder.set_inband_fec(true);
+        let _ = encoder.set_packet_loss_perc(10);
         Ok(OpusEncoder { encoder })
     }
 
@@ -56,6 +60,8 @@ impl StereoOpusEncoder {
         encoder
             .set_bitrate(audiopus::Bitrate::BitsPerSecond(bitrate_bps))
             .map_err(|e| format!("Failed to set bitrate: {}", e))?;
+        let _ = encoder.set_inband_fec(true);
+        let _ = encoder.set_packet_loss_perc(10);
         Ok(StereoOpusEncoder { encoder })
     }
 
