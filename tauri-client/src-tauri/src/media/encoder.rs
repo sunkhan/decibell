@@ -134,7 +134,7 @@ fn extract_avcc_description(annexb_data: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Persistent scaler context for BGRA/RGBA → NV12 conversion.
+/// Persistent scaler context for pixel format conversion / scaling.
 /// Reused across frames to avoid re-creating the FFmpeg SwsContext each time.
 struct SwsScaler {
     ctx: ffmpeg_next::software::scaling::Context,
@@ -142,6 +142,7 @@ struct SwsScaler {
     src_w: u32,
     src_h: u32,
     src_fmt: ffmpeg_next::format::Pixel,
+    dst_fmt: ffmpeg_next::format::Pixel,
 }
 
 impl SwsScaler {
@@ -151,15 +152,16 @@ impl SwsScaler {
         src_fmt: ffmpeg_next::format::Pixel,
         dst_w: u32,
         dst_h: u32,
+        dst_fmt: ffmpeg_next::format::Pixel,
     ) -> Result<Self, String> {
         let ctx = ffmpeg_next::software::scaling::Context::get(
             src_fmt, src_w, src_h,
-            ffmpeg_next::format::Pixel::NV12, dst_w, dst_h,
-            ffmpeg_next::software::scaling::Flags::BILINEAR,
+            dst_fmt, dst_w, dst_h,
+            ffmpeg_next::software::scaling::Flags::FAST_BILINEAR,
         )
         .map_err(|e| format!("sws_getContext: {}", e))?;
         let src_frame = ffmpeg_next::frame::Video::new(src_fmt, src_w, src_h);
-        Ok(Self { ctx, src_frame, src_w, src_h, src_fmt })
+        Ok(Self { ctx, src_frame, src_w, src_h, src_fmt, dst_fmt })
     }
 
     fn matches(&self, src_w: u32, src_h: u32, src_fmt: ffmpeg_next::format::Pixel) -> bool {
@@ -178,8 +180,29 @@ pub struct H264Encoder {
     /// Persistent NV12 frame buffer — reused across encode calls to avoid
     /// allocating a new frame every time.
     nv12_frame: ffmpeg_next::frame::Video,
-    /// Persistent scaler for BGRA→NV12 conversion (Linux).
+    /// Persistent scaler for BGRA→NV12 conversion (fallback for non-NVENC).
     scaler: Option<SwsScaler>,
+    /// Whether the encoder accepts BGRA input directly (h264_nvenc).
+    /// When true, NVENC handles BGRA→NV12 conversion on the GPU, avoiding
+    /// expensive CPU-based sws_scale color conversion.
+    supports_bgra_input: bool,
+    /// Persistent BGRA frame buffer for direct BGRA input path.
+    bgra_frame: Option<ffmpeg_next::frame::Video>,
+    /// Persistent scaler for BGRA→BGRA scaling (used when source resolution
+    /// differs from encoder resolution on the NVENC BGRA path).
+    bgra_scaler: Option<SwsScaler>,
+
+    /// NVIDIA CUDA: FFmpeg hw_device_ctx (AVBufferRef*). When set, NVENC
+    /// reads frames from GPU memory instead of system memory.
+    #[cfg(target_os = "linux")]
+    cuda_hw_device_ref: *mut std::ffi::c_void,
+    /// NVIDIA CUDA: hw_frames_ctx (AVBufferRef*) for frame pool.
+    #[cfg(target_os = "linux")]
+    cuda_hw_frames_ref: *mut std::ffi::c_void,
+
+    /// VA-API: whether this encoder instance uses h264_vaapi with HW frames.
+    #[cfg(target_os = "linux")]
+    is_vaapi_hw: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -225,11 +248,20 @@ impl H264Encoder {
         // packet loss).
         let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
         unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
-        context.set_format(ffmpeg_next::format::Pixel::NV12);
         context.set_gop(config.fps * config.keyframe_interval_secs);
         // Disable B-frames for real-time streaming — B-frames require reordering
         // which adds latency and can cause artifacts with simple decoders.
         context.set_max_b_frames(0);
+
+        // NVENC accepts BGRA directly — the GPU handles BGRA→NV12 conversion
+        // internally, eliminating expensive CPU-based sws_scale.
+        let supports_bgra_input = codec_name == "h264_nvenc";
+
+        if supports_bgra_input {
+            context.set_format(ffmpeg_next::format::Pixel::BGRA);
+        } else {
+            context.set_format(ffmpeg_next::format::Pixel::NV12);
+        }
 
         // Signal BT.709 colorspace in SPS VUI so the decoder uses the correct
         // YUV→RGB matrix. Without this, decoders may assume BT.601 and produce
@@ -267,11 +299,20 @@ impl H264Encoder {
             .open_with(opts)
             .map_err(|e| format!("Open encoder: {}", e))?;
 
-        eprintln!("[encoder] H.264 encoder opened: {} — {}x{} @ {}fps, {}kbps", codec_name, config.width, config.height, config.fps, config.bitrate_kbps);
+        let input_fmt = if supports_bgra_input { "BGRA (GPU convert)" } else { "NV12" };
+        eprintln!("[encoder] H.264 encoder opened: {} — {}x{} @ {}fps, {}kbps, input={}", codec_name, config.width, config.height, config.fps, config.bitrate_kbps, input_fmt);
 
         let nv12_frame = ffmpeg_next::frame::Video::new(
             ffmpeg_next::format::Pixel::NV12, config.width, config.height,
         );
+
+        let bgra_frame = if supports_bgra_input {
+            Some(ffmpeg_next::frame::Video::new(
+                ffmpeg_next::format::Pixel::BGRA, config.width, config.height,
+            ))
+        } else {
+            None
+        };
 
         Ok(H264Encoder {
             encoder,
@@ -282,6 +323,15 @@ impl H264Encoder {
             target_height: config.height,
             nv12_frame,
             scaler: None,
+            supports_bgra_input,
+            bgra_frame,
+            bgra_scaler: None,
+            #[cfg(target_os = "linux")]
+            cuda_hw_device_ref: std::ptr::null_mut(),
+            #[cfg(target_os = "linux")]
+            cuda_hw_frames_ref: std::ptr::null_mut(),
+            #[cfg(target_os = "linux")]
+            is_vaapi_hw: false,
         })
     }
 
@@ -300,6 +350,245 @@ impl H264Encoder {
             }
         }
         Err("No hardware H.264 encoder found. Install NVIDIA drivers (NVENC) or ensure VA-API/Media Foundation is available.".to_string())
+    }
+
+    /// Initialize CUDA hardware frame encoding for NVENC.
+    /// After this, `encode_cuda_frame()` accepts CUdeviceptr from GPU memory.
+    #[cfg(target_os = "linux")]
+    pub fn init_cuda_hw(&mut self) -> Result<(), String> {
+        use ffmpeg_next::sys::*;
+
+        unsafe {
+            // Create CUDA hw_device_ctx
+            let mut hw_device_ref: *mut AVBufferRef = std::ptr::null_mut();
+            let rc = av_hwdevice_ctx_create(
+                &mut hw_device_ref,
+                AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                0,
+            );
+            if rc < 0 || hw_device_ref.is_null() {
+                return Err(format!("av_hwdevice_ctx_create(CUDA) failed: {}", rc));
+            }
+
+            // Create hw_frames_ctx
+            let frames_ref = av_hwframe_ctx_alloc(hw_device_ref);
+            if frames_ref.is_null() {
+                av_buffer_unref(&mut hw_device_ref);
+                return Err("av_hwframe_ctx_alloc(CUDA) failed".into());
+            }
+
+            let frames_ctx = (*frames_ref).data as *mut AVHWFramesContext;
+            (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_CUDA;
+            // NVENC accepts BGRA as sw_format — GPU handles BGRA->NV12 internally
+            (*frames_ctx).sw_format = if self.supports_bgra_input {
+                AVPixelFormat::AV_PIX_FMT_BGRA
+            } else {
+                AVPixelFormat::AV_PIX_FMT_NV12
+            };
+            (*frames_ctx).width = self.target_width as libc::c_int;
+            (*frames_ctx).height = self.target_height as libc::c_int;
+            (*frames_ctx).initial_pool_size = 4;
+
+            let rc = av_hwframe_ctx_init(frames_ref);
+            if rc < 0 {
+                let mut frames_ref_mut = frames_ref;
+                av_buffer_unref(&mut frames_ref_mut);
+                av_buffer_unref(&mut hw_device_ref);
+                return Err(format!("av_hwframe_ctx_init(CUDA) failed: {}", rc));
+            }
+
+            self.cuda_hw_device_ref = hw_device_ref as *mut std::ffi::c_void;
+            self.cuda_hw_frames_ref = frames_ref as *mut std::ffi::c_void;
+
+            eprintln!("[encoder] CUDA hw_frames_ctx initialized ({}x{})",
+                self.target_width, self.target_height);
+            Ok(())
+        }
+    }
+
+    /// Encode a frame from CUDA device memory (NVIDIA zero-copy path).
+    /// `dev_ptr` is a CUdeviceptr to BGRA pixel data in GPU-linear memory.
+    #[cfg(target_os = "linux")]
+    pub fn encode_cuda_frame(
+        &mut self,
+        dev_ptr: u64,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<EncodedFrame>, String> {
+        use ffmpeg_next::sys::*;
+
+        if self.cuda_hw_frames_ref.is_null() {
+            return Err("CUDA encoding not initialized".into());
+        }
+
+        unsafe {
+            // Allocate a CUDA AVFrame from the hw_frames pool
+            let frame = av_frame_alloc();
+            if frame.is_null() {
+                return Err("av_frame_alloc failed".into());
+            }
+
+            (*frame).format = AVPixelFormat::AV_PIX_FMT_CUDA as libc::c_int;
+            (*frame).width = width as libc::c_int;
+            (*frame).height = height as libc::c_int;
+            (*frame).hw_frames_ctx = av_buffer_ref(self.cuda_hw_frames_ref as *const AVBufferRef);
+
+            let rc = av_hwframe_get_buffer(
+                self.cuda_hw_frames_ref as *mut AVBufferRef, frame, 0,
+            );
+            if rc < 0 {
+                av_frame_free(&mut (frame as *mut AVFrame));
+                return Err(format!("av_hwframe_get_buffer(CUDA) failed: {}", rc));
+            }
+
+            // Point the CUDA frame's data[0] to our CUdeviceptr
+            (*frame).data[0] = dev_ptr as *mut u8;
+            let bpp: u32 = if self.supports_bgra_input { 4 } else { 1 }; // BGRA=4, NV12 Y plane=1
+            (*frame).linesize[0] = (width * bpp) as libc::c_int;
+
+            // Set PTS and keyframe flags
+            (*frame).pts = self.frame_count as i64;
+            if self.frame_count % self.keyframe_interval == 0 || self.force_next_keyframe {
+                (*frame).pict_type = AVPictureType::AV_PICTURE_TYPE_I;
+                self.force_next_keyframe = false;
+            } else {
+                (*frame).pict_type = AVPictureType::AV_PICTURE_TYPE_NONE;
+            }
+            self.frame_count += 1;
+
+            // Wrap in ffmpeg_next for send_frame
+            let wrapped = ffmpeg_next::frame::Video::wrap(frame);
+
+            let send_result = self.encoder.send_frame(&wrapped);
+            match send_result {
+                Ok(()) => {}
+                Err(ffmpeg_next::Error::Other { errno: ffmpeg_next::error::EAGAIN }) => {
+                    let _ = self.receive_one_packet();
+                    self.encoder.send_frame(&wrapped)
+                        .map_err(|e| format!("Send CUDA frame (retry): {}", e))?;
+                }
+                Err(e) => {
+                    return Err(format!("Send CUDA frame: {}", e));
+                }
+            }
+
+            Ok(self.receive_one_packet())
+        }
+    }
+
+    /// Check if CUDA hw encoding is ready.
+    #[cfg(target_os = "linux")]
+    pub fn has_cuda_hw(&self) -> bool {
+        !self.cuda_hw_frames_ref.is_null()
+    }
+
+    /// Create a new H264Encoder specifically for VA-API with hw_device_ctx.
+    /// Used when GPU context detected VAAPI backend (AMD/Intel).
+    #[cfg(target_os = "linux")]
+    pub fn new_vaapi(
+        config: &EncoderConfig,
+        vaapi_device_ref: *mut ffmpeg_next::sys::AVBufferRef,
+        vaapi_frames_ref: *mut ffmpeg_next::sys::AVBufferRef,
+    ) -> Result<Self, String> {
+        use ffmpeg_next::sys::*;
+
+        ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
+
+        let codec = ffmpeg_next::encoder::find_by_name("h264_vaapi")
+            .ok_or("h264_vaapi encoder not found")?;
+
+        let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
+            .encoder().video()
+            .map_err(|e| format!("VAAPI encoder context: {}", e))?;
+
+        context.set_width(config.width);
+        context.set_height(config.height);
+        context.set_frame_rate(Some(ffmpeg_next::Rational::new(config.fps as i32, 1)));
+        context.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
+        context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
+        context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
+        context.set_gop(config.fps * config.keyframe_interval_secs);
+        context.set_max_b_frames(0);
+        context.set_format(ffmpeg_next::format::Pixel::VAAPI);
+
+        // Set hw_device_ctx and hw_frames_ctx on the raw AVCodecContext
+        unsafe {
+            let ctx_ptr = context.as_mut_ptr();
+            (*ctx_ptr).hw_device_ctx = av_buffer_ref(vaapi_device_ref);
+            (*ctx_ptr).hw_frames_ctx = av_buffer_ref(vaapi_frames_ref);
+        }
+
+        let mut opts = ffmpeg_next::Dictionary::new();
+        opts.set("rc_mode", "CBR");
+
+        let encoder = context.open_with(opts)
+            .map_err(|e| format!("Open h264_vaapi encoder: {}", e))?;
+
+        eprintln!("[encoder] h264_vaapi opened: {}x{} @ {}fps, {}kbps (DMA-BUF zero-copy)",
+            config.width, config.height, config.fps, config.bitrate_kbps);
+
+        // NV12 frame is unused in VAAPI path but required by struct
+        let nv12_frame = ffmpeg_next::frame::Video::new(
+            ffmpeg_next::format::Pixel::NV12, config.width, config.height,
+        );
+
+        Ok(H264Encoder {
+            encoder,
+            frame_count: 0,
+            keyframe_interval: (config.fps * config.keyframe_interval_secs) as u64,
+            force_next_keyframe: false,
+            target_width: config.width,
+            target_height: config.height,
+            nv12_frame,
+            scaler: None,
+            supports_bgra_input: false,
+            bgra_frame: None,
+            bgra_scaler: None,
+            #[cfg(target_os = "linux")]
+            cuda_hw_device_ref: std::ptr::null_mut(),
+            #[cfg(target_os = "linux")]
+            cuda_hw_frames_ref: std::ptr::null_mut(),
+            #[cfg(target_os = "linux")]
+            is_vaapi_hw: true,
+        })
+    }
+
+    /// Encode a VA-API hardware frame (AMD/Intel zero-copy path).
+    /// The `vaapi_frame` must have format=VAAPI with a valid VASurface.
+    #[cfg(target_os = "linux")]
+    pub fn encode_vaapi_frame(
+        &mut self,
+        vaapi_frame: &mut ffmpeg_next::frame::Video,
+    ) -> Result<Option<EncodedFrame>, String> {
+        vaapi_frame.set_pts(Some(self.frame_count as i64));
+
+        if self.frame_count % self.keyframe_interval == 0 || self.force_next_keyframe {
+            vaapi_frame.set_kind(ffmpeg_next::picture::Type::I);
+            self.force_next_keyframe = false;
+        } else {
+            vaapi_frame.set_kind(ffmpeg_next::picture::Type::None);
+        }
+        self.frame_count += 1;
+
+        match self.encoder.send_frame(vaapi_frame) {
+            Ok(()) => {}
+            Err(ffmpeg_next::Error::Other { errno: ffmpeg_next::error::EAGAIN }) => {
+                let _ = self.receive_one_packet();
+                self.encoder.send_frame(vaapi_frame)
+                    .map_err(|e| format!("Send VAAPI frame (retry): {}", e))?;
+            }
+            Err(e) => return Err(format!("Send VAAPI frame: {}", e)),
+        }
+
+        Ok(self.receive_one_packet())
+    }
+
+    /// Check if this encoder uses VA-API hardware frames.
+    #[cfg(target_os = "linux")]
+    pub fn is_vaapi_hw(&self) -> bool {
+        self.is_vaapi_hw
     }
 
     /// Receive one encoded packet and convert to AVCC format.
@@ -372,9 +661,9 @@ impl H264Encoder {
         self.prepare_and_encode()
     }
 
-    /// Encode a raw BGRA/RGBA frame — converts to NV12 via sws_scale directly
-    /// into the encoder's frame buffer (no intermediate allocation).
-    /// Used by Linux PipeWire capture which outputs BGRA.
+    /// Encode a raw BGRA/RGBA frame.
+    /// - NVENC path: sends BGRA directly to the GPU encoder (no CPU color conversion).
+    /// - Fallback path: converts to NV12 via CPU sws_scale (for VA-API etc.).
     pub fn encode_bgra_frame(
         &mut self,
         rgba_data: &[u8],
@@ -383,22 +672,27 @@ impl H264Encoder {
         stride: usize,
         is_bgra: bool,
     ) -> Result<Option<EncodedFrame>, String> {
+        // Fast path: NVENC accepts BGRA directly, GPU handles color conversion
+        if self.supports_bgra_input && is_bgra {
+            return self.encode_bgra_direct(rgba_data, src_width, src_height, stride);
+        }
+
+        // Fallback: CPU-based BGRA→NV12 conversion via sws_scale
         let src_fmt = if is_bgra {
             ffmpeg_next::format::Pixel::BGRA
         } else {
             ffmpeg_next::format::Pixel::RGBA
         };
 
-        // Rebuild scaler if source dimensions or format changed
         if self.scaler.as_ref().map_or(true, |s| !s.matches(src_width, src_height, src_fmt)) {
             self.scaler = Some(SwsScaler::new(
                 src_width, src_height, src_fmt,
                 self.target_width, self.target_height,
+                ffmpeg_next::format::Pixel::NV12,
             )?);
         }
         let sws = self.scaler.as_mut().unwrap();
 
-        // Copy source data into the scaler's persistent src_frame (one copy)
         let src_stride = sws.src_frame.stride(0);
         if stride == src_stride {
             let copy_size = (src_height as usize) * stride;
@@ -413,10 +707,92 @@ impl H264Encoder {
             }
         }
 
-        // sws_scale: BGRA→NV12, writes directly into self.nv12_frame (zero intermediate alloc)
         sws.ctx.run(&sws.src_frame, &mut self.nv12_frame).expect("sws_scale");
-
         self.prepare_and_encode()
+    }
+
+    /// NVENC fast path: send BGRA frames directly to the encoder.
+    /// The GPU handles BGRA→NV12 conversion internally.
+    fn encode_bgra_direct(
+        &mut self,
+        data: &[u8],
+        src_w: u32,
+        src_h: u32,
+        stride: usize,
+    ) -> Result<Option<EncodedFrame>, String> {
+        let frame = self.bgra_frame.as_mut().unwrap();
+
+        if src_w == self.target_width && src_h == self.target_height {
+            // No scaling needed — single copy into encoder frame
+            let dst_stride = frame.stride(0);
+            if stride == dst_stride {
+                let size = src_h as usize * stride;
+                frame.data_mut(0)[..size].copy_from_slice(&data[..size]);
+            } else {
+                let row_bytes = src_w as usize * 4;
+                for row in 0..src_h as usize {
+                    let src_off = row * stride;
+                    let dst_off = row * dst_stride;
+                    frame.data_mut(0)[dst_off..dst_off + row_bytes]
+                        .copy_from_slice(&data[src_off..src_off + row_bytes]);
+                }
+            }
+        } else {
+            // Scale BGRA→BGRA on CPU, then GPU converts to NV12
+            if self.bgra_scaler.as_ref().map_or(true, |s| !s.matches(src_w, src_h, ffmpeg_next::format::Pixel::BGRA)) {
+                self.bgra_scaler = Some(SwsScaler::new(
+                    src_w, src_h, ffmpeg_next::format::Pixel::BGRA,
+                    self.target_width, self.target_height,
+                    ffmpeg_next::format::Pixel::BGRA,
+                )?);
+            }
+            let sws = self.bgra_scaler.as_mut().unwrap();
+
+            let src_stride_sws = sws.src_frame.stride(0);
+            if stride == src_stride_sws {
+                let size = src_h as usize * stride;
+                sws.src_frame.data_mut(0)[..size].copy_from_slice(&data[..size]);
+            } else {
+                let row_bytes = src_w as usize * 4;
+                for row in 0..src_h as usize {
+                    let src_off = row * stride;
+                    let dst_off = row * src_stride_sws;
+                    sws.src_frame.data_mut(0)[dst_off..dst_off + row_bytes]
+                        .copy_from_slice(&data[src_off..src_off + row_bytes]);
+                }
+            }
+
+            sws.ctx.run(&sws.src_frame, frame).expect("sws_scale bgra");
+        }
+
+        self.prepare_and_encode_bgra()
+    }
+
+    /// Set PTS, keyframe flags, and send the BGRA frame to the NVENC encoder.
+    fn prepare_and_encode_bgra(&mut self) -> Result<Option<EncodedFrame>, String> {
+        let frame = self.bgra_frame.as_mut().unwrap();
+        frame.set_pts(Some(self.frame_count as i64));
+
+        if self.frame_count % self.keyframe_interval == 0 || self.force_next_keyframe {
+            frame.set_kind(ffmpeg_next::picture::Type::I);
+            self.force_next_keyframe = false;
+        } else {
+            frame.set_kind(ffmpeg_next::picture::Type::None);
+        }
+
+        self.frame_count += 1;
+
+        match self.encoder.send_frame(self.bgra_frame.as_ref().unwrap()) {
+            Ok(()) => {}
+            Err(ffmpeg_next::Error::Other { errno: ffmpeg_next::error::EAGAIN }) => {
+                let _ = self.receive_one_packet();
+                self.encoder.send_frame(self.bgra_frame.as_ref().unwrap())
+                    .map_err(|e| format!("Send frame (retry): {}", e))?;
+            }
+            Err(e) => return Err(format!("Send frame: {}", e)),
+        }
+
+        Ok(self.receive_one_packet())
     }
 
     /// Set PTS, keyframe flags, and send the prepared nv12_frame to the encoder.
@@ -477,5 +853,26 @@ impl H264Encoder {
             }
         }
         frames
+    }
+}
+
+impl Drop for H264Encoder {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            use ffmpeg_next::sys::*;
+            unsafe {
+                if !self.cuda_hw_frames_ref.is_null() {
+                    let mut ptr = self.cuda_hw_frames_ref as *mut AVBufferRef;
+                    av_buffer_unref(&mut ptr);
+                    self.cuda_hw_frames_ref = std::ptr::null_mut();
+                }
+                if !self.cuda_hw_device_ref.is_null() {
+                    let mut ptr = self.cuda_hw_device_ref as *mut AVBufferRef;
+                    av_buffer_unref(&mut ptr);
+                    self.cuda_hw_device_ref = std::ptr::null_mut();
+                }
+            }
+        }
     }
 }
