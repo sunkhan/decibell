@@ -103,6 +103,8 @@ pub async fn start_screen_share(
     // Start video pipeline
     let video_engine = VideoEngine::start(
         capture_output.receiver,
+        #[cfg(target_os = "linux")]
+        capture_output.gpu_receiver,
         socket.clone(),
         sender_id.clone(),
         encoder_config,

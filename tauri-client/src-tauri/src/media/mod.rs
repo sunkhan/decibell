@@ -416,6 +416,8 @@ impl VideoEngine {
     /// allowing the event bridge to send thumbnails without locking AppState.
     pub fn start(
         frame_rx: std::sync::mpsc::Receiver<capture::RawFrame>,
+        #[cfg(target_os = "linux")]
+        gpu_frame_rx: Option<std::sync::mpsc::Receiver<capture::DmaBufFrame>>,
         socket: Arc<UdpSocket>,
         sender_id: String,
         config: encoder::EncoderConfig,
@@ -433,7 +435,7 @@ impl VideoEngine {
                 video_pipeline::run_video_send_pipeline(
                     frame_rx,
                     #[cfg(target_os = "linux")]
-                    None, // GPU frame receiver wired in Task 7
+                    gpu_frame_rx,
                     control_rx,
                     event_tx,
                     socket,
