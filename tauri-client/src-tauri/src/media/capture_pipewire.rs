@@ -63,7 +63,7 @@ pub async fn start_capture(
             known_dims
         };
 
-        Ok(CaptureOutput { receiver: rx, width, height })
+        Ok(CaptureOutput { receiver: rx, width, height, gpu_receiver: None })
     })
     .await
     .map_err(|e| format!("Join error: {}", e))??;
@@ -301,7 +301,9 @@ struct CaptureData {
     tx: SyncSender<RawFrame>,
     target_width: u32,
     target_height: u32,
+    target_fps: u32,
     frame_count: u64,
+    last_capture_us: u64,
     start: Instant,
     quit_mainloop: pw::main_loop::MainLoopWeak,
     /// Oneshot sender for resolved dimensions (used when target is 0x0 "source" quality).
@@ -340,7 +342,9 @@ fn pipewire_capture_loop(
         tx,
         target_width,
         target_height,
+        target_fps: config.target_fps,
         frame_count: 0,
+        last_capture_us: 0,
         start: Instant::now(),
         quit_mainloop: mainloop.downgrade(),
         dim_tx: Some(dim_tx),
@@ -425,6 +429,18 @@ fn pipewire_capture_loop(
                 return;
             };
 
+            // Rate-limit: skip frames that arrive faster than target FPS.
+            // This avoids the expensive to_vec() copy (~8MB) on every compositor
+            // frame, which would otherwise block the PipeWire thread and steal
+            // CPU/memory bandwidth from the game.
+            let now_us = data.start.elapsed().as_micros() as u64;
+            let frame_interval_us = 1_000_000 / data.target_fps.max(1) as u64;
+            if now_us.saturating_sub(data.last_capture_us) < frame_interval_us {
+                // Drop buffer back to PipeWire without copying — keeps compositor flowing
+                drop(buffer);
+                return;
+            }
+
             let datas = buffer.datas_mut();
             if datas.is_empty() {
                 return;
@@ -432,7 +448,6 @@ fn pipewire_capture_loop(
 
             let d = &mut datas[0];
 
-            // Extract chunk metadata before taking mutable borrow for data
             let chunk_size = d.chunk().size() as usize;
             let stride = d.chunk().stride() as usize;
             let chunk_offset = d.chunk().offset() as usize;
@@ -458,8 +473,6 @@ fn pipewire_capture_loop(
                 );
             }
 
-            // Send raw pixel data — color conversion happens on the encoder thread
-            // to keep the PipeWire callback fast and avoid blocking the compositor.
             let is_bgra = fmt == spa::param::video::VideoFormat::BGRA
                 || fmt == spa::param::video::VideoFormat::BGRx;
             let is_rgba = fmt == spa::param::video::VideoFormat::RGBA
@@ -484,12 +497,16 @@ fn pipewire_capture_loop(
                 height: src_h as u32,
                 stride,
                 pixel_format,
-                timestamp_us: data.start.elapsed().as_micros() as u64,
+                timestamp_us: now_us,
             };
 
             match data.tx.try_send(frame) {
-                Ok(()) => {}
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+                Ok(()) => {
+                    data.last_capture_us = now_us;
+                }
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    // Encoder is behind — don't update timestamp so we retry next callback
+                }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                     eprintln!("[capture] Frame channel closed, stopping");
                     if let Some(ml) = data.quit_mainloop.upgrade() {

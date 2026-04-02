@@ -47,6 +47,25 @@ pub struct RawFrame {
     pub timestamp_us: u64,
 }
 
+/// GPU-resident frame from PipeWire DMA-BUF capture (Linux only).
+/// The fd is a dup'd DMA-BUF file descriptor — the kernel keeps the
+/// underlying buffer alive via refcount even after PipeWire reclaims it.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct DmaBufFrame {
+    /// DMA-BUF file descriptor (dup'd from PipeWire, closed on drop)
+    pub fd: std::os::fd::OwnedFd,
+    pub width: u32,
+    pub height: u32,
+    /// Row stride in bytes
+    pub stride: u32,
+    /// DRM fourcc format code (e.g. DRM_FORMAT_ARGB8888 for BGRA)
+    pub drm_format: u32,
+    /// DRM format modifier (DRM_FORMAT_MOD_INVALID if unknown)
+    pub modifier: u64,
+    pub timestamp_us: u64,
+}
+
 /// Raw audio frame from platform audio capture.
 #[derive(Debug)]
 pub struct AudioFrame {
@@ -61,6 +80,9 @@ pub struct CaptureOutput {
     pub receiver: std::sync::mpsc::Receiver<RawFrame>,
     pub width: u32,
     pub height: u32,
+    /// Linux-only: optional DMA-BUF frame receiver for zero-copy GPU encoding.
+    #[cfg(target_os = "linux")]
+    pub gpu_receiver: Option<std::sync::mpsc::Receiver<DmaBufFrame>>,
 }
 
 /// List available capture sources (screens and windows).
