@@ -11,6 +11,7 @@
 //! - `GpuContext::fill_drm_frame()` -> AMD/Intel: fills AVDRMFrameDescriptor for VA-API
 //! - `GpuContext::backend()` -> which GPU backend is active
 
+use std::collections::HashMap;
 use libloading::Library;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -174,6 +175,11 @@ pub enum GpuBackendType {
 // NVIDIA CUDA backend
 // ────────────────────────────────────────────────────────────────────────────
 
+struct CachedImport {
+    egl_image: khronos_egl::Image,
+    cu_resource: CUgraphicsResource,
+}
+
 struct CudaBackend {
     cuda: CudaApi,
     cu_ctx: CUcontext,
@@ -184,6 +190,9 @@ struct CudaBackend {
     gl_tex: u32,
     /// Reusable CUDA linear buffer: (ptr, width, height)
     dev_buf: Option<(CUdeviceptr, u32, u32)>,
+    /// Cache of EGL images + CUDA registrations, keyed by DMA-BUF fd.
+    /// PipeWire reuses fds from a small pool, so this avoids re-importing every frame.
+    import_cache: HashMap<i32, CachedImport>,
 }
 
 impl CudaBackend {
@@ -320,11 +329,15 @@ impl CudaBackend {
             gl_image_target_fn,
             gl_tex,
             dev_buf: None,
+            import_cache: HashMap::new(),
         })
     }
 
     /// Import DMA-BUF into CUDA device memory.
     /// Returns CUdeviceptr pointing to BGRA pixel data in GPU-linear memory.
+    ///
+    /// EGLImage + CUDA registration are cached per fd since PipeWire reuses
+    /// a small pool of DMA-BUF buffers. Only the map/copy/unmap runs per frame.
     fn import_dmabuf(
         &mut self,
         fd: i32,
@@ -334,119 +347,125 @@ impl CudaBackend {
         drm_format: u32,
         modifier: u64,
     ) -> Option<CUdeviceptr> {
-        // Ensure EGL + CUDA contexts are current
         self.egl.make_current(self.egl_display, None, None, Some(self.egl_context)).ok()?;
         unsafe { (self.cuda.cu_ctx_push)(self.cu_ctx) };
 
-        // 1. Create EGLImage from DMA-BUF
-        let mut attribs: Vec<khronos_egl::Attrib> = vec![
-            EGL_WIDTH, width as khronos_egl::Attrib,
-            EGL_HEIGHT, height as khronos_egl::Attrib,
-            EGL_LINUX_DRM_FOURCC_EXT, drm_format as khronos_egl::Attrib,
-            EGL_DMA_BUF_PLANE0_FD_EXT, fd as khronos_egl::Attrib,
-            EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-            EGL_DMA_BUF_PLANE0_PITCH_EXT, stride as khronos_egl::Attrib,
-        ];
-        if modifier != DRM_FORMAT_MOD_INVALID {
-            attribs.push(EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT);
-            attribs.push((modifier & 0xFFFFFFFF) as khronos_egl::Attrib);
-            attribs.push(EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT);
-            attribs.push((modifier >> 32) as khronos_egl::Attrib);
-        }
-        attribs.push(khronos_egl::ATTRIB_NONE);
+        // Check cache or create new EGLImage + CUDA registration
+        let cu_resource = if let Some(cached) = self.import_cache.get(&fd) {
+            cached.cu_resource
+        } else {
+            // Create EGLImage from DMA-BUF
+            let mut attribs: Vec<khronos_egl::Attrib> = vec![
+                EGL_WIDTH, width as khronos_egl::Attrib,
+                EGL_HEIGHT, height as khronos_egl::Attrib,
+                EGL_LINUX_DRM_FOURCC_EXT, drm_format as khronos_egl::Attrib,
+                EGL_DMA_BUF_PLANE0_FD_EXT, fd as khronos_egl::Attrib,
+                EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+                EGL_DMA_BUF_PLANE0_PITCH_EXT, stride as khronos_egl::Attrib,
+            ];
+            if modifier != DRM_FORMAT_MOD_INVALID {
+                attribs.push(EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT);
+                attribs.push((modifier & 0xFFFFFFFF) as khronos_egl::Attrib);
+                attribs.push(EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT);
+                attribs.push((modifier >> 32) as khronos_egl::Attrib);
+            }
+            attribs.push(khronos_egl::ATTRIB_NONE);
 
-        let no_ctx = unsafe { khronos_egl::Context::from_ptr(khronos_egl::NO_CONTEXT) };
-        let no_buf = unsafe { khronos_egl::ClientBuffer::from_ptr(std::ptr::null_mut()) };
-        let egl_image = match self.egl.create_image(
-            self.egl_display, no_ctx, EGL_LINUX_DMA_BUF_EXT, no_buf, &attribs,
-        ) {
-            Ok(img) => img,
-            Err(e) => {
-                eprintln!("[gpu] eglCreateImage failed: {}", e);
+            let no_ctx = unsafe { khronos_egl::Context::from_ptr(khronos_egl::NO_CONTEXT) };
+            let no_buf = unsafe { khronos_egl::ClientBuffer::from_ptr(std::ptr::null_mut()) };
+            let egl_image = match self.egl.create_image(
+                self.egl_display, no_ctx, EGL_LINUX_DMA_BUF_EXT, no_buf, &attribs,
+            ) {
+                Ok(img) => img,
+                Err(e) => {
+                    eprintln!("[gpu] eglCreateImage failed: {}", e);
+                    self.pop_ctx();
+                    return None;
+                }
+            };
+
+            // Bind EGLImage to GL texture
+            unsafe {
+                gl::BindTexture(gl::TEXTURE_2D, self.gl_tex);
+                (self.gl_image_target_fn)(gl::TEXTURE_2D, egl_image.as_ptr() as *mut std::ffi::c_void);
+                gl::BindTexture(gl::TEXTURE_2D, 0);
+            }
+
+            // Register GL texture with CUDA
+            let mut cu_resource: CUgraphicsResource = std::ptr::null_mut();
+            let rc = unsafe {
+                (self.cuda.cu_graphics_gl_register_image)(
+                    &mut cu_resource, self.gl_tex, GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY,
+                )
+            };
+            if rc != CUDA_SUCCESS {
+                eprintln!("[gpu] cuGraphicsGLRegisterImage failed: {}", rc);
+                let _ = self.egl.destroy_image(self.egl_display, egl_image);
                 self.pop_ctx();
                 return None;
             }
+
+            // Cache the import
+            self.import_cache.insert(fd, CachedImport { egl_image, cu_resource });
+            cu_resource
         };
 
-        // 2. Bind EGLImage to GL texture
-        unsafe {
-            gl::BindTexture(gl::TEXTURE_2D, self.gl_tex);
-            (self.gl_image_target_fn)(gl::TEXTURE_2D, egl_image.as_ptr() as *mut std::ffi::c_void);
-            gl::BindTexture(gl::TEXTURE_2D, 0);
-        }
-
-        // 3. Register GL texture with CUDA
-        let mut cu_resource: CUgraphicsResource = std::ptr::null_mut();
+        // Map -> get CUarray
+        let mut cu_resource_copy = cu_resource;
         let rc = unsafe {
-            (self.cuda.cu_graphics_gl_register_image)(
-                &mut cu_resource, self.gl_tex, GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY,
-            )
+            (self.cuda.cu_graphics_map_resources)(1, &mut cu_resource_copy, std::ptr::null_mut())
         };
         if rc != CUDA_SUCCESS {
-            eprintln!("[gpu] cuGraphicsGLRegisterImage failed: {}", rc);
-            let _ = self.egl.destroy_image(self.egl_display, egl_image);
+            // Stale cache entry — evict and retry
+            if let Some(old) = self.import_cache.remove(&fd) {
+                unsafe { (self.cuda.cu_graphics_unregister_resource)(old.cu_resource) };
+                let _ = self.egl.destroy_image(self.egl_display, old.egl_image);
+            }
             self.pop_ctx();
-            return None;
-        }
-
-        // 4. Map -> get CUarray
-        let rc = unsafe {
-            (self.cuda.cu_graphics_map_resources)(1, &mut cu_resource, std::ptr::null_mut())
-        };
-        if rc != CUDA_SUCCESS {
-            eprintln!("[gpu] cuGraphicsMapResources failed: {}", rc);
-            unsafe { (self.cuda.cu_graphics_unregister_resource)(cu_resource) };
-            let _ = self.egl.destroy_image(self.egl_display, egl_image);
-            self.pop_ctx();
-            return None;
+            // Recursive retry with fresh import
+            return self.import_dmabuf(fd, width, height, stride, drm_format, modifier);
         }
 
         let mut cu_array: CUarray = std::ptr::null_mut();
         let rc = unsafe {
             (self.cuda.cu_graphics_sub_resource_get_mapped_array)(
-                &mut cu_array, cu_resource, 0, 0,
+                &mut cu_array, cu_resource_copy, 0, 0,
             )
         };
         if rc != CUDA_SUCCESS {
             eprintln!("[gpu] cuGraphicsSubResourceGetMappedArray failed: {}", rc);
             unsafe {
-                (self.cuda.cu_graphics_unmap_resources)(1, &mut cu_resource, std::ptr::null_mut());
-                (self.cuda.cu_graphics_unregister_resource)(cu_resource);
+                (self.cuda.cu_graphics_unmap_resources)(1, &mut cu_resource_copy, std::ptr::null_mut());
             }
-            let _ = self.egl.destroy_image(self.egl_display, egl_image);
             self.pop_ctx();
             return None;
         }
 
-        // 5. Ensure device buffer matches dimensions
-        let bpp = 4u32; // BGRA
+        // Ensure device buffer matches dimensions
+        let bpp = 4u32;
         let pitch = width * bpp;
         let buf_size = (pitch * height) as usize;
         let dev_ptr = match self.ensure_dev_buffer(width, height, buf_size) {
             Some(p) => p,
             None => {
                 unsafe {
-                    (self.cuda.cu_graphics_unmap_resources)(1, &mut cu_resource, std::ptr::null_mut());
-                    (self.cuda.cu_graphics_unregister_resource)(cu_resource);
+                    (self.cuda.cu_graphics_unmap_resources)(1, &mut cu_resource_copy, std::ptr::null_mut());
                 }
-                let _ = self.egl.destroy_image(self.egl_display, egl_image);
                 self.pop_ctx();
                 return None;
             }
         };
 
-        // 6. cuMemcpy2D: CUarray -> CUdeviceptr (GPU-to-GPU, <0.1ms for 1080p)
+        // cuMemcpy2D: CUarray -> CUdeviceptr (GPU-to-GPU, <0.1ms for 1080p)
         let copy = CudaMemcpy2D::array_to_device(
             cu_array, dev_ptr, pitch as usize, (width * bpp) as usize, height as usize,
         );
         let rc = unsafe { (self.cuda.cu_memcpy2d)(&copy) };
 
-        // Cleanup per-frame resources (dev_buf is reused across frames)
+        // Unmap but DON'T unregister — registration stays in cache
         unsafe {
-            (self.cuda.cu_graphics_unmap_resources)(1, &mut cu_resource, std::ptr::null_mut());
-            (self.cuda.cu_graphics_unregister_resource)(cu_resource);
+            (self.cuda.cu_graphics_unmap_resources)(1, &mut cu_resource_copy, std::ptr::null_mut());
         }
-        let _ = self.egl.destroy_image(self.egl_display, egl_image);
         self.pop_ctx();
 
         if rc != CUDA_SUCCESS {
@@ -489,6 +508,11 @@ impl CudaBackend {
 
 impl Drop for CudaBackend {
     fn drop(&mut self) {
+        // Clean up cached EGL images + CUDA registrations
+        for (_, cached) in self.import_cache.drain() {
+            unsafe { (self.cuda.cu_graphics_unregister_resource)(cached.cu_resource) };
+            let _ = self.egl.destroy_image(self.egl_display, cached.egl_image);
+        }
         if let Some((ptr, _, _)) = self.dev_buf.take() {
             unsafe { (self.cuda.cu_mem_free)(ptr) };
         }
