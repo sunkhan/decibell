@@ -3,7 +3,8 @@ use std::os::fd::OwnedFd;
 use std::sync::mpsc::SyncSender;
 use std::time::Instant;
 
-use super::capture::{CaptureConfig, CaptureOutput, CaptureSource, CaptureSourceType, RawFrame};
+use std::os::fd::FromRawFd;
+use super::capture::{CaptureConfig, CaptureOutput, CaptureSource, CaptureSourceType, DmaBufFrame, RawFrame};
 
 /// On Linux, screen/window selection is handled by the XDG Desktop Portal.
 /// We return a single placeholder entry; the real picker dialog appears
@@ -38,6 +39,7 @@ pub async fn start_capture(
         // The D-Bus connection is moved into the thread to keep the portal
         // session alive for the duration of the capture.
         let (tx, rx) = std::sync::mpsc::sync_channel::<RawFrame>(4);
+        let (gpu_tx, gpu_rx) = std::sync::mpsc::sync_channel::<DmaBufFrame>(4);
 
         // When target is 0x0 ("source" quality), the actual dimensions aren't
         // known until PipeWire negotiates. Use a oneshot to communicate them back.
@@ -49,7 +51,7 @@ pub async fn start_capture(
         std::thread::Builder::new()
             .name("decibell-capture".to_string())
             .spawn(move || {
-                if let Err(e) = pipewire_capture_loop(pw_fd, node_id, tx, config, dbus_conn, dim_tx) {
+                if let Err(e) = pipewire_capture_loop(pw_fd, node_id, tx, gpu_tx, config, dbus_conn, dim_tx) {
                     eprintln!("[capture] Capture loop error: {}", e);
                 }
             })
@@ -63,7 +65,7 @@ pub async fn start_capture(
             known_dims
         };
 
-        Ok(CaptureOutput { receiver: rx, width, height, gpu_receiver: None })
+        Ok(CaptureOutput { receiver: rx, width, height, gpu_receiver: Some(gpu_rx) })
     })
     .await
     .map_err(|e| format!("Join error: {}", e))??;
@@ -299,6 +301,7 @@ use pw::spa::pod::Pod;
 struct CaptureData {
     format: spa::param::video::VideoInfoRaw,
     tx: SyncSender<RawFrame>,
+    gpu_tx: SyncSender<DmaBufFrame>,
     target_width: u32,
     target_height: u32,
     target_fps: u32,
@@ -314,6 +317,7 @@ fn pipewire_capture_loop(
     fd: OwnedFd,
     node_id: u32,
     tx: SyncSender<RawFrame>,
+    gpu_tx: SyncSender<DmaBufFrame>,
     config: CaptureConfig,
     _dbus_conn: zbus::blocking::Connection, // kept alive to preserve portal session
     dim_tx: std::sync::mpsc::SyncSender<(u32, u32)>,
@@ -340,6 +344,7 @@ fn pipewire_capture_loop(
     let data = CaptureData {
         format: Default::default(),
         tx,
+        gpu_tx,
         target_width,
         target_height,
         target_fps: config.target_fps,
@@ -429,14 +434,10 @@ fn pipewire_capture_loop(
                 return;
             };
 
-            // Rate-limit: skip frames that arrive faster than target FPS.
-            // This avoids the expensive to_vec() copy (~8MB) on every compositor
-            // frame, which would otherwise block the PipeWire thread and steal
-            // CPU/memory bandwidth from the game.
+            // Rate-limit: skip frames arriving faster than target FPS
             let now_us = data.start.elapsed().as_micros() as u64;
             let frame_interval_us = 1_000_000 / data.target_fps.max(1) as u64;
             if now_us.saturating_sub(data.last_capture_us) < frame_interval_us {
-                // Drop buffer back to PipeWire without copying — keeps compositor flowing
                 drop(buffer);
                 return;
             }
@@ -447,21 +448,16 @@ fn pipewire_capture_loop(
             }
 
             let d = &mut datas[0];
-
             let chunk_size = d.chunk().size() as usize;
             let stride = d.chunk().stride() as usize;
-            let chunk_offset = d.chunk().offset() as usize;
             let buf_type = d.type_();
 
             if chunk_size == 0 || stride == 0 {
                 return;
             }
 
-            let Some(raw_data) = d.data() else { return };
-            let raw_data = &raw_data[chunk_offset..][..chunk_size];
-
-            let src_w = data.format.size().width as usize;
-            let src_h = data.format.size().height as usize;
+            let src_w = data.format.size().width;
+            let src_h = data.format.size().height;
             let fmt = data.format.format();
 
             data.frame_count += 1;
@@ -485,32 +481,74 @@ fn pipewire_capture_loop(
                 return;
             }
 
-            let pixel_format = if is_bgra {
-                super::capture::PixelFormat::BGRA
+            use pw::spa::buffer::DataType;
+
+            if buf_type == DataType::DmaBuf {
+                // ── DMA-BUF path: dup fd, send to GPU channel ──
+                let raw_fd = d.fd();
+                let dup_fd = unsafe { libc::dup(raw_fd) };
+                if dup_fd < 0 {
+                    eprintln!("[capture] dup(dmabuf fd={}) failed", raw_fd);
+                    return;
+                }
+                let owned_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(dup_fd) };
+
+                let drm_format = super::gpu_interop::spa_format_to_drm_fourcc(fmt);
+                if drm_format == 0 {
+                    eprintln!("[capture] No DRM fourcc for {:?}", fmt);
+                    return;
+                }
+
+                if data.frame_count <= 3 {
+                    eprintln!("[capture] DMA-BUF frame: fd={}, {}x{}, stride={}, drm_fmt=0x{:08x}",
+                        dup_fd, src_w, src_h, stride, drm_format);
+                }
+
+                let frame = DmaBufFrame {
+                    fd: owned_fd,
+                    width: src_w,
+                    height: src_h,
+                    stride: stride as u32,
+                    drm_format,
+                    modifier: super::gpu_interop::DRM_FORMAT_MOD_INVALID,
+                    timestamp_us: now_us,
+                };
+
+                match data.gpu_tx.try_send(frame) {
+                    Ok(()) => { data.last_capture_us = now_us; }
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        eprintln!("[capture] GPU frame channel closed, stopping");
+                        if let Some(ml) = data.quit_mainloop.upgrade() { ml.quit(); }
+                    }
+                }
             } else {
-                super::capture::PixelFormat::RGBA
-            };
+                // ── SHM path: copy data to Vec (existing behavior) ──
+                let chunk_offset = d.chunk().offset() as usize;
+                let Some(raw_data) = d.data() else { return };
+                let raw_data = &raw_data[chunk_offset..][..chunk_size];
 
-            let frame = RawFrame {
-                data: raw_data.to_vec(),
-                width: src_w as u32,
-                height: src_h as u32,
-                stride,
-                pixel_format,
-                timestamp_us: now_us,
-            };
+                let pixel_format = if is_bgra {
+                    super::capture::PixelFormat::BGRA
+                } else {
+                    super::capture::PixelFormat::RGBA
+                };
 
-            match data.tx.try_send(frame) {
-                Ok(()) => {
-                    data.last_capture_us = now_us;
-                }
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    // Encoder is behind — don't update timestamp so we retry next callback
-                }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    eprintln!("[capture] Frame channel closed, stopping");
-                    if let Some(ml) = data.quit_mainloop.upgrade() {
-                        ml.quit();
+                let frame = RawFrame {
+                    data: raw_data.to_vec(),
+                    width: src_w,
+                    height: src_h,
+                    stride,
+                    pixel_format,
+                    timestamp_us: now_us,
+                };
+
+                match data.tx.try_send(frame) {
+                    Ok(()) => { data.last_capture_us = now_us; }
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        eprintln!("[capture] Frame channel closed, stopping");
+                        if let Some(ml) = data.quit_mainloop.upgrade() { ml.quit(); }
                     }
                 }
             }
@@ -585,7 +623,7 @@ fn pipewire_capture_loop(
     stream.connect(
         spa::utils::Direction::Input,
         Some(node_id),
-        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
+        pw::stream::StreamFlags::AUTOCONNECT,
         &mut params,
     )
     .map_err(|e| format!("PW stream connect: {:?}", e))?;
