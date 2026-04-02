@@ -483,6 +483,15 @@ fn pipewire_capture_loop(
 
             use pw::spa::buffer::DataType;
 
+            if data.frame_count == 1 && buf_type != DataType::DmaBuf {
+                eprintln!(
+                    "[capture] WARNING: PipeWire is providing {:?} buffers, not DMA-BUF. \
+                     GPU zero-copy capture is NOT active. CPU frame copies will occur. \
+                     (This is normal on NVIDIA proprietary drivers.)",
+                    buf_type
+                );
+            }
+
             if buf_type == DataType::DmaBuf {
                 // ── DMA-BUF path: dup fd, send to GPU channel ──
                 let raw_fd = d.fd();
