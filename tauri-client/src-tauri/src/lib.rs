@@ -49,11 +49,11 @@ pub fn run() {
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // Hard-exit bypassing all atexit/destructor handlers.
-                // std::process::exit(0) runs FFmpeg/CUDA cleanup which hangs
-                // when the GPU context is already torn down during streaming.
-                // The OS reclaims all threads, sockets, and memory.
+                // Hard-exit: the OS reclaims all threads, sockets, and memory.
+                #[cfg(target_os = "linux")]
                 unsafe { libc::_exit(0); }
+                #[cfg(not(target_os = "linux"))]
+                std::process::exit(0);
             }
         })
         .run(tauri::generate_context!())

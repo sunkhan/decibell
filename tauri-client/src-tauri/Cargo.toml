@@ -1,6 +1,6 @@
 [package]
 name = "decibell"
-version = "0.2.1"
+version = "0.2.2"
 description = "Decibell - decentralized text/voice chat and streaming app"
 authors = ["you"]
 edition = "2021"
@@ -28,6 +28,8 @@ futures-util = { version = "0.3", features = ["sink"] }
 log = "0.4"
 cpal = "0.15"
 audiopus = "0.3.0-rc.0"
+rubato = "0.16"
+ringbuf = "0.4"
 ffmpeg-next = "8"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }

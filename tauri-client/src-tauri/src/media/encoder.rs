@@ -243,11 +243,6 @@ impl H264Encoder {
         context.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
         context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
         context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
-        // VBV buffer: ~4 frames of headroom. Balances quality on complex frames
-        // against UDP transport limits (avoids large bitrate spikes that cause
-        // packet loss).
-        let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
-        unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
         context.set_gop(config.fps * config.keyframe_interval_secs);
         // Disable B-frames for real-time streaming — B-frames require reordering
         // which adds latency and can cause artifacts with simple decoders.
@@ -255,7 +250,7 @@ impl H264Encoder {
 
         // NVENC accepts BGRA directly — the GPU handles BGRA→NV12 conversion
         // internally, eliminating expensive CPU-based sws_scale.
-        let supports_bgra_input = codec_name == "h264_nvenc";
+        let supports_bgra_input = cfg!(target_os = "linux") && codec_name == "h264_nvenc";
 
         if supports_bgra_input {
             context.set_format(ffmpeg_next::format::Pixel::BGRA);
@@ -276,6 +271,9 @@ impl H264Encoder {
                 opts.set("preset", "p5");
                 opts.set("tune", "ull");
                 opts.set("rc", "cbr");
+                // VBV buffer: ~4 frames of headroom for rate control
+                let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
+                unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
             }
             "h264_amf" => {
                 opts.set("usage", "ultralowlatency");
