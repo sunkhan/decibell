@@ -494,6 +494,7 @@ impl Drop for CudaBackend {
         }
         unsafe { gl::DeleteTextures(1, &self.gl_tex) };
         let _ = self.egl.destroy_context(self.egl_display, self.egl_context);
+        let _ = self.egl.terminate(self.egl_display);
         unsafe { (self.cuda.cu_ctx_destroy)(self.cu_ctx) };
     }
 }
@@ -597,16 +598,20 @@ impl VaapiBackend {
         }
     }
 
-    /// Map a DMA-BUF frame descriptor into a VAAPI surface AVFrame.
+    /// Map a DMA-BUF into a VAAPI surface AVFrame.
     /// The returned AVFrame has format=VAAPI and can be sent directly to h264_vaapi.
     ///
-    /// # Safety
-    /// The `drm_desc` must remain valid until the returned AVFrame is consumed by the encoder.
+    /// `av_hwframe_map` with DRM→VAAPI copies the VA surface handle into the
+    /// destination frame, so the AVDRMFrameDescriptor only needs to live through
+    /// the mapping call (not through encoding). We build it on the stack here.
     fn map_dmabuf_to_vaapi(
         &self,
-        drm_desc: &ffmpeg_next::sys::AVDRMFrameDescriptor,
+        fd: i32,
         width: u32,
         height: u32,
+        stride: u32,
+        drm_format: u32,
+        modifier: u64,
     ) -> Option<ffmpeg_next::frame::Video> {
         use ffmpeg_next::sys::*;
 
@@ -616,6 +621,10 @@ impl VaapiBackend {
         }
 
         unsafe {
+            // Build descriptor on the stack — av_hwframe_map copies the VA surface
+            // handle so the descriptor only needs to survive through the map call.
+            let drm_desc = build_drm_descriptor(fd, width, height, stride, drm_format, modifier);
+
             // Create DRM_PRIME source frame
             let drm_frame = av_frame_alloc();
             if drm_frame.is_null() {
@@ -625,7 +634,7 @@ impl VaapiBackend {
             (*drm_frame).width = width as libc::c_int;
             (*drm_frame).height = height as libc::c_int;
             // data[0] points to the AVDRMFrameDescriptor
-            (*drm_frame).data[0] = drm_desc as *const _ as *mut u8;
+            (*drm_frame).data[0] = &drm_desc as *const _ as *mut u8;
 
             // Allocate VAAPI destination frame from the frames pool
             let vaapi_frame = av_frame_alloc();
@@ -634,8 +643,9 @@ impl VaapiBackend {
                 return None;
             }
             (*vaapi_frame).format = AVPixelFormat::AV_PIX_FMT_VAAPI as i32;
-            (*vaapi_frame).hw_frames_ctx = av_buffer_ref(self.vaapi_frames_ref);
 
+            // av_hwframe_get_buffer sets hw_frames_ctx internally — don't set it manually
+            // or the av_buffer_ref would leak when overwritten.
             let rc = av_hwframe_get_buffer(self.vaapi_frames_ref, vaapi_frame, 0);
             if rc < 0 {
                 eprintln!("[gpu] av_hwframe_get_buffer(VAAPI) failed: {}", rc);
@@ -771,9 +781,7 @@ impl GpuContext {
     ) -> Option<ffmpeg_next::frame::Video> {
         match &self.backend {
             GpuBackendInner::Vaapi(vaapi) => {
-                // Build AVDRMFrameDescriptor on the stack
-                let drm_desc = build_drm_descriptor(fd, width, height, stride, drm_format, modifier);
-                vaapi.map_dmabuf_to_vaapi(&drm_desc, width, height)
+                vaapi.map_dmabuf_to_vaapi(fd, width, height, stride, drm_format, modifier)
             }
             _ => None,
         }
