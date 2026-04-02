@@ -782,7 +782,7 @@ pub fn run_audio_pipeline(
                         Some(data) => decoder.decode(data, &mut pcm).is_ok(),
                         None => decoder.decode(&[], &mut pcm).is_ok(), // PLC
                     };
-                    if decode_ok && !deafened {
+                    if decode_ok {
                         if let Ok(mut sbuf) = stream_playback_buf.lock() {
                             let remaining = BUF_CAP.saturating_sub(sbuf.len());
                             let take = STEREO_FRAME_SIZE.min(remaining);

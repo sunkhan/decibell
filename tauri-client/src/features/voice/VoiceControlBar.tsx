@@ -82,7 +82,7 @@ export default function VoiceControlBar() {
           className={`flex h-8 flex-1 items-center justify-center rounded-lg transition-colors ${
             isMuted
               ? "bg-error/20 text-error"
-              : "bg-surface-hover text-text-muted hover:bg-surface-active"
+              : "bg-surface-active text-text-secondary hover:bg-border hover:text-text-primary"
           }`}
           title={isMuted ? "Unmute" : "Mute"}
         >
@@ -110,7 +110,7 @@ export default function VoiceControlBar() {
           className={`flex h-8 flex-1 items-center justify-center rounded-lg transition-colors ${
             isDeafened
               ? "bg-error/20 text-error"
-              : "bg-surface-hover text-text-muted hover:bg-surface-active"
+              : "bg-surface-active text-text-secondary hover:bg-border hover:text-text-primary"
           }`}
           title={isDeafened ? "Undeafen" : "Deafen"}
         >
@@ -130,7 +130,7 @@ export default function VoiceControlBar() {
           className={`flex h-8 flex-1 items-center justify-center rounded-lg transition-colors ${
             isStreaming
               ? "bg-accent/20 text-accent hover:bg-accent/30"
-              : "bg-surface-hover text-text-muted hover:bg-surface-active"
+              : "bg-surface-active text-text-secondary hover:bg-border hover:text-text-primary"
           }`}
           title={isStreaming ? "Stop sharing" : "Share screen"}
         >

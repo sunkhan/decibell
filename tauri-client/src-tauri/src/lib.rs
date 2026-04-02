@@ -49,11 +49,11 @@ pub fn run() {
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // Force-exit the process immediately. Graceful engine shutdown
-                // (thread joins) can deadlock when the Tokio runtime is already
-                // tearing down. The OS cleans up all threads, sockets, and memory.
-                // The server detects disconnect when the UDP/TCP connections drop.
-                std::process::exit(0);
+                // Hard-exit bypassing all atexit/destructor handlers.
+                // std::process::exit(0) runs FFmpeg/CUDA cleanup which hangs
+                // when the GPU context is already torn down during streaming.
+                // The OS reclaims all threads, sockets, and memory.
+                unsafe { libc::_exit(0); }
             }
         })
         .run(tauri::generate_context!())

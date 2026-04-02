@@ -37,7 +37,7 @@ pub async fn join_voice_channel(
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     // Take old engines and collect packets under the lock, then release
-    let (old_audio_stream, old_video, old_voice, leave_sends, join_tx, join_data) = {
+    let (old_audio_stream, old_video, old_voice, leave_sends, join_tx, join_data, state_sends, is_muted, is_deafened) = {
         let mut s = state.lock().await;
 
         let mut leave_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
@@ -75,12 +75,42 @@ pub async fn join_voice_channel(
         let jwt = client.jwt.clone();
 
         // Start VoiceEngine (spawns threads, no blocking I/O)
-        let engine = VoiceEngine::start(&host, port, &jwt, app.clone())?;
+        let mut engine = VoiceEngine::start(&host, port, &jwt, app.clone())?;
+
+        // Restore persisted mute/deafen state from previous session
+        let saved_muted = s.voice_muted;
+        let saved_deafened = s.voice_deafened;
+        if saved_deafened {
+            engine.set_deafen(true);
+        } else if saved_muted {
+            engine.set_mute(true);
+        }
+        let is_muted = engine.is_muted();
+        let is_deafened = engine.is_deafened();
+
         s.voice_engine = Some(engine);
         s.connected_voice_server = Some(server_id);
         s.connected_voice_channel = Some(channel_id);
 
-        (old_audio_stream, old_video, old_voice, leave_sends, join_tx, join_data)
+        // Build state notification so the server knows we're muted/deafened
+        let mut state_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
+        if is_muted || is_deafened {
+            for client_val in s.communities.values() {
+                if let Some(tx) = client_val.connection_write_tx() {
+                    let data = build_packet(
+                        packet::Type::VoiceStateNotify,
+                        packet::Payload::VoiceStateNotify(VoiceStateNotify {
+                            is_muted,
+                            is_deafened,
+                        }),
+                        Some(&client_val.jwt),
+                    );
+                    state_sends.push((tx, data));
+                }
+            }
+        }
+
+        (old_audio_stream, old_video, old_voice, leave_sends, join_tx, join_data, state_sends, is_muted, is_deafened)
     }; // Lock released here
 
     // Stop old engines on a background thread (thread::join blocks)
@@ -91,7 +121,12 @@ pub async fn join_voice_channel(
     }
     send_raw(&join_tx, join_data).await?;
 
-    events::emit_voice_state_changed(&app, false, false);
+    // Notify server of restored mute/deafen state
+    for (tx, data) in state_sends {
+        let _ = send_raw(&tx, data).await;
+    }
+
+    events::emit_voice_state_changed(&app, is_muted, is_deafened);
     Ok(())
 }
 
@@ -101,7 +136,7 @@ pub async fn leave_voice_channel(
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     // Take engines and collect packets under the lock
-    let (old_audio_stream, old_video, old_voice, leave_sends) = {
+    let (old_audio_stream, old_video, old_voice, leave_sends, is_muted, is_deafened) = {
         let mut s = state.lock().await;
 
         let mut leave_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
@@ -116,13 +151,22 @@ pub async fn leave_voice_channel(
             }
         }
 
+        // Save mute/deafen state before destroying the engine
+        let (saved_muted, saved_deafened) = s.voice_engine.as_ref()
+            .map(|e| (e.is_muted(), e.is_deafened()))
+            .unwrap_or((s.voice_muted, s.voice_deafened));
+        s.voice_muted = saved_muted;
+        s.voice_deafened = saved_deafened;
+        let is_muted = s.voice_muted;
+        let is_deafened = s.voice_deafened;
+
         let old_audio_stream = s.audio_stream_engine.take();
         let old_video = s.video_engine.take();
         let old_voice = s.voice_engine.take();
         s.connected_voice_server = None;
         s.connected_voice_channel = None;
 
-        (old_audio_stream, old_video, old_voice, leave_sends)
+        (old_audio_stream, old_video, old_voice, leave_sends, is_muted, is_deafened)
     }; // Lock released here
 
     // Stop engines on a background thread (thread::join blocks)
@@ -132,7 +176,8 @@ pub async fn leave_voice_channel(
         let _ = send_raw(&tx, data).await;
     }
 
-    events::emit_voice_state_changed(&app, false, false);
+    // Emit the persisted state so the frontend keeps showing muted/deafened
+    events::emit_voice_state_changed(&app, is_muted, is_deafened);
     Ok(())
 }
 
@@ -148,6 +193,8 @@ pub async fn set_voice_mute(
     engine.set_mute(muted);
     let is_muted = engine.is_muted();
     let is_deafened = engine.is_deafened();
+    s.voice_muted = is_muted;
+    s.voice_deafened = is_deafened;
 
     let mut notify_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
     for client in s.communities.values() {
@@ -227,6 +274,8 @@ pub async fn set_voice_deafen(
     engine.set_deafen(deafened);
     let is_muted = engine.is_muted();
     let is_deafened = engine.is_deafened();
+    s.voice_muted = is_muted;
+    s.voice_deafened = is_deafened;
 
     let mut notify_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
     for client in s.communities.values() {

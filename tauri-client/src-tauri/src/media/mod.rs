@@ -328,14 +328,25 @@ fn run_video_recv_thread(
             Ok(buf) => {
                 if let Some(pkt) = UdpVideoPacket::from_bytes(&buf) {
                     let username = pkt.sender_username();
-                    // Don't process our own reflected video packets
-                    if username == sender_id {
-                        static LOGGED_SELF: std::sync::atomic::AtomicBool =
-                            std::sync::atomic::AtomicBool::new(false);
-                        if !LOGGED_SELF.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            eprintln!("[video-recv] Ignoring own video (sender='{}' == our id)", username);
+                    if video_streamer_username.as_deref() != Some(&username) {
+                        has_received_keyframe = false;
+                    }
+                    video_streamer_username = Some(username.clone());
+                    if let Some(frame) = video_receiver.process_packet(&pkt) {
+                        video_frames_received += 1;
+                        if frame.is_keyframe || video_frames_received % 300 == 1 {
+                            eprintln!("[video-recv] Frame {} reassembled: {} bytes, keyframe={} (total={})",
+                                frame.frame_id, frame.data.len(), frame.is_keyframe, video_frames_received);
                         }
-                    } else {
+                        if frame.is_keyframe { has_received_keyframe = true; }
+                        let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
+                    }
+                }
+
+                // Drain any additional queued packets without blocking
+                while let Ok(buf) = packet_rx.try_recv() {
+                    if let Some(pkt) = UdpVideoPacket::from_bytes(&buf) {
+                        let username = pkt.sender_username();
                         if video_streamer_username.as_deref() != Some(&username) {
                             has_received_keyframe = false;
                         }
@@ -348,28 +359,6 @@ fn run_video_recv_thread(
                             }
                             if frame.is_keyframe { has_received_keyframe = true; }
                             let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
-                        }
-                    }
-                }
-
-                // Drain any additional queued packets without blocking
-                while let Ok(buf) = packet_rx.try_recv() {
-                    if let Some(pkt) = UdpVideoPacket::from_bytes(&buf) {
-                        let username = pkt.sender_username();
-                        if username != sender_id {
-                            if video_streamer_username.as_deref() != Some(&username) {
-                                has_received_keyframe = false;
-                            }
-                            video_streamer_username = Some(username.clone());
-                            if let Some(frame) = video_receiver.process_packet(&pkt) {
-                                video_frames_received += 1;
-                                if frame.is_keyframe || video_frames_received % 300 == 1 {
-                                    eprintln!("[video-recv] Frame {} reassembled: {} bytes, keyframe={} (total={})",
-                                        frame.frame_id, frame.data.len(), frame.is_keyframe, video_frames_received);
-                                }
-                                if frame.is_keyframe { has_received_keyframe = true; }
-                                let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
-                            }
                         }
                     }
                 }

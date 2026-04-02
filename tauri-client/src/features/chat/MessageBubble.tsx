@@ -49,7 +49,7 @@ export default function MessageBubble({ message, grouped }: Props) {
       <div className="group flex gap-3 rounded-xl px-2 py-px transition-colors hover:bg-white/[0.015]">
         {/* Spacer matching avatar width — hover timestamp */}
         <div className="flex w-[38px] shrink-0 items-baseline justify-end">
-          <span className="font-mono text-[10px] leading-none text-text-muted opacity-0 group-hover:opacity-100">
+          <span className="text-[10px] font-medium leading-none text-text-muted opacity-0 group-hover:opacity-100">
             {parseTimestamp(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </span>
         </div>
@@ -89,7 +89,7 @@ export default function MessageBubble({ message, grouped }: Props) {
           >
             {message.sender}
           </span>
-          <span className="font-mono text-[11px] text-text-muted">
+          <span className="text-[11px] font-medium text-text-muted">
             {formatTimestamp(message.timestamp)}
           </span>
         </div>

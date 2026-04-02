@@ -43,7 +43,7 @@ export default function LoginPage() {
   const isLoading = mode === "login" ? isLoggingIn : isRegistering;
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-bg-primary">
+    <div className="relative flex h-screen w-screen items-center justify-center bg-bg-primary">
       <form
         onSubmit={handleSubmit}
         className="w-full max-w-[400px] rounded-2xl border border-border bg-bg-secondary p-8 shadow-2xl"
@@ -58,11 +58,11 @@ export default function LoginPage() {
         </div>
 
         <h1 className="mb-1 text-center text-xl font-extrabold text-text-bright">
-          {mode === "login" ? "Welcome back!" : "Create an account"}
+          {mode === "login" ? "Decibell" : "Create an account"}
         </h1>
         <p className="mb-6 text-center text-sm text-text-secondary">
           {mode === "login"
-            ? "We're so excited to see you again!"
+            ? "Decentralized game chat"
             : "Join the conversation"}
         </p>
 
@@ -147,6 +147,7 @@ export default function LoginPage() {
           )}
         </p>
       </form>
+      <p className="absolute bottom-3 right-4 text-[11px] text-text-muted">Decibell 0.2.1</p>
     </div>
   );
 }

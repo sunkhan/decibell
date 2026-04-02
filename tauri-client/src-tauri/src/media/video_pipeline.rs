@@ -110,79 +110,17 @@ pub fn run_video_send_pipeline(
     config: EncoderConfig,
     target_fps: u32,
 ) {
-    // Try GPU zero-copy path (Linux only). All GPU init happens on this thread.
+    // GPU context is lazily initialized on first DMA-BUF frame (Linux only).
+    // On NVIDIA+KWin, PipeWire provides MemFd (not DmaBuf), so GPU code never
+    // runs and the pipeline behaves identically to the pre-DMA-BUF code path.
+    // On AMD/Intel, DMA-BUF frames arrive and trigger GPU encoder init.
     #[cfg(target_os = "linux")]
-    let mut gpu_ctx = super::gpu_interop::GpuContext::new();
-
+    let mut gpu_ctx: Option<super::gpu_interop::GpuContext> = None;
     #[cfg(target_os = "linux")]
-    let _using_gpu = gpu_ctx.is_some() && gpu_frame_rx.is_some();
+    let mut gpu_initialized = false;
 
-    // Create encoder — use VAAPI-specific constructor when VAAPI backend is active
-    #[cfg(target_os = "linux")]
-    let mut encoder = if let Some(ref mut gpu) = gpu_ctx {
-        match gpu.backend_type() {
-            super::gpu_interop::GpuBackendType::Vaapi => {
-                // Initialize VAAPI frames context first
-                if let Err(e) = gpu.init_vaapi_frames(config.width, config.height) {
-                    eprintln!("[video-send] VAAPI frames init failed: {}", e);
-                    match H264Encoder::new(&config) {
-                        Ok(e) => e,
-                        Err(e) => {
-                            let _ = event_tx.send(VideoPipelineEvent::Error(e));
-                            return;
-                        }
-                    }
-                } else {
-                    match H264Encoder::new_vaapi(
-                        &config,
-                        gpu.vaapi_device_ref(),
-                        gpu.vaapi_frames_ref(),
-                    ) {
-                        Ok(e) => {
-                            eprintln!("[video-send] VA-API zero-copy encoding enabled");
-                            e
-                        }
-                        Err(e) => {
-                            eprintln!("[video-send] VAAPI encoder failed ({}), falling back", e);
-                            match H264Encoder::new(&config) {
-                                Ok(e) => e,
-                                Err(e) => {
-                                    let _ = event_tx.send(VideoPipelineEvent::Error(e));
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            super::gpu_interop::GpuBackendType::Cuda => {
-                match H264Encoder::new(&config) {
-                    Ok(mut e) => {
-                        match e.init_cuda_hw() {
-                            Ok(()) => eprintln!("[video-send] CUDA zero-copy encoding enabled"),
-                            Err(err) => eprintln!("[video-send] CUDA hw init failed ({}), CPU fallback", err),
-                        }
-                        e
-                    }
-                    Err(e) => {
-                        let _ = event_tx.send(VideoPipelineEvent::Error(e));
-                        return;
-                    }
-                }
-            }
-        }
-    } else {
-        match H264Encoder::new(&config) {
-            Ok(e) => e,
-            Err(e) => {
-                let _ = event_tx.send(VideoPipelineEvent::Error(e));
-                return;
-            }
-        }
-    };
-
-    // Windows: standard encoder, no GPU context
-    #[cfg(not(target_os = "linux"))]
+    // Always start with the standard encoder (works for CPU/MemFd frames).
+    // Replaced with a GPU encoder if DMA-BUF frames arrive.
     let mut encoder = match H264Encoder::new(&config) {
         Ok(e) => e,
         Err(e) => {
@@ -262,6 +200,42 @@ pub fn run_video_send_pipeline(
         // ── Encode ──
         #[cfg(target_os = "linux")]
         let encode_result = if let Some(ref dmabuf) = gpu_frame_opt {
+            // Lazy GPU init: only create GPU context on first DMA-BUF frame.
+            // On NVIDIA (MemFd), this block never runs — no GPU overhead.
+            if !gpu_initialized {
+                gpu_initialized = true;
+                gpu_ctx = super::gpu_interop::GpuContext::new();
+                if let Some(ref mut gpu) = gpu_ctx {
+                    match gpu.backend_type() {
+                        super::gpu_interop::GpuBackendType::Vaapi => {
+                            if let Err(e) = gpu.init_vaapi_frames(config.width, config.height) {
+                                eprintln!("[video-send] VAAPI frames init failed: {}", e);
+                                gpu_ctx = None;
+                            } else {
+                                match H264Encoder::new_vaapi(&config, gpu.vaapi_device_ref(), gpu.vaapi_frames_ref()) {
+                                    Ok(e) => {
+                                        eprintln!("[video-send] VA-API zero-copy encoding enabled");
+                                        encoder = e;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[video-send] VAAPI encoder failed ({}), CPU fallback", e);
+                                        gpu_ctx = None;
+                                    }
+                                }
+                            }
+                        }
+                        super::gpu_interop::GpuBackendType::Cuda => {
+                            if let Err(e) = encoder.init_cuda_hw() {
+                                eprintln!("[video-send] CUDA hw init failed ({}), CPU fallback", e);
+                                gpu_ctx = None;
+                            } else {
+                                eprintln!("[video-send] CUDA zero-copy encoding enabled");
+                            }
+                        }
+                    }
+                }
+            }
+
             // GPU zero-copy encode
             if let Some(ref mut gpu) = gpu_ctx {
                 use std::os::fd::AsRawFd;
@@ -305,13 +279,14 @@ pub fn run_video_send_pipeline(
                     }
                 }
             } else {
+                // GPU init failed — skip DMA-BUF frame, rely on CPU frames
                 continue;
             }
         } else {
-            // CPU encode path (RawFrame) — also the Linux fallback
+            // CPU encode path (RawFrame) — default path, also Linux MemFd fallback
             let frame = last_frame.as_ref().unwrap();
 
-            // Generate thumbnail periodically (only for CPU frames — GPU frames aren't CPU-accessible)
+            // Generate thumbnail periodically
             let now_for_thumb = Instant::now();
             if now_for_thumb.duration_since(last_thumbnail_time) >= thumbnail_interval {
                 last_thumbnail_time = now_for_thumb;

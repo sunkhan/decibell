@@ -49,7 +49,7 @@ function UserPanel() {
         <div className="truncate text-[13px] font-bold text-text-primary">
           {username}
         </div>
-        <div className="text-[11px] font-mono text-text-muted">Online</div>
+        <div className="text-[10px] font-semibold tracking-wide text-success">Online</div>
       </div>
       <button
         onClick={() => openModal("settings")}

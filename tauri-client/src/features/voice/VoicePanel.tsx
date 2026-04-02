@@ -57,11 +57,13 @@ export default function VoicePanel() {
     invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
   };
 
-  const handleWatchStream = async (username: string) => {
+  const handleWatchStream = (username: string) => {
     if (!connectedServerId || !connectedChannelId) return;
     const isAlreadyWatching = watchingStreams.includes(username);
     if (!isAlreadyWatching) {
-      await invoke("watch_stream", {
+      // Fire-and-forget — transition the UI immediately instead of
+      // waiting for the server round-trip
+      invoke("watch_stream", {
         serverId: connectedServerId,
         channelId: connectedChannelId,
         targetUsername: username,
@@ -95,7 +97,7 @@ export default function VoicePanel() {
   };
 
   return (
-    <div className="flex flex-1 flex-col bg-bg-tertiary">
+    <div className="flex min-h-0 flex-1 flex-col bg-bg-tertiary">
       {/* Header - hidden when stream is in real fullscreen */}
       {!isStreamFullscreen && (
         <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
@@ -107,7 +109,9 @@ export default function VoicePanel() {
           >
             {participants.length} participant{participants.length !== 1 ? "s" : ""}
             {latencyMs != null && (
-              <span className="ml-2 text-text-muted">{latencyMs}ms</span>
+              <span className={`ml-2 font-semibold ${
+                latencyMs <= 70 ? "text-success" : latencyMs < 175 ? "text-warning" : "text-error"
+              }`}>{latencyMs}ms</span>
             )}
           </span>
         </div>
@@ -115,7 +119,7 @@ export default function VoicePanel() {
 
       {/* StreamViewPanel - stays mounted while watching to preserve the decoder */}
       {watchingStreams.length > 0 && (
-        <div className={fullscreenStream ? "flex flex-1" : "hidden"}>
+        <div className={fullscreenStream ? "flex min-h-0 flex-1" : "hidden"}>
           <StreamViewPanel />
         </div>
       )}
@@ -123,7 +127,8 @@ export default function VoicePanel() {
       {/* Stream cards - stays mounted (hidden when expanded) to preserve card decoders */}
       {hasStreams && (
         <div className={fullscreenStream ? "hidden" : "flex flex-1 overflow-hidden"}>
-          {/* Left: Users */}
+          {/* NOTE: Participants list disabled — redundant with the channel sidebar.
+             Kept commented out in case we want to bring it back later.
           <div className="flex flex-col border-r border-border" style={{ width: "240px", minWidth: "240px" }}>
             <div className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-text-muted">
               Users — {participants.length}
@@ -167,8 +172,9 @@ export default function VoicePanel() {
               })}
             </div>
           </div>
+          */}
 
-          {/* Right: Stream cards */}
+          {/* Stream cards */}
           <div className="flex flex-1 flex-col overflow-hidden">
             <div className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-text-muted">
               Live — {activeStreams.length}
@@ -236,17 +242,47 @@ export default function VoicePanel() {
                           {stream.ownerUsername.charAt(0).toUpperCase()}
                         </div>
                         <div className="min-w-0 flex-1 text-left">
-                          <div className="truncate text-sm font-semibold text-text-bright">
-                            {stream.ownerUsername}
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate text-sm font-semibold text-text-bright">
+                              {stream.ownerUsername}
+                            </span>
+                            {stream.hasAudio && (
+                              <svg className="h-3.5 w-3.5 shrink-0 text-[#00bfff]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                                <path d="M15.54 8.46a5 5 0 010 7.07" />
+                              </svg>
+                            )}
                           </div>
                           <div className="text-[10px] text-text-muted">
                             {stream.resolutionWidth > 0
                               ? `${stream.resolutionWidth}x${stream.resolutionHeight}`
                               : ""}
                             {stream.fps > 0 ? ` · ${stream.fps}fps` : ""}
-                            {stream.hasAudio ? " · Audio" : ""}
                           </div>
                         </div>
+                        {isWatching && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              invoke("stop_watching", {
+                                serverId: connectedServerId,
+                                channelId: connectedChannelId,
+                                targetUsername: stream.ownerUsername,
+                              }).catch(() => {});
+                              useVoiceStore.getState().removeWatching(stream.ownerUsername);
+                            }}
+                            className="ml-auto flex h-7 items-center gap-1.5 rounded-md bg-error/10 px-2.5 text-[11px] font-semibold text-error transition-colors hover:bg-error/20"
+                          >
+                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <rect x="2" y="3" width="20" height="14" rx="2" />
+                              <line x1="8" y1="21" x2="16" y2="21" />
+                              <line x1="12" y1="17" x2="12" y2="21" />
+                              <line x1="7" y1="7" x2="17" y2="13" />
+                              <line x1="17" y1="7" x2="7" y2="13" />
+                            </svg>
+                            Stop Watching
+                          </button>
+                        )}
                       </div>
                     </button>
                   );
@@ -313,7 +349,7 @@ export default function VoicePanel() {
             className={`flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-semibold transition-colors ${
               isMuted
                 ? "bg-error/20 text-error"
-                : "bg-surface-hover text-text-muted hover:bg-surface-active"
+                : "bg-surface-active text-text-secondary hover:bg-border hover:text-text-primary"
             }`}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -341,7 +377,7 @@ export default function VoicePanel() {
             className={`flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-semibold transition-colors ${
               isDeafened
                 ? "bg-error/20 text-error"
-                : "bg-surface-hover text-text-muted hover:bg-surface-active"
+                : "bg-surface-active text-text-secondary hover:bg-border hover:text-text-primary"
             }`}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -361,7 +397,7 @@ export default function VoicePanel() {
             className={`flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-semibold transition-colors ${
               isStreaming
                 ? "bg-accent/20 text-accent hover:bg-accent/30"
-                : "bg-surface-hover text-text-muted hover:bg-surface-active"
+                : "bg-surface-active text-text-secondary hover:bg-border hover:text-text-primary"
             }`}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

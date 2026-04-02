@@ -68,13 +68,27 @@ export default function StreamViewPanel() {
   }, [appWindow, setIsFullscreen]);
 
   useEffect(() => {
-    if (!isFullscreen) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") exitFullscreen();
+      if (e.key === "Escape") {
+        if (isFullscreen) {
+          exitFullscreen();
+        } else {
+          useVoiceStore.getState().setFullscreenStream(null);
+        }
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isFullscreen, exitFullscreen]);
+
+  // Exit fullscreen when the watched stream ends (streamer leaves/stops)
+  useEffect(() => {
+    if (!isFullscreen || !displayUser) return;
+    const streamStillActive = activeStreams.some((s) => s.ownerUsername === displayUser);
+    if (!streamStillActive) {
+      exitFullscreen();
+    }
+  }, [isFullscreen, displayUser, activeStreams, exitFullscreen]);
 
   const handleVolumeChange = (value: number) => {
     setStreamVolume(value);
@@ -113,16 +127,26 @@ export default function StreamViewPanel() {
     }
   }, [isOwnStream]);
 
+  const [hoverControlsVisible, setHoverControlsVisible] = useState(false);
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout>>();
+
   const handleMouseMove = useCallback(() => {
-    if (!isFullscreen) return;
-    setOverlayVisible(true);
-    if (overlayTimeout.current) clearTimeout(overlayTimeout.current);
-    overlayTimeout.current = setTimeout(() => setOverlayVisible(false), 3000);
+    if (isFullscreen) {
+      setOverlayVisible(true);
+      if (overlayTimeout.current) clearTimeout(overlayTimeout.current);
+      overlayTimeout.current = setTimeout(() => setOverlayVisible(false), 3000);
+    } else {
+      setHoverControlsVisible(true);
+      if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
+      hoverTimeout.current = setTimeout(() => setHoverControlsVisible(false), 1500);
+    }
   }, [isFullscreen]);
 
   const handleMouseLeave = useCallback(() => {
     if (overlayTimeout.current) clearTimeout(overlayTimeout.current);
     setOverlayVisible(false);
+    if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
+    setHoverControlsVisible(false);
   }, []);
 
   const handleBackToCards = () => {
@@ -160,8 +184,8 @@ export default function StreamViewPanel() {
           : "flex flex-1 flex-col bg-bg-primary"
       }
     >
-      <div className="flex min-w-0 flex-1">
-        <div className={`flex min-w-0 flex-1 flex-col ${isFullscreen ? "" : "p-2"}`}>
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <div className={`flex min-h-0 min-w-0 flex-1 flex-col ${isFullscreen ? "" : "p-2"}`}>
           {/* Header bar — hidden in fullscreen */}
           {!isFullscreen && (
             <div className="mb-1.5 flex items-center gap-2">
@@ -200,22 +224,13 @@ export default function StreamViewPanel() {
                 )}
                 <button
                   onClick={handleBackToCards}
-                  className="rounded-md px-2 py-1 text-[10px] font-semibold text-text-secondary transition-colors hover:bg-surface-hover"
+                  className="flex h-6 w-6 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                  title="Back (Esc)"
                 >
-                  Back
-                </button>
-                <button
-                  onClick={handleStopWatching}
-                  className="rounded-md px-2 py-1 text-[10px] font-semibold text-error transition-colors hover:bg-error/10"
-                >
-                  Stop
-                </button>
-                <button
-                  onClick={enterFullscreen}
-                  className="flex h-6 w-6 items-center justify-center rounded-md bg-surface-hover text-xs transition-colors hover:bg-border"
-                  title="Fullscreen"
-                >
-                  &#x26F6;
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="19" y1="12" x2="5" y2="12" />
+                    <polyline points="12 19 5 12 12 5" />
+                  </svg>
                 </button>
               </div>
             </div>
@@ -223,19 +238,68 @@ export default function StreamViewPanel() {
 
           {/* Stream video — THE single player instance, never unmounts */}
           <div
-            className={`relative flex flex-1 items-center justify-center ${
+            className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden ${
               isFullscreen
-                ? `overflow-hidden ${overlayVisible ? "cursor-default" : "cursor-none"}`
+                ? `${overlayVisible ? "cursor-default" : "cursor-none"}`
                 : "cursor-pointer rounded-lg border border-border bg-bg-tertiary"
             }`}
             onClick={handleBackToCards}
-            onMouseMove={isFullscreen ? handleMouseMove : undefined}
-            onMouseLeave={isFullscreen ? handleMouseLeave : undefined}
+            onMouseMove={handleMouseMove}
+            onMouseLeave={handleMouseLeave}
           >
             <StreamVideoPlayer
               streamerUsername={displayUser}
               className={`h-full w-full object-contain ${isFullscreen ? "" : "rounded-lg"}`}
             />
+
+            {/* Non-fullscreen hover controls — bottom right */}
+            {!isFullscreen && (
+              <div
+                className={`absolute bottom-3 right-3 flex items-center gap-2 rounded-lg border border-white/10 bg-[#1e1f22]/90 px-2.5 py-1.5 shadow-xl backdrop-blur-sm transition-opacity duration-200 ${
+                  hoverControlsVisible ? "opacity-100" : "pointer-events-none opacity-0"
+                }`}
+                onClick={(e) => e.stopPropagation()}
+                onMouseEnter={() => {
+                  if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
+                  setHoverControlsVisible(true);
+                }}
+              >
+                {!isOwnStream && stream?.hasAudio && (
+                  <>
+                    <button
+                      onClick={toggleMute}
+                      className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+                        streamVolume === 0
+                          ? "text-error hover:bg-white/10"
+                          : "text-white/80 hover:bg-white/10 hover:text-white"
+                      }`}
+                      title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
+                    >
+                      <VolumeIcon muted={streamVolume === 0} />
+                    </button>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={streamVolume}
+                      onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                      className="h-1 w-16 cursor-pointer appearance-none rounded-full bg-white/20 accent-accent [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent"
+                      title={`Stream volume: ${streamVolume}%`}
+                    />
+                    <div className="mx-0.5 h-5 w-px bg-white/15" />
+                  </>
+                )}
+                <button
+                  onClick={enterFullscreen}
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                  title="Fullscreen"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+                  </svg>
+                </button>
+              </div>
+            )}
 
             {/* Fullscreen bottom control bar — slides up/down */}
             {isFullscreen && (
@@ -367,9 +431,12 @@ export default function StreamViewPanel() {
                     className="flex h-9 items-center gap-1.5 rounded-lg bg-error/80 px-3 text-[12px] font-semibold text-white transition-colors hover:bg-error"
                     title="Stop watching"
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                      <rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" stroke="none" />
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="3" width="20" height="14" rx="2" />
+                      <line x1="8" y1="21" x2="16" y2="21" />
+                      <line x1="12" y1="17" x2="12" y2="21" />
+                      <line x1="7" y1="7" x2="17" y2="13" />
+                      <line x1="17" y1="7" x2="7" y2="13" />
                     </svg>
                     Stop Watching
                   </button>

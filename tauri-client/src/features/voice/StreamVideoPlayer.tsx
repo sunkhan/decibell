@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -30,6 +30,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const descriptionRef = useRef<ArrayBuffer | null>(null);
   const needsKeyframeRef = useRef(true);
+  const [hasFirstFrame, setHasFirstFrame] = useState(false);
 
   const configureDecoder = useCallback((decoder: VideoDecoder, description?: ArrayBuffer) => {
     const config: VideoDecoderConfig = {
@@ -68,6 +69,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     let firstRemoteTs = -1;
     let firstLocalTs = -1;
 
+    let firstFrameSignalled = false;
     const decoder = new VideoDecoder({
       output: (frame: VideoFrame) => {
         const ctx = ctxRef.current;
@@ -79,6 +81,10 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
           ctx.drawImage(frame, 0, 0);
         }
         frame.close();
+        if (!firstFrameSignalled) {
+          firstFrameSignalled = true;
+          setHasFirstFrame(true);
+        }
       },
       error: handleDecoderError,
     });
@@ -159,13 +165,24 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       }
       decoderRef.current = null;
       descriptionRef.current = null;
+      setHasFirstFrame(false);
     };
   }, [streamerUsername, handleDecoderError, configureDecoder]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      className={className ?? "h-full w-full object-contain"}
-    />
+    <div className="relative h-full w-full">
+      {!hasFirstFrame && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <svg className="h-8 w-8 animate-spin text-[#00bfff]" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+        </div>
+      )}
+      <canvas
+        ref={canvasRef}
+        className={`${className ?? "h-full w-full object-contain"} ${hasFirstFrame ? "" : "opacity-0"}`}
+      />
+    </div>
   );
 }

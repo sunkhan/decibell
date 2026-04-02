@@ -1,6 +1,6 @@
 [package]
 name = "decibell"
-version = "0.2.0"
+version = "0.2.1"
 description = "Decibell - decentralized text/voice chat and streaming app"
 authors = ["you"]
 edition = "2021"

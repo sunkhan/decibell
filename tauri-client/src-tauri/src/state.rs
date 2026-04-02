@@ -18,6 +18,10 @@ pub struct AppState {
     pub audio_stream_engine: Option<AudioStreamEngine>,
     pub connected_voice_server: Option<String>,
     pub connected_voice_channel: Option<String>,
+    /// Persisted mute/deafen state across voice disconnects so the user
+    /// stays muted/deafened when reconnecting to another channel.
+    pub voice_muted: bool,
+    pub voice_deafened: bool,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;

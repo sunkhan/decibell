@@ -70,9 +70,8 @@ export default function ServerBar() {
         }`}
         title="Home"
       >
-        <svg className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M3 12l9-9 9 9" />
-          <path d="M9 21V12h6v9" />
+        <svg className="h-[20px] w-[20px]" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 3l-9.5 8.5c-.3.27-.15.5.25.5H5v8a1 1 0 001 1h4v-5.5a1 1 0 011-1h2a1 1 0 011 1V21h4a1 1 0 001-1v-8h2.25c.4 0 .55-.23.25-.5L12 3z" />
         </svg>
       </button>
 
@@ -142,7 +141,10 @@ export default function ServerBar() {
           }`}
           title="Add Server"
         >
-          +
+          <svg className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
         </button>
         {showMenu && (
           <div className="absolute left-0 top-full z-50 mt-2 w-48 rounded-xl border border-border bg-bg-secondary p-1.5 shadow-2xl">
