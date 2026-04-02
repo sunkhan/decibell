@@ -101,6 +101,8 @@ fn frame_to_jpeg_thumbnail(frame: &RawFrame) -> Option<Vec<u8>> {
 /// and the server would reject the packets.
 pub fn run_video_send_pipeline(
     frame_rx: std::sync::mpsc::Receiver<RawFrame>,
+    #[cfg(target_os = "linux")]
+    gpu_frame_rx: Option<std::sync::mpsc::Receiver<super::capture::DmaBufFrame>>,
     control_rx: std::sync::mpsc::Receiver<VideoPipelineControl>,
     event_tx: std::sync::mpsc::Sender<VideoPipelineEvent>,
     socket: Arc<UdpSocket>,
@@ -108,7 +110,79 @@ pub fn run_video_send_pipeline(
     config: EncoderConfig,
     target_fps: u32,
 ) {
-    // Initialize encoder
+    // Try GPU zero-copy path (Linux only). All GPU init happens on this thread.
+    #[cfg(target_os = "linux")]
+    let mut gpu_ctx = super::gpu_interop::GpuContext::new();
+
+    #[cfg(target_os = "linux")]
+    let _using_gpu = gpu_ctx.is_some() && gpu_frame_rx.is_some();
+
+    // Create encoder — use VAAPI-specific constructor when VAAPI backend is active
+    #[cfg(target_os = "linux")]
+    let mut encoder = if let Some(ref mut gpu) = gpu_ctx {
+        match gpu.backend_type() {
+            super::gpu_interop::GpuBackendType::Vaapi => {
+                // Initialize VAAPI frames context first
+                if let Err(e) = gpu.init_vaapi_frames(config.width, config.height) {
+                    eprintln!("[video-send] VAAPI frames init failed: {}", e);
+                    match H264Encoder::new(&config) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            let _ = event_tx.send(VideoPipelineEvent::Error(e));
+                            return;
+                        }
+                    }
+                } else {
+                    match H264Encoder::new_vaapi(
+                        &config,
+                        gpu.vaapi_device_ref(),
+                        gpu.vaapi_frames_ref(),
+                    ) {
+                        Ok(e) => {
+                            eprintln!("[video-send] VA-API zero-copy encoding enabled");
+                            e
+                        }
+                        Err(e) => {
+                            eprintln!("[video-send] VAAPI encoder failed ({}), falling back", e);
+                            match H264Encoder::new(&config) {
+                                Ok(e) => e,
+                                Err(e) => {
+                                    let _ = event_tx.send(VideoPipelineEvent::Error(e));
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            super::gpu_interop::GpuBackendType::Cuda => {
+                match H264Encoder::new(&config) {
+                    Ok(mut e) => {
+                        match e.init_cuda_hw() {
+                            Ok(()) => eprintln!("[video-send] CUDA zero-copy encoding enabled"),
+                            Err(err) => eprintln!("[video-send] CUDA hw init failed ({}), CPU fallback", err),
+                        }
+                        e
+                    }
+                    Err(e) => {
+                        let _ = event_tx.send(VideoPipelineEvent::Error(e));
+                        return;
+                    }
+                }
+            }
+        }
+    } else {
+        match H264Encoder::new(&config) {
+            Ok(e) => e,
+            Err(e) => {
+                let _ = event_tx.send(VideoPipelineEvent::Error(e));
+                return;
+            }
+        }
+    };
+
+    // Windows: standard encoder, no GPU context
+    #[cfg(not(target_os = "linux"))]
     let mut encoder = match H264Encoder::new(&config) {
         Ok(e) => e,
         Err(e) => {
@@ -121,14 +195,15 @@ pub fn run_video_send_pipeline(
     eprintln!("[video-send] Pipeline started, target {}fps", target_fps);
 
     let mut frame_id: u32 = 0;
-    let frame_interval = Duration::from_secs_f64(1.0 / target_fps as f64);
     let mut last_frame_time = Instant::now();
 
     // Cache the last frame for re-sending during idle periods (e.g. PipeWire
     // damage-based capture sends nothing when the screen is static). Re-sending
     // at a low rate keeps keyframes flowing so new viewers can join.
+    // Stored directly — no clone needed since the frame is moved from the channel.
     let mut last_frame: Option<RawFrame> = None;
     let repeat_interval = Duration::from_millis(500);
+    let mut have_new_frame = false;
 
     // Thumbnail generation: every 5 seconds, encode a JPEG from the raw frame
     let thumbnail_interval = Duration::from_secs(5);
@@ -145,71 +220,145 @@ pub fn run_video_send_pipeline(
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
 
-        // Frame rate limiting: skip frames that arrive faster than target
-        let now = Instant::now();
-        if now.duration_since(last_frame_time) < frame_interval {
-            match frame_rx.recv_timeout(Duration::from_millis(1)) {
-                Ok(_frame) => continue, // drop frame, too soon
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+        // ── Receive frame: try GPU channel first (Linux), then CPU channel ──
+        let mut got_gpu_frame = false;
+        #[cfg(target_os = "linux")]
+        let mut gpu_frame_opt: Option<super::capture::DmaBufFrame> = None;
+
+        #[cfg(target_os = "linux")]
+        if let Some(ref gpu_rx) = gpu_frame_rx {
+            match gpu_rx.try_recv() {
+                Ok(gf) => {
+                    gpu_frame_opt = Some(gf);
+                    got_gpu_frame = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
+        if !got_gpu_frame {
+            // CPU frame path (RawFrame)
+            match frame_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(f) => {
+                    last_frame = Some(f);
+                    have_new_frame = true;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if last_frame_time.elapsed() >= repeat_interval && last_frame.is_some() {
+                        have_new_frame = false;
+                    } else {
+                        continue;
+                    }
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
 
-        // Receive frame — or repeat the last frame if idle too long
-        let frame = match frame_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(f) => {
-                last_frame = Some(RawFrame {
-                    data: f.data.clone(),
-                    width: f.width,
-                    height: f.height,
-                    stride: f.stride,
-                    pixel_format: f.pixel_format,
-                    timestamp_us: f.timestamp_us,
-                });
-                f
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                // No new frame — re-send last frame if idle long enough
-                if last_frame_time.elapsed() >= repeat_interval {
-                    if let Some(ref cached) = last_frame {
-                        RawFrame {
-                            data: cached.data.clone(),
-                            width: cached.width,
-                            height: cached.height,
-                            stride: cached.stride,
-                            pixel_format: cached.pixel_format,
-                            timestamp_us: cached.timestamp_us,
-                        }
-                    } else {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        };
-        last_frame_time = Instant::now();
-
-        // Generate thumbnail periodically
-        if last_frame_time.duration_since(last_thumbnail_time) >= thumbnail_interval {
-            last_thumbnail_time = last_frame_time;
-            if let Some(jpeg) = frame_to_jpeg_thumbnail(&frame) {
-                eprintln!("[video-send] Thumbnail generated: {} bytes", jpeg.len());
-                let _ = event_tx.send(VideoPipelineEvent::ThumbnailReady(jpeg));
-            }
+        if have_new_frame || got_gpu_frame {
+            last_frame_time = Instant::now();
         }
 
-        // Encode — dispatch based on pixel format
-        let encode_result = match frame.pixel_format {
-            PixelFormat::NV12 => {
-                encoder.encode_nv12_frame(&frame.data, frame.width, frame.height)
+        // ── Encode ──
+        #[cfg(target_os = "linux")]
+        let encode_result = if let Some(ref dmabuf) = gpu_frame_opt {
+            // GPU zero-copy encode
+            if let Some(ref mut gpu) = gpu_ctx {
+                use std::os::fd::AsRawFd;
+                match gpu.backend_type() {
+                    super::gpu_interop::GpuBackendType::Cuda => {
+                        if encoder.has_cuda_hw() {
+                            match gpu.import_dmabuf_cuda(
+                                dmabuf.fd.as_raw_fd(),
+                                dmabuf.width, dmabuf.height,
+                                dmabuf.stride, dmabuf.drm_format, dmabuf.modifier,
+                            ) {
+                                Some(dev_ptr) => {
+                                    gpu.push_cuda_ctx();
+                                    let r = encoder.encode_cuda_frame(dev_ptr, dmabuf.width, dmabuf.height);
+                                    gpu.pop_cuda_ctx();
+                                    r
+                                }
+                                None => {
+                                    eprintln!("[video-send] CUDA import failed, skipping frame");
+                                    continue;
+                                }
+                            }
+                        } else {
+                            continue;
+                        }
+                    }
+                    super::gpu_interop::GpuBackendType::Vaapi => {
+                        match gpu.map_dmabuf_vaapi(
+                            dmabuf.fd.as_raw_fd(),
+                            dmabuf.width, dmabuf.height,
+                            dmabuf.stride, dmabuf.drm_format, dmabuf.modifier,
+                        ) {
+                            Some(mut vaapi_frame) => {
+                                encoder.encode_vaapi_frame(&mut vaapi_frame)
+                            }
+                            None => {
+                                eprintln!("[video-send] VAAPI map failed, skipping frame");
+                                continue;
+                            }
+                        }
+                    }
+                }
+            } else {
+                continue;
             }
-            PixelFormat::BGRA | PixelFormat::RGBA => {
-                let is_bgra = frame.pixel_format == PixelFormat::BGRA;
-                encoder.encode_bgra_frame(
-                    &frame.data, frame.width, frame.height, frame.stride, is_bgra,
-                )
+        } else {
+            // CPU encode path (RawFrame) — also the Linux fallback
+            let frame = last_frame.as_ref().unwrap();
+
+            // Generate thumbnail periodically (only for CPU frames — GPU frames aren't CPU-accessible)
+            let now_for_thumb = Instant::now();
+            if now_for_thumb.duration_since(last_thumbnail_time) >= thumbnail_interval {
+                last_thumbnail_time = now_for_thumb;
+                if let Some(jpeg) = frame_to_jpeg_thumbnail(frame) {
+                    eprintln!("[video-send] Thumbnail generated: {} bytes", jpeg.len());
+                    let _ = event_tx.send(VideoPipelineEvent::ThumbnailReady(jpeg));
+                }
+            }
+
+            match frame.pixel_format {
+                PixelFormat::NV12 => {
+                    encoder.encode_nv12_frame(&frame.data, frame.width, frame.height)
+                }
+                PixelFormat::BGRA | PixelFormat::RGBA => {
+                    let is_bgra = frame.pixel_format == PixelFormat::BGRA;
+                    encoder.encode_bgra_frame(
+                        &frame.data, frame.width, frame.height, frame.stride, is_bgra,
+                    )
+                }
+            }
+        };
+
+        // Windows: CPU-only encode path (unchanged)
+        #[cfg(not(target_os = "linux"))]
+        let encode_result = {
+            let frame = last_frame.as_ref().unwrap();
+
+            // Generate thumbnail periodically
+            let now_for_thumb = Instant::now();
+            if now_for_thumb.duration_since(last_thumbnail_time) >= thumbnail_interval {
+                last_thumbnail_time = now_for_thumb;
+                if let Some(jpeg) = frame_to_jpeg_thumbnail(frame) {
+                    eprintln!("[video-send] Thumbnail generated: {} bytes", jpeg.len());
+                    let _ = event_tx.send(VideoPipelineEvent::ThumbnailReady(jpeg));
+                }
+            }
+
+            match frame.pixel_format {
+                PixelFormat::NV12 => {
+                    encoder.encode_nv12_frame(&frame.data, frame.width, frame.height)
+                }
+                PixelFormat::BGRA | PixelFormat::RGBA => {
+                    let is_bgra = frame.pixel_format == PixelFormat::BGRA;
+                    encoder.encode_bgra_frame(
+                        &frame.data, frame.width, frame.height, frame.stride, is_bgra,
+                    )
+                }
             }
         };
 

@@ -432,6 +432,8 @@ impl VideoEngine {
             .spawn(move || {
                 video_pipeline::run_video_send_pipeline(
                     frame_rx,
+                    #[cfg(target_os = "linux")]
+                    None, // GPU frame receiver wired in Task 7
                     control_rx,
                     event_tx,
                     socket,
