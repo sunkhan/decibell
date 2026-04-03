@@ -425,21 +425,30 @@ pub fn run_audio_pipeline(
             }
 
             // Resample 48kHz → output_sample_rate using sinc resampler.
-            // 1) Drain all available samples from ring buffers, mix into accum
-            let avail_voice = voice_guard.occupied_len();
-            let avail_stream = stream_guard.occupied_len();
-            let take = avail_voice.max(avail_stream);
-            for _ in 0..take {
-                let v = voice_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
-                let s = stream_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
-                pb_accum.push((v + s).clamp(-1.0, 1.0));
-            }
-            // Release locks immediately — no longer needed
-            drop(voice_guard);
-            drop(stream_guard);
-
-            // 2) Feed accumulation buffer into sinc resampler in chunks
+            // 1) Demand-driven drain: only take enough 48kHz samples from the
+            //    ring buffers to produce the output frames this callback needs,
+            //    plus a small margin. This prevents either buffer from growing
+            //    unbounded when both voice and stream audio are active.
             if let Some(ref mut resampler) = pb_resampler {
+                // How many 48kHz input samples we need for mono_frames_needed output
+                let ratio_in_out = SAMPLE_RATE as f64 / output_sample_rate as f64;
+                let deficit = mono_frames_needed as i64 - pb_resampled.len() as i64;
+                let needed_48k = if deficit > 0 {
+                    ((deficit as f64) * ratio_in_out + 16.0).ceil() as usize
+                } else {
+                    0
+                };
+                // Drain only what we need from the ring buffers
+                let drain_count = needed_48k.saturating_sub(pb_accum.len());
+                for _ in 0..drain_count {
+                    let v = voice_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
+                    let s = stream_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
+                    pb_accum.push((v + s).clamp(-1.0, 1.0));
+                }
+                drop(voice_guard);
+                drop(stream_guard);
+
+                // 2) Feed accumulation buffer into sinc resampler in chunks
                 let mut needed = resampler.input_frames_next();
                 while pb_accum.len() >= needed {
                     let chunk: Vec<f64> = pb_accum.drain(..needed).collect();
@@ -450,6 +459,9 @@ pub fn run_audio_pipeline(
                     }
                     needed = resampler.input_frames_next();
                 }
+            } else {
+                drop(voice_guard);
+                drop(stream_guard);
             }
 
             // 3) Fill output from resampled buffer
@@ -576,7 +588,7 @@ pub fn run_audio_pipeline(
                 }
             };
 
-            if let Some(frame) = frame_opt {
+            if let Some(mut frame) = frame_opt {
                 // Compute RMS in dB for threshold check
                 let rms = {
                     let sum_sq: f64 = frame.iter().map(|&s| (s as f64) * (s as f64)).sum();
@@ -595,10 +607,22 @@ pub fn run_audio_pipeline(
                         event_tx.send(VoiceEvent::SpeakingChanged("__local__".to_string(), state));
                 }
 
+                // Always encode the real audio to keep Opus state continuous.
+                // When muted, encode true silence. When below voice threshold,
+                // apply a smooth fade-out ramp to avoid a hard discontinuity
+                // (which causes pops on the receiver side).
                 let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
-                let encode_result = if muted || !above_threshold {
+                let encode_result = if muted {
                     encoder.encode_silence(&mut opus_out)
                 } else {
+                    if !above_threshold {
+                        // Smooth fade-out over the frame to avoid pop
+                        let len = frame.len();
+                        for (i, s) in frame.iter_mut().enumerate() {
+                            let fade = 1.0 - (i as f32 / len as f32);
+                            *s = ((*s as f32) * fade) as i16;
+                        }
+                    }
                     encoder.encode(&frame, &mut opus_out)
                 };
 

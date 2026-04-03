@@ -877,7 +877,7 @@ private:
 
                     constexpr int SID = chatproj::SENDER_ID_SIZE;
                     // Minimum packet sizes: 1 (type) + SENDER_ID_SIZE + fields
-                    if (packet_type == chatproj::UdpPacketType::AUDIO && bytes_recvd >= 1 + SID + 4) {
+                    if ((packet_type == chatproj::UdpPacketType::AUDIO || packet_type == chatproj::UdpPacketType::STREAM_AUDIO) && bytes_recvd >= 1 + SID + 4) {
                         chatproj::UdpAudioPacket* packet = reinterpret_cast<chatproj::UdpAudioPacket*>(udp_buffer_);
                         for (int i = 0; i < SID; ++i) {
                             if (packet->sender_id[i] == '\0') break;
@@ -945,16 +945,21 @@ private:
                                 // Rewrite sender_id with authenticated username for all broadcast packet types
                                 // sender_id is at offset 1 in AUDIO, VIDEO, and FEC packets
                                 if (packet_type == chatproj::UdpPacketType::AUDIO ||
+                                    packet_type == chatproj::UdpPacketType::STREAM_AUDIO ||
                                     packet_type == chatproj::UdpPacketType::VIDEO ||
                                     packet_type == chatproj::UdpPacketType::FEC) {
-                                    // sender_id is at bytes [1..32] for all three packet types
+                                    // sender_id is at bytes [1..32] for all these packet types
                                     std::memset(udp_buffer_ + 1, 0, chatproj::SENDER_ID_SIZE);
                                     std::memcpy(udp_buffer_ + 1, uname.c_str(), std::min(uname.size(), size_t(chatproj::SENDER_ID_SIZE - 1)));
                                 }
 
-                                // Route based on packet type: audio to all voice members, video/FEC to watchers only
+                                // Route based on packet type
                                 if (packet_type == chatproj::UdpPacketType::AUDIO) {
+                                    // Voice audio → all voice channel members
                                     manager_.broadcast_to_voice_channel(udp_buffer_, bytes_recvd, channel, session, udp_socket_);
+                                } else if (packet_type == chatproj::UdpPacketType::STREAM_AUDIO) {
+                                    // Stream audio → watchers of this streamer only
+                                    manager_.broadcast_to_watchers(udp_buffer_, bytes_recvd, channel, session->get_username(), udp_socket_);
                                 } else if (packet_type == chatproj::UdpPacketType::VIDEO || packet_type == chatproj::UdpPacketType::FEC) {
                                     manager_.broadcast_to_watchers(udp_buffer_, bytes_recvd, channel, session->get_username(), udp_socket_);
                                 }

@@ -21,7 +21,8 @@ enum UdpPacketType : uint8_t {
     KEYFRAME_REQUEST = 2,
     NACK = 3,
     FEC = 4,
-    PING = 5
+    PING = 5,
+    STREAM_AUDIO = 6
 };
 
 // Max missing packet indices per NACK — keeps packet under MTU
