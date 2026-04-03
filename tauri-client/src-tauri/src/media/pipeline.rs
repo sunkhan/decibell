@@ -20,7 +20,7 @@ use super::video_receiver::ReassembledFrame;
 
 // ── Sinc resampler helper ────────────────────────────────────────────────────
 
-fn make_sinc_resampler(from_rate: u32, to_rate: u32, chunk_size: usize) -> SincFixedOut<f64> {
+fn make_sinc_resampler(from_rate: u32, to_rate: u32, chunk_size: usize, channels: usize) -> SincFixedOut<f64> {
     let params = SincInterpolationParameters {
         sinc_len: 64,
         f_cutoff: 0.95,
@@ -33,7 +33,7 @@ fn make_sinc_resampler(from_rate: u32, to_rate: u32, chunk_size: usize) -> SincF
         1.1, // max relative input size variation
         params,
         chunk_size,
-        1, // mono
+        channels,
     ).expect("failed to create sinc resampler")
 }
 
@@ -44,6 +44,7 @@ pub enum ControlMessage {
     SetDeafen(bool),
     SetVoiceThreshold(f32), // dB threshold (-60 to 0); below this, send silence
     SetStreamVolume(f32),   // 0.0 to 1.0 — viewer-side stream audio volume
+    SetStreamStereo(bool),  // true = preserve L/R stereo in stream audio
     SetUserVolume(String, f32), // username, linear gain (dB-converted on frontend)
     Shutdown,
 }
@@ -88,7 +89,17 @@ impl JitterBuffer {
             self.next_seq = seq;
             self.initialized = true;
         }
-        // Only accept if seq is at or ahead of the play cursor
+        // Detect sequence reset (user left and rejoined): if the incoming seq
+        // appears to be far behind next_seq, it's actually a fresh sequence
+        // starting from 0. Reinitialize the buffer to accept the new stream.
+        let diff = seq.wrapping_sub(self.next_seq);
+        if diff >= 32768 {
+            // seq is "behind" next_seq by more than half the u16 range —
+            // this is a wraparound/reset, not a late packet.
+            self.packets.clear();
+            self.next_seq = seq;
+            self.ready = false;
+        }
         let diff = seq.wrapping_sub(self.next_seq);
         if diff < 32768 {
             self.packets.insert(seq, data);
@@ -308,7 +319,7 @@ pub fn run_audio_pipeline(
                 Arc::new(std::sync::Mutex::new(None))
             } else {
                 // Use 480-sample output chunks (10ms at 48kHz) for low latency
-                Arc::new(std::sync::Mutex::new(Some(make_sinc_resampler(input_sample_rate, SAMPLE_RATE, 480))))
+                Arc::new(std::sync::Mutex::new(Some(make_sinc_resampler(input_sample_rate, SAMPLE_RATE, 480, 1))))
             };
             let cap_resampler = Arc::clone(&capture_resampler_mutex);
             // Accumulation buffer for resampler input (resampler needs full chunks)
@@ -377,21 +388,35 @@ pub fn run_audio_pipeline(
     };
 
     // ── Output (playback) stream ──────────────────────────────────────────────
+    let stream_stereo = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let voice_cons_out = Arc::clone(&voice_cons);
     let stream_cons_out = Arc::clone(&stream_cons);
+    let pb_stream_stereo = Arc::clone(&stream_stereo); // shared with playback closure
 
     let out_ch = output_channels;
     let passthrough_playback = output_sample_rate == SAMPLE_RATE;
     // Sinc resampler + its buffers are owned by the closure — no mutexes in
     // the real-time callback. Only the ring buffer consumers need a lock
     // (brief, uncontended).
-    let mut pb_resampler: Option<SincFixedOut<f64>> = if passthrough_playback {
+    // Voice is always mono (1-channel resampler).
+    let mut pb_voice_resampler: Option<SincFixedOut<f64>> = if passthrough_playback {
         None
     } else {
-        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480))
+        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 1))
     };
-    let mut pb_accum: Vec<f64> = Vec::new();
-    let mut pb_resampled: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
+    let mut pb_voice_accum: Vec<f64> = Vec::new();
+    let mut pb_voice_resampled: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
+    // Stream audio resampler: always 2-channel so stereo can be toggled at
+    // runtime. In mono mode we feed identical data to both channels.
+    let mut pb_stream_resampler: Option<SincFixedOut<f64>> = if passthrough_playback {
+        None
+    } else {
+        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2))
+    };
+    let mut pb_stream_accum_l: Vec<f64> = Vec::new();
+    let mut pb_stream_accum_r: Vec<f64> = Vec::new();
+    let mut pb_stream_resampled_l: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
+    let mut pb_stream_resampled_r: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
     // Use f32 output — Windows WASAPI defaults to f32; i16 is often unsupported.
     let output_stream = match output_device.build_output_stream(
         &stream_config,
@@ -414,67 +439,123 @@ pub fn run_audio_pipeline(
                 } else {
                     for frame in data.chunks_exact_mut(out_ch as usize) {
                         let v = voice_guard.try_pop().unwrap_or(0) as i32;
-                        let s = stream_guard.try_pop().unwrap_or(0) as i32;
-                        let mixed = (v + s).clamp(-32768, 32767) as f32 / 32768.0;
-                        for ch in frame.iter_mut() {
-                            *ch = mixed;
+                        if pb_stream_stereo.load(std::sync::atomic::Ordering::Relaxed) && out_ch >= 2 {
+                            // Stream audio is stereo (interleaved L,R in ring buffer)
+                            let sl = stream_guard.try_pop().unwrap_or(0) as i32;
+                            let sr = stream_guard.try_pop().unwrap_or(0) as i32;
+                            let left = (v + sl).clamp(-32768, 32767) as f32 / 32768.0;
+                            let right = (v + sr).clamp(-32768, 32767) as f32 / 32768.0;
+                            frame[0] = left;
+                            frame[1] = right;
+                            for ch in &mut frame[2..] {
+                                *ch = left; // extra channels get left
+                            }
+                        } else {
+                            let s = stream_guard.try_pop().unwrap_or(0) as i32;
+                            let mixed = (v + s).clamp(-32768, 32767) as f32 / 32768.0;
+                            for ch in frame.iter_mut() {
+                                *ch = mixed;
+                            }
                         }
                     }
                 }
                 return;
             }
 
-            // Resample 48kHz → output_sample_rate using sinc resampler.
-            // 1) Demand-driven drain: only take enough 48kHz samples from the
-            //    ring buffers to produce the output frames this callback needs,
-            //    plus a small margin. This prevents either buffer from growing
-            //    unbounded when both voice and stream audio are active.
-            if let Some(ref mut resampler) = pb_resampler {
-                // How many 48kHz input samples we need for mono_frames_needed output
+            // Resample 48kHz → output_sample_rate using sinc resamplers.
+            // Voice and stream are resampled independently so stereo stream
+            // audio can use a 2-channel resampler while voice stays mono.
+            let needs_resample = pb_voice_resampler.is_some();
+            if needs_resample {
+                let voice_rs = pb_voice_resampler.as_mut().unwrap();
+                let stream_rs = pb_stream_resampler.as_mut().unwrap();
                 let ratio_in_out = SAMPLE_RATE as f64 / output_sample_rate as f64;
-                let deficit = mono_frames_needed as i64 - pb_resampled.len() as i64;
-                let needed_48k = if deficit > 0 {
-                    ((deficit as f64) * ratio_in_out + 16.0).ceil() as usize
-                } else {
-                    0
-                };
-                // Drain only what we need from the ring buffers
-                let drain_count = needed_48k.saturating_sub(pb_accum.len());
-                for _ in 0..drain_count {
-                    let v = voice_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
-                    let s = stream_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
-                    pb_accum.push((v + s).clamp(-1.0, 1.0));
+
+                // -- Voice (mono) --
+                let voice_chunk_in = voice_rs.input_frames_next();
+                let voice_deficit = mono_frames_needed as i64 - pb_voice_resampled.len() as i64;
+                let voice_needed_48k = if voice_deficit > 0 {
+                    let raw = ((voice_deficit as f64) * ratio_in_out + 16.0).ceil() as usize;
+                    raw.max(voice_chunk_in)
+                } else { 0 };
+                let voice_drain = voice_needed_48k.saturating_sub(pb_voice_accum.len());
+                for _ in 0..voice_drain {
+                    pb_voice_accum.push(voice_guard.try_pop().unwrap_or(0) as f64 / 32768.0);
                 }
+
+                // -- Stream audio --
+                let stream_chunk_in = stream_rs.input_frames_next();
+                let stream_deficit = mono_frames_needed as i64 - pb_stream_resampled_l.len() as i64;
+                let stream_needed_48k = if stream_deficit > 0 {
+                    let raw = ((stream_deficit as f64) * ratio_in_out + 16.0).ceil() as usize;
+                    raw.max(stream_chunk_in)
+                } else { 0 };
+                // Read stereo flag once per callback for consistency
+                let is_stereo = pb_stream_stereo.load(std::sync::atomic::Ordering::Relaxed);
+
+                let stream_drain = stream_needed_48k.saturating_sub(pb_stream_accum_l.len());
+                for _ in 0..stream_drain {
+                    if is_stereo {
+                        pb_stream_accum_l.push(stream_guard.try_pop().unwrap_or(0) as f64 / 32768.0);
+                        pb_stream_accum_r.push(stream_guard.try_pop().unwrap_or(0) as f64 / 32768.0);
+                    } else {
+                        let mono = stream_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
+                        pb_stream_accum_l.push(mono);
+                        pb_stream_accum_r.push(mono); // duplicate for 2-ch resampler
+                    }
+                }
+
                 drop(voice_guard);
                 drop(stream_guard);
 
-                // 2) Feed accumulation buffer into sinc resampler in chunks
-                let mut needed = resampler.input_frames_next();
-                while pb_accum.len() >= needed {
-                    let chunk: Vec<f64> = pb_accum.drain(..needed).collect();
-                    if let Ok(out) = resampler.process(&[&chunk], None) {
+                // Feed voice resampler (1-channel)
+                let mut needed = voice_rs.input_frames_next();
+                while pb_voice_accum.len() >= needed {
+                    let chunk: Vec<f64> = pb_voice_accum.drain(..needed).collect();
+                    if let Ok(out) = voice_rs.process(&[&chunk], None) {
                         for &s in &out[0] {
-                            pb_resampled.push_back(s);
+                            pb_voice_resampled.push_back(s);
                         }
                     }
-                    needed = resampler.input_frames_next();
+                    needed = voice_rs.input_frames_next();
+                }
+
+                // Feed stream resampler (always 2-channel)
+                let mut needed = stream_rs.input_frames_next();
+                while pb_stream_accum_l.len() >= needed && pb_stream_accum_r.len() >= needed {
+                    let chunk_l: Vec<f64> = pb_stream_accum_l.drain(..needed).collect();
+                    let chunk_r: Vec<f64> = pb_stream_accum_r.drain(..needed).collect();
+                    if let Ok(out) = stream_rs.process(&[&chunk_l, &chunk_r], None) {
+                        for &s in &out[0] { pb_stream_resampled_l.push_back(s); }
+                        for &s in &out[1] { pb_stream_resampled_r.push_back(s); }
+                    }
+                    needed = stream_rs.input_frames_next();
                 }
             } else {
                 drop(voice_guard);
                 drop(stream_guard);
             }
 
-            // 3) Fill output from resampled buffer
+            // 3) Fill output from resampled buffers (mix voice + stream)
+            // Resampler always outputs 2 channels (L/R). In mono mode both
+            // channels are identical so we can always write L→ch0, R→ch1.
             if out_ch == 1 {
                 for sample in data.iter_mut() {
-                    *sample = pb_resampled.pop_front().unwrap_or(0.0) as f32;
+                    let v = pb_voice_resampled.pop_front().unwrap_or(0.0);
+                    let sl = pb_stream_resampled_l.pop_front().unwrap_or(0.0);
+                    let _ = pb_stream_resampled_r.pop_front(); // discard R for mono output
+                    *sample = (v + sl).clamp(-1.0, 1.0) as f32;
                 }
             } else {
                 for frame in data.chunks_exact_mut(out_ch as usize) {
-                    let s = pb_resampled.pop_front().unwrap_or(0.0) as f32;
-                    for ch in frame.iter_mut() {
-                        *ch = s;
-                    }
+                    let v = pb_voice_resampled.pop_front().unwrap_or(0.0);
+                    let sl = pb_stream_resampled_l.pop_front().unwrap_or(0.0);
+                    let sr = pb_stream_resampled_r.pop_front().unwrap_or(0.0);
+                    let left = (v + sl).clamp(-1.0, 1.0) as f32;
+                    let right = (v + sr).clamp(-1.0, 1.0) as f32;
+                    frame[0] = left;
+                    frame[1] = right;
+                    for ch in &mut frame[2..] { *ch = left; }
                 }
             }
         },
@@ -563,6 +644,9 @@ pub fn run_audio_pipeline(
                 }
                 Ok(ControlMessage::SetStreamVolume(v)) => {
                     stream_volume = v.clamp(0.0, 1.0);
+                }
+                Ok(ControlMessage::SetStreamStereo(enabled)) => {
+                    stream_stereo.store(enabled, std::sync::atomic::Ordering::Relaxed);
                 }
                 Ok(ControlMessage::SetUserVolume(username, gain)) => {
                     eprintln!("[pipeline] SetUserVolume: '{}' → gain={:.3}", username, gain);
@@ -674,9 +758,11 @@ pub fn run_audio_pipeline(
         // The dedicated recv thread reads the UDP socket and dispatches packets
         // by type. We only see audio/ping/keyframe-request packets here — video
         // packets go directly to the video thread, never touching this loop.
+        let mut pkt_count_this_iter = 0u32;
         loop {
             match audio_pkt_rx.try_recv() {
                 Ok(raw) => {
+                    pkt_count_this_iter += 1;
                     if raw.len() == PACKET_TOTAL_SIZE {
                         if let Some(pkt) = UdpAudioPacket::from_bytes(&raw) {
                             let username = pkt.sender_username();
@@ -696,6 +782,11 @@ pub fn run_audio_pipeline(
                                 // Ignore our own reflected audio packets
                             } else if pkt.packet_type == PACKET_TYPE_AUDIO {
                                 let now = Instant::now();
+                                let is_new = !remote_peers.contains_key(&username);
+                                if is_new {
+                                    eprintln!("[pipeline] New remote peer '{}' detected (type={}, seq={}, payload={}B)",
+                                        username, pkt.packet_type, pkt.sequence, pkt.payload_size);
+                                }
                                 let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
                                     RemotePeer {
                                         decoder: OpusDecoder::new().unwrap_or_else(|_| {
@@ -825,14 +916,21 @@ pub fn run_audio_pipeline(
                     };
                     if decode_ok {
                         if let Ok(mut prod) = stream_prod.lock() {
-                            // Downmix stereo to mono: iterate all STEREO_FRAME_SIZE
-                            // sample pairs (L,R interleaved in pcm[0..STEREO_FRAME_SAMPLES])
                             for i in 0..STEREO_FRAME_SIZE {
                                 let l = pcm[i * 2] as i32;
                                 let r = pcm[i * 2 + 1] as i32;
-                                let mono = ((l + r) / 2) as i16;
-                                let scaled = ((mono as f32) * stream_volume) as i16;
-                                let _ = prod.try_push(scaled);
+                                if stream_stereo.load(std::sync::atomic::Ordering::Relaxed) {
+                                    // Preserve stereo: push L then R (interleaved)
+                                    let sl = ((l as f32) * stream_volume) as i32;
+                                    let sr = ((r as f32) * stream_volume) as i32;
+                                    let _ = prod.try_push(sl.clamp(-32768, 32767) as i16);
+                                    let _ = prod.try_push(sr.clamp(-32768, 32767) as i16);
+                                } else {
+                                    // Downmix to mono
+                                    let mono = (l + r) / 2;
+                                    let scaled = ((mono as f32) * stream_volume) as i32;
+                                    let _ = prod.try_push(scaled.clamp(-32768, 32767) as i16);
+                                }
                             }
                         }
                     }
@@ -859,7 +957,18 @@ pub fn run_audio_pipeline(
             }
         }
 
-        // 6. Sleep if loop finished under 5ms ──────────────────────────────────
+        // 6. Periodic diagnostics (every 5s) ────────────────────────────────
+        static DIAG_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let iter_num = DIAG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if iter_num % 1000 == 999 { // ~every 5s (5ms per iter)
+            let voice_fill = if let Ok(c) = voice_cons.lock() { c.occupied_len() } else { 0 };
+            let stream_fill = if let Ok(c) = stream_cons.lock() { c.occupied_len() } else { 0 };
+            let peers: Vec<String> = remote_peers.keys().cloned().collect();
+            eprintln!("[pipeline] diag: peers={:?}, voice_buf={}/{}, stream_buf={}/{}, pkts_this_iter={}",
+                peers, voice_fill, BUF_CAP, stream_fill, BUF_CAP, pkt_count_this_iter);
+        }
+
+        // 7. Sleep if loop finished under 5ms ──────────────────────────────────
         let elapsed = loop_start.elapsed();
         let target = Duration::from_millis(5);
         if elapsed < target {
@@ -904,11 +1013,24 @@ fn udp_recv_thread(
     }
 
     let mut buf = [0u8; RECV_BUF_SIZE];
+    let mut recv_count: u64 = 0;
+    let mut recv_audio_count: u64 = 0;
+    let mut recv_log_time = Instant::now();
 
     loop {
         match socket.recv(&mut buf) {
             Ok(n) if n >= 1 => {
+                recv_count += 1;
                 let packet_type = buf[0];
+
+                // Log recv stats every 5s
+                if recv_log_time.elapsed() >= Duration::from_secs(5) {
+                    eprintln!("[recv-thread] 5s stats: total={}, audio={}, size_of_last={}",
+                        recv_count, recv_audio_count, n);
+                    recv_count = 0;
+                    recv_audio_count = 0;
+                    recv_log_time = Instant::now();
+                }
 
                 if packet_type == PACKET_TYPE_VIDEO && n == VIDEO_PACKET_SIZE {
                     // Video → video reassembly thread
@@ -916,6 +1038,7 @@ fn udp_recv_thread(
                         break; // video thread gone
                     }
                 } else {
+                    recv_audio_count += 1;
                     // Audio, ping, stream audio, keyframe request → audio thread
                     match audio_tx.try_send(buf[..n].to_vec()) {
                         Ok(()) => {}
@@ -933,9 +1056,14 @@ fn udp_recv_thread(
             Err(ref e)
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut
-                    || e.raw_os_error() == Some(997) =>
+                    || e.kind() == std::io::ErrorKind::ConnectionReset
+                    || e.raw_os_error() == Some(997)   // Windows overlapped I/O
+                    || e.raw_os_error() == Some(10054)  // WSAECONNRESET — Windows reports ICMP
+                                                        // port-unreachable as recv error on UDP
+                =>
             {
-                // No data available — loop back to check for more
+                // Non-fatal — loop back. On Windows, error 10054 is common
+                // on connected UDP sockets and must NOT kill the recv thread.
             }
             Err(e) => {
                 eprintln!("[recv-thread] Socket error: {}", e);

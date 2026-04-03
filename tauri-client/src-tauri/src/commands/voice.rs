@@ -248,6 +248,20 @@ pub async fn set_stream_volume(
 }
 
 #[tauri::command]
+pub async fn set_stream_stereo(
+    enabled: bool,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    if let Some(ref engine) = s.voice_engine {
+        engine.set_stream_stereo(enabled);
+        Ok(())
+    } else {
+        Err("Not in a voice channel".to_string())
+    }
+}
+
+#[tauri::command]
 pub async fn set_user_volume(
     username: String,
     gain: f32,

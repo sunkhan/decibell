@@ -11,6 +11,8 @@ interface UiState {
   profilePopupAnchor: { x: number; y: number } | null;
   contextMenuUser: string | null;
   contextMenuAnchor: { x: number; y: number } | null;
+  streamStereo: boolean;
+  setStreamStereo: (value: boolean) => void;
   toggleSidebar: () => void;
   toggleMembersPanel: () => void;
   toggleDmFriendsPanel: () => void;
@@ -32,6 +34,8 @@ export const useUiStore = create<UiState>((set) => ({
   profilePopupAnchor: null,
   contextMenuUser: null,
   contextMenuAnchor: null,
+  streamStereo: false,
+  setStreamStereo: (value) => set({ streamStereo: value }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   toggleMembersPanel: () => set((state) => ({ membersPanelVisible: !state.membersPanelVisible })),
   toggleDmFriendsPanel: () => set((state) => ({ dmFriendsPanelVisible: !state.dmFriendsPanelVisible })),

@@ -129,6 +129,26 @@ impl VoiceEngine {
                         std::mem::size_of::<i32>(),
                     )),
                 );
+                // Disable SIO_UDP_CONNRESET: Windows reports ICMP port-unreachable
+                // errors as recv() failures (WSAECONNRESET/10054) on connected UDP
+                // sockets. This kills the recv thread. Disabling this behavior
+                // prevents spurious recv errors when the server briefly restarts
+                // or a NAT mapping changes.
+                let wsa_sock = windows::Win32::Networking::WinSock::SOCKET(sock as usize);
+                const SIO_UDP_CONNRESET: u32 = 0x9800000C; // _WSAIOW(IOC_VENDOR, 12)
+                let mut false_val: u32 = 0;
+                let mut bytes_returned: u32 = 0;
+                let _ = windows::Win32::Networking::WinSock::WSAIoctl(
+                    wsa_sock,
+                    SIO_UDP_CONNRESET,
+                    Some(&false_val as *const u32 as *const std::ffi::c_void),
+                    std::mem::size_of::<u32>() as u32,
+                    None,
+                    0,
+                    &mut bytes_returned,
+                    None,
+                    None,
+                );
             }
         }
         let socket = Arc::new(socket);
@@ -287,6 +307,10 @@ impl VoiceEngine {
 
     pub fn set_stream_volume(&self, volume: f32) {
         let _ = self.control_tx.send(ControlMessage::SetStreamVolume(volume));
+    }
+
+    pub fn set_stream_stereo(&self, enabled: bool) {
+        let _ = self.control_tx.send(ControlMessage::SetStreamStereo(enabled));
     }
 
     pub fn set_user_volume(&self, username: String, gain: f32) {

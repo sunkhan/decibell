@@ -7,6 +7,7 @@ export default function SettingsModal() {
   const activeModal = useUiStore((s) => s.activeModal);
   const closeModal = useUiStore((s) => s.closeModal);
   const friendsOnlyDms = useDmStore((s) => s.friendsOnlyDms);
+  const streamStereo = useUiStore((s) => s.streamStereo);
 
   if (activeModal !== "settings") return null;
 
@@ -14,6 +15,12 @@ export default function SettingsModal() {
     const newValue = !friendsOnlyDms;
     useDmStore.getState().setFriendsOnlyDms(newValue);
     invoke("set_dm_privacy", { friendsOnly: newValue }).catch(console.error);
+  };
+
+  const handleStereoToggle = () => {
+    const newValue = !streamStereo;
+    useUiStore.getState().setStreamStereo(newValue);
+    invoke("set_stream_stereo", { enabled: newValue }).catch(console.error);
   };
 
   return createPortal(
@@ -41,6 +48,33 @@ export default function SettingsModal() {
 
         {/* Content */}
         <div className="px-6 py-5">
+          {/* Audio Section */}
+          <h3 className="mb-3 text-[11px] font-bold uppercase tracking-[0.08em] text-text-muted">
+            Audio
+          </h3>
+          <div className="mb-4 flex items-center justify-between rounded-xl bg-bg-primary px-4 py-3">
+            <div>
+              <div className="text-[13px] font-semibold text-text-primary">
+                Stereo stream audio
+              </div>
+              <div className="mt-0.5 text-[11px] text-text-muted">
+                Preserve left/right stereo positioning when watching streams
+              </div>
+            </div>
+            <button
+              onClick={handleStereoToggle}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                streamStereo ? "bg-accent" : "bg-text-muted/30"
+              }`}
+            >
+              <div
+                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                  streamStereo ? "translate-x-[22px]" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+          </div>
+
           {/* Privacy Section */}
           <h3 className="mb-3 text-[11px] font-bold uppercase tracking-[0.08em] text-text-muted">
             Privacy
@@ -71,7 +105,7 @@ export default function SettingsModal() {
 
         {/* Version label */}
         <div className="border-t border-border px-6 py-3">
-          <p className="text-center text-[11px] text-text-muted">Decibell 0.2.4</p>
+          <p className="text-center text-[11px] text-text-muted">Decibell 0.2.5</p>
         </div>
       </div>
     </div>,
