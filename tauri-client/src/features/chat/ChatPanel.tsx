@@ -51,6 +51,19 @@ export default function ChatPanel() {
     return () => cancelAnimationFrame(id);
   }, [input]);
 
+  // Auto-focus textarea when user starts typing anywhere
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key.length !== 1) return; // ignore non-printable keys
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return; // already in an input
+      textareaRef.current?.focus();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const handleSend = async () => {
     if (!input.trim() || !activeServerId || !activeChannelId) return;
     setSending(true);

@@ -61,6 +61,19 @@ export default function DmChatPanel() {
     return () => cancelAnimationFrame(id);
   }, [input]);
 
+  // Auto-focus textarea when user starts typing anywhere
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key.length !== 1) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      textareaRef.current?.focus();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const handleSend = async () => {
     if (!input.trim() || !activeDmUser) return;
     setSending(true);

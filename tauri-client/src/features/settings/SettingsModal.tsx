@@ -71,7 +71,7 @@ export default function SettingsModal() {
 
         {/* Version label */}
         <div className="border-t border-border px-6 py-3">
-          <p className="text-center text-[11px] text-text-muted">Decibell 0.2.2</p>
+          <p className="text-center text-[11px] text-text-muted">Decibell 0.2.3</p>
         </div>
       </div>
     </div>,

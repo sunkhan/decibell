@@ -382,33 +382,28 @@ pub fn run_audio_pipeline(
 
     let out_ch = output_channels;
     let passthrough_playback = output_sample_rate == SAMPLE_RATE;
-    // Sinc resampler for playback (48kHz → output rate).
-    let playback_resampler_mutex: Arc<std::sync::Mutex<Option<SincFixedOut<f64>>>> = if passthrough_playback {
-        Arc::new(std::sync::Mutex::new(None))
+    // Sinc resampler + its buffers are owned by the closure — no mutexes in
+    // the real-time callback. Only the ring buffer consumers need a lock
+    // (brief, uncontended).
+    let mut pb_resampler: Option<SincFixedOut<f64>> = if passthrough_playback {
+        None
     } else {
-        // Use 480-sample output chunks for low latency
-        Arc::new(std::sync::Mutex::new(Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480))))
+        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480))
     };
-    let pb_resampler = Arc::clone(&playback_resampler_mutex);
-    // Accumulation buffer for resampler input (48kHz mixed samples)
-    let pb_accum: Arc<std::sync::Mutex<Vec<f64>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let pb_accum_out = Arc::clone(&pb_accum);
-    // Pre-resampled output buffer to decouple resampler chunk size from CPAL callback size
-    let pb_resampled: Arc<std::sync::Mutex<Vec<f64>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let pb_resampled_out = Arc::clone(&pb_resampled);
+    let mut pb_accum: Vec<f64> = Vec::new();
+    let mut pb_resampled: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
     // Use f32 output — Windows WASAPI defaults to f32; i16 is often unsupported.
     let output_stream = match output_device.build_output_stream(
         &stream_config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             let mono_frames_needed = data.len() / out_ch as usize;
 
+            // Drain ring buffers — single brief lock each, uncontended with SPSC.
+            let mut voice_guard = voice_cons_out.lock().unwrap();
+            let mut stream_guard = stream_cons_out.lock().unwrap();
+
             if passthrough_playback {
                 // No resampling needed — output is already 48kHz.
-                // Lock-free ring buffers: lock only the consumer halves briefly
-                // to pop samples. Even if the lock is contended (extremely rare
-                // with SPSC), we fall back to silence for that sample only.
-                let mut voice_guard = voice_cons_out.lock().unwrap();
-                let mut stream_guard = stream_cons_out.lock().unwrap();
                 if out_ch == 1 {
                     for sample in data.iter_mut() {
                         let v = voice_guard.try_pop().unwrap_or(0) as i32;
@@ -430,60 +425,45 @@ pub fn run_audio_pipeline(
             }
 
             // Resample 48kHz → output_sample_rate using sinc resampler.
-            // 1) Drain ring buffers into the accumulation buffer (mixed 48kHz)
-            {
-                let mut voice_guard = voice_cons_out.lock().unwrap();
-                let mut stream_guard = stream_cons_out.lock().unwrap();
-                // Drain all available samples from both buffers, mix them.
-                // Use min so neither buffer is over-drained relative to the other.
-                let avail_voice = voice_guard.occupied_len();
-                let avail_stream = stream_guard.occupied_len();
-                let take = avail_voice.max(avail_stream); // take enough for whichever has data
-                if let Ok(mut accum) = pb_accum_out.lock() {
-                    for _ in 0..take {
-                        let v = voice_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
-                        let s = stream_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
-                        accum.push((v + s).clamp(-1.0, 1.0));
-                    }
-                }
+            // 1) Drain all available samples from ring buffers, mix into accum
+            let avail_voice = voice_guard.occupied_len();
+            let avail_stream = stream_guard.occupied_len();
+            let take = avail_voice.max(avail_stream);
+            for _ in 0..take {
+                let v = voice_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
+                let s = stream_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
+                pb_accum.push((v + s).clamp(-1.0, 1.0));
             }
+            // Release locks immediately — no longer needed
+            drop(voice_guard);
+            drop(stream_guard);
 
             // 2) Feed accumulation buffer into sinc resampler in chunks
-            if let (Ok(mut accum), Ok(mut resampler_guard), Ok(mut out_buf)) =
-                (pb_accum_out.lock(), pb_resampler.lock(), pb_resampled_out.lock())
-            {
-                if let Some(ref mut resampler) = *resampler_guard {
-                    let needed = resampler.input_frames_next();
-                    while accum.len() >= needed {
-                        let chunk: Vec<f64> = accum.drain(..needed).collect();
-                        if let Ok(out) = resampler.process(&[&chunk], None) {
-                            out_buf.extend_from_slice(&out[0]);
+            if let Some(ref mut resampler) = pb_resampler {
+                let mut needed = resampler.input_frames_next();
+                while pb_accum.len() >= needed {
+                    let chunk: Vec<f64> = pb_accum.drain(..needed).collect();
+                    if let Ok(out) = resampler.process(&[&chunk], None) {
+                        for &s in &out[0] {
+                            pb_resampled.push_back(s);
                         }
                     }
+                    needed = resampler.input_frames_next();
                 }
             }
 
             // 3) Fill output from resampled buffer
-            if let Ok(mut out_buf) = pb_resampled_out.lock() {
-                let avail = out_buf.len().min(mono_frames_needed);
-                let drained: Vec<f64> = out_buf.drain(..avail).collect();
-                let mut i = 0;
-                if out_ch == 1 {
-                    for sample in data.iter_mut() {
-                        *sample = if i < drained.len() { drained[i] as f32 } else { 0.0 };
-                        i += 1;
-                    }
-                } else {
-                    for frame in data.chunks_exact_mut(out_ch as usize) {
-                        let s = if i < drained.len() { drained[i] as f32 } else { 0.0 };
-                        for ch in frame.iter_mut() {
-                            *ch = s;
-                        }
-                        i += 1;
-                    }
+            if out_ch == 1 {
+                for sample in data.iter_mut() {
+                    *sample = pb_resampled.pop_front().unwrap_or(0.0) as f32;
                 }
             } else {
-                for sample in data.iter_mut() { *sample = 0.0; }
+                for frame in data.chunks_exact_mut(out_ch as usize) {
+                    let s = pb_resampled.pop_front().unwrap_or(0.0) as f32;
+                    for ch in frame.iter_mut() {
+                        *ch = s;
+                    }
+                }
             }
         },
         |e| {

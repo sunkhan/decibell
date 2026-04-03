@@ -85,6 +85,12 @@ impl VoiceEngine {
                 libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
                     &buf_size as *const _ as *const libc::c_void,
                     std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+                // DSCP EF (Expedited Forwarding) — tells routers to prioritize
+                // voice/video packets over bulk data (downloads, etc).
+                let dscp_ef: libc::c_int = 0xB8; // DSCP 46 (EF) << 2
+                libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_TOS,
+                    &dscp_ef as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t);
             }
         }
         #[cfg(windows)]
@@ -108,6 +114,18 @@ impl VoiceEngine {
                     windows::Win32::Networking::WinSock::SO_SNDBUF as i32,
                     Some(std::slice::from_raw_parts(
                         &buf_size as *const i32 as *const u8,
+                        std::mem::size_of::<i32>(),
+                    )),
+                );
+                // DSCP EF (Expedited Forwarding) — tells routers and the Windows
+                // network stack to prioritize voice/video over bulk traffic.
+                let dscp_ef: i32 = 0xB8; // DSCP 46 (EF) << 2
+                let _ = windows::Win32::Networking::WinSock::setsockopt(
+                    windows::Win32::Networking::WinSock::SOCKET(sock as usize),
+                    windows::Win32::Networking::WinSock::IPPROTO_IP.0 as i32,
+                    windows::Win32::Networking::WinSock::IP_TOS as i32,
+                    Some(std::slice::from_raw_parts(
+                        &dscp_ef as *const i32 as *const u8,
                         std::mem::size_of::<i32>(),
                     )),
                 );
