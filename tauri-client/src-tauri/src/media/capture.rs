@@ -121,13 +121,24 @@ pub async fn start_capture(
     #[cfg(target_os = "windows")]
     {
         if source_id.starts_with("monitor:") {
-            let source_id = source_id.to_string();
-            let config = config.clone();
-            tokio::task::spawn_blocking(move || {
-                super::capture_dxgi::start_capture(&source_id, &config)
+            let sid = source_id.to_string();
+            let cfg = config.clone();
+            // Try DXGI Desktop Duplication first (lower overhead, handles HDR).
+            // If it fails (e.g. legacy DX9 exclusive fullscreen), fall back to
+            // WGC CreateForMonitor which can capture those applications.
+            let dxgi_result = tokio::task::spawn_blocking(move || {
+                super::capture_dxgi::start_capture(&sid, &cfg)
             })
             .await
-            .map_err(|e| format!("Join error: {}", e))?
+            .map_err(|e| format!("Join error: {}", e))?;
+
+            match dxgi_result {
+                Ok(output) => Ok(output),
+                Err(e) => {
+                    eprintln!("[capture] DXGI DD failed ({}), falling back to WGC for monitor", e);
+                    super::capture_wgc::start_capture(source_id, config).await
+                }
+            }
         } else {
             super::capture_wgc::start_capture(source_id, config).await
         }

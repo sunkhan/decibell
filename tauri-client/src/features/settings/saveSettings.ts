@@ -4,12 +4,13 @@ import { useDmStore } from "../../stores/dmStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 
 export function saveSettings() {
-  const { streamStereo, inputDevice, outputDevice, separateStreamOutput, streamOutputDevice } = useUiStore.getState();
+  const { voiceThresholdDb, streamStereo, inputDevice, outputDevice, separateStreamOutput, streamOutputDevice } = useUiStore.getState();
   const { friendsOnlyDms } = useDmStore.getState();
   const { userVolumes, localMutedUsers } = useVoiceStore.getState();
   invoke("save_settings", {
     settings: {
       friends_only_dms: friendsOnlyDms,
+      voice_threshold_db: voiceThresholdDb,
       stream_stereo: streamStereo,
       input_device: inputDevice,
       output_device: outputDevice,

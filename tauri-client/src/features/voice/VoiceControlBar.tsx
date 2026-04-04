@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import CaptureSourcePicker from "./CaptureSourcePicker";
+import DeviceContextMenu from "./DeviceContextMenu";
 
 const EMPTY_CHANNELS: never[] = [];
 
@@ -24,6 +25,25 @@ export default function VoiceControlBar() {
   });
 
   const [showPicker, setShowPicker] = useState(false);
+  const [deviceMenu, setDeviceMenu] = useState<{
+    type: "input" | "output";
+    anchor: { x: number; y: number };
+  } | null>(null);
+  const [cachedDevices, setCachedDevices] = useState<{
+    inputs: { name: string }[];
+    outputs: { name: string }[];
+  }>({ inputs: [], outputs: [] });
+
+  const refreshDevices = useCallback(() => {
+    invoke<{ inputs: { name: string }[]; outputs: { name: string }[] }>("list_audio_devices")
+      .then(setCachedDevices)
+      .catch(console.error);
+  }, []);
+
+  // Pre-fetch devices on mount so they're ready for right-click
+  useEffect(() => {
+    refreshDevices();
+  }, [refreshDevices]);
 
   if (!connectedChannelId) return null;
 
@@ -79,12 +99,17 @@ export default function VoiceControlBar() {
       <div className="flex gap-1">
         <button
           onClick={handleMute}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setDeviceMenu({ type: "input", anchor: { x: e.clientX, y: e.clientY } });
+            refreshDevices();
+          }}
           className={`flex h-8 flex-1 items-center justify-center rounded-lg transition-colors ${
             isMuted
               ? "bg-error/20 text-error"
               : "bg-surface-active text-text-secondary hover:bg-border hover:text-text-primary"
           }`}
-          title={isMuted ? "Unmute" : "Mute"}
+          title={isMuted ? "Unmute" : "Mute — Right-click to change input device"}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             {isMuted ? (
@@ -107,12 +132,17 @@ export default function VoiceControlBar() {
         </button>
         <button
           onClick={handleDeafen}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setDeviceMenu({ type: "output", anchor: { x: e.clientX, y: e.clientY } });
+            refreshDevices();
+          }}
           className={`flex h-8 flex-1 items-center justify-center rounded-lg transition-colors ${
             isDeafened
               ? "bg-error/20 text-error"
               : "bg-surface-active text-text-secondary hover:bg-border hover:text-text-primary"
           }`}
-          title={isDeafened ? "Undeafen" : "Deafen"}
+          title={isDeafened ? "Undeafen" : "Deafen — Right-click to change output device"}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             {isDeafened ? (
@@ -165,6 +195,14 @@ export default function VoiceControlBar() {
           serverId={connectedServerId}
           channelId={connectedChannelId}
           onClose={() => setShowPicker(false)}
+        />
+      )}
+      {deviceMenu && (
+        <DeviceContextMenu
+          type={deviceMenu.type}
+          anchor={deviceMenu.anchor}
+          devices={deviceMenu.type === "input" ? cachedDevices.inputs : cachedDevices.outputs}
+          onClose={() => setDeviceMenu(null)}
         />
       )}
     </div>

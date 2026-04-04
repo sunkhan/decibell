@@ -81,6 +81,11 @@ pub async fn start_capture(
         let item = SendPtr::new(item);
         let video_proc = SendPtr::new(video_proc);
 
+        // Extract the HWND value from source_id so the capture loop can poll IsWindow().
+        // Store as usize to avoid Send issues with raw pointers; reconstruct HWND in the loop.
+        let capture_hwnd_val: Option<usize> = source_id.strip_prefix("window:")
+            .and_then(|s| s.parse::<usize>().ok());
+
         // Spawn capture thread
         std::thread::Builder::new()
             .name("decibell-capture".to_string())
@@ -89,6 +94,7 @@ pub async fn start_capture(
                     device.into_inner(), context.into_inner(),
                     winrt_device.into_inner(), item.into_inner(),
                     video_proc.into_inner(), tx, config, dst_w, dst_h,
+                    capture_hwnd_val,
                 ) {
                     eprintln!("[capture-wgc] Capture loop error: {}", e);
                 }
@@ -298,15 +304,19 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
         return TRUE;
     }
 
-    // Must have WS_CAPTION style (both WS_BORDER and WS_DLGFRAME bits)
     let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-    if style & WS_CAPTION.0 != WS_CAPTION.0 {
+    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+
+    // Must NOT be a tool window
+    if ex_style & WS_EX_TOOLWINDOW.0 != 0 {
         return TRUE;
     }
 
-    // Must NOT be a tool window
-    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-    if ex_style & WS_EX_TOOLWINDOW.0 != 0 {
+    // Accept windows with WS_CAPTION (normal apps) OR WS_POPUP (fullscreen/borderless games).
+    // Many older games (DX9 era) use WS_POPUP without WS_CAPTION.
+    let has_caption = style & WS_CAPTION.0 == WS_CAPTION.0;
+    let has_popup = style & WS_POPUP.0 != 0;
+    if !has_caption && !has_popup {
         return TRUE;
     }
 
@@ -365,8 +375,38 @@ fn create_winrt_device(device: &ID3D11Device) -> Result<IDirect3DDevice, String>
 fn create_capture_item(source_id: &str) -> Result<GraphicsCaptureItem, String> {
     if let Some(rest) = source_id.strip_prefix("window:") {
         create_capture_item_for_window(rest)
+    } else if let Some(rest) = source_id.strip_prefix("monitor:") {
+        create_capture_item_for_monitor(rest)
     } else {
-        Err(format!("WGC capture only supports window: sources, got: {}", source_id))
+        Err(format!("WGC capture: unsupported source: {}", source_id))
+    }
+}
+
+fn create_capture_item_for_monitor(id: &str) -> Result<GraphicsCaptureItem, String> {
+    // id format: "adapter_idx:output_idx"
+    let mut parts = id.splitn(2, ':');
+    let adapter_idx: u32 = parts.next().and_then(|s| s.parse().ok())
+        .ok_or_else(|| format!("Invalid adapter index in monitor id: {}", id))?;
+    let output_idx: u32 = parts.next().and_then(|s| s.parse().ok())
+        .ok_or_else(|| format!("Invalid output index in monitor id: {}", id))?;
+
+    unsafe {
+        let factory: IDXGIFactory1 =
+            CreateDXGIFactory1().map_err(|e| format!("CreateDXGIFactory1: {}", e))?;
+        let adapter: IDXGIAdapter1 = factory.EnumAdapters1(adapter_idx)
+            .map_err(|e| format!("EnumAdapters1: {}", e))?;
+        let output: IDXGIOutput = adapter.EnumOutputs(output_idx)
+            .map_err(|e| format!("EnumOutputs: {}", e))?;
+        let desc = output.GetDesc().map_err(|e| format!("GetDesc: {}", e))?;
+        let hmonitor = desc.Monitor;
+
+        let interop: IGraphicsCaptureItemInterop =
+            windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
+                .map_err(|e| format!("IGraphicsCaptureItemInterop factory: {}", e))?;
+
+        interop
+            .CreateForMonitor::<GraphicsCaptureItem>(hmonitor)
+            .map_err(|e| format!("CreateForMonitor: {}", e))
     }
 }
 
@@ -637,6 +677,7 @@ fn wgc_capture_loop(
     config: CaptureConfig,
     dst_w: u32,
     dst_h: u32,
+    capture_hwnd_val: Option<usize>,
 ) -> Result<(), String> {
     unsafe {
         // Closed flag shared between handler and poll loop
@@ -697,10 +738,19 @@ fn wgc_capture_loop(
         loop {
             let loop_start = Instant::now();
 
-            // Check if the capture source was closed
+            // Check if the capture source was closed (WinRT event)
             if closed_flag.load(Ordering::Relaxed) {
-                eprintln!("[capture-wgc] Capture item closed, stopping");
+                eprintln!("[capture-wgc] Capture item closed (event), stopping");
                 break;
+            }
+
+            // Actively check if the window handle is still valid (reliable fallback
+            // for when the WinRT Closed event doesn't fire due to COM threading)
+            if let Some(val) = capture_hwnd_val {
+                if !IsWindow(Some(HWND(val as *mut _))).as_bool() {
+                    eprintln!("[capture-wgc] Window destroyed (IsWindow), stopping");
+                    break;
+                }
             }
 
             // Try to get next frame — non-blocking

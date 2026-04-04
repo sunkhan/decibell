@@ -1,7 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useNavigate } from "react-router-dom";
 import { useUiStore } from "../stores/uiStore";
-import { useAuthStore } from "../stores/authStore";
 import { useDmStore } from "../stores/dmStore";
 import { useFriendsStore } from "../stores/friendsStore";
 import { useChatStore } from "../stores/chatStore";
@@ -9,7 +6,6 @@ import { stringToGradient } from "../utils/colors";
 
 
 export default function DmSidebar() {
-  const navigate = useNavigate();
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const activeView = useUiStore((s) => s.activeView);
@@ -28,16 +24,6 @@ export default function DmSidebar() {
   const handleDmClick = (username: string) => {
     setActiveDmUser(username);
     setActiveView("dm");
-  };
-
-  const handleLogout = async () => {
-    try {
-      await invoke("logout");
-    } catch (err) {
-      console.error("Logout failed:", err);
-    }
-    useAuthStore.getState().logout();
-    navigate("/login");
   };
 
   return (
@@ -94,16 +80,6 @@ export default function DmSidebar() {
         })}
       </div>
 
-      {/* Logout */}
-      <button
-        onClick={handleLogout}
-        className="mb-3 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-text-muted transition-all duration-200 hover:bg-error/20 hover:text-error"
-        title="Log out"
-      >
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-        </svg>
-      </button>
     </div>
   );
 }

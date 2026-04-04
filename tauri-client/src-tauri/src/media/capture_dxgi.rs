@@ -473,16 +473,27 @@ pub fn start_capture(
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<RawFrame>(2);
 
+    // The capture thread signals whether it started successfully (first frame acquired)
+    // or failed (e.g. access lost due to legacy exclusive fullscreen).
+    // This lets the caller fall back to WGC if DXGI DD can't capture.
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
+
     std::thread::Builder::new()
         .name("decibell-dxgi-capture".to_string())
         .spawn(move || {
-            if let Err(e) = dxgi_capture_thread(adapter_idx, output_idx, target_fps, target_w, target_h, tx) {
+            if let Err(e) = dxgi_capture_thread(adapter_idx, output_idx, target_fps, target_w, target_h, tx, ready_tx.clone()) {
                 eprintln!("[capture-dxgi] Fatal error: {}", e);
+                let _ = ready_tx.try_send(Err(e));
             }
         })
         .map_err(|e| format!("Spawn DXGI capture thread: {}", e))?;
 
-    Ok(CaptureOutput { receiver: rx, width: out_w, height: out_h })
+    // Wait up to 3 seconds for the capture thread to confirm it can acquire frames
+    match ready_rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(Ok(())) => Ok(CaptureOutput { receiver: rx, width: out_w, height: out_h }),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("DXGI DD timed out waiting for first frame".to_string()),
+    }
 }
 
 // ─── HDR SDR White Level Query ──────────────────────────────────────────────
@@ -602,6 +613,7 @@ fn dxgi_capture_thread(
     target_w: u32,
     target_h: u32,
     tx: std::sync::mpsc::SyncSender<RawFrame>,
+    ready_tx: std::sync::mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {
     unsafe {
         let factory: IDXGIFactory1 =
@@ -692,6 +704,7 @@ fn dxgi_capture_thread(
         let mut frame_count: u64 = 0;
         let acquire_timeout_ms = (frame_interval.as_millis() as u32).max(1);
         let mut last_nv12: Option<Vec<u8>> = None;
+        let mut signalled_ready = false;
 
         loop {
             let loop_start = std::time::Instant::now();
@@ -715,9 +728,15 @@ fn dxgi_capture_thread(
                         false // DXGI_ERROR_WAIT_TIMEOUT — no desktop change
                     } else if code == 0x887A0026 {
                         eprintln!("[capture-dxgi] Access lost, stopping");
+                        if !signalled_ready {
+                            let _ = ready_tx.try_send(Err("DXGI access lost (exclusive fullscreen app?)".to_string()));
+                        }
                         break;
                     } else {
                         eprintln!("[capture-dxgi] AcquireNextFrame error: {}", e);
+                        if !signalled_ready {
+                            let _ = ready_tx.try_send(Err(format!("AcquireNextFrame: {}", e)));
+                        }
                         break;
                     }
                 }
@@ -786,8 +805,18 @@ fn dxgi_capture_thread(
             };
 
             match tx.try_send(raw_frame) {
-                Ok(()) => {}
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+                Ok(()) => {
+                    if !signalled_ready {
+                        signalled_ready = true;
+                        let _ = ready_tx.try_send(Ok(()));
+                    }
+                }
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    if !signalled_ready {
+                        signalled_ready = true;
+                        let _ = ready_tx.try_send(Ok(()));
+                    }
+                }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                     eprintln!("[capture-dxgi] Channel closed, stopping");
                     break;

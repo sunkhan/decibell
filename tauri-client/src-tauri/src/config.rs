@@ -25,6 +25,9 @@ pub struct AppSettings {
     pub separate_stream_output: bool,
     /// Output device for stream audio when separate_stream_output is true (None = system default)
     pub stream_output_device: Option<String>,
+    /// Voice activation threshold in dB (-60 to 0). Below this, mic input is silenced.
+    /// None means use default (-50 dB).
+    pub voice_threshold_db: Option<f64>,
     /// Per-user volume in dB (username → dB). 0 = default, negative = quieter, positive = louder.
     #[serde(default)]
     pub user_volumes: std::collections::HashMap<String, f64>,

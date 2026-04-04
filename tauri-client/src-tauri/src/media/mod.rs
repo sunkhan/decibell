@@ -207,6 +207,11 @@ impl VoiceEngine {
                                 "isDeafened": is_deafened,
                             }));
                         }
+                        VoiceEvent::InputLevel(db) => {
+                            let _ = app.emit("voice_input_level", serde_json::json!({
+                                "db": db,
+                            }));
+                        }
                         VoiceEvent::PingMeasured(ms) => {
                             let _ = app.emit("voice_ping_updated", serde_json::json!({
                                 "latencyMs": ms,
@@ -498,6 +503,10 @@ impl VideoEngine {
         let event_bridge = tokio::task::spawn_blocking(move || {
             loop {
                 match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                    Ok(video_pipeline::VideoPipelineEvent::CaptureEnded) => {
+                        eprintln!("[video-engine] Capture source ended, emitting stream_capture_ended");
+                        let _ = app.emit("stream_capture_ended", ());
+                    }
                     Ok(video_pipeline::VideoPipelineEvent::Error(msg)) => {
                         let _ = app.emit("voice_error", serde_json::json!({
                             "message": format!("Video: {}", msg),

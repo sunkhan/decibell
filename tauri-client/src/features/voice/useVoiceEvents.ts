@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import type { StreamInfo } from "../../types";
@@ -95,6 +96,26 @@ export function useVoiceEvents() {
 
     listen<{ message: string }>("voice_error", (event) => {
       setError(event.payload.message);
+    }).then((u) => unlisten.push(u));
+
+    // Window closed while streaming → auto-stop
+    listen("stream_capture_ended", () => {
+      const { connectedServerId, connectedChannelId, isStreaming, fullscreenStream, isStreamFullscreen } = useVoiceStore.getState();
+      if (isStreaming && connectedServerId && connectedChannelId) {
+        invoke("stop_screen_share", {
+          serverId: connectedServerId,
+          channelId: connectedChannelId,
+        }).catch(console.error);
+        useVoiceStore.getState().setIsStreaming(false);
+
+        // If we were watching our own stream in fullscreen, exit immediately
+        // rather than waiting for the server's stream_presence_updated.
+        if (fullscreenStream === username && isStreamFullscreen) {
+          useVoiceStore.getState().setFullscreenStream(null);
+          useVoiceStore.getState().setStreamFullscreen(false);
+          getCurrentWindow().setFullscreen(false).catch(() => {});
+        }
+      }
     }).then((u) => unlisten.push(u));
 
     listen<{ streams: { streamId: string; ownerUsername: string; hasAudio: boolean; resolutionWidth: number; resolutionHeight: number; fps: number }[] }>(

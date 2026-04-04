@@ -11,6 +11,8 @@ interface UiState {
   profilePopupAnchor: { x: number; y: number } | null;
   contextMenuUser: string | null;
   contextMenuAnchor: { x: number; y: number } | null;
+  voiceThresholdDb: number;
+  setVoiceThresholdDb: (value: number) => void;
   streamStereo: boolean;
   setStreamStereo: (value: boolean) => void;
   inputDevice: string | null;
@@ -44,6 +46,8 @@ export const useUiStore = create<UiState>((set) => ({
   profilePopupAnchor: null,
   contextMenuUser: null,
   contextMenuAnchor: null,
+  voiceThresholdDb: -50,
+  setVoiceThresholdDb: (value) => set({ voiceThresholdDb: value }),
   streamStereo: false,
   setStreamStereo: (value) => set({ streamStereo: value }),
   inputDevice: null,

@@ -15,6 +15,8 @@ pub enum VideoPipelineControl {
 pub enum VideoPipelineEvent {
     Started,
     Stopped,
+    /// The capture source ended on its own (e.g. window was closed).
+    CaptureEnded,
     Error(String),
     ThumbnailReady(Vec<u8>),
 }
@@ -147,14 +149,18 @@ pub fn run_video_send_pipeline(
     let thumbnail_interval = Duration::from_secs(5);
     let mut last_thumbnail_time = Instant::now() - thumbnail_interval; // generate first one immediately
 
+    // Track whether the loop exits because of an explicit Shutdown command
+    // vs the capture source ending on its own (frame channel disconnected).
+    let mut shutdown_requested = false;
+
     loop {
         // Check control messages
         match control_rx.try_recv() {
-            Ok(VideoPipelineControl::Shutdown) => break,
+            Ok(VideoPipelineControl::Shutdown) => { shutdown_requested = true; break; }
             Ok(VideoPipelineControl::ForceKeyframe) => {
                 encoder.force_keyframe();
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => { shutdown_requested = true; break; }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
 
@@ -398,5 +404,10 @@ pub fn run_video_send_pipeline(
         frame_id = frame_id.wrapping_add(1);
     }
 
-    let _ = event_tx.send(VideoPipelineEvent::Stopped);
+    if shutdown_requested {
+        let _ = event_tx.send(VideoPipelineEvent::Stopped);
+    } else {
+        eprintln!("[video-send] Capture source ended, signalling CaptureEnded");
+        let _ = event_tx.send(VideoPipelineEvent::CaptureEnded);
+    }
 }

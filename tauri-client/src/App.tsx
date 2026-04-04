@@ -63,6 +63,7 @@ export default function App() {
           credentials?: { username: string; password: string };
           settings: {
             friends_only_dms: boolean;
+            voice_threshold_db: number | null;
             stream_stereo: boolean;
             input_device: string | null;
             output_device: string | null;
@@ -76,6 +77,9 @@ export default function App() {
         // Apply saved settings to stores
         const { settings } = config;
         useDmStore.getState().setFriendsOnlyDms(settings.friends_only_dms);
+        if (settings.voice_threshold_db != null) {
+          useUiStore.getState().setVoiceThresholdDb(settings.voice_threshold_db);
+        }
         useUiStore.getState().setStreamStereo(settings.stream_stereo);
         useUiStore.getState().setInputDevice(settings.input_device);
         useUiStore.getState().setOutputDevice(settings.output_device);

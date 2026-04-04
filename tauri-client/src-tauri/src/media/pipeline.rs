@@ -58,6 +58,8 @@ pub enum ControlMessage {
 pub enum VoiceEvent {
     SpeakingChanged(String, bool),
     UserStateChanged(String, bool, bool), // username, muted, deafened
+    /// Local microphone input level in dB (emitted ~every 50ms for the UI meter)
+    InputLevel(f32),
     PingMeasured(u32),
     VideoFrameReady(ReassembledFrame),
     KeyframeRequested,
@@ -964,6 +966,7 @@ pub fn run_audio_pipeline(
 
     let mut sequence: u16 = 0;
     let mut local_speaking = SpeakingDetector::new();
+    let mut input_level_counter: u32 = 0; // throttle InputLevel events (~every 3 frames = 60ms)
     let mut remote_peers: HashMap<String, RemotePeer> = HashMap::new();
 
     let mut last_ping_time = Instant::now();
@@ -1137,6 +1140,13 @@ pub fn run_audio_pipeline(
                     -96.0
                 };
                 let above_threshold = !muted && rms_db >= voice_threshold_db;
+
+                // Emit input level for the UI meter (~every 60ms)
+                input_level_counter += 1;
+                if input_level_counter >= 3 {
+                    input_level_counter = 0;
+                    let _ = event_tx.send(VoiceEvent::InputLevel(rms_db));
+                }
 
                 // Speaking detection based on threshold
                 if let Some(state) = local_speaking.process_threshold(above_threshold) {
