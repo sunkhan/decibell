@@ -13,6 +13,16 @@ interface UiState {
   contextMenuAnchor: { x: number; y: number } | null;
   streamStereo: boolean;
   setStreamStereo: (value: boolean) => void;
+  inputDevice: string | null;
+  outputDevice: string | null;
+  separateStreamOutput: boolean;
+  streamOutputDevice: string | null;
+  settingsTab: string;
+  setInputDevice: (device: string | null) => void;
+  setOutputDevice: (device: string | null) => void;
+  setSeparateStreamOutput: (value: boolean) => void;
+  setStreamOutputDevice: (device: string | null) => void;
+  setSettingsTab: (tab: string) => void;
   toggleSidebar: () => void;
   toggleMembersPanel: () => void;
   toggleDmFriendsPanel: () => void;
@@ -36,6 +46,16 @@ export const useUiStore = create<UiState>((set) => ({
   contextMenuAnchor: null,
   streamStereo: false,
   setStreamStereo: (value) => set({ streamStereo: value }),
+  inputDevice: null,
+  outputDevice: null,
+  separateStreamOutput: false,
+  streamOutputDevice: null,
+  settingsTab: "account",
+  setInputDevice: (device) => set({ inputDevice: device }),
+  setOutputDevice: (device) => set({ outputDevice: device }),
+  setSeparateStreamOutput: (value) => set({ separateStreamOutput: value }),
+  setStreamOutputDevice: (device) => set({ streamOutputDevice: device }),
+  setSettingsTab: (tab) => set({ settingsTab: tab }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   toggleMembersPanel: () => set((state) => ({ membersPanelVisible: !state.membersPanelVisible })),
   toggleDmFriendsPanel: () => set((state) => ({ dmFriendsPanelVisible: !state.dmFriendsPanelVisible })),

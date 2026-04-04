@@ -313,6 +313,22 @@ impl VoiceEngine {
         let _ = self.control_tx.send(ControlMessage::SetStreamStereo(enabled));
     }
 
+    pub fn set_input_device(&self, name: Option<String>) {
+        let _ = self.control_tx.send(ControlMessage::SetInputDevice(name));
+    }
+
+    pub fn set_output_device(&self, name: Option<String>) {
+        let _ = self.control_tx.send(ControlMessage::SetOutputDevice(name));
+    }
+
+    pub fn set_separate_stream_output(&self, enabled: bool, device: Option<String>) {
+        let _ = self.control_tx.send(ControlMessage::SetSeparateStreamOutput(enabled, device));
+    }
+
+    pub fn set_stream_output_device(&self, name: Option<String>) {
+        let _ = self.control_tx.send(ControlMessage::SetStreamOutputDevice(name));
+    }
+
     pub fn set_user_volume(&self, username: String, gain: f32) {
         let _ = self.control_tx.send(ControlMessage::SetUserVolume(username, gain));
     }

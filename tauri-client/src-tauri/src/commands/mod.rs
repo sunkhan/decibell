@@ -3,6 +3,7 @@ pub mod channels;
 pub mod friends;
 pub mod messaging;
 pub mod servers;
+pub mod settings;
 pub mod streaming;
 pub mod voice;
 

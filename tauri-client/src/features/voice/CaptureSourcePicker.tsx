@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useVoiceStore } from "../../stores/voiceStore";
@@ -54,9 +54,27 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [closing, setClosing] = useState(false);
 
   const streamSettings = useVoiceStore((s) => s.streamSettings);
   const setStreamSettings = useVoiceStore((s) => s.setStreamSettings);
+
+  // Animate in on mount
+  useEffect(() => {
+    requestAnimationFrame(() => requestAnimationFrame(() => setVisible(true)));
+  }, []);
+
+  // Animate out then call onClose
+  const handleClose = useCallback(() => {
+    if (closing) return;
+    setClosing(true);
+    setVisible(false);
+  }, [closing]);
+
+  const handleTransitionEnd = useCallback(() => {
+    if (!visible && closing) onClose();
+  }, [visible, closing, onClose]);
 
   useEffect(() => {
     invoke<CaptureSource[]>("list_capture_sources")
@@ -89,7 +107,7 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
         audioBitrateKbps: streamSettings.audioBitrateKbps,
       });
       useVoiceStore.getState().setIsStreaming(true);
-      onClose();
+      handleClose();
     } catch (e) {
       setError(String(e));
       setStarting(false);
@@ -98,10 +116,18 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
+      className="fixed inset-0 z-50 flex items-center justify-center transition-colors duration-300"
+      style={{ backgroundColor: visible ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0)" }}
+      onClick={(e) => e.target === e.currentTarget && handleClose()}
+      onTransitionEnd={handleTransitionEnd}
     >
-      <div className="w-[560px] rounded-xl border border-border bg-bg-secondary shadow-2xl">
+      <div
+        className="w-[560px] rounded-xl border border-border bg-bg-secondary shadow-2xl transition-all duration-300"
+        style={{
+          opacity: visible ? 1 : 0,
+          transform: visible ? "scale(1)" : "scale(0.95)",
+        }}
+      >
         {/* Source selection — on Linux, the OS portal handles picking */}
         {!loading && sources.length === 1 && sources[0].id === "portal" ? (
           <div className="px-5 py-6 text-center">

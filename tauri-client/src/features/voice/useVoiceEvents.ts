@@ -1,8 +1,15 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import type { StreamInfo } from "../../types";
+
+/** Convert dB to linear gain: 10^(dB/20), with -40 dB floor mapped to 0. */
+function dbToGain(db: number): number {
+  if (db <= -40) return 0;
+  return Math.pow(10, db / 20);
+}
 
 export function useVoiceEvents() {
   const setSpeaking = useVoiceStore((s) => s.setSpeaking);
@@ -38,6 +45,18 @@ export function useVoiceEvents() {
               audioLevel: 0,
             }))
           );
+
+          // Apply saved per-user volume/mute settings for each recognized peer
+          const { userVolumes, localMutedUsers } = useVoiceStore.getState();
+          for (const user of participants) {
+            const hasCustomVolume = user in userVolumes;
+            const isMuted = localMutedUsers.has(user);
+            if (hasCustomVolume || isMuted) {
+              const db = userVolumes[user] ?? 0;
+              const gain = isMuted ? 0 : dbToGain(db);
+              invoke("set_user_volume", { username: user, gain }).catch(console.error);
+            }
+          }
         }
       }
     ).then((u) => unlisten.push(u));

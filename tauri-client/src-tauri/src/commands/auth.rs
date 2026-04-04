@@ -1,5 +1,6 @@
 use tauri::{AppHandle, State};
 
+use crate::config;
 use crate::events;
 use crate::net::central::CentralClient;
 use crate::state::SharedState;
@@ -33,6 +34,16 @@ pub async fn login(
     // Store client in state
     let mut s = state_arc.lock().await;
     s.central = Some(client);
+
+    // Save credentials to config for auto-login
+    let creds = config::Credentials {
+        username: username.clone(),
+        password: password.clone(),
+    };
+    let settings = config::load(&app)
+        .map(|c| c.settings)
+        .unwrap_or_default();
+    let _ = config::save(&app, Some(&creds), &settings);
 
     Ok(())
 }
@@ -110,6 +121,9 @@ pub async fn logout(
     }
 
     events::emit_logged_out(&app);
+
+    // Clear saved credentials but keep settings
+    let _ = config::clear_credentials(&app);
 
     Ok(())
 }

@@ -153,6 +153,21 @@ export default function ChannelSidebar() {
     invoke("join_voice_channel", {
       serverId: activeServerId,
       channelId,
+    }).then(() => {
+      // Apply saved audio device settings to the new pipeline
+      const { inputDevice, outputDevice, separateStreamOutput, streamOutputDevice } = useUiStore.getState();
+      if (inputDevice) {
+        invoke("set_input_device", { name: inputDevice }).catch(console.error);
+      }
+      if (outputDevice) {
+        invoke("set_output_device", { name: outputDevice }).catch(console.error);
+      }
+      if (separateStreamOutput) {
+        invoke("set_separate_stream_output", {
+          enabled: true,
+          device: streamOutputDevice,
+        }).catch(console.error);
+      }
     }).catch((err) => {
       console.error(err);
       useVoiceStore.getState().disconnect();

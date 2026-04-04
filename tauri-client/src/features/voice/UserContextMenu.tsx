@@ -5,6 +5,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { stringToGradient } from "../../utils/colors";
+import { saveSettings } from "../settings/saveSettings";
 
 const MIN_DB = -40;
 const MAX_DB = 15;
@@ -56,6 +57,7 @@ export default function UserContextMenu() {
           gain: dbToGain(clamped),
         }).catch(console.error);
       }
+      saveSettings();
     },
     [username, setUserVolume, localMutedUsers]
   );
@@ -76,6 +78,7 @@ export default function UserContextMenu() {
       const db = userVolumes[username] ?? DEFAULT_DB;
       invoke("set_user_volume", { username, gain: dbToGain(db) }).catch(console.error);
     }
+    saveSettings();
   }, [username, localMutedUsers, toggleLocalMute, userVolumes]);
 
   // Close on outside click

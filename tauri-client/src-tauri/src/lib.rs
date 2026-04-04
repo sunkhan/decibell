@@ -1,4 +1,5 @@
 mod commands;
+mod config;
 mod events;
 mod media;
 mod net;
@@ -47,6 +48,13 @@ pub fn run() {
             commands::voice::set_stream_volume,
             commands::voice::set_stream_stereo,
             commands::voice::set_user_volume,
+            commands::settings::load_config,
+            commands::settings::save_settings,
+            commands::settings::list_audio_devices,
+            commands::settings::set_input_device,
+            commands::settings::set_output_device,
+            commands::settings::set_separate_stream_output,
+            commands::settings::set_stream_output_device,
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
