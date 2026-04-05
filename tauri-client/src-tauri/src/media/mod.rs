@@ -338,6 +338,18 @@ impl VoiceEngine {
         let _ = self.control_tx.send(ControlMessage::SetUserVolume(username, gain));
     }
 
+    pub fn set_aec_enabled(&self, enabled: bool) {
+        let _ = self.control_tx.send(ControlMessage::SetAecEnabled(enabled));
+    }
+
+    pub fn set_noise_suppression_level(&self, level: u8) {
+        let _ = self.control_tx.send(ControlMessage::SetNoiseSuppressionLevel(level));
+    }
+
+    pub fn set_agc_enabled(&self, enabled: bool) {
+        let _ = self.control_tx.send(ControlMessage::SetAgcEnabled(enabled));
+    }
+
     /// Set the video encoder's control channel so keyframe requests from
     /// remote viewers can be forwarded without locking AppState.
     pub fn set_keyframe_sender(&self, tx: mpsc::Sender<video_pipeline::VideoPipelineControl>) {

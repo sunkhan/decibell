@@ -19,6 +19,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aec3"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d2bf40d3b8182532b3e9135b9dda500ae1489fae677bd5ffbd75e38b51761a1"
+dependencies = [
+ "crossbeam-channel",
+ "log",
+ "num-complex",
+ "rustfft",
+]
+
+[[package]]
 name = "aes"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -942,6 +954,7 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 name = "decibell"
 version = "0.3.1"
 dependencies = [
+ "aec3",
  "aes-gcm",
  "audiopus",
  "base64 0.22.1",

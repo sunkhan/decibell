@@ -4,7 +4,7 @@ import { useDmStore } from "../../stores/dmStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 
 export function saveSettings() {
-  const { voiceThresholdDb, streamStereo, inputDevice, outputDevice, separateStreamOutput, streamOutputDevice } = useUiStore.getState();
+  const { voiceThresholdDb, streamStereo, inputDevice, outputDevice, separateStreamOutput, streamOutputDevice, aecEnabled, noiseSuppressionLevel, agcEnabled } = useUiStore.getState();
   const { friendsOnlyDms } = useDmStore.getState();
   const { userVolumes, localMutedUsers } = useVoiceStore.getState();
   invoke("save_settings", {
@@ -18,6 +18,9 @@ export function saveSettings() {
       stream_output_device: streamOutputDevice,
       user_volumes: userVolumes,
       local_muted_users: [...localMutedUsers],
+      aec_enabled: aecEnabled,
+      noise_suppression_level: noiseSuppressionLevel,
+      agc_enabled: agcEnabled,
     },
   }).catch(console.error);
 }

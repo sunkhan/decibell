@@ -28,6 +28,15 @@ pub struct AppSettings {
     /// Voice activation threshold in dB (-60 to 0). Below this, mic input is silenced.
     /// None means use default (-50 dB).
     pub voice_threshold_db: Option<f64>,
+    /// Echo cancellation (AEC3) — removes speaker audio bleeding into the mic
+    #[serde(default)]
+    pub aec_enabled: bool,
+    /// Noise suppression level: 0=off, 1=light(6dB), 2=moderate(12dB), 3=aggressive(18dB), 4=very aggressive(21dB)
+    #[serde(default)]
+    pub noise_suppression_level: u8,
+    /// Automatic gain control (AGC2) — normalizes mic volume
+    #[serde(default)]
+    pub agc_enabled: bool,
     /// Per-user volume in dB (username → dB). 0 = default, negative = quieter, positive = louder.
     #[serde(default)]
     pub user_volumes: std::collections::HashMap<String, f64>,

@@ -13,6 +13,12 @@ interface UiState {
   contextMenuAnchor: { x: number; y: number } | null;
   voiceThresholdDb: number;
   setVoiceThresholdDb: (value: number) => void;
+  aecEnabled: boolean;
+  setAecEnabled: (value: boolean) => void;
+  noiseSuppressionLevel: number; // 0=off, 1=light, 2=moderate, 3=aggressive, 4=very aggressive
+  setNoiseSuppressionLevel: (value: number) => void;
+  agcEnabled: boolean;
+  setAgcEnabled: (value: boolean) => void;
   streamStereo: boolean;
   setStreamStereo: (value: boolean) => void;
   inputDevice: string | null;
@@ -48,6 +54,12 @@ export const useUiStore = create<UiState>((set) => ({
   contextMenuAnchor: null,
   voiceThresholdDb: -50,
   setVoiceThresholdDb: (value) => set({ voiceThresholdDb: value }),
+  aecEnabled: false,
+  setAecEnabled: (value) => set({ aecEnabled: value }),
+  noiseSuppressionLevel: 0,
+  setNoiseSuppressionLevel: (value) => set({ noiseSuppressionLevel: value }),
+  agcEnabled: false,
+  setAgcEnabled: (value) => set({ agcEnabled: value }),
   streamStereo: false,
   setStreamStereo: (value) => set({ streamStereo: value }),
   inputDevice: null,

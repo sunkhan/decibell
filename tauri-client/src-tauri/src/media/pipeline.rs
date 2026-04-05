@@ -52,6 +52,11 @@ pub enum ControlMessage {
     SetSeparateStreamOutput(bool, Option<String>),
     /// Change the stream output device (only effective when separate stream output is on)
     SetStreamOutputDevice(Option<String>),
+    /// Voice processing toggles (AEC, NS, AGC)
+    SetAecEnabled(bool),
+    /// 0=off, 1=light(6dB), 2=moderate(12dB), 3=aggressive(18dB), 4=very aggressive(21dB)
+    SetNoiseSuppressionLevel(u8),
+    SetAgcEnabled(bool),
     Shutdown,
 }
 
@@ -370,6 +375,7 @@ fn build_output_stream(
     voice_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
     stream_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
     stream_stereo: Arc<std::sync::atomic::AtomicBool>,
+    _render_ref_prod: Arc<std::sync::Mutex<HeapProd<f32>>>,
     event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
 ) -> Option<(cpal::Stream, u32, u16)> {
     let output_device = match device_name {
@@ -595,6 +601,7 @@ fn build_voice_output_stream(
     host: &cpal::Host,
     device_name: Option<&str>,
     voice_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
+    _render_ref_prod: Arc<std::sync::Mutex<HeapProd<f32>>>,
     event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
 ) -> Option<(cpal::Stream, u32, u16)> {
     let output_device = match device_name {
@@ -915,6 +922,14 @@ pub fn run_audio_pipeline(
     let stream_prod = Arc::new(std::sync::Mutex::new(stream_prod));
     let stream_cons = Arc::new(std::sync::Mutex::new(stream_cons));
 
+    // ── AEC render reference ring buffer ─────────────────────────────────────
+    // Mono f32 at 48kHz — fed from the voice decode path in the main loop,
+    // consumed by VoipAec3::handle_render_frame() before capture processing.
+    let render_ref_rb = HeapRb::<f32>::new(BUF_CAP);
+    let (render_ref_prod, render_ref_cons) = render_ref_rb.split();
+    let render_ref_prod = Arc::new(std::sync::Mutex::new(render_ref_prod));
+    let render_ref_cons = Arc::new(std::sync::Mutex::new(render_ref_cons));
+
     // ── Build output stream first (we need its sample rate for input matching) ─
     let stream_stereo = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -924,6 +939,7 @@ pub fn run_audio_pipeline(
         Arc::clone(&voice_cons),
         Arc::clone(&stream_cons),
         Arc::clone(&stream_stereo),
+        Arc::clone(&render_ref_prod),
         &event_tx,
     ) {
         Some((stream, rate, _ch)) => (Some(stream), rate),
@@ -971,6 +987,53 @@ pub fn run_audio_pipeline(
 
     let mut last_ping_time = Instant::now();
     let ping_interval = Duration::from_secs(3);
+
+    // ── Voice processing (AEC / NS / AGC) ──────────────────────────────────
+    // VoipAec3 bundles all three processors. We rebuild it when toggles change.
+    let mut aec_enabled = false;
+    let mut ns_level: u8 = 0; // 0=off, 1=light, 2=moderate, 3=aggressive, 4=very aggressive
+    let mut agc_enabled = false;
+    let mut voice_processor: Option<aec3::voip::VoipAec3> = None;
+
+    fn ns_level_to_config(level: u8) -> Option<aec3::audio_processing::ns::NsConfig> {
+        use aec3::audio_processing::ns::{NsConfig, SuppressionLevel};
+        match level {
+            0 => None,
+            1 => Some(NsConfig { target_level: SuppressionLevel::K6dB, ..NsConfig::default() }),
+            2 => Some(NsConfig { target_level: SuppressionLevel::K12dB, ..NsConfig::default() }),
+            3 => Some(NsConfig { target_level: SuppressionLevel::K18dB, ..NsConfig::default() }),
+            _ => Some(NsConfig { target_level: SuppressionLevel::K21dB, ..NsConfig::default() }),
+        }
+    }
+
+    // Helper: (re)build the voice processor based on current toggle state
+    fn build_voice_processor(aec: bool, ns_level: u8, agc: bool) -> Option<aec3::voip::VoipAec3> {
+        let ns_on = ns_level > 0;
+        if !aec && !ns_on && !agc {
+            return None;
+        }
+        // 48kHz mono, 10ms frames = 480 samples
+        let mut builder = aec3::voip::VoipAec3::builder(48000, 1, 1)
+            .enable_noise_suppression(ns_on)
+            .enable_gain_controller2(agc);
+        if let Some(ns_cfg) = ns_level_to_config(ns_level) {
+            builder = builder.noise_suppression_config(ns_cfg);
+        }
+        match builder.build() {
+            Ok(processor) => {
+                eprintln!("[pipeline] Voice processor built: aec={}, ns_level={}, agc={}", aec, ns_level, agc);
+                Some(processor)
+            }
+            Err(e) => {
+                eprintln!("[pipeline] Failed to build voice processor: {}", e);
+                None
+            }
+        }
+    }
+
+    // AEC render reference accumulator (10ms = 480 samples at 48kHz)
+    const AEC_FRAME_SIZE: usize = 480; // 10ms at 48kHz
+    let mut render_ref_accum: Vec<f32> = Vec::with_capacity(AEC_FRAME_SIZE * 2);
 
     // ── Dedicated UDP recv thread ───────────────────────────────────────────
     // Reads all incoming packets and dispatches by type into separate channels.
@@ -1041,6 +1104,12 @@ pub fn run_audio_pipeline(
                     if input_stream_opt.is_none() {
                         eprintln!("[pipeline] Warning: no input device after hot-swap");
                     }
+                    // Reset voice processor state on device change
+                    if voice_processor.is_some() {
+                        voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
+                        render_ref_accum.clear();
+                        if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
+                    }
                 }
                 Ok(ControlMessage::SetOutputDevice(name)) => {
                     eprintln!("[pipeline] Hot-swapping output device to: {:?}", name);
@@ -1049,7 +1118,7 @@ pub fn run_audio_pipeline(
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     if separate_stream_enabled {
                         // Voice-only on main output
-                        match build_voice_output_stream(&host, name.as_deref(), Arc::clone(&voice_cons), &event_tx) {
+                        match build_voice_output_stream(&host, name.as_deref(), Arc::clone(&voice_cons), Arc::clone(&render_ref_prod), &event_tx) {
                             Some((stream, rate, _ch)) => {
                                 output_sample_rate = rate;
                                 output_stream = Some(stream);
@@ -1058,7 +1127,7 @@ pub fn run_audio_pipeline(
                         }
                     } else {
                         // Mixed voice+stream
-                        match build_output_stream(&host, name.as_deref(), Arc::clone(&voice_cons), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), &event_tx) {
+                        match build_output_stream(&host, name.as_deref(), Arc::clone(&voice_cons), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), &event_tx) {
                             Some((stream, rate, _ch)) => {
                                 output_sample_rate = rate;
                                 output_stream = Some(stream);
@@ -1080,7 +1149,7 @@ pub fn run_audio_pipeline(
                     if enabled {
                         // Main output: voice-only
                         // (reuse current main output device — None means default)
-                        if let Some((stream, rate, _ch)) = build_voice_output_stream(&host, None, Arc::clone(&voice_cons), &event_tx) {
+                        if let Some((stream, rate, _ch)) = build_voice_output_stream(&host, None, Arc::clone(&voice_cons), Arc::clone(&render_ref_prod), &event_tx) {
                             output_sample_rate = rate;
                             output_stream = Some(stream);
                         }
@@ -1090,7 +1159,7 @@ pub fn run_audio_pipeline(
                         }
                     } else {
                         // Back to mixed mode
-                        if let Some((stream, rate, _ch)) = build_output_stream(&host, None, Arc::clone(&voice_cons), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), &event_tx) {
+                        if let Some((stream, rate, _ch)) = build_output_stream(&host, None, Arc::clone(&voice_cons), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), &event_tx) {
                             output_sample_rate = rate;
                             output_stream = Some(stream);
                         }
@@ -1108,8 +1177,46 @@ pub fn run_audio_pipeline(
                         }
                     }
                 }
+                Ok(ControlMessage::SetAecEnabled(enabled)) => {
+                    eprintln!("[pipeline] AEC enabled={}", enabled);
+                    aec_enabled = enabled;
+                    voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
+                    render_ref_accum.clear();
+                    if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
+                }
+                Ok(ControlMessage::SetNoiseSuppressionLevel(level)) => {
+                    eprintln!("[pipeline] NS level={}", level);
+                    ns_level = level;
+                    voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
+                    render_ref_accum.clear();
+                    if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
+                }
+                Ok(ControlMessage::SetAgcEnabled(enabled)) => {
+                    eprintln!("[pipeline] AGC enabled={}", enabled);
+                    agc_enabled = enabled;
+                    voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
+                    render_ref_accum.clear();
+                    if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'main,
+            }
+        }
+
+        // 1b. Feed AEC render reference from decoded voice audio ──────────────
+        // Drain the render ref ring buffer and process 10ms chunks through AEC.
+        if voice_processor.is_some() {
+            if let Ok(mut rr_cons) = render_ref_cons.lock() {
+                while let Some(s) = rr_cons.try_pop() {
+                    render_ref_accum.push(s);
+                }
+            }
+            // Feed complete 10ms render frames to AEC
+            while render_ref_accum.len() >= AEC_FRAME_SIZE {
+                let chunk: Vec<f32> = render_ref_accum.drain(..AEC_FRAME_SIZE).collect();
+                if let Some(ref mut proc) = voice_processor {
+                    let _ = proc.handle_render_frame(&chunk);
+                }
             }
         }
 
@@ -1152,6 +1259,33 @@ pub fn run_audio_pipeline(
                 if let Some(state) = local_speaking.process_threshold(above_threshold) {
                     let _ =
                         event_tx.send(VoiceEvent::SpeakingChanged("__local__".to_string(), state));
+                }
+
+                // ── Voice processing (AEC / NS / AGC) ────────────────────────
+                // Process the 20ms capture frame through VoipAec3 in two 10ms
+                // chunks. This removes echo, noise, and normalizes gain.
+                if let Some(ref mut proc) = voice_processor {
+                    if !muted {
+                        // Convert i16 → f32 for processing
+                        let mut f32_frame: Vec<f32> = frame.iter().map(|&s| s as f32 / 32768.0).collect();
+                        let mut output_buf = vec![0.0f32; AEC_FRAME_SIZE];
+                        // Process two 10ms chunks
+                        for chunk_idx in 0..2 {
+                            let start = chunk_idx * AEC_FRAME_SIZE;
+                            let end = start + AEC_FRAME_SIZE;
+                            if let Ok(_) = proc.process_capture_frame(
+                                &f32_frame[start..end],
+                                false,
+                                &mut output_buf,
+                            ) {
+                                f32_frame[start..end].copy_from_slice(&output_buf);
+                            }
+                        }
+                        // Convert back to i16
+                        for (i, s) in f32_frame.iter().enumerate() {
+                            frame[i] = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
+                        }
+                    }
                 }
 
                 // Always encode the real audio to keep Opus state continuous.
@@ -1360,6 +1494,14 @@ pub fn run_audio_pipeline(
                                 let _ = prod.try_push(scaled.clamp(-32768, 32767) as i16);
                             }
                         }
+                        // Feed decoded voice to AEC render reference (48kHz mono f32)
+                        if aec_enabled {
+                            if let Ok(mut rr_prod) = render_ref_prod.lock() {
+                                for &s in &pcm {
+                                    let _ = rr_prod.try_push(s as f32 / 32768.0);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1393,6 +1535,19 @@ pub fn run_audio_pipeline(
                                     let mono = (l + r) / 2;
                                     let scaled = ((mono as f32) * stream_volume) as i32;
                                     let _ = prod.try_push(scaled.clamp(-32768, 32767) as i16);
+                                }
+                            }
+                        }
+                        // Feed stream audio to AEC render reference (mono, with volume applied).
+                        // Regardless of separate output or stereo mode — the mic can pick up
+                        // echo from any speaker device playing stream audio.
+                        if aec_enabled {
+                            if let Ok(mut rr_prod) = render_ref_prod.lock() {
+                                for i in 0..STEREO_FRAME_SIZE {
+                                    let l = pcm[i * 2] as f32;
+                                    let r = pcm[i * 2 + 1] as f32;
+                                    let mono = ((l + r) / 2.0) * stream_volume / 32768.0;
+                                    let _ = rr_prod.try_push(mono);
                                 }
                             }
                         }

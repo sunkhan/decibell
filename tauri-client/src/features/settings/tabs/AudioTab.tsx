@@ -244,6 +244,34 @@ function VoiceThresholdBar() {
   );
 }
 
+function ToggleSwitch({ label, description, enabled, onToggle }: {
+  label: string;
+  description: string;
+  enabled: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between rounded-xl bg-bg-primary px-4 py-3">
+      <div>
+        <div className="text-[13px] font-semibold text-text-primary">{label}</div>
+        <div className="mt-0.5 text-[11px] text-text-muted">{description}</div>
+      </div>
+      <button
+        onClick={onToggle}
+        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+          enabled ? "bg-accent" : "bg-text-muted/30"
+        }`}
+      >
+        <div
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+            enabled ? "translate-x-[22px]" : "translate-x-0.5"
+          }`}
+        />
+      </button>
+    </div>
+  );
+}
+
 export default function AudioTab() {
   const [devices, setDevices] = useState<AudioDeviceList>({ inputs: [], outputs: [] });
   const inputDevice = useUiStore((s) => s.inputDevice);
@@ -251,6 +279,9 @@ export default function AudioTab() {
   const streamStereo = useUiStore((s) => s.streamStereo);
   const separateStreamOutput = useUiStore((s) => s.separateStreamOutput);
   const streamOutputDevice = useUiStore((s) => s.streamOutputDevice);
+  const aecEnabled = useUiStore((s) => s.aecEnabled);
+  const nsLevel = useUiStore((s) => s.noiseSuppressionLevel);
+  const agcEnabled = useUiStore((s) => s.agcEnabled);
 
   useEffect(() => {
     invoke<AudioDeviceList>("list_audio_devices")
@@ -290,6 +321,26 @@ export default function AudioTab() {
     const newValue = !streamStereo;
     useUiStore.getState().setStreamStereo(newValue);
     invoke("set_stream_stereo", { enabled: newValue }).catch(console.error);
+    saveSettings();
+  };
+
+  const handleAecToggle = () => {
+    const newValue = !aecEnabled;
+    useUiStore.getState().setAecEnabled(newValue);
+    invoke("set_aec_enabled", { enabled: newValue }).catch(console.error);
+    saveSettings();
+  };
+
+  const handleNsChange = (level: number) => {
+    useUiStore.getState().setNoiseSuppressionLevel(level);
+    invoke("set_noise_suppression_level", { level }).catch(console.error);
+    saveSettings();
+  };
+
+  const handleAgcToggle = () => {
+    const newValue = !agcEnabled;
+    useUiStore.getState().setAgcEnabled(newValue);
+    invoke("set_agc_enabled", { enabled: newValue }).catch(console.error);
     saveSettings();
   };
 
@@ -342,33 +393,66 @@ export default function AudioTab() {
       {/* Divider */}
       <div className="my-4 h-px bg-border" />
 
+      {/* Voice Processing section */}
+      <div className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.08em] text-text-muted">
+        Voice Processing
+      </div>
+      <div className="mb-2 flex flex-col gap-2">
+        <ToggleSwitch
+          label="Echo Cancellation"
+          description="Remove speaker audio bleeding into your microphone"
+          enabled={aecEnabled}
+          onToggle={handleAecToggle}
+        />
+        <div className="rounded-xl bg-bg-primary px-4 py-3">
+          <div className="mb-2.5">
+            <div className="text-[13px] font-semibold text-text-primary">Noise Suppression</div>
+            <div className="mt-0.5 text-[11px] text-text-muted">Reduce background noise like fans, keyboards, and traffic</div>
+          </div>
+          <div className="flex gap-1">
+            {([
+              { level: 0, label: "Off" },
+              { level: 1, label: "Light" },
+              { level: 2, label: "Moderate" },
+              { level: 3, label: "Aggressive" },
+              { level: 4, label: "Max" },
+            ] as const).map(({ level, label }) => (
+              <button
+                key={level}
+                onClick={() => handleNsChange(level)}
+                className={`flex-1 rounded-lg py-1.5 text-[11px] font-semibold transition-colors ${
+                  nsLevel === level
+                    ? "bg-accent text-white"
+                    : "bg-bg-secondary text-text-secondary hover:text-text-primary"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <ToggleSwitch
+          label="Automatic Gain Control"
+          description="Normalize your microphone volume for consistent levels"
+          enabled={agcEnabled}
+          onToggle={handleAgcToggle}
+        />
+      </div>
+
+      {/* Divider */}
+      <div className="my-4 h-px bg-border" />
+
       {/* Stream Audio section */}
       <div className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.08em] text-text-muted">
         Stream Audio
       </div>
       <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between rounded-xl bg-bg-primary px-4 py-3">
-          <div>
-            <div className="text-[13px] font-semibold text-text-primary">
-              Separate stream output device
-            </div>
-            <div className="mt-0.5 text-[11px] text-text-muted">
-              Route stream audio to a different output device than voice chat
-            </div>
-          </div>
-          <button
-            onClick={handleSeparateStreamToggle}
-            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-              separateStreamOutput ? "bg-accent" : "bg-text-muted/30"
-            }`}
-          >
-            <div
-              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                separateStreamOutput ? "translate-x-[22px]" : "translate-x-0.5"
-              }`}
-            />
-          </button>
-        </div>
+        <ToggleSwitch
+          label="Separate stream output device"
+          description="Route stream audio to a different output device than voice chat"
+          enabled={separateStreamOutput}
+          onToggle={handleSeparateStreamToggle}
+        />
         {separateStreamOutput && (
           <DeviceSelector
             label="Stream Output Device"
@@ -384,28 +468,12 @@ export default function AudioTab() {
             onChange={handleStreamOutputChange}
           />
         )}
-        <div className="flex items-center justify-between rounded-xl bg-bg-primary px-4 py-3">
-          <div>
-            <div className="text-[13px] font-semibold text-text-primary">
-              Stereo stream audio
-            </div>
-            <div className="mt-0.5 text-[11px] text-text-muted">
-              Preserve left/right stereo positioning when watching streams
-            </div>
-          </div>
-          <button
-            onClick={handleStereoToggle}
-            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-              streamStereo ? "bg-accent" : "bg-text-muted/30"
-            }`}
-          >
-            <div
-              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                streamStereo ? "translate-x-[22px]" : "translate-x-0.5"
-              }`}
-            />
-          </button>
-        </div>
+        <ToggleSwitch
+          label="Stereo stream audio"
+          description="Preserve left/right stereo positioning when watching streams"
+          enabled={streamStereo}
+          onToggle={handleStereoToggle}
+        />
       </div>
     </div>
   );

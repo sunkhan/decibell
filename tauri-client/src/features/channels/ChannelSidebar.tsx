@@ -155,7 +155,7 @@ export default function ChannelSidebar() {
       channelId,
     }).then(() => {
       // Apply saved audio device settings to the new pipeline
-      const { inputDevice, outputDevice, separateStreamOutput, streamOutputDevice, voiceThresholdDb } = useUiStore.getState();
+      const { inputDevice, outputDevice, separateStreamOutput, streamOutputDevice, voiceThresholdDb, aecEnabled, noiseSuppressionLevel, agcEnabled } = useUiStore.getState();
       // Apply voice threshold (always, since default is -50 and user may have changed it)
       invoke("set_voice_threshold", { thresholdDb: voiceThresholdDb <= -60 ? -96 : voiceThresholdDb }).catch(console.error);
       if (inputDevice) {
@@ -170,6 +170,10 @@ export default function ChannelSidebar() {
           device: streamOutputDevice,
         }).catch(console.error);
       }
+      // Apply voice processing settings
+      if (aecEnabled) invoke("set_aec_enabled", { enabled: true }).catch(console.error);
+      if (noiseSuppressionLevel > 0) invoke("set_noise_suppression_level", { level: noiseSuppressionLevel }).catch(console.error);
+      if (agcEnabled) invoke("set_agc_enabled", { enabled: true }).catch(console.error);
     }).catch((err) => {
       console.error(err);
       useVoiceStore.getState().disconnect();

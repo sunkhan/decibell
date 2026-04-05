@@ -71,6 +71,9 @@ export default function App() {
             stream_output_device: string | null;
             user_volumes: Record<string, number>;
             local_muted_users: string[];
+            aec_enabled: boolean;
+            noise_suppression_level: number;
+            agc_enabled: boolean;
           };
         }>("load_config");
 
@@ -87,6 +90,9 @@ export default function App() {
           useUiStore.getState().setSeparateStreamOutput(true);
           useUiStore.getState().setStreamOutputDevice(settings.stream_output_device);
         }
+        useUiStore.getState().setAecEnabled(settings.aec_enabled);
+        useUiStore.getState().setNoiseSuppressionLevel(settings.noise_suppression_level);
+        useUiStore.getState().setAgcEnabled(settings.agc_enabled);
 
         // Restore per-user volume and mute settings
         if (settings.user_volumes) {

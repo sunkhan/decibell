@@ -277,6 +277,42 @@ pub async fn set_user_volume(
 }
 
 #[tauri::command]
+pub async fn set_aec_enabled(
+    enabled: bool,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    if let Some(ref engine) = s.voice_engine {
+        engine.set_aec_enabled(enabled);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_noise_suppression_level(
+    level: u8,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    if let Some(ref engine) = s.voice_engine {
+        engine.set_noise_suppression_level(level);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_agc_enabled(
+    enabled: bool,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    if let Some(ref engine) = s.voice_engine {
+        engine.set_agc_enabled(enabled);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn set_voice_deafen(
     deafened: bool,
     app: AppHandle,
