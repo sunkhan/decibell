@@ -11,7 +11,7 @@ use super::codec::{
     SAMPLE_RATE, STEREO_FRAME_SAMPLES, STEREO_FRAME_SIZE,
 };
 use super::packet::{
-    UdpAudioPacket, PACKET_TOTAL_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
+    UdpAudioPacket, AUDIO_HEADER_SIZE, PACKET_TOTAL_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
     PACKET_TYPE_STREAM_AUDIO,
 };
 use super::speaking::SpeakingDetector;
@@ -81,8 +81,8 @@ const FLAG_DEAFENED: u8 = 0x02;
 // out-of-order packets can be reordered. When a packet is truly lost, the
 // Opus decoder's PLC (Packet Loss Concealment) fills the gap smoothly.
 
-const JITTER_DEPTH: usize = 3; // packets to buffer before starting playback (60ms)
-const JITTER_MAX: usize = 20;  // safety cap — force-drain if buffer grows past this
+const JITTER_DEPTH: usize = 5; // packets to buffer before starting playback (100ms)
+const JITTER_MAX: usize = 30;  // safety cap — force-drain if buffer grows past this
 
 struct JitterBuffer {
     packets: HashMap<u16, Vec<u8>>,
@@ -165,6 +165,9 @@ struct RemotePeer {
     stream_audio_decoder: Option<StereoOpusDecoder>,
     stream_jitter: JitterBuffer,
     stream_drain_time: Instant,
+    /// Decoded voice samples (f32, -1..1) waiting to be mixed with other peers.
+    /// Accumulated during jitter drain, consumed by the mixing step each tick.
+    decoded_voice: Vec<f32>,
 }
 
 // ── Windows: default communications device ───────────────────────────────────
@@ -448,8 +451,15 @@ fn build_output_stream(
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             let mono_frames_needed = data.len() / out_ch as usize;
 
-            let mut voice_guard = voice_cons_out.lock().unwrap();
-            let mut stream_guard = stream_cons_out.lock().unwrap();
+            let Ok(mut voice_guard) = voice_cons_out.try_lock() else {
+                for sample in data.iter_mut() { *sample = 0.0; }
+                return;
+            };
+            let Ok(mut stream_guard) = stream_cons_out.try_lock() else {
+                drop(voice_guard);
+                for sample in data.iter_mut() { *sample = 0.0; }
+                return;
+            };
 
             if passthrough_playback {
                 if out_ch == 1 {
@@ -655,7 +665,10 @@ fn build_voice_output_stream(
         &stream_config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             let frames_needed = data.len() / out_ch as usize;
-            let mut guard = voice_cons_out.lock().unwrap();
+            let Ok(mut guard) = voice_cons_out.try_lock() else {
+                for sample in data.iter_mut() { *sample = 0.0; }
+                return;
+            };
 
             if passthrough {
                 for frame in data.chunks_exact_mut(out_ch as usize) {
@@ -776,7 +789,10 @@ fn build_stream_output_stream(
     let stream = match output_device.build_output_stream(
         &stream_config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let mut guard = stream_cons_out.lock().unwrap();
+            let Ok(mut guard) = stream_cons_out.try_lock() else {
+                for sample in data.iter_mut() { *sample = 0.0; }
+                return;
+            };
             let is_stereo = pb_stereo.load(std::sync::atomic::Ordering::Relaxed);
 
             if passthrough {
@@ -987,6 +1003,9 @@ pub fn run_audio_pipeline(
 
     let mut last_ping_time = Instant::now();
     let ping_interval = Duration::from_secs(3);
+
+    // Reusable buffer for mixing decoded voice from all peers each tick
+    let mut mix_buffer: Vec<f32> = Vec::with_capacity(FRAME_SIZE * 4);
 
     // ── Voice processing (AEC / NS / AGC) ──────────────────────────────────
     // VoipAec3 bundles all three processors. We rebuild it when toggles change.
@@ -1360,7 +1379,7 @@ pub fn run_audio_pipeline(
             match audio_pkt_rx.try_recv() {
                 Ok(raw) => {
                     pkt_count_this_iter += 1;
-                    if raw.len() == PACKET_TOTAL_SIZE {
+                    if raw.len() >= AUDIO_HEADER_SIZE {
                         if let Some(pkt) = UdpAudioPacket::from_bytes(&raw) {
                             let username = pkt.sender_username();
 
@@ -1396,6 +1415,7 @@ pub fn run_audio_pipeline(
                                         stream_audio_decoder: None,
                                         stream_jitter: JitterBuffer::new(),
                                         stream_drain_time: now,
+                                        decoded_voice: Vec::new(),
                                     }
                                 });
                                 peer.last_packet_time = now;
@@ -1428,6 +1448,7 @@ pub fn run_audio_pipeline(
                                             stream_audio_decoder: None,
                                             stream_jitter: JitterBuffer::new(),
                                             stream_drain_time: now,
+                                            decoded_voice: Vec::new(),
                                         }
                                     });
                                     peer.last_packet_time = now;
@@ -1488,19 +1509,8 @@ pub fn run_audio_pipeline(
                     }
                     if !deafened {
                         let gain = user_volumes.get(username.as_str()).copied().unwrap_or(1.0);
-                        if let Ok(mut prod) = voice_prod.lock() {
-                            for &s in &pcm {
-                                let scaled = ((s as f32) * gain) as i32;
-                                let _ = prod.try_push(scaled.clamp(-32768, 32767) as i16);
-                            }
-                        }
-                        // Feed decoded voice to AEC render reference (48kHz mono f32)
-                        if aec_enabled {
-                            if let Ok(mut rr_prod) = render_ref_prod.lock() {
-                                for &s in &pcm {
-                                    let _ = rr_prod.try_push(s as f32 / 32768.0);
-                                }
-                            }
+                        for &s in &pcm {
+                            peer.decoded_voice.push((s as f32 / 32768.0) * gain);
                         }
                     }
                 }
@@ -1556,6 +1566,41 @@ pub fn run_audio_pipeline(
             }
         }
 
+        // 4c. Mix decoded voice from all peers → push to playback buffer ─────
+        // Each peer's jitter drain accumulated f32 samples in decoded_voice.
+        // Sum them sample-by-sample so N speakers produce correct mixed audio
+        // instead of N× speed playback.
+        {
+            let max_samples = remote_peers.values().map(|p| p.decoded_voice.len()).max().unwrap_or(0);
+            if max_samples > 0 {
+                mix_buffer.clear();
+                mix_buffer.resize(max_samples, 0.0);
+                for peer in remote_peers.values() {
+                    for (i, &s) in peer.decoded_voice.iter().enumerate() {
+                        mix_buffer[i] += s;
+                    }
+                }
+                // Push mixed audio to playback ring buffer
+                if let Ok(mut prod) = voice_prod.lock() {
+                    for &s in &mix_buffer {
+                        let _ = prod.try_push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                    }
+                }
+                // Feed mixed voice to AEC render reference (what the speaker actually plays)
+                if aec_enabled {
+                    if let Ok(mut rr_prod) = render_ref_prod.lock() {
+                        for &s in &mix_buffer {
+                            let _ = rr_prod.try_push(s);
+                        }
+                    }
+                }
+                // Clear per-peer buffers
+                for peer in remote_peers.values_mut() {
+                    peer.decoded_voice.clear();
+                }
+            }
+        }
+
         // 5. Clean up stale remote peers (no packet for > 5s) ─────────────────
         let stale_timeout = Duration::from_secs(5);
         let mut to_remove: Vec<String> = Vec::new();
@@ -1579,8 +1624,8 @@ pub fn run_audio_pipeline(
         static DIAG_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let iter_num = DIAG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if iter_num % 1000 == 999 { // ~every 5s (5ms per iter)
-            let voice_fill = if let Ok(c) = voice_cons.lock() { c.occupied_len() } else { 0 };
-            let stream_fill = if let Ok(c) = stream_cons.lock() { c.occupied_len() } else { 0 };
+            let voice_fill = if let Ok(c) = voice_cons.try_lock() { c.occupied_len() } else { 0 };
+            let stream_fill = if let Ok(c) = stream_cons.try_lock() { c.occupied_len() } else { 0 };
             let peers: Vec<String> = remote_peers.keys().cloned().collect();
             eprintln!("[pipeline] diag: peers={:?}, voice_buf={}/{}, stream_buf={}/{}, pkts_this_iter={}",
                 peers, voice_fill, BUF_CAP, stream_fill, BUF_CAP, pkt_count_this_iter);

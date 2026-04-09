@@ -29,7 +29,7 @@ export default function DmSidebar() {
   return (
     <div
       className={`flex h-full shrink-0 flex-col items-center border-r border-border bg-bg-dmbar pt-2.5 transition-all ease-[cubic-bezier(0.4,0,0.2,1)] ${
-        sidebarCollapsed ? "w-0 overflow-hidden border-r-0 opacity-0" : "w-[68px]"
+        sidebarCollapsed ? "w-0 overflow-hidden border-r-0 opacity-0" : "w-[68px] pb-14"
       }`}
       style={{ transitionDuration: "300ms" }}
     >

@@ -5,6 +5,7 @@ import ServerBar from "../features/servers/ServerBar";
 import ServerDiscoveryModal from "../features/servers/ServerDiscoveryModal";
 import ServerBrowseView from "../features/servers/ServerBrowseView";
 import ChannelSidebar from "../features/channels/ChannelSidebar";
+import UserPanel from "../features/channels/UserPanel";
 import ChatPanel from "../features/chat/ChatPanel";
 import FriendsList from "../features/friends/FriendsList";
 import MembersList from "../features/friends/MembersList";
@@ -53,13 +54,22 @@ export default function MainLayout() {
 
       {/* Main content row */}
       <div className="flex flex-1 overflow-hidden">
-        <DmSidebar />
-
         {activeView === "browse" ? (
-          <ServerBrowseView />
+          <>
+            <DmSidebar />
+            <ServerBrowseView />
+          </>
         ) : (
           <>
-            <ChannelSidebar />
+            {/* Sidebar group: DmSidebar + ChannelSidebar + floating UserPanel */}
+            <div className="relative flex shrink-0">
+              <DmSidebar />
+              <ChannelSidebar />
+              {/* Floating user panel overlay */}
+              <div className="absolute bottom-2 left-2 right-2 z-20">
+                <UserPanel />
+              </div>
+            </div>
             {activeView === "voice" ? (
               <VoicePanel />
             ) : activeView === "dm" ? (
