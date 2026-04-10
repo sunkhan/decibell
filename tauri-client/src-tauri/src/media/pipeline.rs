@@ -67,6 +67,10 @@ pub enum VoiceEvent {
     InputLevel(f32),
     PingMeasured(u32),
     VideoFrameReady(ReassembledFrame),
+    /// Linux only: H.264 frame decoded to JPEG in the video recv thread.
+    /// (username, jpeg_bytes, frame_id, is_keyframe)
+    #[cfg(target_os = "linux")]
+    VideoFrameDecoded(String, Vec<u8>, u32, bool),
     KeyframeRequested,
     Error(String),
 }
@@ -765,6 +769,9 @@ pub fn run_audio_pipeline(
     let mut stream_output: Option<cpal::Stream> = None;
     let mut separate_stream_enabled = false;
     let mut stream_output_device_name: Option<String> = None;
+    // When separate stream output is enabled, stream audio may play on a device
+    // with a different sample rate than the voice output. Track it separately.
+    let mut stream_output_sample_rate: u32 = output_sample_rate;
 
     // ── Local state ───────────────────────────────────────────────────────────
     let mut muted = false;
@@ -949,10 +956,17 @@ pub fn run_audio_pipeline(
                     // Rebuild playback resamplers for new output rate
                     if output_sample_rate == SAMPLE_RATE {
                         playback_voice_resampler = None;
-                        playback_stream_resampler = None;
                     } else {
                         playback_voice_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 1));
-                        playback_stream_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2));
+                    }
+                    // Stream resampler: only update if stream plays on the same device
+                    if !separate_stream_enabled {
+                        stream_output_sample_rate = output_sample_rate;
+                        if output_sample_rate == SAMPLE_RATE {
+                            playback_stream_resampler = None;
+                        } else {
+                            playback_stream_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2));
+                        }
                     }
                 }
                 Ok(ControlMessage::SetSeparateStreamOutput(enabled, device)) => {
@@ -974,24 +988,29 @@ pub fn run_audio_pipeline(
                             output_sample_rate = rate;
                             output_stream = Some(stream);
                         }
-                        // Stream output: stream-only on separate device
-                        if let Some((stream, _rate, _ch)) = build_stream_output_stream(&host, device.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), &event_tx) {
+                        // Stream output: stream-only on separate device (may have different rate)
+                        if let Some((stream, rate, _ch)) = build_stream_output_stream(&host, device.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), &event_tx) {
+                            stream_output_sample_rate = rate;
                             stream_output = Some(stream);
                         }
                     } else {
-                        // Back to mixed mode
+                        // Back to mixed mode — stream plays on same device as voice
                         if let Some((stream, rate, _ch)) = build_output_stream(&host, None, Arc::clone(&voice_cons), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), &event_tx) {
                             output_sample_rate = rate;
+                            stream_output_sample_rate = rate;
                             output_stream = Some(stream);
                         }
                     }
-                    // Rebuild playback resamplers for (potentially new) output rate
+                    // Rebuild playback resamplers — voice uses voice device rate, stream uses stream device rate
                     if output_sample_rate == SAMPLE_RATE {
                         playback_voice_resampler = None;
-                        playback_stream_resampler = None;
                     } else {
                         playback_voice_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 1));
-                        playback_stream_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2));
+                    }
+                    if stream_output_sample_rate == SAMPLE_RATE {
+                        playback_stream_resampler = None;
+                    } else {
+                        playback_stream_resampler = Some(make_sinc_resampler(SAMPLE_RATE, stream_output_sample_rate, 480, 2));
                     }
                 }
                 Ok(ControlMessage::SetStreamOutputDevice(name)) => {
@@ -1001,8 +1020,17 @@ pub fn run_audio_pipeline(
                         stream_output = None;
                         // Drain stream ring buffer
                         { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
-                        if let Some((stream, _rate, _ch)) = build_stream_output_stream(&host, name.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), &event_tx) {
+                        playback_stream_accum_l.clear();
+                        playback_stream_accum_r.clear();
+                        if let Some((stream, rate, _ch)) = build_stream_output_stream(&host, name.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), &event_tx) {
+                            stream_output_sample_rate = rate;
                             stream_output = Some(stream);
+                            // Rebuild stream resampler for the new device rate
+                            if rate == SAMPLE_RATE {
+                                playback_stream_resampler = None;
+                            } else {
+                                playback_stream_resampler = Some(make_sinc_resampler(SAMPLE_RATE, rate, 480, 2));
+                            }
                         }
                     }
                 }
@@ -1103,7 +1131,33 @@ pub fn run_audio_pipeline(
             };
 
             if let Some(mut frame) = frame_opt {
-                // Compute RMS in dB for threshold check
+                // ── Voice processing (AEC / NS / AGC) ────────────────────────
+                // Process BEFORE threshold check so AGC-boosted levels are what
+                // the threshold sees. Previous order caused AGC to boost quiet
+                // audio after the gate had already decided to fade it out,
+                // producing robotic popping artifacts.
+                if let Some(ref mut proc) = voice_processor {
+                    if !muted {
+                        let mut f32_frame: Vec<f32> = frame.iter().map(|&s| s as f32 / 32768.0).collect();
+                        let mut output_buf = vec![0.0f32; AEC_FRAME_SIZE];
+                        for chunk_idx in 0..2 {
+                            let start = chunk_idx * AEC_FRAME_SIZE;
+                            let end = start + AEC_FRAME_SIZE;
+                            if let Ok(_) = proc.process_capture_frame(
+                                &f32_frame[start..end],
+                                false,
+                                &mut output_buf,
+                            ) {
+                                f32_frame[start..end].copy_from_slice(&output_buf);
+                            }
+                        }
+                        for (i, s) in f32_frame.iter().enumerate() {
+                            frame[i] = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
+                        }
+                    }
+                }
+
+                // Compute RMS in dB on the PROCESSED frame (post-AGC/NS)
                 let rms = {
                     let sum_sq: f64 = frame.iter().map(|&s| (s as f64) * (s as f64)).sum();
                     (sum_sq / frame.len() as f64).sqrt() as f32
@@ -1128,49 +1182,12 @@ pub fn run_audio_pipeline(
                         event_tx.send(VoiceEvent::SpeakingChanged("__local__".to_string(), state));
                 }
 
-                // ── Voice processing (AEC / NS / AGC) ────────────────────────
-                // Process the 20ms capture frame through VoipAec3 in two 10ms
-                // chunks. This removes echo, noise, and normalizes gain.
-                if let Some(ref mut proc) = voice_processor {
-                    if !muted {
-                        // Convert i16 → f32 for processing
-                        let mut f32_frame: Vec<f32> = frame.iter().map(|&s| s as f32 / 32768.0).collect();
-                        let mut output_buf = vec![0.0f32; AEC_FRAME_SIZE];
-                        // Process two 10ms chunks
-                        for chunk_idx in 0..2 {
-                            let start = chunk_idx * AEC_FRAME_SIZE;
-                            let end = start + AEC_FRAME_SIZE;
-                            if let Ok(_) = proc.process_capture_frame(
-                                &f32_frame[start..end],
-                                false,
-                                &mut output_buf,
-                            ) {
-                                f32_frame[start..end].copy_from_slice(&output_buf);
-                            }
-                        }
-                        // Convert back to i16
-                        for (i, s) in f32_frame.iter().enumerate() {
-                            frame[i] = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
-                        }
-                    }
-                }
-
-                // Always encode the real audio to keep Opus state continuous.
-                // When muted, encode true silence. When below voice threshold,
-                // apply a smooth fade-out ramp to avoid a hard discontinuity
-                // (which causes pops on the receiver side).
+                // Encode: when muted or below threshold, send true silence so
+                // nothing leaks to listeners. Opus DTX makes silence frames tiny.
                 let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
-                let encode_result = if muted {
+                let encode_result = if muted || !above_threshold {
                     encoder.encode_silence(&mut opus_out)
                 } else {
-                    if !above_threshold {
-                        // Smooth fade-out over the frame to avoid pop
-                        let len = frame.len();
-                        for (i, s) in frame.iter_mut().enumerate() {
-                            let fade = 1.0 - (i as f32 / len as f32);
-                            *s = ((*s as f32) * fade) as i16;
-                        }
-                    }
                     encoder.encode(&frame, &mut opus_out)
                 };
 

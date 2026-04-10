@@ -20,6 +20,8 @@ pub mod speaking;
 pub mod video_packet;
 pub mod video_pipeline;
 pub mod video_receiver;
+#[cfg(target_os = "linux")]
+pub mod video_decoder;
 
 use std::net::UdpSocket;
 use std::sync::{mpsc, Arc};
@@ -235,10 +237,23 @@ impl VoiceEngine {
                             };
                             let _ = app.emit("stream_frame", serde_json::json!({
                                 "username": frame.streamer_username,
+                                "format": "h264",
                                 "data": b64_data,
                                 "timestamp": frame.frame_id as u64 * 33_333,
                                 "keyframe": frame.is_keyframe,
                                 "description": b64_desc,
+                            }));
+                        }
+                        #[cfg(target_os = "linux")]
+                        VoiceEvent::VideoFrameDecoded(username, jpeg_data, frame_id, is_keyframe) => {
+                            use base64::Engine;
+                            let b64_jpeg = base64::engine::general_purpose::STANDARD.encode(&jpeg_data);
+                            let _ = app.emit("stream_frame", serde_json::json!({
+                                "username": username,
+                                "format": "jpeg",
+                                "data": b64_jpeg,
+                                "timestamp": frame_id as u64 * 33_333,
+                                "keyframe": is_keyframe,
                             }));
                         }
                         VoiceEvent::KeyframeRequested => {
@@ -397,6 +412,53 @@ fn run_video_recv_thread(
     let mut video_frames_received: u64 = 0;
     let mut last_maintenance = Instant::now();
 
+    // Linux: software H.264 decoder for frames (WebKitGTK lacks WebCodecs)
+    #[cfg(target_os = "linux")]
+    let mut sw_decoder: Option<video_decoder::SoftwareH264Decoder> = None;
+    #[cfg(target_os = "linux")]
+    let mut sw_decoder_init_attempted = false;
+    #[cfg(target_os = "linux")]
+    let mut last_decode_time = Instant::now();
+
+    // Helper: emit a reassembled video frame.
+    // Linux: decode H.264 → JPEG on this thread, emit VideoFrameDecoded.
+    // Windows: pass raw H.264 AVCC via VideoFrameReady for WebCodecs.
+    let mut emit_frame = |frame: video_receiver::ReassembledFrame| {
+        #[cfg(target_os = "linux")]
+        {
+            if !sw_decoder_init_attempted {
+                sw_decoder_init_attempted = true;
+                match video_decoder::SoftwareH264Decoder::new() {
+                    Ok(dec) => {
+                        eprintln!("[video-recv] Software H.264 decoder initialized");
+                        sw_decoder = Some(dec);
+                    }
+                    Err(e) => eprintln!("[video-recv] Failed to init SW decoder: {}", e),
+                }
+            }
+            if let Some(ref mut dec) = sw_decoder {
+                // Rate-limit: skip emitting delta frames if last decode was < 25ms ago (~40fps cap)
+                let elapsed = last_decode_time.elapsed();
+                if !frame.is_keyframe && elapsed < Duration::from_millis(25) {
+                    // Still feed to decoder to keep reference frames correct
+                    let _ = dec.decode_to_jpeg(&frame.data);
+                } else if let Some(jpeg) = dec.decode_to_jpeg(&frame.data) {
+                    last_decode_time = Instant::now();
+                    let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameDecoded(
+                        frame.streamer_username,
+                        jpeg,
+                        frame.frame_id,
+                        frame.is_keyframe,
+                    ));
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
+        }
+    };
+
     loop {
         // Drain available video packets (non-blocking after the first blocking recv)
         match packet_rx.recv_timeout(Duration::from_millis(5)) {
@@ -414,7 +476,7 @@ fn run_video_recv_thread(
                                 frame.frame_id, frame.data.len(), frame.is_keyframe, video_frames_received);
                         }
                         if frame.is_keyframe { has_received_keyframe = true; }
-                        let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
+                        emit_frame(frame);
                     }
                 }
 
@@ -433,7 +495,7 @@ fn run_video_recv_thread(
                                     frame.frame_id, frame.data.len(), frame.is_keyframe, video_frames_received);
                             }
                             if frame.is_keyframe { has_received_keyframe = true; }
-                            let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
+                            emit_frame(frame);
                         }
                     }
                 }

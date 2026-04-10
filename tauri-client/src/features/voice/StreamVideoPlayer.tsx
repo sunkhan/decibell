@@ -9,10 +9,11 @@ interface Props {
 
 interface StreamFramePayload {
   username: string;
-  data: string; // base64-encoded H.264 AVCC frame
+  format?: "h264" | "jpeg"; // h264 = Windows WebCodecs, jpeg = Linux SW decode
+  data: string; // base64-encoded frame data
   timestamp: number;
   keyframe: boolean;
-  description: string | null; // base64-encoded avcC record (on keyframes)
+  description: string | null; // base64-encoded avcC record (h264 keyframes only)
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -23,6 +24,9 @@ function base64ToBytes(b64: string): Uint8Array {
   }
   return bytes;
 }
+
+// Check if WebCodecs VideoDecoder is available (Chromium-based webviews only)
+const hasWebCodecs = typeof VideoDecoder !== "undefined";
 
 export default function StreamVideoPlayer({ streamerUsername, className }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -70,35 +74,64 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     let firstLocalTs = -1;
 
     let firstFrameSignalled = false;
-    const decoder = new VideoDecoder({
-      output: (frame: VideoFrame) => {
-        const ctx = ctxRef.current;
-        if (ctx && canvas) {
-          if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-            canvas.width = frame.displayWidth;
-            canvas.height = frame.displayHeight;
-          }
-          ctx.drawImage(frame, 0, 0);
-        }
-        frame.close();
-        if (!firstFrameSignalled) {
-          firstFrameSignalled = true;
-          setHasFirstFrame(true);
-        }
-      },
-      error: handleDecoderError,
-    });
 
-    configureDecoder(decoder);
-    decoderRef.current = decoder;
-    needsKeyframeRef.current = true;
+    // WebCodecs decoder — only created on Windows (or where VideoDecoder exists)
+    let decoder: VideoDecoder | null = null;
+    if (hasWebCodecs) {
+      decoder = new VideoDecoder({
+        output: (frame: VideoFrame) => {
+          const ctx = ctxRef.current;
+          if (ctx && canvas) {
+            if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+              canvas.width = frame.displayWidth;
+              canvas.height = frame.displayHeight;
+            }
+            ctx.drawImage(frame, 0, 0);
+          }
+          frame.close();
+          if (!firstFrameSignalled) {
+            firstFrameSignalled = true;
+            setHasFirstFrame(true);
+          }
+        },
+        error: handleDecoderError,
+      });
+      configureDecoder(decoder);
+      decoderRef.current = decoder;
+      needsKeyframeRef.current = true;
+    }
 
     invoke("request_keyframe", { targetUsername: streamerUsername }).catch(() => {});
 
+    // Reusable Image for JPEG rendering (Linux path)
+    const jpegImg = new Image();
+    jpegImg.onload = () => {
+      const ctx = ctxRef.current;
+      if (ctx && canvas) {
+        if (canvas.width !== jpegImg.naturalWidth || canvas.height !== jpegImg.naturalHeight) {
+          canvas.width = jpegImg.naturalWidth;
+          canvas.height = jpegImg.naturalHeight;
+        }
+        ctx.drawImage(jpegImg, 0, 0);
+      }
+      if (!firstFrameSignalled) {
+        firstFrameSignalled = true;
+        setHasFirstFrame(true);
+      }
+    };
+
     const unlisten = listen<StreamFramePayload>("stream_frame", (event) => {
-      const { username, data, timestamp, keyframe, description } = event.payload;
+      const { username, format, data, timestamp, keyframe, description } = event.payload;
       if (username !== streamerUsername) return;
-      if (decoder.state === "closed") return;
+
+      // ── JPEG path (Linux: Rust-side decoded) ──────────────────────────
+      if (format === "jpeg") {
+        jpegImg.src = `data:image/jpeg;base64,${data}`;
+        return;
+      }
+
+      // ── H.264 WebCodecs path (Windows) ────────────────────────────────
+      if (!decoder || decoder.state === "closed") return;
 
       if (keyframe && description && !descriptionRef.current) {
         const descBytes = base64ToBytes(description);
@@ -160,7 +193,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
 
     return () => {
       unlisten.then((fn) => fn());
-      if (decoder.state !== "closed") {
+      if (decoder && decoder.state !== "closed") {
         decoder.close();
       }
       decoderRef.current = null;
