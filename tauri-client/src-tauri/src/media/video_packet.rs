@@ -79,22 +79,29 @@ impl UdpVideoPacket {
         }
     }
 
+    /// Serialize to a compact byte vector: header (45 bytes) + actual payload only.
+    /// This saves hundreds of bytes per packet vs the old fixed 1445-byte format.
+    /// The C++ server broadcasts `bytes_recvd` so compact packets relay correctly.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let total = std::mem::size_of::<Self>();
+        let ps = { self.payload_size } as usize;
+        let header_size = std::mem::size_of::<Self>() - UDP_MAX_PAYLOAD; // 45 bytes
+        let total = header_size + ps;
         let mut buf = vec![0u8; total];
         unsafe {
             std::ptr::copy_nonoverlapping(
                 self as *const Self as *const u8,
                 buf.as_mut_ptr(),
-                total,
+                header_size,
             );
         }
+        buf[header_size..header_size + ps].copy_from_slice(&self.payload[..ps]);
         buf
     }
 
+    /// Deserialize from bytes. Accepts both compact (header + payload) and full-size buffers.
     pub fn from_bytes(buf: &[u8]) -> Option<Self> {
-        let expected = std::mem::size_of::<Self>();
-        if buf.len() < expected {
+        let header_size = std::mem::size_of::<Self>() - UDP_MAX_PAYLOAD; // 45 bytes
+        if buf.len() < header_size {
             return None;
         }
         let mut pkt = Self {
@@ -108,13 +115,19 @@ impl UdpVideoPacket {
             codec: 0,
             payload: [0; UDP_MAX_PAYLOAD],
         };
+        // Copy header fields
         unsafe {
             std::ptr::copy_nonoverlapping(
                 buf.as_ptr(),
                 &mut pkt as *mut Self as *mut u8,
-                expected,
+                header_size,
             );
         }
+        // Copy payload (however many bytes are available, up to payload_size)
+        let ps = { pkt.payload_size } as usize;
+        let available = buf.len() - header_size;
+        let copy_len = ps.min(available).min(UDP_MAX_PAYLOAD);
+        pkt.payload[..copy_len].copy_from_slice(&buf[header_size..header_size + copy_len]);
         Some(pkt)
     }
 
@@ -226,6 +239,20 @@ mod tests {
     fn video_packet_size_matches_cpp() {
         // C++ struct: 1 + 32 + 4 + 2 + 2 + 2 + 1 + 1 + 1400 = 1445 bytes
         assert_eq!(std::mem::size_of::<UdpVideoPacket>(), 1445);
+    }
+
+    #[test]
+    fn video_packet_compact_serialization() {
+        let data = b"hello video frame";
+        let pkt = UdpVideoPacket::new("testuser", 42, 0, 3, true, data);
+        let bytes = pkt.to_bytes();
+        // Header (45 bytes) + payload (17 bytes) = 62 bytes, NOT 1445
+        let header_size = std::mem::size_of::<UdpVideoPacket>() - UDP_MAX_PAYLOAD;
+        assert_eq!(bytes.len(), header_size + data.len());
+        // Should still round-trip correctly
+        let decoded = UdpVideoPacket::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.payload_data(), data);
+        assert_eq!(decoded.sender_username(), "testuser");
     }
 
     #[test]

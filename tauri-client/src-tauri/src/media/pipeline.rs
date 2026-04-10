@@ -1607,9 +1607,8 @@ fn udp_recv_thread(
     video_tx: std::sync::mpsc::Sender<Vec<u8>>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
 ) {
-    const VIDEO_PACKET_SIZE: usize = std::mem::size_of::<UdpVideoPacket>();
-    const RECV_BUF_SIZE: usize = if VIDEO_PACKET_SIZE > PACKET_TOTAL_SIZE {
-        VIDEO_PACKET_SIZE
+    const RECV_BUF_SIZE: usize = if std::mem::size_of::<UdpVideoPacket>() > PACKET_TOTAL_SIZE {
+        std::mem::size_of::<UdpVideoPacket>()
     } else {
         PACKET_TOTAL_SIZE
     };
@@ -1640,7 +1639,7 @@ fn udp_recv_thread(
                     recv_log_time = Instant::now();
                 }
 
-                if packet_type == PACKET_TYPE_VIDEO && n == VIDEO_PACKET_SIZE {
+                if packet_type == PACKET_TYPE_VIDEO {
                     // Video → video reassembly thread
                     if video_tx.send(buf[..n].to_vec()).is_err() {
                         break; // video thread gone
