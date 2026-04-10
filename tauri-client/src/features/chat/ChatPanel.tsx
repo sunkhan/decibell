@@ -5,7 +5,56 @@ import { useUiStore } from "../../stores/uiStore";
 import MessageBubble, { shouldGroup } from "./MessageBubble";
 import { useChatEvents } from "./useChatEvents";
 
-export default function ChatPanel() {
+export function ChatHeader() {
+  const activeServerId = useChatStore((s) => s.activeServerId);
+  const activeChannelId = useChatStore((s) => s.activeChannelId);
+  const channelsByServer = useChatStore((s) => s.channelsByServer);
+  const membersPanelVisible = useUiStore((s) => s.membersPanelVisible);
+  const toggleMembersPanel = useUiStore((s) => s.toggleMembersPanel);
+
+  const channelName = activeServerId
+    ? channelsByServer[activeServerId]?.find(
+        (ch) => ch.id === activeChannelId
+      )?.name
+    : null;
+
+  if (!activeChannelId) return null;
+
+  return (
+    <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border bg-bg-tertiary px-4">
+      <span className="font-mono text-xl font-semibold text-text-muted">#</span>
+      <span className="text-[15px] font-bold text-text-bright">
+        {channelName ?? activeChannelId}
+      </span>
+      <div className="h-5 w-px bg-border-divider" />
+      <span className="flex-1 text-[13px] text-text-muted">
+        The main hangout — say whatever
+      </span>
+      <div className="flex gap-1">
+        <button className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+        </button>
+        <button
+          onClick={toggleMembersPanel}
+          className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+            membersPanelVisible
+              ? "text-text-secondary bg-surface-hover"
+              : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+          }`}
+          title={membersPanelVisible ? "Hide members" : "Show members"}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean }) {
   useChatEvents();
 
   const activeServerId = useChatStore((s) => s.activeServerId);
@@ -13,8 +62,6 @@ export default function ChatPanel() {
   const messagesByChannel = useChatStore((s) => s.messagesByChannel);
   const channelsByServer = useChatStore((s) => s.channelsByServer);
   const activeView = useUiStore((s) => s.activeView);
-  const membersPanelVisible = useUiStore((s) => s.membersPanelVisible);
-  const toggleMembersPanel = useUiStore((s) => s.toggleMembersPanel);
 
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -103,36 +150,7 @@ export default function ChatPanel() {
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-bg-tertiary">
       {/* Channel header */}
-      <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border px-4">
-        <span className="font-mono text-xl font-semibold text-text-muted">#</span>
-        <span className="text-[15px] font-bold text-text-bright">
-          {channelName ?? activeChannelId}
-        </span>
-        <div className="h-5 w-px bg-border-divider" />
-        <span className="flex-1 text-[13px] text-text-muted">
-          The main hangout — say whatever
-        </span>
-        <div className="flex gap-1">
-          <button className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-          </button>
-          <button
-            onClick={toggleMembersPanel}
-            className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
-              membersPanelVisible
-                ? "text-text-secondary bg-surface-hover"
-                : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
-            }`}
-            title={membersPanelVisible ? "Hide members" : "Show members"}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" />
-            </svg>
-          </button>
-        </div>
-      </div>
+      {!hideHeader && <ChatHeader />}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-4">

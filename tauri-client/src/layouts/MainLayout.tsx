@@ -6,7 +6,7 @@ import ServerDiscoveryModal from "../features/servers/ServerDiscoveryModal";
 import ServerBrowseView from "../features/servers/ServerBrowseView";
 import ChannelSidebar from "../features/channels/ChannelSidebar";
 import UserPanel from "../features/channels/UserPanel";
-import ChatPanel from "../features/chat/ChatPanel";
+import ChatPanel, { ChatHeader } from "../features/chat/ChatPanel";
 import FriendsList from "../features/friends/FriendsList";
 import MembersList from "../features/friends/MembersList";
 import { useConnectionEvents } from "../hooks/useConnectionEvents";
@@ -83,10 +83,13 @@ export default function MainLayout() {
                 <FriendsList />
               </>
             ) : (
-              <>
-                <ChatPanel />
-                {membersPanelVisible && <MembersList />}
-              </>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <ChatHeader />
+                <div className="flex min-h-0 flex-1 overflow-hidden">
+                  <ChatPanel hideHeader />
+                  {membersPanelVisible && <MembersList />}
+                </div>
+              </div>
             )}
           </>
         )}

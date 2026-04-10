@@ -140,6 +140,10 @@ export function useVoiceEvents() {
         }
         if (fullscreenStream && !mapped.some((s) => s.ownerUsername === fullscreenStream)) {
           useVoiceStore.getState().setFullscreenStream(null);
+          if (useVoiceStore.getState().isStreamFullscreen) {
+            useVoiceStore.getState().setStreamFullscreen(false);
+            getCurrentWindow().setFullscreen(false).catch(() => {});
+          }
         }
       }
     ).then((u) => unlisten.push(u));

@@ -331,9 +331,10 @@ export default function AudioTab() {
     saveSettings();
   };
 
-  const handleNsChange = (level: number) => {
-    useUiStore.getState().setNoiseSuppressionLevel(level);
-    invoke("set_noise_suppression_level", { level }).catch(console.error);
+  const handleNsToggle = () => {
+    const newLevel = nsLevel > 0 ? 0 : 1;
+    useUiStore.getState().setNoiseSuppressionLevel(newLevel);
+    invoke("set_noise_suppression_level", { level: newLevel }).catch(console.error);
     saveSettings();
   };
 
@@ -404,33 +405,12 @@ export default function AudioTab() {
           enabled={aecEnabled}
           onToggle={handleAecToggle}
         />
-        <div className="rounded-xl bg-bg-primary px-4 py-3">
-          <div className="mb-2.5">
-            <div className="text-[13px] font-semibold text-text-primary">Noise Suppression</div>
-            <div className="mt-0.5 text-[11px] text-text-muted">Reduce background noise like fans, keyboards, and traffic</div>
-          </div>
-          <div className="flex gap-1">
-            {([
-              { level: 0, label: "Off" },
-              { level: 1, label: "Light" },
-              { level: 2, label: "Moderate" },
-              { level: 3, label: "Aggressive" },
-              { level: 4, label: "Max" },
-            ] as const).map(({ level, label }) => (
-              <button
-                key={level}
-                onClick={() => handleNsChange(level)}
-                className={`flex-1 rounded-lg py-1.5 text-[11px] font-semibold transition-colors ${
-                  nsLevel === level
-                    ? "bg-accent text-white"
-                    : "bg-bg-secondary text-text-secondary hover:text-text-primary"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
+        <ToggleSwitch
+          label="Noise Suppression"
+          description="AI-powered noise removal for fans, keyboards, and background noise"
+          enabled={nsLevel > 0}
+          onToggle={handleNsToggle}
+        />
         <ToggleSwitch
           label="Automatic Gain Control"
           description="Normalize your microphone volume for consistent levels"

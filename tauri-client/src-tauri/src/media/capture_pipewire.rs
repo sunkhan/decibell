@@ -596,8 +596,9 @@ fn pipewire_capture_loop(
             Range,
             Rectangle,
             spa::utils::Rectangle {
-                width: target_width,
-                height: target_height,
+                // "Source" quality passes 0x0 — use max so PipeWire picks native resolution
+                width: if target_width > 0 { target_width } else { 7680 },
+                height: if target_height > 0 { target_height } else { 4320 },
             },
             spa::utils::Rectangle {
                 width: 1,

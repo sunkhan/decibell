@@ -13,7 +13,7 @@ export default function MembersList() {
     : [];
 
   return (
-    <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-secondary">
+    <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-tertiary">
       <div className="px-4 pt-4 pb-2">
         <h3 className="text-[11px] font-bold uppercase tracking-[0.08em] text-text-muted">
           Online — {members.length}
@@ -41,7 +41,7 @@ export default function MembersList() {
               >
                 {username.charAt(0).toUpperCase()}
               </div>
-              <div className="absolute -bottom-px -right-px h-[11px] w-[11px] rounded-full border-[2.5px] border-bg-secondary bg-success" />
+              <div className="absolute -bottom-px -right-px h-[11px] w-[11px] rounded-full border-[2.5px] border-bg-tertiary bg-success" />
             </div>
             <span className="truncate text-[13.5px] font-semibold text-text-secondary">
               {username}

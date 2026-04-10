@@ -412,9 +412,9 @@ fn run_video_recv_thread(
     let mut video_frames_received: u64 = 0;
     let mut last_maintenance = Instant::now();
 
-    // Linux: software H.264 decoder for frames (WebKitGTK lacks WebCodecs)
+    // Linux: H.264 decoder for frames (WebKitGTK lacks WebCodecs) — tries GPU first
     #[cfg(target_os = "linux")]
-    let mut sw_decoder: Option<video_decoder::SoftwareH264Decoder> = None;
+    let mut sw_decoder: Option<video_decoder::H264Decoder> = None;
     #[cfg(target_os = "linux")]
     let mut sw_decoder_init_attempted = false;
     #[cfg(target_os = "linux")]
@@ -428,12 +428,12 @@ fn run_video_recv_thread(
         {
             if !sw_decoder_init_attempted {
                 sw_decoder_init_attempted = true;
-                match video_decoder::SoftwareH264Decoder::new() {
+                match video_decoder::H264Decoder::new() {
                     Ok(dec) => {
-                        eprintln!("[video-recv] Software H.264 decoder initialized");
+                        eprintln!("[video-recv] H.264 decoder initialized");
                         sw_decoder = Some(dec);
                     }
-                    Err(e) => eprintln!("[video-recv] Failed to init SW decoder: {}", e),
+                    Err(e) => eprintln!("[video-recv] Failed to init H.264 decoder: {}", e),
                 }
             }
             if let Some(ref mut dec) = sw_decoder {

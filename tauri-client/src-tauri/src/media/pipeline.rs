@@ -802,30 +802,21 @@ pub fn run_audio_pipeline(
     let mut agc_enabled = false;
     let mut voice_processor: Option<aec3::voip::VoipAec3> = None;
 
-    fn ns_level_to_config(level: u8) -> Option<aec3::audio_processing::ns::NsConfig> {
-        use aec3::audio_processing::ns::{NsConfig, SuppressionLevel};
-        match level {
-            0 => None,
-            1 => Some(NsConfig { target_level: SuppressionLevel::K6dB, ..NsConfig::default() }),
-            2 => Some(NsConfig { target_level: SuppressionLevel::K12dB, ..NsConfig::default() }),
-            3 => Some(NsConfig { target_level: SuppressionLevel::K18dB, ..NsConfig::default() }),
-            _ => Some(NsConfig { target_level: SuppressionLevel::K21dB, ..NsConfig::default() }),
-        }
-    }
+    // RNNoise deep-learning noise suppressor — much better than WebRTC's spectral NS.
+    // Created when ns_level > 0, processes 480-sample (10ms) frames at 48kHz.
+    let mut rnnoise: Option<Box<nnnoiseless::DenoiseState<'static>>> = None;
 
-    // Helper: (re)build the voice processor based on current toggle state
+    // Helper: (re)build the voice processor based on current toggle state.
+    // WebRTC NS is disabled when RNNoise handles suppression (avoids double-filtering).
     fn build_voice_processor(aec: bool, ns_level: u8, agc: bool) -> Option<aec3::voip::VoipAec3> {
-        let ns_on = ns_level > 0;
-        if !aec && !ns_on && !agc {
+        // Only use WebRTC processor for AEC and/or AGC — RNNoise handles NS
+        if !aec && !agc {
             return None;
         }
         // 48kHz mono, 10ms frames = 480 samples
-        let mut builder = aec3::voip::VoipAec3::builder(48000, 1, 1)
-            .enable_noise_suppression(ns_on)
+        let builder = aec3::voip::VoipAec3::builder(48000, 1, 1)
+            .enable_noise_suppression(false) // RNNoise handles this
             .enable_gain_controller2(agc);
-        if let Some(ns_cfg) = ns_level_to_config(ns_level) {
-            builder = builder.noise_suppression_config(ns_cfg);
-        }
         match builder.build() {
             Ok(processor) => {
                 eprintln!("[pipeline] Voice processor built: aec={}, ns_level={}, agc={}", aec, ns_level, agc);
@@ -836,6 +827,14 @@ pub fn run_audio_pipeline(
                 None
             }
         }
+    }
+
+    fn build_rnnoise(ns_level: u8) -> Option<Box<nnnoiseless::DenoiseState<'static>>> {
+        if ns_level == 0 {
+            return None;
+        }
+        eprintln!("[pipeline] RNNoise deep-learning noise suppressor enabled (level={})", ns_level);
+        Some(nnnoiseless::DenoiseState::new())
     }
 
     // AEC render reference accumulator (10ms = 480 samples at 48kHz)
@@ -1044,6 +1043,7 @@ pub fn run_audio_pipeline(
                 Ok(ControlMessage::SetNoiseSuppressionLevel(level)) => {
                     eprintln!("[pipeline] NS level={}", level);
                     ns_level = level;
+                    rnnoise = build_rnnoise(ns_level);
                     voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
                     render_ref_accum.clear();
                     if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
@@ -1136,9 +1136,11 @@ pub fn run_audio_pipeline(
                 // the threshold sees. Previous order caused AGC to boost quiet
                 // audio after the gate had already decided to fade it out,
                 // producing robotic popping artifacts.
-                if let Some(ref mut proc) = voice_processor {
-                    if !muted {
-                        let mut f32_frame: Vec<f32> = frame.iter().map(|&s| s as f32 / 32768.0).collect();
+                if !muted && (voice_processor.is_some() || rnnoise.is_some()) {
+                    let mut f32_frame: Vec<f32> = frame.iter().map(|&s| s as f32 / 32768.0).collect();
+
+                    // Pass 1: WebRTC AEC + AGC (if enabled)
+                    if let Some(ref mut proc) = voice_processor {
                         let mut output_buf = vec![0.0f32; AEC_FRAME_SIZE];
                         for chunk_idx in 0..2 {
                             let start = chunk_idx * AEC_FRAME_SIZE;
@@ -1151,9 +1153,29 @@ pub fn run_audio_pipeline(
                                 f32_frame[start..end].copy_from_slice(&output_buf);
                             }
                         }
-                        for (i, s) in f32_frame.iter().enumerate() {
-                            frame[i] = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
+                    }
+
+                    // Pass 2: RNNoise deep-learning noise suppression
+                    if let Some(ref mut rnn) = rnnoise {
+                        let mut rnn_in = [0.0f32; AEC_FRAME_SIZE];
+                        let mut rnn_out = [0.0f32; AEC_FRAME_SIZE];
+                        for chunk_idx in 0..2 {
+                            let start = chunk_idx * AEC_FRAME_SIZE;
+                            let end = start + AEC_FRAME_SIZE;
+                            // RNNoise expects samples in [-32768, 32767] range
+                            for (j, s) in f32_frame[start..end].iter().enumerate() {
+                                rnn_in[j] = s * 32768.0;
+                            }
+                            let _vad = rnn.process_frame(&mut rnn_out, &rnn_in);
+                            // Convert back to [-1, 1] range
+                            for (j, s) in rnn_out.iter().enumerate() {
+                                f32_frame[start + j] = s / 32768.0;
+                            }
                         }
+                    }
+
+                    for (i, s) in f32_frame.iter().enumerate() {
+                        frame[i] = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
                     }
                 }
 
