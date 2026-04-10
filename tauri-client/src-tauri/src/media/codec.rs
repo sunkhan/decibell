@@ -22,8 +22,14 @@ impl OpusEncoder {
         let mut encoder =
             Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::Voip)
                 .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
-        // Enable in-band FEC so the decoder can recover from packet loss.
-        // The ~10% bitrate overhead is negligible for voice.
+        // 64kbps — matches Discord, major clarity improvement over the ~24kbps default
+        let _ = encoder.set_bitrate(audiopus::Bitrate::BitsPerSecond(64000));
+        // Complexity 5 — sweet spot for real-time voice: half the CPU of 10,
+        // no perceptible quality difference for speech.
+        let _ = encoder.set_complexity(5);
+        // DTX — encoder emits near-zero bytes during silence, saving CPU + bandwidth.
+        let _ = encoder.set_dtx(true);
+        // In-band FEC so the decoder can recover from packet loss.
         let _ = encoder.set_inband_fec(true);
         let _ = encoder.set_packet_loss_perc(10);
         Ok(OpusEncoder { encoder })
@@ -150,5 +156,23 @@ impl OpusDecoder {
         self.decoder
             .decode(packet, mut_signals, false)
             .map_err(|e| format!("Opus decode error: {}", e))
+    }
+
+    /// Decode using Forward Error Correction: pass the NEXT packet's data
+    /// to recover a lost packet. The Opus encoder embeds redundant data from
+    /// the previous frame, so decoding packet N+1 with fec=true reconstructs
+    /// an approximation of lost packet N.
+    pub fn decode_fec(
+        &mut self,
+        next_packet_data: &[u8],
+        output: &mut [i16; FRAME_SIZE],
+    ) -> Result<usize, String> {
+        let packet = Packet::try_from(next_packet_data)
+            .map_err(|e| format!("Invalid Opus packet for FEC: {}", e))?;
+        let mut_signals = MutSignals::try_from(output.as_mut_slice())
+            .map_err(|e| format!("MutSignals error: {}", e))?;
+        self.decoder
+            .decode(Some(packet), mut_signals, true)
+            .map_err(|e| format!("Opus FEC decode error: {}", e))
     }
 }

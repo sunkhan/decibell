@@ -1,0 +1,24 @@
+pkgbase = decibell
+	pkgdesc = Decentralized text, voice chat, and streaming app
+	pkgver = 0.3.4
+	pkgrel = 1
+	url = https://github.com/sunkhan/decibell
+	arch = x86_64
+	license = MIT
+	depends = webkit2gtk-4.1
+	depends = libappindicator-gtk3
+	depends = librsvg
+	depends = pipewire
+	depends = libpipewire
+	depends = dbus
+	depends = gtk3
+	provides = decibell
+	conflicts = decibell-bin
+	conflicts = decibell-git
+	options = !strip
+	source = decibell-0.3.4.AppImage::https://github.com/sunkhan/decibell/releases/download/v0.3.4/Decibell_0.3.4_amd64.AppImage
+	source = decibell.desktop
+	sha256sums = SKIP
+	sha256sums = SKIP
+
+pkgname = decibell

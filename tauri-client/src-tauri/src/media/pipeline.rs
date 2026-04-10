@@ -22,10 +22,10 @@ use super::video_receiver::ReassembledFrame;
 
 fn make_sinc_resampler(from_rate: u32, to_rate: u32, chunk_size: usize, channels: usize) -> SincFixedOut<f64> {
     let params = SincInterpolationParameters {
-        sinc_len: 64,
-        f_cutoff: 0.95,
+        sinc_len: 24,
+        f_cutoff: 0.925,
         interpolation: SincInterpolationType::Cubic,
-        oversampling_factor: 128,
+        oversampling_factor: 32,
         window: WindowFunction::Blackman2,
     };
     SincFixedOut::<f64>::new(
@@ -81,7 +81,7 @@ const FLAG_DEAFENED: u8 = 0x02;
 // out-of-order packets can be reordered. When a packet is truly lost, the
 // Opus decoder's PLC (Packet Loss Concealment) fills the gap smoothly.
 
-const JITTER_DEPTH: usize = 5; // packets to buffer before starting playback (100ms)
+const JITTER_DEPTH: usize = 3; // packets to buffer before starting playback (60ms)
 const JITTER_MAX: usize = 30;  // safety cap — force-drain if buffer grows past this
 
 struct JitterBuffer {
@@ -151,6 +151,13 @@ impl JitterBuffer {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.wrapping_add(1);
         Some(self.packets.remove(&seq))
+    }
+
+    /// Peek at the next packet (next_seq) without consuming it.
+    /// Used for FEC: when current packet is missing, check if the next
+    /// packet is available to decode with fec=true.
+    fn peek_next(&self) -> Option<&Vec<u8>> {
+        self.packets.get(&self.next_seq)
     }
 }
 
@@ -233,14 +240,17 @@ fn get_default_device(host: &cpal::Host, input: bool) -> Option<cpal::Device> {
 
 // ── Input stream builder ─────────────────────────────────────────────────────
 
-/// Build a CPAL input (capture) stream that pushes mono 48kHz i16 samples into
-/// `capture_prod`.  Returns `None` if no usable input device is found.
+/// Build a CPAL input (capture) stream that pushes mono i16 samples at the
+/// device's native sample rate into `capture_prod`.
+/// Returns (stream, device_sample_rate) or None if no usable device is found.
+///
+/// The callback does NO resampling — just downmixes to mono and converts to i16.
+/// Resampling from device rate → 48kHz happens in the main pipeline loop.
 fn build_input_stream(
     host: &cpal::Host,
     device_name: Option<&str>,
-    output_sample_rate: u32,
     capture_prod: Arc<std::sync::Mutex<HeapProd<i16>>>,
-) -> Option<cpal::Stream> {
+) -> Option<(cpal::Stream, u32)> {
     let input_device = match device_name {
         Some(name) => {
             let found = host.input_devices().ok()?.find(|d| {
@@ -259,23 +269,8 @@ fn build_input_stream(
 
     let (input_cfg, input_channels) = match input_device.default_input_config() {
         Ok(default_cfg) => {
-            let mut rate = default_cfg.sample_rate();
+            let rate = default_cfg.sample_rate();
             let channels = default_cfg.channels();
-            if rate != cpal::SampleRate(output_sample_rate) {
-                let supported = input_device.supported_input_configs();
-                if let Ok(configs) = supported {
-                    let can_match = configs.into_iter().any(|c| {
-                        c.channels() >= channels
-                            && c.min_sample_rate() <= cpal::SampleRate(output_sample_rate)
-                            && c.max_sample_rate() >= cpal::SampleRate(output_sample_rate)
-                    });
-                    if can_match {
-                        eprintln!("[pipeline] Input device: matching output rate {}Hz to reduce glitch",
-                            output_sample_rate);
-                        rate = cpal::SampleRate(output_sample_rate);
-                    }
-                }
-            }
             eprintln!(
                 "[pipeline] Input device: {}ch @ {}Hz (sample format: {:?})",
                 channels, rate.0, default_cfg.sample_format()
@@ -297,53 +292,23 @@ fn build_input_stream(
 
     let in_ch = input_channels;
     let input_sample_rate = input_cfg.sample_rate.0;
-    let passthrough_capture = input_sample_rate == SAMPLE_RATE;
+    let cap_prod = capture_prod;
 
-    let capture_resampler_mutex: Arc<std::sync::Mutex<Option<SincFixedOut<f64>>>> = if passthrough_capture {
-        Arc::new(std::sync::Mutex::new(None))
-    } else {
-        Arc::new(std::sync::Mutex::new(Some(make_sinc_resampler(input_sample_rate, SAMPLE_RATE, 480, 1))))
-    };
-    let cap_resampler = Arc::clone(&capture_resampler_mutex);
-    let cap_accum: Arc<std::sync::Mutex<Vec<f64>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let cap_accum_in = Arc::clone(&cap_accum);
-    let cap_prod_in = capture_prod;
-
+    // The callback only does: downmix to mono + f32→i16. No resampling, no allocations.
+    // Uses try_lock to never block the real-time audio thread.
     match input_device.build_input_stream(
         &input_cfg,
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            let mono: Vec<f64> = if in_ch == 1 {
-                data.iter().map(|&s| s as f64).collect()
-            } else {
-                data.chunks_exact(in_ch as usize)
-                    .map(|frame| {
-                        let sum: f64 = frame.iter().map(|&s| s as f64).sum();
-                        sum / in_ch as f64
-                    })
-                    .collect()
-            };
-
-            if passthrough_capture {
-                if let Ok(mut prod) = cap_prod_in.lock() {
-                    for &s in &mono {
-                        let _ = prod.try_push((s * 32767.0) as i16);
-                    }
+            let Ok(mut prod) = cap_prod.try_lock() else { return };
+            if in_ch == 1 {
+                for &s in data {
+                    let _ = prod.try_push((s * 32767.0).clamp(-32768.0, 32767.0) as i16);
                 }
             } else {
-                let Ok(mut accum) = cap_accum_in.lock() else { return };
-                accum.extend_from_slice(&mono);
-                let Ok(mut resampler_guard) = cap_resampler.lock() else { return };
-                let Some(ref mut resampler) = *resampler_guard else { return };
-                let needed = resampler.input_frames_next();
-                while accum.len() >= needed {
-                    let chunk: Vec<f64> = accum.drain(..needed).collect();
-                    if let Ok(out) = resampler.process(&[&chunk], None) {
-                        if let Ok(mut prod) = cap_prod_in.lock() {
-                            for &s in &out[0] {
-                                let _ = prod.try_push((s * 32767.0) as i16);
-                            }
-                        }
-                    }
+                for frame in data.chunks_exact(in_ch as usize) {
+                    let sum: f32 = frame.iter().sum();
+                    let mono = sum / in_ch as f32;
+                    let _ = prod.try_push((mono * 32767.0).clamp(-32768.0, 32767.0) as i16);
                 }
             }
         },
@@ -357,7 +322,8 @@ fn build_input_stream(
                 eprintln!("[pipeline] failed to start capture stream: {}", e);
                 None
             } else {
-                Some(stream)
+                eprintln!("[pipeline] Capture stream started: mono @ {}Hz (no callback resampling)", input_sample_rate);
+                Some((stream, input_sample_rate))
             }
         }
         Err(e) => {
@@ -370,8 +336,8 @@ fn build_input_stream(
 // ── Output stream builder ────────────────────────────────────────────────────
 
 /// Build a CPAL output (playback) stream that mixes voice + stream audio from
-/// their respective ring buffer consumers.  Returns the stream, its sample rate,
-/// and channel count, or `None` on failure.
+/// their respective ring buffer consumers. The ring buffers carry i16 samples
+/// at the output device's native rate — all resampling happens in the main loop.
 fn build_output_stream(
     host: &cpal::Host,
     device_name: Option<&str>,
@@ -425,32 +391,13 @@ fn build_output_stream(
     let voice_cons_out = voice_cons;
     let stream_cons_out = stream_cons;
     let pb_stream_stereo = stream_stereo;
-
     let out_ch = output_channels;
-    let passthrough_playback = output_sample_rate == SAMPLE_RATE;
 
-    let mut pb_voice_resampler: Option<SincFixedOut<f64>> = if passthrough_playback {
-        None
-    } else {
-        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 1))
-    };
-    let mut pb_voice_accum: Vec<f64> = Vec::new();
-    let mut pb_voice_resampled: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
-    let mut pb_stream_resampler: Option<SincFixedOut<f64>> = if passthrough_playback {
-        None
-    } else {
-        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2))
-    };
-    let mut pb_stream_accum_l: Vec<f64> = Vec::new();
-    let mut pb_stream_accum_r: Vec<f64> = Vec::new();
-    let mut pb_stream_resampled_l: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
-    let mut pb_stream_resampled_r: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
-
+    // No resampling in the callback — ring buffers already carry samples at device rate.
+    // Just read i16, convert to f32, mix voice+stream, write to device.
     let stream = match output_device.build_output_stream(
         &stream_config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let mono_frames_needed = data.len() / out_ch as usize;
-
             let Ok(mut voice_guard) = voice_cons_out.try_lock() else {
                 for sample in data.iter_mut() { *sample = 0.0; }
                 return;
@@ -461,122 +408,33 @@ fn build_output_stream(
                 return;
             };
 
-            if passthrough_playback {
-                if out_ch == 1 {
-                    for sample in data.iter_mut() {
-                        let v = voice_guard.try_pop().unwrap_or(0) as i32;
-                        let s = stream_guard.try_pop().unwrap_or(0) as i32;
-                        let mixed = (v + s).clamp(-32768, 32767);
-                        *sample = mixed as f32 / 32768.0;
-                    }
-                } else {
-                    for frame in data.chunks_exact_mut(out_ch as usize) {
-                        let v = voice_guard.try_pop().unwrap_or(0) as i32;
-                        if pb_stream_stereo.load(std::sync::atomic::Ordering::Relaxed) && out_ch >= 2 {
-                            let sl = stream_guard.try_pop().unwrap_or(0) as i32;
-                            let sr = stream_guard.try_pop().unwrap_or(0) as i32;
-                            let left = (v + sl).clamp(-32768, 32767) as f32 / 32768.0;
-                            let right = (v + sr).clamp(-32768, 32767) as f32 / 32768.0;
-                            frame[0] = left;
-                            frame[1] = right;
-                            for ch in &mut frame[2..] {
-                                *ch = left;
-                            }
-                        } else {
-                            let s = stream_guard.try_pop().unwrap_or(0) as i32;
-                            let mixed = (v + s).clamp(-32768, 32767) as f32 / 32768.0;
-                            for ch in frame.iter_mut() {
-                                *ch = mixed;
-                            }
-                        }
-                    }
-                }
-                return;
-            }
-
-            let needs_resample = pb_voice_resampler.is_some();
-            if needs_resample {
-                let voice_rs = pb_voice_resampler.as_mut().unwrap();
-                let stream_rs = pb_stream_resampler.as_mut().unwrap();
-                let ratio_in_out = SAMPLE_RATE as f64 / output_sample_rate as f64;
-
-                let voice_chunk_in = voice_rs.input_frames_next();
-                let voice_deficit = mono_frames_needed as i64 - pb_voice_resampled.len() as i64;
-                let voice_needed_48k = if voice_deficit > 0 {
-                    let raw = ((voice_deficit as f64) * ratio_in_out + 16.0).ceil() as usize;
-                    raw.max(voice_chunk_in)
-                } else { 0 };
-                let voice_drain = voice_needed_48k.saturating_sub(pb_voice_accum.len());
-                for _ in 0..voice_drain {
-                    pb_voice_accum.push(voice_guard.try_pop().unwrap_or(0) as f64 / 32768.0);
-                }
-
-                let stream_chunk_in = stream_rs.input_frames_next();
-                let stream_deficit = mono_frames_needed as i64 - pb_stream_resampled_l.len() as i64;
-                let stream_needed_48k = if stream_deficit > 0 {
-                    let raw = ((stream_deficit as f64) * ratio_in_out + 16.0).ceil() as usize;
-                    raw.max(stream_chunk_in)
-                } else { 0 };
-                let is_stereo = pb_stream_stereo.load(std::sync::atomic::Ordering::Relaxed);
-
-                let stream_drain = stream_needed_48k.saturating_sub(pb_stream_accum_l.len());
-                for _ in 0..stream_drain {
-                    if is_stereo {
-                        pb_stream_accum_l.push(stream_guard.try_pop().unwrap_or(0) as f64 / 32768.0);
-                        pb_stream_accum_r.push(stream_guard.try_pop().unwrap_or(0) as f64 / 32768.0);
-                    } else {
-                        let mono = stream_guard.try_pop().unwrap_or(0) as f64 / 32768.0;
-                        pb_stream_accum_l.push(mono);
-                        pb_stream_accum_r.push(mono);
-                    }
-                }
-
-                drop(voice_guard);
-                drop(stream_guard);
-
-                let mut needed = voice_rs.input_frames_next();
-                while pb_voice_accum.len() >= needed {
-                    let chunk: Vec<f64> = pb_voice_accum.drain(..needed).collect();
-                    if let Ok(out) = voice_rs.process(&[&chunk], None) {
-                        for &s in &out[0] {
-                            pb_voice_resampled.push_back(s);
-                        }
-                    }
-                    needed = voice_rs.input_frames_next();
-                }
-
-                let mut needed = stream_rs.input_frames_next();
-                while pb_stream_accum_l.len() >= needed && pb_stream_accum_r.len() >= needed {
-                    let chunk_l: Vec<f64> = pb_stream_accum_l.drain(..needed).collect();
-                    let chunk_r: Vec<f64> = pb_stream_accum_r.drain(..needed).collect();
-                    if let Ok(out) = stream_rs.process(&[&chunk_l, &chunk_r], None) {
-                        for &s in &out[0] { pb_stream_resampled_l.push_back(s); }
-                        for &s in &out[1] { pb_stream_resampled_r.push_back(s); }
-                    }
-                    needed = stream_rs.input_frames_next();
-                }
-            } else {
-                drop(voice_guard);
-                drop(stream_guard);
-            }
-
             if out_ch == 1 {
                 for sample in data.iter_mut() {
-                    let v = pb_voice_resampled.pop_front().unwrap_or(0.0);
-                    let sl = pb_stream_resampled_l.pop_front().unwrap_or(0.0);
-                    let _ = pb_stream_resampled_r.pop_front();
-                    *sample = (v + sl).clamp(-1.0, 1.0) as f32;
+                    let v = voice_guard.try_pop().unwrap_or(0) as i32;
+                    let s = stream_guard.try_pop().unwrap_or(0) as i32;
+                    let mixed = (v + s).clamp(-32768, 32767);
+                    *sample = mixed as f32 / 32768.0;
                 }
             } else {
                 for frame in data.chunks_exact_mut(out_ch as usize) {
-                    let v = pb_voice_resampled.pop_front().unwrap_or(0.0);
-                    let sl = pb_stream_resampled_l.pop_front().unwrap_or(0.0);
-                    let sr = pb_stream_resampled_r.pop_front().unwrap_or(0.0);
-                    let left = (v + sl).clamp(-1.0, 1.0) as f32;
-                    let right = (v + sr).clamp(-1.0, 1.0) as f32;
-                    frame[0] = left;
-                    frame[1] = right;
-                    for ch in &mut frame[2..] { *ch = left; }
+                    let v = voice_guard.try_pop().unwrap_or(0) as i32;
+                    if pb_stream_stereo.load(std::sync::atomic::Ordering::Relaxed) && out_ch >= 2 {
+                        let sl = stream_guard.try_pop().unwrap_or(0) as i32;
+                        let sr = stream_guard.try_pop().unwrap_or(0) as i32;
+                        let left = (v + sl).clamp(-32768, 32767) as f32 / 32768.0;
+                        let right = (v + sr).clamp(-32768, 32767) as f32 / 32768.0;
+                        frame[0] = left;
+                        frame[1] = right;
+                        for ch in &mut frame[2..] {
+                            *ch = left;
+                        }
+                    } else {
+                        let s = stream_guard.try_pop().unwrap_or(0) as i32;
+                        let mixed = (v + s).clamp(-32768, 32767) as f32 / 32768.0;
+                        for ch in frame.iter_mut() {
+                            *ch = mixed;
+                        }
+                    }
                 }
             }
         },
@@ -607,6 +465,7 @@ fn build_output_stream(
 
 /// Build a CPAL output stream that plays only voice audio (no stream mixing).
 /// Used when stream audio is routed to a separate device.
+/// Ring buffer carries i16 at device native rate — no callback resampling.
 fn build_voice_output_stream(
     host: &cpal::Host,
     device_name: Option<&str>,
@@ -650,61 +509,17 @@ fn build_voice_output_stream(
     };
     let output_sample_rate = stream_config.sample_rate.0;
     let out_ch = output_channels;
-    let passthrough = output_sample_rate == SAMPLE_RATE;
     let voice_cons_out = voice_cons;
-
-    let mut resampler: Option<SincFixedOut<f64>> = if passthrough {
-        None
-    } else {
-        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 1))
-    };
-    let mut accum: Vec<f64> = Vec::new();
-    let mut resampled: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
 
     let stream = match output_device.build_output_stream(
         &stream_config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let frames_needed = data.len() / out_ch as usize;
             let Ok(mut guard) = voice_cons_out.try_lock() else {
                 for sample in data.iter_mut() { *sample = 0.0; }
                 return;
             };
-
-            if passthrough {
-                for frame in data.chunks_exact_mut(out_ch as usize) {
-                    let v = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
-                    for ch in frame.iter_mut() { *ch = v; }
-                }
-                return;
-            }
-
-            // Resample
-            if let Some(ref mut rs) = resampler {
-                let ratio = SAMPLE_RATE as f64 / output_sample_rate as f64;
-                let deficit = frames_needed as i64 - resampled.len() as i64;
-                let needed_48k = if deficit > 0 {
-                    ((deficit as f64 * ratio) + 16.0).ceil() as usize
-                } else { 0 };
-                let drain = needed_48k.saturating_sub(accum.len());
-                for _ in 0..drain {
-                    accum.push(guard.try_pop().unwrap_or(0) as f64 / 32768.0);
-                }
-                drop(guard);
-
-                let mut n = rs.input_frames_next();
-                while accum.len() >= n {
-                    let chunk: Vec<f64> = accum.drain(..n).collect();
-                    if let Ok(out) = rs.process(&[&chunk], None) {
-                        for &s in &out[0] { resampled.push_back(s); }
-                    }
-                    n = rs.input_frames_next();
-                }
-            } else {
-                drop(guard);
-            }
-
             for frame in data.chunks_exact_mut(out_ch as usize) {
-                let v = resampled.pop_front().unwrap_or(0.0).clamp(-1.0, 1.0) as f32;
+                let v = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
                 for ch in frame.iter_mut() { *ch = v; }
             }
         },
@@ -729,6 +544,7 @@ fn build_voice_output_stream(
 
 /// Build a CPAL output stream that plays only stream audio (with stereo support).
 /// Used when stream audio is routed to a separate device.
+/// Ring buffer carries i16 at device native rate — no callback resampling.
 fn build_stream_output_stream(
     host: &cpal::Host,
     device_name: Option<&str>,
@@ -772,19 +588,8 @@ fn build_stream_output_stream(
     };
     let output_sample_rate = stream_config.sample_rate.0;
     let out_ch = output_channels;
-    let passthrough = output_sample_rate == SAMPLE_RATE;
     let stream_cons_out = stream_cons;
     let pb_stereo = stream_stereo;
-
-    let mut resampler: Option<SincFixedOut<f64>> = if passthrough {
-        None
-    } else {
-        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2))
-    };
-    let mut accum_l: Vec<f64> = Vec::new();
-    let mut accum_r: Vec<f64> = Vec::new();
-    let mut resampled_l: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
-    let mut resampled_r: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
 
     let stream = match output_device.build_output_stream(
         &stream_config,
@@ -795,79 +600,24 @@ fn build_stream_output_stream(
             };
             let is_stereo = pb_stereo.load(std::sync::atomic::Ordering::Relaxed);
 
-            if passthrough {
-                if out_ch == 1 {
-                    for sample in data.iter_mut() {
-                        let s = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
-                        if is_stereo { let _ = guard.try_pop(); } // discard R for mono
-                        *sample = s;
-                    }
-                } else {
-                    for frame in data.chunks_exact_mut(out_ch as usize) {
-                        if is_stereo && out_ch >= 2 {
-                            let sl = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
-                            let sr = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
-                            frame[0] = sl;
-                            frame[1] = sr;
-                            for ch in &mut frame[2..] { *ch = sl; }
-                        } else {
-                            let s = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
-                            for ch in frame.iter_mut() { *ch = s; }
-                        }
-                    }
-                }
-                return;
-            }
-
-            // Resample (always 2-channel)
-            let frames_needed = data.len() / out_ch as usize;
-            if let Some(ref mut rs) = resampler {
-                let ratio = SAMPLE_RATE as f64 / output_sample_rate as f64;
-                let deficit = frames_needed as i64 - resampled_l.len() as i64;
-                let needed_48k = if deficit > 0 {
-                    let raw = ((deficit as f64 * ratio) + 16.0).ceil() as usize;
-                    raw.max(rs.input_frames_next())
-                } else { 0 };
-                let drain = needed_48k.saturating_sub(accum_l.len());
-                for _ in 0..drain {
-                    if is_stereo {
-                        accum_l.push(guard.try_pop().unwrap_or(0) as f64 / 32768.0);
-                        accum_r.push(guard.try_pop().unwrap_or(0) as f64 / 32768.0);
-                    } else {
-                        let mono = guard.try_pop().unwrap_or(0) as f64 / 32768.0;
-                        accum_l.push(mono);
-                        accum_r.push(mono);
-                    }
-                }
-                drop(guard);
-
-                let mut n = rs.input_frames_next();
-                while accum_l.len() >= n && accum_r.len() >= n {
-                    let cl: Vec<f64> = accum_l.drain(..n).collect();
-                    let cr: Vec<f64> = accum_r.drain(..n).collect();
-                    if let Ok(out) = rs.process(&[&cl, &cr], None) {
-                        for &s in &out[0] { resampled_l.push_back(s); }
-                        for &s in &out[1] { resampled_r.push_back(s); }
-                    }
-                    n = rs.input_frames_next();
-                }
-            } else {
-                drop(guard);
-            }
-
             if out_ch == 1 {
                 for sample in data.iter_mut() {
-                    let sl = resampled_l.pop_front().unwrap_or(0.0);
-                    let _ = resampled_r.pop_front();
-                    *sample = sl.clamp(-1.0, 1.0) as f32;
+                    let s = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
+                    if is_stereo { let _ = guard.try_pop(); }
+                    *sample = s;
                 }
             } else {
                 for frame in data.chunks_exact_mut(out_ch as usize) {
-                    let sl = resampled_l.pop_front().unwrap_or(0.0).clamp(-1.0, 1.0) as f32;
-                    let sr = resampled_r.pop_front().unwrap_or(0.0).clamp(-1.0, 1.0) as f32;
-                    frame[0] = sl;
-                    frame[1] = sr;
-                    for ch in &mut frame[2..] { *ch = sl; }
+                    if is_stereo && out_ch >= 2 {
+                        let sl = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
+                        let sr = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
+                        frame[0] = sl;
+                        frame[1] = sr;
+                        for ch in &mut frame[2..] { *ch = sl; }
+                    } else {
+                        let s = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
+                        for ch in frame.iter_mut() { *ch = s; }
+                    }
                 }
             }
         },
@@ -968,20 +718,48 @@ pub fn run_audio_pipeline(
     };
 
     // ── Build input (capture) stream ──────────────────────────────────────────
-    let mut input_stream_opt: Option<cpal::Stream> = match build_input_stream(
+    let (mut input_stream_opt, mut input_sample_rate): (Option<cpal::Stream>, u32) = match build_input_stream(
         &host,
         None, // system default on startup
-        output_sample_rate,
         Arc::clone(&capture_prod),
     ) {
-        Some(s) => Some(s),
+        Some((s, rate)) => (Some(s), rate),
         None => {
             let _ = event_tx.send(VoiceEvent::Error(
                 "No microphone found — running in listen-only mode".to_string(),
             ));
-            None
+            (None, SAMPLE_RATE)
         }
     };
+
+    // ── Main-loop resamplers (all DSP off the audio callback threads) ─────────
+    // Capture: input_device_rate → 48kHz (for Opus encoding)
+    let mut capture_resampler: Option<SincFixedOut<f64>> = if input_sample_rate == SAMPLE_RATE {
+        None
+    } else {
+        eprintln!("[pipeline] Capture resampler: {}Hz → {}Hz", input_sample_rate, SAMPLE_RATE);
+        Some(make_sinc_resampler(input_sample_rate, SAMPLE_RATE, 480, 1))
+    };
+    let mut capture_accum: Vec<f64> = Vec::new();
+
+    // Playback voice: 48kHz → output_device_rate (mono)
+    let mut playback_voice_resampler: Option<SincFixedOut<f64>> = if output_sample_rate == SAMPLE_RATE {
+        None
+    } else {
+        eprintln!("[pipeline] Playback voice resampler: {}Hz → {}Hz", SAMPLE_RATE, output_sample_rate);
+        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 1))
+    };
+    let mut playback_voice_accum: Vec<f64> = Vec::new();
+
+    // Playback stream: 48kHz → output_device_rate (stereo)
+    let mut playback_stream_resampler: Option<SincFixedOut<f64>> = if output_sample_rate == SAMPLE_RATE {
+        None
+    } else {
+        eprintln!("[pipeline] Playback stream resampler: {}Hz → {}Hz (stereo)", SAMPLE_RATE, output_sample_rate);
+        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2))
+    };
+    let mut playback_stream_accum_l: Vec<f64> = Vec::new();
+    let mut playback_stream_accum_r: Vec<f64> = Vec::new();
 
     // Separate stream output (None = disabled, stream mixed into main output)
     let mut stream_output: Option<cpal::Stream> = None;
@@ -1000,6 +778,9 @@ pub fn run_audio_pipeline(
     let mut local_speaking = SpeakingDetector::new();
     let mut input_level_counter: u32 = 0; // throttle InputLevel events (~every 3 frames = 60ms)
     let mut remote_peers: HashMap<String, RemotePeer> = HashMap::new();
+
+    // Accumulator for resampled 48kHz capture PCM — persists across loop iterations
+    let mut capture_48k_buf: Vec<i16> = Vec::with_capacity(FRAME_SIZE * 4);
 
     let mut last_ping_time = Instant::now();
     let ping_interval = Duration::from_secs(3);
@@ -1114,14 +895,24 @@ pub fn run_audio_pipeline(
                     eprintln!("[pipeline] Hot-swapping input device to: {:?}", name);
                     input_stream_opt = None; // drop old stream
                     { let mut g = capture_cons.lock().unwrap(); while g.try_pop().is_some() {} }
-                    input_stream_opt = build_input_stream(
-                        &host,
-                        name.as_deref(),
-                        output_sample_rate,
-                        Arc::clone(&capture_prod),
-                    );
-                    if input_stream_opt.is_none() {
-                        eprintln!("[pipeline] Warning: no input device after hot-swap");
+                    capture_48k_buf.clear();
+                    capture_accum.clear();
+                    match build_input_stream(&host, name.as_deref(), Arc::clone(&capture_prod)) {
+                        Some((stream, rate)) => {
+                            input_stream_opt = Some(stream);
+                            input_sample_rate = rate;
+                            if rate == SAMPLE_RATE {
+                                capture_resampler = None;
+                                eprintln!("[pipeline] Input device {}Hz — passthrough", rate);
+                            } else {
+                                capture_resampler = Some(make_sinc_resampler(rate, SAMPLE_RATE, 480, 1));
+                                eprintln!("[pipeline] Input device {}Hz — resampler to {}Hz", rate, SAMPLE_RATE);
+                            }
+                        }
+                        None => {
+                            input_stream_opt = None;
+                            eprintln!("[pipeline] Warning: no input device after hot-swap");
+                        }
                     }
                     // Reset voice processor state on device change
                     if voice_processor.is_some() {
@@ -1135,8 +926,10 @@ pub fn run_audio_pipeline(
                     output_stream = None; // drop old stream
                     { let mut g = voice_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
+                    playback_voice_accum.clear();
+                    playback_stream_accum_l.clear();
+                    playback_stream_accum_r.clear();
                     if separate_stream_enabled {
-                        // Voice-only on main output
                         match build_voice_output_stream(&host, name.as_deref(), Arc::clone(&voice_cons), Arc::clone(&render_ref_prod), &event_tx) {
                             Some((stream, rate, _ch)) => {
                                 output_sample_rate = rate;
@@ -1145,7 +938,6 @@ pub fn run_audio_pipeline(
                             None => eprintln!("[pipeline] Warning: no output device after hot-swap"),
                         }
                     } else {
-                        // Mixed voice+stream
                         match build_output_stream(&host, name.as_deref(), Arc::clone(&voice_cons), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), &event_tx) {
                             Some((stream, rate, _ch)) => {
                                 output_sample_rate = rate;
@@ -1153,6 +945,14 @@ pub fn run_audio_pipeline(
                             }
                             None => eprintln!("[pipeline] Warning: no output device after hot-swap"),
                         }
+                    }
+                    // Rebuild playback resamplers for new output rate
+                    if output_sample_rate == SAMPLE_RATE {
+                        playback_voice_resampler = None;
+                        playback_stream_resampler = None;
+                    } else {
+                        playback_voice_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 1));
+                        playback_stream_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2));
                     }
                 }
                 Ok(ControlMessage::SetSeparateStreamOutput(enabled, device)) => {
@@ -1165,9 +965,11 @@ pub fn run_audio_pipeline(
                     // Drain ring buffers to prevent stale audio causing delay
                     { let mut g = voice_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
+                    playback_voice_accum.clear();
+                    playback_stream_accum_l.clear();
+                    playback_stream_accum_r.clear();
                     if enabled {
                         // Main output: voice-only
-                        // (reuse current main output device — None means default)
                         if let Some((stream, rate, _ch)) = build_voice_output_stream(&host, None, Arc::clone(&voice_cons), Arc::clone(&render_ref_prod), &event_tx) {
                             output_sample_rate = rate;
                             output_stream = Some(stream);
@@ -1182,6 +984,14 @@ pub fn run_audio_pipeline(
                             output_sample_rate = rate;
                             output_stream = Some(stream);
                         }
+                    }
+                    // Rebuild playback resamplers for (potentially new) output rate
+                    if output_sample_rate == SAMPLE_RATE {
+                        playback_voice_resampler = None;
+                        playback_stream_resampler = None;
+                    } else {
+                        playback_voice_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 1));
+                        playback_stream_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2));
                     }
                 }
                 Ok(ControlMessage::SetStreamOutputDevice(name)) => {
@@ -1240,18 +1050,56 @@ pub fn run_audio_pipeline(
         }
 
         // 2. Capture & encode → send UDP ──────────────────────────────────────
+        //
+        // The capture ring buffer carries i16 at the input device's native rate.
+        // We drain available samples, resample to 48kHz if needed, and accumulate
+        // in capture_48k_buf. When we have a full 960-sample frame, encode + send.
         {
-            let frame_opt: Option<[i16; FRAME_SIZE]> = {
+            // Drain all available samples from the capture ring buffer
+            {
                 let mut cons = capture_cons.lock().unwrap();
-                if cons.occupied_len() >= FRAME_SIZE {
-                    let mut frame = [0i16; FRAME_SIZE];
-                    for s in frame.iter_mut() {
-                        *s = cons.try_pop().unwrap();
+                let avail = cons.occupied_len();
+                if avail > 0 {
+                    if capture_resampler.is_none() {
+                        // Input device is 48kHz — copy directly to the 48k buffer
+                        for _ in 0..avail {
+                            if let Some(s) = cons.try_pop() {
+                                capture_48k_buf.push(s);
+                            }
+                        }
+                    } else {
+                        // Drain raw samples into the resampler accumulator
+                        for _ in 0..avail {
+                            if let Some(s) = cons.try_pop() {
+                                capture_accum.push(s as f64 / 32768.0);
+                            }
+                        }
                     }
-                    Some(frame)
-                } else {
-                    None
                 }
+            } // release capture_cons lock
+
+            // Resample accumulated raw samples: input_rate → 48kHz
+            if let Some(ref mut resampler) = capture_resampler {
+                let mut needed = resampler.input_frames_next();
+                while capture_accum.len() >= needed {
+                    let chunk: Vec<f64> = capture_accum.drain(..needed).collect();
+                    if let Ok(out) = resampler.process(&[&chunk], None) {
+                        for &s in &out[0] {
+                            capture_48k_buf.push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                        }
+                    }
+                    needed = resampler.input_frames_next();
+                }
+            }
+
+            // Try to assemble a full Opus frame (960 samples at 48kHz = 20ms)
+            let frame_opt: Option<[i16; FRAME_SIZE]> = if capture_48k_buf.len() >= FRAME_SIZE {
+                let mut frame = [0i16; FRAME_SIZE];
+                frame.copy_from_slice(&capture_48k_buf[..FRAME_SIZE]);
+                capture_48k_buf.drain(..FRAME_SIZE);
+                Some(frame)
+            } else {
+                None
             };
 
             if let Some(mut frame) = frame_opt {
@@ -1496,7 +1344,15 @@ pub fn run_audio_pipeline(
                 let mut pcm = [0i16; FRAME_SIZE];
                 let decode_ok = match &opus_opt {
                     Some(data) => peer.decoder.decode(data, &mut pcm).is_ok(),
-                    None => peer.decoder.decode(&[], &mut pcm).is_ok(), // PLC
+                    None => {
+                        // Packet lost — try FEC recovery using the next packet
+                        if let Some(next_data) = peer.voice_jitter.peek_next() {
+                            peer.decoder.decode_fec(next_data, &mut pcm).is_ok()
+                        } else {
+                            // No next packet available — fall back to basic PLC
+                            peer.decoder.decode(&[], &mut pcm).is_ok()
+                        }
+                    }
                 };
                 if decode_ok {
                     let rms = {
@@ -1530,27 +1386,55 @@ pub fn run_audio_pipeline(
                         None => decoder.decode(&[], &mut pcm).is_ok(), // PLC
                     };
                     if decode_ok {
-                        if let Ok(mut prod) = stream_prod.lock() {
-                            for i in 0..STEREO_FRAME_SIZE {
-                                let l = pcm[i * 2] as i32;
-                                let r = pcm[i * 2 + 1] as i32;
-                                if stream_stereo.load(std::sync::atomic::Ordering::Relaxed) {
-                                    // Preserve stereo: push L then R (interleaved)
-                                    let sl = ((l as f32) * stream_volume) as i32;
-                                    let sr = ((r as f32) * stream_volume) as i32;
-                                    let _ = prod.try_push(sl.clamp(-32768, 32767) as i16);
-                                    let _ = prod.try_push(sr.clamp(-32768, 32767) as i16);
-                                } else {
-                                    // Downmix to mono
-                                    let mono = (l + r) / 2;
-                                    let scaled = ((mono as f32) * stream_volume) as i32;
-                                    let _ = prod.try_push(scaled.clamp(-32768, 32767) as i16);
+                        if playback_stream_resampler.is_none() {
+                            // Output device is 48kHz — push directly
+                            if let Ok(mut prod) = stream_prod.lock() {
+                                for i in 0..STEREO_FRAME_SIZE {
+                                    let l = pcm[i * 2] as i32;
+                                    let r = pcm[i * 2 + 1] as i32;
+                                    if stream_stereo.load(std::sync::atomic::Ordering::Relaxed) {
+                                        let sl = ((l as f32) * stream_volume) as i32;
+                                        let sr = ((r as f32) * stream_volume) as i32;
+                                        let _ = prod.try_push(sl.clamp(-32768, 32767) as i16);
+                                        let _ = prod.try_push(sr.clamp(-32768, 32767) as i16);
+                                    } else {
+                                        let mono = (l + r) / 2;
+                                        let scaled = ((mono as f32) * stream_volume) as i32;
+                                        let _ = prod.try_push(scaled.clamp(-32768, 32767) as i16);
+                                    }
                                 }
                             }
+                        } else if let Some(ref mut resampler) = playback_stream_resampler {
+                            // Resample stereo 48kHz → output device rate, then push
+                            for i in 0..STEREO_FRAME_SIZE {
+                                let l = pcm[i * 2] as f32 * stream_volume / 32768.0;
+                                let r = pcm[i * 2 + 1] as f32 * stream_volume / 32768.0;
+                                playback_stream_accum_l.push(l as f64);
+                                playback_stream_accum_r.push(r as f64);
+                            }
+                            let mut needed = resampler.input_frames_next();
+                            while playback_stream_accum_l.len() >= needed && playback_stream_accum_r.len() >= needed {
+                                let cl: Vec<f64> = playback_stream_accum_l.drain(..needed).collect();
+                                let cr: Vec<f64> = playback_stream_accum_r.drain(..needed).collect();
+                                if let Ok(out) = resampler.process(&[&cl, &cr], None) {
+                                    if let Ok(mut prod) = stream_prod.lock() {
+                                        let is_stereo = stream_stereo.load(std::sync::atomic::Ordering::Relaxed);
+                                        let len = out[0].len().min(out[1].len());
+                                        for i in 0..len {
+                                            if is_stereo {
+                                                let _ = prod.try_push((out[0][i] * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                                                let _ = prod.try_push((out[1][i] * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                                            } else {
+                                                let mono = (out[0][i] + out[1][i]) / 2.0;
+                                                let _ = prod.try_push((mono * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                                            }
+                                        }
+                                    }
+                                }
+                                needed = resampler.input_frames_next();
+                            }
                         }
-                        // Feed stream audio to AEC render reference (mono, with volume applied).
-                        // Regardless of separate output or stereo mode — the mic can pick up
-                        // echo from any speaker device playing stream audio.
+                        // Feed stream audio to AEC render reference (mono, with volume applied)
                         if aec_enabled {
                             if let Ok(mut rr_prod) = render_ref_prod.lock() {
                                 for i in 0..STEREO_FRAME_SIZE {
@@ -1566,10 +1450,10 @@ pub fn run_audio_pipeline(
             }
         }
 
-        // 4c. Mix decoded voice from all peers → push to playback buffer ─────
+        // 4c. Mix decoded voice from all peers → resample → push to playback buffer
         // Each peer's jitter drain accumulated f32 samples in decoded_voice.
-        // Sum them sample-by-sample so N speakers produce correct mixed audio
-        // instead of N× speed playback.
+        // Sum them sample-by-sample, then resample from 48kHz to the output device
+        // rate before pushing to the voice ring buffer.
         {
             let max_samples = remote_peers.values().map(|p| p.decoded_voice.len()).max().unwrap_or(0);
             if max_samples > 0 {
@@ -1580,12 +1464,7 @@ pub fn run_audio_pipeline(
                         mix_buffer[i] += s;
                     }
                 }
-                // Push mixed audio to playback ring buffer
-                if let Ok(mut prod) = voice_prod.lock() {
-                    for &s in &mix_buffer {
-                        let _ = prod.try_push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
-                    }
-                }
+
                 // Feed mixed voice to AEC render reference (what the speaker actually plays)
                 if aec_enabled {
                     if let Ok(mut rr_prod) = render_ref_prod.lock() {
@@ -1594,6 +1473,32 @@ pub fn run_audio_pipeline(
                         }
                     }
                 }
+
+                // Resample 48kHz → output device rate, then push to playback ring buffer
+                if playback_voice_resampler.is_none() {
+                    if let Ok(mut prod) = voice_prod.lock() {
+                        for &s in &mix_buffer {
+                            let _ = prod.try_push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                        }
+                    }
+                } else if let Some(ref mut resampler) = playback_voice_resampler {
+                    for &s in &mix_buffer {
+                        playback_voice_accum.push(s as f64);
+                    }
+                    let mut needed = resampler.input_frames_next();
+                    while playback_voice_accum.len() >= needed {
+                        let chunk: Vec<f64> = playback_voice_accum.drain(..needed).collect();
+                        if let Ok(out) = resampler.process(&[&chunk], None) {
+                            if let Ok(mut prod) = voice_prod.lock() {
+                                for &s in &out[0] {
+                                    let _ = prod.try_push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                                }
+                            }
+                        }
+                        needed = resampler.input_frames_next();
+                    }
+                }
+
                 // Clear per-peer buffers
                 for peer in remote_peers.values_mut() {
                     peer.decoded_voice.clear();
