@@ -125,10 +125,9 @@ function VoiceThresholdBar() {
 
   // Listen for input level events from the backend
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    listen<{ db: number }>("voice_input_level", (event) => {
+    const unlistenPromise = listen<{ db: number }>("voice_input_level", (event) => {
       levelRef.current = event.payload.db;
-    }).then((u) => { unlisten = u; });
+    });
 
     // Smooth animation loop: lerp toward the latest level
     const tick = () => {
@@ -143,7 +142,7 @@ function VoiceThresholdBar() {
     animRef.current = requestAnimationFrame(tick);
 
     return () => {
-      if (unlisten) unlisten();
+      unlistenPromise.then((fn) => fn());
       cancelAnimationFrame(animRef.current);
     };
   }, []);

@@ -24,9 +24,9 @@ export function useVoiceEvents() {
   const username = useAuthStore((s) => s.username);
 
   useEffect(() => {
-    const unlisten: (() => void)[] = [];
+    const promises: Promise<() => void>[] = [];
 
-    listen<{ serverId: string; channelId: string; participants: string[]; userStates: { username: string; isMuted: boolean; isDeafened: boolean }[] }>(
+    promises.push(listen<{ serverId: string; channelId: string; participants: string[]; userStates: { username: string; isMuted: boolean; isDeafened: boolean }[] }>(
       "voice_presence_updated",
       (event) => {
         const { channelId, participants, userStates } = event.payload;
@@ -60,9 +60,9 @@ export function useVoiceEvents() {
           }
         }
       }
-    ).then((u) => unlisten.push(u));
+    ));
 
-    listen<{ username: string; speaking: boolean }>(
+    promises.push(listen<{ username: string; speaking: boolean }>(
       "voice_user_speaking",
       (event) => {
         const speakingUsername =
@@ -73,33 +73,33 @@ export function useVoiceEvents() {
           setSpeaking(speakingUsername, event.payload.speaking);
         }
       }
-    ).then((u) => unlisten.push(u));
+    ));
 
-    listen<{ isMuted: boolean; isDeafened: boolean }>(
+    promises.push(listen<{ isMuted: boolean; isDeafened: boolean }>(
       "voice_state_changed",
       (event) => {
         setMuted(event.payload.isMuted);
         setDeafened(event.payload.isDeafened);
       }
-    ).then((u) => unlisten.push(u));
+    ));
 
-    listen<{ username: string; isMuted: boolean; isDeafened: boolean }>(
+    promises.push(listen<{ username: string; isMuted: boolean; isDeafened: boolean }>(
       "voice_user_state_changed",
       (event) => {
         setUserState(event.payload.username, event.payload.isMuted, event.payload.isDeafened);
       }
-    ).then((u) => unlisten.push(u));
+    ));
 
-    listen<{ latencyMs: number }>("voice_ping_updated", (event) => {
+    promises.push(listen<{ latencyMs: number }>("voice_ping_updated", (event) => {
       setLatency(event.payload.latencyMs);
-    }).then((u) => unlisten.push(u));
+    }));
 
-    listen<{ message: string }>("voice_error", (event) => {
+    promises.push(listen<{ message: string }>("voice_error", (event) => {
       setError(event.payload.message);
-    }).then((u) => unlisten.push(u));
+    }));
 
     // Window closed while streaming → auto-stop
-    listen("stream_capture_ended", () => {
+    promises.push(listen("stream_capture_ended", () => {
       const { connectedServerId, connectedChannelId, isStreaming, fullscreenStream, isStreamFullscreen } = useVoiceStore.getState();
       if (isStreaming && connectedServerId && connectedChannelId) {
         invoke("stop_screen_share", {
@@ -116,9 +116,9 @@ export function useVoiceEvents() {
           getCurrentWindow().setFullscreen(false).catch(() => {});
         }
       }
-    }).then((u) => unlisten.push(u));
+    }));
 
-    listen<{ streams: { streamId: string; ownerUsername: string; hasAudio: boolean; resolutionWidth: number; resolutionHeight: number; fps: number }[] }>(
+    promises.push(listen<{ streams: { streamId: string; ownerUsername: string; hasAudio: boolean; resolutionWidth: number; resolutionHeight: number; fps: number }[] }>(
       "stream_presence_updated",
       (event) => {
         const mapped: StreamInfo[] = event.payload.streams.map((s) => ({
@@ -146,10 +146,12 @@ export function useVoiceEvents() {
           }
         }
       }
-    ).then((u) => unlisten.push(u));
+    ));
 
     return () => {
-      unlisten.forEach((fn) => fn());
+      for (const p of promises) {
+        p.then((fn) => fn());
+      }
     };
   }, [username, setSpeaking, setMuted, setDeafened, setLatency, setError, setParticipants, setChannelPresence, setUserState]);
 }
