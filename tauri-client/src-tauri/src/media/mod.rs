@@ -479,12 +479,32 @@ fn run_video_recv_thread(
                             emit_frame(frame);
                         }
                     }
+                } else if packet_type == video_packet::PACKET_TYPE_FEC {
+                    let header_size = std::mem::size_of::<video_packet::UdpFecPacket>() - video_packet::UDP_MAX_PAYLOAD;
+                    if n >= header_size {
+                        // Parse FEC packet — safe to reinterpret since it's repr(C, packed)
+                        let fec_pkt = unsafe {
+                            let mut pkt: video_packet::UdpFecPacket = std::mem::zeroed();
+                            let copy_len = n.min(std::mem::size_of::<video_packet::UdpFecPacket>());
+                            std::ptr::copy_nonoverlapping(
+                                recv_buf.as_ptr(),
+                                &mut pkt as *mut video_packet::UdpFecPacket as *mut u8,
+                                copy_len,
+                            );
+                            pkt
+                        };
+                        if let Some(frame) = video_receiver.process_fec_packet(&fec_pkt) {
+                            video_frames_received += 1;
+                            eprintln!("[video-recv] Frame {} completed via FEC: {} bytes, keyframe={}",
+                                frame.frame_id, frame.data.len(), frame.is_keyframe);
+                            if frame.is_keyframe { has_received_keyframe = true; }
+                            emit_frame(frame);
+                        }
+                    }
                 } else if packet_type == video_packet::PACKET_TYPE_KEYFRAME_REQUEST && n >= std::mem::size_of::<UdpKeyframeRequest>() {
                     eprintln!("[video-recv] Keyframe request received, signaling encoder");
                     let _ = event_tx.send(pipeline::VoiceEvent::KeyframeRequested);
                 }
-                // FEC and NACK packets from server are also received here
-                // but currently only forwarded by server — no client-side processing needed
             }
             Ok(_) => {}
             Err(ref e)
