@@ -62,6 +62,8 @@ public:
     void broadcast_to_watchers(const char* data, size_t length, const std::string& channel_id, const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket);
     void set_udp_socket(boost::asio::ip::udp::socket* sock) { udp_socket_ptr_ = sock; }
     void set_media_udp_socket(boost::asio::ip::udp::socket* sock) { media_udp_socket_ptr_ = sock; }
+    void register_udp_key(const std::string& udp_key, std::shared_ptr<Session> session);
+    void unregister_udp_key(const std::string& udp_key);
     void relay_keyframe_request_internal(const std::string& target_username);
     size_t session_count() { std::lock_guard<std::mutex> lock(mutex_); return sessions_.size(); }
 
@@ -82,6 +84,9 @@ private:
     uint32_t max_streams_per_channel_ = 8;  // 0 = unlimited
     boost::asio::ip::udp::socket* udp_socket_ptr_ = nullptr;
     boost::asio::ip::udp::socket* media_udp_socket_ptr_ = nullptr;
+
+    // O(1) UDP sender_id → session lookup (key = last 31 chars of JWT)
+    std::unordered_map<std::string, std::shared_ptr<Session>> udp_key_index_;
 
     std::mutex mutex_;
 };
@@ -129,6 +134,7 @@ public:
 
     std::string get_username() const { return username_; }
     std::string get_token() const { return token_; }
+    std::string get_udp_key() const { return udp_key_; }
     void set_udp_endpoint(const boost::asio::ip::udp::endpoint& ep) { udp_endpoint_ = ep; }
     boost::asio::ip::udp::endpoint get_udp_endpoint() const { return udp_endpoint_; }
     void set_udp_media_endpoint(const boost::asio::ip::udp::endpoint& ep) { udp_media_endpoint_ = ep; }
@@ -213,6 +219,16 @@ private:
                 authenticated_ = true;
                 username_ = decoded.get_subject();
                 token_ = token;
+
+                // Register UDP key for O(1) lookup: last 31 chars of JWT
+                // (matches what the client sends as sender_id in UDP packets)
+                constexpr size_t UDP_KEY_LEN = chatproj::SENDER_ID_SIZE - 1; // 31
+                if (token_.size() >= UDP_KEY_LEN) {
+                    udp_key_ = token_.substr(token_.size() - UDP_KEY_LEN);
+                } else {
+                    udp_key_ = token_;
+                }
+                manager_.register_udp_key(udp_key_, shared_from_this());
 
                 std::cout << "[Community] Authorized user: " << username_ << "\n";
                 send_auth_response(true, "Authentication successful.");
@@ -392,6 +408,7 @@ private:
     bool authenticated_ = false;
     std::string username_;
     std::string token_;
+    std::string udp_key_;
     std::string current_channel_;
     std::string current_voice_channel_;
     boost::asio::ip::udp::endpoint udp_endpoint_;
@@ -416,6 +433,9 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
     std::vector<std::string> affected_text_channels;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (!session->get_udp_key().empty()) {
+            udp_key_index_.erase(session->get_udp_key());
+        }
         sessions_.erase(session);
         for (auto& pair : channels_) {
             if (pair.second.erase(session) > 0) {
@@ -813,16 +833,21 @@ void SessionManager::send_initial_voice_presences(std::shared_ptr<Session> sessi
     }
 }
 
-std::shared_ptr<Session> SessionManager::find_session_by_token(const std::string& udp_id, const std::string& jwt_secret) {
+void SessionManager::register_udp_key(const std::string& udp_key, std::shared_ptr<Session> session) {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& session : sessions_) {
-        // Clients send the last SENDER_ID_SIZE-1 chars of their JWT as a compact
-        // UDP identifier.  Match by checking if the session's full token ends with it.
-        const std::string& full_token = session->get_token();
-        if (!udp_id.empty() && full_token.size() >= udp_id.size() &&
-            full_token.compare(full_token.size() - udp_id.size(), udp_id.size(), udp_id) == 0) {
-            return session;
-        }
+    udp_key_index_[udp_key] = session;
+}
+
+void SessionManager::unregister_udp_key(const std::string& udp_key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    udp_key_index_.erase(udp_key);
+}
+
+std::shared_ptr<Session> SessionManager::find_session_by_token(const std::string& udp_id, const std::string& /*jwt_secret*/) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = udp_key_index_.find(udp_id);
+    if (it != udp_key_index_.end()) {
+        return it->second;
     }
     return nullptr;
 }
