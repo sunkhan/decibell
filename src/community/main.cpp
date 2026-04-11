@@ -61,6 +61,7 @@ public:
     void remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
     void broadcast_to_watchers(const char* data, size_t length, const std::string& channel_id, const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket);
     void set_udp_socket(boost::asio::ip::udp::socket* sock) { udp_socket_ptr_ = sock; }
+    void set_media_udp_socket(boost::asio::ip::udp::socket* sock) { media_udp_socket_ptr_ = sock; }
     void relay_keyframe_request_internal(const std::string& target_username);
     size_t session_count() { std::lock_guard<std::mutex> lock(mutex_); return sessions_.size(); }
 
@@ -80,6 +81,7 @@ private:
 
     uint32_t max_streams_per_channel_ = 8;  // 0 = unlimited
     boost::asio::ip::udp::socket* udp_socket_ptr_ = nullptr;
+    boost::asio::ip::udp::socket* media_udp_socket_ptr_ = nullptr;
 
     std::mutex mutex_;
 };
@@ -129,6 +131,8 @@ public:
     std::string get_token() const { return token_; }
     void set_udp_endpoint(const boost::asio::ip::udp::endpoint& ep) { udp_endpoint_ = ep; }
     boost::asio::ip::udp::endpoint get_udp_endpoint() const { return udp_endpoint_; }
+    void set_udp_media_endpoint(const boost::asio::ip::udp::endpoint& ep) { udp_media_endpoint_ = ep; }
+    boost::asio::ip::udp::endpoint get_udp_media_endpoint() const { return udp_media_endpoint_; }
     std::string get_current_voice_channel() const { return current_voice_channel_; }
     bool is_muted() const { return is_muted_; }
     bool is_deafened() const { return is_deafened_; }
@@ -391,6 +395,7 @@ private:
     std::string current_channel_;
     std::string current_voice_channel_;
     boost::asio::ip::udp::endpoint udp_endpoint_;
+    boost::asio::ip::udp::endpoint udp_media_endpoint_;
     bool is_muted_ = false;
     bool is_deafened_ = false;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
@@ -649,11 +654,11 @@ void SessionManager::relay_keyframe_request(const std::string& target_username, 
 
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& session : sessions_) {
-        if (session->get_username() == target_username && session->get_udp_endpoint().port() != 0) {
+        if (session->get_username() == target_username && session->get_udp_media_endpoint().port() != 0) {
             auto buffer = std::make_shared<std::vector<char>>(reinterpret_cast<const char*>(&req),
                                                                reinterpret_cast<const char*>(&req) + sizeof(req));
             udp_socket.async_send_to(
-                boost::asio::buffer(*buffer), session->get_udp_endpoint(),
+                boost::asio::buffer(*buffer), session->get_udp_media_endpoint(),
                 [buffer](boost::system::error_code, std::size_t) {});
             return;
         }
@@ -663,10 +668,10 @@ void SessionManager::relay_keyframe_request(const std::string& target_username, 
 void SessionManager::relay_nack(const char* data, size_t length, const std::string& target_username, boost::asio::ip::udp::socket& udp_socket) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& session : sessions_) {
-        if (session->get_username() == target_username && session->get_udp_endpoint().port() != 0) {
+        if (session->get_username() == target_username && session->get_udp_media_endpoint().port() != 0) {
             auto buffer = std::make_shared<std::vector<char>>(data, data + length);
             udp_socket.async_send_to(
-                boost::asio::buffer(*buffer), session->get_udp_endpoint(),
+                boost::asio::buffer(*buffer), session->get_udp_media_endpoint(),
                 [buffer](boost::system::error_code, std::size_t) {});
             return;
         }
@@ -700,17 +705,17 @@ void SessionManager::broadcast_to_watchers(const char* data, size_t length, cons
     auto st_it = ch_it->second.find(streamer_username);
     if (st_it == ch_it->second.end()) return;
     for (auto& watcher : st_it->second) {
-        if (watcher->get_udp_endpoint().port() != 0) {
+        if (watcher->get_udp_media_endpoint().port() != 0) {
             udp_socket.async_send_to(
-                boost::asio::buffer(*buffer), watcher->get_udp_endpoint(),
+                boost::asio::buffer(*buffer), watcher->get_udp_media_endpoint(),
                 [buffer](boost::system::error_code, std::size_t) {});
         }
     }
 }
 
 void SessionManager::relay_keyframe_request_internal(const std::string& target_username) {
-    if (!udp_socket_ptr_) return;
-    relay_keyframe_request(target_username, *udp_socket_ptr_);
+    if (!media_udp_socket_ptr_) return;
+    relay_keyframe_request(target_username, *media_udp_socket_ptr_);
 }
 
 void SessionManager::broadcast_voice_presence(const std::string& channel_id) {
@@ -827,7 +832,7 @@ public:
     CommunityServer(boost::asio::io_context& io_context, short port, SessionManager& manager, const std::string& jwt_secret)
         : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
           udp_socket_(io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), port + 1)),
-          // UDP buffer sizes are set after construction below
+          media_udp_socket_(io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), port + 2)),
           ssl_context_(ssl::context::tlsv12),
           manager_(manager),
           jwt_secret_(jwt_secret) {
@@ -842,17 +847,24 @@ public:
         ssl_context_.use_certificate_chain_file("server.crt");
         ssl_context_.use_private_key_file("server.key", ssl::context::pem);
 
-        // Increase UDP socket buffers to handle video traffic bursts
+        // Voice UDP socket buffers
         udp_socket_.set_option(boost::asio::socket_base::receive_buffer_size(2 * 1024 * 1024));
         udp_socket_.set_option(boost::asio::socket_base::send_buffer_size(2 * 1024 * 1024));
 
+        // Media UDP socket buffers
+        media_udp_socket_.set_option(boost::asio::socket_base::receive_buffer_size(2 * 1024 * 1024));
+        media_udp_socket_.set_option(boost::asio::socket_base::send_buffer_size(2 * 1024 * 1024));
+
         manager_.set_udp_socket(&udp_socket_);
+        manager_.set_media_udp_socket(&media_udp_socket_);
 
         std::cout << "Community Server TCP running on port " << port << "...\n";
-        std::cout << "Community Server UDP running on port " << port + 1 << "...\n";
+        std::cout << "Community Server Voice UDP running on port " << port + 1 << "...\n";
+        std::cout << "Community Server Media UDP running on port " << port + 2 << "...\n";
 
         do_accept();
-        do_receive_udp();
+        do_receive_voice_udp();
+        do_receive_media_udp();
     }
 private:
     void do_accept() {
@@ -867,113 +879,155 @@ private:
             });
     }
 
-    void do_receive_udp() {
+    // ── Voice UDP receive chain (AUDIO, STREAM_AUDIO, PING) ──────────────────
+    void do_receive_voice_udp() {
         udp_socket_.async_receive_from(
             boost::asio::buffer(udp_buffer_, sizeof(udp_buffer_)), udp_sender_endpoint_,
             [this](boost::system::error_code ec, std::size_t bytes_recvd) {
                 if (!ec && bytes_recvd >= 1) {
                     uint8_t packet_type = static_cast<uint8_t>(udp_buffer_[0]);
-                    std::string token_str;
 
-                    constexpr int SID = chatproj::SENDER_ID_SIZE;
-                    // Minimum packet sizes: 1 (type) + SENDER_ID_SIZE + fields
-                    if ((packet_type == chatproj::UdpPacketType::AUDIO || packet_type == chatproj::UdpPacketType::STREAM_AUDIO) && bytes_recvd >= 1 + SID + 4) {
-                        chatproj::UdpAudioPacket* packet = reinterpret_cast<chatproj::UdpAudioPacket*>(udp_buffer_);
-                        for (int i = 0; i < SID; ++i) {
-                            if (packet->sender_id[i] == '\0') break;
-                            token_str.push_back(packet->sender_id[i]);
-                        }
-                    } else if ((packet_type == chatproj::UdpPacketType::VIDEO || packet_type == chatproj::UdpPacketType::FEC) && bytes_recvd >= 1 + SID + 8) {
-                        // VIDEO and FEC packets both have sender_id at offset 1
-                        chatproj::UdpVideoPacket* packet = reinterpret_cast<chatproj::UdpVideoPacket*>(udp_buffer_);
-                        for (int i = 0; i < SID; ++i) {
-                            if (packet->sender_id[i] == '\0') break;
-                            token_str.push_back(packet->sender_id[i]);
-                        }
-                    } else if (packet_type == chatproj::UdpPacketType::KEYFRAME_REQUEST && bytes_recvd >= sizeof(chatproj::UdpKeyframeRequest)) {
-                        chatproj::UdpKeyframeRequest* packet = reinterpret_cast<chatproj::UdpKeyframeRequest*>(udp_buffer_);
-                        // Extract the target streamer username and relay PLI to them
-                        std::string target;
-                        for (int i = 0; i < SID; ++i) {
-                            if (packet->target_username[i] == '\0') break;
-                            target.push_back(packet->target_username[i]);
-                        }
-                        if (!target.empty()) {
-                            manager_.relay_keyframe_request(target, udp_socket_);
-                        }
-                        // Don't process further — this is not audio/video data
-                        do_receive_udp();
-                        return;
-                    } else if (packet_type == chatproj::UdpPacketType::NACK &&
-                               bytes_recvd >= sizeof(chatproj::UdpNackPacket) - sizeof(uint16_t) * chatproj::NACK_MAX_ENTRIES) {
-                        chatproj::UdpNackPacket* packet = reinterpret_cast<chatproj::UdpNackPacket*>(udp_buffer_);
-                        std::string target;
-                        for (int i = 0; i < SID; ++i) {
-                            if (packet->target_username[i] == '\0') break;
-                            target.push_back(packet->target_username[i]);
-                        }
-                        if (!target.empty()) {
-                            manager_.relay_nack(udp_buffer_, bytes_recvd, target, udp_socket_);
-                        }
-                        do_receive_udp();
-                        return;
-                    } else if (packet_type == 5) { // PING
-                        // Echo the packet back to the sender
+                    // PING: echo back immediately
+                    if (packet_type == chatproj::UdpPacketType::PING) {
                         auto echo_buf = std::make_shared<std::vector<uint8_t>>(
                             udp_buffer_, udp_buffer_ + bytes_recvd);
                         udp_socket_.async_send_to(
                             boost::asio::buffer(*echo_buf), udp_sender_endpoint_,
                             [echo_buf](boost::system::error_code, std::size_t) {});
-                        do_receive_udp();
+                        do_receive_voice_udp();
                         return;
                     }
 
-                    if (!token_str.empty()) {
-                        auto session = manager_.find_session_by_token(token_str, jwt_secret_);
+                    // AUDIO or STREAM_AUDIO
+                    constexpr int SID = chatproj::SENDER_ID_SIZE;
+                    if ((packet_type == chatproj::UdpPacketType::AUDIO ||
+                         packet_type == chatproj::UdpPacketType::STREAM_AUDIO) &&
+                        bytes_recvd >= 1 + SID + 4) {
 
-                        if (session) {
-                            // Update endpoint if it changed
-                            if (session->get_udp_endpoint() != udp_sender_endpoint_) {
-                                session->set_udp_endpoint(udp_sender_endpoint_);
-                            }
+                        std::string token_str;
+                        chatproj::UdpAudioPacket* packet = reinterpret_cast<chatproj::UdpAudioPacket*>(udp_buffer_);
+                        for (int i = 0; i < SID; ++i) {
+                            if (packet->sender_id[i] == '\0') break;
+                            token_str.push_back(packet->sender_id[i]);
+                        }
 
-                            std::string channel = session->get_current_voice_channel();
-                            if (!channel.empty()) {
-                                // Overwrite sender_id with username before broadcasting for security and identification
-                                std::string uname = session->get_username();
-
-                                // Rewrite sender_id with authenticated username for all broadcast packet types
-                                // sender_id is at offset 1 in AUDIO, VIDEO, and FEC packets
-                                if (packet_type == chatproj::UdpPacketType::AUDIO ||
-                                    packet_type == chatproj::UdpPacketType::STREAM_AUDIO ||
-                                    packet_type == chatproj::UdpPacketType::VIDEO ||
-                                    packet_type == chatproj::UdpPacketType::FEC) {
-                                    // sender_id is at bytes [1..32] for all these packet types
-                                    std::memset(udp_buffer_ + 1, 0, chatproj::SENDER_ID_SIZE);
-                                    std::memcpy(udp_buffer_ + 1, uname.c_str(), std::min(uname.size(), size_t(chatproj::SENDER_ID_SIZE - 1)));
+                        if (!token_str.empty()) {
+                            auto session = manager_.find_session_by_token(token_str, jwt_secret_);
+                            if (session) {
+                                if (session->get_udp_endpoint() != udp_sender_endpoint_) {
+                                    session->set_udp_endpoint(udp_sender_endpoint_);
                                 }
+                                std::string channel = session->get_current_voice_channel();
+                                if (!channel.empty()) {
+                                    std::string uname = session->get_username();
+                                    std::memset(udp_buffer_ + 1, 0, SID);
+                                    std::memcpy(udp_buffer_ + 1, uname.c_str(),
+                                                std::min(uname.size(), size_t(SID - 1)));
 
-                                // Route based on packet type
-                                if (packet_type == chatproj::UdpPacketType::AUDIO) {
-                                    // Voice audio → all voice channel members
-                                    manager_.broadcast_to_voice_channel(udp_buffer_, bytes_recvd, channel, session, udp_socket_);
-                                } else if (packet_type == chatproj::UdpPacketType::STREAM_AUDIO) {
-                                    // Stream audio → watchers of this streamer only
-                                    manager_.broadcast_to_watchers(udp_buffer_, bytes_recvd, channel, session->get_username(), udp_socket_);
-                                } else if (packet_type == chatproj::UdpPacketType::VIDEO || packet_type == chatproj::UdpPacketType::FEC) {
-                                    manager_.broadcast_to_watchers(udp_buffer_, bytes_recvd, channel, session->get_username(), udp_socket_);
+                                    if (packet_type == chatproj::UdpPacketType::AUDIO) {
+                                        manager_.broadcast_to_voice_channel(
+                                            udp_buffer_, bytes_recvd, channel, session, udp_socket_);
+                                    } else if (packet_type == chatproj::UdpPacketType::STREAM_AUDIO) {
+                                        // Stream audio stays on voice path (small, latency-sensitive)
+                                        manager_.broadcast_to_watchers(
+                                            udp_buffer_, bytes_recvd, channel, uname, udp_socket_);
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                do_receive_udp();
+                do_receive_voice_udp();
             });
     }
+
+    // ── Media UDP receive chain (VIDEO, FEC, KEYFRAME_REQUEST, NACK) ────────
+    void do_receive_media_udp() {
+        media_udp_socket_.async_receive_from(
+            boost::asio::buffer(media_udp_buffer_, sizeof(media_udp_buffer_)), media_udp_sender_endpoint_,
+            [this](boost::system::error_code ec, std::size_t bytes_recvd) {
+                if (!ec && bytes_recvd >= 1) {
+                    uint8_t packet_type = static_cast<uint8_t>(media_udp_buffer_[0]);
+                    constexpr int SID = chatproj::SENDER_ID_SIZE;
+
+                    // KEYFRAME_REQUEST: relay to the target streamer
+                    if (packet_type == chatproj::UdpPacketType::KEYFRAME_REQUEST &&
+                        bytes_recvd >= sizeof(chatproj::UdpKeyframeRequest)) {
+                        chatproj::UdpKeyframeRequest* packet =
+                            reinterpret_cast<chatproj::UdpKeyframeRequest*>(media_udp_buffer_);
+                        std::string target;
+                        for (int i = 0; i < SID; ++i) {
+                            if (packet->target_username[i] == '\0') break;
+                            target.push_back(packet->target_username[i]);
+                        }
+                        if (!target.empty()) {
+                            manager_.relay_keyframe_request(target, media_udp_socket_);
+                        }
+                        do_receive_media_udp();
+                        return;
+                    }
+
+                    // NACK: relay to the target streamer
+                    if (packet_type == chatproj::UdpPacketType::NACK &&
+                        bytes_recvd >= sizeof(chatproj::UdpNackPacket) - sizeof(uint16_t) * chatproj::NACK_MAX_ENTRIES) {
+                        chatproj::UdpNackPacket* packet =
+                            reinterpret_cast<chatproj::UdpNackPacket*>(media_udp_buffer_);
+                        std::string target;
+                        for (int i = 0; i < SID; ++i) {
+                            if (packet->target_username[i] == '\0') break;
+                            target.push_back(packet->target_username[i]);
+                        }
+                        if (!target.empty()) {
+                            manager_.relay_nack(media_udp_buffer_, bytes_recvd, target, media_udp_socket_);
+                        }
+                        do_receive_media_udp();
+                        return;
+                    }
+
+                    // VIDEO or FEC: authenticate, rewrite sender_id, broadcast to watchers
+                    if ((packet_type == chatproj::UdpPacketType::VIDEO ||
+                         packet_type == chatproj::UdpPacketType::FEC) &&
+                        bytes_recvd >= 1 + SID + 8) {
+
+                        std::string token_str;
+                        chatproj::UdpVideoPacket* packet =
+                            reinterpret_cast<chatproj::UdpVideoPacket*>(media_udp_buffer_);
+                        for (int i = 0; i < SID; ++i) {
+                            if (packet->sender_id[i] == '\0') break;
+                            token_str.push_back(packet->sender_id[i]);
+                        }
+
+                        if (!token_str.empty()) {
+                            auto session = manager_.find_session_by_token(token_str, jwt_secret_);
+                            if (session) {
+                                if (session->get_udp_media_endpoint() != media_udp_sender_endpoint_) {
+                                    session->set_udp_media_endpoint(media_udp_sender_endpoint_);
+                                }
+                                std::string channel = session->get_current_voice_channel();
+                                if (!channel.empty()) {
+                                    std::string uname = session->get_username();
+                                    std::memset(media_udp_buffer_ + 1, 0, SID);
+                                    std::memcpy(media_udp_buffer_ + 1, uname.c_str(),
+                                                std::min(uname.size(), size_t(SID - 1)));
+
+                                    manager_.broadcast_to_watchers(
+                                        media_udp_buffer_, bytes_recvd, channel, uname, media_udp_socket_);
+                                }
+                            }
+                        }
+                    }
+                }
+                do_receive_media_udp();
+            });
+    }
+
     tcp::acceptor acceptor_;
     boost::asio::ip::udp::socket udp_socket_;
+    boost::asio::ip::udp::socket media_udp_socket_;
     char udp_buffer_[sizeof(chatproj::UdpVideoPacket) > sizeof(chatproj::UdpFecPacket) ? sizeof(chatproj::UdpVideoPacket) : sizeof(chatproj::UdpFecPacket)];
+    char media_udp_buffer_[sizeof(chatproj::UdpVideoPacket) > sizeof(chatproj::UdpFecPacket) ? sizeof(chatproj::UdpVideoPacket) : sizeof(chatproj::UdpFecPacket)];
     boost::asio::ip::udp::endpoint udp_sender_endpoint_;
+    boost::asio::ip::udp::endpoint media_udp_sender_endpoint_;
     ssl::context ssl_context_;
     SessionManager& manager_;
     std::string jwt_secret_;
