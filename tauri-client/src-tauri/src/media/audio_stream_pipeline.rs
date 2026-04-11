@@ -90,13 +90,21 @@ pub fn run_audio_stream_pipeline(
                     oversampling_factor: 128,
                     window: WindowFunction::Blackman2,
                 };
-                resampler = Some(SincFixedOut::<f64>::new(
+                match SincFixedOut::<f64>::new(
                     SAMPLE_RATE as f64 / from_rate as f64,
                     1.1,
                     params,
                     480, // output chunk size (10ms at 48kHz)
                     2,   // stereo
-                ).expect("failed to create stereo sinc resampler"));
+                ) {
+                    Ok(r) => resampler = Some(r),
+                    Err(e) => {
+                        let msg = format!("Failed to create stereo resampler ({}Hz → {}Hz): {}", from_rate, SAMPLE_RATE, e);
+                        eprintln!("[stream-audio] {}", msg);
+                        let _ = event_tx.send(AudioStreamEvent::Error(msg));
+                        break;
+                    }
+                }
             }
         }
 
