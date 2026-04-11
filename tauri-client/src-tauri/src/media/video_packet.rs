@@ -8,6 +8,9 @@ pub const NACK_MAX_ENTRIES: usize = 64;
 pub const PACKET_TYPE_VIDEO: u8 = 1;
 pub const PACKET_TYPE_KEYFRAME_REQUEST: u8 = 2;
 pub const PACKET_TYPE_NACK: u8 = 3;
+pub const PACKET_TYPE_FEC: u8 = 4;
+
+pub const FEC_GROUP_SIZE: u16 = 5;
 
 pub const CODEC_H264: u8 = 1;
 
@@ -42,6 +45,22 @@ pub struct UdpNackPacket {
     pub frame_id: u32,
     pub nack_count: u16,
     pub missing_indices: [u16; NACK_MAX_ENTRIES],
+}
+
+/// XOR-based Forward Error Correction packet. One FEC packet per group of
+/// `FEC_GROUP_SIZE` video packets. If exactly 1 packet in the group is lost,
+/// the receiver can reconstruct it by XOR-ing the FEC payload with all other
+/// received packets in the group.
+#[repr(C, packed)]
+#[derive(Clone)]
+pub struct UdpFecPacket {
+    pub packet_type: u8,
+    pub sender_id: [u8; SENDER_ID_SIZE],
+    pub frame_id: u32,
+    pub group_start: u16,
+    pub group_count: u16,
+    pub payload_size_xor: u16,
+    pub payload: [u8; UDP_MAX_PAYLOAD],
 }
 
 fn fill_id(dest: &mut [u8; SENDER_ID_SIZE], src: &str) {
@@ -171,6 +190,46 @@ impl UdpKeyframeRequest {
     }
 }
 
+impl UdpFecPacket {
+    pub fn new(
+        sender_id_str: &str,
+        frame_id: u32,
+        group_start: u16,
+        group_count: u16,
+        payload_size_xor: u16,
+        xor_payload: &[u8; UDP_MAX_PAYLOAD],
+    ) -> Self {
+        let mut sender_id = [0u8; SENDER_ID_SIZE];
+        fill_id(&mut sender_id, sender_id_str);
+
+        UdpFecPacket {
+            packet_type: PACKET_TYPE_FEC,
+            sender_id,
+            frame_id,
+            group_start,
+            group_count,
+            payload_size_xor,
+            payload: *xor_payload,
+        }
+    }
+
+    /// Serialize to compact bytes: header + actual max payload.
+    /// FEC payloads are always UDP_MAX_PAYLOAD (XOR of zero-padded payloads),
+    /// so the compact form is the full struct size.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let total = std::mem::size_of::<Self>();
+        let mut buf = vec![0u8; total];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self as *const Self as *const u8,
+                buf.as_mut_ptr(),
+                total,
+            );
+        }
+        buf
+    }
+}
+
 impl UdpNackPacket {
     pub fn new(sender_id_str: &str, target: &str, frame_id: u32, missing: &[u16]) -> Self {
         let mut sender_id = [0u8; SENDER_ID_SIZE];
@@ -262,6 +321,26 @@ mod tests {
         assert_eq!(bytes[0], PACKET_TYPE_KEYFRAME_REQUEST);
         let sender = String::from_utf8_lossy(&bytes[1..8]).trim_matches('\0').to_string();
         assert_eq!(sender, "viewer1");
+    }
+
+    #[test]
+    fn fec_packet_size_matches_cpp() {
+        // C++ struct: 1 + 32 + 4 + 2 + 2 + 2 + 1400 = 1443 bytes
+        assert_eq!(std::mem::size_of::<UdpFecPacket>(), 1443);
+    }
+
+    #[test]
+    fn fec_packet_roundtrip() {
+        let mut xor_payload = [0u8; UDP_MAX_PAYLOAD];
+        xor_payload[0] = 0xAB;
+        xor_payload[1] = 0xCD;
+        let pkt = UdpFecPacket::new("streamer1", 42, 0, 5, 1234, &xor_payload);
+        let bytes = pkt.to_bytes();
+        assert_eq!(bytes[0], PACKET_TYPE_FEC);
+        assert_eq!(bytes.len(), std::mem::size_of::<UdpFecPacket>());
+        // Verify sender_id at offset 1
+        let sender = String::from_utf8_lossy(&bytes[1..10]).trim_matches('\0').to_string();
+        assert_eq!(sender, "streamer1");
     }
 
     #[test]

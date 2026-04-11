@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::capture::{PixelFormat, RawFrame};
 use super::encoder::{EncoderConfig, H264Encoder};
-use super::video_packet::{UdpVideoPacket, UDP_MAX_PAYLOAD};
+use super::video_packet::{UdpFecPacket, UdpVideoPacket, FEC_GROUP_SIZE, UDP_MAX_PAYLOAD};
 
 pub enum VideoPipelineControl {
     ForceKeyframe,
@@ -354,6 +354,12 @@ pub fn run_video_send_pipeline(
                         frame_id, encoded.data.len(), total, encoded.is_keyframe);
                 }
 
+                // FEC accumulator: XOR payload buffer and payload_size for current group
+                let mut fec_payload = [0u8; UDP_MAX_PAYLOAD];
+                let mut fec_size_xor: u16 = 0;
+                let mut fec_group_start: u16 = 0;
+                let mut fec_group_count: u16 = 0;
+
                 let mut send_ok = 0u32;
                 let mut send_err = 0u32;
                 for (i, chunk) in chunks.iter().enumerate() {
@@ -374,11 +380,42 @@ pub fn run_video_send_pipeline(
                             send_err += 1;
                         }
                     }
+
+                    // Accumulate FEC: XOR this packet's payload (zero-padded) and size
+                    for (j, &b) in chunk.iter().enumerate() {
+                        fec_payload[j] ^= b;
+                    }
+                    fec_size_xor ^= chunk.len() as u16;
+                    fec_group_count += 1;
+
+                    // Emit FEC packet when group is full
+                    if fec_group_count == FEC_GROUP_SIZE {
+                        let fec_pkt = UdpFecPacket::new(
+                            &sender_id, frame_id, fec_group_start,
+                            fec_group_count, fec_size_xor, &fec_payload,
+                        );
+                        let _ = socket.send(&fec_pkt.to_bytes());
+                        fec_payload = [0u8; UDP_MAX_PAYLOAD];
+                        fec_size_xor = 0;
+                        fec_group_start = i as u16 + 1;
+                        fec_group_count = 0;
+                    }
+
                     // Pace large frames to avoid overwhelming the server's UDP buffer.
                     if total > 10 && i % 10 == 9 {
                         std::thread::sleep(Duration::from_micros(500));
                     }
                 }
+
+                // Emit FEC for the trailing partial group (need at least 2 packets)
+                if fec_group_count > 1 {
+                    let fec_pkt = UdpFecPacket::new(
+                        &sender_id, frame_id, fec_group_start,
+                        fec_group_count, fec_size_xor, &fec_payload,
+                    );
+                    let _ = socket.send(&fec_pkt.to_bytes());
+                }
+
                 if encoded.is_keyframe || send_err > 0 {
                     eprintln!("[video-send] Frame {} sent: {}/{} ok, {} errors, keyframe={}",
                         frame_id, send_ok, total, send_err, encoded.is_keyframe);
@@ -393,7 +430,7 @@ pub fn run_video_send_pipeline(
         }
     }
 
-    // Flush encoder
+    // Flush encoder (FEC not critical for final frames)
     for encoded in encoder.flush() {
         let chunks: Vec<&[u8]> = encoded.data.chunks(UDP_MAX_PAYLOAD).collect();
         let total = chunks.len() as u16;
