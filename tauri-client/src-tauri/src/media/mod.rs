@@ -36,7 +36,8 @@ pub struct VoiceEngine {
     video_recv_thread: Option<JoinHandle<()>>,
     event_bridge: Option<tokio::task::JoinHandle<()>>,
     control_tx: mpsc::Sender<ControlMessage>,
-    socket: Arc<UdpSocket>,
+    voice_socket: Arc<UdpSocket>,
+    media_socket: Arc<UdpSocket>,
     sender_id: String,
     is_muted: bool,
     is_deafened: bool,
@@ -56,8 +57,9 @@ impl VoiceEngine {
         let (control_tx, control_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
-        // UDP audio port is server_port + 1
-        let udp_addr = format!("{}:{}", server_host, server_port + 1);
+        // Voice UDP port is server_port + 1, media UDP port is server_port + 2
+        let voice_udp_addr = format!("{}:{}", server_host, server_port + 1);
+        let media_udp_addr = format!("{}:{}", server_host, server_port + 2);
 
         // Sender ID: last 31 chars of JWT
         let jwt_bytes = jwt.as_bytes();
@@ -67,119 +69,109 @@ impl VoiceEngine {
             jwt.to_string()
         };
 
-        // Create and connect UDP socket (shared between audio + video pipelines)
-        let socket = UdpSocket::bind("0.0.0.0:0")
-            .map_err(|e| format!("UDP bind failed: {}", e))?;
-        socket
-            .connect(&udp_addr)
-            .map_err(|e| format!("UDP connect failed: {}", e))?;
-        // Increase socket buffers to handle video keyframe bursts.
-        // Default ~208KB may be capped by net.core.rmem_max / wmem_max.
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            let fd = socket.as_raw_fd();
-            let buf_size: libc::c_int = 4 * 1024 * 1024; // 4 MB (kernel may cap)
-            unsafe {
-                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
-                    &buf_size as *const _ as *const libc::c_void,
-                    std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
-                    &buf_size as *const _ as *const libc::c_void,
-                    std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-                // DSCP EF (Expedited Forwarding) — tells routers to prioritize
-                // voice/video packets over bulk data (downloads, etc).
-                let dscp_ef: libc::c_int = 0xB8; // DSCP 46 (EF) << 2
-                libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_TOS,
-                    &dscp_ef as *const _ as *const libc::c_void,
-                    std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::AsRawSocket;
-            let sock = socket.as_raw_socket();
-            let buf_size: i32 = 4 * 1024 * 1024; // 4 MB
-            unsafe {
-                let _ = windows::Win32::Networking::WinSock::setsockopt(
-                    windows::Win32::Networking::WinSock::SOCKET(sock as usize),
-                    windows::Win32::Networking::WinSock::SOL_SOCKET as i32,
-                    windows::Win32::Networking::WinSock::SO_RCVBUF as i32,
-                    Some(std::slice::from_raw_parts(
-                        &buf_size as *const i32 as *const u8,
-                        std::mem::size_of::<i32>(),
-                    )),
-                );
-                let _ = windows::Win32::Networking::WinSock::setsockopt(
-                    windows::Win32::Networking::WinSock::SOCKET(sock as usize),
-                    windows::Win32::Networking::WinSock::SOL_SOCKET as i32,
-                    windows::Win32::Networking::WinSock::SO_SNDBUF as i32,
-                    Some(std::slice::from_raw_parts(
-                        &buf_size as *const i32 as *const u8,
-                        std::mem::size_of::<i32>(),
-                    )),
-                );
-                // DSCP EF (Expedited Forwarding) — tells routers and the Windows
-                // network stack to prioritize voice/video over bulk traffic.
-                let dscp_ef: i32 = 0xB8; // DSCP 46 (EF) << 2
-                let _ = windows::Win32::Networking::WinSock::setsockopt(
-                    windows::Win32::Networking::WinSock::SOCKET(sock as usize),
-                    windows::Win32::Networking::WinSock::IPPROTO_IP.0 as i32,
-                    windows::Win32::Networking::WinSock::IP_TOS as i32,
-                    Some(std::slice::from_raw_parts(
-                        &dscp_ef as *const i32 as *const u8,
-                        std::mem::size_of::<i32>(),
-                    )),
-                );
-                // Disable SIO_UDP_CONNRESET: Windows reports ICMP port-unreachable
-                // errors as recv() failures (WSAECONNRESET/10054) on connected UDP
-                // sockets. This kills the recv thread. Disabling this behavior
-                // prevents spurious recv errors when the server briefly restarts
-                // or a NAT mapping changes.
-                let wsa_sock = windows::Win32::Networking::WinSock::SOCKET(sock as usize);
-                const SIO_UDP_CONNRESET: u32 = 0x9800000C; // _WSAIOW(IOC_VENDOR, 12)
-                let mut false_val: u32 = 0;
-                let mut bytes_returned: u32 = 0;
-                let _ = windows::Win32::Networking::WinSock::WSAIoctl(
-                    wsa_sock,
-                    SIO_UDP_CONNRESET,
-                    Some(&false_val as *const u32 as *const std::ffi::c_void),
-                    std::mem::size_of::<u32>() as u32,
-                    None,
-                    0,
-                    &mut bytes_returned,
-                    None,
-                    None,
-                );
-            }
-        }
-        let socket = Arc::new(socket);
+        // Voice socket — carries AUDIO, STREAM_AUDIO, PING
+        let voice_socket = UdpSocket::bind("0.0.0.0:0")
+            .map_err(|e| format!("Voice UDP bind failed: {}", e))?;
+        voice_socket
+            .connect(&voice_udp_addr)
+            .map_err(|e| format!("Voice UDP connect failed: {}", e))?;
 
-        // Channel for forwarding raw video packets from the audio recv loop
-        // to a dedicated video processing thread (prevents video reassembly
-        // from blocking audio decode/playback).
-        let (video_packet_tx, video_packet_rx) = mpsc::channel::<Vec<u8>>();
+        // Media socket — carries VIDEO, FEC, KEYFRAME_REQUEST, NACK
+        let media_socket = UdpSocket::bind("0.0.0.0:0")
+            .map_err(|e| format!("Media UDP bind failed: {}", e))?;
+        media_socket
+            .connect(&media_udp_addr)
+            .map_err(|e| format!("Media UDP connect failed: {}", e))?;
+
+        // Apply buffer sizes and DSCP to both sockets
+        fn configure_udp_socket(socket: &UdpSocket) {
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                let fd = socket.as_raw_fd();
+                let buf_size: libc::c_int = 4 * 1024 * 1024;
+                unsafe {
+                    libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
+                        &buf_size as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+                    libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
+                        &buf_size as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+                    let dscp_ef: libc::c_int = 0xB8;
+                    libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_TOS,
+                        &dscp_ef as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+                }
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::AsRawSocket;
+                let sock = socket.as_raw_socket();
+                let buf_size: i32 = 4 * 1024 * 1024;
+                unsafe {
+                    let _ = windows::Win32::Networking::WinSock::setsockopt(
+                        windows::Win32::Networking::WinSock::SOCKET(sock as usize),
+                        windows::Win32::Networking::WinSock::SOL_SOCKET as i32,
+                        windows::Win32::Networking::WinSock::SO_RCVBUF as i32,
+                        Some(std::slice::from_raw_parts(
+                            &buf_size as *const i32 as *const u8, std::mem::size_of::<i32>(),
+                        )),
+                    );
+                    let _ = windows::Win32::Networking::WinSock::setsockopt(
+                        windows::Win32::Networking::WinSock::SOCKET(sock as usize),
+                        windows::Win32::Networking::WinSock::SOL_SOCKET as i32,
+                        windows::Win32::Networking::WinSock::SO_SNDBUF as i32,
+                        Some(std::slice::from_raw_parts(
+                            &buf_size as *const i32 as *const u8, std::mem::size_of::<i32>(),
+                        )),
+                    );
+                    let dscp_ef: i32 = 0xB8;
+                    let _ = windows::Win32::Networking::WinSock::setsockopt(
+                        windows::Win32::Networking::WinSock::SOCKET(sock as usize),
+                        windows::Win32::Networking::WinSock::IPPROTO_IP.0 as i32,
+                        windows::Win32::Networking::WinSock::IP_TOS as i32,
+                        Some(std::slice::from_raw_parts(
+                            &dscp_ef as *const i32 as *const u8, std::mem::size_of::<i32>(),
+                        )),
+                    );
+                    let wsa_sock = windows::Win32::Networking::WinSock::SOCKET(sock as usize);
+                    const SIO_UDP_CONNRESET: u32 = 0x9800000C;
+                    let mut false_val: u32 = 0;
+                    let mut bytes_returned: u32 = 0;
+                    let _ = windows::Win32::Networking::WinSock::WSAIoctl(
+                        wsa_sock, SIO_UDP_CONNRESET,
+                        Some(&false_val as *const u32 as *const std::ffi::c_void),
+                        std::mem::size_of::<u32>() as u32, None, 0,
+                        &mut bytes_returned, None, None,
+                    );
+                }
+            }
+        }
+        configure_udp_socket(&voice_socket);
+        configure_udp_socket(&media_socket);
+        let voice_socket = Arc::new(voice_socket);
+        let media_socket = Arc::new(media_socket);
 
         // Clone event_tx before it's moved into the audio thread — the video
         // recv thread needs its own sender into the same event channel.
         let event_tx_video = event_tx.clone();
 
-        let socket_for_audio = socket.clone();
+        let voice_socket_for_audio = voice_socket.clone();
         let sender_id_for_audio = sender_id.clone();
         let audio_thread = thread::Builder::new()
             .name("decibell-audio".to_string())
             .spawn(move || {
-                pipeline::run_audio_pipeline(socket_for_audio, sender_id_for_audio, control_rx, event_tx, video_packet_tx);
+                pipeline::run_audio_pipeline(voice_socket_for_audio, sender_id_for_audio, control_rx, event_tx);
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
 
-        // Dedicated video recv thread: reassembles video frames, sends NACKs/PLI
-        let socket_for_video_recv = socket.clone();
+        // Dedicated video recv thread: reads from media socket, reassembles frames, sends NACKs/PLI
+        let media_socket_for_video_recv = media_socket.clone();
         let sender_id_for_video = sender_id.clone();
         let video_recv_thread = thread::Builder::new()
             .name("decibell-video-recv".to_string())
             .spawn(move || {
-                run_video_recv_thread(video_packet_rx, socket_for_video_recv, sender_id_for_video, event_tx_video);
+                run_video_recv_thread(media_socket_for_video_recv, sender_id_for_video, event_tx_video);
             })
             .map_err(|e| format!("Failed to spawn video recv thread: {}", e))?;
 
@@ -281,7 +273,8 @@ impl VoiceEngine {
             video_recv_thread: Some(video_recv_thread),
             event_bridge: Some(event_bridge),
             control_tx,
-            socket,
+            voice_socket,
+            media_socket,
             sender_id,
             is_muted: false,
             is_deafened: false,
@@ -295,8 +288,7 @@ impl VoiceEngine {
         if let Some(handle) = self.audio_thread.take() {
             let _ = handle.join();
         }
-        // Video recv thread exits when its video_packet_rx channel is dropped
-        // (which happens when the audio thread exits and drops video_packet_tx).
+        // Video recv thread exits when its media socket read times out after the pipeline shuts down.
         if let Some(handle) = self.video_recv_thread.take() {
             let _ = handle.join();
         }
@@ -382,7 +374,8 @@ impl VoiceEngine {
 
     pub fn is_muted(&self) -> bool { self.is_muted }
     pub fn is_deafened(&self) -> bool { self.is_deafened }
-    pub fn socket(&self) -> Arc<UdpSocket> { self.socket.clone() }
+    pub fn voice_socket(&self) -> Arc<UdpSocket> { self.voice_socket.clone() }
+    pub fn media_socket(&self) -> Arc<UdpSocket> { self.media_socket.clone() }
     pub fn sender_id(&self) -> &str { &self.sender_id }
 }
 
@@ -393,10 +386,8 @@ impl Drop for VoiceEngine {
 }
 
 /// Dedicated thread for video packet reassembly, NACK/PLI.
-/// Receives raw video packet bytes from the audio recv loop via `packet_rx`,
-/// keeping video processing completely off the audio thread.
+/// Reads directly from the media UDP socket (VIDEO, FEC, KEYFRAME_REQUEST, NACK).
 fn run_video_recv_thread(
-    packet_rx: std::sync::mpsc::Receiver<Vec<u8>>,
     socket: Arc<UdpSocket>,
     sender_id: String,
     event_tx: std::sync::mpsc::Sender<pipeline::VoiceEvent>,
@@ -459,30 +450,18 @@ fn run_video_recv_thread(
         }
     };
 
-    loop {
-        // Drain available video packets (non-blocking after the first blocking recv)
-        match packet_rx.recv_timeout(Duration::from_millis(5)) {
-            Ok(buf) => {
-                if let Some(pkt) = UdpVideoPacket::from_bytes(&buf) {
-                    let username = pkt.sender_username();
-                    if video_streamer_username.as_deref() != Some(&username) {
-                        has_received_keyframe = false;
-                    }
-                    video_streamer_username = Some(username.clone());
-                    if let Some(frame) = video_receiver.process_packet(&pkt) {
-                        video_frames_received += 1;
-                        if frame.is_keyframe || video_frames_received % 300 == 1 {
-                            eprintln!("[video-recv] Frame {} reassembled: {} bytes, keyframe={} (total={})",
-                                frame.frame_id, frame.data.len(), frame.is_keyframe, video_frames_received);
-                        }
-                        if frame.is_keyframe { has_received_keyframe = true; }
-                        emit_frame(frame);
-                    }
-                }
+    // Read directly from the media socket with a short timeout for periodic maintenance
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(5)));
+    let mut recv_buf = [0u8; std::mem::size_of::<UdpVideoPacket>()];
 
-                // Drain any additional queued packets without blocking
-                while let Ok(buf) = packet_rx.try_recv() {
-                    if let Some(pkt) = UdpVideoPacket::from_bytes(&buf) {
+    loop {
+        // Read from media socket
+        match socket.recv(&mut recv_buf) {
+            Ok(n) if n >= 1 => {
+                let packet_type = recv_buf[0];
+
+                if packet_type == video_packet::PACKET_TYPE_VIDEO {
+                    if let Some(pkt) = UdpVideoPacket::from_bytes(&recv_buf[..n]) {
                         let username = pkt.sender_username();
                         if video_streamer_username.as_deref() != Some(&username) {
                             has_received_keyframe = false;
@@ -498,10 +477,25 @@ fn run_video_recv_thread(
                             emit_frame(frame);
                         }
                     }
+                } else if packet_type == video_packet::PACKET_TYPE_KEYFRAME_REQUEST && n >= std::mem::size_of::<UdpKeyframeRequest>() {
+                    eprintln!("[video-recv] Keyframe request received, signaling encoder");
+                    let _ = event_tx.send(pipeline::VoiceEvent::KeyframeRequested);
                 }
+                // FEC and NACK packets from server are also received here
+                // but currently only forwarded by server — no client-side processing needed
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Ok(_) => {}
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::ConnectionReset
+                    || e.raw_os_error() == Some(997)
+                    || e.raw_os_error() == Some(10054)
+            => {}
+            Err(e) => {
+                eprintln!("[video-recv] Socket error: {}", e);
+                break;
+            }
         }
 
         // Periodic maintenance: NACKs, PLI, stale cleanup

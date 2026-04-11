@@ -66,7 +66,8 @@ pub async fn start_screen_share(
     // Re-check after portal dialog (user may have disconnected)
     let voice_engine = s.voice_engine.as_ref()
         .ok_or("Voice channel disconnected during screen selection")?;
-    let socket = voice_engine.socket();
+    let voice_socket = voice_engine.voice_socket();
+    let media_socket = voice_engine.media_socket();
     let sender_id = voice_engine.sender_id().to_string();
 
     // Get community connection write channel and build the start_stream packet
@@ -105,7 +106,7 @@ pub async fn start_screen_share(
         capture_output.receiver,
         #[cfg(target_os = "linux")]
         capture_output.gpu_receiver,
-        socket.clone(),
+        media_socket,
         sender_id.clone(),
         encoder_config,
         fps,
@@ -137,7 +138,7 @@ pub async fn start_screen_share(
             };
             let audio_engine = AudioStreamEngine::start(
                 audio_rx,
-                socket,
+                voice_socket,
                 sender_id,
                 bitrate,
                 app,
@@ -156,7 +157,7 @@ pub async fn start_screen_share(
             };
             let audio_engine = AudioStreamEngine::start(
                 audio_rx,
-                socket,
+                voice_socket,
                 sender_id,
                 bitrate,
                 app,

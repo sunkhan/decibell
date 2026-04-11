@@ -15,7 +15,6 @@ use super::packet::{
     PACKET_TYPE_STREAM_AUDIO,
 };
 use super::speaking::SpeakingDetector;
-use super::video_packet::{UdpVideoPacket, PACKET_TYPE_VIDEO, PACKET_TYPE_KEYFRAME_REQUEST};
 use super::video_receiver::ReassembledFrame;
 
 // ── Sinc resampler helper ────────────────────────────────────────────────────
@@ -677,7 +676,6 @@ pub fn run_audio_pipeline(
     sender_id: String,
     control_rx: std::sync::mpsc::Receiver<ControlMessage>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
-    video_packet_tx: std::sync::mpsc::Sender<Vec<u8>>,
 ) {
     // Socket timeout is set by the dedicated recv thread — not needed here.
     // The audio loop uses channel-based recv (non-blocking try_recv).
@@ -865,20 +863,19 @@ pub fn run_audio_pipeline(
     const AEC_FRAME_SIZE: usize = 480; // 10ms at 48kHz
     let mut render_ref_accum: Vec<f32> = Vec::with_capacity(AEC_FRAME_SIZE * 2);
 
-    // ── Dedicated UDP recv thread ───────────────────────────────────────────
-    // Reads all incoming packets and dispatches by type into separate channels.
-    // This keeps the audio processing loop free from socket I/O and prevents
-    // video packet floods (100+ per keyframe) from stalling audio decode.
+    // ── Dedicated voice UDP recv thread ─────────────────────────────────────
+    // Reads voice packets (AUDIO, STREAM_AUDIO, PING) from the voice socket
+    // and forwards them to the audio processing thread. Video packets arrive
+    // on a separate media socket handled by the video recv thread in mod.rs.
     let (audio_pkt_tx, audio_pkt_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(256);
     let recv_socket = Arc::clone(&socket);
-    let recv_video_tx = video_packet_tx.clone();
     let recv_event_tx = event_tx.clone();
     std::thread::Builder::new()
-        .name("decibell-udp-recv".to_string())
+        .name("decibell-voice-recv".to_string())
         .spawn(move || {
-            udp_recv_thread(recv_socket, audio_pkt_tx, recv_video_tx, recv_event_tx);
+            voice_recv_thread(recv_socket, audio_pkt_tx, recv_event_tx);
         })
-        .expect("spawn recv thread");
+        .expect("spawn voice recv thread");
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     'main: loop {
@@ -1372,9 +1369,6 @@ pub fn run_audio_pipeline(
                                 }
                             }
                         }
-                    } else if !raw.is_empty() && raw[0] == PACKET_TYPE_KEYFRAME_REQUEST {
-                        eprintln!("[recv] Keyframe request received, signaling encoder");
-                        let _ = event_tx.send(VoiceEvent::KeyframeRequested);
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -1636,61 +1630,48 @@ pub fn run_audio_pipeline(
 //   recv thread → audio channel → audio processing thread
 //                → video channel → video reassembly thread
 
-fn udp_recv_thread(
+// ── Dedicated voice UDP receive thread ──────────────────────────────────────
+//
+// Reads voice packets (AUDIO, STREAM_AUDIO, PING) from the voice UDP socket
+// and forwards them to the audio processing thread. Video packets arrive on
+// a separate media socket handled by the video recv thread in mod.rs.
+
+fn voice_recv_thread(
     socket: Arc<UdpSocket>,
     audio_tx: std::sync::mpsc::SyncSender<Vec<u8>>,
-    video_tx: std::sync::mpsc::Sender<Vec<u8>>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
 ) {
-    const RECV_BUF_SIZE: usize = if std::mem::size_of::<UdpVideoPacket>() > PACKET_TOTAL_SIZE {
-        std::mem::size_of::<UdpVideoPacket>()
-    } else {
-        PACKET_TOTAL_SIZE
-    };
+    const RECV_BUF_SIZE: usize = PACKET_TOTAL_SIZE;
 
-    // Short timeout so we notice channel disconnection promptly
     if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(1))) {
-        let _ = event_tx.send(VoiceEvent::Error(format!("recv thread: set_read_timeout: {}", e)));
+        let _ = event_tx.send(VoiceEvent::Error(format!("voice recv thread: set_read_timeout: {}", e)));
         return;
     }
 
     let mut buf = [0u8; RECV_BUF_SIZE];
     let mut recv_count: u64 = 0;
-    let mut recv_audio_count: u64 = 0;
     let mut recv_log_time = Instant::now();
 
     loop {
         match socket.recv(&mut buf) {
             Ok(n) if n >= 1 => {
                 recv_count += 1;
-                let packet_type = buf[0];
-
-                // Log recv stats every 5s
                 if recv_log_time.elapsed() >= Duration::from_secs(5) {
-                    eprintln!("[recv-thread] 5s stats: total={}, audio={}, size_of_last={}",
-                        recv_count, recv_audio_count, n);
+                    eprintln!("[voice-recv] 5s stats: packets={}", recv_count);
                     recv_count = 0;
-                    recv_audio_count = 0;
                     recv_log_time = Instant::now();
                 }
 
-                if packet_type == PACKET_TYPE_VIDEO {
-                    // Video → video reassembly thread
-                    if video_tx.send(buf[..n].to_vec()).is_err() {
-                        break; // video thread gone
+                // Forward all packets on the voice socket to the audio thread.
+                // No type classification needed — only voice packets arrive here.
+                match audio_tx.try_send(buf[..n].to_vec()) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        // Audio thread is behind — drop this packet.
+                        // The jitter buffer's PLC will smooth the gap.
                     }
-                } else {
-                    recv_audio_count += 1;
-                    // Audio, ping, stream audio, keyframe request → audio thread
-                    match audio_tx.try_send(buf[..n].to_vec()) {
-                        Ok(()) => {}
-                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                            // Audio thread is behind — drop this packet.
-                            // The jitter buffer's PLC will smooth the gap.
-                        }
-                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                            break; // audio thread exited
-                        }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        break;
                     }
                 }
             }
@@ -1699,20 +1680,15 @@ fn udp_recv_thread(
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut
                     || e.kind() == std::io::ErrorKind::ConnectionReset
-                    || e.raw_os_error() == Some(997)   // Windows overlapped I/O
-                    || e.raw_os_error() == Some(10054)  // WSAECONNRESET — Windows reports ICMP
-                                                        // port-unreachable as recv error on UDP
-                =>
-            {
-                // Non-fatal — loop back. On Windows, error 10054 is common
-                // on connected UDP sockets and must NOT kill the recv thread.
-            }
+                    || e.raw_os_error() == Some(997)
+                    || e.raw_os_error() == Some(10054)
+            => {}
             Err(e) => {
-                eprintln!("[recv-thread] Socket error: {}", e);
+                eprintln!("[voice-recv] Socket error: {}", e);
                 break;
             }
         }
     }
 
-    eprintln!("[recv-thread] Exiting");
+    eprintln!("[voice-recv] Exiting");
 }
