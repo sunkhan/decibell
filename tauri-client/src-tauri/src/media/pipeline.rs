@@ -1,40 +1,25 @@
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use ringbuf::{HeapRb, HeapProd, HeapCons, traits::{Consumer, Producer, Split, Observer}};
-use rubato::{SincFixedOut, SincInterpolationParameters, SincInterpolationType, WindowFunction, Resampler};
+use ringbuf::{HeapRb, traits::{Consumer, Producer, Split, Observer}};
+use rubato::Resampler;
 
+use super::audio_device::{
+    make_sinc_resampler, build_input_stream, build_output_stream,
+    build_voice_output_stream, build_stream_output_stream,
+};
 use super::codec::{
     OpusDecoder, OpusEncoder, StereoOpusDecoder, FRAME_SIZE, MAX_OPUS_FRAME_SIZE,
     SAMPLE_RATE, STEREO_FRAME_SAMPLES, STEREO_FRAME_SIZE,
 };
+use super::jitter::JitterBuffer;
 use super::packet::{
     UdpAudioPacket, AUDIO_HEADER_SIZE, PACKET_TOTAL_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
     PACKET_TYPE_STREAM_AUDIO,
 };
 use super::speaking::SpeakingDetector;
 use super::video_receiver::ReassembledFrame;
-
-// ── Sinc resampler helper ────────────────────────────────────────────────────
-
-fn make_sinc_resampler(from_rate: u32, to_rate: u32, chunk_size: usize, channels: usize) -> SincFixedOut<f64> {
-    let params = SincInterpolationParameters {
-        sinc_len: 24,
-        f_cutoff: 0.925,
-        interpolation: SincInterpolationType::Cubic,
-        oversampling_factor: 32,
-        window: WindowFunction::Blackman2,
-    };
-    SincFixedOut::<f64>::new(
-        to_rate as f64 / from_rate as f64,
-        1.1, // max relative input size variation
-        params,
-        chunk_size,
-        channels,
-    ).expect("failed to create sinc resampler")
-}
 
 // ── Control / Event messages ──────────────────────────────────────────────────
 
@@ -78,116 +63,6 @@ pub enum VoiceEvent {
 const FLAG_MUTED: u8 = 0x01;
 const FLAG_DEAFENED: u8 = 0x02;
 
-// ── Jitter buffer ────────────────────────────────────────────────────────────
-//
-// Holds incoming packets for a short time before decoding, so that late/
-// out-of-order packets can be reordered. When a packet is truly lost, the
-// Opus decoder's PLC (Packet Loss Concealment) fills the gap smoothly.
-
-const JITTER_DEPTH: usize = 3; // packets to buffer before starting playback (60ms)
-const JITTER_MAX: usize = 30;  // safety cap — force-drain if buffer grows past this
-
-struct JitterBuffer {
-    packets: HashMap<u16, Vec<u8>>,
-    next_seq: u16,
-    initialized: bool,
-    ready: bool,
-    /// Consecutive drain() calls that returned a missing packet (PLC).
-    /// When this exceeds the threshold, the buffer resets to re-sync.
-    consecutive_losses: u32,
-}
-
-impl JitterBuffer {
-    fn new() -> Self {
-        Self { packets: HashMap::new(), next_seq: 0, initialized: false, ready: false, consecutive_losses: 0 }
-    }
-
-    /// Insert a packet. Ignores packets behind the play cursor.
-    fn push(&mut self, seq: u16, data: Vec<u8>) {
-        if !self.initialized {
-            self.next_seq = seq;
-            self.initialized = true;
-        }
-        // Detect sequence reset (user left and rejoined): if the incoming seq
-        // appears to be far behind next_seq, it's actually a fresh sequence
-        // starting from 0. Reinitialize the buffer to accept the new stream.
-        let diff = seq.wrapping_sub(self.next_seq);
-        if diff >= 32768 {
-            // seq is "behind" next_seq by more than half the u16 range —
-            // this is a wraparound/reset, not a late packet.
-            self.packets.clear();
-            self.next_seq = seq;
-            self.ready = false;
-        }
-        let diff = seq.wrapping_sub(self.next_seq);
-        if diff < 32768 {
-            self.packets.insert(seq, data);
-        }
-        if !self.ready && self.packets.len() >= JITTER_DEPTH {
-            self.ready = true;
-        }
-        // Force-drain excess so the buffer can't grow unbounded.
-        // If next_seq points to a gap (no packet), jump to the earliest actual
-        // entry first — otherwise the while loop would spin through thousands
-        // of empty sequence numbers before hitting a real packet.
-        while self.packets.len() > JITTER_MAX {
-            if !self.packets.contains_key(&self.next_seq) {
-                if let Some(&earliest) = self.packets.keys()
-                    .min_by_key(|&&s| s.wrapping_sub(self.next_seq))
-                {
-                    self.next_seq = earliest;
-                } else {
-                    break;
-                }
-            }
-            self.packets.remove(&self.next_seq);
-            self.next_seq = self.next_seq.wrapping_add(1);
-        }
-    }
-
-    /// Pop the next frame. Returns:
-    /// - `Some(Some(data))` — packet present, decode normally
-    /// - `Some(None)` — packet missing, caller should do PLC
-    /// - `None` — buffer not ready (initial fill or post-reset re-buffering)
-    fn drain(&mut self) -> Option<Option<Vec<u8>>> {
-        if !self.ready { return None; }
-
-        // Auto-recovery: if we've produced 10+ consecutive PLC frames (200ms),
-        // the audio is already unintelligible. Reset and re-buffer from scratch
-        // so playback can resume cleanly once packets arrive.
-        if self.consecutive_losses >= 10 {
-            self.reset();
-            return None;
-        }
-
-        let seq = self.next_seq;
-        self.next_seq = self.next_seq.wrapping_add(1);
-        let result = self.packets.remove(&seq);
-        if result.is_some() {
-            self.consecutive_losses = 0;
-        } else {
-            self.consecutive_losses += 1;
-        }
-        Some(result)
-    }
-
-    /// Reset the buffer to its initial state, forcing a re-buffering period.
-    /// Called automatically after prolonged packet loss.
-    fn reset(&mut self) {
-        self.packets.clear();
-        self.initialized = false;
-        self.ready = false;
-        self.consecutive_losses = 0;
-    }
-
-    /// Peek at the next packet (next_seq) without consuming it.
-    /// Used for FEC: when current packet is missing, check if the next
-    /// packet is available to decode with fec=true.
-    fn peek_next(&self) -> Option<&Vec<u8>> {
-        self.packets.get(&self.next_seq)
-    }
-}
-
 // ── Per-remote-peer state ─────────────────────────────────────────────────────
 
 struct RemotePeer {
@@ -202,467 +77,6 @@ struct RemotePeer {
     /// Decoded voice samples (f32, -1..1) waiting to be mixed with other peers.
     /// Accumulated during jitter drain, consumed by the mixing step each tick.
     decoded_voice: Vec<f32>,
-}
-
-// ── Windows: default communications device ───────────────────────────────────
-//
-// CPAL's default_input_device / default_output_device use the eConsole role,
-// which is the "Default Device" in Windows Sound settings. For a voice chat app
-// we want the "Default Communications Device" (eCommunications) instead, since
-// many users set their headset as comms device and speakers as default.
-
-#[cfg(target_os = "windows")]
-fn default_comms_device_name(input: bool) -> Option<String> {
-    use windows::Win32::Media::Audio::*;
-    use windows::Win32::System::Com::{*, STGM};
-    use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
-    unsafe {
-        // COM must be initialized on this thread
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
-
-        let flow = if input { eCapture } else { eRender };
-        let device = enumerator.GetDefaultAudioEndpoint(flow, eCommunications).ok()?;
-
-        // STGM_READ = 0
-        let store = device.OpenPropertyStore(STGM(0)).ok()?;
-        let prop = store.GetValue(&PKEY_Device_FriendlyName).ok()?;
-
-        // The friendly name is a VT_LPWSTR PROPVARIANT
-        let name = prop.to_string();
-        if name.is_empty() { None } else { Some(name) }
-    }
-}
-
-/// Get the default device for voice — on Windows, prefer the communications
-/// device; on Linux, just use CPAL's default.
-fn get_default_device(host: &cpal::Host, input: bool) -> Option<cpal::Device> {
-    #[cfg(target_os = "windows")]
-    {
-        // Try to find the communications device by name in CPAL's list
-        if let Some(comms_name) = default_comms_device_name(input) {
-            let devices = if input {
-                host.input_devices()
-            } else {
-                host.output_devices()
-            };
-            if let Ok(mut devs) = devices {
-                if let Some(d) = devs.find(|d| d.name().map(|n| n == comms_name).unwrap_or(false)) {
-                    eprintln!("[pipeline] Using Windows communications device: {}", comms_name);
-                    return Some(d);
-                }
-            }
-            eprintln!("[pipeline] Communications device '{}' not found in CPAL, falling back to default", comms_name);
-        }
-    }
-
-    if input {
-        host.default_input_device()
-    } else {
-        host.default_output_device()
-    }
-}
-
-// ── Input stream builder ─────────────────────────────────────────────────────
-
-/// Build a CPAL input (capture) stream that pushes mono i16 samples at the
-/// device's native sample rate into `capture_prod`.
-/// Returns (stream, device_sample_rate) or None if no usable device is found.
-///
-/// The callback does NO resampling — just downmixes to mono and converts to i16.
-/// Resampling from device rate → 48kHz happens in the main pipeline loop.
-fn build_input_stream(
-    host: &cpal::Host,
-    device_name: Option<&str>,
-    capture_prod: Arc<std::sync::Mutex<HeapProd<i16>>>,
-) -> Option<(cpal::Stream, u32)> {
-    let input_device = match device_name {
-        Some(name) => {
-            let found = host.input_devices().ok()?.find(|d| {
-                d.name().map(|n| n == name).unwrap_or(false)
-            });
-            match found {
-                Some(d) => d,
-                None => {
-                    eprintln!("[pipeline] Input device '{}' not found, falling back to default", name);
-                    get_default_device(host, true)?
-                }
-            }
-        }
-        None => get_default_device(host, true)?,
-    };
-
-    let (input_cfg, input_channels) = match input_device.default_input_config() {
-        Ok(default_cfg) => {
-            let rate = default_cfg.sample_rate();
-            let channels = default_cfg.channels();
-            eprintln!(
-                "[pipeline] Input device: {}ch @ {}Hz (sample format: {:?})",
-                channels, rate.0, default_cfg.sample_format()
-            );
-            (cpal::StreamConfig {
-                channels,
-                sample_rate: rate,
-                buffer_size: cpal::BufferSize::Default,
-            }, channels)
-        }
-        Err(_) => {
-            (cpal::StreamConfig {
-                channels: 1,
-                sample_rate: cpal::SampleRate(SAMPLE_RATE),
-                buffer_size: cpal::BufferSize::Default,
-            }, 1u16)
-        }
-    };
-
-    let in_ch = input_channels;
-    let input_sample_rate = input_cfg.sample_rate.0;
-    let cap_prod = capture_prod;
-
-    // The callback only does: downmix to mono + f32→i16. No resampling, no allocations.
-    // Uses try_lock to never block the real-time audio thread.
-    match input_device.build_input_stream(
-        &input_cfg,
-        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            let Ok(mut prod) = cap_prod.try_lock() else { return };
-            if in_ch == 1 {
-                for &s in data {
-                    let _ = prod.try_push((s * 32767.0).clamp(-32768.0, 32767.0) as i16);
-                }
-            } else {
-                for frame in data.chunks_exact(in_ch as usize) {
-                    let sum: f32 = frame.iter().sum();
-                    let mono = sum / in_ch as f32;
-                    let _ = prod.try_push((mono * 32767.0).clamp(-32768.0, 32767.0) as i16);
-                }
-            }
-        },
-        |e| {
-            eprintln!("[pipeline] capture stream error: {}", e);
-        },
-        None,
-    ) {
-        Ok(stream) => {
-            if let Err(e) = stream.play() {
-                eprintln!("[pipeline] failed to start capture stream: {}", e);
-                None
-            } else {
-                eprintln!("[pipeline] Capture stream started: mono @ {}Hz (no callback resampling)", input_sample_rate);
-                Some((stream, input_sample_rate))
-            }
-        }
-        Err(e) => {
-            eprintln!("[pipeline] build_input_stream failed: {}", e);
-            None
-        }
-    }
-}
-
-// ── Output stream builder ────────────────────────────────────────────────────
-
-/// Build a CPAL output (playback) stream that mixes voice + stream audio from
-/// their respective ring buffer consumers. The ring buffers carry i16 samples
-/// at the output device's native rate — all resampling happens in the main loop.
-fn build_output_stream(
-    host: &cpal::Host,
-    device_name: Option<&str>,
-    voice_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
-    stream_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
-    stream_stereo: Arc<std::sync::atomic::AtomicBool>,
-    _render_ref_prod: Arc<std::sync::Mutex<HeapProd<f32>>>,
-    event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
-) -> Option<(cpal::Stream, u32, u16)> {
-    let output_device = match device_name {
-        Some(name) => {
-            let found = host.output_devices().ok()?.find(|d| {
-                d.name().map(|n| n == name).unwrap_or(false)
-            });
-            match found {
-                Some(d) => d,
-                None => {
-                    eprintln!("[pipeline] Output device '{}' not found, falling back to default", name);
-                    get_default_device(host, false)?
-                }
-            }
-        }
-        None => get_default_device(host, false)?,
-    };
-
-    let (stream_config, output_channels) = match output_device.default_output_config() {
-        Ok(default_cfg) => {
-            let cfg = cpal::StreamConfig {
-                channels: default_cfg.channels(),
-                sample_rate: default_cfg.sample_rate(),
-                buffer_size: cpal::BufferSize::Default,
-            };
-            eprintln!(
-                "[pipeline] Output device: {}ch @ {}Hz (sample format: {:?})",
-                cfg.channels, cfg.sample_rate.0, default_cfg.sample_format()
-            );
-            (cfg, default_cfg.channels())
-        }
-        Err(e) => {
-            eprintln!("[pipeline] default_output_config failed ({}), trying 48kHz stereo", e);
-            let cfg = cpal::StreamConfig {
-                channels: 2,
-                sample_rate: cpal::SampleRate(SAMPLE_RATE),
-                buffer_size: cpal::BufferSize::Default,
-            };
-            (cfg, 2)
-        }
-    };
-    let output_sample_rate = stream_config.sample_rate.0;
-
-    let voice_cons_out = voice_cons;
-    let stream_cons_out = stream_cons;
-    let pb_stream_stereo = stream_stereo;
-    let out_ch = output_channels;
-
-    // No resampling in the callback — ring buffers already carry samples at device rate.
-    // Just read i16, convert to f32, mix voice+stream, write to device.
-    let stream = match output_device.build_output_stream(
-        &stream_config,
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let Ok(mut voice_guard) = voice_cons_out.try_lock() else {
-                for sample in data.iter_mut() { *sample = 0.0; }
-                return;
-            };
-            let Ok(mut stream_guard) = stream_cons_out.try_lock() else {
-                drop(voice_guard);
-                for sample in data.iter_mut() { *sample = 0.0; }
-                return;
-            };
-
-            if out_ch == 1 {
-                for sample in data.iter_mut() {
-                    let v = voice_guard.try_pop().unwrap_or(0) as i32;
-                    let s = stream_guard.try_pop().unwrap_or(0) as i32;
-                    let mixed = (v + s).clamp(-32768, 32767);
-                    *sample = mixed as f32 / 32768.0;
-                }
-            } else {
-                for frame in data.chunks_exact_mut(out_ch as usize) {
-                    let v = voice_guard.try_pop().unwrap_or(0) as i32;
-                    if pb_stream_stereo.load(std::sync::atomic::Ordering::Relaxed) && out_ch >= 2 {
-                        let sl = stream_guard.try_pop().unwrap_or(0) as i32;
-                        let sr = stream_guard.try_pop().unwrap_or(0) as i32;
-                        let left = (v + sl).clamp(-32768, 32767) as f32 / 32768.0;
-                        let right = (v + sr).clamp(-32768, 32767) as f32 / 32768.0;
-                        frame[0] = left;
-                        frame[1] = right;
-                        for ch in &mut frame[2..] {
-                            *ch = left;
-                        }
-                    } else {
-                        let s = stream_guard.try_pop().unwrap_or(0) as i32;
-                        let mixed = (v + s).clamp(-32768, 32767) as f32 / 32768.0;
-                        for ch in frame.iter_mut() {
-                            *ch = mixed;
-                        }
-                    }
-                }
-            }
-        },
-        |e| {
-            eprintln!("[pipeline] playback stream error: {}", e);
-        },
-        None,
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = event_tx.send(VoiceEvent::Error(format!(
-                "Failed to build output stream: {}", e
-            )));
-            return None;
-        }
-    };
-    if let Err(e) = stream.play() {
-        let _ = event_tx.send(VoiceEvent::Error(format!(
-            "Failed to start output stream: {}", e
-        )));
-        return None;
-    }
-
-    Some((stream, output_sample_rate, output_channels))
-}
-
-// ── Voice-only output stream builder ─────────────────────────────────────────
-
-/// Build a CPAL output stream that plays only voice audio (no stream mixing).
-/// Used when stream audio is routed to a separate device.
-/// Ring buffer carries i16 at device native rate — no callback resampling.
-fn build_voice_output_stream(
-    host: &cpal::Host,
-    device_name: Option<&str>,
-    voice_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
-    _render_ref_prod: Arc<std::sync::Mutex<HeapProd<f32>>>,
-    event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
-) -> Option<(cpal::Stream, u32, u16)> {
-    let output_device = match device_name {
-        Some(name) => {
-            let found = host.output_devices().ok()?.find(|d| {
-                d.name().map(|n| n == name).unwrap_or(false)
-            });
-            match found {
-                Some(d) => d,
-                None => {
-                    eprintln!("[pipeline] Voice output device '{}' not found, falling back to default", name);
-                    get_default_device(host, false)?
-                }
-            }
-        }
-        None => get_default_device(host, false)?,
-    };
-
-    let (stream_config, output_channels) = match output_device.default_output_config() {
-        Ok(default_cfg) => {
-            let cfg = cpal::StreamConfig {
-                channels: default_cfg.channels(),
-                sample_rate: default_cfg.sample_rate(),
-                buffer_size: cpal::BufferSize::Default,
-            };
-            eprintln!(
-                "[pipeline] Voice output device: {}ch @ {}Hz",
-                cfg.channels, cfg.sample_rate.0
-            );
-            (cfg, default_cfg.channels())
-        }
-        Err(e) => {
-            eprintln!("[pipeline] voice output default_output_config failed ({}), trying 48kHz stereo", e);
-            (cpal::StreamConfig { channels: 2, sample_rate: cpal::SampleRate(SAMPLE_RATE), buffer_size: cpal::BufferSize::Default }, 2)
-        }
-    };
-    let output_sample_rate = stream_config.sample_rate.0;
-    let out_ch = output_channels;
-    let voice_cons_out = voice_cons;
-
-    let stream = match output_device.build_output_stream(
-        &stream_config,
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let Ok(mut guard) = voice_cons_out.try_lock() else {
-                for sample in data.iter_mut() { *sample = 0.0; }
-                return;
-            };
-            for frame in data.chunks_exact_mut(out_ch as usize) {
-                let v = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
-                for ch in frame.iter_mut() { *ch = v; }
-            }
-        },
-        |e| eprintln!("[pipeline] voice output stream error: {}", e),
-        None,
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = event_tx.send(VoiceEvent::Error(format!("Failed to build voice output stream: {}", e)));
-            return None;
-        }
-    };
-    if let Err(e) = stream.play() {
-        let _ = event_tx.send(VoiceEvent::Error(format!("Failed to start voice output stream: {}", e)));
-        return None;
-    }
-
-    Some((stream, output_sample_rate, output_channels))
-}
-
-// ── Stream-only output stream builder ────────────────────────────────────────
-
-/// Build a CPAL output stream that plays only stream audio (with stereo support).
-/// Used when stream audio is routed to a separate device.
-/// Ring buffer carries i16 at device native rate — no callback resampling.
-fn build_stream_output_stream(
-    host: &cpal::Host,
-    device_name: Option<&str>,
-    stream_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
-    stream_stereo: Arc<std::sync::atomic::AtomicBool>,
-    event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
-) -> Option<(cpal::Stream, u32, u16)> {
-    let output_device = match device_name {
-        Some(name) => {
-            let found = host.output_devices().ok()?.find(|d| {
-                d.name().map(|n| n == name).unwrap_or(false)
-            });
-            match found {
-                Some(d) => d,
-                None => {
-                    eprintln!("[pipeline] Stream output device '{}' not found, falling back to default", name);
-                    get_default_device(host, false)?
-                }
-            }
-        }
-        None => get_default_device(host, false)?,
-    };
-
-    let (stream_config, output_channels) = match output_device.default_output_config() {
-        Ok(default_cfg) => {
-            let cfg = cpal::StreamConfig {
-                channels: default_cfg.channels(),
-                sample_rate: default_cfg.sample_rate(),
-                buffer_size: cpal::BufferSize::Default,
-            };
-            eprintln!(
-                "[pipeline] Stream output device: {}ch @ {}Hz",
-                cfg.channels, cfg.sample_rate.0
-            );
-            (cfg, default_cfg.channels())
-        }
-        Err(e) => {
-            eprintln!("[pipeline] stream output default_output_config failed ({}), trying 48kHz stereo", e);
-            (cpal::StreamConfig { channels: 2, sample_rate: cpal::SampleRate(SAMPLE_RATE), buffer_size: cpal::BufferSize::Default }, 2)
-        }
-    };
-    let output_sample_rate = stream_config.sample_rate.0;
-    let out_ch = output_channels;
-    let stream_cons_out = stream_cons;
-    let pb_stereo = stream_stereo;
-
-    let stream = match output_device.build_output_stream(
-        &stream_config,
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let Ok(mut guard) = stream_cons_out.try_lock() else {
-                for sample in data.iter_mut() { *sample = 0.0; }
-                return;
-            };
-            let is_stereo = pb_stereo.load(std::sync::atomic::Ordering::Relaxed);
-
-            if out_ch == 1 {
-                for sample in data.iter_mut() {
-                    let s = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
-                    if is_stereo { let _ = guard.try_pop(); }
-                    *sample = s;
-                }
-            } else {
-                for frame in data.chunks_exact_mut(out_ch as usize) {
-                    if is_stereo && out_ch >= 2 {
-                        let sl = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
-                        let sr = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
-                        frame[0] = sl;
-                        frame[1] = sr;
-                        for ch in &mut frame[2..] { *ch = sl; }
-                    } else {
-                        let s = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
-                        for ch in frame.iter_mut() { *ch = s; }
-                    }
-                }
-            }
-        },
-        |e| eprintln!("[pipeline] stream output error: {}", e),
-        None,
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = event_tx.send(VoiceEvent::Error(format!("Failed to build stream output: {}", e)));
-            return None;
-        }
-    };
-    if let Err(e) = stream.play() {
-        let _ = event_tx.send(VoiceEvent::Error(format!("Failed to start stream output: {}", e)));
-        return None;
-    }
-
-    Some((stream, output_sample_rate, output_channels))
 }
 
 // ── Main blocking pipeline entry-point ───────────────────────────────────────
@@ -760,7 +174,7 @@ pub fn run_audio_pipeline(
 
     // ── Main-loop resamplers (all DSP off the audio callback threads) ─────────
     // Capture: input_device_rate → 48kHz (for Opus encoding)
-    let mut capture_resampler: Option<SincFixedOut<f64>> = if input_sample_rate == SAMPLE_RATE {
+    let mut capture_resampler = if input_sample_rate == SAMPLE_RATE {
         None
     } else {
         eprintln!("[pipeline] Capture resampler: {}Hz → {}Hz", input_sample_rate, SAMPLE_RATE);
@@ -769,7 +183,7 @@ pub fn run_audio_pipeline(
     let mut capture_accum: Vec<f64> = Vec::new();
 
     // Playback voice: 48kHz → output_device_rate (mono)
-    let mut playback_voice_resampler: Option<SincFixedOut<f64>> = if output_sample_rate == SAMPLE_RATE {
+    let mut playback_voice_resampler = if output_sample_rate == SAMPLE_RATE {
         None
     } else {
         eprintln!("[pipeline] Playback voice resampler: {}Hz → {}Hz", SAMPLE_RATE, output_sample_rate);
@@ -778,7 +192,7 @@ pub fn run_audio_pipeline(
     let mut playback_voice_accum: Vec<f64> = Vec::new();
 
     // Playback stream: 48kHz → output_device_rate (stereo)
-    let mut playback_stream_resampler: Option<SincFixedOut<f64>> = if output_sample_rate == SAMPLE_RATE {
+    let mut playback_stream_resampler = if output_sample_rate == SAMPLE_RATE {
         None
     } else {
         eprintln!("[pipeline] Playback stream resampler: {}Hz → {}Hz (stereo)", SAMPLE_RATE, output_sample_rate);
@@ -1619,16 +1033,6 @@ pub fn run_audio_pipeline(
     drop(output_stream);    // Option<cpal::Stream>
     drop(input_stream_opt); // Option<cpal::Stream>
 }
-
-// ── Dedicated UDP receive thread ─────────────────────────────────────────────
-//
-// Reads all incoming packets from the shared UDP socket and dispatches them
-// by type into separate channels. This thread does NO processing — it just
-// classifies and forwards, keeping the socket buffer drained at all times.
-//
-// Architecture (matching Discord's model):
-//   recv thread → audio channel → audio processing thread
-//                → video channel → video reassembly thread
 
 // ── Dedicated voice UDP receive thread ──────────────────────────────────────
 //

@@ -1,3 +1,4 @@
+pub mod audio_device;
 pub mod audio_stream_pipeline;
 pub mod capture;
 #[cfg(target_os = "linux")]
@@ -14,6 +15,7 @@ pub mod capture_wgc;
 pub mod capture_dxgi;
 pub mod codec;
 pub mod encoder;
+pub mod jitter;
 pub mod packet;
 pub mod pipeline;
 pub mod speaking;
