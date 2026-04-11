@@ -93,11 +93,14 @@ struct JitterBuffer {
     next_seq: u16,
     initialized: bool,
     ready: bool,
+    /// Consecutive drain() calls that returned a missing packet (PLC).
+    /// When this exceeds the threshold, the buffer resets to re-sync.
+    consecutive_losses: u32,
 }
 
 impl JitterBuffer {
     fn new() -> Self {
-        Self { packets: HashMap::new(), next_seq: 0, initialized: false, ready: false }
+        Self { packets: HashMap::new(), next_seq: 0, initialized: false, ready: false, consecutive_losses: 0 }
     }
 
     /// Insert a packet. Ignores packets behind the play cursor.
@@ -146,15 +149,36 @@ impl JitterBuffer {
     /// Pop the next frame. Returns:
     /// - `Some(Some(data))` — packet present, decode normally
     /// - `Some(None)` — packet missing, caller should do PLC
-    /// - `None` — buffer not ready yet (initial fill only)
+    /// - `None` — buffer not ready (initial fill or post-reset re-buffering)
     fn drain(&mut self) -> Option<Option<Vec<u8>>> {
         if !self.ready { return None; }
-        // Once initialized, always produce output — return PLC for missing
-        // packets instead of going silent. Re-buffering gaps cause loud pops
-        // at the silence→audio transition.
+
+        // Auto-recovery: if we've produced 10+ consecutive PLC frames (200ms),
+        // the audio is already unintelligible. Reset and re-buffer from scratch
+        // so playback can resume cleanly once packets arrive.
+        if self.consecutive_losses >= 10 {
+            self.reset();
+            return None;
+        }
+
         let seq = self.next_seq;
         self.next_seq = self.next_seq.wrapping_add(1);
-        Some(self.packets.remove(&seq))
+        let result = self.packets.remove(&seq);
+        if result.is_some() {
+            self.consecutive_losses = 0;
+        } else {
+            self.consecutive_losses += 1;
+        }
+        Some(result)
+    }
+
+    /// Reset the buffer to its initial state, forcing a re-buffering period.
+    /// Called automatically after prolonged packet loss.
+    fn reset(&mut self) {
+        self.packets.clear();
+        self.initialized = false;
+        self.ready = false;
+        self.consecutive_losses = 0;
     }
 
     /// Peek at the next packet (next_seq) without consuming it.
@@ -1378,7 +1402,15 @@ pub fn run_audio_pipeline(
                 peer.voice_drain_time += frame_dur;
                 let opus_opt = match peer.voice_jitter.drain() {
                     Some(v) => v,
-                    None => break, // not ready or empty
+                    None => {
+                        // Buffer not ready (initial fill or auto-recovery reset).
+                        if peer.voice_drain_time != drain_now {
+                            eprintln!("[pipeline] Jitter buffer reset for peer '{}' — re-buffering", username);
+                        }
+                        peer.voice_drain_time = drain_now;
+                        peer.decoded_voice.clear();
+                        break;
+                    }
                 };
                 let mut pcm = [0i16; FRAME_SIZE];
                 let decode_ok = match &opus_opt {
@@ -1417,7 +1449,10 @@ pub fn run_audio_pipeline(
                     peer.stream_drain_time += frame_dur;
                     let opus_opt = match peer.stream_jitter.drain() {
                         Some(v) => v,
-                        None => break,
+                        None => {
+                            peer.stream_drain_time = drain_now;
+                            break;
+                        }
                     };
                     let mut pcm = [0i16; STEREO_FRAME_SAMPLES];
                     let decode_ok = match &opus_opt {
