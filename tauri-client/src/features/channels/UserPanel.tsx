@@ -7,6 +7,7 @@ import { useChatStore } from "../../stores/chatStore";
 import { stringToGradient } from "../../utils/colors";
 import CaptureSourcePicker from "../voice/CaptureSourcePicker";
 import DeviceContextMenu from "../voice/DeviceContextMenu";
+import { playSound } from "../../utils/sounds";
 
 const EMPTY_CHANNELS: never[] = [];
 
@@ -60,24 +61,29 @@ export default function UserPanel() {
 
   const handleMute = () => {
     if (isDeafened) {
+      playSound("undeafen");
       invoke("set_voice_deafen", { deafened: false }).catch(console.error);
       invoke("set_voice_mute", { muted: false }).catch(console.error);
     } else {
+      playSound(isMuted ? "unmute" : "mute");
       invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
     }
   };
 
   const handleDeafen = () => {
+    playSound(isDeafened ? "undeafen" : "deafen");
     invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
   };
 
   const handleDisconnect = () => {
+    playSound("disconnect");
     invoke("leave_voice_channel").catch(console.error);
     disconnect();
     setActiveView("server");
   };
 
   const handleStopSharing = () => {
+    playSound("stream_stop");
     invoke("stop_screen_share", {
       serverId: connectedServerId,
       channelId: connectedChannelId,

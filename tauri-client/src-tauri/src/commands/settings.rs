@@ -10,6 +10,7 @@ use crate::state::SharedState;
 #[derive(Debug, Clone, Serialize)]
 pub struct AudioDevice {
     pub name: String,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,18 +36,74 @@ pub async fn save_settings(
 
 #[tauri::command]
 pub async fn list_audio_devices() -> Result<AudioDeviceList, String> {
-    let host = cpal::default_host();
+    #[cfg(target_os = "linux")]
+    {
+        return list_audio_devices_pactl();
+    }
 
-    let inputs: Vec<AudioDevice> = host
-        .input_devices()
-        .map_err(|e| format!("Failed to list input devices: {}", e))?
-        .filter_map(|d| d.name().ok().map(|name| AudioDevice { name }))
-        .collect();
+    #[cfg(not(target_os = "linux"))]
+    {
+        let host = cpal::default_host();
 
-    let outputs: Vec<AudioDevice> = host
-        .output_devices()
-        .map_err(|e| format!("Failed to list output devices: {}", e))?
-        .filter_map(|d| d.name().ok().map(|name| AudioDevice { name }))
+        let inputs: Vec<AudioDevice> = host
+            .input_devices()
+            .map_err(|e| format!("Failed to list input devices: {}", e))?
+            .filter_map(|d| d.name().ok().map(|name| AudioDevice { name: name.clone(), label: name }))
+            .collect();
+
+        let outputs: Vec<AudioDevice> = host
+            .output_devices()
+            .map_err(|e| format!("Failed to list output devices: {}", e))?
+            .filter_map(|d| d.name().ok().map(|name| AudioDevice { name: name.clone(), label: name }))
+            .collect();
+
+        Ok(AudioDeviceList { inputs, outputs })
+    }
+}
+
+/// On Linux, enumerate audio devices via `pactl` to get PipeWire/PulseAudio devices
+/// with friendly descriptions — same list as Chromium-based apps like Vesktop.
+#[cfg(target_os = "linux")]
+fn list_audio_devices_pactl() -> Result<AudioDeviceList, String> {
+    fn parse_pactl_devices(kind: &str) -> Vec<AudioDevice> {
+        // kind = "sinks" or "sources"
+        let output = match std::process::Command::new("pactl")
+            .args(["list", kind])
+            .output()
+        {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+            Err(_) => return Vec::new(),
+        };
+
+        let mut devices = Vec::new();
+        let mut current_name: Option<String> = None;
+        let mut current_desc: Option<String> = None;
+
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("Name: ") {
+                // Save previous device if complete
+                if let (Some(name), Some(desc)) = (current_name.take(), current_desc.take()) {
+                    devices.push(AudioDevice { name, label: desc });
+                }
+                current_name = Some(trimmed.strip_prefix("Name: ").unwrap().to_string());
+                current_desc = None;
+            } else if trimmed.starts_with("Description: ") {
+                current_desc = Some(trimmed.strip_prefix("Description: ").unwrap().to_string());
+            }
+        }
+        // Don't forget the last device
+        if let (Some(name), Some(desc)) = (current_name, current_desc) {
+            devices.push(AudioDevice { name, label: desc });
+        }
+
+        devices
+    }
+
+    let outputs = parse_pactl_devices("sinks");
+    let inputs: Vec<AudioDevice> = parse_pactl_devices("sources")
+        .into_iter()
+        .filter(|d| !d.name.ends_with(".monitor")) // skip loopback monitors
         .collect();
 
     Ok(AudioDeviceList { inputs, outputs })
@@ -63,11 +120,30 @@ pub async fn set_input_device(
     settings.input_device = name.clone();
     config::save(&app, None, &settings)?;
 
-    let s = state.lock().await;
-    if let Some(ref engine) = s.voice_engine {
-        engine.set_input_device(name);
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, set the PipeWire/PulseAudio default source, then tell
+        // the engine to reopen its default device (which now points here).
+        if let Some(ref pa_name) = name {
+            let _ = std::process::Command::new("pactl")
+                .args(["set-default-source", pa_name])
+                .status();
+        }
+        let s = state.lock().await;
+        if let Some(ref engine) = s.voice_engine {
+            engine.set_input_device(None);
+        }
+        return Ok(());
     }
-    Ok(())
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let s = state.lock().await;
+        if let Some(ref engine) = s.voice_engine {
+            engine.set_input_device(name);
+        }
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -81,11 +157,28 @@ pub async fn set_output_device(
     settings.output_device = name.clone();
     config::save(&app, None, &settings)?;
 
-    let s = state.lock().await;
-    if let Some(ref engine) = s.voice_engine {
-        engine.set_output_device(name);
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(ref pa_name) = name {
+            let _ = std::process::Command::new("pactl")
+                .args(["set-default-sink", pa_name])
+                .status();
+        }
+        let s = state.lock().await;
+        if let Some(ref engine) = s.voice_engine {
+            engine.set_output_device(None);
+        }
+        return Ok(());
     }
-    Ok(())
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let s = state.lock().await;
+        if let Some(ref engine) = s.voice_engine {
+            engine.set_output_device(name);
+        }
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -103,6 +196,10 @@ pub async fn set_separate_stream_output(
 
     let s = state.lock().await;
     if let Some(ref engine) = s.voice_engine {
+        // On Linux, stream output device selection uses pactl — pass None to engine
+        #[cfg(target_os = "linux")]
+        engine.set_separate_stream_output(enabled, None);
+        #[cfg(not(target_os = "linux"))]
         engine.set_separate_stream_output(enabled, device);
     }
     Ok(())
@@ -121,6 +218,10 @@ pub async fn set_stream_output_device(
 
     let s = state.lock().await;
     if let Some(ref engine) = s.voice_engine {
+        // On Linux, can't route separate stream output via pactl easily — use default
+        #[cfg(target_os = "linux")]
+        { let _ = name; engine.set_stream_output_device(None); }
+        #[cfg(not(target_os = "linux"))]
         engine.set_stream_output_device(name);
     }
     Ok(())
@@ -150,6 +251,18 @@ pub async fn start_mic_test(
     let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_flag_thread = stop_flag.clone();
     s.mic_test_stop = Some(stop_flag);
+
+    // On Linux, device names are PulseAudio names — pactl set-default-source
+    // was already called, so just use the default CPAL device.
+    #[cfg(target_os = "linux")]
+    let device_name: Option<String> = {
+        if let Some(ref pa_name) = device_name {
+            let _ = std::process::Command::new("pactl")
+                .args(["set-default-source", pa_name])
+                .status();
+        }
+        None
+    };
 
     std::thread::Builder::new()
         .name("decibell-mic-test".to_string())

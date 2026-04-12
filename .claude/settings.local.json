@@ -9,7 +9,11 @@
       "WebSearch",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:forum.qt.io)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:microsoft.github.io)",
+      "WebFetch(domain:chromium.googlesource.com)",
+      "Bash(pip install:*)"
     ]
   }
 }

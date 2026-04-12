@@ -6,8 +6,6 @@ import { stringToGradient } from "../utils/colors";
 
 
 export default function DmSidebar() {
-  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
-  const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const activeView = useUiStore((s) => s.activeView);
   const setActiveView = useUiStore((s) => s.setActiveView);
 
@@ -27,29 +25,9 @@ export default function DmSidebar() {
   };
 
   return (
-    <div
-      className={`flex h-full shrink-0 flex-col items-center border-r border-border bg-bg-dmbar pt-2.5 transition-all ease-[cubic-bezier(0.4,0,0.2,1)] ${
-        sidebarCollapsed ? "w-0 overflow-hidden border-r-0 opacity-0" : "w-[68px] pb-14"
-      }`}
-      style={{ transitionDuration: "300ms" }}
-    >
-      {/* Collapse toggle */}
-      <button
-        onClick={toggleSidebar}
-        className="mb-1 flex h-7 w-10 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
-        title="Collapse DMs"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-          <polyline points="15 18 9 12 15 6" />
-        </svg>
-      </button>
-
-      {/* DM label */}
-      <span className="mb-1 mt-3 shrink-0 text-[9px] font-bold uppercase tracking-widest text-text-muted">
-        DMs
-      </span>
-      <div className="mb-2 h-px w-8 shrink-0 bg-border-divider" />
-
+    <div className="relative flex h-full w-[68px] shrink-0 flex-col items-center bg-bg-dmbar pb-14 pt-2.5">
+      {/* Right border — stops above UserPanel */}
+      <div className="absolute right-0 top-0 bottom-14 w-px bg-border" />
       {/* DM contacts */}
       <div className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto px-3 py-1">
         {sortedConversations.map((conv) => {

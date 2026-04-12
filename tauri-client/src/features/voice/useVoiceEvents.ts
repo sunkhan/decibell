@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import type { StreamInfo } from "../../types";
+import { playSound } from "../../utils/sounds";
 
 /** Convert dB to linear gain: 10^(dB/20), with -40 dB floor mapped to 0. */
 function dbToGain(db: number): number {
@@ -25,6 +26,7 @@ export function useVoiceEvents() {
 
   useEffect(() => {
     const promises: Promise<() => void>[] = [];
+    let prevParticipants: Set<string> | null = null;
 
     promises.push(listen<{ serverId: string; channelId: string; participants: string[]; userStates: { username: string; isMuted: boolean; isDeafened: boolean }[] }>(
       "voice_presence_updated",
@@ -33,8 +35,22 @@ export function useVoiceEvents() {
         // Always update per-channel presence map with user states
         setChannelPresence(channelId, participants, userStates);
 
-        // Update connected channel participants
+        // Play join/leave sounds for other users in our connected channel
         const connectedId = useVoiceStore.getState().connectedChannelId;
+        if (channelId === connectedId && prevParticipants) {
+          const current = new Set(participants);
+          for (const u of participants) {
+            if (!prevParticipants.has(u) && u !== username) playSound("user_join");
+          }
+          for (const u of prevParticipants) {
+            if (!current.has(u) && u !== username) playSound("user_leave");
+          }
+        }
+        if (channelId === connectedId) {
+          prevParticipants = new Set(participants);
+        }
+
+        // Update connected channel participants
         if (channelId === connectedId) {
           const stateMap = new Map(userStates?.map((s) => [s.username, s]) ?? []);
           setParticipants(
@@ -118,6 +134,8 @@ export function useVoiceEvents() {
       }
     }));
 
+    let prevStreamOwners: Set<string> | null = null;
+
     promises.push(listen<{ streams: { streamId: string; ownerUsername: string; hasAudio: boolean; resolutionWidth: number; resolutionHeight: number; fps: number }[] }>(
       "stream_presence_updated",
       (event) => {
@@ -129,6 +147,19 @@ export function useVoiceEvents() {
           resolutionHeight: s.resolutionHeight || 0,
           fps: s.fps || 0,
         }));
+
+        // Play stream start/stop sounds for other users
+        if (prevStreamOwners) {
+          const current = new Set(mapped.map((s) => s.ownerUsername));
+          for (const owner of current) {
+            if (!prevStreamOwners.has(owner) && owner !== username) playSound("stream_start");
+          }
+          for (const owner of prevStreamOwners) {
+            if (!current.has(owner) && owner !== username) playSound("stream_stop");
+          }
+        }
+        prevStreamOwners = new Set(mapped.map((s) => s.ownerUsername));
+
         useVoiceStore.getState().setActiveStreams(mapped);
 
         // Remove any watched streams that are no longer active

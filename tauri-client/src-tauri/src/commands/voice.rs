@@ -80,11 +80,17 @@ pub async fn join_voice_channel(
         // Restore persisted mute/deafen state from previous session
         let saved_muted = s.voice_muted;
         let saved_deafened = s.voice_deafened;
+        let saved_muted_before_deafen = s.voice_muted_before_deafen;
         if saved_deafened {
+            // Pre-seed the pre-deafen memory so undeafen restores the right state.
+            if saved_muted_before_deafen {
+                engine.set_mute(true);
+            }
             engine.set_deafen(true);
         } else if saved_muted {
             engine.set_mute(true);
         }
+        engine.set_muted_before_deafen(saved_muted_before_deafen);
         let is_muted = engine.is_muted();
         let is_deafened = engine.is_deafened();
 
@@ -151,12 +157,13 @@ pub async fn leave_voice_channel(
             }
         }
 
-        // Save mute/deafen state before destroying the engine
-        let (saved_muted, saved_deafened) = s.voice_engine.as_ref()
-            .map(|e| (e.is_muted(), e.is_deafened()))
-            .unwrap_or((s.voice_muted, s.voice_deafened));
+        // Save mute/deafen state (including pre-deafen memory) before destroying the engine
+        let (saved_muted, saved_deafened, saved_mbd) = s.voice_engine.as_ref()
+            .map(|e| (e.is_muted(), e.is_deafened(), e.muted_before_deafen()))
+            .unwrap_or((s.voice_muted, s.voice_deafened, s.voice_muted_before_deafen));
         s.voice_muted = saved_muted;
         s.voice_deafened = saved_deafened;
+        s.voice_muted_before_deafen = saved_mbd;
         let is_muted = s.voice_muted;
         let is_deafened = s.voice_deafened;
 
@@ -188,11 +195,13 @@ pub async fn set_voice_mute(
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     let mut s = state.lock().await;
-    let engine = s.voice_engine.as_mut()
-        .ok_or("Not in a voice channel")?;
-    engine.set_mute(muted);
-    let is_muted = engine.is_muted();
-    let is_deafened = engine.is_deafened();
+    let (is_muted, is_deafened, mbd) = if let Some(engine) = s.voice_engine.as_mut() {
+        engine.set_mute(muted);
+        (engine.is_muted(), engine.is_deafened(), engine.muted_before_deafen())
+    } else {
+        (muted, s.voice_deafened, s.voice_muted_before_deafen)
+    };
+    s.voice_muted_before_deafen = mbd;
     s.voice_muted = is_muted;
     s.voice_deafened = is_deafened;
 
@@ -319,11 +328,15 @@ pub async fn set_voice_deafen(
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     let mut s = state.lock().await;
-    let engine = s.voice_engine.as_mut()
-        .ok_or("Not in a voice channel")?;
-    engine.set_deafen(deafened);
-    let is_muted = engine.is_muted();
-    let is_deafened = engine.is_deafened();
+    let (is_muted, is_deafened, mbd) = if let Some(engine) = s.voice_engine.as_mut() {
+        engine.set_deafen(deafened);
+        (engine.is_muted(), engine.is_deafened(), engine.muted_before_deafen())
+    } else if deafened {
+        (true, true, s.voice_muted)
+    } else {
+        (s.voice_muted_before_deafen, false, s.voice_muted_before_deafen)
+    };
+    s.voice_muted_before_deafen = mbd;
     s.voice_muted = is_muted;
     s.voice_deafened = is_deafened;
 

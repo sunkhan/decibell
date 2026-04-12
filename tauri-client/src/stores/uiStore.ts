@@ -1,7 +1,6 @@
 import { create } from "zustand";
 
 interface UiState {
-  sidebarCollapsed: boolean;
   activeModal: string | null;
   connectionStatus: "connected" | "reconnecting" | "disconnected";
   activeView: "home" | "server" | "browse" | "voice" | "dm";
@@ -31,7 +30,6 @@ interface UiState {
   setSeparateStreamOutput: (value: boolean) => void;
   setStreamOutputDevice: (device: string | null) => void;
   setSettingsTab: (tab: string) => void;
-  toggleSidebar: () => void;
   toggleMembersPanel: () => void;
   toggleDmFriendsPanel: () => void;
   openModal: (modalId: string) => void;
@@ -45,7 +43,7 @@ interface UiState {
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  sidebarCollapsed: false, activeModal: null, connectionStatus: "connected", activeView: "home",
+  activeModal: null, connectionStatus: "connected", activeView: "home",
   membersPanelVisible: true,
   dmFriendsPanelVisible: true,
   profilePopupUser: null,
@@ -72,7 +70,6 @@ export const useUiStore = create<UiState>((set) => ({
   setSeparateStreamOutput: (value) => set({ separateStreamOutput: value }),
   setStreamOutputDevice: (device) => set({ streamOutputDevice: device }),
   setSettingsTab: (tab) => set({ settingsTab: tab }),
-  toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   toggleMembersPanel: () => set((state) => ({ membersPanelVisible: !state.membersPanelVisible })),
   toggleDmFriendsPanel: () => set((state) => ({ dmFriendsPanelVisible: !state.dmFriendsPanelVisible })),
   openModal: (modalId) => set({ activeModal: modalId }),

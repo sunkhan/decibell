@@ -7,6 +7,7 @@ import { saveSettings } from "../saveSettings";
 
 interface AudioDevice {
   name: string;
+  label: string;
 }
 
 interface AudioDeviceList {
@@ -41,7 +42,7 @@ function DeviceSelector({
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
 
-  const displayName = selected ?? "Default";
+  const displayName = devices.find((d) => d.name === selected)?.label ?? selected ?? "Default";
 
   return (
     <div className="rounded-xl bg-bg-primary p-4" ref={ref}>
@@ -92,7 +93,7 @@ function DeviceSelector({
                   selected === device.name ? "text-accent-bright font-semibold" : "text-text-secondary"
                 }`}
               >
-                {device.name}
+                {device.label}
               </button>
             ))}
           </div>

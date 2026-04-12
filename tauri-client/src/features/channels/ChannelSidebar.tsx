@@ -8,6 +8,7 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
 import VoiceParticipantList from "../voice/VoiceParticipantList";
+import { playSound } from "../../utils/sounds";
 
 function formatRelativeTime(epochMs: number): string {
   const diff = Date.now() - epochMs;
@@ -105,6 +106,7 @@ export default function ChannelSidebar() {
       setActiveView("voice");
       return;
     }
+    playSound("connect");
     useVoiceStore.getState().setConnectedChannel(activeServerId, channelId);
     invoke("join_voice_channel", {
       serverId: activeServerId,

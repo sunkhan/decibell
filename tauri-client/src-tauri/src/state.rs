@@ -22,6 +22,7 @@ pub struct AppState {
     /// stays muted/deafened when reconnecting to another channel.
     pub voice_muted: bool,
     pub voice_deafened: bool,
+    pub voice_muted_before_deafen: bool,
     /// Stop signal for the temporary mic test capture (settings UI level meter).
     /// Setting this to true stops the test. None means no test is running.
     pub mic_test_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,

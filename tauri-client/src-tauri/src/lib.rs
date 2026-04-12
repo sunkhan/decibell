@@ -60,6 +60,7 @@ pub fn run() {
             commands::settings::set_stream_output_device,
             commands::settings::start_mic_test,
             commands::settings::stop_mic_test,
+            commands::sounds::play_sound,
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {

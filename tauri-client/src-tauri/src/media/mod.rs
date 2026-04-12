@@ -376,6 +376,8 @@ impl VoiceEngine {
 
     pub fn is_muted(&self) -> bool { self.is_muted }
     pub fn is_deafened(&self) -> bool { self.is_deafened }
+    pub fn muted_before_deafen(&self) -> bool { self.was_muted_before_deafen }
+    pub fn set_muted_before_deafen(&mut self, v: bool) { self.was_muted_before_deafen = v; }
     pub fn voice_socket(&self) -> Arc<UdpSocket> { self.voice_socket.clone() }
     pub fn media_socket(&self) -> Arc<UdpSocket> { self.media_socket.clone() }
     pub fn sender_id(&self) -> &str { &self.sender_id }

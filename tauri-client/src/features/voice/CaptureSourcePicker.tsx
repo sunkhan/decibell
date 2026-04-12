@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useVoiceStore } from "../../stores/voiceStore";
+import { playSound } from "../../utils/sounds";
 
 interface CaptureSource {
   id: string;
@@ -107,6 +108,7 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
         audioBitrateKbps: streamSettings.audioBitrateKbps,
       });
       useVoiceStore.getState().setIsStreaming(true);
+      playSound("stream_start");
       handleClose();
     } catch (e) {
       setError(String(e));

@@ -13,9 +13,6 @@ export default function ServerBar() {
   const activeView = useUiStore((s) => s.activeView);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const openModal = useUiStore((s) => s.openModal);
-  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
-  const toggleSidebar = useUiStore((s) => s.toggleSidebar);
-
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -59,38 +56,28 @@ export default function ServerBar() {
   };
 
   return (
-    <div className="relative flex h-[58px] shrink-0 items-center gap-2 border-b border-border bg-bg-primary px-3">
-      {/* Home button */}
-      <button
-        onClick={() => { setActiveServer(null); setActiveChannel(null); setActiveView("home"); }}
-        className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-xl transition-all duration-200 ${
-          activeView === "home"
-            ? "bg-accent text-white shadow-[0_0_0_2px_var(--color-accent)]"
-            : "bg-surface-active text-text-secondary hover:bg-accent hover:text-white hover:-translate-y-0.5"
-        }`}
-        title="Home"
-      >
-        <svg className="h-[20px] w-[20px]" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 3l-9.5 8.5c-.3.27-.15.5.25.5H5v8a1 1 0 001 1h4v-5.5a1 1 0 011-1h2a1 1 0 011 1V21h4a1 1 0 001-1v-8h2.25c.4 0 .55-.23.25-.5L12 3z" />
-        </svg>
-      </button>
-
-      <div className="mx-0.5 h-7 w-px shrink-0 bg-border-divider" />
-
-      {/* Expand DM bar button (shown when collapsed) */}
-      {sidebarCollapsed && (
+    <div className="relative flex h-[58px] shrink-0 items-center border-b border-border bg-bg-primary">
+      {/* Home button — width matches DM sidebar */}
+      <div className="flex w-[68px] shrink-0 items-center justify-center">
         <button
-          onClick={toggleSidebar}
-          className="mr-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
-          title="Show DMs"
+          onClick={() => { setActiveServer(null); setActiveChannel(null); setActiveView("home"); }}
+          className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-xl transition-all duration-200 ${
+            activeView === "home"
+              ? "bg-accent text-white shadow-[0_0_0_2px_var(--color-accent)]"
+              : "bg-surface-active text-text-secondary hover:bg-accent hover:text-white hover:-translate-y-0.5"
+          }`}
+          title="Home"
         >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <polyline points="9 6 15 12 9 18" />
+          <svg className="h-[20px] w-[20px]" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 3l-9.5 8.5c-.3.27-.15.5.25.5H5v8a1 1 0 001 1h4v-5.5a1 1 0 011-1h2a1 1 0 011 1V21h4a1 1 0 001-1v-8h2.25c.4 0 .55-.23.25-.5L12 3z" />
           </svg>
         </button>
-      )}
+      </div>
+
+      <div className="h-7 w-px shrink-0 bg-border-divider" />
 
       {/* Server tabs */}
+      <div className="flex flex-1 items-center gap-2 px-2">
       {connected.map((server) => (
         <button
           key={server.id}
@@ -164,6 +151,7 @@ export default function ServerBar() {
             </button>
           </div>
         )}
+      </div>
       </div>
     </div>
   );
