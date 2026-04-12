@@ -94,7 +94,7 @@ export default function ServerBar() {
           )}
 
           <div
-            className="flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px] font-extrabold text-white"
+            className="flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
             style={{ background: stringToGradient(server.name) }}
           >
             {server.name.charAt(0).toUpperCase()}

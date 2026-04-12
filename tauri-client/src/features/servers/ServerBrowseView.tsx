@@ -46,7 +46,7 @@ export default function ServerBrowseView() {
     <div className="flex flex-1 flex-col overflow-hidden bg-bg-tertiary">
       {/* Header */}
       <div className="border-b border-border px-8 py-6">
-        <h1 className="mb-1 text-xl font-extrabold text-text-bright">
+        <h1 className="mb-1 text-xl font-semibold text-text-bright">
           Discover Servers
         </h1>
         <p className="mb-4 text-sm text-text-secondary">
@@ -95,7 +95,7 @@ export default function ServerBrowseView() {
                   className="flex flex-col items-center rounded-2xl border border-border bg-bg-secondary p-5 text-center transition-all hover:border-accent/40 hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0"
                 >
                   <div
-                    className="mb-3 flex h-14 w-14 items-center justify-center rounded-xl text-xl font-extrabold text-white"
+                    className="mb-3 flex h-14 w-14 items-center justify-center rounded-xl text-xl font-semibold text-white"
                     style={{ background: stringToGradient(server.name) }}
                   >
                     {server.name.charAt(0).toUpperCase()}

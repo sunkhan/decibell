@@ -12,12 +12,12 @@ export default function AboutTab() {
             </svg>
           </div>
           <div>
-            <div className="text-sm font-extrabold text-text-bright">Decibell</div>
+            <div className="text-sm font-semibold text-text-bright">Decibell</div>
             <div className="text-[11px] text-text-muted">Decentralized game chat</div>
           </div>
         </div>
         <div className="text-[12px] text-text-secondary">
-          Version <span className="font-semibold text-text-primary">0.3.8</span>
+          Version <span className="font-semibold text-text-primary">0.3.9</span>
         </div>
       </div>
     </div>

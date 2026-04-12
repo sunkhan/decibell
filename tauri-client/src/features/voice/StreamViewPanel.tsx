@@ -156,11 +156,15 @@ export default function StreamViewPanel() {
 
   const handleStopWatching = async () => {
     if (!displayUser || !connectedServerId || !connectedChannelId) return;
-    await invoke("stop_watching", {
-      serverId: connectedServerId,
-      channelId: connectedChannelId,
-      targetUsername: displayUser,
-    }).catch(() => {});
+    if (displayUser === currentUsername) {
+      await invoke("watch_self_stream", { enabled: false }).catch(() => {});
+    } else {
+      await invoke("stop_watching", {
+        serverId: connectedServerId,
+        channelId: connectedChannelId,
+        targetUsername: displayUser,
+      }).catch(() => {});
+    }
     useVoiceStore.getState().removeWatching(displayUser);
     if (isFullscreen) exitFullscreen();
   };

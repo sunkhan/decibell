@@ -143,7 +143,7 @@ export default function ChannelSidebar() {
     return (
       <div className="relative flex shrink-0 flex-col border-r border-border bg-bg-dmbar pb-14" style={{ width: sidebarWidth }}>
         <div className="flex h-12 shrink-0 items-center border-b border-border px-4">
-          <h2 className="text-[15px] font-extrabold text-text-bright">
+          <h2 className="text-[15px] font-semibold text-text-bright">
             Direct Messages
           </h2>
         </div>
@@ -215,7 +215,7 @@ export default function ChannelSidebar() {
     <div className="relative flex shrink-0 flex-col border-r border-border bg-bg-dmbar pb-14" style={{ width: sidebarWidth }}>
       {/* Server name header */}
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
-        <h2 className="flex-1 truncate text-[15px] font-extrabold text-text-bright">
+        <h2 className="flex-1 truncate text-[15px] font-semibold text-text-bright">
           {serverName ?? "Server"}
         </h2>
         {servers.some((s) => s.id === activeServerId) ? (

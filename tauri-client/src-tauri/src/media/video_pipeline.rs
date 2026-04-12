@@ -10,6 +10,9 @@ use super::video_packet::{UdpFecPacket, UdpVideoPacket, FEC_GROUP_SIZE, UDP_MAX_
 pub enum VideoPipelineControl {
     ForceKeyframe,
     Shutdown,
+    /// Enable emitting EncodedFrame events so the streamer can watch their own preview.
+    /// Disabled by default to avoid the base64/JSON cost when nobody is previewing.
+    SetSelfPreview(bool),
 }
 
 pub enum VideoPipelineEvent {
@@ -19,6 +22,9 @@ pub enum VideoPipelineEvent {
     CaptureEnded,
     Error(String),
     ThumbnailReady(Vec<u8>),
+    /// Emitted for every successfully encoded frame, but only when self-preview
+    /// is enabled (see `VideoPipelineControl::SetSelfPreview`).
+    EncodedFrame { data: Vec<u8>, is_keyframe: bool, frame_id: u32 },
 }
 
 /// Convert a raw frame to a small JPEG thumbnail.
@@ -153,12 +159,18 @@ pub fn run_video_send_pipeline(
     // vs the capture source ending on its own (frame channel disconnected).
     let mut shutdown_requested = false;
 
+    let mut self_preview = false;
+
     loop {
         // Check control messages
         match control_rx.try_recv() {
             Ok(VideoPipelineControl::Shutdown) => { shutdown_requested = true; break; }
             Ok(VideoPipelineControl::ForceKeyframe) => {
                 encoder.force_keyframe();
+            }
+            Ok(VideoPipelineControl::SetSelfPreview(v)) => {
+                self_preview = v;
+                if v { encoder.force_keyframe(); }
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => { shutdown_requested = true; break; }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -345,6 +357,13 @@ pub fn run_video_send_pipeline(
 
         match encode_result {
             Ok(Some(encoded)) => {
+                if self_preview {
+                    let _ = event_tx.send(VideoPipelineEvent::EncodedFrame {
+                        data: encoded.data.clone(),
+                        is_keyframe: encoded.is_keyframe,
+                        frame_id,
+                    });
+                }
                 // Packetize: split encoded data into UDP_MAX_PAYLOAD-sized chunks
                 let chunks: Vec<&[u8]> = encoded.data.chunks(UDP_MAX_PAYLOAD).collect();
                 let total = chunks.len() as u16;

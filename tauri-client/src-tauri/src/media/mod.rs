@@ -569,6 +569,7 @@ impl VideoEngine {
         app: AppHandle,
         thumbnail_write_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
         thumbnail_channel_id: Option<String>,
+        self_username: String,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
@@ -622,6 +623,24 @@ impl VideoEngine {
                             let _ = tx.try_send(data);
                         }
                     }
+                    Ok(video_pipeline::VideoPipelineEvent::EncodedFrame { data, is_keyframe, frame_id }) => {
+                        use base64::Engine;
+                        let b64_data = base64::engine::general_purpose::STANDARD.encode(&data);
+                        let b64_desc = if is_keyframe {
+                            encoder::extract_avcc_description_from_avcc(&data)
+                                .map(|d| base64::engine::general_purpose::STANDARD.encode(&d))
+                        } else {
+                            None
+                        };
+                        let _ = app.emit("stream_frame", serde_json::json!({
+                            "username": self_username,
+                            "format": "h264",
+                            "data": b64_data,
+                            "timestamp": frame_id as u64 * 33_333,
+                            "keyframe": is_keyframe,
+                            "description": b64_desc,
+                        }));
+                    }
                     Ok(_) => {}
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -644,6 +663,10 @@ impl VideoEngine {
 
     pub fn force_keyframe(&self) {
         let _ = self.pipeline_control_tx.send(video_pipeline::VideoPipelineControl::ForceKeyframe);
+    }
+
+    pub fn set_self_preview(&self, enabled: bool) {
+        let _ = self.pipeline_control_tx.send(video_pipeline::VideoPipelineControl::SetSelfPreview(enabled));
     }
 
     /// Clone the pipeline control sender so external code can forward keyframe

@@ -39,12 +39,12 @@ export default function UserPanel() {
     anchor: { x: number; y: number };
   } | null>(null);
   const [cachedDevices, setCachedDevices] = useState<{
-    inputs: { name: string }[];
-    outputs: { name: string }[];
+    inputs: { name: string; label?: string }[];
+    outputs: { name: string; label?: string }[];
   }>({ inputs: [], outputs: [] });
 
   const refreshDevices = useCallback(() => {
-    invoke<{ inputs: { name: string }[]; outputs: { name: string }[] }>("list_audio_devices")
+    invoke<{ inputs: { name: string; label?: string }[]; outputs: { name: string; label?: string }[] }>("list_audio_devices")
       .then(setCachedDevices)
       .catch(console.error);
   }, []);

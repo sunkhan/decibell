@@ -122,17 +122,12 @@ pub async fn set_input_device(
 
     #[cfg(target_os = "linux")]
     {
-        // On Linux, set the PipeWire/PulseAudio default source, then tell
-        // the engine to reopen its default device (which now points here).
+        // Route only *our* capture streams to the selected source. Don't
+        // change the system-wide default — that would move every other app too.
         if let Some(ref pa_name) = name {
-            let _ = std::process::Command::new("pactl")
-                .args(["set-default-source", pa_name])
-                .status();
+            crate::audio_routing::route_inputs_to(pa_name);
         }
-        let s = state.lock().await;
-        if let Some(ref engine) = s.voice_engine {
-            engine.set_input_device(None);
-        }
+        let _ = state;
         return Ok(());
     }
 
@@ -160,14 +155,9 @@ pub async fn set_output_device(
     #[cfg(target_os = "linux")]
     {
         if let Some(ref pa_name) = name {
-            let _ = std::process::Command::new("pactl")
-                .args(["set-default-sink", pa_name])
-                .status();
+            crate::audio_routing::route_outputs_to(pa_name);
         }
-        let s = state.lock().await;
-        if let Some(ref engine) = s.voice_engine {
-            engine.set_output_device(None);
-        }
+        let _ = state;
         return Ok(());
     }
 
@@ -252,17 +242,12 @@ pub async fn start_mic_test(
     let stop_flag_thread = stop_flag.clone();
     s.mic_test_stop = Some(stop_flag);
 
-    // On Linux, device names are PulseAudio names — pactl set-default-source
-    // was already called, so just use the default CPAL device.
+    // On Linux, device names are PulseAudio names — cpal sees only ALSA
+    // device names, so open the default and move the stream via pactl.
     #[cfg(target_os = "linux")]
-    let device_name: Option<String> = {
-        if let Some(ref pa_name) = device_name {
-            let _ = std::process::Command::new("pactl")
-                .args(["set-default-source", pa_name])
-                .status();
-        }
-        None
-    };
+    let pa_source: Option<String> = device_name.clone();
+    #[cfg(target_os = "linux")]
+    let device_name: Option<String> = None;
 
     std::thread::Builder::new()
         .name("decibell-mic-test".to_string())
@@ -272,6 +257,15 @@ pub async fn start_mic_test(
             }
         })
         .map_err(|e| format!("Spawn mic test thread: {}", e))?;
+
+    #[cfg(target_os = "linux")]
+    if let Some(name) = pa_source {
+        // Give the stream a moment to appear in pactl, then route it.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            crate::audio_routing::route_inputs_to(&name);
+        });
+    }
 
     Ok(())
 }

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useAuthStore } from "../../stores/authStore";
 import { stringToGradient } from "../../utils/colors";
 import StreamViewPanel from "./StreamViewPanel";
 import StreamVideoPlayer from "./StreamVideoPlayer";
@@ -34,6 +35,8 @@ export default function VoicePanel() {
     return serverId ? s.channelsByServer[serverId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
   });
 
+  const ownUsername = useAuthStore((s) => s.username);
+
   const [showPicker, setShowPicker] = useState(false);
 
   // Generate thumbnails for active streams
@@ -59,15 +62,18 @@ export default function VoicePanel() {
 
   const handleWatchStream = (username: string) => {
     if (!connectedServerId || !connectedChannelId) return;
+    const isSelf = username === ownUsername;
     const isAlreadyWatching = watchingStreams.includes(username);
     if (!isAlreadyWatching) {
-      // Fire-and-forget — transition the UI immediately instead of
-      // waiting for the server round-trip
-      invoke("watch_stream", {
-        serverId: connectedServerId,
-        channelId: connectedChannelId,
-        targetUsername: username,
-      }).catch(() => {});
+      if (isSelf) {
+        invoke("watch_self_stream", { enabled: true }).catch(() => {});
+      } else {
+        invoke("watch_stream", {
+          serverId: connectedServerId,
+          channelId: connectedChannelId,
+          targetUsername: username,
+        }).catch(() => {});
+      }
       useVoiceStore.getState().addWatching(username);
     }
     useVoiceStore.getState().setFullscreenStream(username);
@@ -84,11 +90,15 @@ export default function VoicePanel() {
   const handleDisconnect = async () => {
     if (connectedServerId && connectedChannelId) {
       for (const username of watchingStreams) {
-        await invoke("stop_watching", {
-          serverId: connectedServerId,
-          channelId: connectedChannelId,
-          targetUsername: username,
-        }).catch(() => {});
+        if (username === ownUsername) {
+          await invoke("watch_self_stream", { enabled: false }).catch(() => {});
+        } else {
+          await invoke("stop_watching", {
+            serverId: connectedServerId,
+            channelId: connectedChannelId,
+            targetUsername: username,
+          }).catch(() => {});
+        }
       }
     }
     invoke("leave_voice_channel").catch(console.error);
@@ -264,11 +274,15 @@ export default function VoicePanel() {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              invoke("stop_watching", {
-                                serverId: connectedServerId,
-                                channelId: connectedChannelId,
-                                targetUsername: stream.ownerUsername,
-                              }).catch(() => {});
+                              if (stream.ownerUsername === ownUsername) {
+                                invoke("watch_self_stream", { enabled: false }).catch(() => {});
+                              } else {
+                                invoke("stop_watching", {
+                                  serverId: connectedServerId,
+                                  channelId: connectedChannelId,
+                                  targetUsername: stream.ownerUsername,
+                                }).catch(() => {});
+                              }
                               useVoiceStore.getState().removeWatching(stream.ownerUsername);
                             }}
                             className="ml-auto flex h-7 items-center gap-1.5 rounded-md bg-error/10 px-2.5 text-[11px] font-semibold text-error transition-colors hover:bg-error/20"

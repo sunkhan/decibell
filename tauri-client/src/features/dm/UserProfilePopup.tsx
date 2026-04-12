@@ -104,7 +104,7 @@ export default function UserProfilePopup() {
         <div className="px-5">
           <div className="relative -mt-9">
             <div
-              className="flex h-[72px] w-[72px] items-center justify-center rounded-xl border-4 border-bg-secondary text-[28px] font-extrabold text-white"
+              className="flex h-[72px] w-[72px] items-center justify-center rounded-xl border-4 border-bg-secondary text-[28px] font-semibold text-white"
               style={{ background: stringToGradient(username) }}
             >
               {username.charAt(0).toUpperCase()}
@@ -119,7 +119,7 @@ export default function UserProfilePopup() {
 
         {/* Info */}
         <div className="px-5 pt-3">
-          <div className="text-lg font-extrabold text-text-bright">
+          <div className="text-lg font-semibold text-text-bright">
             {username}
           </div>
           <div

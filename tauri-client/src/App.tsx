@@ -8,6 +8,7 @@ import { useAuthStore } from "./stores/authStore";
 import { useUiStore } from "./stores/uiStore";
 import { useDmStore } from "./stores/dmStore";
 import { useVoiceStore } from "./stores/voiceStore";
+import { useWindowTitle } from "./hooks/useWindowTitle";
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -55,6 +56,7 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
 
 export default function App() {
   const [ready, setReady] = useState(false);
+  useWindowTitle();
 
   useEffect(() => {
     (async () => {

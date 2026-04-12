@@ -53,7 +53,7 @@ export default function ServerDiscoveryModal() {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-extrabold text-text-bright">
+          <h2 className="text-lg font-semibold text-text-bright">
             Direct Connect
           </h2>
           <button

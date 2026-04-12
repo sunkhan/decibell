@@ -176,7 +176,7 @@ export default function DmChatPanel() {
               >
                 {activeDmUser.charAt(0).toUpperCase()}
               </div>
-              <h1 className="mb-1.5 text-[26px] font-extrabold tracking-tight text-text-bright">
+              <h1 className="mb-1.5 text-[26px] font-semibold tracking-tight text-text-bright">
                 {activeDmUser}
               </h1>
               <p className="text-sm text-text-secondary leading-relaxed">

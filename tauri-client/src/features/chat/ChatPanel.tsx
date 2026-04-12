@@ -160,7 +160,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
               <div className="mb-3 flex h-[60px] w-[60px] items-center justify-center rounded-xl border border-accent/10 bg-gradient-to-br from-accent-soft to-accent/5 font-mono text-[26px] font-bold text-accent">
                 #
               </div>
-              <h1 className="mb-1.5 text-[26px] font-extrabold tracking-tight text-text-bright">
+              <h1 className="mb-1.5 text-[26px] font-semibold tracking-tight text-text-bright">
                 Welcome to #{channelName ?? "channel"}
               </h1>
               <p className="text-sm text-text-secondary leading-relaxed">

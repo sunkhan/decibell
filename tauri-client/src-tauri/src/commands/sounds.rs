@@ -1,4 +1,12 @@
-use std::thread;
+//! UI sound effects.
+//!
+//! One persistent output stream is created on the first `play_sound` call and
+//! kept open for the lifetime of the app — so it appears as a single long-lived
+//! playback stream in `pavucontrol` / `wpctl`, not a flickering per-effect one.
+//! Subsequent calls just push samples into a shared mixer queue.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -16,7 +24,18 @@ static SOUNDS: &[(&str, &[u8])] = &[
     ("disconnect", include_bytes!("../../sounds/disconnect.wav")),
 ];
 
-/// Parse a 16-bit PCM WAV file into f32 samples + sample rate.
+struct ActiveClip {
+    samples: Arc<Vec<f32>>,
+    pos: usize,
+}
+
+struct Mixer {
+    bank: HashMap<&'static str, Arc<Vec<f32>>>,
+    active: Arc<Mutex<Vec<ActiveClip>>>,
+}
+
+static MIXER: OnceLock<Option<Mixer>> = OnceLock::new();
+
 fn parse_wav(data: &[u8]) -> Option<(Vec<f32>, u32)> {
     if data.len() < 44 { return None; }
     let mut offset = 12usize;
@@ -44,8 +63,6 @@ fn parse_wav(data: &[u8]) -> Option<(Vec<f32>, u32)> {
     if data_offset == 0 || bits_per_sample != 16 { return None; }
     let bytes_per_sample = (bits_per_sample / 8) as usize;
     let total_samples = data_size / bytes_per_sample;
-
-    // Mix down to mono if stereo
     let num_frames = total_samples / channels as usize;
     let mut samples = Vec::with_capacity(num_frames);
     for i in 0..num_frames {
@@ -63,97 +80,100 @@ fn parse_wav(data: &[u8]) -> Option<(Vec<f32>, u32)> {
     Some((samples, sample_rate))
 }
 
+fn resample_and_shape(mut samples: Vec<f32>, wav_rate: u32, device_rate: u32) -> Vec<f32> {
+    if wav_rate != device_rate && !samples.is_empty() {
+        let ratio = device_rate as f64 / wav_rate as f64;
+        let out_len = (samples.len() as f64 * ratio) as usize;
+        let mut out = Vec::with_capacity(out_len);
+        for i in 0..out_len {
+            let src_pos = i as f64 / ratio;
+            let idx = src_pos as usize;
+            let frac = (src_pos - idx as f64) as f32;
+            let a = samples[idx.min(samples.len() - 1)];
+            let b = samples[(idx + 1).min(samples.len() - 1)];
+            out.push(a + (b - a) * frac);
+        }
+        samples = out;
+    }
+
+    let fade_in = (device_rate as usize * 2) / 1000;
+    let fade_out = (device_rate as usize * 5) / 1000;
+    let len = samples.len();
+    for i in 0..fade_in.min(len) {
+        samples[i] *= i as f32 / fade_in as f32;
+    }
+    for i in 0..fade_out.min(len) {
+        samples[len - 1 - i] *= i as f32 / fade_out as f32;
+    }
+    samples
+}
+
+fn init_mixer() -> Option<Mixer> {
+    let host = cpal::default_host();
+    let device = host.default_output_device()?;
+    let config = device.default_output_config().ok()?;
+    let device_rate = config.sample_rate().0;
+    let device_channels = config.channels() as usize;
+
+    let mut bank: HashMap<&'static str, Arc<Vec<f32>>> = HashMap::new();
+    for (name, data) in SOUNDS {
+        if let Some((samples, rate)) = parse_wav(data) {
+            let shaped = resample_and_shape(samples, rate, device_rate);
+            bank.insert(*name, Arc::new(shaped));
+        }
+    }
+
+    let active: Arc<Mutex<Vec<ActiveClip>>> = Arc::new(Mutex::new(Vec::new()));
+    let active_cb = active.clone();
+
+    // cpal::Stream is !Send; own it on a dedicated parked thread.
+    std::thread::Builder::new()
+        .name("decibell-sound-mixer".to_string())
+        .spawn(move || {
+            let stream_cfg: cpal::StreamConfig = config.into();
+            let stream = device.build_output_stream(
+                &stream_cfg,
+                move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    for s in output.iter_mut() { *s = 0.0; }
+                    let Ok(mut clips) = active_cb.lock() else { return };
+                    clips.retain(|c| c.pos < c.samples.len());
+                    for clip in clips.iter_mut() {
+                        let mut i = clip.pos;
+                        for frame in output.chunks_mut(device_channels) {
+                            if i >= clip.samples.len() { break; }
+                            let v = clip.samples[i];
+                            for sample in frame.iter_mut() { *sample += v; }
+                            i += 1;
+                        }
+                        clip.pos = i;
+                    }
+                },
+                |err| eprintln!("[sounds] mixer stream error: {}", err),
+                None,
+            );
+            match stream {
+                Ok(s) => {
+                    if let Err(e) = s.play() {
+                        eprintln!("[sounds] mixer play failed: {}", e);
+                        return;
+                    }
+                    std::thread::park();
+                    drop(s);
+                }
+                Err(e) => eprintln!("[sounds] mixer build failed: {}", e),
+            }
+        })
+        .ok()?;
+
+    Some(Mixer { bank, active })
+}
+
 #[tauri::command]
 pub fn play_sound(name: String) {
-    let wav_data = match SOUNDS.iter().find(|(n, _)| *n == name.as_str()) {
-        Some((_, data)) => *data,
-        None => return,
-    };
-
-    thread::spawn(move || {
-        let (mut samples, wav_rate) = match parse_wav(wav_data) {
-            Some(v) => v,
-            None => return,
-        };
-
-        let host = cpal::default_host();
-        let device = match host.default_output_device() {
-            Some(d) => d,
-            None => return,
-        };
-        let config = match device.default_output_config() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-
-        let device_rate = config.sample_rate().0;
-        let device_channels = config.channels() as usize;
-
-        // Resample if rates differ
-        if wav_rate != device_rate {
-            let ratio = device_rate as f64 / wav_rate as f64;
-            let out_len = (samples.len() as f64 * ratio) as usize;
-            let mut out = Vec::with_capacity(out_len);
-            for i in 0..out_len {
-                let src_pos = i as f64 / ratio;
-                let idx = src_pos as usize;
-                let frac = (src_pos - idx as f64) as f32;
-                let a = samples[idx.min(samples.len() - 1)];
-                let b = samples[(idx + 1).min(samples.len() - 1)];
-                out.push(a + (b - a) * frac);
-            }
-            samples = out;
-        }
-
-        // Add 100ms silence tail so the audio device can drain fully
-        let tail_samples = device_rate as usize / 10;
-        samples.extend(std::iter::repeat(0.0f32).take(tail_samples));
-
-        // Apply short fade-in (2ms) and fade-out (5ms) to avoid pops
-        let fade_in = (device_rate as usize * 2) / 1000;
-        let fade_out = (device_rate as usize * 5) / 1000;
-        let len = samples.len();
-        for i in 0..fade_in.min(len) {
-            samples[i] *= i as f32 / fade_in as f32;
-        }
-        for i in 0..fade_out.min(len) {
-            samples[len - 1 - i] *= i as f32 / fade_out as f32;
-        }
-
-        let samples = std::sync::Arc::new(samples);
-        let samples2 = samples.clone();
-        let pos = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let pos2 = pos.clone();
-
-        let stream = device.build_output_stream(
-            &config.into(),
-            move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                let mut i = pos2.load(std::sync::atomic::Ordering::Relaxed);
-                for frame in output.chunks_mut(device_channels) {
-                    let val = if i < samples2.len() { samples2[i] } else { 0.0 };
-                    for sample in frame.iter_mut() {
-                        *sample = val;
-                    }
-                    if i < samples2.len() { i += 1; }
-                }
-                pos2.store(i, std::sync::atomic::Ordering::Relaxed);
-            },
-            |err| eprintln!("[sounds] playback error: {}", err),
-            None,
-        );
-
-        if let Ok(s) = stream {
-            let _ = s.play();
-            // Poll until all samples (including silence tail) have been consumed
-            let total = samples.len();
-            loop {
-                let current = pos.load(std::sync::atomic::Ordering::Relaxed);
-                if current >= total { break; }
-                thread::sleep(std::time::Duration::from_millis(10));
-            }
-            // Small extra sleep to let the device buffer drain
-            thread::sleep(std::time::Duration::from_millis(30));
-            // Stream dropped here — all audio has been played
-        }
-    });
+    let mixer = MIXER.get_or_init(init_mixer);
+    let Some(mixer) = mixer.as_ref() else { return };
+    let Some(samples) = mixer.bank.get(name.as_str()) else { return };
+    if let Ok(mut clips) = mixer.active.lock() {
+        clips.push(ActiveClip { samples: samples.clone(), pos: 0 });
+    }
 }

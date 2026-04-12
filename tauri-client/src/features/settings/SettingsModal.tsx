@@ -133,7 +133,7 @@ export default function SettingsModal() {
         {/* Right content */}
         <div className="flex flex-1 flex-col overflow-y-auto">
           <div className="flex items-center justify-between px-7 pt-6 pb-4">
-            <h2 className="text-lg font-extrabold text-text-bright">
+            <h2 className="text-lg font-semibold text-text-bright">
               {activeTab.label}
             </h2>
             <button

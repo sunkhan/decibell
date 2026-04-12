@@ -57,7 +57,7 @@ export default function LoginPage() {
           </svg>
         </div>
 
-        <h1 className="mb-1 text-center text-xl font-extrabold text-text-bright">
+        <h1 className="mb-1 text-center text-xl font-semibold text-text-bright">
           {mode === "login" ? "Decibell" : "Create an account"}
         </h1>
         <p className="mb-6 text-center text-sm text-text-secondary">
@@ -147,7 +147,7 @@ export default function LoginPage() {
           )}
         </p>
       </form>
-      <p className="absolute bottom-3 right-4 text-[11px] text-text-muted">Decibell 0.3.8</p>
+      <p className="absolute bottom-3 right-4 text-[11px] text-text-muted">Decibell 0.3.9</p>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { saveSettings } from "../settings/saveSettings";
 
 interface AudioDevice {
   name: string;
+  label?: string;
 }
 
 interface Props {
@@ -126,7 +127,7 @@ export default function DeviceContextMenu({ type, anchor, devices, onClose }: Pr
               </svg>
             )}
             <span className={selected === device.name ? "" : "pl-5"}>
-              {device.name}
+              {device.label ?? device.name}
             </span>
           </button>
         ))}

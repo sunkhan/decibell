@@ -4,6 +4,8 @@ mod events;
 mod media;
 mod net;
 mod state;
+#[cfg(target_os = "linux")]
+mod audio_routing;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -43,6 +45,7 @@ pub fn run() {
             commands::streaming::start_screen_share,
             commands::streaming::stop_screen_share,
             commands::streaming::watch_stream,
+            commands::streaming::watch_self_stream,
             commands::streaming::stop_watching,
             commands::streaming::request_keyframe,
             commands::voice::set_stream_volume,

@@ -100,6 +100,7 @@ pub async fn start_screen_share(
     // can send thumbnails without locking AppState (avoids Tokio deadlock).
     let thumbnail_write_tx = client.connection_write_tx();
     let thumbnail_channel_id = Some(channel_id.clone());
+    let self_username = s.username.clone().unwrap_or_default();
 
     // Start video pipeline
     let video_engine = VideoEngine::start(
@@ -113,6 +114,7 @@ pub async fn start_screen_share(
         app.clone(),
         thumbnail_write_tx,
         thumbnail_channel_id,
+        self_username,
     );
 
     // Wire up keyframe forwarding: voice bridge → video encoder
@@ -262,6 +264,19 @@ pub async fn stop_screen_share(
         Ok(Err(_)) => Err("Connection closed".to_string()),
         Err(_) => Err("Send timed out".to_string()),
     }
+}
+
+#[tauri::command]
+pub async fn watch_self_stream(
+    enabled: bool,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    let ve = s.video_engine.as_ref()
+        .ok_or("Not currently streaming")?;
+    ve.set_self_preview(enabled);
+    if enabled { ve.force_keyframe(); }
+    Ok(())
 }
 
 #[tauri::command]
