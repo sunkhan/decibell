@@ -7,13 +7,14 @@ use rubato::Resampler;
 
 use super::audio_device::{
     make_sinc_resampler, build_input_stream, build_output_stream,
-    build_voice_output_stream, build_stream_output_stream,
+    build_voice_output_stream, build_stream_output_stream, PeerList,
 };
 use super::codec::{
-    OpusDecoder, OpusEncoder, StereoOpusDecoder, FRAME_SIZE, MAX_OPUS_FRAME_SIZE,
+    OpusEncoder, FRAME_SIZE, MAX_OPUS_FRAME_SIZE,
     SAMPLE_RATE, STEREO_FRAME_SAMPLES, STEREO_FRAME_SIZE,
 };
-use super::jitter::JitterBuffer;
+use super::peer::{PeerAudio, PeerOutput};
+use arc_swap::ArcSwap;
 use super::packet::{
     UdpAudioPacket, AUDIO_HEADER_SIZE, PACKET_TOTAL_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
     PACKET_TYPE_STREAM_AUDIO,
@@ -63,21 +64,8 @@ pub enum VoiceEvent {
 const FLAG_MUTED: u8 = 0x01;
 const FLAG_DEAFENED: u8 = 0x02;
 
-// ── Per-remote-peer state ─────────────────────────────────────────────────────
-
-struct RemotePeer {
-    decoder: OpusDecoder,
-    speaking: SpeakingDetector,
-    last_packet_time: Instant,
-    voice_jitter: JitterBuffer,
-    voice_drain_time: Instant,
-    stream_audio_decoder: Option<StereoOpusDecoder>,
-    stream_jitter: JitterBuffer,
-    stream_drain_time: Instant,
-    /// Decoded voice samples (f32, -1..1) waiting to be mixed with other peers.
-    /// Accumulated during jitter drain, consumed by the mixing step each tick.
-    decoded_voice: Vec<f32>,
-}
+// Per-peer state lives in `media::peer::PeerAudio`. Voice mixing happens in
+// the output audio callback which pulls from each peer's ring buffer.
 
 // ── Main blocking pipeline entry-point ───────────────────────────────────────
 
@@ -118,10 +106,9 @@ pub fn run_audio_pipeline(
     let capture_prod = Arc::new(std::sync::Mutex::new(capture_prod));
     let capture_cons = Arc::new(std::sync::Mutex::new(capture_cons));
 
-    let voice_rb = HeapRb::<i16>::new(BUF_CAP);
-    let (voice_prod, voice_cons) = voice_rb.split();
-    let voice_prod = Arc::new(std::sync::Mutex::new(voice_prod));
-    let voice_cons = Arc::new(std::sync::Mutex::new(voice_cons));
+    // Per-peer voice rings live in each PeerAudio. The output callback reads
+    // this atomically-swappable snapshot of current peers' consumers.
+    let peers: PeerList = Arc::new(ArcSwap::from_pointee(Vec::new()));
 
     let stream_rb = HeapRb::<i16>::new(BUF_CAP);
     let (stream_prod, stream_cons) = stream_rb.split();
@@ -142,7 +129,7 @@ pub fn run_audio_pipeline(
     let (mut output_stream, mut output_sample_rate) = match build_output_stream(
         &host,
         None, // system default on startup
-        Arc::clone(&voice_cons),
+        Arc::clone(&peers),
         Arc::clone(&stream_cons),
         Arc::clone(&stream_stereo),
         Arc::clone(&render_ref_prod),
@@ -182,14 +169,8 @@ pub fn run_audio_pipeline(
     };
     let mut capture_accum: Vec<f64> = Vec::new();
 
-    // Playback voice: 48kHz → output_device_rate (mono)
-    let mut playback_voice_resampler = if output_sample_rate == SAMPLE_RATE {
-        None
-    } else {
-        eprintln!("[pipeline] Playback voice resampler: {}Hz → {}Hz", SAMPLE_RATE, output_sample_rate);
-        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 1))
-    };
-    let mut playback_voice_accum: Vec<f64> = Vec::new();
+    // Voice resampling is per-peer now — each PeerAudio owns its own resampler
+    // to output_sample_rate. Updated on device hot-swap via set_output_rate().
 
     // Playback stream: 48kHz → output_device_rate (stereo)
     let mut playback_stream_resampler = if output_sample_rate == SAMPLE_RATE {
@@ -220,7 +201,17 @@ pub fn run_audio_pipeline(
     let mut sequence: u16 = 0;
     let mut local_speaking = SpeakingDetector::new();
     let mut input_level_counter: u32 = 0; // throttle InputLevel events (~every 3 frames = 60ms)
-    let mut remote_peers: HashMap<String, RemotePeer> = HashMap::new();
+    let mut remote_peers: HashMap<String, PeerAudio> = HashMap::new();
+
+    // Rebuilds the ArcSwap peer-list snapshot handed to the output callback.
+    // Call after any peer insert/remove.
+    fn refresh_peer_list(peers: &PeerList, remote_peers: &HashMap<String, PeerAudio>) {
+        let snapshot: Vec<PeerOutput> = remote_peers
+            .iter()
+            .map(|(name, p)| p.output_handle(name))
+            .collect();
+        peers.store(Arc::new(snapshot));
+    }
 
     // Accumulator for resampled 48kHz capture PCM — persists across loop iterations
     let mut capture_48k_buf: Vec<i16> = Vec::with_capacity(FRAME_SIZE * 4);
@@ -228,8 +219,9 @@ pub fn run_audio_pipeline(
     let mut last_ping_time = Instant::now();
     let ping_interval = Duration::from_secs(3);
 
-    // Reusable buffer for mixing decoded voice from all peers each tick
-    let mut mix_buffer: Vec<f32> = Vec::with_capacity(FRAME_SIZE * 4);
+    // AEC render reference: summed across peers per tick so AEC sees what the
+    // speaker actually plays. Reset each tick; fed to render_ref_prod at end.
+    let mut aec_render_mix: Vec<f32> = Vec::with_capacity(FRAME_SIZE * 4);
 
     // ── Voice processing (AEC / NS / AGC) ──────────────────────────────────
     // VoipAec3 bundles all three processors. We rebuild it when toggles change.
@@ -281,13 +273,15 @@ pub fn run_audio_pipeline(
     // Reads voice packets (AUDIO, STREAM_AUDIO, PING) from the voice socket
     // and forwards them to the audio processing thread. Video packets arrive
     // on a separate media socket handled by the video recv thread in mod.rs.
-    let (audio_pkt_tx, audio_pkt_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(256);
+    let (audio_pkt_tx, audio_pkt_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
+    let recv_drops = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let recv_socket = Arc::clone(&socket);
     let recv_event_tx = event_tx.clone();
+    let recv_drops_clone = Arc::clone(&recv_drops);
     std::thread::Builder::new()
         .name("decibell-voice-recv".to_string())
         .spawn(move || {
-            voice_recv_thread(recv_socket, audio_pkt_tx, recv_event_tx);
+            voice_recv_thread(recv_socket, audio_pkt_tx, recv_event_tx, recv_drops_clone);
         })
         .expect("spawn voice recv thread");
 
@@ -365,13 +359,12 @@ pub fn run_audio_pipeline(
                 Ok(ControlMessage::SetOutputDevice(name)) => {
                     eprintln!("[pipeline] Hot-swapping output device to: {:?}", name);
                     output_stream = None; // drop old stream
-                    { let mut g = voice_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
-                    playback_voice_accum.clear();
+                    for peer in remote_peers.values_mut() { peer.drain_ring(); }
                     playback_stream_accum_l.clear();
                     playback_stream_accum_r.clear();
                     if separate_stream_enabled {
-                        match build_voice_output_stream(&host, name.as_deref(), Arc::clone(&voice_cons), Arc::clone(&render_ref_prod), &event_tx) {
+                        match build_voice_output_stream(&host, name.as_deref(), Arc::clone(&peers), Arc::clone(&render_ref_prod), &event_tx) {
                             Some((stream, rate, _ch)) => {
                                 output_sample_rate = rate;
                                 output_stream = Some(stream);
@@ -379,7 +372,7 @@ pub fn run_audio_pipeline(
                             None => eprintln!("[pipeline] Warning: no output device after hot-swap"),
                         }
                     } else {
-                        match build_output_stream(&host, name.as_deref(), Arc::clone(&voice_cons), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), &event_tx) {
+                        match build_output_stream(&host, name.as_deref(), Arc::clone(&peers), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), &event_tx) {
                             Some((stream, rate, _ch)) => {
                                 output_sample_rate = rate;
                                 output_stream = Some(stream);
@@ -387,11 +380,9 @@ pub fn run_audio_pipeline(
                             None => eprintln!("[pipeline] Warning: no output device after hot-swap"),
                         }
                     }
-                    // Rebuild playback resamplers for new output rate
-                    if output_sample_rate == SAMPLE_RATE {
-                        playback_voice_resampler = None;
-                    } else {
-                        playback_voice_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 1));
+                    // Update every peer's resampler for the new output rate.
+                    for peer in remote_peers.values_mut() {
+                        peer.set_output_rate(output_sample_rate);
                     }
                     // Stream resampler: only update if stream plays on the same device
                     if !separate_stream_enabled {
@@ -411,14 +402,13 @@ pub fn run_audio_pipeline(
                     output_stream = None;
                     stream_output = None;
                     // Drain ring buffers to prevent stale audio causing delay
-                    { let mut g = voice_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
-                    playback_voice_accum.clear();
+                    for peer in remote_peers.values_mut() { peer.drain_ring(); }
                     playback_stream_accum_l.clear();
                     playback_stream_accum_r.clear();
                     if enabled {
                         // Main output: voice-only
-                        if let Some((stream, rate, _ch)) = build_voice_output_stream(&host, None, Arc::clone(&voice_cons), Arc::clone(&render_ref_prod), &event_tx) {
+                        if let Some((stream, rate, _ch)) = build_voice_output_stream(&host, None, Arc::clone(&peers), Arc::clone(&render_ref_prod), &event_tx) {
                             output_sample_rate = rate;
                             output_stream = Some(stream);
                         }
@@ -429,17 +419,15 @@ pub fn run_audio_pipeline(
                         }
                     } else {
                         // Back to mixed mode — stream plays on same device as voice
-                        if let Some((stream, rate, _ch)) = build_output_stream(&host, None, Arc::clone(&voice_cons), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), &event_tx) {
+                        if let Some((stream, rate, _ch)) = build_output_stream(&host, None, Arc::clone(&peers), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), &event_tx) {
                             output_sample_rate = rate;
                             stream_output_sample_rate = rate;
                             output_stream = Some(stream);
                         }
                     }
-                    // Rebuild playback resamplers — voice uses voice device rate, stream uses stream device rate
-                    if output_sample_rate == SAMPLE_RATE {
-                        playback_voice_resampler = None;
-                    } else {
-                        playback_voice_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 1));
+                    // Update every peer's resampler for the new voice output rate.
+                    for peer in remote_peers.values_mut() {
+                        peer.set_output_rate(output_sample_rate);
                     }
                     if stream_output_sample_rate == SAMPLE_RATE {
                         playback_stream_resampler = None;
@@ -697,6 +685,7 @@ pub fn run_audio_pipeline(
         // by type. We only see audio/ping/keyframe-request packets here — video
         // packets go directly to the video thread, never touching this loop.
         let mut pkt_count_this_iter = 0u32;
+        let mut peers_changed = false;
         loop {
             match audio_pkt_rx.try_recv() {
                 Ok(raw) => {
@@ -725,22 +714,12 @@ pub fn run_audio_pipeline(
                                     eprintln!("[pipeline] New remote peer '{}' detected (type={}, seq={}, payload={}B)",
                                         username, pkt.packet_type, pkt.sequence, pkt.payload_size);
                                 }
+                                let inserted = !remote_peers.contains_key(&username);
                                 let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
-                                    RemotePeer {
-                                        decoder: OpusDecoder::new().unwrap_or_else(|_| {
-                                            OpusDecoder::new().expect("OpusDecoder::new failed twice")
-                                        }),
-                                        speaking: SpeakingDetector::new(),
-                                        last_packet_time: now,
-                                        voice_jitter: JitterBuffer::new(),
-                                        voice_drain_time: now,
-                                        stream_audio_decoder: None,
-                                        stream_jitter: JitterBuffer::new(),
-                                        stream_drain_time: now,
-                                        decoded_voice: Vec::new(),
-                                    }
+                                    PeerAudio::new(output_sample_rate, now)
                                 });
                                 peer.last_packet_time = now;
+                                if inserted { peers_changed = true; }
 
                                 let raw_payload = pkt.payload_data();
                                 let (flags, opus_data) = if raw_payload.len() > 1 {
@@ -758,25 +737,15 @@ pub fn run_audio_pipeline(
                             } else if pkt.packet_type == PACKET_TYPE_STREAM_AUDIO {
                                 if username != sender_id {
                                     let now = Instant::now();
+                                    let inserted = !remote_peers.contains_key(&username);
                                     let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
-                                        RemotePeer {
-                                            decoder: OpusDecoder::new().unwrap_or_else(|_| {
-                                                OpusDecoder::new().expect("OpusDecoder::new failed twice")
-                                            }),
-                                            speaking: SpeakingDetector::new(),
-                                            last_packet_time: now,
-                                            voice_jitter: JitterBuffer::new(),
-                                            voice_drain_time: now,
-                                            stream_audio_decoder: None,
-                                            stream_jitter: JitterBuffer::new(),
-                                            stream_drain_time: now,
-                                            decoded_voice: Vec::new(),
-                                        }
+                                        PeerAudio::new(output_sample_rate, now)
                                     });
                                     peer.last_packet_time = now;
+                                    if inserted { peers_changed = true; }
 
                                     if peer.stream_audio_decoder.is_none() {
-                                        peer.stream_audio_decoder = StereoOpusDecoder::new().ok();
+                                        peer.stream_audio_decoder = super::codec::StereoOpusDecoder::new().ok();
                                     }
 
                                     peer.stream_jitter.push(pkt.sequence, pkt.payload_data().to_vec());
@@ -789,8 +758,11 @@ pub fn run_audio_pipeline(
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'main,
             }
         }
+        if peers_changed {
+            refresh_peer_list(&peers, &remote_peers);
+        }
 
-        // 4b. Drain jitter buffers → decode → push to playback ──────────────
+        // 4b. Drain jitter buffers → decode → push to per-peer ring ─────────
         let drain_now = Instant::now();
         let frame_dur = Duration::from_millis(20);
         // Cap how far behind drain times can fall. Without this, a peer whose
@@ -798,6 +770,7 @@ pub fn run_audio_pipeline(
         // time debt, and when packets resume the loop fires dozens of PLC
         // frames in a single burst — audible as a glitch.
         let max_behind = Duration::from_millis(100);
+        aec_render_mix.clear();
         for (username, peer) in remote_peers.iter_mut() {
             if drain_now.duration_since(peer.voice_drain_time) > max_behind {
                 peer.voice_drain_time = drain_now - max_behind;
@@ -816,7 +789,6 @@ pub fn run_audio_pipeline(
                             eprintln!("[pipeline] Jitter buffer reset for peer '{}' — re-buffering", username);
                         }
                         peer.voice_drain_time = drain_now;
-                        peer.decoded_voice.clear();
                         break;
                     }
                 };
@@ -844,9 +816,20 @@ pub fn run_audio_pipeline(
                     }
                     if !deafened {
                         let gain = user_volumes.get(username.as_str()).copied().unwrap_or(1.0);
-                        for &s in &pcm {
-                            peer.decoded_voice.push((s as f32 / 32768.0) * gain);
+                        let mut f32_frame = [0.0f32; FRAME_SIZE];
+                        for (i, &s) in pcm.iter().enumerate() {
+                            f32_frame[i] = (s as f32 / 32768.0) * gain;
                         }
+                        // Sum into AEC render reference (mono, pre-resample).
+                        if aec_enabled {
+                            if aec_render_mix.len() < f32_frame.len() {
+                                aec_render_mix.resize(f32_frame.len(), 0.0);
+                            }
+                            for (dst, &s) in aec_render_mix.iter_mut().zip(f32_frame.iter()) {
+                                *dst += s;
+                            }
+                        }
+                        peer.push_voice_frame(&f32_frame);
                     }
                 }
             }
@@ -932,58 +915,11 @@ pub fn run_audio_pipeline(
             }
         }
 
-        // 4c. Mix decoded voice from all peers → resample → push to playback buffer
-        // Each peer's jitter drain accumulated f32 samples in decoded_voice.
-        // Sum them sample-by-sample, then resample from 48kHz to the output device
-        // rate before pushing to the voice ring buffer.
-        {
-            let max_samples = remote_peers.values().map(|p| p.decoded_voice.len()).max().unwrap_or(0);
-            if max_samples > 0 {
-                mix_buffer.clear();
-                mix_buffer.resize(max_samples, 0.0);
-                for peer in remote_peers.values() {
-                    for (i, &s) in peer.decoded_voice.iter().enumerate() {
-                        mix_buffer[i] += s;
-                    }
-                }
-
-                // Feed mixed voice to AEC render reference (what the speaker actually plays)
-                if aec_enabled {
-                    if let Ok(mut rr_prod) = render_ref_prod.lock() {
-                        for &s in &mix_buffer {
-                            let _ = rr_prod.try_push(s);
-                        }
-                    }
-                }
-
-                // Resample 48kHz → output device rate, then push to playback ring buffer
-                if playback_voice_resampler.is_none() {
-                    if let Ok(mut prod) = voice_prod.lock() {
-                        for &s in &mix_buffer {
-                            let _ = prod.try_push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
-                        }
-                    }
-                } else if let Some(ref mut resampler) = playback_voice_resampler {
-                    for &s in &mix_buffer {
-                        playback_voice_accum.push(s as f64);
-                    }
-                    let mut needed = resampler.input_frames_next();
-                    while playback_voice_accum.len() >= needed {
-                        let chunk: Vec<f64> = playback_voice_accum.drain(..needed).collect();
-                        if let Ok(out) = resampler.process(&[&chunk], None) {
-                            if let Ok(mut prod) = voice_prod.lock() {
-                                for &s in &out[0] {
-                                    let _ = prod.try_push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
-                                }
-                            }
-                        }
-                        needed = resampler.input_frames_next();
-                    }
-                }
-
-                // Clear per-peer buffers
-                for peer in remote_peers.values_mut() {
-                    peer.decoded_voice.clear();
+        // 4c. Feed AEC render reference (mixed voice pre-playback). ────────
+        if aec_enabled && !aec_render_mix.is_empty() {
+            if let Ok(mut rr_prod) = render_ref_prod.lock() {
+                for &s in &aec_render_mix {
+                    let _ = rr_prod.try_push(s);
                 }
             }
         }
@@ -996,6 +932,7 @@ pub fn run_audio_pipeline(
                 to_remove.push(name.clone());
             }
         }
+        let had_removals = !to_remove.is_empty();
         for name in to_remove {
             if let Some(mut peer) = remote_peers.remove(&name) {
                 // Emit speaking-stopped if they were still marked speaking
@@ -1006,16 +943,23 @@ pub fn run_audio_pipeline(
                 }
             }
         }
+        if had_removals {
+            refresh_peer_list(&peers, &remote_peers);
+        }
 
         // 6. Periodic diagnostics (every 5s) ────────────────────────────────
         static DIAG_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let iter_num = DIAG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if iter_num % 1000 == 999 { // ~every 5s (5ms per iter)
-            let voice_fill = if let Ok(c) = voice_cons.try_lock() { c.occupied_len() } else { 0 };
             let stream_fill = if let Ok(c) = stream_cons.try_lock() { c.occupied_len() } else { 0 };
-            let peers: Vec<String> = remote_peers.keys().cloned().collect();
-            eprintln!("[pipeline] diag: peers={:?}, voice_buf={}/{}, stream_buf={}/{}, pkts_this_iter={}",
-                peers, voice_fill, BUF_CAP, stream_fill, BUF_CAP, pkt_count_this_iter);
+            let recv_drop_total = recv_drops.load(std::sync::atomic::Ordering::Relaxed);
+            let peer_stats: Vec<String> = remote_peers.iter().map(|(n, p)| {
+                format!("{}(j={:.1}ms tgt={} plc={} drop={})",
+                    n, p.voice_jitter.jitter_ms(), p.voice_jitter.target(),
+                    p.voice_jitter.plc_frames, p.voice_jitter.dropped_frames)
+            }).collect();
+            eprintln!("[pipeline] diag: peers=[{}], stream_buf={}/{}, recv_drops={}, pkts_this_iter={}",
+                peer_stats.join(", "), stream_fill, BUF_CAP, recv_drop_total, pkt_count_this_iter);
         }
 
         // 7. Sleep if loop finished under 5ms ──────────────────────────────────
@@ -1044,6 +988,7 @@ fn voice_recv_thread(
     socket: Arc<UdpSocket>,
     audio_tx: std::sync::mpsc::SyncSender<Vec<u8>>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
+    drops: Arc<std::sync::atomic::AtomicU64>,
 ) {
     const RECV_BUF_SIZE: usize = PACKET_TOTAL_SIZE;
 
@@ -1073,6 +1018,7 @@ fn voice_recv_thread(
                     Err(std::sync::mpsc::TrySendError::Full(_)) => {
                         // Audio thread is behind — drop this packet.
                         // The jitter buffer's PLC will smooth the gap.
+                        drops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                         break;

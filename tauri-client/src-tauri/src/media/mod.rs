@@ -17,6 +17,7 @@ pub mod codec;
 pub mod encoder;
 pub mod jitter;
 pub mod packet;
+pub mod peer;
 pub mod pipeline;
 pub mod speaking;
 pub mod video_packet;
@@ -632,6 +633,11 @@ impl VideoEngine {
                         } else {
                             None
                         };
+                        if frame_id % 60 == 0 || is_keyframe {
+                            eprintln!("[self-preview-bridge] emit stream_frame user='{}' frame={} bytes={} keyframe={} desc={}",
+                                self_username, frame_id, data.len(), is_keyframe,
+                                b64_desc.as_ref().map(|d| d.len()).unwrap_or(0));
+                        }
                         let _ = app.emit("stream_frame", serde_json::json!({
                             "username": self_username,
                             "format": "h264",

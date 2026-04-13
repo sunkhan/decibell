@@ -1,10 +1,17 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::Arc;
+use arc_swap::ArcSwap;
 use ringbuf::{HeapProd, HeapCons, traits::{Consumer, Producer}};
 use rubato::{SincFixedOut, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
 use super::codec::SAMPLE_RATE;
+use super::peer::PeerOutput;
 use super::pipeline::VoiceEvent;
+
+/// Shared peer list used by the output callback. Swapped atomically by the
+/// main loop whenever peers join/leave so the callback never blocks.
+pub type PeerList = Arc<ArcSwap<Vec<PeerOutput>>>;
+
 
 // ── Sinc resampler helper ────────────────────────────────────────────────────
 
@@ -189,7 +196,7 @@ pub fn build_input_stream(
 pub fn build_output_stream(
     host: &cpal::Host,
     device_name: Option<&str>,
-    voice_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
+    peers: PeerList,
     stream_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
     stream_stereo: Arc<std::sync::atomic::AtomicBool>,
     _render_ref_prod: Arc<std::sync::Mutex<HeapProd<f32>>>,
@@ -236,36 +243,51 @@ pub fn build_output_stream(
     };
     let output_sample_rate = stream_config.sample_rate.0;
 
-    let voice_cons_out = voice_cons;
+    let peers_out = peers;
     let stream_cons_out = stream_cons;
     let pb_stream_stereo = stream_stereo;
     let out_ch = output_channels;
 
-    // No resampling in the callback — ring buffers already carry samples at device rate.
-    // Just read i16, convert to f32, mix voice+stream, write to device.
+    // Per-sample mixing: pop one i16 from each peer's ring (lock held for the
+    // whole callback), sum as i32, add stream audio, clamp, write.
     let stream = match output_device.build_output_stream(
         &stream_config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let Ok(mut voice_guard) = voice_cons_out.try_lock() else {
-                for sample in data.iter_mut() { *sample = 0.0; }
-                return;
-            };
+            // Lock-free snapshot of the current peer list.
+            let peer_snapshot = peers_out.load();
+            // Try to lock each peer's consumer once per callback.
+            // Peers whose lock is contended contribute silence for this callback.
+            let mut voice_guards: Vec<std::sync::MutexGuard<HeapCons<i16>>> = peer_snapshot
+                .iter()
+                .filter_map(|p| p.cons.try_lock().ok())
+                .collect();
+
             let Ok(mut stream_guard) = stream_cons_out.try_lock() else {
-                drop(voice_guard);
+                drop(voice_guards);
                 for sample in data.iter_mut() { *sample = 0.0; }
                 return;
             };
 
+            let pop_voice = |guards: &mut Vec<std::sync::MutexGuard<HeapCons<i16>>>| -> i32 {
+                let mut sum: i32 = 0;
+                for g in guards.iter_mut() {
+                    if let Some(s) = g.try_pop() {
+                        sum += s as i32;
+                    }
+                }
+                sum
+            };
+
             if out_ch == 1 {
                 for sample in data.iter_mut() {
-                    let v = voice_guard.try_pop().unwrap_or(0) as i32;
+                    let v = pop_voice(&mut voice_guards);
                     let s = stream_guard.try_pop().unwrap_or(0) as i32;
                     let mixed = (v + s).clamp(-32768, 32767);
                     *sample = mixed as f32 / 32768.0;
                 }
             } else {
                 for frame in data.chunks_exact_mut(out_ch as usize) {
-                    let v = voice_guard.try_pop().unwrap_or(0) as i32;
+                    let v = pop_voice(&mut voice_guards);
                     if pb_stream_stereo.load(std::sync::atomic::Ordering::Relaxed) && out_ch >= 2 {
                         let sl = stream_guard.try_pop().unwrap_or(0) as i32;
                         let sr = stream_guard.try_pop().unwrap_or(0) as i32;
@@ -317,7 +339,7 @@ pub fn build_output_stream(
 pub fn build_voice_output_stream(
     host: &cpal::Host,
     device_name: Option<&str>,
-    voice_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
+    peers: PeerList,
     _render_ref_prod: Arc<std::sync::Mutex<HeapProd<f32>>>,
     event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
 ) -> Option<(cpal::Stream, u32, u16)> {
@@ -357,17 +379,25 @@ pub fn build_voice_output_stream(
     };
     let output_sample_rate = stream_config.sample_rate.0;
     let out_ch = output_channels;
-    let voice_cons_out = voice_cons;
+    let peers_out = peers;
 
     let stream = match output_device.build_output_stream(
         &stream_config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let Ok(mut guard) = voice_cons_out.try_lock() else {
-                for sample in data.iter_mut() { *sample = 0.0; }
-                return;
-            };
+            let peer_snapshot = peers_out.load();
+            let mut voice_guards: Vec<std::sync::MutexGuard<HeapCons<i16>>> = peer_snapshot
+                .iter()
+                .filter_map(|p| p.cons.try_lock().ok())
+                .collect();
+
             for frame in data.chunks_exact_mut(out_ch as usize) {
-                let v = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
+                let mut sum: i32 = 0;
+                for g in voice_guards.iter_mut() {
+                    if let Some(s) = g.try_pop() {
+                        sum += s as i32;
+                    }
+                }
+                let v = sum.clamp(-32768, 32767) as f32 / 32768.0;
                 for ch in frame.iter_mut() { *ch = v; }
             }
         },

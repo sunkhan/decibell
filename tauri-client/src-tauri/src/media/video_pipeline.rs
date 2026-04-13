@@ -169,6 +169,7 @@ pub fn run_video_send_pipeline(
                 encoder.force_keyframe();
             }
             Ok(VideoPipelineControl::SetSelfPreview(v)) => {
+                eprintln!("[self-preview] SetSelfPreview({})", v);
                 self_preview = v;
                 if v { encoder.force_keyframe(); }
             }
@@ -358,6 +359,10 @@ pub fn run_video_send_pipeline(
         match encode_result {
             Ok(Some(encoded)) => {
                 if self_preview {
+                    if frame_id % 60 == 0 || encoded.is_keyframe {
+                        eprintln!("[self-preview] Emitting frame {} ({} bytes, keyframe={})",
+                            frame_id, encoded.data.len(), encoded.is_keyframe);
+                    }
                     let _ = event_tx.send(VideoPipelineEvent::EncodedFrame {
                         data: encoded.data.clone(),
                         is_keyframe: encoded.is_keyframe,

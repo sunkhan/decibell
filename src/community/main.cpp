@@ -653,15 +653,30 @@ void SessionManager::broadcast_to_voice_channel(const char* data, size_t length,
     // since the caller's udp_buffer_ will be overwritten by the next received packet.
     auto buffer = std::make_shared<std::vector<char>>(data, data + length);
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& session : voice_channels_[channel_id]) {
-        if (session != sender && session->get_udp_endpoint().port() != 0) {
-            udp_socket.async_send_to(
-                boost::asio::buffer(*buffer), session->get_udp_endpoint(),
-                [buffer](boost::system::error_code /*ec*/, std::size_t /*bytes_sent*/) {
-                    // buffer captured to extend its lifetime until send completes
-                });
+    // Snapshot recipient endpoints under the lock, then release it before
+    // issuing async_send_to calls. Holding the SessionManager mutex across
+    // per-recipient iteration serialized every other voice-channel operation
+    // (joins, leaves, state updates) behind the fanout loop — the dominant
+    // cause of voice glitches when more than two users shared a channel.
+    std::vector<boost::asio::ip::udp::endpoint> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = voice_channels_.find(channel_id);
+        if (it == voice_channels_.end()) return;
+        targets.reserve(it->second.size());
+        for (auto& session : it->second) {
+            if (session != sender && session->get_udp_endpoint().port() != 0) {
+                targets.push_back(session->get_udp_endpoint());
+            }
         }
+    }
+
+    for (auto& ep : targets) {
+        udp_socket.async_send_to(
+            boost::asio::buffer(*buffer), ep,
+            [buffer](boost::system::error_code /*ec*/, std::size_t /*bytes_sent*/) {
+                // buffer captured to extend its lifetime until send completes
+            });
     }
 }
 
@@ -719,17 +734,29 @@ void SessionManager::remove_watcher(std::shared_ptr<Session> watcher, const std:
 void SessionManager::broadcast_to_watchers(const char* data, size_t length, const std::string& channel_id,
                                             const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket) {
     auto buffer = std::make_shared<std::vector<char>>(data, data + length);
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto ch_it = stream_watchers_.find(channel_id);
-    if (ch_it == stream_watchers_.end()) return;
-    auto st_it = ch_it->second.find(streamer_username);
-    if (st_it == ch_it->second.end()) return;
-    for (auto& watcher : st_it->second) {
-        if (watcher->get_udp_media_endpoint().port() != 0) {
-            udp_socket.async_send_to(
-                boost::asio::buffer(*buffer), watcher->get_udp_media_endpoint(),
-                [buffer](boost::system::error_code, std::size_t) {});
+
+    // Snapshot watcher endpoints under the lock, release, then send. Same
+    // rationale as broadcast_to_voice_channel — keeps the manager mutex free
+    // for joins/leaves while the video/audio fanout is in flight.
+    std::vector<boost::asio::ip::udp::endpoint> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto ch_it = stream_watchers_.find(channel_id);
+        if (ch_it == stream_watchers_.end()) return;
+        auto st_it = ch_it->second.find(streamer_username);
+        if (st_it == ch_it->second.end()) return;
+        targets.reserve(st_it->second.size());
+        for (auto& watcher : st_it->second) {
+            if (watcher->get_udp_media_endpoint().port() != 0) {
+                targets.push_back(watcher->get_udp_media_endpoint());
+            }
         }
+    }
+
+    for (auto& ep : targets) {
+        udp_socket.async_send_to(
+            boost::asio::buffer(*buffer), ep,
+            [buffer](boost::system::error_code, std::size_t) {});
     }
 }
 
