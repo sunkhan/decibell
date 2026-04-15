@@ -415,6 +415,9 @@ fn run_video_recv_thread(
     // matching the voice PING cadence.
     let mut last_media_ping = Instant::now() - Duration::from_secs(10);
     let media_ping_interval = Duration::from_secs(3);
+    let mut media_packets_recvd: u64 = 0;
+    let mut last_stats_log = Instant::now();
+    eprintln!("[video-recv] thread started, sender_id_len={}", sender_id.len());
 
     // Linux: H.264 decoder for frames (WebKitGTK lacks WebCodecs) — tries GPU first
     #[cfg(target_os = "linux")]
@@ -471,6 +474,7 @@ fn run_video_recv_thread(
         // Read from media socket
         match socket.recv(&mut recv_buf) {
             Ok(n) if n >= 1 => {
+                media_packets_recvd += 1;
                 let packet_type = recv_buf[0];
 
                 if packet_type == video_packet::PACKET_TYPE_VIDEO {
@@ -539,7 +543,12 @@ fn run_video_recv_thread(
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0);
             let ping = packet::UdpAudioPacket::new_ping(&sender_id, ts_ns);
-            let _ = socket.send(&ping.to_bytes());
+            let send_res = socket.send(&ping.to_bytes());
+            if last_stats_log.elapsed() > Duration::from_secs(5) {
+                eprintln!("[video-recv] 5s stats: media_pkts_recvd={}, last_ping_send={:?}",
+                    media_packets_recvd, send_res.as_ref().map(|n| *n).map_err(|e| e.kind()));
+                last_stats_log = Instant::now();
+            }
             last_media_ping = Instant::now();
         }
 
