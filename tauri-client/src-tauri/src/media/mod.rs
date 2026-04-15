@@ -408,6 +408,14 @@ fn run_video_recv_thread(
     let mut video_frames_received: u64 = 0;
     let mut last_maintenance = Instant::now();
 
+    // Periodic media-socket PING so the server learns and refreshes this
+    // client's media UDP endpoint. Without this, pure watchers (who never
+    // send video themselves) stay unregistered on the server's media side
+    // and receive no relayed frames. Fire one immediately, then every 3s
+    // matching the voice PING cadence.
+    let mut last_media_ping = Instant::now() - Duration::from_secs(10);
+    let media_ping_interval = Duration::from_secs(3);
+
     // Linux: H.264 decoder for frames (WebKitGTK lacks WebCodecs) — tries GPU first
     #[cfg(target_os = "linux")]
     let mut sw_decoder: Option<video_decoder::H264Decoder> = None;
@@ -521,6 +529,18 @@ fn run_video_recv_thread(
                 eprintln!("[video-recv] Socket error: {}", e);
                 break;
             }
+        }
+
+        // Periodic media-socket PING — registers/refreshes this client's media
+        // endpoint on the server so video relay can reach us.
+        if last_media_ping.elapsed() >= media_ping_interval {
+            let ts_ns = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let ping = packet::UdpAudioPacket::new_ping(&sender_id, ts_ns);
+            let _ = socket.send(&ping.to_bytes());
+            last_media_ping = Instant::now();
         }
 
         // Periodic maintenance: NACKs, PLI, stale cleanup

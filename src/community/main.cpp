@@ -1002,6 +1002,34 @@ private:
                     uint8_t packet_type = static_cast<uint8_t>(media_udp_buffer_[0]);
                     constexpr int SID = chatproj::SENDER_ID_SIZE;
 
+                    // PING: authenticate, register/refresh the sender's media
+                    // endpoint so broadcast_to_watchers can reach them, then
+                    // echo back for RTT measurement. Pure watchers (who never
+                    // send VIDEO themselves) rely on this to receive relay.
+                    if (packet_type == chatproj::UdpPacketType::PING &&
+                        bytes_recvd >= 1 + SID + 4) {
+                        std::string token_str;
+                        chatproj::UdpAudioPacket* packet =
+                            reinterpret_cast<chatproj::UdpAudioPacket*>(media_udp_buffer_);
+                        for (int i = 0; i < SID; ++i) {
+                            if (packet->sender_id[i] == '\0') break;
+                            token_str.push_back(packet->sender_id[i]);
+                        }
+                        if (!token_str.empty()) {
+                            auto session = manager_.find_session_by_token(token_str, jwt_secret_);
+                            if (session && session->get_udp_media_endpoint() != media_udp_sender_endpoint_) {
+                                session->set_udp_media_endpoint(media_udp_sender_endpoint_);
+                            }
+                        }
+                        auto echo_buf = std::make_shared<std::vector<uint8_t>>(
+                            media_udp_buffer_, media_udp_buffer_ + bytes_recvd);
+                        media_udp_socket_.async_send_to(
+                            boost::asio::buffer(*echo_buf), media_udp_sender_endpoint_,
+                            [echo_buf](boost::system::error_code, std::size_t) {});
+                        do_receive_media_udp();
+                        return;
+                    }
+
                     // KEYFRAME_REQUEST: relay to the target streamer
                     if (packet_type == chatproj::UdpPacketType::KEYFRAME_REQUEST &&
                         bytes_recvd >= sizeof(chatproj::UdpKeyframeRequest)) {
