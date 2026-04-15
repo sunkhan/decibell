@@ -239,7 +239,9 @@ impl H264Decoder {
         ctx.set_format(ffmpeg_next::format::Pixel::YUV420P);
         ctx.set_color_range(ffmpeg_next::color::Range::JPEG);
         ctx.set_time_base(ffmpeg_next::Rational::new(1, 30));
-        ctx.set_quality(8);
+        // MJPEG qscale: 1 = near-lossless, 31 = worst. 8 produced visible 8x8
+        // block artifacts on remote streams; 2 is high-quality with modest size.
+        ctx.set_quality(2);
 
         match ctx.open() {
             Ok(enc) => {
@@ -319,7 +321,7 @@ impl H264Decoder {
                 ffmpeg_next::format::Pixel::YUV420P,
                 w,
                 h,
-                ffmpeg_next::software::scaling::Flags::FAST_BILINEAR,
+                ffmpeg_next::software::scaling::Flags::BILINEAR,
             )
             .ok();
         }

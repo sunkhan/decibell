@@ -186,8 +186,8 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
       )}
 
       {/* Input bar */}
-      <div className="px-4 pb-[18px]">
-        <div className="flex items-center gap-2.5 rounded-xl border border-border bg-bg-secondary px-3.5 py-[11px] transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
+      <div className="px-3 pb-2">
+        <div className="flex min-h-[54px] items-center gap-2.5 rounded-xl border border-border bg-bg-secondary px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
           <button className="flex h-7 w-7 shrink-0 self-end items-center justify-center rounded-full bg-surface-hover text-text-muted transition-colors hover:bg-accent-soft hover:text-accent">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" />

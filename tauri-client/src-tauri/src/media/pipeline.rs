@@ -734,6 +734,7 @@ pub fn run_audio_pipeline(
                                 ));
 
                                 peer.voice_jitter.push(pkt.sequence, opus_data.to_vec());
+                                peer.voice_underrun_logged = false;
                             } else if pkt.packet_type == PACKET_TYPE_STREAM_AUDIO {
                                 if username != sender_id {
                                     let now = Instant::now();
@@ -785,8 +786,11 @@ pub fn run_audio_pipeline(
                     Some(v) => v,
                     None => {
                         // Buffer not ready (initial fill or auto-recovery reset).
-                        if peer.voice_drain_time != drain_now {
+                        // Log once per underrun episode; the flag is cleared when
+                        // packets resume in the recv handler.
+                        if !peer.voice_underrun_logged {
                             eprintln!("[pipeline] Jitter buffer reset for peer '{}' — re-buffering", username);
+                            peer.voice_underrun_logged = true;
                         }
                         peer.voice_drain_time = drain_now;
                         break;

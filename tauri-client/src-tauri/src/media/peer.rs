@@ -38,6 +38,7 @@ pub struct PeerAudio {
 
     pub voice_jitter: JitterBuffer,
     pub voice_drain_time: Instant,
+    pub voice_underrun_logged: bool,
 
     // Stream audio (screen-share audio) — unchanged location for now.
     pub stream_audio_decoder: Option<StereoOpusDecoder>,
@@ -70,6 +71,7 @@ impl PeerAudio {
             last_packet_time: now,
             voice_jitter: JitterBuffer::new(),
             voice_drain_time: now,
+            voice_underrun_logged: false,
             stream_audio_decoder: None,
             stream_jitter: JitterBuffer::new(),
             stream_drain_time: now,

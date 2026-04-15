@@ -56,7 +56,9 @@ export default function ServerBar() {
   };
 
   return (
-    <div className="relative flex h-[58px] shrink-0 items-center border-b border-border bg-bg-primary">
+    <div className="relative z-10 flex h-[58px] shrink-0 items-center bg-bg-primary">
+      {/* Bottom separator starts after the home-button column. */}
+      <div className="pointer-events-none absolute bottom-0 left-[68px] right-0 border-b border-border" />
       {/* Home button — width matches DM sidebar */}
       <div className="flex w-[68px] shrink-0 items-center justify-center">
         <button
