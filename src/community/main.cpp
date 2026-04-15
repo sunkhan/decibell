@@ -746,21 +746,10 @@ void SessionManager::broadcast_to_watchers(const char* data, size_t length, cons
         auto st_it = ch_it->second.find(streamer_username);
         if (st_it == ch_it->second.end()) return;
         targets.reserve(st_it->second.size());
-        int zero_skipped = 0;
         for (auto& watcher : st_it->second) {
             if (watcher->get_udp_media_endpoint().port() != 0) {
                 targets.push_back(watcher->get_udp_media_endpoint());
-            } else {
-                zero_skipped++;
             }
-        }
-        static std::atomic<uint64_t> bcast_count{0};
-        uint64_t bc = ++bcast_count;
-        if (bc <= 5 || bc % 300 == 0) {
-            std::cout << "[bcast] streamer=" << streamer_username
-                      << " watchers_total=" << st_it->second.size()
-                      << " targets=" << targets.size()
-                      << " zero_skipped=" << zero_skipped << "\n";
         }
     }
 
@@ -1026,20 +1015,10 @@ private:
                             if (packet->sender_id[i] == '\0') break;
                             token_str.push_back(packet->sender_id[i]);
                         }
-                        static std::atomic<int> ping_log_count{0};
-                        if (ping_log_count++ < 8) {
-                            auto session = manager_.find_session_by_token(token_str, jwt_secret_);
-                            std::cout << "[media-udp] PING from " << media_udp_sender_endpoint_
-                                      << " token_len=" << token_str.size()
-                                      << " session=" << (session ? session->get_username() : "<none>")
-                                      << "\n";
-                        }
                         if (!token_str.empty()) {
                             auto session = manager_.find_session_by_token(token_str, jwt_secret_);
                             if (session && session->get_udp_media_endpoint() != media_udp_sender_endpoint_) {
                                 session->set_udp_media_endpoint(media_udp_sender_endpoint_);
-                                std::cout << "[media-udp] registered media endpoint for "
-                                          << session->get_username() << "\n";
                             }
                         }
                         auto echo_buf = std::make_shared<std::vector<uint8_t>>(
@@ -1111,12 +1090,6 @@ private:
                                     std::memcpy(media_udp_buffer_ + 1, uname.c_str(),
                                                 std::min(uname.size(), size_t(SID - 1)));
 
-                                    static std::atomic<uint64_t> video_recv_count{0};
-                                    uint64_t c = ++video_recv_count;
-                                    if (c <= 5 || c % 300 == 0) {
-                                        std::cout << "[media-udp] VIDEO from " << uname
-                                                  << " ch=" << channel << " cnt=" << c << "\n";
-                                    }
                                     manager_.broadcast_to_watchers(
                                         media_udp_buffer_, bytes_recvd, channel, uname, media_udp_socket_);
                                 }
