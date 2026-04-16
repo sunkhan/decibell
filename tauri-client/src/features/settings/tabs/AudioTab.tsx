@@ -45,15 +45,15 @@ function DeviceSelector({
   const displayName = devices.find((d) => d.name === selected)?.label ?? selected ?? "Default";
 
   return (
-    <div className="rounded-xl bg-bg-primary p-4" ref={ref}>
+    <div className="rounded-[10px] border border-border-divider bg-bg-light p-4" ref={ref}>
       <div className="mb-2.5 flex items-center gap-2.5">
-        {icon}
-        <span className="text-[13px] font-semibold text-text-primary">{label}</span>
+        <span className="text-text-muted">{icon}</span>
+        <span className="text-[13px] font-medium text-text-secondary">{label}</span>
       </div>
       <div className="relative">
         <button
           onClick={() => setOpen(!open)}
-          className="flex w-full items-center justify-between rounded-lg border border-border bg-bg-secondary px-3 py-2.5 text-left text-[12px] text-text-primary transition-colors hover:border-accent/40"
+          className="flex w-full items-center justify-between rounded-md border border-border bg-bg-lighter px-3.5 py-2.5 text-left text-[13px] text-text-primary transition-all hover:border-accent/40 focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-soft)] focus:outline-none"
         >
           <span className="truncate">{displayName}</span>
           <svg
@@ -70,14 +70,14 @@ function DeviceSelector({
           </svg>
         </button>
         {open && (
-          <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-y-auto rounded-lg border border-border bg-bg-secondary shadow-xl">
+          <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-y-auto rounded-[10px] border border-border bg-bg-lighter shadow-[0_8px_32px_rgba(0,0,0,0.4)]">
             <button
               onClick={() => {
                 onChange(null);
                 setOpen(false);
               }}
-              className={`flex w-full items-center px-3 py-2 text-left text-[12px] transition-colors hover:bg-surface-hover ${
-                selected === null ? "text-accent-bright font-semibold" : "text-text-secondary"
+              className={`flex w-full items-center px-3.5 py-2.5 text-left text-[13px] transition-colors hover:bg-surface-hover ${
+                selected === null ? "font-medium text-accent-bright" : "text-text-secondary"
               }`}
             >
               Default
@@ -89,8 +89,8 @@ function DeviceSelector({
                   onChange(device.name);
                   setOpen(false);
                 }}
-                className={`flex w-full items-center px-3 py-2 text-left text-[12px] transition-colors hover:bg-surface-hover ${
-                  selected === device.name ? "text-accent-bright font-semibold" : "text-text-secondary"
+                className={`flex w-full items-center px-3.5 py-2.5 text-left text-[13px] transition-colors hover:bg-surface-hover ${
+                  selected === device.name ? "font-medium text-accent-bright" : "text-text-secondary"
                 }`}
               >
                 {device.label}
@@ -200,15 +200,15 @@ function VoiceThresholdBar() {
   const aboveThreshold = isOpenMic || inputLevel >= voiceThresholdDb;
 
   return (
-    <div className="rounded-xl bg-bg-primary p-4">
-      <div className="mb-2.5 flex items-center gap-2.5">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-text-secondary">
+    <div className="rounded-[10px] border border-border-divider bg-bg-light p-4">
+      <div className="mb-3 flex items-center gap-2.5">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-text-muted">
           <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
           <path d="M19 10v2a7 7 0 01-14 0v-2" />
           <line x1="12" y1="19" x2="12" y2="23" />
         </svg>
-        <span className="text-[13px] font-semibold text-text-primary">Voice Activity Threshold</span>
-        <span className="ml-auto text-[11px] font-semibold text-text-muted">
+        <span className="text-[14px] font-medium text-text-primary">Voice Activity Threshold</span>
+        <span className="ml-auto rounded bg-accent-soft px-2 py-0.5 text-[12px] font-medium text-accent-bright">
           {voiceThresholdDb <= MIN_THRESHOLD_DB ? "Off" : `${Math.round(voiceThresholdDb)} dB`}
         </span>
       </div>
@@ -216,7 +216,7 @@ function VoiceThresholdBar() {
       {/* Bar container */}
       <div
         ref={barRef}
-        className="relative h-2 w-full cursor-pointer rounded-full bg-bg-secondary select-none"
+        className="relative h-[6px] w-full cursor-pointer rounded-full bg-bg-lighter select-none"
         onMouseDown={handleMouseDown}
       >
         {/* Input level fill */}
@@ -229,16 +229,16 @@ function VoiceThresholdBar() {
 
         {/* Threshold handle — pill with glow */}
         <div
-          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-10 flex items-center justify-center"
+          className="absolute top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 items-center justify-center"
           style={{ left: `${thresholdPercent}%` }}
         >
-          <div className="h-5 w-1.5 rounded-full bg-white shadow-[0_0_6px_rgba(255,255,255,0.4)]" />
+          <div className="h-[18px] w-[18px] rounded-full border-2 border-accent bg-bg-mid shadow-[0_0_8px_rgba(56,143,255,0.35)]" />
         </div>
       </div>
 
-      <div className="mt-2 flex items-center justify-between">
-        <span className="text-[10px] text-text-muted">Sensitive</span>
-        <span className="text-[10px] text-text-muted">Aggressive</span>
+      <div className="mt-2.5 flex items-center justify-between">
+        <span className="text-[11px] text-text-muted">Sensitive</span>
+        <span className="text-[11px] text-text-muted">Aggressive</span>
       </div>
     </div>
   );
@@ -251,20 +251,24 @@ function ToggleSwitch({ label, description, enabled, onToggle }: {
   onToggle: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between rounded-xl bg-bg-primary px-4 py-3">
-      <div>
-        <div className="text-[13px] font-semibold text-text-primary">{label}</div>
-        <div className="mt-0.5 text-[11px] text-text-muted">{description}</div>
+    <div className="flex items-center justify-between rounded-[10px] border border-border-divider bg-bg-light px-4 py-3.5 transition-colors hover:bg-bg-lighter">
+      <div className="pr-4">
+        <div className="text-[14px] font-medium text-text-primary">{label}</div>
+        <div className="mt-1 text-[12px] leading-relaxed text-text-muted">{description}</div>
       </div>
       <button
         onClick={onToggle}
-        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-          enabled ? "bg-accent" : "bg-text-muted/30"
+        className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
+          enabled
+            ? "border-accent bg-accent shadow-[0_0_8px_rgba(56,143,255,0.22)]"
+            : "border-border bg-bg-lighter"
         }`}
       >
         <div
-          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-            enabled ? "translate-x-[22px]" : "translate-x-0.5"
+          className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
+            enabled
+              ? "translate-x-[18px] bg-white"
+              : "translate-x-[3px] bg-text-muted"
           }`}
         />
       </button>
@@ -346,114 +350,111 @@ export default function AudioTab() {
   };
 
   return (
-    <div>
+    <div className="flex flex-col gap-6">
       {/* Devices section */}
-      <div className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.08em] text-text-muted">
-        Devices
-      </div>
-      <div className="mb-2 flex flex-col gap-2">
-        <DeviceSelector
-          label="Input Device"
-          icon={
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-text-secondary">
-              <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
-              <path d="M19 10v2a7 7 0 01-14 0v-2" />
-              <line x1="12" y1="19" x2="12" y2="23" />
-            </svg>
-          }
-          devices={devices.inputs}
-          selected={inputDevice}
-          onChange={handleInputChange}
-        />
-        <DeviceSelector
-          label="Output Device"
-          icon={
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-text-secondary">
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-              <path d="M19.07 4.93a10 10 0 010 14.14" />
-              <path d="M15.54 8.46a5 5 0 010 7.07" />
-            </svg>
-          }
-          devices={devices.outputs}
-          selected={outputDevice}
-          onChange={handleOutputChange}
-        />
-      </div>
-
-      {/* Divider */}
-      <div className="my-4 h-px bg-border" />
-
-      {/* Voice Threshold section */}
-      <div className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.08em] text-text-muted">
-        Input Sensitivity
-      </div>
-      <div className="mb-2">
-        <VoiceThresholdBar />
-      </div>
-
-      {/* Divider */}
-      <div className="my-4 h-px bg-border" />
-
-      {/* Voice Processing section */}
-      <div className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.08em] text-text-muted">
-        Voice Processing
-      </div>
-      <div className="mb-2 flex flex-col gap-2">
-        <ToggleSwitch
-          label="Echo Cancellation"
-          description="Remove speaker audio bleeding into your microphone"
-          enabled={aecEnabled}
-          onToggle={handleAecToggle}
-        />
-        <ToggleSwitch
-          label="Noise Suppression"
-          description="AI-powered noise removal for fans, keyboards, and background noise"
-          enabled={nsLevel > 0}
-          onToggle={handleNsToggle}
-        />
-        <ToggleSwitch
-          label="Automatic Gain Control"
-          description="Normalize your microphone volume for consistent levels"
-          enabled={agcEnabled}
-          onToggle={handleAgcToggle}
-        />
-      </div>
-
-      {/* Divider */}
-      <div className="my-4 h-px bg-border" />
-
-      {/* Stream Audio section */}
-      <div className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.08em] text-text-muted">
-        Stream Audio
-      </div>
-      <div className="flex flex-col gap-2">
-        <ToggleSwitch
-          label="Separate stream output device"
-          description="Route stream audio to a different output device than voice chat"
-          enabled={separateStreamOutput}
-          onToggle={handleSeparateStreamToggle}
-        />
-        {separateStreamOutput && (
+      <div>
+        <div className="mb-2.5 pl-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+          Devices
+        </div>
+        <div className="flex flex-col gap-2.5">
           <DeviceSelector
-            label="Stream Output Device"
+            label="Input Device"
             icon={
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-text-secondary">
-                <path d="M9 18V5l12-2v13" />
-                <circle cx="6" cy="18" r="3" />
-                <circle cx="18" cy="16" r="3" />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
+                <path d="M19 10v2a7 7 0 01-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+              </svg>
+            }
+            devices={devices.inputs}
+            selected={inputDevice}
+            onChange={handleInputChange}
+          />
+          <DeviceSelector
+            label="Output Device"
+            icon={
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <path d="M19.07 4.93a10 10 0 010 14.14" />
+                <path d="M15.54 8.46a5 5 0 010 7.07" />
               </svg>
             }
             devices={devices.outputs}
-            selected={streamOutputDevice}
-            onChange={handleStreamOutputChange}
+            selected={outputDevice}
+            onChange={handleOutputChange}
           />
-        )}
-        <ToggleSwitch
-          label="Stereo stream audio"
-          description="Preserve left/right stereo positioning when watching streams"
-          enabled={streamStereo}
-          onToggle={handleStereoToggle}
-        />
+        </div>
+      </div>
+
+      {/* Voice Threshold section */}
+      <div>
+        <div className="mb-2.5 pl-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+          Input Sensitivity
+        </div>
+        <VoiceThresholdBar />
+      </div>
+
+      {/* Voice Processing section */}
+      <div>
+        <div className="mb-2.5 pl-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+          Voice Processing
+        </div>
+        <div className="flex flex-col gap-2.5">
+          <ToggleSwitch
+            label="Echo Cancellation"
+            description="Remove speaker audio bleeding into your microphone"
+            enabled={aecEnabled}
+            onToggle={handleAecToggle}
+          />
+          <ToggleSwitch
+            label="Noise Suppression"
+            description="AI-powered noise removal for fans, keyboards, and background noise"
+            enabled={nsLevel > 0}
+            onToggle={handleNsToggle}
+          />
+          <ToggleSwitch
+            label="Automatic Gain Control"
+            description="Normalize your microphone volume for consistent levels"
+            enabled={agcEnabled}
+            onToggle={handleAgcToggle}
+          />
+        </div>
+      </div>
+
+      {/* Stream Audio section */}
+      <div>
+        <div className="mb-2.5 pl-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+          Stream Audio
+        </div>
+        <div className="flex flex-col gap-2.5">
+          <ToggleSwitch
+            label="Separate stream output device"
+            description="Route stream audio to a different output device than voice chat"
+            enabled={separateStreamOutput}
+            onToggle={handleSeparateStreamToggle}
+          />
+          {separateStreamOutput && (
+            <DeviceSelector
+              label="Stream Output Device"
+              icon={
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M9 18V5l12-2v13" />
+                  <circle cx="6" cy="18" r="3" />
+                  <circle cx="18" cy="16" r="3" />
+                </svg>
+              }
+              devices={devices.outputs}
+              selected={streamOutputDevice}
+              onChange={handleStreamOutputChange}
+            />
+          )}
+          <ToggleSwitch
+            label="Stereo stream audio"
+            description="Preserve left/right stereo positioning when watching streams"
+            enabled={streamStereo}
+            onToggle={handleStereoToggle}
+          />
+        </div>
       </div>
     </div>
   );

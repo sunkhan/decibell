@@ -417,6 +417,7 @@ impl CommunityClient {
                                 Err(_) => "unknown",
                             }
                             .to_string(),
+                            voice_bitrate_kbps: c.voice_bitrate_kbps,
                         })
                         .collect();
                     events::emit_community_auth_responded(

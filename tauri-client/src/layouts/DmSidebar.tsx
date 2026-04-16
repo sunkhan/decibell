@@ -25,7 +25,7 @@ export default function DmSidebar() {
   };
 
   return (
-    <div className="relative flex h-full w-[68px] shrink-0 flex-col items-center bg-bg-dmbar pb-14 pt-2.5">
+    <div className="relative flex h-full w-[68px] shrink-0 flex-col items-center bg-bg-darkest pb-14 pt-2.5">
       {/* Right border — stops above UserPanel */}
       <div className="absolute right-0 top-0 bottom-14 w-px bg-border" />
       {/* DM contacts */}

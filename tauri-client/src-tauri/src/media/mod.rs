@@ -55,6 +55,7 @@ impl VoiceEngine {
         server_host: &str,
         server_port: u16,
         jwt: &str,
+        voice_bitrate_bps: i32,
         app: AppHandle,
     ) -> Result<Self, String> {
         let (control_tx, control_rx) = mpsc::channel();
@@ -164,7 +165,7 @@ impl VoiceEngine {
         let audio_thread = thread::Builder::new()
             .name("decibell-audio".to_string())
             .spawn(move || {
-                pipeline::run_audio_pipeline(voice_socket_for_audio, sender_id_for_audio, control_rx, event_tx);
+                pipeline::run_audio_pipeline(voice_socket_for_audio, sender_id_for_audio, voice_bitrate_bps, control_rx, event_tx);
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
 

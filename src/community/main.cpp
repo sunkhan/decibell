@@ -382,6 +382,7 @@ private:
             ch3->set_id("voice-lounge");
             ch3->set_name("Voice Lounge");
             ch3->set_type(chatproj::ChannelInfo::VOICE);
+            ch3->set_voice_bitrate_kbps(64);
         }
 
         send_packet(p);

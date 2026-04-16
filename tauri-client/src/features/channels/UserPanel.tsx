@@ -92,7 +92,7 @@ export default function UserPanel() {
   };
 
   return (
-    <div className="rounded-xl bg-[#1a1b2e] px-3 py-2.5 shadow-lg">
+    <div className="rounded-xl border border-border bg-bg-light px-3 py-2.5 shadow-lg">
       {/* Voice connection info — only when connected */}
       {connectedChannelId && (
         <div className="mb-2 flex items-center gap-1.5 px-0.5">
@@ -169,7 +169,7 @@ export default function UserPanel() {
           >
             {username.charAt(0).toUpperCase()}
           </div>
-          <div className="absolute -bottom-px -right-px h-3 w-3 rounded-full border-[2.5px] border-[#1a1b2e] bg-success" />
+          <div className="absolute -bottom-px -right-px h-3 w-3 rounded-full border-[2.5px] border-bg-light bg-success" />
         </div>
 
         {/* Username */}

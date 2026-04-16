@@ -231,7 +231,7 @@ export default function DmChatPanel() {
 
       {/* Input bar */}
       <div className="px-4 pb-[18px]">
-        <div className="flex items-center gap-2.5 rounded-xl border border-border bg-bg-secondary px-3.5 py-[11px] transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
+        <div className="flex items-center gap-2.5 rounded-xl border border-border bg-bg-light px-3.5 py-[11px] transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
           <textarea
             ref={textareaRef}
             rows={1}

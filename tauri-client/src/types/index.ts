@@ -21,6 +21,7 @@ export interface Channel {
   id: string;
   name: string;
   type: "text" | "voice";
+  voiceBitrateKbps?: number;
 }
 
 export interface Message {

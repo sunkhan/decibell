@@ -3,6 +3,8 @@
    ═══════════════════════════════════════ */
 
 @import "@fontsource-variable/inter/index.css";
+@import "@fontsource-variable/dm-sans/index.css";
+@import "@fontsource-variable/outfit/index.css";
 
 @font-face {
   font-family: "Plus Jakarta Sans";
@@ -60,37 +62,48 @@
 @import "tailwindcss";
 
 @theme {
+  /* Surface scale — darkest → lightest */
+  --color-bg-darkest: #0a0c10;   /* ServerBar, DmSidebar, UserPanel */
+  --color-bg-dark: #0f1218;      /* ChannelSidebar, MembersList, FriendsList */
+  --color-bg-mid: #141820;       /* ChatView / main content area */
+  --color-bg-light: #1a1f2b;     /* Message input, channel list items */
+  --color-bg-lighter: #212836;   /* Hover surfaces */
+  --color-bg-surface: #283040;   /* Secondary buttons */
+
   --color-bg-titlebar: #0a0b10;
   --color-bg-primary: #0e0f16;
   --color-bg-secondary: #14151e;
   --color-bg-tertiary: #191a25;
   --color-bg-input: #14151e;
   --color-bg-dmbar: #101119;
-  --color-border: rgba(255,255,255,0.05);
-  --color-border-divider: rgba(255,255,255,0.07);
+  --color-border: rgba(255,255,255,0.06);           /* medium — UserPanel outline, input border */
+  --color-border-divider: rgba(255,255,255,0.035);  /* subtle — panel dividers */
 
-  --color-accent: #388bfd;
-  --color-accent-bright: #58a6ff;
-  --color-accent-hover: #58a6ff;
+  --color-accent: #388fff;          /* primary accent — buttons, active indicators, focus rings */
+  --color-accent-bright: #5ea8ff;   /* bright accent — active channel hash, role dots */
+  --color-accent-hover: #2d7ae6;    /* hover accent — button hover states */
   --color-accent-pressed: #1a5fc9;
-  --color-accent-soft: rgba(56,139,253,0.10);
-  --color-accent-mid: rgba(56,139,253,0.16);
+  --color-accent-soft: rgba(56,143,255,0.10);
+  --color-accent-mid: rgba(56,143,255,0.16);
 
   --color-success: #3fb950;
   --color-warning: #d29922;
   --color-error: #f85149;
   --color-danger: #f85149;
 
-  --color-text-primary: #d2d5da;
-  --color-text-bright: #f0f3f6;
-  --color-text-secondary: #8b949e;
-  --color-text-muted: #484f58;
+  --color-text-primary: #dce4f0;    /* usernames, headings */
+  --color-text-bright: #f0f3f6;     /* extra emphasis — kept for existing callers */
+  --color-text-secondary: #7e8da6;  /* descriptions, unhovered channel/voice names */
+  --color-text-muted: #4d5b72;      /* section labels, icons */
+  --color-text-faint: #3a4556;      /* placeholders, inactive elements */
 
   --color-surface-hover: rgba(255,255,255,0.04);
   --color-surface-active: rgba(255,255,255,0.07);
 
   --font-sans: "Inter Variable", "Inter", "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-channel: "DM Sans Variable", "DM Sans", "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit Variable", "Outfit", "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
 @layer base {

@@ -63,6 +63,7 @@ pub struct ChannelInfoPayload {
     pub id: String,
     pub name: String,
     pub r#type: String,
+    pub voice_bitrate_kbps: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

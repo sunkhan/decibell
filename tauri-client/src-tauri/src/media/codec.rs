@@ -18,12 +18,14 @@ pub struct OpusEncoder {
 }
 
 impl OpusEncoder {
-    pub fn new() -> Result<Self, String> {
+    /// Default voice bitrate when the server doesn't specify one (matches Discord).
+    pub const DEFAULT_BITRATE_BPS: i32 = 64000;
+
+    pub fn new(bitrate_bps: i32) -> Result<Self, String> {
         let mut encoder =
             Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::Voip)
                 .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
-        // 64kbps — matches Discord, major clarity improvement over the ~24kbps default
-        let _ = encoder.set_bitrate(audiopus::Bitrate::BitsPerSecond(64000));
+        let _ = encoder.set_bitrate(audiopus::Bitrate::BitsPerSecond(bitrate_bps));
         // Complexity 5 — sweet spot for real-time voice: half the CPU of 10,
         // no perceptible quality difference for speech.
         let _ = encoder.set_complexity(5);

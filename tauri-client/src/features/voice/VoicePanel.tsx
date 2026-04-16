@@ -107,7 +107,7 @@ export default function VoicePanel() {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-bg-tertiary">
+    <div className="flex min-h-0 flex-1 flex-col bg-bg-mid">
       {/* Header - hidden when stream is in real fullscreen */}
       {!isStreamFullscreen && (
         <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">

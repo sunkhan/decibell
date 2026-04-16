@@ -30,14 +30,14 @@ function SegmentedControl<T extends string | number>({
   onChange: (v: T) => void;
 }) {
   return (
-    <div className="flex rounded-lg bg-bg-tertiary p-0.5">
+    <div className="flex rounded-[8px] bg-bg-darkest p-[3px]">
       {options.map((opt) => (
         <button
           key={String(opt.value)}
           onClick={() => onChange(opt.value)}
-          className={`flex-1 rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+          className={`flex-1 rounded-[6px] px-3 py-[7px] text-[11px] font-semibold transition-all ${
             value === opt.value
-              ? "bg-accent/15 text-accent"
+              ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(56,143,255,0.1)]"
               : "text-text-muted hover:text-text-secondary"
           }`}
         >
@@ -119,12 +119,12 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center transition-colors duration-300"
-      style={{ backgroundColor: visible ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0)" }}
+      style={{ backgroundColor: visible ? "rgba(0,0,0,0.65)" : "rgba(0,0,0,0)" }}
       onClick={(e) => e.target === e.currentTarget && handleClose()}
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="w-[560px] rounded-xl border border-border bg-bg-secondary shadow-2xl transition-all duration-300"
+        className="w-[560px] overflow-hidden rounded-2xl border border-border bg-bg-dark shadow-[0_24px_80px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.02)] transition-all duration-300"
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",
@@ -132,26 +132,30 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
       >
         {/* Source selection — on Linux, the OS portal handles picking */}
         {!loading && sources.length === 1 && sources[0].id === "portal" ? (
-          <div className="px-5 py-6 text-center">
-            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-accent/10 text-xl">
-              🖥
+          <div className="px-6 py-8 text-center">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-accent-soft">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent-bright">
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <line x1="8" y1="21" x2="16" y2="21" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
             </div>
-            <p className="text-sm font-semibold text-text-bright">
+            <p className="font-display text-[15px] font-semibold text-text-primary">
               Screen or window selection
             </p>
-            <p className="mt-1 text-xs text-text-muted">
+            <p className="mt-1.5 text-[13px] leading-relaxed text-text-muted">
               A system dialog will appear after you click Go Live to choose what to share.
             </p>
           </div>
         ) : (
           <>
             {/* Tabs */}
-            <div className="flex border-b-2 border-border px-5">
+            <div className="flex gap-1 border-b border-border-divider px-5">
               <button
                 onClick={() => setTab("screen")}
-                className={`-mb-[2px] border-b-2 px-4 py-2.5 text-xs font-bold transition-colors ${
+                className={`-mb-px border-b-2 px-4 py-3 text-[13px] font-medium transition-colors ${
                   tab === "screen"
-                    ? "border-accent text-accent"
+                    ? "border-accent text-text-primary"
                     : "border-transparent text-text-muted hover:text-text-secondary"
                 }`}
               >
@@ -159,9 +163,9 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
               </button>
               <button
                 onClick={() => setTab("window")}
-                className={`-mb-[2px] border-b-2 px-4 py-2.5 text-xs font-bold transition-colors ${
+                className={`-mb-px border-b-2 px-4 py-3 text-[13px] font-medium transition-colors ${
                   tab === "window"
-                    ? "border-accent text-accent"
+                    ? "border-accent text-text-primary"
                     : "border-transparent text-text-muted hover:text-text-secondary"
                 }`}
               >
@@ -172,12 +176,12 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
             {/* Source grid */}
             <div className="grid max-h-[320px] grid-cols-2 gap-3 overflow-y-auto p-5">
               {loading && (
-                <p className="col-span-2 py-8 text-center text-sm text-text-muted">
+                <p className="col-span-2 py-10 text-center text-[13px] text-text-muted">
                   Loading sources...
                 </p>
               )}
               {!loading && displayed.length === 0 && (
-                <p className="col-span-2 py-8 text-center text-sm text-text-muted">
+                <p className="col-span-2 py-10 text-center text-[13px] text-text-muted">
                   No {tab === "screen" ? "screens" : "windows"} found
                 </p>
               )}
@@ -185,13 +189,13 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
                 <button
                   key={source.id}
                   onClick={() => setSelected(source.id)}
-                  className={`overflow-hidden rounded-lg border-2 text-left transition-all ${
+                  className={`overflow-hidden rounded-[10px] text-left transition-all ${
                     selected === source.id
-                      ? "border-accent"
-                      : "border-border hover:border-text-muted"
+                      ? "ring-2 ring-accent ring-offset-1 ring-offset-bg-dark shadow-[0_0_12px_rgba(56,143,255,0.15)]"
+                      : "ring-1 ring-border hover:ring-white/[0.12]"
                   }`}
                 >
-                  <div className="flex h-[120px] items-center justify-center bg-bg-primary overflow-hidden">
+                  <div className="flex h-[120px] items-center justify-center overflow-hidden bg-bg-darkest">
                     {source.thumbnail ? (
                       <img
                         src={source.thumbnail}
@@ -200,7 +204,7 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
                         draggable={false}
                       />
                     ) : (
-                      <span className="text-xs text-text-muted">
+                      <span className="text-[12px] text-text-muted">
                         {source.width > 0
                           ? `${source.width} × ${source.height}`
                           : "Preview"}
@@ -208,10 +212,10 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
                     )}
                   </div>
                   <div
-                    className={`px-3 py-2 text-[11px] font-semibold ${
+                    className={`px-3 py-2.5 text-[12px] font-medium ${
                       selected === source.id
-                        ? "bg-accent/10 text-text-bright"
-                        : "text-text-secondary"
+                        ? "bg-accent-soft text-text-primary"
+                        : "bg-bg-mid text-text-secondary"
                     }`}
                   >
                     {source.name}
@@ -222,12 +226,12 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
           </>
         )}
 
-        {/* Stream settings — segmented controls */}
-        <div className="mx-5 space-y-2.5 rounded-lg bg-bg-primary p-3.5">
+        {/* Stream settings */}
+        <div className="mx-5 mb-1 space-y-3 rounded-[10px] border border-border-divider bg-bg-light p-4">
           {/* Row 1: Resolution, FPS */}
-          <div className="flex gap-2.5">
+          <div className="flex gap-3">
             <div className="flex-1">
-              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
                 Resolution
               </label>
               <SegmentedControl
@@ -239,7 +243,6 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
                 value={streamSettings.resolution}
                 onChange={(v) => {
                   setStreamSettings({ resolution: v });
-                  // Auto-scale bitrate preset when switching resolution
                   if (streamSettings.quality !== "custom") {
                     const isHighRes = v === "source";
                     const presets = { low: isHighRes ? 6000 : 3000, medium: isHighRes ? 12000 : 6000, high: isHighRes ? 20000 : 10000 };
@@ -249,8 +252,8 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
               />
             </div>
             <div className="flex-1">
-              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-                Frame Rate
+              <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+                Frame rate
               </label>
               <SegmentedControl
                 options={[
@@ -264,14 +267,13 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
             </div>
           </div>
 
-          {/* Row 2: Video quality — presets + custom */}
+          {/* Row 2: Video quality */}
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-              Video Quality
+            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+              Video quality
             </label>
-            <div className="flex rounded-lg bg-bg-tertiary p-0.5">
+            <div className="flex rounded-[8px] bg-bg-darkest p-[3px]">
               {(() => {
-                // Scale bitrate presets based on resolution — 1440p+ needs more headroom
                 const isHighRes = streamSettings.resolution === "source";
                 return [
                   { key: "low" as const, label: "Low", sub: isHighRes ? "6 Mbps" : "3 Mbps", bitrate: isHighRes ? 6000 : 3000 },
@@ -289,16 +291,16 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
                       setStreamSettings({ quality: "custom" });
                     }
                   }}
-                  className={`flex flex-1 flex-col items-center rounded-md px-2 py-1.5 transition-colors ${
+                  className={`flex flex-1 flex-col items-center rounded-[6px] px-2 py-[7px] transition-all ${
                     streamSettings.quality === opt.key
-                      ? "bg-accent/15 text-accent"
+                      ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(56,143,255,0.1)]"
                       : "text-text-muted hover:text-text-secondary"
                   }`}
                 >
                   <span className="text-[11px] font-semibold">{opt.label}</span>
                   {opt.sub && (
                     <span className={`text-[9px] ${
-                      streamSettings.quality === opt.key ? "text-accent/60" : "text-text-muted"
+                      streamSettings.quality === opt.key ? "text-accent/60" : "text-text-faint"
                     }`}>
                       {opt.sub}
                     </span>
@@ -309,7 +311,7 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
 
             {/* Custom bitrate slider */}
             {streamSettings.quality === "custom" && (
-              <div className="mt-2 flex items-center gap-3 px-1">
+              <div className="mt-2.5 flex items-center gap-3 px-1">
                 <input
                   type="range"
                   min={1000}
@@ -317,9 +319,9 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
                   step={500}
                   value={streamSettings.videoBitrateKbps}
                   onChange={(e) => setStreamSettings({ videoBitrateKbps: Number(e.target.value) })}
-                  className="custom-slider h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-surface-active accent-accent"
+                  className="h-[6px] flex-1 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[16px] [&::-webkit-slider-thumb]:w-[16px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-mid [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(56,143,255,0.3)]"
                 />
-                <span className="w-[60px] shrink-0 whitespace-nowrap text-right text-[11px] font-semibold tabular-nums text-text-secondary">
+                <span className="w-[60px] shrink-0 whitespace-nowrap text-right text-[11px] font-medium tabular-nums text-text-secondary">
                   {streamSettings.videoBitrateKbps >= 1000
                     ? `${(streamSettings.videoBitrateKbps / 1000).toFixed(streamSettings.videoBitrateKbps % 1000 === 0 ? 0 : 1)} Mbps`
                     : `${streamSettings.videoBitrateKbps} kbps`}
@@ -328,11 +330,11 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
             )}
           </div>
 
-          {/* Row 3: Audio bitrate (only visible when audio sharing is on) */}
+          {/* Row 3: Audio bitrate */}
           {streamSettings.shareAudio && (
             <div>
-              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-                Audio Bitrate
+              <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+                Audio bitrate
               </label>
               <SegmentedControl
                 options={[
@@ -348,32 +350,36 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
 
         {/* Bottom bar */}
         <div className="flex items-center justify-between px-5 py-4">
-          <label className="flex cursor-pointer items-center gap-2.5 text-xs text-text-secondary">
-            <div
+          <label className="flex cursor-pointer items-center gap-3 text-[13px] text-text-secondary">
+            <button
               onClick={() => setStreamSettings({ shareAudio: !streamSettings.shareAudio })}
-              className={`relative h-5 w-9 rounded-full transition-colors ${
-                streamSettings.shareAudio ? "bg-accent" : "bg-surface-hover"
+              className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
+                streamSettings.shareAudio
+                  ? "border-accent bg-accent shadow-[0_0_8px_rgba(56,143,255,0.22)]"
+                  : "border-border bg-bg-lighter"
               }`}
             >
               <div
-                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-                  streamSettings.shareAudio ? "translate-x-4" : "translate-x-0.5"
+                className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
+                  streamSettings.shareAudio
+                    ? "translate-x-[18px] bg-white"
+                    : "translate-x-[3px] bg-text-muted"
                 }`}
               />
-            </div>
+            </button>
             Share audio
           </label>
           <button
             onClick={handleGoLive}
             disabled={!selected || starting}
-            className="rounded-lg bg-accent px-6 py-2 text-[13px] font-bold text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+            className="rounded-[10px] bg-accent px-7 py-2.5 text-[13px] font-semibold text-white shadow-[0_2px_12px_rgba(56,143,255,0.22)] transition-all hover:bg-accent-hover hover:shadow-[0_4px_20px_rgba(56,143,255,0.3)] active:scale-[0.98] disabled:opacity-50 disabled:shadow-none"
           >
             {starting ? "Starting..." : "Go Live"}
           </button>
         </div>
 
         {error && (
-          <p className="px-5 pb-3 text-xs text-error">{error}</p>
+          <p className="px-5 pb-3 text-[12px] text-error">{error}</p>
         )}
       </div>
     </div>,

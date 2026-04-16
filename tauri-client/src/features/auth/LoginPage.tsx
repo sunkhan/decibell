@@ -147,7 +147,7 @@ export default function LoginPage() {
           )}
         </p>
       </form>
-      <p className="absolute bottom-3 right-4 text-[11px] text-text-muted">Decibell 0.3.12</p>
+      <p className="absolute bottom-3 right-4 text-[11px] text-text-muted">Decibell 0.3.13</p>
     </div>
   );
 }

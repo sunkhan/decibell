@@ -16,7 +16,7 @@ interface CommunityAuthPayload {
   serverId: string;
   success: boolean;
   message: string;
-  channels: { id: string; name: string; type: string }[];
+  channels: { id: string; name: string; type: string; voiceBitrateKbps: number }[];
 }
 
 export function useServerEvents() {
@@ -46,6 +46,7 @@ export function useServerEvents() {
             id: ch.id,
             name: ch.name,
             type: ch.type as "text" | "voice",
+            voiceBitrateKbps: ch.voiceBitrateKbps > 0 ? ch.voiceBitrateKbps : undefined,
           }));
           useChatStore.getState().setChannelsForServer(serverId, typedChannels);
           const firstText = typedChannels.find((ch) => ch.type === "text");

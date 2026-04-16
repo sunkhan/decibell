@@ -108,9 +108,11 @@ export default function ChannelSidebar() {
     }
     playSound("connect");
     useVoiceStore.getState().setConnectedChannel(activeServerId, channelId);
+    const channel = useChatStore.getState().channelsByServer[activeServerId]?.find((ch) => ch.id === channelId);
     invoke("join_voice_channel", {
       serverId: activeServerId,
       channelId,
+      voiceBitrateKbps: channel?.voiceBitrateKbps ?? null,
     }).then(() => {
       // Apply saved audio device settings to the new pipeline
       const { inputDevice, outputDevice, separateStreamOutput, streamOutputDevice, voiceThresholdDb, aecEnabled, noiseSuppressionLevel, agcEnabled } = useUiStore.getState();
@@ -141,7 +143,7 @@ export default function ChannelSidebar() {
 
   if (activeView === "home" || activeView === "dm") {
     return (
-      <div className="relative flex shrink-0 flex-col border-r border-border bg-bg-dmbar pb-14" style={{ width: sidebarWidth }}>
+      <div className="relative flex shrink-0 flex-col border-r border-border bg-bg-dark pb-14" style={{ width: sidebarWidth }}>
         <div className="flex h-12 shrink-0 items-center border-b border-border px-4">
           <h2 className="text-[15px] font-semibold text-text-bright">
             Direct Messages
@@ -212,10 +214,10 @@ export default function ChannelSidebar() {
   }
 
   return (
-    <div className="relative flex shrink-0 flex-col border-r border-border bg-bg-dmbar pb-14" style={{ width: sidebarWidth }}>
+    <div className="relative flex shrink-0 flex-col border-r border-border bg-bg-dark pb-14" style={{ width: sidebarWidth }}>
       {/* Server name header */}
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
-        <h2 className="flex-1 truncate text-[15px] font-semibold text-text-bright">
+        <h2 className="flex-1 truncate font-display text-[15px] font-semibold tracking-[0.01em] text-text-bright">
           {serverName ?? "Server"}
         </h2>
         {servers.some((s) => s.id === activeServerId) ? (
@@ -235,13 +237,13 @@ export default function ChannelSidebar() {
         {textChannels.length > 0 && (
           <div className="mb-4">
             <div
-              className="mb-1 flex cursor-pointer select-none items-center gap-1 px-2"
+              className="group mb-1 flex cursor-pointer select-none items-center gap-1 px-2"
               onClick={() => setTextCollapsed(!textCollapsed)}
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`text-text-muted ${textCollapsed ? "-rotate-90" : ""}`}>
                 <polyline points="6 9 12 15 18 9" />
               </svg>
-              <h3 className="text-[11px] font-bold uppercase tracking-[0.08em] text-text-muted">
+              <h3 className="font-channel text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted transition-colors group-hover:text-text-secondary">
                 Text Channels
               </h3>
             </div>
@@ -255,10 +257,10 @@ export default function ChannelSidebar() {
                     : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
                 }`}
               >
-                <span className={`font-mono text-[17px] font-semibold ${activeChannelId === ch.id && activeView === "server" ? "text-accent" : "text-text-muted"}`}>
+                <span className={`font-channel text-[16px] font-medium ${activeChannelId === ch.id && activeView === "server" ? "text-accent-bright" : "text-text-muted"}`}>
                   #
                 </span>
-                <span className="truncate">{ch.name}</span>
+                <span className="truncate font-channel">{ch.name}</span>
               </button>
             ))}
           </div>
@@ -268,13 +270,13 @@ export default function ChannelSidebar() {
         {voiceChannels.length > 0 && (
           <div>
             <div
-              className="mb-1 flex cursor-pointer select-none items-center gap-1 px-2"
+              className="group mb-1 flex cursor-pointer select-none items-center gap-1 px-2"
               onClick={() => setVoiceCollapsed(!voiceCollapsed)}
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`text-text-muted ${voiceCollapsed ? "-rotate-90" : ""}`}>
                 <polyline points="6 9 12 15 18 9" />
               </svg>
-              <h3 className="text-[11px] font-bold uppercase tracking-[0.08em] text-text-muted">
+              <h3 className="font-channel text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted transition-colors group-hover:text-text-secondary">
                 Voice Channels
               </h3>
             </div>
@@ -292,10 +294,23 @@ export default function ChannelSidebar() {
                           : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
                     }`}
                   >
-                    <span className={`text-[15px] ${connectedChannelId === ch.id && activeView === "voice" ? "text-accent" : connectedChannelId === ch.id ? "text-[#3fb950]" : "text-text-muted"}`}>
-                      🔊
-                    </span>
-                    <span className="truncate">{ch.name}</span>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className={`shrink-0 ${connectedChannelId === ch.id && activeView === "voice" ? "text-accent" : connectedChannelId === ch.id ? "text-[#3fb950]" : "text-text-muted"}`}
+                    >
+                      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                      <line x1="12" y1="19" x2="12" y2="23" />
+                      <line x1="8" y1="23" x2="16" y2="23" />
+                    </svg>
+                    <span className="truncate font-channel">{ch.name}</span>
                   </button>
                   {connectedChannelId === ch.id ? (
                     <VoiceParticipantList />

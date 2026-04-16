@@ -56,7 +56,7 @@ export default function ServerBar() {
   };
 
   return (
-    <div className="relative z-10 flex h-[58px] shrink-0 items-center bg-bg-primary">
+    <div className="relative z-10 flex h-[58px] shrink-0 items-center bg-bg-darkest">
       {/* Bottom separator starts after the home-button column. */}
       <div className="pointer-events-none absolute bottom-0 left-[68px] right-0 border-b border-border" />
       {/* Home button — width matches DM sidebar */}
@@ -86,7 +86,7 @@ export default function ServerBar() {
           onClick={() => handleServerClick(server.id)}
           className={`group relative flex h-[38px] shrink-0 items-center gap-2 rounded-lg px-3.5 text-[13px] font-semibold transition-all duration-200 ${
             activeServerId === server.id
-              ? "bg-accent-mid text-accent-bright shadow-[0_2px_12px_rgba(56,139,253,0.10)]"
+              ? "bg-accent-mid text-accent-bright shadow-[0_2px_12px_rgba(56,143,255,0.10)]"
               : "text-text-secondary hover:bg-surface-hover hover:text-text-primary hover:-translate-y-px"
           }`}
         >

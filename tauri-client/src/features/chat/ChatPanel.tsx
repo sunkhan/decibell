@@ -4,6 +4,7 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import MessageBubble, { shouldGroup } from "./MessageBubble";
 import { useChatEvents } from "./useChatEvents";
+import WelcomeState from "./WelcomeState";
 
 export function ChatHeader() {
   const activeServerId = useChatStore((s) => s.activeServerId);
@@ -21,9 +22,9 @@ export function ChatHeader() {
   if (!activeChannelId) return null;
 
   return (
-    <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border bg-bg-tertiary px-4">
-      <span className="font-mono text-xl font-semibold text-text-muted">#</span>
-      <span className="text-[15px] font-bold text-text-bright">
+    <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border bg-bg-mid px-4">
+      <span className="font-channel text-[16px] font-medium text-text-muted">#</span>
+      <span className="font-display text-[15px] font-semibold text-text-bright">
         {channelName ?? activeChannelId}
       </span>
       <div className="h-5 w-px bg-border-divider" />
@@ -139,7 +140,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   // Empty state
   if (activeView === "home" || !activeChannelId) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-bg-tertiary">
+      <div className="flex flex-1 items-center justify-center bg-bg-mid">
         <p className="text-sm text-text-muted">
           Select a channel to start chatting
         </p>
@@ -148,26 +149,14 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   }
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-bg-tertiary">
+    <div className="flex min-w-0 flex-1 flex-col bg-bg-mid">
       {/* Channel header */}
       {!hideHeader && <ChatHeader />}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-4">
         {messages.length === 0 ? (
-          <div className="animate-[fadeUp_0.4s_ease_both]">
-            <div className="border-b border-border pb-5 mb-5">
-              <div className="mb-3 flex h-[60px] w-[60px] items-center justify-center rounded-xl border border-accent/10 bg-gradient-to-br from-accent-soft to-accent/5 font-mono text-[26px] font-bold text-accent">
-                #
-              </div>
-              <h1 className="mb-1.5 text-[26px] font-semibold tracking-tight text-text-bright">
-                Welcome to #{channelName ?? "channel"}
-              </h1>
-              <p className="text-sm text-text-secondary leading-relaxed">
-                This is the start of the #{channelName ?? "channel"} channel. Invite your squad and get the conversation going.
-              </p>
-            </div>
-          </div>
+          <WelcomeState channelName={channelName ?? "channel"} />
         ) : (
           messages.map((msg, i) => (
             <MessageBubble
@@ -187,7 +176,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
 
       {/* Input bar */}
       <div className="px-3 pb-2">
-        <div className="flex min-h-[54px] items-center gap-2.5 rounded-xl border border-border bg-bg-secondary px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
+        <div className="flex min-h-[54px] items-center gap-2.5 rounded-xl border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
           <button className="flex h-7 w-7 shrink-0 self-end items-center justify-center rounded-full bg-surface-hover text-text-muted transition-colors hover:bg-accent-soft hover:text-accent">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" />

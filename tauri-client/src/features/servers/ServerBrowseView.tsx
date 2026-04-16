@@ -43,7 +43,7 @@ export default function ServerBrowseView() {
   };
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden bg-bg-tertiary">
+    <div className="flex flex-1 flex-col overflow-hidden bg-bg-mid">
       {/* Header */}
       <div className="border-b border-border px-8 py-6">
         <h1 className="mb-1 text-xl font-semibold text-text-bright">
@@ -57,7 +57,7 @@ export default function ServerBrowseView() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search servers..."
-          className="w-full max-w-md rounded-xl border border-border bg-bg-secondary px-4 py-2.5 text-sm text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-soft)]"
+          className="w-full max-w-md rounded-xl border border-border bg-bg-dark px-4 py-2.5 text-sm text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-soft)]"
         />
       </div>
 
@@ -70,7 +70,7 @@ export default function ServerBrowseView() {
             {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
               <div
                 key={i}
-                className="flex animate-pulse flex-col items-center rounded-2xl border border-border bg-bg-secondary p-5"
+                className="flex animate-pulse flex-col items-center rounded-2xl border border-border bg-bg-dark p-5"
               >
                 <div className="mb-3 h-14 w-14 rounded-xl bg-bg-tertiary" />
                 <div className="mb-1.5 h-4 w-24 rounded bg-bg-tertiary" />
@@ -92,7 +92,7 @@ export default function ServerBrowseView() {
                     handleConnect(server.id, server.hostIp, server.port)
                   }
                   disabled={isConnected || isConnecting}
-                  className="flex flex-col items-center rounded-2xl border border-border bg-bg-secondary p-5 text-center transition-all hover:border-accent/40 hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0"
+                  className="flex flex-col items-center rounded-2xl border border-border bg-bg-dark p-5 text-center transition-all hover:border-accent/40 hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0"
                 >
                   <div
                     className="mb-3 flex h-14 w-14 items-center justify-center rounded-xl text-xl font-semibold text-white"

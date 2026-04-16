@@ -76,6 +76,7 @@ const FLAG_DEAFENED: u8 = 0x02;
 pub fn run_audio_pipeline(
     socket: Arc<UdpSocket>,
     sender_id: String,
+    voice_bitrate_bps: i32,
     control_rx: std::sync::mpsc::Receiver<ControlMessage>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
 ) {
@@ -83,7 +84,7 @@ pub fn run_audio_pipeline(
     // The audio loop uses channel-based recv (non-blocking try_recv).
 
     // ── Opus encoder ──────────────────────────────────────────────────────────
-    let encoder = match OpusEncoder::new() {
+    let encoder = match OpusEncoder::new(voice_bitrate_bps) {
         Ok(e) => e,
         Err(e) => {
             let _ = event_tx.send(VoiceEvent::Error(format!(
@@ -197,6 +198,19 @@ pub fn run_audio_pipeline(
     let mut voice_threshold_db: f32 = -50.0; // dB threshold; below this, send silence
     let mut stream_volume: f32 = 1.0; // 0.0–1.0 viewer-side stream audio volume
     let mut user_volumes: HashMap<String, f32> = HashMap::new(); // username → linear gain
+
+    // Noise gate state: hysteresis + hang time to stop near-threshold flutter.
+    // When the level hovers around voice_threshold_db, raw per-frame thresholding
+    // flip-flops between "send voice" and "send silence" every 20ms. Each flip
+    // creates a waveform discontinuity the listener perceives as a quiet pop.
+    // Gate opens at voice_threshold_db, stays open while rms >= (threshold - 6dB),
+    // and keeps transmitting for GATE_HANG_FRAMES extra frames after falling
+    // below the close threshold. No effect on captured audio — only on whether
+    // the encoded frame is voice or silence.
+    const GATE_HYSTERESIS_DB: f32 = 6.0;
+    const GATE_HANG_FRAMES: u32 = 10; // 200ms @ 20ms/frame
+    let mut gate_open: bool = false;
+    let mut gate_hang_remaining: u32 = 0;
 
     let mut sequence: u16 = 0;
     let mut local_speaking = SpeakingDetector::new();
@@ -612,7 +626,25 @@ pub fn run_audio_pipeline(
                 } else {
                     -96.0
                 };
-                let above_threshold = !muted && rms_db >= voice_threshold_db;
+                let open_threshold = voice_threshold_db;
+                let close_threshold = voice_threshold_db - GATE_HYSTERESIS_DB;
+                if muted {
+                    gate_open = false;
+                    gate_hang_remaining = 0;
+                } else if rms_db >= open_threshold {
+                    gate_open = true;
+                    gate_hang_remaining = GATE_HANG_FRAMES;
+                } else if gate_open {
+                    if rms_db >= close_threshold {
+                        // Soft zone — keep open and refresh hang.
+                        gate_hang_remaining = GATE_HANG_FRAMES;
+                    } else if gate_hang_remaining > 0 {
+                        gate_hang_remaining -= 1;
+                    } else {
+                        gate_open = false;
+                    }
+                }
+                let transmit_voice = gate_open;
 
                 // Emit input level for the UI meter (~every 60ms)
                 input_level_counter += 1;
@@ -621,16 +653,17 @@ pub fn run_audio_pipeline(
                     let _ = event_tx.send(VoiceEvent::InputLevel(rms_db));
                 }
 
-                // Speaking detection based on threshold
-                if let Some(state) = local_speaking.process_threshold(above_threshold) {
+                // Speaking detection based on threshold (no hysteresis — this is
+                // just for the UI speaking ring, user wants it to react immediately)
+                if let Some(state) = local_speaking.process_threshold(!muted && rms_db >= open_threshold) {
                     let _ =
                         event_tx.send(VoiceEvent::SpeakingChanged("__local__".to_string(), state));
                 }
 
-                // Encode: when muted or below threshold, send true silence so
-                // nothing leaks to listeners. Opus DTX makes silence frames tiny.
+                // Encode: when gate is closed, send true silence so nothing leaks
+                // to listeners. Opus DTX makes silence frames tiny.
                 let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
-                let encode_result = if muted || !above_threshold {
+                let encode_result = if !transmit_voice {
                     encoder.encode_silence(&mut opus_out)
                 } else {
                     encoder.encode(&frame, &mut opus_out)

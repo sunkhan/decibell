@@ -104,7 +104,7 @@ export default function FriendsList() {
   };
 
   return (
-    <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-secondary">
+    <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-dark">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h2 className="text-[13px] font-bold text-text-bright">Friends</h2>

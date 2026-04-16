@@ -97,12 +97,12 @@ export default function SettingsModal() {
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center transition-colors duration-300"
-      style={{ backgroundColor: visible ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0)" }}
+      style={{ backgroundColor: visible ? "rgba(0,0,0,0.65)" : "rgba(0,0,0,0)" }}
       onClick={closeModal}
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="flex h-[560px] w-[820px] overflow-hidden rounded-2xl border border-border bg-bg-secondary shadow-2xl transition-all duration-300"
+        className="flex h-[560px] w-[820px] overflow-hidden rounded-2xl border border-border bg-bg-dark shadow-[0_24px_80px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.02)] transition-all duration-300"
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",
@@ -110,30 +110,32 @@ export default function SettingsModal() {
         onClick={(e) => e.stopPropagation()}
       >
         {/* Left sidebar */}
-        <div className="flex w-[220px] shrink-0 flex-col gap-0.5 border-r border-border bg-bg-tertiary px-3 py-5">
-          <div className="mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-text-muted">
+        <div className="flex w-[210px] shrink-0 flex-col gap-0.5 border-r border-border-divider bg-bg-darkest px-3 py-6">
+          <div className="mb-2 px-3 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
             Settings
           </div>
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setSettingsTab(tab.id)}
-              className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-semibold transition-colors ${
+              className={`flex items-center gap-2.5 rounded-[10px] px-3 py-[9px] text-[14px] transition-colors ${
                 settingsTab === tab.id
-                  ? "bg-accent-soft text-accent-bright"
-                  : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                  ? "bg-accent-soft font-medium text-text-primary"
+                  : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
               }`}
             >
-              {tab.icon}
+              <span className={settingsTab === tab.id ? "text-accent-bright" : "text-text-muted"}>
+                {tab.icon}
+              </span>
               {tab.label}
             </button>
           ))}
         </div>
 
         {/* Right content */}
-        <div className="flex flex-1 flex-col overflow-y-auto">
-          <div className="flex items-center justify-between px-7 pt-6 pb-4">
-            <h2 className="text-lg font-semibold text-text-bright">
+        <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
+          <div className="flex items-center justify-between px-8 pt-7 pb-5">
+            <h2 className="font-display text-xl font-semibold text-text-primary">
               {activeTab.label}
             </h2>
             <button
@@ -146,7 +148,7 @@ export default function SettingsModal() {
               </svg>
             </button>
           </div>
-          <div className="flex-1 px-7 pb-6">
+          <div className="flex-1 px-8 pb-7">
             <TabComponent />
           </div>
         </div>

@@ -186,6 +186,8 @@ message ChannelInfo {
   string name = 2;
   enum Type { TEXT = 0; VOICE = 1; }
   Type type = 3;
+  // Opus bitrate (kbps) for voice channels. 0 / unset means "use client default".
+  int32 voice_bitrate_kbps = 4;
 }
 
 message CommunityAuthRequest {

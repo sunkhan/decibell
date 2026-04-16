@@ -33,9 +33,14 @@ fn stop_engines_background(
 pub async fn join_voice_channel(
     server_id: String,
     channel_id: String,
+    voice_bitrate_kbps: Option<i32>,
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
+    let bitrate_bps = match voice_bitrate_kbps {
+        Some(k) if k > 0 => k * 1000,
+        _ => crate::media::codec::OpusEncoder::DEFAULT_BITRATE_BPS,
+    };
     // Take old engines and collect packets under the lock, then release
     let (old_audio_stream, old_video, old_voice, leave_sends, join_tx, join_data, state_sends, is_muted, is_deafened) = {
         let mut s = state.lock().await;
@@ -75,7 +80,7 @@ pub async fn join_voice_channel(
         let jwt = client.jwt.clone();
 
         // Start VoiceEngine (spawns threads, no blocking I/O)
-        let mut engine = VoiceEngine::start(&host, port, &jwt, app.clone())?;
+        let mut engine = VoiceEngine::start(&host, port, &jwt, bitrate_bps, app.clone())?;
 
         // Restore persisted mute/deafen state from previous session
         let saved_muted = s.voice_muted;
