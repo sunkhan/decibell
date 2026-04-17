@@ -48,6 +48,7 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
   const isDeafened = useVoiceStore((s) => s.isDeafened);
   const channelUserStates = useVoiceStore((s) => s.channelUserStates);
   const localMutedUsers = useVoiceStore((s) => s.localMutedUsers);
+  const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const localUsername = useAuthStore((s) => s.username);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
@@ -65,7 +66,7 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
               className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-hover"
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
-                openProfilePopup(u, { x: rect.right + 8, y: rect.top });
+                openProfilePopup(u, { x: rect.right + 8, y: rect.top }, connectedServerId);
               }}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -111,7 +112,7 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
             className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-hover"
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
-              openProfilePopup(p.username, { x: rect.right + 8, y: rect.top });
+              openProfilePopup(p.username, { x: rect.right + 8, y: rect.top }, connectedServerId);
             }}
             onContextMenu={(e) => {
               e.preventDefault();

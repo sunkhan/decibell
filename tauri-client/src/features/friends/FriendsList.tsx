@@ -15,7 +15,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
 
   return (
     <div
-      className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-hover"
+      className="group flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(friend.username, { x: rect.right + 8, y: rect.top });
@@ -40,7 +40,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
           />
         )}
       </div>
-      <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-text-primary">
+      <span className="min-w-0 flex-1 truncate font-channel text-[13px] font-normal text-text-secondary transition-colors group-hover:text-text-primary">
         {friend.username}
       </span>
       {isPendingIn && (
@@ -107,10 +107,10 @@ export default function FriendsList() {
     <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-dark">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="text-[13px] font-bold text-text-bright">Friends</h2>
+        <h2 className="font-display text-[15px] font-semibold text-text-bright">Friends</h2>
         <button
           onClick={() => setShowAdd(!showAdd)}
-          className="text-[11px] font-semibold text-accent hover:text-accent-bright"
+          className="rounded-md px-2 py-1 font-channel text-[12px] font-medium text-accent-bright transition-colors hover:bg-accent-hover/15"
         >
           Add Friend
         </button>
@@ -148,7 +148,7 @@ export default function FriendsList() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search friends..."
-          className="w-full rounded-lg border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary outline-none placeholder:text-text-muted focus:border-accent"
+          className="w-full rounded-[10px] border border-border bg-bg-light px-3 py-2 text-[12px] text-text-primary outline-none transition-all focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-soft)] placeholder:font-channel placeholder:text-[12px] placeholder:font-normal placeholder:text-text-faint"
         />
       </div>
 
@@ -164,7 +164,7 @@ export default function FriendsList() {
           (section) =>
             section.items.length > 0 && (
               <div key={section.label} className="mb-3">
-                <h3 className="mb-1 px-2 text-[11px] font-bold uppercase tracking-[0.08em] text-text-muted">
+                <h3 className="mb-1 px-2 font-channel text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
                   {section.label} — {section.items.length}
                 </h3>
                 {section.items.map((friend) => (

@@ -318,7 +318,7 @@ export default function VoicePanel() {
                 className="flex cursor-pointer flex-col items-center rounded-2xl px-4 py-3 transition-all duration-200 hover:bg-surface-hover hover:shadow-[0_0_12px_rgba(255,255,255,0.04)]"
                 onClick={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect();
-                  openProfilePopup(p.username, { x: rect.right + 8, y: rect.top });
+                  openProfilePopup(p.username, { x: rect.right + 8, y: rect.top }, connectedServerId);
                 }}
                 onContextMenu={(e) => {
                   e.preventDefault();

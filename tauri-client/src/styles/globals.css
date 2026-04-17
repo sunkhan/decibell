@@ -164,6 +164,11 @@ button, a, [class*="transition"] {
   50% { opacity: 0.4; }
 }
 
+@keyframes waveBar {
+  0%, 100% { height: 4px; }
+  50% { height: 14px; }
+}
+
 /* Custom range slider */
 .custom-slider::-webkit-slider-thumb {
   -webkit-appearance: none;

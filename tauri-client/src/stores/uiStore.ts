@@ -8,6 +8,7 @@ interface UiState {
   dmFriendsPanelVisible: boolean;
   profilePopupUser: string | null;
   profilePopupAnchor: { x: number; y: number } | null;
+  profilePopupServerId: string | null;
   contextMenuUser: string | null;
   contextMenuAnchor: { x: number; y: number } | null;
   voiceThresholdDb: number;
@@ -36,7 +37,7 @@ interface UiState {
   closeModal: () => void;
   setConnectionStatus: (status: "connected" | "reconnecting" | "disconnected") => void;
   setActiveView: (view: "home" | "server" | "browse" | "voice" | "dm") => void;
-  openProfilePopup: (username: string, anchor: { x: number; y: number }) => void;
+  openProfilePopup: (username: string, anchor: { x: number; y: number }, serverId?: string | null) => void;
   closeProfilePopup: () => void;
   openContextMenu: (username: string, anchor: { x: number; y: number }) => void;
   closeContextMenu: () => void;
@@ -48,6 +49,7 @@ export const useUiStore = create<UiState>((set) => ({
   dmFriendsPanelVisible: true,
   profilePopupUser: null,
   profilePopupAnchor: null,
+  profilePopupServerId: null,
   contextMenuUser: null,
   contextMenuAnchor: null,
   voiceThresholdDb: -50,
@@ -76,10 +78,10 @@ export const useUiStore = create<UiState>((set) => ({
   closeModal: () => set({ activeModal: null }),
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setActiveView: (view) => set({ activeView: view }),
-  openProfilePopup: (username, anchor) =>
-    set({ profilePopupUser: username, profilePopupAnchor: anchor }),
+  openProfilePopup: (username, anchor, serverId = null) =>
+    set({ profilePopupUser: username, profilePopupAnchor: anchor, profilePopupServerId: serverId }),
   closeProfilePopup: () =>
-    set({ profilePopupUser: null, profilePopupAnchor: null }),
+    set({ profilePopupUser: null, profilePopupAnchor: null, profilePopupServerId: null }),
   openContextMenu: (username, anchor) =>
     set({ contextMenuUser: username, contextMenuAnchor: anchor }),
   closeContextMenu: () =>

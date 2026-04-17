@@ -7,6 +7,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient, stringToColor } from "../../utils/colors";
 import MessageBubble, { shouldGroup } from "../chat/MessageBubble";
+import ErrorCard from "../../components/ErrorCard";
 
 const ERROR_MESSAGES = [
   "This user is currently offline. Your message could not be delivered.",
@@ -101,7 +102,7 @@ export default function DmChatPanel() {
   // Empty state — no active DM
   if (!activeDmUser) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-bg-tertiary">
+      <div className="flex flex-1 items-center justify-center bg-bg-mid">
         <p className="text-sm text-text-muted">
           Select a conversation or start a new one
         </p>
@@ -116,7 +117,7 @@ export default function DmChatPanel() {
   }));
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-bg-tertiary">
+    <div className="flex min-w-0 flex-1 flex-col bg-bg-mid">
       {/* DM header */}
       <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border px-4">
         <div className="relative">
@@ -132,16 +133,20 @@ export default function DmChatPanel() {
             }`}
           />
         </div>
-        <span className="text-[15px] font-bold text-text-bright">
+        <span className="font-display text-[15px] font-semibold text-text-bright">
           {activeDmUser}
         </span>
-        <span
-          className={`text-xs font-medium ${
-            isOnline ? "text-success" : "text-text-muted"
-          }`}
-        >
-          {isOnline ? "Online" : "Offline"}
-        </span>
+        {isOnline ? (
+          <div className="flex items-center gap-[5px] rounded bg-success/15 px-2 py-0.5 font-channel text-[11px] font-medium text-success">
+            <div className="h-1.5 w-1.5 rounded-full bg-success" />
+            Online
+          </div>
+        ) : (
+          <div className="flex items-center gap-[5px] rounded bg-text-muted/15 px-2 py-0.5 font-channel text-[11px] font-medium text-text-muted">
+            <div className="h-1.5 w-1.5 rounded-full bg-text-muted" />
+            Offline
+          </div>
+        )}
         <div className="flex-1" />
         <div className="flex gap-1">
           <button className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary">
@@ -200,12 +205,21 @@ export default function DmChatPanel() {
               return (
                 <div
                   key={`${msg.timestamp}-${msg.sender}-${i}`}
-                  className="flex gap-3 px-2 py-1"
+                  className="px-2 py-1.5"
                 >
-                  <div className="w-[38px] shrink-0" />
-                  <p className="text-[13px] italic text-error">
-                    {msg.content}
-                  </p>
+                  <ErrorCard>
+                    {msg.content === ERROR_MESSAGES[0] ? (
+                      <>
+                        <span className="font-medium text-warning">User is offline.</span>{" "}
+                        Your message could not be delivered. It will be sent when {activeDmUser} comes back online.
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-medium text-warning">Can't reach this user.</span>{" "}
+                        They only accept direct messages from users in their friends list.
+                      </>
+                    )}
+                  </ErrorCard>
                 </div>
               );
             }
@@ -230,8 +244,8 @@ export default function DmChatPanel() {
       )}
 
       {/* Input bar */}
-      <div className="px-4 pb-[18px]">
-        <div className="flex items-center gap-2.5 rounded-xl border border-border bg-bg-light px-3.5 py-[11px] transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
+      <div className="px-3 pb-2">
+        <div className="flex min-h-[54px] items-center gap-2.5 rounded-xl border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
           <textarea
             ref={textareaRef}
             rows={1}
@@ -240,9 +254,18 @@ export default function DmChatPanel() {
             onKeyDown={handleKeyDown}
             disabled={sending}
             placeholder={`Message @${activeDmUser}`}
-            className="flex-1 resize-none bg-transparent text-sm leading-snug text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
+            className="flex-1 resize-none bg-transparent text-sm leading-snug text-text-primary outline-none placeholder:font-channel placeholder:text-[14px] placeholder:font-normal placeholder:text-text-faint disabled:opacity-50"
             style={{ maxHeight: 160 }}
           />
+          <button
+            onClick={handleSend}
+            disabled={sending || !input.trim()}
+            className="flex h-[34px] w-[34px] shrink-0 items-center justify-center self-end rounded-md bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+            </svg>
+          </button>
         </div>
       </div>
     </div>

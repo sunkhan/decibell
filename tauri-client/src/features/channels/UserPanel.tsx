@@ -174,10 +174,10 @@ export default function UserPanel() {
 
         {/* Username */}
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[13px] font-bold text-text-primary">
+          <div className="truncate font-channel text-[13px] font-medium text-text-primary">
             {username}
           </div>
-          <div className="text-[10px] font-semibold tracking-wide text-success">Online</div>
+          <div className="font-channel text-[11px] font-normal text-success">Online</div>
         </div>
 
         {/* Action buttons */}

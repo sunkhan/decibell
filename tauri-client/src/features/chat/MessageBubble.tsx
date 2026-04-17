@@ -38,9 +38,10 @@ export function shouldGroup(prev: Message | undefined, curr: Message): boolean {
 interface Props {
   message: Message;
   grouped: boolean;
+  serverId?: string | null;
 }
 
-export default function MessageBubble({ message, grouped }: Props) {
+export default function MessageBubble({ message, grouped, serverId }: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
 
@@ -80,7 +81,7 @@ export default function MessageBubble({ message, grouped }: Props) {
             style={{ color: stringToColor(message.sender) }}
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
-              openProfilePopup(message.sender, { x: rect.right + 8, y: rect.top });
+              openProfilePopup(message.sender, { x: rect.right + 8, y: rect.top }, serverId);
             }}
             onContextMenu={(e) => {
               e.preventDefault();

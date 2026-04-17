@@ -163,6 +163,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
               key={`${msg.timestamp}-${msg.sender}-${i}`}
               message={msg}
               grouped={shouldGroup(messages[i - 1], msg)}
+              serverId={activeServerId}
             />
           ))
         )}
@@ -190,13 +191,22 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
             onKeyDown={handleKeyDown}
             disabled={sending}
             placeholder={`Message #${channelName ?? "channel"}`}
-            className="flex-1 resize-none bg-transparent text-sm leading-snug text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
+            className="flex-1 resize-none bg-transparent text-sm leading-snug text-text-primary outline-none placeholder:font-channel placeholder:text-[14px] placeholder:font-normal placeholder:text-text-faint disabled:opacity-50"
             style={{ maxHeight: 160 }}
           />
           <div className="flex shrink-0 self-end gap-1">
             <button className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:text-text-secondary">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
+              </svg>
+            </button>
+            <button
+              onClick={handleSend}
+              disabled={sending || !input.trim()}
+              className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
               </svg>
             </button>
           </div>

@@ -477,7 +477,7 @@ export default function StreamViewPanel() {
                   className="flex cursor-pointer items-center gap-1.5 rounded-md p-1.5 transition-colors hover:bg-surface-hover"
                   onClick={(e) => {
                     const rect = e.currentTarget.getBoundingClientRect();
-                    openProfilePopup(p.username, { x: rect.right + 8, y: rect.top });
+                    openProfilePopup(p.username, { x: rect.right + 8, y: rect.top }, connectedServerId);
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();

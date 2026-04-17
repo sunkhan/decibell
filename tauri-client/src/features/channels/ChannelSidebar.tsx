@@ -145,7 +145,7 @@ export default function ChannelSidebar() {
     return (
       <div className="relative flex shrink-0 flex-col border-r border-border bg-bg-dark pb-14" style={{ width: sidebarWidth }}>
         <div className="flex h-12 shrink-0 items-center border-b border-border px-4">
-          <h2 className="text-[15px] font-semibold text-text-bright">
+          <h2 className="font-display text-[15px] font-semibold text-text-bright">
             Direct Messages
           </h2>
         </div>
@@ -185,17 +185,17 @@ export default function ChannelSidebar() {
                     />
                   </div>
                   <div className="min-w-0 flex-1 text-left">
-                    <div className="truncate text-[13px] font-bold">
+                    <div className="truncate font-channel text-[13px] font-medium">
                       {conv.username}
                     </div>
                     {lastMsg && (
-                      <div className="truncate text-[11px] text-text-muted">
+                      <div className="truncate font-channel text-[11px] font-normal text-text-muted">
                         {lastMsg.content}
                       </div>
                     )}
                   </div>
                   {conv.lastMessageTime > 0 && (
-                    <span className="shrink-0 text-[10px] text-text-muted">
+                    <span className="shrink-0 font-channel text-[10px] font-normal text-text-faint">
                       {formatRelativeTime(conv.lastMessageTime)}
                     </span>
                   )}
