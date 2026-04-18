@@ -15,6 +15,7 @@ find_package(PkgConfig REQUIRED)
 
 find_package(jwt-cpp REQUIRED)
 pkg_check_modules(LIBPQXX REQUIRED IMPORTED_TARGET libpqxx)
+find_package(SQLite3 REQUIRED)
 
 find_package(nlohmann_json REQUIRED)
 
@@ -50,6 +51,7 @@ target_link_libraries(decibell_server PRIVATE
 # --- COMMUNITY SERVER ---
 add_executable(decibell_community
     src/community/main.cpp
+    src/community/db.cpp
 )
 target_link_libraries(decibell_community PRIVATE
     decibell_common
@@ -59,4 +61,5 @@ target_link_libraries(decibell_community PRIVATE
     OpenSSL::Crypto
     jwt-cpp::jwt-cpp
     nlohmann_json::nlohmann_json
+    SQLite3::SQLite3
 )

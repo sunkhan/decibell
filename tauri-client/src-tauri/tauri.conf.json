@@ -51,6 +51,12 @@
         "https://github.com/sunkhan/decibell/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIxMDhFQUUyMTVGQTIyNEEKUldSS0l2b1Y0dW9JSVR4ZUV2N0RXZGlPWmhTbTBSV0RQUVB1N3F4TDVPdU9mSWtPOGRLY3lEM04K"
+    },
+    "deep-link": {
+      "mobile": [],
+      "desktop": {
+        "schemes": ["decibell"]
+      }
     }
   }
 }

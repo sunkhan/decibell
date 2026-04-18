@@ -4,6 +4,10 @@ import DmSidebar from "./DmSidebar";
 import ServerBar from "../features/servers/ServerBar";
 import ServerDiscoveryModal from "../features/servers/ServerDiscoveryModal";
 import ServerBrowseView from "../features/servers/ServerBrowseView";
+import InviteModal from "../features/servers/InviteModal";
+import MembersAdminPanel from "../features/servers/MembersAdminPanel";
+import DeepLinkJoinModal from "../features/servers/DeepLinkJoinModal";
+import MembershipRevokedToast from "../features/servers/MembershipRevokedToast";
 import ChannelSidebar from "../features/channels/ChannelSidebar";
 import UserPanel from "../features/channels/UserPanel";
 import ChatPanel, { ChatHeader } from "../features/chat/ChatPanel";
@@ -96,6 +100,10 @@ export default function MainLayout() {
       </div>
 
       <ServerDiscoveryModal />
+      <InviteModal />
+      <MembersAdminPanel />
+      <DeepLinkJoinModal />
+      <MembershipRevokedToast />
       <UserProfilePopup />
       <UserContextMenu />
       <SettingsModal />

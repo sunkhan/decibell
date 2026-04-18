@@ -73,6 +73,10 @@ pub struct CommunityAuthRespondedPayload {
     pub success: bool,
     pub message: String,
     pub channels: Vec<ChannelInfoPayload>,
+    pub error_code: String,
+    pub server_name: String,
+    pub server_description: String,
+    pub owner_username: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +168,10 @@ pub fn emit_community_auth_responded(
     success: bool,
     message: String,
     channels: Vec<ChannelInfoPayload>,
+    error_code: String,
+    server_name: String,
+    server_description: String,
+    owner_username: String,
 ) {
     let _ = app.emit(
         COMMUNITY_AUTH_RESPONDED,
@@ -172,6 +180,10 @@ pub fn emit_community_auth_responded(
             success,
             message,
             channels,
+            error_code,
+            server_name,
+            server_description,
+            owner_username,
         },
     );
 }
@@ -314,6 +326,183 @@ pub fn emit_stream_presence_updated(
 }
 
 pub const STREAM_THUMBNAIL_UPDATED: &str = "stream_thumbnail_updated";
+
+// --- Deep link ---
+pub const DEEP_LINK_RECEIVED: &str = "deep_link_received";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeepLinkReceivedPayload {
+    pub url: String,
+}
+
+pub fn emit_deep_link_received(app: &AppHandle, url: String) {
+    let _ = app.emit(DEEP_LINK_RECEIVED, DeepLinkReceivedPayload { url });
+}
+
+// --- Invites + membership ---
+pub const INVITE_CREATE_RESPONDED: &str = "invite_create_responded";
+pub const INVITE_LIST_RECEIVED: &str = "invite_list_received";
+pub const INVITE_REVOKE_RESPONDED: &str = "invite_revoke_responded";
+pub const MEMBER_LIST_RECEIVED: &str = "member_list_received";
+pub const MOD_ACTION_RESPONDED: &str = "mod_action_responded";
+pub const MEMBERSHIP_REVOKED: &str = "membership_revoked";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteInfoPayload {
+    pub code: String,
+    pub created_by: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub max_uses: i32,
+    pub uses: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteCreateRespondedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub invite: Option<InviteInfoPayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteListReceivedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub invites: Vec<InviteInfoPayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteRevokeRespondedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberInfoPayload {
+    pub username: String,
+    pub joined_at: i64,
+    pub nickname: String,
+    pub is_owner: bool,
+    pub is_online: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberListReceivedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub members: Vec<MemberInfoPayload>,
+    pub bans: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModActionRespondedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub username: String,
+    pub action: String, // "kick" | "ban" | "leave"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MembershipRevokedPayload {
+    pub server_id: String,
+    pub action: String,
+    pub reason: String,
+    pub actor: String,
+}
+
+pub fn emit_invite_create_responded(
+    app: &AppHandle,
+    server_id: String,
+    success: bool,
+    message: String,
+    invite: Option<InviteInfoPayload>,
+) {
+    let _ = app.emit(
+        INVITE_CREATE_RESPONDED,
+        InviteCreateRespondedPayload { server_id, success, message, invite },
+    );
+}
+
+pub fn emit_invite_list_received(
+    app: &AppHandle,
+    server_id: String,
+    success: bool,
+    message: String,
+    invites: Vec<InviteInfoPayload>,
+) {
+    let _ = app.emit(
+        INVITE_LIST_RECEIVED,
+        InviteListReceivedPayload { server_id, success, message, invites },
+    );
+}
+
+pub fn emit_invite_revoke_responded(
+    app: &AppHandle,
+    server_id: String,
+    success: bool,
+    message: String,
+    code: String,
+) {
+    let _ = app.emit(
+        INVITE_REVOKE_RESPONDED,
+        InviteRevokeRespondedPayload { server_id, success, message, code },
+    );
+}
+
+pub fn emit_member_list_received(
+    app: &AppHandle,
+    server_id: String,
+    success: bool,
+    message: String,
+    members: Vec<MemberInfoPayload>,
+    bans: Vec<String>,
+) {
+    let _ = app.emit(
+        MEMBER_LIST_RECEIVED,
+        MemberListReceivedPayload { server_id, success, message, members, bans },
+    );
+}
+
+pub fn emit_mod_action_responded(
+    app: &AppHandle,
+    server_id: String,
+    success: bool,
+    message: String,
+    username: String,
+    action: String,
+) {
+    let _ = app.emit(
+        MOD_ACTION_RESPONDED,
+        ModActionRespondedPayload { server_id, success, message, username, action },
+    );
+}
+
+pub fn emit_membership_revoked(
+    app: &AppHandle,
+    server_id: String,
+    action: String,
+    reason: String,
+    actor: String,
+) {
+    let _ = app.emit(
+        MEMBERSHIP_REVOKED,
+        MembershipRevokedPayload { server_id, action, reason, actor },
+    );
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

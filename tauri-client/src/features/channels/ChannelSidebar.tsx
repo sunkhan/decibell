@@ -1,7 +1,8 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useAuthStore } from "../../stores/authStore";
 import { useChannelEvents } from "./useChannelEvents";
 import { stringToGradient } from "../../utils/colors";
 import { useVoiceStore } from "../../stores/voiceStore";
@@ -58,17 +59,36 @@ export default function ChannelSidebar() {
   const activeChannelId = useChatStore((s) => s.activeChannelId);
   const channelsByServer = useChatStore((s) => s.channelsByServer);
   const servers = useChatStore((s) => s.servers);
+  const serverOwner = useChatStore((s) => s.serverOwner);
+  const serverMeta = useChatStore((s) => s.serverMeta);
   const setActiveChannel = useChatStore((s) => s.setActiveChannel);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
   const channelPresence = useVoiceStore((s) => s.channelPresence);
   const setActiveView = useUiStore((s) => s.setActiveView);
+  const openModal = useUiStore((s) => s.openModal);
   const conversations = useDmStore((s) => s.conversations);
   const activeDmUser = useDmStore((s) => s.activeDmUser);
   const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
   const friends = useFriendsStore((s) => s.friends);
   const onlineUsers = useChatStore((s) => s.onlineUsers);
+  const currentUser = useAuthStore((s) => s.username);
   const [textCollapsed, setTextCollapsed] = useState(false);
   const [voiceCollapsed, setVoiceCollapsed] = useState(false);
+  const [showServerMenu, setShowServerMenu] = useState(false);
+  const serverMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (
+        serverMenuRef.current &&
+        !serverMenuRef.current.contains(e.target as Node)
+      ) {
+        setShowServerMenu(false);
+      }
+    };
+    if (showServerMenu) document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showServerMenu]);
 
   const sortedConversations = Object.values(conversations).sort(
     (a, b) => b.lastMessageTime - a.lastMessageTime
@@ -84,7 +104,13 @@ export default function ChannelSidebar() {
     : [];
   const textChannels = channels.filter((ch) => ch.type === "text");
   const voiceChannels = channels.filter((ch) => ch.type === "voice");
-  const serverName = servers.find((s) => s.id === activeServerId)?.name;
+  const serverName =
+    (activeServerId ? serverMeta[activeServerId]?.name : undefined) ??
+    servers.find((s) => s.id === activeServerId)?.name;
+  const isOwner =
+    !!activeServerId &&
+    !!currentUser &&
+    serverOwner[activeServerId] === currentUser;
 
   const handleChannelClick = (channelId: string) => {
     if (!activeServerId) return;
@@ -216,10 +242,30 @@ export default function ChannelSidebar() {
   return (
     <div className="relative flex shrink-0 flex-col border-r border-border bg-bg-dark pb-14" style={{ width: sidebarWidth }}>
       {/* Server name header */}
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
-        <h2 className="flex-1 truncate font-display text-[15px] font-semibold tracking-[0.01em] text-text-bright">
-          {serverName ?? "Server"}
-        </h2>
+      <div className="relative flex h-12 shrink-0 items-center gap-2 border-b border-border px-4" ref={serverMenuRef}>
+        <button
+          onClick={() => activeServerId && setShowServerMenu((v) => !v)}
+          disabled={!activeServerId}
+          className="flex flex-1 items-center gap-1.5 truncate text-left transition-colors disabled:cursor-default"
+          title={activeServerId ? "Server options" : undefined}
+        >
+          <span className="truncate font-display text-[15px] font-semibold tracking-[0.01em] text-text-bright">
+            {serverName ?? "Server"}
+          </span>
+          {activeServerId && (
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              className={`shrink-0 text-text-muted transition-transform ${showServerMenu ? "rotate-180" : ""}`}
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          )}
+        </button>
         {servers.some((s) => s.id === activeServerId) ? (
           <span className="rounded bg-success/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-success">
             Public
@@ -228,6 +274,60 @@ export default function ChannelSidebar() {
           <span className="rounded bg-text-muted/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-text-secondary">
             Private
           </span>
+        )}
+
+        {showServerMenu && activeServerId && (
+          <div className="absolute left-2 right-2 top-full z-30 mt-1 rounded-xl border border-border bg-bg-secondary p-1.5 shadow-2xl">
+            <button
+              onClick={() => {
+                setShowServerMenu(false);
+                openModal("members-manage");
+              }}
+              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-primary transition-colors hover:bg-surface-hover"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              Members
+            </button>
+            {isOwner && (
+              <button
+                onClick={() => {
+                  setShowServerMenu(false);
+                  openModal("invite-manage");
+                }}
+                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-primary transition-colors hover:bg-surface-hover"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                </svg>
+                Invites
+              </button>
+            )}
+            <div className="my-1 h-px bg-border" />
+            <button
+              onClick={() => {
+                setShowServerMenu(false);
+                invoke("disconnect_from_community", { serverId: activeServerId }).catch(console.error);
+                useChatStore.getState().removeConnectedServer(activeServerId);
+                useChatStore.getState().setActiveServer(null);
+                setActiveChannel(null);
+                setActiveView("home");
+              }}
+              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-surface-hover"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+              Disconnect
+            </button>
+          </div>
         )}
       </div>
 

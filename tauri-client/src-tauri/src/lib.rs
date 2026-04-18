@@ -21,6 +21,23 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_deep_link::init())
+        .setup(|app| {
+            use tauri::Manager;
+            use tauri_plugin_deep_link::DeepLinkExt;
+            let handle = app.handle().clone();
+            // Runtime registration is required for Linux AppImage builds (the
+            // bundle's .desktop file registers at install time, but running
+            // from a dev build or an unpacked AppImage needs this).
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            let _ = app.deep_link().register_all();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    events::emit_deep_link_received(&handle, url.to_string());
+                }
+            });
+            Ok(())
+        })
         .manage(Arc::new(Mutex::new(AppState::default())) as SharedState)
         .invoke_handler(tauri::generate_handler![
             commands::ping,
@@ -30,6 +47,15 @@ pub fn run() {
             commands::servers::request_server_list,
             commands::servers::connect_to_community,
             commands::servers::disconnect_from_community,
+            commands::servers::redeem_invite,
+            commands::community::create_invite,
+            commands::community::list_invites,
+            commands::community::revoke_invite,
+            commands::community::list_members,
+            commands::community::kick_member,
+            commands::community::ban_member,
+            commands::community::leave_server,
+            commands::community::parse_invite_link,
             commands::channels::join_channel,
             commands::channels::send_channel_message,
             commands::friends::request_friend_list,

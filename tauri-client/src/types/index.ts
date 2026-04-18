@@ -53,3 +53,20 @@ export interface StreamInfo {
   resolutionHeight: number;
   fps: number;
 }
+
+export interface ServerMember {
+  username: string;
+  joinedAt: number;
+  nickname: string;
+  isOwner: boolean;
+  isOnline: boolean;
+}
+
+export interface ServerInvite {
+  code: string;
+  createdBy: string;
+  createdAt: number;
+  expiresAt: number; // 0 = never
+  maxUses: number;   // 0 = unlimited
+  uses: number;
+}

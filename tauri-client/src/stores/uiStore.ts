@@ -1,11 +1,28 @@
 import { create } from "zustand";
 
+export interface AuthErrorNotice {
+  serverId: string;
+  message: string;
+  errorCode: string;
+}
+
+export interface MembershipRevocationNotice {
+  serverId: string;
+  action: string;
+  reason: string;
+  actor: string;
+}
+
 interface UiState {
   activeModal: string | null;
   connectionStatus: "connected" | "reconnecting" | "disconnected";
   activeView: "home" | "server" | "browse" | "voice" | "dm";
   membersPanelVisible: boolean;
   dmFriendsPanelVisible: boolean;
+  authError: AuthErrorNotice | null;
+  setAuthError: (err: AuthErrorNotice | null) => void;
+  membershipRevocationNotice: MembershipRevocationNotice | null;
+  setMembershipRevocationNotice: (notice: MembershipRevocationNotice | null) => void;
   profilePopupUser: string | null;
   profilePopupAnchor: { x: number; y: number } | null;
   profilePopupServerId: string | null;
@@ -47,6 +64,10 @@ export const useUiStore = create<UiState>((set) => ({
   activeModal: null, connectionStatus: "connected", activeView: "home",
   membersPanelVisible: true,
   dmFriendsPanelVisible: true,
+  authError: null,
+  setAuthError: (err) => set({ authError: err }),
+  membershipRevocationNotice: null,
+  setMembershipRevocationNotice: (notice) => set({ membershipRevocationNotice: notice }),
   profilePopupUser: null,
   profilePopupAnchor: null,
   profilePopupServerId: null,

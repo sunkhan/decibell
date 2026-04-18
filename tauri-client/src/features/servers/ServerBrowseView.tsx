@@ -4,16 +4,40 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
 
+interface ParsedInviteLink {
+  host: string;
+  port: number;
+  code: string;
+}
+
 export default function ServerBrowseView() {
   const servers = useChatStore((s) => s.servers);
   const connectedServers = useChatStore((s) => s.connectedServers);
   const setActiveServer = useChatStore((s) => s.setActiveServer);
   const setActiveView = useUiStore((s) => s.setActiveView);
+  const authError = useUiStore((s) => s.authError);
+  const setAuthError = useUiStore((s) => s.setAuthError);
 
   const [search, setSearch] = useState("");
   const [isLoadingList, setIsLoadingList] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [inviteInput, setInviteInput] = useState("");
+  const [inviteHost, setInviteHost] = useState("");
+  const [invitePort, setInvitePort] = useState("");
+  const [redeeming, setRedeeming] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [redeemTarget, setRedeemTarget] = useState<string | null>(null);
+
+  // Surface backend auth failures from an in-progress invite redemption.
+  useEffect(() => {
+    if (!redeemTarget || !authError) return;
+    if (authError.serverId === redeemTarget) {
+      setInviteError(authError.message || authError.errorCode);
+      setRedeeming(false);
+      setRedeemTarget(null);
+    }
+  }, [authError, redeemTarget]);
 
   useEffect(() => {
     setIsLoadingList(true);
@@ -42,6 +66,62 @@ export default function ServerBrowseView() {
     }
   };
 
+  const handleRedeemInvite = async () => {
+    const trimmed = inviteInput.trim();
+    if (!trimmed) {
+      setInviteError("Enter an invite code or link");
+      return;
+    }
+    setInviteError(null);
+    setAuthError(null);
+
+    let host = inviteHost.trim();
+    let port = parseInt(invitePort, 10);
+    let code = trimmed;
+
+    // If the user pasted a full decibell:// URL, parse it via the backend
+    // and ignore the separate host/port fields.
+    if (trimmed.toLowerCase().startsWith("decibell:")) {
+      try {
+        const parsed = await invoke<ParsedInviteLink>("parse_invite_link", {
+          url: trimmed,
+        });
+        host = parsed.host;
+        port = parsed.port;
+        code = parsed.code;
+      } catch (err) {
+        setInviteError(`Invalid invite link: ${err}`);
+        return;
+      }
+    } else {
+      if (!host || isNaN(port) || port <= 0) {
+        setInviteError("Enter host and port, or paste a full decibell:// link");
+        return;
+      }
+    }
+
+    const serverId = `${host}:${port}`;
+    setRedeeming(true);
+    setRedeemTarget(serverId);
+    try {
+      await invoke("redeem_invite", {
+        serverId,
+        host,
+        port,
+        inviteCode: code,
+      });
+      setActiveServer(serverId);
+      setActiveView("server");
+      setInviteInput("");
+      setInviteHost("");
+      setInvitePort("");
+    } catch (err) {
+      setInviteError(String(err));
+      setRedeeming(false);
+      setRedeemTarget(null);
+    }
+  };
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden bg-bg-mid">
       {/* Header */}
@@ -59,6 +139,57 @@ export default function ServerBrowseView() {
           placeholder="Search servers..."
           className="w-full max-w-md rounded-xl border border-border bg-bg-dark px-4 py-2.5 text-sm text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-soft)]"
         />
+
+        {/* Join with invite */}
+        <div className="mt-5 max-w-2xl rounded-2xl border border-border bg-bg-dark p-4">
+          <h2 className="mb-1 text-sm font-semibold text-text-bright">
+            Have an invite?
+          </h2>
+          <p className="mb-3 text-xs text-text-secondary">
+            Paste a <span className="font-mono">decibell://</span> link, or enter
+            the host + port + code manually.
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              type="text"
+              value={inviteInput}
+              onChange={(e) => setInviteInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleRedeemInvite()}
+              placeholder="decibell://invite/... or code (e.g. KH72NQ4XR3)"
+              className="flex-1 rounded-lg border border-border bg-bg-primary px-3 py-2 font-mono text-sm text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent"
+            />
+          </div>
+          {!inviteInput.trim().toLowerCase().startsWith("decibell:") && (
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+              <input
+                type="text"
+                value={inviteHost}
+                onChange={(e) => setInviteHost(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleRedeemInvite()}
+                placeholder="Host"
+                className="flex-1 rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+              />
+              <input
+                type="text"
+                value={invitePort}
+                onChange={(e) => setInvitePort(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleRedeemInvite()}
+                placeholder="Port"
+                className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent sm:w-28"
+              />
+            </div>
+          )}
+          <button
+            onClick={handleRedeemInvite}
+            disabled={redeeming}
+            className="mt-3 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+          >
+            {redeeming ? "Joining..." : "Join"}
+          </button>
+          {inviteError && (
+            <p className="mt-2 text-xs text-error">{inviteError}</p>
+          )}
+        </div>
       </div>
 
       {error && <p className="px-8 pt-3 text-sm text-error">{error}</p>}

@@ -42,6 +42,22 @@ message Packet {
     STREAM_THUMBNAIL_UPDATE = 29;
     SERVER_HEARTBEAT = 30;
     CLIENT_PING = 31;       // Client→central keepalive (no payload needed)
+
+    // Membership + invites (community server)
+    INVITE_CREATE_REQ = 32;
+    INVITE_CREATE_RES = 33;
+    INVITE_LIST_REQ = 34;
+    INVITE_LIST_RES = 35;
+    INVITE_REVOKE_REQ = 36;
+    INVITE_REVOKE_RES = 37;
+    MEMBER_LIST_REQ = 38;
+    MEMBER_LIST_RES = 39;
+    KICK_MEMBER_REQ = 40;
+    BAN_MEMBER_REQ = 41;
+    MOD_ACTION_RES = 42;    // shared kick/ban/leave response
+    LEAVE_SERVER_REQ = 43;
+    SERVER_META_UPDATE = 44; // server pushes owner/name/etc to client after auth
+    MEMBERSHIP_REVOKED = 45; // server→client: you were kicked/banned
   }
 
   Type type = 1;
@@ -83,6 +99,21 @@ message Packet {
     DmPrivacySetting dm_privacy = 31;
     StreamThumbnailUpdate stream_thumbnail_update = 32;
     ServerHeartbeat server_heartbeat = 33;
+
+    InviteCreateRequest invite_create_req = 34;
+    InviteCreateResponse invite_create_res = 35;
+    InviteListRequest invite_list_req = 36;
+    InviteListResponse invite_list_res = 37;
+    InviteRevokeRequest invite_revoke_req = 38;
+    InviteRevokeResponse invite_revoke_res = 39;
+    MemberListRequest member_list_req = 40;
+    MemberListResponse member_list_res = 41;
+    KickMemberRequest kick_member_req = 42;
+    BanMemberRequest ban_member_req = 43;
+    ModActionResponse mod_action_res = 44;
+    LeaveServerRequest leave_server_req = 45;
+    ServerMetaUpdate server_meta_update = 46;
+    MembershipRevoked membership_revoked = 47;
   }
 }
 
@@ -192,12 +223,26 @@ message ChannelInfo {
 
 message CommunityAuthRequest {
   string jwt_token = 1;
+  // Optional — when present, the user joins the server (consuming the invite)
+  // as part of the same authentication handshake. Required for non-members.
+  string invite_code = 2;
 }
 
 message CommunityAuthResponse {
   bool success = 1;
   string message = 2;
   repeated ChannelInfo channels = 3;
+  // Membership failure reason code:
+  //   ""               -> success
+  //   "not_member"     -> user is not a member and did not supply an invite
+  //   "invalid_invite" -> supplied invite is unknown, expired, or used up
+  //   "banned"         -> user is banned from this server
+  //   "auth"           -> JWT invalid
+  string error_code = 4;
+  // Server metadata (populated on success)
+  string server_name = 5;
+  string server_description = 6;
+  string owner_username = 7;
 }
 
 message ChannelMessage {
@@ -294,4 +339,98 @@ message ServerHeartbeat {
   string host_ip = 3;
   int32 port = 4;
   int32 member_count = 5;
+}
+
+// --- Invites + Membership ---
+
+message InviteInfo {
+  string code = 1;
+  string created_by = 2;
+  int64 created_at = 3;
+  int64 expires_at = 4;     // 0 = never
+  int32 max_uses = 5;       // 0 = unlimited
+  int32 uses = 6;
+}
+
+message InviteCreateRequest {
+  // 0 means "never"
+  int64 expires_at = 1;
+  // 0 means "unlimited"
+  int32 max_uses = 2;
+}
+
+message InviteCreateResponse {
+  bool success = 1;
+  string message = 2;
+  InviteInfo invite = 3;
+}
+
+message InviteListRequest {}
+
+message InviteListResponse {
+  bool success = 1;
+  string message = 2;
+  repeated InviteInfo invites = 3;
+}
+
+message InviteRevokeRequest {
+  string code = 1;
+}
+
+message InviteRevokeResponse {
+  bool success = 1;
+  string message = 2;
+  string code = 3;
+}
+
+message MemberInfo {
+  string username = 1;
+  int64 joined_at = 2;
+  string nickname = 3;
+  bool is_owner = 4;
+  bool is_online = 5;
+}
+
+message MemberListRequest {}
+
+message MemberListResponse {
+  bool success = 1;
+  string message = 2;
+  repeated MemberInfo members = 3;
+  repeated string bans = 4;
+}
+
+message KickMemberRequest {
+  string username = 1;
+  string reason = 2;
+}
+
+message BanMemberRequest {
+  string username = 1;
+  string reason = 2;
+}
+
+message ModActionResponse {
+  bool success = 1;
+  string message = 2;
+  // Echo of the username that was acted upon, so the client can resolve
+  // which request this response corresponds to.
+  string username = 3;
+  // "kick" | "ban" | "leave"
+  string action = 4;
+}
+
+message LeaveServerRequest {}
+
+message ServerMetaUpdate {
+  string server_name = 1;
+  string server_description = 2;
+  string owner_username = 3;
+}
+
+message MembershipRevoked {
+  // "kick" | "ban"
+  string action = 1;
+  string reason = 2;
+  string actor = 3;
 }

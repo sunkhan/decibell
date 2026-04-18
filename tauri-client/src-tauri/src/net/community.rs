@@ -22,11 +22,14 @@ pub struct CommunityClient {
 
 impl CommunityClient {
     /// Connect to a community server and authenticate with JWT.
+    /// If `invite_code` is supplied, the server will consume it to grant
+    /// membership as part of the same handshake.
     pub async fn connect(
         server_id: String,
         host: String,
         port: u16,
         jwt: String,
+        invite_code: Option<String>,
         app: AppHandle,
         state: Arc<Mutex<AppState>>,
     ) -> Result<Self, String> {
@@ -37,6 +40,7 @@ impl CommunityClient {
             packet::Type::CommunityAuthReq,
             packet::Payload::CommunityAuthReq(CommunityAuthRequest {
                 jwt_token: jwt.clone(),
+                invite_code: invite_code.unwrap_or_default(),
             }),
             Some(&jwt),
         );
@@ -304,11 +308,13 @@ impl CommunityClient {
                     Ok((connection, read_rx)) => {
                         log::info!("Reconnected to community server {}", sid_for_task);
 
-                        // Re-authenticate
+                        // Re-authenticate. No invite code on reconnect — the
+                        // user is already a member at this point.
                         let auth_data = build_packet(
                             packet::Type::CommunityAuthReq,
                             packet::Payload::CommunityAuthReq(CommunityAuthRequest {
                                 jwt_token: jwt.clone(),
+                                invite_code: String::new(),
                             }),
                             Some(&jwt),
                         );
@@ -426,6 +432,97 @@ impl CommunityClient {
                         resp.success,
                         resp.message,
                         channels,
+                        resp.error_code,
+                        resp.server_name,
+                        resp.server_description,
+                        resp.owner_username,
+                    );
+                }
+                Some(packet::Payload::InviteCreateRes(resp)) => {
+                    let invite = resp.invite.map(|i| events::InviteInfoPayload {
+                        code: i.code,
+                        created_by: i.created_by,
+                        created_at: i.created_at,
+                        expires_at: i.expires_at,
+                        max_uses: i.max_uses,
+                        uses: i.uses,
+                    });
+                    events::emit_invite_create_responded(
+                        &app,
+                        server_id.clone(),
+                        resp.success,
+                        resp.message,
+                        invite,
+                    );
+                }
+                Some(packet::Payload::InviteListRes(resp)) => {
+                    let invites: Vec<events::InviteInfoPayload> = resp
+                        .invites
+                        .into_iter()
+                        .map(|i| events::InviteInfoPayload {
+                            code: i.code,
+                            created_by: i.created_by,
+                            created_at: i.created_at,
+                            expires_at: i.expires_at,
+                            max_uses: i.max_uses,
+                            uses: i.uses,
+                        })
+                        .collect();
+                    events::emit_invite_list_received(
+                        &app,
+                        server_id.clone(),
+                        resp.success,
+                        resp.message,
+                        invites,
+                    );
+                }
+                Some(packet::Payload::InviteRevokeRes(resp)) => {
+                    events::emit_invite_revoke_responded(
+                        &app,
+                        server_id.clone(),
+                        resp.success,
+                        resp.message,
+                        resp.code,
+                    );
+                }
+                Some(packet::Payload::MemberListRes(resp)) => {
+                    let members: Vec<events::MemberInfoPayload> = resp
+                        .members
+                        .into_iter()
+                        .map(|m| events::MemberInfoPayload {
+                            username: m.username,
+                            joined_at: m.joined_at,
+                            nickname: m.nickname,
+                            is_owner: m.is_owner,
+                            is_online: m.is_online,
+                        })
+                        .collect();
+                    events::emit_member_list_received(
+                        &app,
+                        server_id.clone(),
+                        resp.success,
+                        resp.message,
+                        members,
+                        resp.bans,
+                    );
+                }
+                Some(packet::Payload::ModActionRes(resp)) => {
+                    events::emit_mod_action_responded(
+                        &app,
+                        server_id.clone(),
+                        resp.success,
+                        resp.message,
+                        resp.username,
+                        resp.action,
+                    );
+                }
+                Some(packet::Payload::MembershipRevoked(rev)) => {
+                    events::emit_membership_revoked(
+                        &app,
+                        server_id.clone(),
+                        rev.action,
+                        rev.reason,
+                        rev.actor,
                     );
                 }
                 Some(packet::Payload::ChannelMsg(msg)) => {

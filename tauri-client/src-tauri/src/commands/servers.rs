@@ -39,17 +39,63 @@ pub async fn connect_to_community(
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
+    connect_to_community_with_invite(server_id, host, port, None, app, state).await
+}
+
+/// Connect to a community server, optionally consuming an invite code so the
+/// user joins (becomes a persistent member) as part of the handshake.
+#[tauri::command]
+pub async fn redeem_invite(
+    server_id: String,
+    host: String,
+    port: u16,
+    invite_code: String,
+    app: AppHandle,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    if invite_code.trim().is_empty() {
+        return Err("Invite code is empty".into());
+    }
+    connect_to_community_with_invite(
+        server_id,
+        host,
+        port,
+        Some(invite_code.trim().to_uppercase()),
+        app,
+        state,
+    )
+    .await
+}
+
+async fn connect_to_community_with_invite(
+    server_id: String,
+    host: String,
+    port: u16,
+    invite_code: Option<String>,
+    app: AppHandle,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
     let state_arc = state.inner().clone();
     let jwt = {
         let s = state_arc.lock().await;
         s.token.clone().ok_or("Not authenticated")?
     };
 
+    // If we already have a live session for this server, tear it down first —
+    // a fresh redeem (or a re-connect with a new invite) should replace it.
+    {
+        let mut s = state_arc.lock().await;
+        if let Some(mut existing) = s.communities.remove(&server_id) {
+            existing.disconnect();
+        }
+    }
+
     let client = CommunityClient::connect(
         server_id.clone(),
         host,
         port,
         jwt,
+        invite_code,
         app,
         state_arc.clone(),
     )

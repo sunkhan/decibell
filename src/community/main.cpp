@@ -8,6 +8,7 @@
 #endif
 
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <memory>
 #include <vector>
@@ -22,6 +23,7 @@
 #include "messages.pb.h"
 #include "../common/net_utils.hpp"
 #include "../common/udp_packet.hpp"
+#include "db.hpp"
 
 namespace ssl = boost::asio::ssl;
 using boost::asio::ip::tcp;
@@ -67,6 +69,27 @@ public:
     void relay_keyframe_request_internal(const std::string& target_username);
     size_t session_count() { std::lock_guard<std::mutex> lock(mutex_); return sessions_.size(); }
 
+    // Returns the set of usernames that currently have an authenticated live
+    // session. Used for the members-list "online" flag.
+    std::set<std::string> get_online_usernames();
+
+    // Persistent state.
+    void set_db(chatproj::CommunityDb* db) { db_ = db; }
+    chatproj::CommunityDb* db() { return db_; }
+
+    // Member count (authoritative from DB), used by the central-server heartbeat.
+    size_t member_count();
+
+    // Find an active session by username. Returns nullptr if not connected.
+    std::shared_ptr<Session> find_session_by_username(const std::string& username);
+
+    // Forcibly disconnect a session — sends MEMBERSHIP_REVOKED then closes.
+    // Also cleans up channel/voice/stream membership via leave().
+    void force_disconnect(const std::string& username,
+                          const std::string& action,
+                          const std::string& reason,
+                          const std::string& actor);
+
 private:
     std::set<std::shared_ptr<Session>> sessions_;
     std::unordered_map<std::string, std::set<std::shared_ptr<Session>>> channels_;
@@ -87,6 +110,8 @@ private:
 
     // O(1) UDP sender_id → session lookup (key = last 31 chars of JWT)
     std::unordered_map<std::string, std::shared_ptr<Session>> udp_key_index_;
+
+    chatproj::CommunityDb* db_ = nullptr;
 
     std::mutex mutex_;
 };
@@ -135,6 +160,20 @@ public:
     std::string get_username() const { return username_; }
     std::string get_token() const { return token_; }
     std::string get_udp_key() const { return udp_key_; }
+    bool is_authenticated() const { return authenticated_; }
+
+    // Forcibly close the underlying TCP socket. Any in-flight reads/writes
+    // will error out, which triggers SessionManager::leave via the normal
+    // error-handling path. Safe to call from any thread.
+    void close_connection() {
+        boost::system::error_code ec;
+        socket_.lowest_layer().cancel(ec);
+        socket_.lowest_layer().close(ec);
+    }
+
+    // Send a pre-built packet. Public so SessionManager can push notifications
+    // (MEMBERSHIP_REVOKED, SERVER_META_UPDATE, etc.) directly.
+    void send_packet_external(const chatproj::Packet& packet) { send_packet(packet); }
     void set_udp_endpoint(const boost::asio::ip::udp::endpoint& ep) { udp_endpoint_ = ep; }
     boost::asio::ip::udp::endpoint get_udp_endpoint() const { return udp_endpoint_; }
     void set_udp_media_endpoint(const boost::asio::ip::udp::endpoint& ep) { udp_media_endpoint_ = ep; }
@@ -204,41 +243,100 @@ private:
         chatproj::Packet packet;
         if (!packet.ParseFromArray(inbound_body_.data(), static_cast<int>(inbound_body_.size()))) return;
 
-        // --- STATELESS AUTHENTICATION ---
+        // --- AUTHENTICATION + MEMBERSHIP GATE ---
         if (packet.type() == chatproj::Packet::COMMUNITY_AUTH_REQ) {
-            std::string token = packet.community_auth_req().jwt_token();
+            const auto& req = packet.community_auth_req();
+            std::string token = req.jwt_token();
+            std::string invite_code = req.invite_code();
 
+            // Step 1: JWT verification.
+            std::string candidate_username;
             try {
                 auto decoded = jwt::decode(token);
                 auto verifier = jwt::verify()
                     .allow_algorithm(jwt::algorithm::hs256{jwt_secret_})
                     .with_issuer("decibell_central_auth");
-
                 verifier.verify(decoded);
-
-                authenticated_ = true;
-                username_ = decoded.get_subject();
-                token_ = token;
-
-                // Register UDP key for O(1) lookup: last 31 chars of JWT
-                // (matches what the client sends as sender_id in UDP packets)
-                constexpr size_t UDP_KEY_LEN = chatproj::SENDER_ID_SIZE - 1; // 31
-                if (token_.size() >= UDP_KEY_LEN) {
-                    udp_key_ = token_.substr(token_.size() - UDP_KEY_LEN);
-                } else {
-                    udp_key_ = token_;
-                }
-                manager_.register_udp_key(udp_key_, shared_from_this());
-
-                std::cout << "[Community] Authorized user: " << username_ << "\n";
-                send_auth_response(true, "Authentication successful.");
-                manager_.send_initial_voice_presences(shared_from_this());
-
+                candidate_username = decoded.get_subject();
             } catch (const std::exception& e) {
-                std::cout << "[Community] Auth failed: " << e.what() << "\n";
-                send_auth_response(false, "Invalid token.");
+                std::cout << "[Community] Auth failed (JWT): " << e.what() << "\n";
+                send_auth_response(false, "Invalid token.", "auth");
                 manager_.leave(shared_from_this());
+                return;
             }
+
+            // Step 2: Membership + invite gating.
+            auto* db = manager_.db();
+            if (!db) {
+                send_auth_response(false, "Server misconfigured.", "auth");
+                manager_.leave(shared_from_this());
+                return;
+            }
+
+            if (db->is_banned(candidate_username)) {
+                std::cout << "[Community] Blocked banned user: " << candidate_username << "\n";
+                send_auth_response(false, "You are banned from this server.", "banned");
+                manager_.leave(shared_from_this());
+                return;
+            }
+
+            bool member = db->is_member(candidate_username);
+            if (!member) {
+                if (invite_code.empty()) {
+                    send_auth_response(false,
+                        "Membership required. An invite code is needed to join this server.",
+                        "not_member");
+                    manager_.leave(shared_from_this());
+                    return;
+                }
+                chatproj::DbInvite consumed;
+                auto result = db->redeem_invite(invite_code, candidate_username, &consumed);
+                switch (result) {
+                    case chatproj::InviteResult::Ok:
+                        if (!db->add_member(candidate_username)) {
+                            send_auth_response(false, "Failed to record membership.", "auth");
+                            manager_.leave(shared_from_this());
+                            return;
+                        }
+                        std::cout << "[Community] " << candidate_username
+                                  << " joined via invite " << invite_code << "\n";
+                        break;
+                    case chatproj::InviteResult::AlreadyMember:
+                        // Race — someone was added between is_member and redeem.
+                        // Accept the connection; nothing more to do.
+                        break;
+                    case chatproj::InviteResult::Banned:
+                        send_auth_response(false, "You are banned from this server.", "banned");
+                        manager_.leave(shared_from_this());
+                        return;
+                    case chatproj::InviteResult::Unknown:
+                    case chatproj::InviteResult::Expired:
+                    case chatproj::InviteResult::Exhausted:
+                    default:
+                        send_auth_response(false,
+                            "Invite code is invalid, expired, or has been used up.",
+                            "invalid_invite");
+                        manager_.leave(shared_from_this());
+                        return;
+                }
+            }
+
+            // Step 3: accept.
+            authenticated_ = true;
+            username_ = candidate_username;
+            token_ = token;
+
+            constexpr size_t UDP_KEY_LEN = chatproj::SENDER_ID_SIZE - 1;
+            if (token_.size() >= UDP_KEY_LEN) {
+                udp_key_ = token_.substr(token_.size() - UDP_KEY_LEN);
+            } else {
+                udp_key_ = token_;
+            }
+            manager_.register_udp_key(udp_key_, shared_from_this());
+
+            std::cout << "[Community] Authorized user: " << username_ << "\n";
+            send_auth_response(true, "Authentication successful.", "");
+            manager_.send_initial_voice_presences(shared_from_this());
             return;
         }
 
@@ -358,31 +456,264 @@ private:
             manager_.broadcast_to_channel(routed, msg->channel_id());
             std::cout << "[#" << msg->channel_id() << "] " << username_ << ": " << msg->content() << "\n";
         }
+
+        // --- INVITE: CREATE ---
+        else if (packet.type() == chatproj::Packet::INVITE_CREATE_REQ) {
+            auto* db = manager_.db();
+            if (!db) return;
+            if (db->owner() != username_) {
+                send_simple_mod_res(chatproj::Packet::INVITE_CREATE_RES, false,
+                                    "Only the server owner can create invites.",
+                                    "", "");
+                return;
+            }
+            const auto& req = packet.invite_create_req();
+            auto created = db->create_invite(username_, req.expires_at(), req.max_uses());
+
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::INVITE_CREATE_RES);
+            auto* res = p.mutable_invite_create_res();
+            if (created) {
+                res->set_success(true);
+                res->set_message("Invite created.");
+                auto* info = res->mutable_invite();
+                info->set_code(created->code);
+                info->set_created_by(created->created_by);
+                info->set_created_at(created->created_at);
+                info->set_expires_at(created->expires_at);
+                info->set_max_uses(created->max_uses);
+                info->set_uses(created->uses);
+            } else {
+                res->set_success(false);
+                res->set_message("Failed to create invite.");
+            }
+            send_packet(p);
+        }
+
+        // --- INVITE: LIST ---
+        else if (packet.type() == chatproj::Packet::INVITE_LIST_REQ) {
+            auto* db = manager_.db();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::INVITE_LIST_RES);
+            auto* res = p.mutable_invite_list_res();
+            if (!db) {
+                res->set_success(false);
+                res->set_message("Server misconfigured.");
+                send_packet(p);
+                return;
+            }
+            if (db->owner() != username_) {
+                res->set_success(false);
+                res->set_message("Only the server owner can list invites.");
+                send_packet(p);
+                return;
+            }
+            res->set_success(true);
+            for (const auto& inv : db->list_invites()) {
+                auto* info = res->add_invites();
+                info->set_code(inv.code);
+                info->set_created_by(inv.created_by);
+                info->set_created_at(inv.created_at);
+                info->set_expires_at(inv.expires_at);
+                info->set_max_uses(inv.max_uses);
+                info->set_uses(inv.uses);
+            }
+            send_packet(p);
+        }
+
+        // --- INVITE: REVOKE ---
+        else if (packet.type() == chatproj::Packet::INVITE_REVOKE_REQ) {
+            auto* db = manager_.db();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::INVITE_REVOKE_RES);
+            auto* res = p.mutable_invite_revoke_res();
+            const std::string& code = packet.invite_revoke_req().code();
+            res->set_code(code);
+            if (!db) {
+                res->set_success(false);
+                res->set_message("Server misconfigured.");
+                send_packet(p);
+                return;
+            }
+            if (db->owner() != username_) {
+                res->set_success(false);
+                res->set_message("Only the server owner can revoke invites.");
+                send_packet(p);
+                return;
+            }
+            bool ok = db->revoke_invite(code);
+            res->set_success(ok);
+            res->set_message(ok ? "Invite revoked." : "Invite not found.");
+            send_packet(p);
+        }
+
+        // --- MEMBER LIST ---
+        else if (packet.type() == chatproj::Packet::MEMBER_LIST_REQ) {
+            auto* db = manager_.db();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::MEMBER_LIST_RES);
+            auto* res = p.mutable_member_list_res();
+            if (!db) {
+                res->set_success(false);
+                res->set_message("Server misconfigured.");
+                send_packet(p);
+                return;
+            }
+            res->set_success(true);
+            const std::string owner_name = db->owner();
+            auto online_users = manager_.get_online_usernames();
+            for (const auto& m : db->list_members()) {
+                auto* info = res->add_members();
+                info->set_username(m.username);
+                info->set_joined_at(m.joined_at);
+                info->set_nickname(m.nickname);
+                info->set_is_owner(m.username == owner_name);
+                info->set_is_online(online_users.count(m.username) > 0);
+            }
+            // Only the owner sees the ban list, since it reveals moderation
+            // history. Regular members just get the member roster.
+            if (username_ == owner_name) {
+                for (const auto& u : db->list_bans()) {
+                    res->add_bans(u);
+                }
+            }
+            send_packet(p);
+        }
+
+        // --- KICK MEMBER ---
+        else if (packet.type() == chatproj::Packet::KICK_MEMBER_REQ) {
+            auto* db = manager_.db();
+            if (!db) return;
+            const std::string& target = packet.kick_member_req().username();
+            const std::string& reason = packet.kick_member_req().reason();
+            const std::string owner_name = db->owner();
+            if (username_ != owner_name) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "Only the server owner can kick members.",
+                                    target, "kick");
+                return;
+            }
+            if (target == owner_name) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "Cannot kick the server owner.",
+                                    target, "kick");
+                return;
+            }
+            if (target == username_) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "Use leave to remove yourself.",
+                                    target, "kick");
+                return;
+            }
+            bool removed = db->remove_member(target);
+            // Even if they weren't in the members table, force-disconnect
+            // any live session so the UI reflects the action.
+            manager_.force_disconnect(target, "kick", reason, username_);
+            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, removed,
+                                removed ? "Member kicked." : "User is not a member.",
+                                target, "kick");
+        }
+
+        // --- BAN MEMBER ---
+        else if (packet.type() == chatproj::Packet::BAN_MEMBER_REQ) {
+            auto* db = manager_.db();
+            if (!db) return;
+            const std::string& target = packet.ban_member_req().username();
+            const std::string& reason = packet.ban_member_req().reason();
+            const std::string owner_name = db->owner();
+            if (username_ != owner_name) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "Only the server owner can ban members.",
+                                    target, "ban");
+                return;
+            }
+            if (target == owner_name) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "Cannot ban the server owner.",
+                                    target, "ban");
+                return;
+            }
+            if (target == username_) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "Cannot ban yourself.",
+                                    target, "ban");
+                return;
+            }
+            bool ok = db->add_ban(target, username_, reason);
+            manager_.force_disconnect(target, "ban", reason, username_);
+            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, ok,
+                                ok ? "Member banned." : "Ban failed.",
+                                target, "ban");
+        }
+
+        // --- LEAVE SERVER ---
+        else if (packet.type() == chatproj::Packet::LEAVE_SERVER_REQ) {
+            auto* db = manager_.db();
+            if (!db) return;
+            if (db->owner() == username_) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "The server owner cannot leave their own server.",
+                                    username_, "leave");
+                return;
+            }
+            db->remove_member(username_);
+            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, true,
+                                "You have left the server.",
+                                username_, "leave");
+            std::cout << "[Community] " << username_ << " left the server\n";
+            // Give the write queue a tick to flush, then close.
+            manager_.force_disconnect(username_, "leave", "", username_);
+        }
     }
 
-    void send_auth_response(bool success, const std::string& msg) {
+    // Helper used by moderation paths to send a short response (KICK/BAN/LEAVE
+    // all share MOD_ACTION_RES; invite paths have their own response types but
+    // follow the same shape).
+    void send_simple_mod_res(chatproj::Packet::Type type, bool success,
+                             const std::string& message,
+                             const std::string& target_username,
+                             const std::string& action) {
+        chatproj::Packet p;
+        p.set_type(type);
+        if (type == chatproj::Packet::MOD_ACTION_RES) {
+            auto* res = p.mutable_mod_action_res();
+            res->set_success(success);
+            res->set_message(message);
+            res->set_username(target_username);
+            res->set_action(action);
+        } else if (type == chatproj::Packet::INVITE_CREATE_RES) {
+            auto* res = p.mutable_invite_create_res();
+            res->set_success(success);
+            res->set_message(message);
+        }
+        send_packet(p);
+    }
+
+    void send_auth_response(bool success, const std::string& msg,
+                            const std::string& error_code) {
         chatproj::Packet p;
         p.set_type(chatproj::Packet::COMMUNITY_AUTH_RES);
         auto* res = p.mutable_community_auth_res();
         res->set_success(success);
         res->set_message(msg);
+        res->set_error_code(error_code);
 
         if (success) {
-            auto* ch1 = res->add_channels();
-            ch1->set_id("general");
-            ch1->set_name("general");
-            ch1->set_type(chatproj::ChannelInfo::TEXT);
-
-            auto* ch2 = res->add_channels();
-            ch2->set_id("announcements");
-            ch2->set_name("announcements");
-            ch2->set_type(chatproj::ChannelInfo::TEXT);
-
-            auto* ch3 = res->add_channels();
-            ch3->set_id("voice-lounge");
-            ch3->set_name("Voice Lounge");
-            ch3->set_type(chatproj::ChannelInfo::VOICE);
-            ch3->set_voice_bitrate_kbps(64);
+            auto* db = manager_.db();
+            if (db) {
+                for (const auto& ch : db->list_channels()) {
+                    auto* info = res->add_channels();
+                    info->set_id(ch.id);
+                    info->set_name(ch.name);
+                    info->set_type(ch.type == 1
+                                   ? chatproj::ChannelInfo::VOICE
+                                   : chatproj::ChannelInfo::TEXT);
+                    info->set_voice_bitrate_kbps(ch.voice_bitrate_kbps);
+                }
+                res->set_server_name(db->server_name());
+                res->set_server_description(db->server_description());
+                res->set_owner_username(db->owner());
+            }
         }
 
         send_packet(p);
@@ -880,6 +1211,54 @@ std::shared_ptr<Session> SessionManager::find_session_by_token(const std::string
     return nullptr;
 }
 
+size_t SessionManager::member_count() {
+    if (db_) {
+        return db_->list_members().size();
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    return sessions_.size();
+}
+
+std::set<std::string> SessionManager::get_online_usernames() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::set<std::string> out;
+    for (const auto& s : sessions_) {
+        if (s->is_authenticated() && !s->get_username().empty()) {
+            out.insert(s->get_username());
+        }
+    }
+    return out;
+}
+
+std::shared_ptr<Session> SessionManager::find_session_by_username(const std::string& username) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& s : sessions_) {
+        if (s->get_username() == username) return s;
+    }
+    return nullptr;
+}
+
+void SessionManager::force_disconnect(const std::string& username,
+                                      const std::string& action,
+                                      const std::string& reason,
+                                      const std::string& actor) {
+    auto session = find_session_by_username(username);
+    if (!session) return;
+
+    // Best-effort notification before we close the socket. If the write is
+    // already queued behind a slow client, the close below cancels it — the
+    // target just won't see the reason, which is fine.
+    chatproj::Packet p;
+    p.set_type(chatproj::Packet::MEMBERSHIP_REVOKED);
+    auto* rev = p.mutable_membership_revoked();
+    rev->set_action(action);
+    rev->set_reason(reason);
+    rev->set_actor(actor);
+    session->send_packet_external(p);
+
+    session->close_connection();
+}
+
 class CommunityServer {
 public:
     CommunityServer(boost::asio::io_context& io_context, short port, SessionManager& manager, const std::string& jwt_secret)
@@ -1128,7 +1507,7 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
     hb->set_description(server_desc);
     hb->set_host_ip(public_ip);
     hb->set_port(community_port);
-    hb->set_member_count(static_cast<int>(manager.session_count()));
+    hb->set_member_count(static_cast<int>(manager.member_count()));
 
     std::string serialized;
     packet.SerializeToString(&serialized);
@@ -1176,6 +1555,8 @@ int main() {
         const char* server_name_env = std::getenv("DECIBELL_SERVER_NAME");
         const char* server_desc_env = std::getenv("DECIBELL_SERVER_DESC");
         const char* public_ip_env = std::getenv("DECIBELL_PUBLIC_IP");
+        const char* owner_env = std::getenv("DECIBELL_OWNER_USERNAME");
+        const char* db_path_env = std::getenv("DECIBELL_DB_PATH");
 
         if (!jwt_env) {
             std::cerr << "Missing required environment variable: DECIBELL_JWT_SECRET\n";
@@ -1187,16 +1568,43 @@ int main() {
         std::string server_name = server_name_env ? server_name_env : "Community Server";
         std::string server_desc = server_desc_env ? server_desc_env : "";
         std::string public_ip = public_ip_env ? public_ip_env : "127.0.0.1";
+        std::string owner_username = owner_env ? owner_env : "";
+        std::string db_path = db_path_env ? db_path_env : "decibell_community.db";
+
+        // Open (or create) the persistent DB. If the file doesn't exist yet
+        // we require DECIBELL_OWNER_USERNAME so we know who to seed as owner.
+        chatproj::CommunityDb db;
+        {
+            std::ifstream probe(db_path);
+            bool fresh = !probe.good();
+            if (fresh && owner_username.empty()) {
+                std::cerr << "[Community] DB " << db_path
+                          << " does not exist yet and DECIBELL_OWNER_USERNAME is unset.\n"
+                             "          Set DECIBELL_OWNER_USERNAME to the username that "
+                             "should own this server and restart.\n";
+                return 1;
+            }
+            if (!db.open(db_path, owner_username, server_name, server_desc)) {
+                std::cerr << "[Community] Failed to open database.\n";
+                return 1;
+            }
+        }
 
         boost::asio::io_context io_context;
         SessionManager manager;
+        manager.set_db(&db);
         CommunityServer s(io_context, 8082, manager, jwt_secret);
         std::cout << "Decibell Community Server running on port 8082...\n";
+        std::cout << "[Community] Owner: " << db.owner()
+                  << " | Members: " << manager.member_count() << "\n";
 
-        // Start heartbeat timer
+        // Start heartbeat timer. Pull the authoritative server name/description
+        // from the DB so the central directory reflects any rename.
         boost::asio::steady_timer heartbeat_timer(io_context);
+        std::string hb_name = db.server_name();
+        std::string hb_desc = db.server_description();
         send_heartbeat(io_context, heartbeat_timer, central_host, 8080,
-                       server_name, server_desc, public_ip, 8082,
+                       hb_name, hb_desc, public_ip, 8082,
                        manager, jwt_secret);
 
         io_context.run();
