@@ -61,5 +61,5 @@ target_link_libraries(decibell_community PRIVATE
     OpenSSL::Crypto
     jwt-cpp::jwt-cpp
     nlohmann_json::nlohmann_json
-    SQLite3::SQLite3
+    SQLite::SQLite3
 )
