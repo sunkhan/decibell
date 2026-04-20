@@ -375,6 +375,18 @@ impl CentralClient {
                 Some(packet::Payload::FriendActionRes(resp)) => {
                     events::emit_friend_action_responded(&app, resp.success, resp.message);
                 }
+                Some(packet::Payload::InviteResolveRes(resp)) => {
+                    // Fulfil the waiter keyed by the echoed code.
+                    let waiter = {
+                        let mut s = state.lock().await;
+                        s.pending_invite_resolves.remove(&resp.code)
+                    };
+                    if let Some(tx) = waiter {
+                        let _ = tx.send(resp);
+                    } else {
+                        log::debug!("Orphan InviteResolveRes for code {}", resp.code);
+                    }
+                }
                 _ => {
                     log::debug!("Unhandled central packet type: {}", packet.r#type);
                 }

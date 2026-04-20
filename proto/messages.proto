@@ -58,6 +58,13 @@ message Packet {
     LEAVE_SERVER_REQ = 43;
     SERVER_META_UPDATE = 44; // server pushes owner/name/etc to client after auth
     MEMBERSHIP_REVOKED = 45; // server→client: you were kicked/banned
+
+    // Central-hosted invite lookup (so clients can redeem a raw code
+    // without knowing the hosting community server's host:port).
+    INVITE_REGISTER_REQ = 46;    // community→central (shared secret)
+    INVITE_UNREGISTER_REQ = 47;  // community→central (shared secret)
+    INVITE_RESOLVE_REQ = 48;     // client→central (JWT)
+    INVITE_RESOLVE_RES = 49;     // central→client
   }
 
   Type type = 1;
@@ -114,6 +121,11 @@ message Packet {
     LeaveServerRequest leave_server_req = 45;
     ServerMetaUpdate server_meta_update = 46;
     MembershipRevoked membership_revoked = 47;
+
+    InviteRegisterRequest invite_register_req = 48;
+    InviteUnregisterRequest invite_unregister_req = 49;
+    InviteResolveRequest invite_resolve_req = 50;
+    InviteResolveResponse invite_resolve_res = 51;
   }
 }
 
@@ -433,4 +445,32 @@ message MembershipRevoked {
   string action = 1;
   string reason = 2;
   string actor = 3;
+}
+
+// --- Central-hosted invite lookup ---
+// Community servers register each live invite with the central server so
+// clients can redeem a raw code without knowing the community host:port.
+
+message InviteRegisterRequest {
+  string code = 1;
+  string host = 2;
+  uint32 port = 3;
+  int64 expires_at = 4;  // 0 = never
+}
+
+message InviteUnregisterRequest {
+  string code = 1;
+}
+
+message InviteResolveRequest {
+  string code = 1;
+}
+
+message InviteResolveResponse {
+  bool success = 1;
+  string message = 2;
+  string host = 3;
+  uint32 port = 4;
+  // Echoed so the client can correlate concurrent lookups.
+  string code = 5;
 }

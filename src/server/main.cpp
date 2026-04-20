@@ -141,11 +141,16 @@ private:
         std::cout << "[Server] Raw packet received, type ID: " << packet.type() << "\n";
 
         // --- ENFORCE JWT VALIDATION ---
+        // Heartbeats and invite register/unregister from community servers
+        // authenticate with the pre-shared secret, not a JWT — they are
+        // verified below in their own handlers.
         if (packet.type() != chatproj::Packet::REGISTER_REQ &&
             packet.type() != chatproj::Packet::LOGIN_REQ &&
             packet.type() != chatproj::Packet::HANDSHAKE &&
             packet.type() != chatproj::Packet::SERVER_HEARTBEAT &&
-            packet.type() != chatproj::Packet::CLIENT_PING) {
+            packet.type() != chatproj::Packet::CLIENT_PING &&
+            packet.type() != chatproj::Packet::INVITE_REGISTER_REQ &&
+            packet.type() != chatproj::Packet::INVITE_UNREGISTER_REQ) {
 
             if (!auth_manager_.validateToken(packet.auth_token())) {
                 std::cout << "[Security] Dropped packet - Missing or invalid JWT.\n";
@@ -353,6 +358,57 @@ private:
             auto& hb = packet.server_heartbeat();
             std::cout << "[Server] Heartbeat from community server: " << hb.name() << " at " << hb.host_ip() << ":" << hb.port() << "\n";
             auth_manager_.upsertCommunityServer(hb.name(), hb.description(), hb.host_ip(), hb.port(), hb.member_count());
+        }
+
+        // --- COMMUNITY SERVER: REGISTER AN INVITE ---
+        else if (packet.type() == chatproj::Packet::INVITE_REGISTER_REQ) {
+            if (!auth_manager_.verifySharedSecret(packet.auth_token())) {
+                std::cout << "[Security] Dropped invite_register - invalid shared secret.\n";
+                return;
+            }
+            const auto& req = packet.invite_register_req();
+            auth_manager_.registerCommunityInvite(
+                req.code(), req.host(), static_cast<int>(req.port()), req.expires_at());
+            std::cout << "[Server] Registered invite " << req.code()
+                      << " -> " << req.host() << ":" << req.port() << "\n";
+        }
+
+        // --- COMMUNITY SERVER: UNREGISTER AN INVITE ---
+        else if (packet.type() == chatproj::Packet::INVITE_UNREGISTER_REQ) {
+            if (!auth_manager_.verifySharedSecret(packet.auth_token())) {
+                std::cout << "[Security] Dropped invite_unregister - invalid shared secret.\n";
+                return;
+            }
+            const auto& req = packet.invite_unregister_req();
+            auth_manager_.unregisterCommunityInvite(req.code());
+            std::cout << "[Server] Unregistered invite " << req.code() << "\n";
+        }
+
+        // --- CLIENT: RESOLVE AN INVITE CODE TO HOST:PORT ---
+        else if (packet.type() == chatproj::Packet::INVITE_RESOLVE_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.invite_resolve_req();
+            auto resolved = auth_manager_.resolveCommunityInvite(req.code());
+
+            chatproj::Packet resp;
+            resp.set_type(chatproj::Packet::INVITE_RESOLVE_RES);
+            auto* body = resp.mutable_invite_resolve_res();
+            body->set_code(req.code());
+            if (resolved) {
+                body->set_success(true);
+                body->set_message("");
+                body->set_host(resolved->first);
+                body->set_port(static_cast<uint32_t>(resolved->second));
+            } else {
+                body->set_success(false);
+                body->set_message("Unknown or expired invite");
+            }
+
+            std::string serialized;
+            resp.SerializeToString(&serialized);
+            auto framed = std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(serialized));
+            deliver(framed);
         }
     }
 

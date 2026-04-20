@@ -7,6 +7,7 @@
 #endif
 #endif
 
+#include <ctime>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -15,6 +16,7 @@
 #include <set>
 #include <unordered_map>
 #include <mutex>
+#include <thread>
 #include <utility>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -90,6 +92,14 @@ public:
                           const std::string& reason,
                           const std::string& actor);
 
+    // Central-hosted invite sync. Community servers register each live invite
+    // with central so clients can redeem a raw code without knowing host:port.
+    void set_central_sync(const std::string& central_host, int central_port,
+                          const std::string& jwt_secret,
+                          const std::string& public_ip, int community_port);
+    void sync_invite_register(const std::string& code, int64_t expires_at);
+    void sync_invite_unregister(const std::string& code);
+
 private:
     std::set<std::shared_ptr<Session>> sessions_;
     std::unordered_map<std::string, std::set<std::shared_ptr<Session>>> channels_;
@@ -112,6 +122,13 @@ private:
     std::unordered_map<std::string, std::shared_ptr<Session>> udp_key_index_;
 
     chatproj::CommunityDb* db_ = nullptr;
+
+    // Central-sync config (populated once at startup via set_central_sync).
+    std::string central_host_;
+    int central_port_ = 0;
+    std::string central_jwt_secret_;
+    std::string public_ip_;
+    int community_port_ = 0;
 
     std::mutex mutex_;
 };
@@ -488,6 +505,9 @@ private:
                 res->set_message("Failed to create invite.");
             }
             send_packet(p);
+            if (created) {
+                manager_.sync_invite_register(created->code, created->expires_at);
+            }
         }
 
         // --- INVITE: LIST ---
@@ -545,6 +565,9 @@ private:
             res->set_success(ok);
             res->set_message(ok ? "Invite revoked." : "Invite not found.");
             send_packet(p);
+            if (ok) {
+                manager_.sync_invite_unregister(code);
+            }
         }
 
         // --- MEMBER LIST ---
@@ -1259,6 +1282,86 @@ void SessionManager::force_disconnect(const std::string& username,
     session->close_connection();
 }
 
+void SessionManager::set_central_sync(const std::string& central_host, int central_port,
+                                      const std::string& jwt_secret,
+                                      const std::string& public_ip, int community_port) {
+    central_host_ = central_host;
+    central_port_ = central_port;
+    central_jwt_secret_ = jwt_secret;
+    public_ip_ = public_ip;
+    community_port_ = community_port;
+}
+
+namespace {
+// One-shot TLS send of a framed packet to central. Blocks briefly; call from
+// a detached thread so packet-handler coroutines never stall.
+void send_to_central_blocking(const std::string& host, int port,
+                              const std::vector<uint8_t>& framed) {
+    try {
+        boost::asio::io_context io;
+        ssl::context ctx(ssl::context::tlsv12_client);
+        ctx.set_verify_mode(ssl::verify_none);
+
+        tcp::resolver resolver(io);
+        auto endpoints = resolver.resolve(host, std::to_string(port));
+
+        tcp::socket raw_socket(io);
+        boost::asio::connect(raw_socket, endpoints);
+
+        ssl::stream<tcp::socket> ssl_socket(std::move(raw_socket), ctx);
+        ssl_socket.handshake(ssl::stream_base::client);
+
+        boost::asio::write(ssl_socket, boost::asio::buffer(framed));
+        ssl_socket.lowest_layer().close();
+    } catch (const std::exception& e) {
+        std::cerr << "[InviteSync] Failed: " << e.what() << "\n";
+    }
+}
+} // namespace
+
+void SessionManager::sync_invite_register(const std::string& code, int64_t expires_at) {
+    if (central_host_.empty() || central_port_ == 0) return;
+
+    chatproj::Packet packet;
+    packet.set_type(chatproj::Packet::INVITE_REGISTER_REQ);
+    packet.set_auth_token(central_jwt_secret_);
+    auto* req = packet.mutable_invite_register_req();
+    req->set_code(code);
+    req->set_host(public_ip_);
+    req->set_port(static_cast<uint32_t>(community_port_));
+    req->set_expires_at(expires_at);
+
+    std::string serialized;
+    packet.SerializeToString(&serialized);
+    auto framed = chatproj::create_framed_packet(serialized);
+
+    std::string host = central_host_;
+    int port = central_port_;
+    std::thread([host, port, framed = std::move(framed)]() {
+        send_to_central_blocking(host, port, framed);
+    }).detach();
+}
+
+void SessionManager::sync_invite_unregister(const std::string& code) {
+    if (central_host_.empty() || central_port_ == 0) return;
+
+    chatproj::Packet packet;
+    packet.set_type(chatproj::Packet::INVITE_UNREGISTER_REQ);
+    packet.set_auth_token(central_jwt_secret_);
+    auto* req = packet.mutable_invite_unregister_req();
+    req->set_code(code);
+
+    std::string serialized;
+    packet.SerializeToString(&serialized);
+    auto framed = chatproj::create_framed_packet(serialized);
+
+    std::string host = central_host_;
+    int port = central_port_;
+    std::thread([host, port, framed = std::move(framed)]() {
+        send_to_central_blocking(host, port, framed);
+    }).detach();
+}
+
 class CommunityServer {
 public:
     CommunityServer(boost::asio::io_context& io_context, short port, SessionManager& manager, const std::string& jwt_secret)
@@ -1593,10 +1696,28 @@ int main() {
         boost::asio::io_context io_context;
         SessionManager manager;
         manager.set_db(&db);
+        manager.set_central_sync(central_host, 8080, jwt_secret, public_ip, 8082);
         CommunityServer s(io_context, 8082, manager, jwt_secret);
         std::cout << "Decibell Community Server running on port 8082...\n";
         std::cout << "[Community] Owner: " << db.owner()
                   << " | Members: " << manager.member_count() << "\n";
+
+        // Re-register every still-live invite with central so clients can
+        // resolve raw codes after a restart. Central does UPSERT so this is
+        // safe to call unconditionally.
+        {
+            const int64_t now = static_cast<int64_t>(std::time(nullptr));
+            int registered = 0;
+            for (const auto& inv : db.list_invites()) {
+                if (inv.expires_at != 0 && inv.expires_at <= now) continue;
+                manager.sync_invite_register(inv.code, inv.expires_at);
+                ++registered;
+            }
+            if (registered > 0) {
+                std::cout << "[Community] Re-registered " << registered
+                          << " active invite(s) with central.\n";
+            }
+        }
 
         // Start heartbeat timer. Pull the authoritative server name/description
         // from the DB so the central directory reflects any rename.

@@ -126,9 +126,11 @@ export default function InviteModal() {
     setCreating(true);
     setError(null);
     try {
+      const expiresAt =
+        expirySec === 0 ? 0 : Math.floor(Date.now() / 1000) + expirySec;
       await invoke("create_invite", {
         serverId: activeServerId,
-        expiresInSec: expirySec,
+        expiresAt,
         maxUses,
       });
     } catch (err) {

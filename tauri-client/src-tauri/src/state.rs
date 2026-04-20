@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 
 use crate::media::{VoiceEngine, VideoEngine, AudioStreamEngine};
 use crate::net::central::CentralClient;
 use crate::net::community::CommunityClient;
+use crate::net::proto::InviteResolveResponse;
 
 #[derive(Default)]
 pub struct AppState {
@@ -26,6 +27,10 @@ pub struct AppState {
     /// Stop signal for the temporary mic test capture (settings UI level meter).
     /// Setting this to true stops the test. None means no test is running.
     pub mic_test_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// In-flight invite-resolve lookups keyed by invite code (uppercased).
+    /// Router fulfils each sender when INVITE_RESOLVE_RES arrives; the caller
+    /// drops its half after timeout.
+    pub pending_invite_resolves: HashMap<String, oneshot::Sender<InviteResolveResponse>>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;

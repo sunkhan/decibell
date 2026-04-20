@@ -1,4 +1,5 @@
 use tauri::State;
+use tokio::sync::oneshot;
 
 use crate::net::connection::build_packet;
 use crate::net::proto::*;
@@ -208,4 +209,73 @@ pub fn parse_invite_link(url: String) -> Result<ParsedInviteLink, String> {
         port,
         code: code.to_uppercase(),
     })
+}
+
+// --- central-hosted invite lookup ---
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedInvite {
+    pub host: String,
+    pub port: u16,
+    pub code: String,
+}
+
+/// Ask the central server to resolve a raw invite code to a community
+/// host:port. Returns the resolved endpoint or an error describing why the
+/// code couldn't be resolved (unknown, expired, central not reachable).
+#[tauri::command]
+pub async fn resolve_invite_code(
+    code: String,
+    state: State<'_, SharedState>,
+) -> Result<ResolvedInvite, String> {
+    let code = code.trim().to_uppercase();
+    if code.is_empty() {
+        return Err("Invite code is empty".into());
+    }
+
+    // Build packet and register waiter while holding the AppState lock.
+    let (write_tx, data, rx) = {
+        let mut s = state.lock().await;
+        let central = s.central.as_ref()
+            .ok_or("Not connected to central server")?;
+        let tx = central.connection_write_tx()
+            .ok_or("Central connection lost")?;
+        let token = s.token.clone();
+        let data = build_packet(
+            packet::Type::InviteResolveReq,
+            packet::Payload::InviteResolveReq(InviteResolveRequest { code: code.clone() }),
+            token.as_deref(),
+        );
+
+        let (otx, orx) = oneshot::channel::<InviteResolveResponse>();
+        // Replace any previous waiter for this code (last request wins).
+        s.pending_invite_resolves.insert(code.clone(), otx);
+        (tx, data, orx)
+    };
+
+    if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        state.lock().await.pending_invite_resolves.remove(&code);
+        return Err(format!("Failed to send resolve request: {}", e));
+    }
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(resp)) => {
+            if resp.success {
+                let port = u16::try_from(resp.port)
+                    .map_err(|_| "Central returned invalid port".to_string())?;
+                Ok(ResolvedInvite { host: resp.host, port, code: resp.code })
+            } else {
+                let msg = if resp.message.is_empty() { "Invite not found".to_string() } else { resp.message };
+                Err(msg)
+            }
+        }
+        Ok(Err(_)) => {
+            Err("Central connection closed before response".into())
+        }
+        Err(_) => {
+            state.lock().await.pending_invite_resolves.remove(&code);
+            Err("Timed out waiting for central server".into())
+        }
+    }
 }

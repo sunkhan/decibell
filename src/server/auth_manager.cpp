@@ -25,6 +25,15 @@ void AuthManager::initializeDatabase() {
             "  CHECK (user1 < user2)"
             ")"
         );
+        txn.exec(
+            "CREATE TABLE IF NOT EXISTS community_invites ("
+            "  code VARCHAR(32) PRIMARY KEY,"
+            "  host VARCHAR(255) NOT NULL,"
+            "  port INTEGER NOT NULL,"
+            "  expires_at BIGINT NOT NULL,"  // 0 = never
+            "  registered_at BIGINT NOT NULL"
+            ")"
+        );
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] initializeDatabase: " << e.what() << "\n";
@@ -189,6 +198,71 @@ void AuthManager::upsertCommunityServer(const std::string& name, const std::stri
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] upsertCommunityServer: " << e.what() << "\n";
+    }
+}
+
+void AuthManager::registerCommunityInvite(const std::string& code, const std::string& host, int port, int64_t expires_at) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+                                std::chrono::system_clock::now().time_since_epoch())
+                                .count();
+        txn.exec_params(
+            "INSERT INTO community_invites (code, host, port, expires_at, registered_at) "
+            "VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (code) DO UPDATE SET "
+            "host = EXCLUDED.host, port = EXCLUDED.port, "
+            "expires_at = EXCLUDED.expires_at, registered_at = EXCLUDED.registered_at",
+            code, host, port, expires_at, now
+        );
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] registerCommunityInvite: " << e.what() << "\n";
+    }
+}
+
+void AuthManager::unregisterCommunityInvite(const std::string& code) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        txn.exec_params("DELETE FROM community_invites WHERE code = $1", code);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] unregisterCommunityInvite: " << e.what() << "\n";
+    }
+}
+
+std::optional<std::pair<std::string, int>> AuthManager::resolveCommunityInvite(const std::string& code) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result res = txn.exec_params(
+            "SELECT host, port, expires_at FROM community_invites WHERE code = $1",
+            code
+        );
+        if (res.empty()) return std::nullopt;
+
+        const int64_t expires_at = res[0][2].as<int64_t>();
+        if (expires_at != 0) {
+            const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+                                    std::chrono::system_clock::now().time_since_epoch())
+                                    .count();
+            if (now >= expires_at) {
+                // Lazily prune expired entries so the table doesn't grow forever.
+                try {
+                    pqxx::work cleanup(conn);
+                    cleanup.exec_params("DELETE FROM community_invites WHERE code = $1", code);
+                    cleanup.commit();
+                } catch (...) {}
+                return std::nullopt;
+            }
+        }
+
+        return std::make_pair(res[0][0].as<std::string>(), res[0][1].as<int>());
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] resolveCommunityInvite: " << e.what() << "\n";
+        return std::nullopt;
     }
 }
 

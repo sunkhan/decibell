@@ -26,6 +26,13 @@ public:
     std::vector<chatproj::CommunityServerInfo> getCommunityServers();
     void upsertCommunityServer(const std::string& name, const std::string& description, const std::string& host_ip, int port, int member_count);
 
+    // Invite lookup (community servers register invites here so clients can
+    // redeem a raw code without knowing the hosting server's host:port).
+    void registerCommunityInvite(const std::string& code, const std::string& host, int port, int64_t expires_at);
+    void unregisterCommunityInvite(const std::string& code);
+    // Returns (host, port) or nullopt if the code is unknown or expired.
+    std::optional<std::pair<std::string, int>> resolveCommunityInvite(const std::string& code);
+
     // Friend System
     std::string handleFriendAction(const std::string& requester, chatproj::FriendActionType action, const std::string& target);
     std::vector<chatproj::FriendInfo> getFriends(const std::string& username);
