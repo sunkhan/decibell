@@ -34,6 +34,7 @@ export default function ServerBrowseView() {
   const [redeeming, setRedeeming] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [redeemTarget, setRedeemTarget] = useState<string | null>(null);
+  const [showManualHost, setShowManualHost] = useState(false);
 
   // Surface backend auth failures from an in-progress invite redemption.
   useEffect(() => {
@@ -162,42 +163,24 @@ export default function ServerBrowseView() {
             .startsWith("decibell:");
           const canJoin = !redeeming && inviteInput.trim().length > 0;
           return (
-            <div className="mt-5 max-w-2xl rounded-2xl border border-border bg-bg-dark p-4">
-              <h2 className="mb-1 text-sm font-semibold text-text-bright">
-                Have an invite?
-              </h2>
-              <p className="mb-3 text-xs text-text-secondary">
-                Paste an invite code on its own — we'll look up the server for
-                you. You can also paste a full{" "}
-                <span className="font-mono">decibell://</span> link, or enter a
-                host and port manually for unlisted servers.
-              </p>
-              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-                Invite link or code
-              </label>
-              <input
-                type="text"
-                value={inviteInput}
-                onChange={(e) => setInviteInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleRedeemInvite()}
-                placeholder="decibell://invite/... or KH72NQ4XR3"
-                className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 font-mono text-sm text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent"
-              />
-              {!isLink && (
-                <>
-                  <label className="mt-3 mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-                    Server host &amp; port
-                    <span className="ml-1 font-normal normal-case tracking-normal text-text-secondary">
-                      (optional — only if the code can't be resolved)
-                    </span>
-                  </label>
-                  <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="mt-5 flex max-w-2xl items-start gap-2 rounded-2xl border border-border bg-bg-dark p-3">
+              <div className="flex-1">
+                <input
+                  type="text"
+                  value={inviteInput}
+                  onChange={(e) => setInviteInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleRedeemInvite()}
+                  placeholder="Have an invite? Paste a code or decibell:// link"
+                  className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 font-mono text-sm text-text-primary outline-none transition-colors placeholder:font-sans placeholder:text-text-muted focus:border-accent"
+                />
+                {!isLink && showManualHost && (
+                  <div className="mt-2 flex flex-col gap-2 sm:flex-row">
                     <input
                       type="text"
                       value={inviteHost}
                       onChange={(e) => setInviteHost(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleRedeemInvite()}
-                      placeholder="e.g. play.example.com or 203.0.113.5"
+                      placeholder="host (e.g. 203.0.113.5)"
                       className="flex-1 rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
                     />
                     <input
@@ -205,22 +188,34 @@ export default function ServerBrowseView() {
                       value={invitePort}
                       onChange={(e) => setInvitePort(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleRedeemInvite()}
-                      placeholder="8082"
-                      className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent sm:w-28"
+                      placeholder="port"
+                      className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent sm:w-24"
                     />
                   </div>
-                </>
-              )}
+                )}
+                <div className="mt-1.5 flex items-center gap-3">
+                  {!isLink && (
+                    <button
+                      onClick={() => setShowManualHost((v) => !v)}
+                      className="text-[11px] text-text-muted transition-colors hover:text-text-secondary"
+                    >
+                      {showManualHost
+                        ? "Hide host & port"
+                        : "Unlisted server? Enter host & port"}
+                    </button>
+                  )}
+                  {inviteError && (
+                    <p className="flex-1 text-xs text-error">{inviteError}</p>
+                  )}
+                </div>
+              </div>
               <button
                 onClick={handleRedeemInvite}
                 disabled={!canJoin}
-                className="mt-3 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+                className="shrink-0 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {redeeming ? "Joining..." : "Join"}
               </button>
-              {inviteError && (
-                <p className="mt-2 text-xs text-error">{inviteError}</p>
-              )}
             </div>
           );
         })()}

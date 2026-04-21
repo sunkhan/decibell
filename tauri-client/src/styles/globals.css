@@ -169,6 +169,42 @@ button, a, [class*="transition"] {
   50% { height: 14px; }
 }
 
+@keyframes pickerIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes tooltipIn {
+  from { opacity: 0; transform: translateX(-4px) scale(0.97); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+/* Rich contentEditable input — matches textarea visuals, inlines Twemoji */
+.rich-input {
+  min-height: 1.4em;
+  line-height: 1.4;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  cursor: text;
+}
+
+.rich-input[data-empty="true"]::before {
+  content: attr(data-placeholder);
+  color: var(--color-text-faint);
+  font-family: var(--font-channel);
+  font-size: 14px;
+  font-weight: 400;
+  pointer-events: none;
+}
+
+.rich-input .rich-emoji {
+  display: inline-block;
+  width: 1.375em;
+  height: 1.375em;
+  vertical-align: -0.3em;
+  margin: 0 1px;
+}
+
 /* Custom range slider */
 .custom-slider::-webkit-slider-thumb {
   -webkit-appearance: none;

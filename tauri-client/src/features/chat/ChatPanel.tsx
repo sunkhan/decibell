@@ -2,9 +2,12 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useDraftsStore } from "../../stores/draftsStore";
 import MessageBubble, { shouldGroup } from "./MessageBubble";
 import { useChatEvents } from "./useChatEvents";
 import WelcomeState from "./WelcomeState";
+import EmojiPicker from "./EmojiPicker";
+import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 
 export function ChatHeader() {
   const activeServerId = useChatStore((s) => s.activeServerId);
@@ -67,8 +70,10 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<RichInputHandle>(null);
+  const emojiTriggerRef = useRef<HTMLButtonElement>(null);
 
   const messages = activeChannelId
     ? messagesByChannel[activeChannelId] ?? []
@@ -82,47 +87,48 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
 
   useEffect(() => {
     setSendError(null);
-    setInput("");
+    setPickerOpen(false);
+    const stored = activeChannelId
+      ? useDraftsStore.getState().channelDrafts[activeChannelId] ?? ""
+      : "";
+    editorRef.current?.setValue(stored);
+    setInput(stored);
   }, [activeChannelId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
 
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    const id = requestAnimationFrame(() => {
-      el.style.height = "0";
-      el.style.height = Math.min(el.scrollHeight, 160) + "px";
-    });
-    return () => cancelAnimationFrame(id);
-  }, [input]);
-
-  // Auto-focus textarea when user starts typing anywhere
+  // Auto-focus editor when user starts typing anywhere
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.altKey || e.metaKey) return;
-      if (e.key.length !== 1) return; // ignore non-printable keys
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return; // already in an input
-      textareaRef.current?.focus();
+      if (e.key.length !== 1) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (target?.isContentEditable) return;
+      editorRef.current?.focus();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
   const handleSend = async () => {
-    if (!input.trim() || !activeServerId || !activeChannelId) return;
+    const value = editorRef.current?.getValue() ?? input;
+    if (!value.trim() || !activeServerId || !activeChannelId) return;
     setSending(true);
     setSendError(null);
     try {
       await invoke("send_channel_message", {
         serverId: activeServerId,
         channelId: activeChannelId,
-        message: input.trim(),
+        message: value.trim(),
       });
+      editorRef.current?.clear();
       setInput("");
+      useDraftsStore.getState().clearChannelDraft(activeChannelId);
+      setPickerOpen(false);
     } catch (err) {
       setSendError(String(err));
     } finally {
@@ -130,11 +136,15 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  const handleInputChange = (value: string) => {
+    setInput(value);
+    if (activeChannelId) {
+      useDraftsStore.getState().setChannelDraft(activeChannelId, value);
     }
+  };
+
+  const insertEmoji = (emoji: string) => {
+    editorRef.current?.insertEmoji(emoji);
   };
 
   // Empty state
@@ -183,23 +193,39 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
               <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" />
             </svg>
           </button>
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
+          <RichInput
+            ref={editorRef}
+            onChange={handleInputChange}
+            onEnter={handleSend}
             disabled={sending}
             placeholder={`Message #${channelName ?? "channel"}`}
-            className="flex-1 resize-none bg-transparent text-sm leading-snug text-text-primary outline-none placeholder:font-channel placeholder:text-[14px] placeholder:font-normal placeholder:text-text-faint disabled:opacity-50"
-            style={{ maxHeight: 160 }}
+            className="flex-1 bg-transparent text-sm leading-snug text-text-primary"
+            maxHeight={160}
           />
           <div className="flex shrink-0 self-end gap-1">
-            <button className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:text-text-secondary">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
-              </svg>
-            </button>
+            <div className="relative">
+              <button
+                ref={emojiTriggerRef}
+                onClick={() => setPickerOpen((v) => !v)}
+                className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-md transition-colors ${
+                  pickerOpen
+                    ? "bg-surface-hover text-text-secondary"
+                    : "text-text-muted hover:text-text-secondary"
+                }`}
+                title="Emoji"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
+                </svg>
+              </button>
+              {pickerOpen && (
+                <EmojiPicker
+                  onSelect={(emoji) => insertEmoji(emoji)}
+                  onClose={() => setPickerOpen(false)}
+                  triggerRef={emojiTriggerRef}
+                />
+              )}
+            </div>
             <button
               onClick={handleSend}
               disabled={sending || !input.trim()}

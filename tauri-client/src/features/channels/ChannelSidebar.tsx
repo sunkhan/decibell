@@ -9,6 +9,7 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
 import VoiceParticipantList from "../voice/VoiceParticipantList";
+import ServerActionsDropdown from "../servers/ServerActionsDropdown";
 import { playSound } from "../../utils/sounds";
 
 function formatRelativeTime(epochMs: number): string {
@@ -277,57 +278,25 @@ export default function ChannelSidebar() {
         )}
 
         {showServerMenu && activeServerId && (
-          <div className="absolute left-2 right-2 top-full z-30 mt-1 rounded-xl border border-border bg-bg-secondary p-1.5 shadow-2xl">
-            <button
-              onClick={() => {
-                setShowServerMenu(false);
-                openModal("members-manage");
-              }}
-              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-primary transition-colors hover:bg-surface-hover"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-              </svg>
-              Members
-            </button>
-            {isOwner && (
-              <button
-                onClick={() => {
-                  setShowServerMenu(false);
-                  openModal("invite-manage");
-                }}
-                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-primary transition-colors hover:bg-surface-hover"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
-                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                </svg>
-                Invites
-              </button>
-            )}
-            <div className="my-1 h-px bg-border" />
-            <button
-              onClick={() => {
-                setShowServerMenu(false);
-                invoke("disconnect_from_community", { serverId: activeServerId }).catch(console.error);
-                useChatStore.getState().removeConnectedServer(activeServerId);
-                useChatStore.getState().setActiveServer(null);
-                setActiveChannel(null);
-                setActiveView("home");
-              }}
-              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-surface-hover"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                <polyline points="16 17 21 12 16 7" />
-                <line x1="21" y1="12" x2="9" y2="12" />
-              </svg>
-              Disconnect
-            </button>
-          </div>
+          <ServerActionsDropdown
+            isOwner={isOwner}
+            onMembers={() => {
+              setShowServerMenu(false);
+              openModal("members-manage");
+            }}
+            onInvites={() => {
+              setShowServerMenu(false);
+              openModal("invite-manage");
+            }}
+            onDisconnect={() => {
+              setShowServerMenu(false);
+              invoke("disconnect_from_community", { serverId: activeServerId }).catch(console.error);
+              useChatStore.getState().removeConnectedServer(activeServerId);
+              useChatStore.getState().setActiveServer(null);
+              setActiveChannel(null);
+              setActiveView("home");
+            }}
+          />
         )}
       </div>
 

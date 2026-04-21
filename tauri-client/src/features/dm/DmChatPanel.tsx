@@ -5,9 +5,12 @@ import { useFriendsStore } from "../../stores/friendsStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useDraftsStore } from "../../stores/draftsStore";
 import { stringToGradient, stringToColor } from "../../utils/colors";
 import MessageBubble, { shouldGroup } from "../chat/MessageBubble";
+import EmojiPicker from "../chat/EmojiPicker";
 import ErrorCard from "../../components/ErrorCard";
+import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 
 const ERROR_MESSAGES = [
   "This user is currently offline. Your message could not be delivered.",
@@ -26,8 +29,10 @@ export default function DmChatPanel() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<RichInputHandle>(null);
+  const emojiTriggerRef = useRef<HTMLButtonElement>(null);
 
   const conversation = activeDmUser
     ? conversations[activeDmUser]
@@ -41,10 +46,15 @@ export default function DmChatPanel() {
     friend?.status === "online" ||
     (activeDmUser ? onlineUsers.includes(activeDmUser) : false);
 
-  // Reset on conversation switch
+  // Restore draft on conversation switch
   useEffect(() => {
     setSendError(null);
-    setInput("");
+    setPickerOpen(false);
+    const stored = activeDmUser
+      ? useDraftsStore.getState().dmDrafts[activeDmUser] ?? ""
+      : "";
+    editorRef.current?.setValue(stored);
+    setInput(stored);
   }, [activeDmUser]);
 
   // Auto-scroll on new messages
@@ -52,39 +62,35 @@ export default function DmChatPanel() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
 
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    const id = requestAnimationFrame(() => {
-      el.style.height = "0";
-      el.style.height = Math.min(el.scrollHeight, 160) + "px";
-    });
-    return () => cancelAnimationFrame(id);
-  }, [input]);
-
-  // Auto-focus textarea when user starts typing anywhere
+  // Auto-focus editor when user starts typing anywhere
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.altKey || e.metaKey) return;
       if (e.key.length !== 1) return;
-      const tag = (e.target as HTMLElement)?.tagName;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
-      textareaRef.current?.focus();
+      if (target?.isContentEditable) return;
+      editorRef.current?.focus();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
   const handleSend = async () => {
-    if (!input.trim() || !activeDmUser) return;
+    const value = editorRef.current?.getValue() ?? input;
+    if (!value.trim() || !activeDmUser) return;
     setSending(true);
     setSendError(null);
     try {
       await invoke("send_private_message", {
         recipient: activeDmUser,
-        message: input.trim(),
+        message: value.trim(),
       });
+      editorRef.current?.clear();
       setInput("");
+      useDraftsStore.getState().clearDmDraft(activeDmUser);
+      setPickerOpen(false);
     } catch (err) {
       setSendError(String(err));
     } finally {
@@ -92,11 +98,15 @@ export default function DmChatPanel() {
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  const handleInputChange = (value: string) => {
+    setInput(value);
+    if (activeDmUser) {
+      useDraftsStore.getState().setDmDraft(activeDmUser, value);
     }
+  };
+
+  const insertEmoji = (emoji: string) => {
+    editorRef.current?.insertEmoji(emoji);
   };
 
   // Empty state — no active DM
@@ -246,17 +256,38 @@ export default function DmChatPanel() {
       {/* Input bar */}
       <div className="px-3 pb-2">
         <div className="flex min-h-[54px] items-center gap-2.5 rounded-xl border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
+          <RichInput
+            ref={editorRef}
+            onChange={handleInputChange}
+            onEnter={handleSend}
             disabled={sending}
             placeholder={`Message @${activeDmUser}`}
-            className="flex-1 resize-none bg-transparent text-sm leading-snug text-text-primary outline-none placeholder:font-channel placeholder:text-[14px] placeholder:font-normal placeholder:text-text-faint disabled:opacity-50"
-            style={{ maxHeight: 160 }}
+            className="flex-1 bg-transparent text-sm leading-snug text-text-primary"
+            maxHeight={160}
           />
+          <div className="relative self-end">
+            <button
+              ref={emojiTriggerRef}
+              onClick={() => setPickerOpen((v) => !v)}
+              className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-md transition-colors ${
+                pickerOpen
+                  ? "bg-surface-hover text-text-secondary"
+                  : "text-text-muted hover:text-text-secondary"
+              }`}
+              title="Emoji"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
+              </svg>
+            </button>
+            {pickerOpen && (
+              <EmojiPicker
+                onSelect={(emoji) => insertEmoji(emoji)}
+                onClose={() => setPickerOpen(false)}
+                triggerRef={emojiTriggerRef}
+              />
+            )}
+          </div>
           <button
             onClick={handleSend}
             disabled={sending || !input.trim()}
