@@ -48,6 +48,11 @@ public:
     // CHANNEL_MSG fan-out goes to the whole server rather than a per-channel
     // presence set.
     void broadcast_to_members(const chatproj::Packet& packet);
+    // Push a fresh MEMBER_LIST_RES to every authenticated session so their
+    // members sidebar reflects joins, departures, kicks, bans, and online
+    // flips without having to re-open the server. The owner also receives
+    // the ban list; everyone else gets members-only.
+    void broadcast_members();
     void broadcast_to_voice_channel(const char* data, size_t length, const std::string& channel_id, std::shared_ptr<Session> sender, boost::asio::ip::udp::socket& udp_socket);
     void broadcast_to_voice_channel_tcp(const chatproj::Packet& packet, const std::string& channel_id);
     void relay_keyframe_request(const std::string& target_username, boost::asio::ip::udp::socket& udp_socket);
@@ -354,6 +359,10 @@ private:
             std::cout << "[Community] Authorized user: " << username_ << "\n";
             send_auth_response(true, "Authentication successful.", "");
             manager_.send_initial_voice_presences(shared_from_this());
+            // Tell every existing member about the roster change. Covers both
+            // a brand-new member (just added via invite redemption) and a
+            // returning member flipping from offline to online.
+            manager_.broadcast_members();
             return;
         }
 
@@ -753,6 +762,10 @@ void SessionManager::join(std::shared_ptr<Session> session) {
 void SessionManager::leave(std::shared_ptr<Session> session) {
     std::vector<std::string> affected_voice_channels;
     std::vector<std::string> affected_stream_channels;
+    // Capture auth state before erasing so we know whether to push a roster
+    // refresh to the rest of the server. Kicks/bans/self-leaves all funnel
+    // through here via force_disconnect → socket close → read error → leave.
+    const bool was_authenticated = session->is_authenticated();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!session->get_udp_key().empty()) {
@@ -783,6 +796,9 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
     }
     for (const auto& ch : affected_stream_channels) {
         broadcast_stream_presence(ch);
+    }
+    if (was_authenticated) {
+        broadcast_members();
     }
 }
 
@@ -911,6 +927,68 @@ void SessionManager::broadcast_to_members(const chatproj::Packet& packet) {
         if (session->is_authenticated()) {
             session->deliver(framed);
         }
+    }
+}
+
+void SessionManager::broadcast_members() {
+    if (!db_) return;
+
+    // Snapshot DB state first — db_ takes its own mutex so doing this
+    // outside mutex_ keeps lock acquisition orders consistent.
+    const std::string owner_name = db_->owner();
+    auto members = db_->list_members();
+    auto bans = db_->list_bans();
+
+    // Compute online set + fan-out targets under session mutex.
+    std::set<std::string> online;
+    std::vector<std::pair<std::shared_ptr<Session>, bool>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        targets.reserve(sessions_.size());
+        for (const auto& s : sessions_) {
+            if (s->is_authenticated() && !s->get_username().empty()) {
+                online.insert(s->get_username());
+                targets.emplace_back(s, s->get_username() == owner_name);
+            }
+        }
+    }
+
+    auto frame_pkt = [](const chatproj::Packet& p) {
+        std::string serialized;
+        p.SerializeToString(&serialized);
+        uint32_t length = htonl(static_cast<uint32_t>(serialized.size()));
+        auto framed = std::make_shared<std::vector<uint8_t>>();
+        framed->resize(4 + serialized.size());
+        std::memcpy(framed->data(), &length, 4);
+        std::memcpy(framed->data() + 4, serialized.data(), serialized.size());
+        return framed;
+    };
+
+    chatproj::Packet pkt_no_bans;
+    pkt_no_bans.set_type(chatproj::Packet::MEMBER_LIST_RES);
+    {
+        auto* res = pkt_no_bans.mutable_member_list_res();
+        res->set_success(true);
+        for (const auto& m : members) {
+            auto* info = res->add_members();
+            info->set_username(m.username);
+            info->set_joined_at(m.joined_at);
+            info->set_nickname(m.nickname);
+            info->set_is_owner(m.username == owner_name);
+            info->set_is_online(online.count(m.username) > 0);
+        }
+    }
+
+    chatproj::Packet pkt_with_bans = pkt_no_bans;
+    for (const auto& u : bans) {
+        pkt_with_bans.mutable_member_list_res()->add_bans(u);
+    }
+
+    auto framed_no_bans = frame_pkt(pkt_no_bans);
+    auto framed_with_bans = bans.empty() ? framed_no_bans : frame_pkt(pkt_with_bans);
+
+    for (const auto& [session, is_owner] : targets) {
+        session->deliver(is_owner ? framed_with_bans : framed_no_bans);
     }
 }
 
