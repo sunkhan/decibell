@@ -109,8 +109,9 @@ export function useServerEvents() {
           const firstText = typedChannels.find((ch) => ch.type === "text");
           if (firstText) {
             store.setActiveChannel(firstText.id);
-            invoke("join_channel", { serverId, channelId: firstText.id }).catch(console.error);
           }
+          // Populate the members sidebar — every channel view uses it.
+          invoke("list_members", { serverId }).catch(console.error);
         } else {
           // Surface the rejection to the UI — the invite modal and
           // ServerBrowseView listen for this error_code to render inline.

@@ -12,7 +12,6 @@ pub const SERVER_LIST_RECEIVED: &str = "server_list_received";
 pub const COMMUNITY_AUTH_RESPONDED: &str = "community_auth_responded";
 pub const MESSAGE_RECEIVED: &str = "message_received";
 pub const USER_LIST_UPDATED: &str = "user_list_updated";
-pub const JOIN_CHANNEL_RESPONDED: &str = "join_channel_responded";
 pub const FRIEND_LIST_RECEIVED: &str = "friend_list_received";
 pub const FRIEND_ACTION_RESPONDED: &str = "friend_action_responded";
 
@@ -92,15 +91,6 @@ pub struct MessageReceivedPayload {
 #[serde(rename_all = "camelCase")]
 pub struct UserListUpdatedPayload {
     pub online_users: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JoinChannelRespondedPayload {
-    pub server_id: String,
-    pub success: bool,
-    pub channel_id: String,
-    pub active_users: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,24 +200,6 @@ pub fn emit_message_received(
 
 pub fn emit_user_list_updated(app: &AppHandle, online_users: Vec<String>) {
     let _ = app.emit(USER_LIST_UPDATED, UserListUpdatedPayload { online_users });
-}
-
-pub fn emit_join_channel_responded(
-    app: &AppHandle,
-    server_id: String,
-    success: bool,
-    channel_id: String,
-    active_users: Vec<String>,
-) {
-    let _ = app.emit(
-        JOIN_CHANNEL_RESPONDED,
-        JoinChannelRespondedPayload {
-            server_id,
-            success,
-            channel_id,
-            active_users,
-        },
-    );
 }
 
 pub fn emit_friend_list_received(app: &AppHandle, friends: Vec<FriendInfoPayload>) {

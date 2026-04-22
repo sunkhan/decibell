@@ -244,11 +244,22 @@ pub fn run_video_send_pipeline(
                             }
                         }
                         super::gpu_interop::GpuBackendType::Cuda => {
-                            if let Err(e) = encoder.init_cuda_hw() {
-                                eprintln!("[video-send] CUDA hw init failed ({}), CPU fallback", e);
-                                gpu_ctx = None;
-                            } else {
-                                eprintln!("[video-send] CUDA zero-copy encoding enabled");
+                            // Replace the encoder with one opened from scratch
+                            // as pix_fmt=CUDA + hw_frames_ctx attached, sharing
+                            // our CUcontext. The previous approach (open with
+                            // BGRA then bolt on hw_frames_ctx afterwards) left
+                            // the codec context expecting CPU memory, so
+                            // feeding it CUDA frames failed with EINVAL.
+                            let shared_ctx = gpu.cuda_ctx_raw();
+                            match super::encoder::H264Encoder::new_cuda(&config, shared_ctx) {
+                                Ok(e) => {
+                                    eprintln!("[video-send] CUDA zero-copy encoding enabled");
+                                    encoder = e;
+                                }
+                                Err(e) => {
+                                    eprintln!("[video-send] CUDA encoder init failed ({}), CPU fallback", e);
+                                    gpu_ctx = None;
+                                }
                             }
                         }
                     }

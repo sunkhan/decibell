@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
-import { useChannelEvents } from "./useChannelEvents";
 import { stringToGradient } from "../../utils/colors";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useDmStore } from "../../stores/dmStore";
@@ -25,8 +24,6 @@ function formatRelativeTime(epochMs: number): string {
 }
 
 export default function ChannelSidebar() {
-  useChannelEvents();
-
   const [sidebarWidth, setSidebarWidth] = useState(240);
   const isResizing = useRef(false);
 
@@ -117,10 +114,6 @@ export default function ChannelSidebar() {
     if (!activeServerId) return;
     if (channelId !== activeChannelId) {
       setActiveChannel(channelId);
-      invoke("join_channel", {
-        serverId: activeServerId,
-        channelId,
-      }).catch(console.error);
     }
     if (activeView !== "server") {
       setActiveView("server");

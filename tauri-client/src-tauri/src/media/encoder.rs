@@ -352,23 +352,58 @@ impl H264Encoder {
 
     /// Initialize CUDA hardware frame encoding for NVENC.
     /// After this, `encode_cuda_frame()` accepts CUdeviceptr from GPU memory.
+    ///
+    /// `external_cu_ctx`, if non-null, is a CUcontext created elsewhere
+    /// (specifically: by our `gpu_interop::GpuContext`) that the encoder
+    /// must share. CUDA device pointers are context-scoped — passing a
+    /// `dev_ptr` allocated in context A into an NVENC session bound to
+    /// context B returns EINVAL. Sharing one context lets our DMA-BUF
+    /// imports and NVENC use the same memory addresses.
     #[cfg(target_os = "linux")]
-    pub fn init_cuda_hw(&mut self) -> Result<(), String> {
+    pub fn init_cuda_hw(&mut self, external_cu_ctx: *mut std::ffi::c_void) -> Result<(), String> {
         use ffmpeg_next::sys::*;
 
         unsafe {
-            // Create CUDA hw_device_ctx
-            let mut hw_device_ref: *mut AVBufferRef = std::ptr::null_mut();
-            let rc = av_hwdevice_ctx_create(
-                &mut hw_device_ref,
-                AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
-                std::ptr::null(),
-                std::ptr::null_mut(),
-                0,
-            );
-            if rc < 0 || hw_device_ref.is_null() {
-                return Err(format!("av_hwdevice_ctx_create(CUDA) failed: {}", rc));
-            }
+            let mut hw_device_ref: *mut AVBufferRef = if external_cu_ctx.is_null() {
+                // No external context: let FFmpeg create its own.
+                let mut dev_ref: *mut AVBufferRef = std::ptr::null_mut();
+                let rc = av_hwdevice_ctx_create(
+                    &mut dev_ref,
+                    AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    0,
+                );
+                if rc < 0 || dev_ref.is_null() {
+                    return Err(format!("av_hwdevice_ctx_create(CUDA) failed: {}", rc));
+                }
+                dev_ref
+            } else {
+                // Share the caller's CUDA context. Allocate the hw device
+                // buffer, manually write our context pointer into the
+                // AVCUDADeviceContext.cuda_ctx field, then init it.
+                //
+                // AVCUDADeviceContext layout:
+                //   CUcontext cuda_ctx;   // offset 0  (8 bytes on 64-bit)
+                //   CUstream  stream;     // offset 8
+                //   void*     internal;   // offset 16
+                let dev_ref = av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
+                if dev_ref.is_null() {
+                    return Err("av_hwdevice_ctx_alloc(CUDA) failed".into());
+                }
+                let hw_dev_ctx = (*dev_ref).data as *mut AVHWDeviceContext;
+                let cuda_dev_ctx = (*hw_dev_ctx).hwctx as *mut std::ffi::c_void;
+                // First field of AVCUDADeviceContext is `CUcontext cuda_ctx`.
+                *(cuda_dev_ctx as *mut *mut std::ffi::c_void) = external_cu_ctx;
+                let rc = av_hwdevice_ctx_init(dev_ref);
+                if rc < 0 {
+                    let mut dr = dev_ref;
+                    av_buffer_unref(&mut dr);
+                    return Err(format!("av_hwdevice_ctx_init(CUDA, shared ctx) failed: {}", rc));
+                }
+                eprintln!("[encoder] CUDA hw_device_ctx initialized with shared context");
+                dev_ref
+            };
 
             // Create hw_frames_ctx
             let frames_ref = av_hwframe_ctx_alloc(hw_device_ref);
@@ -441,10 +476,75 @@ impl H264Encoder {
                 return Err(format!("av_hwframe_get_buffer(CUDA) failed: {}", rc));
             }
 
-            // Point the CUDA frame's data[0] to our CUdeviceptr
-            (*frame).data[0] = dev_ptr as *mut u8;
+            // Copy our dev_ptr content into the hwframe-allocated buffer.
+            // av_hwframe_get_buffer returned a CUDA buffer with NVENC-aligned
+            // pitch (frame->linesize[0]); overwriting frame->data[0] to point
+            // at our tight-packed buffer was what triggered "Invalid argument"
+            // — FFmpeg/NVENC saw a data[0] not matching its buf[0] ref. A
+            // cuMemcpy2D on the same context keeps everything consistent and
+            // pays only a GPU-local copy (<0.1ms for 1080p BGRA).
             let bpp: u32 = if self.supports_bgra_input { 4 } else { 1 }; // BGRA=4, NV12 Y plane=1
-            (*frame).linesize[0] = (width * bpp) as libc::c_int;
+            let src_pitch = (width * bpp) as usize;
+            let dst_pitch = (*frame).linesize[0] as usize;
+            let dst_dev_ptr = (*frame).data[0] as u64;
+
+            // Dynamically load cuMemcpy2D once (we don't own the global
+            // CudaApi here, so just grab the entry we need).
+            let cu_memcpy_fn = {
+                let cu_lib = libloading::Library::new("libcuda.so.1")
+                    .map_err(|e| format!("libcuda.so.1 load: {}", e))?;
+                let sym: libloading::Symbol<unsafe extern "C" fn(*const u8) -> i32> =
+                    cu_lib.get(b"cuMemcpy2D_v2\0")
+                        .map_err(|e| format!("cuMemcpy2D_v2 lookup: {}", e))?;
+                let ptr = *sym;
+                // Leak the Library to keep the symbol valid for the process lifetime.
+                std::mem::forget(cu_lib);
+                ptr
+            };
+
+            // CUDA_MEMCPY2D struct — layout must match the driver API header.
+            //   u=0 offset bytes/lines, memory type 2 = device
+            const CU_MEMTYPE_DEVICE: u32 = 2;
+            #[repr(C)]
+            struct CudaMemcpy2D {
+                src_x_in_bytes: usize,
+                src_y: usize,
+                src_memory_type: u32,
+                src_host: *const std::ffi::c_void,
+                src_device: u64,
+                src_array: *mut std::ffi::c_void,
+                _src_reserved: usize,
+                src_pitch: usize,
+                dst_x_in_bytes: usize,
+                dst_y: usize,
+                dst_memory_type: u32,
+                dst_host: *mut std::ffi::c_void,
+                dst_device: u64,
+                dst_array: *mut std::ffi::c_void,
+                _dst_reserved: usize,
+                dst_pitch: usize,
+                width_in_bytes: usize,
+                height: usize,
+            }
+            let copy = CudaMemcpy2D {
+                src_x_in_bytes: 0, src_y: 0,
+                src_memory_type: CU_MEMTYPE_DEVICE,
+                src_host: std::ptr::null(), src_device: dev_ptr,
+                src_array: std::ptr::null_mut(), _src_reserved: 0,
+                src_pitch,
+                dst_x_in_bytes: 0, dst_y: 0,
+                dst_memory_type: CU_MEMTYPE_DEVICE,
+                dst_host: std::ptr::null_mut(), dst_device: dst_dev_ptr,
+                dst_array: std::ptr::null_mut(), _dst_reserved: 0,
+                dst_pitch,
+                width_in_bytes: (width * bpp) as usize,
+                height: height as usize,
+            };
+            let rc = cu_memcpy_fn(&copy as *const _ as *const u8);
+            if rc != 0 {
+                av_frame_free(&mut (frame as *mut AVFrame));
+                return Err(format!("cuMemcpy2D(dev_ptr -> hwframe) failed: {}", rc));
+            }
 
             // Set PTS and keyframe flags
             (*frame).pts = self.frame_count as i64;
@@ -550,6 +650,160 @@ impl H264Encoder {
             cuda_hw_frames_ref: std::ptr::null_mut(),
             #[cfg(target_os = "linux")]
             is_vaapi_hw: true,
+        })
+    }
+
+    /// NVIDIA CUDA-native constructor. Creates a hw_device_ctx sharing the
+    /// caller's CUcontext, a hw_frames_ctx for the pool, and opens h264_nvenc
+    /// with `pix_fmt=AV_PIX_FMT_CUDA` so NVENC accepts CUDA frames directly.
+    ///
+    /// This replaces the older `H264Encoder::new` + `init_cuda_hw` flow: the
+    /// older flow opened the encoder with `pix_fmt=BGRA` (CPU-side memory)
+    /// and later tried to feed it `AV_PIX_FMT_CUDA` frames, which NVENC
+    /// rejected with EINVAL because the codec context was already configured
+    /// for a different frame kind.
+    #[cfg(target_os = "linux")]
+    pub fn new_cuda(
+        config: &EncoderConfig,
+        external_cu_ctx: *mut std::ffi::c_void,
+    ) -> Result<Self, String> {
+        use ffmpeg_next::sys::*;
+
+        ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
+
+        let codec = ffmpeg_next::encoder::find_by_name("h264_nvenc")
+            .ok_or_else(|| "h264_nvenc encoder not available".to_string())?;
+
+        // Build hw_device_ctx with the shared CUcontext.
+        let (hw_device_ref, hw_frames_ref) = unsafe {
+            let dev_ref = if external_cu_ctx.is_null() {
+                let mut r: *mut AVBufferRef = std::ptr::null_mut();
+                let rc = av_hwdevice_ctx_create(
+                    &mut r, AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+                    std::ptr::null(), std::ptr::null_mut(), 0,
+                );
+                if rc < 0 || r.is_null() {
+                    return Err(format!("av_hwdevice_ctx_create(CUDA) failed: {}", rc));
+                }
+                r
+            } else {
+                let r = av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
+                if r.is_null() {
+                    return Err("av_hwdevice_ctx_alloc(CUDA) failed".into());
+                }
+                let hw_dev_ctx = (*r).data as *mut AVHWDeviceContext;
+                let cuda_dev_ctx = (*hw_dev_ctx).hwctx as *mut std::ffi::c_void;
+                *(cuda_dev_ctx as *mut *mut std::ffi::c_void) = external_cu_ctx;
+                let rc = av_hwdevice_ctx_init(r);
+                if rc < 0 {
+                    let mut rr = r;
+                    av_buffer_unref(&mut rr);
+                    return Err(format!("av_hwdevice_ctx_init(CUDA, shared) failed: {}", rc));
+                }
+                r
+            };
+
+            let frames_ref = av_hwframe_ctx_alloc(dev_ref);
+            if frames_ref.is_null() {
+                let mut dr = dev_ref;
+                av_buffer_unref(&mut dr);
+                return Err("av_hwframe_ctx_alloc(CUDA) failed".into());
+            }
+            let frames_ctx = (*frames_ref).data as *mut AVHWFramesContext;
+            (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_CUDA;
+            (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_BGRA;
+            (*frames_ctx).width = config.width as libc::c_int;
+            (*frames_ctx).height = config.height as libc::c_int;
+            (*frames_ctx).initial_pool_size = 4;
+            let rc = av_hwframe_ctx_init(frames_ref);
+            if rc < 0 {
+                let mut fr = frames_ref;
+                let mut dr = dev_ref;
+                av_buffer_unref(&mut fr);
+                av_buffer_unref(&mut dr);
+                return Err(format!("av_hwframe_ctx_init(CUDA) failed: {}", rc));
+            }
+            eprintln!("[encoder] CUDA hw_frames_ctx initialized ({}x{}) with shared ctx",
+                config.width, config.height);
+            (dev_ref, frames_ref)
+        };
+
+        let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
+            .encoder().video()
+            .map_err(|e| {
+                unsafe {
+                    let mut fr = hw_frames_ref;
+                    let mut dr = hw_device_ref;
+                    av_buffer_unref(&mut fr);
+                    av_buffer_unref(&mut dr);
+                }
+                format!("CUDA encoder context: {}", e)
+            })?;
+
+        context.set_width(config.width);
+        context.set_height(config.height);
+        context.set_frame_rate(Some(ffmpeg_next::Rational::new(config.fps as i32, 1)));
+        context.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
+        context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
+        context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
+        context.set_gop(config.fps * config.keyframe_interval_secs);
+        context.set_max_b_frames(0);
+        context.set_format(ffmpeg_next::format::Pixel::CUDA);
+        context.set_colorspace(ffmpeg_next::color::Space::BT709);
+        context.set_color_range(ffmpeg_next::color::Range::MPEG);
+
+        // Attach hw_device_ctx and hw_frames_ctx. AVCodecContext takes its own
+        // ref; we keep our own copy in self for later frame allocation.
+        unsafe {
+            let ctx_ptr = context.as_mut_ptr();
+            (*ctx_ptr).hw_device_ctx = av_buffer_ref(hw_device_ref);
+            (*ctx_ptr).hw_frames_ctx = av_buffer_ref(hw_frames_ref);
+            // VBV buffer: ~4 frames of headroom for rate control
+            let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
+            (*ctx_ptr).rc_buffer_size = vbv_bits;
+        }
+
+        let mut opts = ffmpeg_next::Dictionary::new();
+        opts.set("forced_idr", "1");
+        opts.set("preset", "p5");
+        opts.set("tune", "ull");
+        opts.set("rc", "cbr");
+
+        let encoder = context.open_with(opts)
+            .map_err(|e| {
+                unsafe {
+                    let mut fr = hw_frames_ref;
+                    let mut dr = hw_device_ref;
+                    av_buffer_unref(&mut fr);
+                    av_buffer_unref(&mut dr);
+                }
+                format!("Open h264_nvenc (CUDA path): {}", e)
+            })?;
+
+        eprintln!(
+            "[encoder] h264_nvenc opened with CUDA pix_fmt: {}x{} @ {}fps, {}kbps (zero-copy)",
+            config.width, config.height, config.fps, config.bitrate_kbps
+        );
+
+        let nv12_frame = ffmpeg_next::frame::Video::new(
+            ffmpeg_next::format::Pixel::NV12, config.width, config.height,
+        );
+
+        Ok(H264Encoder {
+            encoder,
+            frame_count: 0,
+            keyframe_interval: (config.fps * config.keyframe_interval_secs) as u64,
+            force_next_keyframe: false,
+            target_width: config.width,
+            target_height: config.height,
+            nv12_frame,
+            scaler: None,
+            supports_bgra_input: true,
+            bgra_frame: None,
+            bgra_scaler: None,
+            cuda_hw_device_ref: hw_device_ref as *mut std::ffi::c_void,
+            cuda_hw_frames_ref: hw_frames_ref as *mut std::ffi::c_void,
+            is_vaapi_hw: false,
         })
     }
 

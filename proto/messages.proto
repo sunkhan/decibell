@@ -18,8 +18,8 @@ message Packet {
     COMMUNITY_AUTH_REQ = 10;
     COMMUNITY_AUTH_RES = 11;
     CHANNEL_MSG = 12;
-    JOIN_CHANNEL_REQ = 13;
-    JOIN_CHANNEL_RES = 14;
+    reserved 13, 14;
+    reserved "JOIN_CHANNEL_REQ", "JOIN_CHANNEL_RES";
 
     // Friend System Types
     FRIEND_ACTION_REQ = 15;
@@ -69,8 +69,14 @@ message Packet {
 
   Type type = 1;
   int64 timestamp = 2;
-  string auth_token = 16; 
-  
+  string auth_token = 16;
+
+  // Retired oneof field numbers — do not reuse. JOIN_CHANNEL_REQ/RES
+  // were removed when text channels became a per-session subscription
+  // implicit in COMMUNITY_AUTH_REQ rather than an explicit join.
+  reserved 15, 17;
+  reserved "join_channel_req", "join_channel_res";
+
   oneof payload {
     Handshake handshake = 3;
     RegisterRequest register_req = 4;
@@ -85,8 +91,6 @@ message Packet {
     CommunityAuthRequest community_auth_req = 12;
     CommunityAuthResponse community_auth_res = 13;
     ChannelMessage channel_msg = 14;
-    JoinChannelRequest join_channel_req = 15;
-    JoinChannelResponse join_channel_res = 17;
 
     FriendActionReq friend_action_req = 18;
     FriendActionRes friend_action_res = 19;
@@ -262,16 +266,6 @@ message ChannelMessage {
   string channel_id = 2;
   string content = 3;
   int64 timestamp = 4;
-}
-
-message JoinChannelRequest {
-  string channel_id = 1;
-}
-
-message JoinChannelResponse {
-  bool success = 1;
-  string channel_id = 2;
-  repeated string active_users = 3;
 }
 
 message JoinVoiceRequest {

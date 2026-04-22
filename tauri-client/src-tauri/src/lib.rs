@@ -57,7 +57,6 @@ pub fn run() {
             commands::community::leave_server,
             commands::community::parse_invite_link,
             commands::community::resolve_invite_code,
-            commands::channels::join_channel,
             commands::channels::send_channel_message,
             commands::friends::request_friend_list,
             commands::friends::send_friend_action,

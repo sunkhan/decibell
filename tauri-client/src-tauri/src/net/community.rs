@@ -17,7 +17,6 @@ pub struct CommunityClient {
     pub host: String,
     pub port: u16,
     pub jwt: String,
-    pub joined_channels: Vec<String>,
 }
 
 impl CommunityClient {
@@ -90,7 +89,6 @@ impl CommunityClient {
             host,
             port,
             jwt,
-            joined_channels: Vec::new(),
         })
     }
 
@@ -105,23 +103,6 @@ impl CommunityClient {
             Some(conn) => conn.send(data).await,
             None => Err("Not connected to community server".to_string()),
         }
-    }
-
-    /// Join a channel.
-    pub async fn join_channel(&mut self, channel_id: &str) -> Result<(), String> {
-        let data = build_packet(
-            packet::Type::JoinChannelReq,
-            packet::Payload::JoinChannelReq(JoinChannelRequest {
-                channel_id: channel_id.into(),
-            }),
-            Some(&self.jwt),
-        );
-        self.send(data).await?;
-
-        if !self.joined_channels.contains(&channel_id.to_string()) {
-            self.joined_channels.push(channel_id.to_string());
-        }
-        Ok(())
     }
 
     /// Send a channel message.
@@ -275,7 +256,6 @@ impl CommunityClient {
         if let Some(conn) = self.connection.take() {
             conn.shutdown();
         }
-        self.joined_channels.clear();
     }
 
     /// Start reconnection loop.
@@ -284,7 +264,6 @@ impl CommunityClient {
         host: String,
         port: u16,
         jwt: String,
-        joined_channels: Vec<String>,
         app: AppHandle,
         state: Arc<Mutex<AppState>>,
     ) {
@@ -309,7 +288,9 @@ impl CommunityClient {
                         log::info!("Reconnected to community server {}", sid_for_task);
 
                         // Re-authenticate. No invite code on reconnect — the
-                        // user is already a member at this point.
+                        // user is already a member at this point. Text channels
+                        // are implicit subscriptions, so no per-channel rejoin
+                        // is needed; auth success alone restores delivery.
                         let auth_data = build_packet(
                             packet::Type::CommunityAuthReq,
                             packet::Payload::CommunityAuthReq(CommunityAuthRequest {
@@ -319,18 +300,6 @@ impl CommunityClient {
                             Some(&jwt),
                         );
                         let _ = connection.send(auth_data).await;
-
-                        // Re-join channels
-                        for channel_id in &joined_channels {
-                            let join_data = build_packet(
-                                packet::Type::JoinChannelReq,
-                                packet::Payload::JoinChannelReq(JoinChannelRequest {
-                                    channel_id: channel_id.clone(),
-                                }),
-                                Some(&jwt),
-                            );
-                            let _ = connection.send(join_data).await;
-                        }
 
                         let sid = sid_for_task.clone();
                         let router = tokio::spawn(Self::route_packets(
@@ -536,15 +505,6 @@ impl CommunityClient {
                         msg.timestamp.to_string(),
                     );
                 }
-                Some(packet::Payload::JoinChannelRes(resp)) => {
-                    events::emit_join_channel_responded(
-                        &app,
-                        server_id.clone(),
-                        resp.success,
-                        resp.channel_id,
-                        resp.active_users,
-                    );
-                }
                 Some(packet::Payload::VoicePresenceUpdate(update)) => {
                     let user_states: Vec<events::VoiceUserStatePayload> = update
                         .user_states
@@ -602,10 +562,9 @@ impl CommunityClient {
             let host = client.host.clone();
             let port = client.port;
             let jwt = client.jwt.clone();
-            let joined = client.joined_channels.clone();
             let sid = server_id.clone();
             drop(s);
-            Self::start_reconnect(sid, host, port, jwt, joined, app, state);
+            Self::start_reconnect(sid, host, port, jwt, app, state);
         }
     }
 }

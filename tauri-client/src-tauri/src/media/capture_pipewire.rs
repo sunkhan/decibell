@@ -159,8 +159,12 @@ fn portal_screencast_session() -> Result<(OwnedFd, u32, zbus::blocking::Connecti
             &session,
             HashMap::from([
                 ("handle_token", Value::from(select_token.as_str())),
-                ("types", Value::from(3u32)), // MONITOR | WINDOW
+                ("types", Value::from(3u32)),       // MONITOR | WINDOW
                 ("multiple", Value::from(false)),
+                // cursor_mode is a bitmask of *supported* cursor modes. 1 = Hidden.
+                // Setting it explicitly avoids producers that treat the absence of
+                // the option as "client doesn't support this negotiation at all".
+                ("cursor_mode", Value::from(1u32)),
             ]),
         ),
     )?;
@@ -311,6 +315,335 @@ struct CaptureData {
     quit_mainloop: pw::main_loop::MainLoopWeak,
     /// Oneshot sender for resolved dimensions (used when target is 0x0 "source" quality).
     dim_tx: Option<std::sync::mpsc::SyncSender<(u32, u32)>>,
+    diag_process_calls: u64,
+    diag_no_buffer: u64,
+    diag_rate_limited: u64,
+    diag_empty_datas: u64,
+    diag_zero_chunk: u64,
+}
+
+/// Build an EnumFormat param describing what we accept from the producer.
+///
+/// When `with_modifier` is true, the param includes a `VideoModifier`
+/// property with flags `MANDATORY | DONT_FIXATE`, listing `DRM_FORMAT_MOD_INVALID`
+/// (the "any modifier" wildcard) and `DRM_FORMAT_MOD_LINEAR`. This is the
+/// handshake GNOME/mutter's xdg-desktop-portal requires to hand us DMA-BUF
+/// buffers. Without it, mutter has no compatible offer and the stream
+/// errors with "no more input formats".
+///
+/// When `with_modifier` is false, VideoModifier is omitted, which signals
+/// plain SHM to the producer — the historical path that KDE's portal serves.
+fn build_format_pod(
+    target_width: u32,
+    target_height: u32,
+    target_fps: u32,
+    with_modifier: bool,
+) -> Vec<u8> {
+    use pw::spa::pod::{ChoiceValue, Property, PropertyFlags, Value};
+    use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags};
+
+    let size_pref = spa::utils::Rectangle {
+        // "Source" quality passes 0x0 — use max so PipeWire picks native resolution.
+        width: if target_width > 0 { target_width } else { 7680 },
+        height: if target_height > 0 { target_height } else { 4320 },
+    };
+
+    let mut obj = spa::pod::object!(
+        spa::utils::SpaTypes::ObjectParamFormat,
+        spa::param::ParamType::EnumFormat,
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaType,
+            Id,
+            spa::param::format::MediaType::Video
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaSubtype,
+            Id,
+            spa::param::format::MediaSubtype::Raw
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFormat,
+            Choice,
+            Enum,
+            Id,
+            spa::param::video::VideoFormat::BGRA,
+            spa::param::video::VideoFormat::BGRA,
+            spa::param::video::VideoFormat::BGRx,
+            spa::param::video::VideoFormat::RGBA,
+            spa::param::video::VideoFormat::RGBx
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoSize,
+            Choice,
+            Range,
+            Rectangle,
+            size_pref,
+            spa::utils::Rectangle { width: 1, height: 1 },
+            spa::utils::Rectangle { width: 7680, height: 4320 }
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFramerate,
+            Choice,
+            Range,
+            Fraction,
+            spa::utils::Fraction { num: target_fps, denom: 1 },
+            spa::utils::Fraction { num: 0, denom: 1 },
+            spa::utils::Fraction { num: 1000, denom: 1 }
+        ),
+    );
+
+    if with_modifier {
+        // Offer both MOD_INVALID (accept any layout) and MOD_LINEAR. Niri's
+        // portal only advertises MOD_INVALID — it refuses LINEAR-only offers
+        // with "no more input formats". The tiled buffers we get can't be
+        // CPU-mmap'd, so the downstream CUDA-via-EGL path has to import them
+        // via EGL with the NVIDIA platform device explicitly selected.
+        obj.properties.push(Property {
+            key: spa::param::format::FormatProperties::VideoModifier.as_raw(),
+            flags: PropertyFlags::MANDATORY,
+            value: Value::Choice(ChoiceValue::Long(Choice::<i64>(
+                ChoiceFlags::empty(),
+                ChoiceEnum::<i64>::Enum {
+                    default: super::gpu_interop::DRM_FORMAT_MOD_INVALID as i64,
+                    alternatives: vec![
+                        super::gpu_interop::DRM_FORMAT_MOD_INVALID as i64,
+                        0_i64, // DRM_FORMAT_MOD_LINEAR
+                    ],
+                },
+            ))),
+        });
+    }
+
+    spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(obj),
+    )
+    .unwrap()
+    .0
+    .into_inner()
+}
+
+/// Build a `ParamMeta` pod requesting `SPA_META_Header` metadata on every
+/// buffer. Some producers (mutter on certain configs, and Niri's screencast
+/// implementation) treat this as the signal that the consumer is ready to
+/// receive data — without it, buffers are allocated into the pool but never
+/// actually enqueued, and `process()` never fires.
+fn build_param_meta_header() -> Vec<u8> {
+    use pw::spa::pod::{Object, Property, PropertyFlags, Value};
+
+    const SPA_META_HEADER_SIZE: i32 = 32;
+
+    let obj = Object {
+        type_: pw::spa::utils::SpaTypes::ObjectParamMeta.as_raw(),
+        id: pw::spa::param::ParamType::Meta.as_raw(),
+        properties: vec![
+            Property {
+                key: pw::spa::sys::SPA_PARAM_META_type,
+                flags: PropertyFlags::empty(),
+                value: Value::Id(pw::spa::utils::Id(pw::spa::sys::SPA_META_Header)),
+            },
+            Property {
+                key: pw::spa::sys::SPA_PARAM_META_size,
+                flags: PropertyFlags::empty(),
+                value: Value::Int(SPA_META_HEADER_SIZE),
+            },
+        ],
+    };
+
+    pw::spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &Value::Object(obj),
+    )
+    .unwrap()
+    .0
+    .into_inner()
+}
+
+/// Parse the producer's Format pod and extract the `VideoModifier` Choice
+/// alternatives. When the producer sends `FIXATION_REQUIRED`, this is the
+/// actual set of modifiers it's offering — we must pick one of these to
+/// respond with. `VideoInfoRaw::parse` only gives the "default" (first) entry.
+fn extract_modifier_alternatives(param: &Pod) -> Option<Vec<u64>> {
+    use pw::spa::pod::{
+        deserialize::PodDeserializer, ChoiceValue, Value,
+    };
+    use pw::spa::utils::ChoiceEnum;
+
+    let bytes = param.as_bytes();
+    let (_, value) = PodDeserializer::deserialize_from::<Value>(bytes).ok()?;
+
+    let obj = match value {
+        Value::Object(o) => o,
+        _ => return None,
+    };
+
+    let key_modifier = spa::param::format::FormatProperties::VideoModifier.as_raw();
+    for prop in &obj.properties {
+        if prop.key != key_modifier {
+            continue;
+        }
+        match &prop.value {
+            Value::Long(v) => return Some(vec![*v as u64]),
+            Value::Choice(ChoiceValue::Long(choice)) => {
+                return match &choice.1 {
+                    ChoiceEnum::None(v) => Some(vec![*v as u64]),
+                    ChoiceEnum::Enum { alternatives, .. } => {
+                        Some(alternatives.iter().map(|&x| x as u64).collect())
+                    }
+                    _ => None,
+                };
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Pick a modifier to fixate on. Preference order:
+///   1. `DRM_FORMAT_MOD_INVALID` (wildcard — producer uses its native layout).
+///   2. Any non-LINEAR modifier (native GPU layout is what the compositor
+///      can actually export; LINEAR often fails allocation on NVIDIA).
+///   3. LINEAR as a last resort.
+///   4. The producer-default if the list was empty (VideoInfoRaw fallback).
+fn pick_modifier(alternatives: &[u64], default: u64) -> u64 {
+    const MOD_INVALID: u64 = 0x00ffffff_ffffffff;
+    const MOD_LINEAR: u64 = 0;
+
+    if alternatives.is_empty() {
+        return default;
+    }
+    if alternatives.iter().any(|&m| m == MOD_INVALID) {
+        return MOD_INVALID;
+    }
+    if let Some(&m) = alternatives.iter().find(|&&m| m != MOD_LINEAR) {
+        return m;
+    }
+    alternatives[0]
+}
+
+/// Build a concrete `Format` pod (not `EnumFormat`) with every property
+/// fixated to a single value. This is the response mutter / xdg-desktop-portal-
+/// gnome expects after we offered a DONT_FIXATE modifier choice: the producer
+/// replied with a narrowed modifier list, we pick one, and acknowledge with
+/// this concrete Format + ParamBuffers so it can finally allocate buffers.
+fn build_fixated_format_pod(
+    width: u32,
+    height: u32,
+    framerate: spa::utils::Fraction,
+    fmt: spa::param::video::VideoFormat,
+    modifier: u64,
+) -> Vec<u8> {
+    use pw::spa::pod::{Object, Property, PropertyFlags, Value};
+
+    // Ordering matters — VideoModifier is required to come right after
+    // VideoFormat per the spa format-object convention.
+    let obj = Object {
+        type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
+        id: spa::param::ParamType::Format.as_raw(),
+        properties: vec![
+            spa::pod::property!(
+                spa::param::format::FormatProperties::MediaType,
+                Id,
+                spa::param::format::MediaType::Video
+            ),
+            spa::pod::property!(
+                spa::param::format::FormatProperties::MediaSubtype,
+                Id,
+                spa::param::format::MediaSubtype::Raw
+            ),
+            spa::pod::property!(
+                spa::param::format::FormatProperties::VideoFormat,
+                Id,
+                fmt
+            ),
+            // VideoModifier as a plain Long (no Choice), flagged MANDATORY —
+            // the "fixated" signal producers wait for to proceed to allocation.
+            Property {
+                key: spa::param::format::FormatProperties::VideoModifier.as_raw(),
+                flags: PropertyFlags::MANDATORY,
+                value: Value::Long(modifier as i64),
+            },
+            spa::pod::property!(
+                spa::param::format::FormatProperties::VideoSize,
+                Rectangle,
+                spa::utils::Rectangle { width, height }
+            ),
+            spa::pod::property!(
+                spa::param::format::FormatProperties::VideoFramerate,
+                Fraction,
+                framerate
+            ),
+        ],
+    };
+
+    spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(obj),
+    )
+    .unwrap()
+    .0
+    .into_inner()
+}
+
+/// Build a `ParamBuffers` pod that matches the negotiated format. This is the
+/// response mutter / xdg-desktop-portal-gnome waits for after we receive the
+/// Format — without it the stream stays Paused forever and `process()` never
+/// fires. The `dataType` mask must match whatever the producer fixated:
+/// advertising DMA-BUF when it picked SHM (or vice-versa) fails allocation.
+fn build_param_buffers(_width: u32, _height: u32, uses_dmabuf: bool) -> Vec<u8> {
+    use pw::spa::pod::{ChoiceValue, Object, Property, PropertyFlags, Value};
+    use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags};
+
+    // SPA_DATA_* are 0-based indices; `(1 << n)` forms the dataType bitmask.
+    let data_type_mask: i32 = if uses_dmabuf {
+        1 << pw::spa::sys::SPA_DATA_DmaBuf
+    } else {
+        (1 << pw::spa::sys::SPA_DATA_MemPtr) | (1 << pw::spa::sys::SPA_DATA_MemFd)
+    };
+
+    // Intentionally omit BUFFERS_stride and BUFFERS_size. Tiled DMA-BUF formats
+    // often have strides/sizes that don't match width*4 (alignment padding,
+    // compressed layouts, etc.), and specifying tight minimums silently blocks
+    // the producer from enqueuing buffers it's already allocated. Leaving
+    // them unspecified tells the producer "any stride/size is fine".
+    let obj = Object {
+        type_: pw::spa::utils::SpaTypes::ObjectParamBuffers.as_raw(),
+        id: pw::spa::param::ParamType::Buffers.as_raw(),
+        properties: vec![
+            Property {
+                key: pw::spa::sys::SPA_PARAM_BUFFERS_buffers,
+                flags: PropertyFlags::empty(),
+                value: Value::Choice(ChoiceValue::Int(Choice::<i32>(
+                    ChoiceFlags::empty(),
+                    ChoiceEnum::<i32>::Range { default: 8, min: 2, max: 32 },
+                ))),
+            },
+            Property {
+                key: pw::spa::sys::SPA_PARAM_BUFFERS_blocks,
+                flags: PropertyFlags::empty(),
+                value: Value::Int(1),
+            },
+            Property {
+                key: pw::spa::sys::SPA_PARAM_BUFFERS_dataType,
+                flags: PropertyFlags::empty(),
+                value: Value::Choice(ChoiceValue::Int(Choice::<i32>(
+                    ChoiceFlags::empty(),
+                    ChoiceEnum::<i32>::Flags {
+                        default: data_type_mask,
+                        flags: vec![data_type_mask],
+                    },
+                ))),
+            },
+        ],
+    };
+
+    pw::spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &Value::Object(obj),
+    )
+    .unwrap()
+    .0
+    .into_inner()
 }
 
 fn pipewire_capture_loop(
@@ -353,6 +686,11 @@ fn pipewire_capture_loop(
         start: Instant::now(),
         quit_mainloop: mainloop.downgrade(),
         dim_tx: Some(dim_tx),
+        diag_process_calls: 0,
+        diag_no_buffer: 0,
+        diag_rate_limited: 0,
+        diag_empty_datas: 0,
+        diag_zero_chunk: 0,
     };
 
     let stream = pw::stream::StreamRc::new(
@@ -379,8 +717,22 @@ fn pipewire_capture_loop(
                 }
             }
         })
-        .param_changed(|_stream, data, id, param| {
-            let Some(param) = param else { return };
+        .add_buffer(|_stream, _data, _buf| {
+            eprintln!("[capture] add_buffer (producer allocated a buffer)");
+        })
+        .remove_buffer(|_stream, _data, _buf| {
+            eprintln!("[capture] remove_buffer");
+        })
+        .param_changed(|stream, data, id, param| {
+            let Some(param) = param else {
+                eprintln!("[capture] param_changed(id={}, param=None)", id);
+                return;
+            };
+            eprintln!(
+                "[capture] param_changed(id={} = {:?})",
+                id,
+                spa::param::ParamType::from_raw(id)
+            );
             if id != spa::param::ParamType::Format.as_raw() {
                 return;
             }
@@ -404,6 +756,17 @@ fn pipewire_capture_loop(
             let w = data.format.size().width;
             let h = data.format.size().height;
             let fmt = data.format.format();
+            let framerate = data.format.framerate();
+            let modifier = data.format.modifier();
+
+            // Video flags tell us what the producer fixated to.
+            //   bit 2 = SPA_VIDEO_FLAG_MODIFIER             → DMA-BUF with modifier
+            //   bit 3 = SPA_VIDEO_FLAG_MODIFIER_FIXATION_REQUIRED → producer wants us to pick one
+            const SPA_VIDEO_FLAG_MODIFIER: u32 = 1 << 2;
+            const SPA_VIDEO_FLAG_MODIFIER_FIXATION_REQUIRED: u32 = 1 << 3;
+            let vflags = data.format.flags().bits();
+            let uses_dmabuf = (vflags & SPA_VIDEO_FLAG_MODIFIER) != 0;
+            let needs_fixation = (vflags & SPA_VIDEO_FLAG_MODIFIER_FIXATION_REQUIRED) != 0;
 
             // Resolve "source" resolution (0x0) to the actual capture dimensions
             if data.target_width == 0 {
@@ -419,18 +782,66 @@ fn pipewire_capture_loop(
             }
 
             eprintln!(
-                "[capture] Negotiated format: {:?} {}x{} -> {}x{} @ {}/{}",
+                "[capture] Negotiated format: {:?} {}x{} -> {}x{} @ {}/{} (modifier=0x{:x}, dmabuf={}, fixate={})",
                 fmt, w, h,
                 data.target_width, data.target_height,
-                data.format.framerate().num,
-                data.format.framerate().denom,
+                framerate.num, framerate.denom,
+                modifier, uses_dmabuf, needs_fixation,
             );
 
-            // Don't set buffer params — let PipeWire negotiate automatically.
-            // We handle stride correctly in the process callback using chunk metadata.
+            // Build the response params. The producer is waiting on us:
+            //   - If fixation is required, we must re-send a concrete `Format`
+            //     with a single chosen modifier so the producer can allocate.
+            //   - We also always push `ParamBuffers` so the producer knows our
+            //     acceptable dataType (must match SHM vs DMA-BUF).
+            let mut bytes_store: Vec<Vec<u8>> = Vec::new();
+            if needs_fixation {
+                // VideoInfoRaw::parse() only hands us the "default" modifier
+                // from the producer's narrowed Choice list. That's usually
+                // LINEAR (0), which mutter claims to support but often can't
+                // actually export on NVIDIA / tiled-native GPUs — allocation
+                // then fails. Parse the raw pod to see the full list and
+                // prefer a non-LINEAR modifier (the GPU's native layout).
+                let alternatives = extract_modifier_alternatives(param).unwrap_or_default();
+                let chosen_modifier = pick_modifier(&alternatives, modifier);
+                eprintln!(
+                    "[capture] Fixating modifier: producer offered {:?} (default 0x{:x}) -> sending 0x{:x}",
+                    alternatives
+                        .iter()
+                        .map(|m| format!("0x{:x}", m))
+                        .collect::<Vec<_>>(),
+                    modifier,
+                    chosen_modifier,
+                );
+                bytes_store.push(build_fixated_format_pod(
+                    w, h, framerate, fmt, chosen_modifier,
+                ));
+            }
+            bytes_store.push(build_param_buffers(w, h, uses_dmabuf));
+            // Opt in to SPA_META_Header — some producers (mutter/Niri variants)
+            // require the consumer to request per-frame metadata before they
+            // actually start enqueuing buffers. Without this, the pool fills
+            // up but frames never fire process().
+            bytes_store.push(build_param_meta_header());
+
+            let pods: Vec<&Pod> = bytes_store
+                .iter()
+                .filter_map(|b| Pod::from_bytes(b))
+                .collect();
+            let mut params: Vec<&Pod> = pods;
+            if let Err(e) = stream.update_params(&mut params) {
+                eprintln!("[capture] update_params failed: {:?}", e);
+            }
         })
         .process(|stream, data| {
+            data.diag_process_calls = data.diag_process_calls.saturating_add(1);
+            let log_diag = data.frame_count == 0 && data.diag_process_calls <= 5;
+
             let Some(mut buffer) = stream.dequeue_buffer() else {
+                data.diag_no_buffer = data.diag_no_buffer.saturating_add(1);
+                if log_diag {
+                    eprintln!("[capture] process(): dequeue_buffer returned None");
+                }
                 return;
             };
 
@@ -438,12 +849,17 @@ fn pipewire_capture_loop(
             let now_us = data.start.elapsed().as_micros() as u64;
             let frame_interval_us = 1_000_000 / data.target_fps.max(1) as u64;
             if now_us.saturating_sub(data.last_capture_us) < frame_interval_us {
+                data.diag_rate_limited = data.diag_rate_limited.saturating_add(1);
                 drop(buffer);
                 return;
             }
 
             let datas = buffer.datas_mut();
             if datas.is_empty() {
+                data.diag_empty_datas = data.diag_empty_datas.saturating_add(1);
+                if log_diag {
+                    eprintln!("[capture] process(): buffer.datas is empty");
+                }
                 return;
             }
 
@@ -452,7 +868,37 @@ fn pipewire_capture_loop(
             let stride = d.chunk().stride() as usize;
             let buf_type = d.type_();
 
-            if chunk_size == 0 || stride == 0 {
+            use pw::spa::buffer::DataType;
+            if log_diag {
+                eprintln!(
+                    "[capture] process() diag: chunk_size={}, stride={}, buf_type={:?}, has_data={}",
+                    chunk_size, stride, buf_type, d.data().is_some()
+                );
+            }
+
+            // Stride is always required. chunk_size is only meaningful for
+            // SHM buffers — DMA-BUF producers (mutter, Niri) commonly report
+            // chunk.size=0 because the buffer size is implied by stride *
+            // height. Requiring chunk_size > 0 here previously discarded every
+            // DMA-BUF frame and froze the stream.
+            if stride == 0 {
+                data.diag_zero_chunk = data.diag_zero_chunk.saturating_add(1);
+                if data.diag_zero_chunk == 1 || data.diag_zero_chunk % 600 == 0 {
+                    eprintln!(
+                        "[capture] process(): zero stride — count={}",
+                        data.diag_zero_chunk
+                    );
+                }
+                return;
+            }
+            if buf_type != DataType::DmaBuf && chunk_size == 0 {
+                data.diag_zero_chunk = data.diag_zero_chunk.saturating_add(1);
+                if data.diag_zero_chunk == 1 || data.diag_zero_chunk % 600 == 0 {
+                    eprintln!(
+                        "[capture] process(): SHM buffer with zero chunk_size — count={}",
+                        data.diag_zero_chunk
+                    );
+                }
                 return;
             }
 
@@ -481,8 +927,6 @@ fn pipewire_capture_loop(
                 return;
             }
 
-            use pw::spa::buffer::DataType;
-
             if data.frame_count == 1 && buf_type != DataType::DmaBuf {
                 eprintln!(
                     "[capture] WARNING: PipeWire is providing {:?} buffers, not DMA-BUF. \
@@ -493,8 +937,24 @@ fn pipewire_capture_loop(
             }
 
             if buf_type == DataType::DmaBuf {
-                // ── DMA-BUF path: dup fd, send to GPU channel ──
                 let raw_fd = d.fd();
+
+                // Use the producer-fixated modifier when it set SPA_VIDEO_FLAG_MODIFIER;
+                // otherwise fall back to MOD_INVALID (legacy DMA-BUF, no modifier attrs).
+                const SPA_VIDEO_FLAG_MODIFIER: u32 = 1 << 2;
+                let modifier = if (data.format.flags().bits() & SPA_VIDEO_FLAG_MODIFIER) != 0 {
+                    data.format.modifier()
+                } else {
+                    super::gpu_interop::DRM_FORMAT_MOD_INVALID
+                };
+
+                // Hand the fd to the GPU channel so the EGL/GL/CUDA path can
+                // zero-copy import it. Niri fixates DMA-BUF with MOD_INVALID
+                // (native tiled layout) which is unreadable via mmap — the
+                // CPU-readback fallback previously here produced zero pages
+                // and a black preview. The downstream CUDA backend now uses
+                // an EGL display explicitly bound to the NVIDIA device, so
+                // cuGraphicsGLRegisterImage can consume the tiled DMA-BUF.
                 let dup_fd = unsafe { libc::dup(raw_fd) };
                 if dup_fd < 0 {
                     eprintln!("[capture] dup(dmabuf fd={}) failed", raw_fd);
@@ -509,8 +969,8 @@ fn pipewire_capture_loop(
                 }
 
                 if data.frame_count <= 3 {
-                    eprintln!("[capture] DMA-BUF frame: fd={}, {}x{}, stride={}, drm_fmt=0x{:08x}",
-                        dup_fd, src_w, src_h, stride, drm_format);
+                    eprintln!("[capture] DMA-BUF frame: fd={}, {}x{}, stride={}, drm_fmt=0x{:08x}, modifier=0x{:x}",
+                        dup_fd, src_w, src_h, stride, drm_format, modifier);
                 }
 
                 let frame = DmaBufFrame {
@@ -519,7 +979,7 @@ fn pipewire_capture_loop(
                     height: src_h,
                     stride: stride as u32,
                     drm_format,
-                    modifier: super::gpu_interop::DRM_FORMAT_MOD_INVALID,
+                    modifier,
                     timestamp_us: now_us,
                 };
 
@@ -565,70 +1025,19 @@ fn pipewire_capture_loop(
         .register()
         .map_err(|e| format!("PW listener: {:?}", e))?;
 
-    // Negotiate BGRA format (preferred for screen capture)
-    let format_obj = spa::pod::object!(
-        spa::utils::SpaTypes::ObjectParamFormat,
-        spa::param::ParamType::EnumFormat,
-        spa::pod::property!(
-            spa::param::format::FormatProperties::MediaType,
-            Id,
-            spa::param::format::MediaType::Video
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::MediaSubtype,
-            Id,
-            spa::param::format::MediaSubtype::Raw
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoFormat,
-            Choice,
-            Enum,
-            Id,
-            spa::param::video::VideoFormat::BGRA,
-            spa::param::video::VideoFormat::BGRA,
-            spa::param::video::VideoFormat::BGRx,
-            spa::param::video::VideoFormat::RGBA,
-            spa::param::video::VideoFormat::RGBx
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoSize,
-            Choice,
-            Range,
-            Rectangle,
-            spa::utils::Rectangle {
-                // "Source" quality passes 0x0 — use max so PipeWire picks native resolution
-                width: if target_width > 0 { target_width } else { 7680 },
-                height: if target_height > 0 { target_height } else { 4320 },
-            },
-            spa::utils::Rectangle {
-                width: 1,
-                height: 1,
-            },
-            spa::utils::Rectangle {
-                width: 7680,
-                height: 4320,
-            }
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoFramerate,
-            Choice,
-            Range,
-            Fraction,
-            spa::utils::Fraction { num: config.target_fps, denom: 1 },
-            spa::utils::Fraction { num: 0, denom: 1 },
-            spa::utils::Fraction { num: 1000, denom: 1 }
-        ),
-    );
-
-    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
-        std::io::Cursor::new(Vec::new()),
-        &spa::pod::Value::Object(format_obj),
-    )
-    .unwrap()
-    .0
-    .into_inner();
-
-    let mut params = [Pod::from_bytes(&values).unwrap()];
+    // Offer SHM first, then DMA-BUF-with-LINEAR. Producers typically pick the
+    // first alternative they can satisfy, so we steer toward SHM — CPU-readable
+    // host memory that needs no GPU interop at all. If the producer can't do
+    // SHM (some GNOME/mutter configs refuse it outright), it falls through to
+    // the LINEAR DMA-BUF alternative. LINEAR DMA-BUF is also CPU-readable via
+    // mmap; only MOD_INVALID / tiled layouts would give us zero pages, and
+    // we no longer advertise those.
+    let shm_bytes = build_format_pod(target_width, target_height, config.target_fps, false);
+    let dmabuf_bytes = build_format_pod(target_width, target_height, config.target_fps, true);
+    let mut params = [
+        Pod::from_bytes(&shm_bytes).unwrap(),
+        Pod::from_bytes(&dmabuf_bytes).unwrap(),
+    ];
 
     stream.connect(
         spa::utils::Direction::Input,
@@ -637,6 +1046,13 @@ fn pipewire_capture_loop(
         &mut params,
     )
     .map_err(|e| format!("PW stream connect: {:?}", e))?;
+
+    // Some producers keep the stream in Paused until the consumer explicitly
+    // flips it active, even without PW_STREAM_FLAG_INACTIVE set. This is a
+    // harmless no-op when the stream is already active.
+    if let Err(e) = stream.set_active(true) {
+        eprintln!("[capture] set_active(true) failed: {:?}", e);
+    }
 
     eprintln!("[capture] PipeWire stream connected, running main loop");
     mainloop.run();

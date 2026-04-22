@@ -39,7 +39,6 @@ export default function ServerBar() {
       const firstText = channels.find((ch) => ch.type === "text");
       if (firstText) {
         setActiveChannel(firstText.id);
-        invoke("join_channel", { serverId, channelId: firstText.id }).catch(console.error);
       }
     }
   };
