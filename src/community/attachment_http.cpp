@@ -314,19 +314,28 @@ private:
         std::filesystem::path dir = std::filesystem::path(storage_root_) / channel_id;
         std::error_code mkdir_ec;
         std::filesystem::create_directories(dir, mkdir_ec);
-        if (mkdir_ec) { send_error(500, "Internal Server Error"); return; }
+        if (mkdir_ec) {
+            std::cerr << "[AttachmentHttp] init: mkdir '" << dir.string()
+                      << "' failed: " << mkdir_ec.message() << "\n";
+            send_error(500, "Internal Server Error"); return;
+        }
 
         const int64_t new_id = db_.insert_pending_attachment(
             channel_id, kind, filename, mime, size, /*storage_path*/ "", username_,
             /*position*/ 0);
-        if (new_id == 0) { send_error(500, "Internal Server Error"); return; }
+        if (new_id == 0) {
+            std::cerr << "[AttachmentHttp] init: insert_pending_attachment "
+                         "returned 0 (see [DB] log for SQLite error)\n";
+            send_error(500, "Internal Server Error"); return;
+        }
 
         // Final path: <root>/<channel>/<id>_<safe_name>. .partial variant used
         // during upload so completion is a rename-only atomic flip.
         const std::string final_path =
             (dir / (std::to_string(new_id) + "_" + safe_name)).string();
         if (!db_.update_attachment_storage_path(new_id, final_path)) {
-            // Row vanished between insert and update — treat as internal.
+            std::cerr << "[AttachmentHttp] init: update_attachment_storage_path "
+                         "for id=" << new_id << " failed\n";
             std::error_code cleanup_ec;
             std::filesystem::remove(final_path + ".partial", cleanup_ec);
             send_error(500, "Internal Server Error"); return;
@@ -336,7 +345,13 @@ private:
         // stat() races.
         {
             std::ofstream f(final_path + ".partial", std::ios::binary | std::ios::trunc);
-            if (!f.good()) { send_error(500, "Internal Server Error"); return; }
+            if (!f.good()) {
+                std::cerr << "[AttachmentHttp] init: cannot create '"
+                          << (final_path + ".partial")
+                          << "' (errno=" << errno << ": " << std::strerror(errno)
+                          << ")\n";
+                send_error(500, "Internal Server Error"); return;
+            }
         }
 
         json resp = { {"id", new_id}, {"uploadOffset", 0} };
