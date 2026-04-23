@@ -1,5 +1,10 @@
 #pragma once
 
+// Some Boost.Asio versions (e.g. Debian 12's 1.74) use std::exchange in
+// awaitable.hpp without including <utility> themselves. Pulling it in first
+// keeps the community server buildable across the distro versions we target.
+#include <utility>
+
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <cstdint>
