@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAttachmentsStore, type PendingAttachment } from "../../stores/attachmentsStore";
 import { formatBytes } from "./attachmentHelpers";
@@ -101,11 +102,19 @@ function PendingCard({ a }: { a: PendingAttachment }) {
 }
 
 export default function PendingAttachmentsRow({ channelId }: { channelId: string }) {
-  const items = useAttachmentsStore((s) =>
-    (s.orderByChannel[channelId] ?? [])
-      .map((id) => s.byPendingId[id])
-      .filter((x): x is PendingAttachment => !!x)
-  );
+  // Subscribe to raw slices so each selector returns an identity-stable
+  // value when the slice hasn't changed. zustand v5 / React 18's
+  // useSyncExternalStore enters an infinite-render loop if a selector
+  // returns a freshly-derived array reference on every call (the previous
+  // version of this component did exactly that, which tripped React #185
+  // the moment a channel became active).
+  const orderByChannel = useAttachmentsStore((s) => s.orderByChannel);
+  const byPendingId = useAttachmentsStore((s) => s.byPendingId);
+  const items = useMemo(() => {
+    const order = orderByChannel[channelId] ?? [];
+    return order.map((id) => byPendingId[id]).filter((x): x is PendingAttachment => !!x);
+  }, [orderByChannel, byPendingId, channelId]);
+
   if (items.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-2 px-3 pb-2">
