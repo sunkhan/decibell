@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { Attachment } from "../../types";
-import { useChatStore } from "../../stores/chatStore";
 
 // ---- shared helpers --------------------------------------------------------
 
@@ -57,14 +56,6 @@ function kindLabel(kind: Attachment["kind"]): string {
 // Max file size (in bytes) to auto-inline as a data URL for preview.
 // 20 MB is generous for images while keeping memory-per-message bounded.
 const INLINE_PREVIEW_CAP = 20 * 1024 * 1024;
-
-// Find the server id that owns a given message's attachment. Attachments
-// don't carry their server id on the wire, so we resolve through the
-// active server context — which is always the server whose channel the
-// message belongs to (there's only one connected server per channel id).
-function useAttachmentServerId(): string | null {
-  return useChatStore((s) => s.activeServerId);
-}
 
 // ---- components -----------------------------------------------------------
 
@@ -312,8 +303,13 @@ function LiveAttachment({ attachment, serverId }: { attachment: Attachment; serv
   }
 }
 
-export default function AttachmentList({ attachments }: { attachments: Attachment[] }) {
-  const serverId = useAttachmentServerId();
+export default function AttachmentList({
+  attachments,
+  serverId,
+}: {
+  attachments: Attachment[];
+  serverId: string | null;
+}) {
   if (attachments.length === 0) return null;
   const ordered = [...attachments].sort((a, b) => a.position - b.position);
   return (

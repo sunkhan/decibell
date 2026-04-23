@@ -172,16 +172,27 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   // Viewport-fill auto-paginate: when the first page doesn't overflow the
   // container there's no scrollbar, so scroll-based pagination never fires.
   // Pull the next page silently until the viewport is filled or hasMore=false.
+  //
+  // Deps: only `messages.length` (along with the active channel/server). The
+  // hasMoreHistory and historyLoading Records change reference on *every*
+  // store action against them, and depending on those would re-fire this
+  // effect mid-flight before its own setHistoryLoading(true) settles —
+  // which under bad timing can rapidly nest setStates and trip React's
+  // "Maximum update depth exceeded" guard. Reading the latest values via
+  // .getState() inside keeps the guard checks accurate without making the
+  // effect itself fan out.
   useEffect(() => {
     if (!activeServerId || !activeChannelId) return;
-    if (!hasMoreHistory[activeChannelId]) return;
-    if (historyLoading[activeChannelId]) return;
+    const ch = activeChannelId;
+    const s = useChatStore.getState();
+    if (!s.hasMoreHistory[ch]) return;
+    if (s.historyLoading[ch]) return;
     const el = messagesContainerRef.current;
     if (!el) return;
     if (el.scrollHeight <= el.clientHeight + 10) {
       fetchOlderPage();
     }
-  }, [messages.length, hasMoreHistory, historyLoading, activeServerId, activeChannelId]);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [messages.length, activeServerId, activeChannelId]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scroll coordination. Runs synchronously after every render but before
   // paint, so the user never sees an intermediate frame at the wrong position.

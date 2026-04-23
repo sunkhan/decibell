@@ -77,7 +77,7 @@ export function useChatEvents() {
         content: event.payload.content,
         timestamp: event.payload.timestamp,
         channelId: event.payload.context,
-        attachments: event.payload.attachments.map(mapAttachment),
+        attachments: (event.payload.attachments ?? []).map(mapAttachment),
       });
     });
 
@@ -91,7 +91,7 @@ export function useChatEvents() {
           content: m.content,
           timestamp: String(m.timestamp),
           channelId: m.channelId,
-          attachments: m.attachments.map(mapAttachment),
+          attachments: (m.attachments ?? []).map(mapAttachment),
         })),
         hasMore,
       );

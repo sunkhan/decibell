@@ -62,7 +62,7 @@ export default function MessageBubble({ message, grouped, serverId }: Props) {
               <MessageText content={message.content} />
             </p>
           )}
-          <AttachmentList attachments={message.attachments} />
+          <AttachmentList attachments={message.attachments} serverId={serverId ?? null} />
         </div>
       </div>
     );
@@ -104,7 +104,7 @@ export default function MessageBubble({ message, grouped, serverId }: Props) {
             <MessageText content={message.content} />
           </p>
         )}
-        <AttachmentList attachments={message.attachments} />
+        <AttachmentList attachments={message.attachments} serverId={serverId ?? null} />
       </div>
     </div>
   );
