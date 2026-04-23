@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <boost/asio.hpp>
 // Windows socket headers must form a specific order or be guarded
@@ -12,24 +13,23 @@
 
 namespace chatproj {
 
-    // Helper to prepare a buffer: [4-byte Length][Payload]
+    // Helper to prepare a buffer: [4-byte Length][Payload].
+    //
+    // Implemented as resize-then-memcpy rather than insert-into-empty-vector
+    // because GCC 12's -Wstringop-overflow flow analysis reports a false
+    // positive on the insert idiom (it loses track of the capacity grown by
+    // the first insert and assumes the second writes into a zero-sized
+    // region). resize avoids the back-to-back allocations anyway, so this is
+    // both warning-free and marginally faster.
     inline std::vector<uint8_t> create_framed_packet(const std::string& serialized_data) {
-        std::vector<uint8_t> buffer;
+        const uint32_t length = static_cast<uint32_t>(serialized_data.size());
+        const uint32_t net_length = htonl(length);
 
-        // 1. Calculate length
-        uint32_t length = static_cast<uint32_t>(serialized_data.size());
-
-        // 2. Convert to Network Byte Order (Big Endian)
-        // Note: htonl takes a u_long, so we cast safely
-        uint32_t net_length = htonl(length);
-
-        // 3. Append Length (4 bytes)
-        const uint8_t* len_bytes = reinterpret_cast<const uint8_t*>(&net_length);
-        buffer.insert(buffer.end(), len_bytes, len_bytes + 4);
-
-        // 4. Append Payload
-        buffer.insert(buffer.end(), serialized_data.begin(), serialized_data.end());
-
+        std::vector<uint8_t> buffer(4 + serialized_data.size());
+        std::memcpy(buffer.data(), &net_length, 4);
+        if (!serialized_data.empty()) {
+            std::memcpy(buffer.data() + 4, serialized_data.data(), serialized_data.size());
+        }
         return buffer;
     }
 }
