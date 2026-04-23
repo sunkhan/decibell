@@ -218,10 +218,14 @@ void CommunityDb::migrate_to_v2_() {
     //   'ready'     — file is final on disk at storage_path
     // Defaults to 'ready' for backwards compatibility on fresh v3 installs
     // (so any manually-inserted rows don't get treated as pending).
+    // No FK on message_id: pending uploads carry message_id=0 as a "not yet
+    // bound" sentinel, which would violate any FK to messages(id). We handle
+    // orphan cleanup ourselves in prune_text_messages and the
+    // pending-uploads sweep, so the FK isn't pulling weight here anyway.
     exec_sql(db_,
         "CREATE TABLE IF NOT EXISTS attachments ("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "  message_id INTEGER NOT NULL,"
+        "  message_id INTEGER NOT NULL DEFAULT 0,"
         "  kind INTEGER NOT NULL,"
         "  filename TEXT NOT NULL,"
         "  mime TEXT NOT NULL DEFAULT '',"
@@ -233,8 +237,7 @@ void CommunityDb::migrate_to_v2_() {
         "  upload_status TEXT NOT NULL DEFAULT 'ready',"
         "  expected_size INTEGER NOT NULL DEFAULT 0,"
         "  uploader TEXT NOT NULL DEFAULT '',"
-        "  channel_id TEXT NOT NULL DEFAULT '',"
-        "  FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE"
+        "  channel_id TEXT NOT NULL DEFAULT ''"
         ");");
     exec_sql(db_,
         "CREATE INDEX IF NOT EXISTS idx_attachments_message "
@@ -291,6 +294,74 @@ void CommunityDb::migrate_to_v2_() {
         "END;");
 
     set_meta_("schema_version", "3");
+
+    // --- v4: drop FK + NOT NULL on attachments.message_id ---
+    //
+    // Earlier schemas declared `message_id INTEGER NOT NULL` plus a
+    // `FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE`.
+    // The pending-upload flow uses message_id=0 as "not yet bound to a
+    // message", which violates that FK and rejected every /attachments/init
+    // with a 500. Recreate the table without the FK; orphan cleanup is now
+    // explicit in prune_text_messages and the pending-uploads sweep.
+    //
+    // Skip if attachments was just freshly created without the FK (i.e.,
+    // we're on a brand-new DB) — detected by the absence of a foreign
+    // key on the table.
+    {
+        bool has_fk = false;
+        Stmt fkq(db_, "PRAGMA foreign_key_list(attachments);");
+        if (fkq.s) {
+            while (fkq.step() == SQLITE_ROW) { has_fk = true; break; }
+        }
+        if (has_fk) {
+            // SQLite forbids changing PRAGMA foreign_keys mid-transaction —
+            // toggle it before BEGIN, restore after COMMIT.
+            exec_sql(db_, "PRAGMA foreign_keys=OFF;");
+            exec_sql(db_, "BEGIN;");
+            exec_sql(db_,
+                "CREATE TABLE attachments_v4 ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  message_id INTEGER NOT NULL DEFAULT 0,"
+                "  kind INTEGER NOT NULL,"
+                "  filename TEXT NOT NULL,"
+                "  mime TEXT NOT NULL DEFAULT '',"
+                "  size_bytes INTEGER NOT NULL DEFAULT 0,"
+                "  storage_path TEXT,"
+                "  position INTEGER NOT NULL DEFAULT 0,"
+                "  created_at INTEGER NOT NULL,"
+                "  purged_at INTEGER NOT NULL DEFAULT 0,"
+                "  upload_status TEXT NOT NULL DEFAULT 'ready',"
+                "  expected_size INTEGER NOT NULL DEFAULT 0,"
+                "  uploader TEXT NOT NULL DEFAULT '',"
+                "  channel_id TEXT NOT NULL DEFAULT ''"
+                ");");
+            exec_sql(db_,
+                "INSERT INTO attachments_v4 "
+                "  (id, message_id, kind, filename, mime, size_bytes, "
+                "   storage_path, position, created_at, purged_at, "
+                "   upload_status, expected_size, uploader, channel_id) "
+                "SELECT id, message_id, kind, filename, mime, size_bytes, "
+                "       storage_path, position, created_at, purged_at, "
+                "       upload_status, expected_size, uploader, channel_id "
+                "FROM attachments;");
+            exec_sql(db_, "DROP TABLE attachments;");
+            exec_sql(db_, "ALTER TABLE attachments_v4 RENAME TO attachments;");
+            exec_sql(db_, "COMMIT;");
+            exec_sql(db_, "PRAGMA foreign_keys=ON;");
+
+            // DROP TABLE drops indices too — recreate.
+            exec_sql(db_,
+                "CREATE INDEX IF NOT EXISTS idx_attachments_message "
+                "ON attachments(message_id);");
+            exec_sql(db_,
+                "CREATE INDEX IF NOT EXISTS idx_attachments_kind_created "
+                "ON attachments(kind, created_at) WHERE purged_at = 0;");
+            exec_sql(db_,
+                "CREATE INDEX IF NOT EXISTS idx_attachments_pending "
+                "ON attachments(created_at) WHERE message_id = 0;");
+        }
+    }
+    set_meta_("schema_version", "4");
 }
 
 void CommunityDb::seed_if_empty_(const std::string& owner,
@@ -833,7 +904,11 @@ int64_t CommunityDb::insert_pending_attachment(const std::string& channel_id,
         "  position, created_at, purged_at, upload_status, expected_size, "
         "  uploader, channel_id"
         ") VALUES(0, ?, ?, ?, 0, ?, ?, ?, 0, 'uploading', ?, ?, ?);");
-    if (!q.s) return 0;
+    if (!q.s) {
+        std::cerr << "[DB] insert_pending_attachment prepare failed: "
+                  << sqlite3_errmsg(db_) << "\n";
+        return 0;
+    }
     q.bind_int(1, kind);
     q.bind_text(2, filename);
     q.bind_text(3, mime);
@@ -843,7 +918,12 @@ int64_t CommunityDb::insert_pending_attachment(const std::string& channel_id,
     q.bind_int64(7, expected_size);
     q.bind_text(8, uploader);
     q.bind_text(9, channel_id);
-    if (q.step() != SQLITE_DONE) return 0;
+    int rc = q.step();
+    if (rc != SQLITE_DONE) {
+        std::cerr << "[DB] insert_pending_attachment step failed (rc=" << rc
+                  << "): " << sqlite3_errmsg(db_) << "\n";
+        return 0;
+    }
     return sqlite3_last_insert_rowid(db_);
 }
 
@@ -1029,8 +1109,6 @@ CommunityDb::PrunedTextResult CommunityDb::prune_text_messages(
     PrunedTextResult out;
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Collect doomed message ids + any still-present attachment blobs that
-    // need to be unlinked from disk (CASCADE drops the DB rows but not files).
     std::vector<int64_t> doomed;
     {
         Stmt q(db_,
@@ -1044,6 +1122,8 @@ CommunityDb::PrunedTextResult CommunityDb::prune_text_messages(
     }
     if (doomed.empty()) return out;
 
+    // Collect any still-present attachment blobs so the caller can unlink
+    // them from disk after the DB rows are gone.
     {
         Stmt q(db_,
             "SELECT storage_path FROM attachments "
@@ -1059,6 +1139,22 @@ CommunityDb::PrunedTextResult CommunityDb::prune_text_messages(
         }
     }
 
+    // Single transaction: delete attachment rows tied to the doomed messages,
+    // then the messages themselves. We do this manually now that the FK +
+    // CASCADE between attachments and messages has been dropped (FK was
+    // incompatible with the message_id=0 sentinel for pending uploads).
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    {
+        Stmt q(db_,
+            "DELETE FROM attachments "
+            "WHERE message_id IN (SELECT id FROM messages "
+            "                     WHERE channel_id=? AND timestamp<?);");
+        if (q.s) {
+            q.bind_text(1, channel_id);
+            q.bind_int64(2, cutoff_ts);
+            q.step();
+        }
+    }
     {
         Stmt q(db_, "DELETE FROM messages WHERE channel_id=? AND timestamp<?;");
         if (q.s) {
@@ -1067,6 +1163,7 @@ CommunityDb::PrunedTextResult CommunityDb::prune_text_messages(
             q.step();
         }
     }
+    exec_sql(db_, "COMMIT;");
 
     out.deleted_ids = std::move(doomed);
     return out;
