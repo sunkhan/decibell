@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -74,10 +74,25 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<RichInputHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
+  // Scroll-coordination refs. These drive the useLayoutEffect below that
+  // decides how to move scrollTop after the message list changes.
+  //   prevChannel:      last channel we rendered — a mismatch means "jump to bottom".
+  //   prevFirstId:      first (oldest) rendered id — a smaller new value means
+  //                     older messages just prepended.
+  //   prevMessageCount: so we can tell append from no-op.
+  //   wasNearBottom:    sticky-follow heuristic: only auto-scroll on append if
+  //                     the user was already within ~80px of the bottom.
+  //   pendingPrependAnchor: captured by the scroll handler right before firing
+  //                     a user-initiated older-page request, so the layout
+  //                     effect can preserve the visual anchor.
+  const prevChannelRef = useRef<string | null>(null);
+  const prevFirstIdRef = useRef<number>(0);
+  const prevMessageCountRef = useRef<number>(0);
+  const wasNearBottomRef = useRef<boolean>(true);
+  const pendingPrependAnchor = useRef<{ prevSH: number; prevST: number } | null>(null);
 
   const messages = activeChannelId
     ? messagesByChannel[activeChannelId] ?? []
@@ -117,13 +132,8 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     });
   }, [activeServerId, activeChannelId, historyFetched]);
 
-  // Scroll-to-top pagination. When the user scrolls within ~100px of the top
-  // and there's more history, fetch the next older page using the oldest id
-  // currently loaded as the cursor.
-  const handleScroll = () => {
-    const el = messagesContainerRef.current;
-    if (!el || !activeServerId || !activeChannelId) return;
-    if (el.scrollTop > 100) return;
+  const fetchOlderPage = () => {
+    if (!activeServerId || !activeChannelId) return;
     if (!hasMoreHistory[activeChannelId]) return;
     if (historyLoading[activeChannelId]) return;
     const firstId = messages.find((m) => m.id !== 0)?.id ?? 0;
@@ -136,13 +146,84 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
       limit: 50,
     }).catch((err) => {
       console.error("request_channel_history (paginate) failed", err);
-      useChatStore.getState().setHistoryLoading(activeChannelId, false);
+      useChatStore.getState().setHistoryLoading(activeChannelId!, false);
     });
   };
 
+  const handleScroll = () => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    // Update the sticky-follow heuristic on every scroll event. The layout
+    // effect reads this after append to decide whether to auto-scroll.
+    wasNearBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    // Near-top: user wants older history. Capture current scroll state so the
+    // layout effect can preserve the visual anchor after prepend, then fire.
+    if (el.scrollTop <= 100 && activeChannelId && hasMoreHistory[activeChannelId] && !historyLoading[activeChannelId]) {
+      pendingPrependAnchor.current = { prevSH: el.scrollHeight, prevST: el.scrollTop };
+      fetchOlderPage();
+    }
+  };
+
+  // Viewport-fill auto-paginate: when the first page doesn't overflow the
+  // container there's no scrollbar, so scroll-based pagination never fires.
+  // Pull the next page silently until the viewport is filled or hasMore=false.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length]);
+    if (!activeServerId || !activeChannelId) return;
+    if (!hasMoreHistory[activeChannelId]) return;
+    if (historyLoading[activeChannelId]) return;
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    if (el.scrollHeight <= el.clientHeight + 10) {
+      fetchOlderPage();
+    }
+  }, [messages.length, hasMoreHistory, historyLoading, activeServerId, activeChannelId]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Scroll coordination. Runs synchronously after every render but before
+  // paint, so the user never sees an intermediate frame at the wrong position.
+  useLayoutEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+
+    const channelChanged = prevChannelRef.current !== activeChannelId;
+    const firstId = messages.find((m) => m.id !== 0)?.id ?? 0;
+    const prependDetected =
+      !channelChanged &&
+      firstId !== 0 &&
+      prevFirstIdRef.current !== 0 &&
+      firstId < prevFirstIdRef.current;
+    const appendDetected =
+      !channelChanged &&
+      !prependDetected &&
+      messages.length > prevMessageCountRef.current;
+
+    if (channelChanged) {
+      // Instant jump to newest — no animation, no flash.
+      el.scrollTop = el.scrollHeight;
+      wasNearBottomRef.current = true;
+    } else if (prependDetected) {
+      if (pendingPrependAnchor.current) {
+        // User-initiated scroll-to-top: keep the visible message under the
+        // same viewport y-offset by shifting scrollTop by the added height.
+        const { prevSH, prevST } = pendingPrependAnchor.current;
+        el.scrollTop = el.scrollHeight - prevSH + prevST;
+        pendingPrependAnchor.current = null;
+      } else {
+        // Auto-fill prepend (viewport wasn't yet scrollable) — keep the user
+        // pinned to the newest content rather than the newly-revealed oldest.
+        el.scrollTop = el.scrollHeight;
+      }
+    } else if (appendDetected && wasNearBottomRef.current) {
+      // New real-time message arrived while the user was at/near the bottom.
+      el.scrollTop = el.scrollHeight;
+    }
+    // If append happened while user was scrolled up reading history, do
+    // nothing — their position stays where it was.
+
+    prevChannelRef.current = activeChannelId;
+    prevFirstIdRef.current = firstId;
+    prevMessageCountRef.current = messages.length;
+  }, [activeChannelId, messages.length, messages[0]?.id]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-focus editor when user starts typing anywhere
   useEffect(() => {
@@ -239,7 +320,6 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
             />
           ))
         )}
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Send error */}
