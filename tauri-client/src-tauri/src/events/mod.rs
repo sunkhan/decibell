@@ -107,6 +107,8 @@ pub struct CommunityAuthRespondedPayload {
     pub server_name: String,
     pub server_description: String,
     pub owner_username: String,
+    pub attachment_port: i32,
+    pub max_attachment_bytes: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +199,8 @@ pub fn emit_community_auth_responded(
     server_name: String,
     server_description: String,
     owner_username: String,
+    attachment_port: i32,
+    max_attachment_bytes: i64,
 ) {
     let _ = app.emit(
         COMMUNITY_AUTH_RESPONDED,
@@ -209,6 +213,8 @@ pub fn emit_community_auth_responded(
             server_name,
             server_description,
             owner_username,
+            attachment_port,
+            max_attachment_bytes,
         },
     );
 }
@@ -417,6 +423,70 @@ pub fn emit_stream_presence_updated(
 }
 
 pub const STREAM_THUMBNAIL_UPDATED: &str = "stream_thumbnail_updated";
+
+// --- Attachment upload / download progress ---
+pub const ATTACHMENT_UPLOAD_PROGRESS: &str = "attachment_upload_progress";
+pub const ATTACHMENT_UPLOAD_COMPLETE: &str = "attachment_upload_complete";
+pub const ATTACHMENT_UPLOAD_FAILED:   &str = "attachment_upload_failed";
+pub const ATTACHMENT_DOWNLOAD_PROGRESS: &str = "attachment_download_progress";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentUploadProgressPayload {
+    pub pending_id: String,
+    pub server_id: String,
+    pub channel_id: String,
+    pub attachment_id: i64,
+    pub filename: String,
+    pub transferred_bytes: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentUploadCompletePayload {
+    pub pending_id: String,
+    pub server_id: String,
+    pub channel_id: String,
+    pub attachment_id: i64,
+    pub filename: String,
+    pub mime: String,
+    pub kind: String,
+    pub size_bytes: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentUploadFailedPayload {
+    pub pending_id: String,
+    pub server_id: String,
+    pub channel_id: String,
+    pub attachment_id: i64,
+    pub filename: String,
+    pub message: String,
+    pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentDownloadProgressPayload {
+    pub attachment_id: i64,
+    pub transferred_bytes: u64,
+    pub total_bytes: u64,
+}
+
+pub fn emit_attachment_upload_progress(app: &AppHandle, p: AttachmentUploadProgressPayload) {
+    let _ = app.emit(ATTACHMENT_UPLOAD_PROGRESS, p);
+}
+pub fn emit_attachment_upload_complete(app: &AppHandle, p: AttachmentUploadCompletePayload) {
+    let _ = app.emit(ATTACHMENT_UPLOAD_COMPLETE, p);
+}
+pub fn emit_attachment_upload_failed(app: &AppHandle, p: AttachmentUploadFailedPayload) {
+    let _ = app.emit(ATTACHMENT_UPLOAD_FAILED, p);
+}
+pub fn emit_attachment_download_progress(app: &AppHandle, p: AttachmentDownloadProgressPayload) {
+    let _ = app.emit(ATTACHMENT_DOWNLOAD_PROGRESS, p);
+}
 
 // --- Deep link ---
 pub const DEEP_LINK_RECEIVED: &str = "deep_link_received";

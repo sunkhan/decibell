@@ -76,6 +76,8 @@ export default function App() {
             aec_enabled: boolean;
             noise_suppression_level: number;
             agc_enabled: boolean;
+            upload_limit_bps: number;
+            download_limit_bps: number;
           };
         }>("load_config");
 
@@ -95,6 +97,16 @@ export default function App() {
         useUiStore.getState().setAecEnabled(settings.aec_enabled);
         useUiStore.getState().setNoiseSuppressionLevel(settings.noise_suppression_level);
         useUiStore.getState().setAgcEnabled(settings.agc_enabled);
+
+        // Attachment transfer caps. Persist in uiStore for the settings UI
+        // and also push them into the Rust AppState so in-flight transfers
+        // honor them immediately.
+        useUiStore.getState().setUploadLimitBps(settings.upload_limit_bps || 0);
+        useUiStore.getState().setDownloadLimitBps(settings.download_limit_bps || 0);
+        invoke("set_transfer_limits", {
+          uploadBps: settings.upload_limit_bps || 0,
+          downloadBps: settings.download_limit_bps || 0,
+        }).catch(console.error);
 
         // Restore per-user volume and mute settings
         if (settings.user_volumes) {

@@ -35,6 +35,8 @@ interface CommunityAuthPayload {
   serverName: string;
   serverDescription: string;
   ownerUsername: string;
+  attachmentPort: number;
+  maxAttachmentBytes: number;
 }
 
 interface ChannelUpdatedPayload {
@@ -112,12 +114,13 @@ export function useServerEvents() {
     const unlistenAuth = listen<CommunityAuthPayload>(
       "community_auth_responded",
       (event) => {
-        const { serverId, success, message, channels, errorCode, serverName, serverDescription, ownerUsername } = event.payload;
+        const { serverId, success, message, channels, errorCode, serverName, serverDescription, ownerUsername, attachmentPort, maxAttachmentBytes } = event.payload;
         const store = useChatStore.getState();
         if (success) {
           store.addConnectedServer(serverId);
           store.setServerOwner(serverId, ownerUsername);
           store.setServerMeta(serverId, { name: serverName, description: serverDescription });
+          store.setServerAttachmentConfig(serverId, attachmentPort, maxAttachmentBytes);
           const typedChannels = channels.map((ch) => ({
             id: ch.id,
             name: ch.name,

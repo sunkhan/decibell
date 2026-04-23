@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
@@ -31,6 +32,14 @@ pub struct AppState {
     /// Router fulfils each sender when INVITE_RESOLVE_RES arrives; the caller
     /// drops its half after timeout.
     pub pending_invite_resolves: HashMap<String, oneshot::Sender<InviteResolveResponse>>,
+    /// Upload/download throttle rates in bytes per second. Both default to 0
+    /// (unlimited). Shared via Arc<AtomicU64> so in-flight transfers pick up
+    /// slider changes mid-stream without restart.
+    pub upload_limit_bps: Arc<std::sync::atomic::AtomicU64>,
+    pub download_limit_bps: Arc<std::sync::atomic::AtomicU64>,
+    /// In-flight uploads keyed by client-side pending id. Lets the UI cancel
+    /// mid-stream and the upload task to poll the flag between sub-chunks.
+    pub active_uploads: HashMap<String, Arc<AtomicBool>>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;

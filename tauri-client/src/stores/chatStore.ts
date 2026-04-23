@@ -25,6 +25,9 @@ interface ChatState {
   connectedServers: Set<string>;
   serverOwner: Record<string, string>;
   serverMeta: Record<string, { name: string; description: string }>;
+  // Attachment HTTP endpoint advertised by each connected server, used by
+  // the file-upload UI. Port 0 = server doesn't support attachments.
+  serverAttachmentConfig: Record<string, { port: number; maxBytes: number }>;
   membersByServer: Record<string, ServerMember[]>;
   bansByServer: Record<string, string[]>;
   invitesByServer: Record<string, ServerInvite[]>;
@@ -48,6 +51,7 @@ interface ChatState {
   removeConnectedServer: (serverId: string) => void;
   setServerOwner: (serverId: string, owner: string) => void;
   setServerMeta: (serverId: string, meta: { name: string; description: string }) => void;
+  setServerAttachmentConfig: (serverId: string, port: number, maxBytes: number) => void;
   setMembersForServer: (serverId: string, members: ServerMember[], bans: string[]) => void;
   setInvitesForServer: (serverId: string, invites: ServerInvite[]) => void;
   upsertInvite: (serverId: string, invite: ServerInvite) => void;
@@ -90,6 +94,7 @@ export const useChatStore = create<ChatState>((set) => ({
   connectedServers: new Set(),
   serverOwner: {},
   serverMeta: {},
+  serverAttachmentConfig: {},
   membersByServer: {},
   bansByServer: {},
   invitesByServer: {},
@@ -164,6 +169,9 @@ export const useChatStore = create<ChatState>((set) => ({
   removeConnectedServer: (serverId) => set((state) => { const next = new Set(state.connectedServers); next.delete(serverId); return { connectedServers: next }; }),
   setServerOwner: (serverId, owner) => set((state) => ({ serverOwner: { ...state.serverOwner, [serverId]: owner } })),
   setServerMeta: (serverId, meta) => set((state) => ({ serverMeta: { ...state.serverMeta, [serverId]: meta } })),
+  setServerAttachmentConfig: (serverId, port, maxBytes) => set((state) => ({
+    serverAttachmentConfig: { ...state.serverAttachmentConfig, [serverId]: { port, maxBytes } },
+  })),
   setMembersForServer: (serverId, members, bans) => set((state) => ({
     membersByServer: { ...state.membersByServer, [serverId]: members },
     bansByServer: { ...state.bansByServer, [serverId]: bans },

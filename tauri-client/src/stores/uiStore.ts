@@ -38,6 +38,11 @@ interface UiState {
   setAgcEnabled: (value: boolean) => void;
   streamStereo: boolean;
   setStreamStereo: (value: boolean) => void;
+  /// Attachment transfer caps in bytes per second. 0 = unlimited.
+  uploadLimitBps: number;
+  downloadLimitBps: number;
+  setUploadLimitBps: (value: number) => void;
+  setDownloadLimitBps: (value: number) => void;
   inputDevice: string | null;
   outputDevice: string | null;
   separateStreamOutput: boolean;
@@ -83,6 +88,10 @@ export const useUiStore = create<UiState>((set) => ({
   setAgcEnabled: (value) => set({ agcEnabled: value }),
   streamStereo: false,
   setStreamStereo: (value) => set({ streamStereo: value }),
+  uploadLimitBps: 0,
+  downloadLimitBps: 0,
+  setUploadLimitBps: (value) => set({ uploadLimitBps: value }),
+  setDownloadLimitBps: (value) => set({ downloadLimitBps: value }),
   inputDevice: null,
   outputDevice: null,
   separateStreamOutput: false,

@@ -43,6 +43,12 @@ pub struct AppSettings {
     /// Users locally muted by this client
     #[serde(default)]
     pub local_muted_users: Vec<String>,
+    /// Attachment upload cap in bytes per second. 0 = unlimited.
+    #[serde(default)]
+    pub upload_limit_bps: u64,
+    /// Attachment download cap in bytes per second. 0 = unlimited.
+    #[serde(default)]
+    pub download_limit_bps: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

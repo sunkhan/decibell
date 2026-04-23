@@ -17,6 +17,11 @@ pub struct CommunityClient {
     pub host: String,
     pub port: u16,
     pub jwt: String,
+    /// Populated from CommunityAuthResponse. 0 means the server didn't
+    /// report an attachment endpoint (old server or HTTP disabled).
+    pub attachment_port: u16,
+    /// Per-file upload cap reported by the server. 0 = unlimited.
+    pub max_attachment_bytes: i64,
 }
 
 impl CommunityClient {
@@ -89,6 +94,8 @@ impl CommunityClient {
             host,
             port,
             jwt,
+            attachment_port: 0,
+            max_attachment_bytes: 0,
         })
     }
 
@@ -402,6 +409,17 @@ impl CommunityClient {
                             retention_days_audio: c.retention_days_audio,
                         })
                         .collect();
+                    // Cache attachment endpoint on the client so upload
+                    // commands don't have to re-resolve on every call.
+                    if resp.success {
+                        let mut s = state.lock().await;
+                        if let Some(client) = s.communities.get_mut(&server_id) {
+                            if resp.attachment_port > 0 {
+                                client.attachment_port = resp.attachment_port as u16;
+                            }
+                            client.max_attachment_bytes = resp.max_attachment_bytes;
+                        }
+                    }
                     events::emit_community_auth_responded(
                         &app,
                         server_id.clone(),
@@ -412,6 +430,8 @@ impl CommunityClient {
                         resp.server_name,
                         resp.server_description,
                         resp.owner_username,
+                        resp.attachment_port,
+                        resp.max_attachment_bytes,
                     );
                 }
                 Some(packet::Payload::InviteCreateRes(resp)) => {

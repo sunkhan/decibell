@@ -92,6 +92,11 @@ pub fn run() {
             commands::settings::start_mic_test,
             commands::settings::stop_mic_test,
             commands::sounds::play_sound,
+            commands::attachments::upload_attachment,
+            commands::attachments::cancel_attachment_upload,
+            commands::attachments::download_attachment,
+            commands::attachments::fetch_attachment_blob,
+            commands::attachments::set_transfer_limits,
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
