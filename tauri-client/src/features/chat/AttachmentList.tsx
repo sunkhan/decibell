@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { Attachment } from "../../types";
 
@@ -187,6 +188,12 @@ function FileCard({ attachment, serverId, icon }: { attachment: Attachment; serv
   );
 }
 
+interface DownloadProgressPayload {
+  attachmentId: number;
+  transferredBytes: number;
+  totalBytes: number;
+}
+
 function DownloadButton({
   attachment,
   serverId,
@@ -198,6 +205,25 @@ function DownloadButton({
 }) {
   const [state, setState] = useState<"idle" | "running" | "done" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [transferred, setTransferred] = useState(0);
+  const [total, setTotal] = useState(0);
+
+  // Listen for download progress while a download is in flight. Each
+  // DownloadButton subscribes only while its own download is running, so
+  // there's no scaling cost across hundreds of historic attachments.
+  useEffect(() => {
+    if (state !== "running") return;
+    let unlisten: (() => void) | null = null;
+    listen<DownloadProgressPayload>(
+      "attachment_download_progress",
+      (event) => {
+        if (event.payload.attachmentId !== attachment.id) return;
+        setTransferred(event.payload.transferredBytes);
+        setTotal(event.payload.totalBytes);
+      },
+    ).then((fn) => { unlisten = fn; });
+    return () => { if (unlisten) unlisten(); };
+  }, [state, attachment.id]);
 
   const onClick = async () => {
     if (!serverId) return;
@@ -213,6 +239,8 @@ function DownloadButton({
       return;
     }
     if (!destination) return;
+    setTransferred(0);
+    setTotal(0);
     setState("running");
     setError(null);
     try {
@@ -230,36 +258,58 @@ function DownloadButton({
     }
   };
 
-  const label = state === "running" ? "Downloading…"
+  const pct = total > 0 ? Math.min(100, (transferred / total) * 100) : 0;
+  const label = state === "running"
+      ? (total > 0 ? `Downloading ${pct.toFixed(0)}%` : "Downloading…")
     : state === "done" ? "Saved"
     : state === "error" ? "Retry"
     : "Download";
 
   if (inline) {
     return (
-      <button
-        onClick={onClick}
-        title={error ?? label}
-        disabled={state === "running"}
-        className="shrink-0 rounded-md bg-accent-soft px-2.5 py-1.5 text-[11px] font-medium text-accent-bright transition-colors hover:bg-accent-mid disabled:opacity-60"
-      >
-        {label}
-      </button>
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        <button
+          onClick={onClick}
+          title={error ?? label}
+          disabled={state === "running"}
+          className="rounded-md bg-accent-soft px-2.5 py-1.5 text-[11px] font-medium text-accent-bright transition-colors hover:bg-accent-mid disabled:opacity-60"
+        >
+          {label}
+        </button>
+        {state === "running" && total > 0 && (
+          <div className="h-[3px] w-[80px] overflow-hidden rounded-full bg-bg-dark">
+            <div
+              className="h-full rounded-full bg-accent transition-[width] duration-150"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        )}
+      </div>
     );
   }
   return (
-    <button
-      onClick={onClick}
-      disabled={state === "running"}
-      className="mt-1.5 inline-flex items-center gap-1.5 rounded-md bg-accent-soft px-2.5 py-1.5 text-[11px] font-medium text-accent-bright transition-colors hover:bg-accent-mid disabled:opacity-60"
-    >
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-        <polyline points="7 10 12 15 17 10" />
-        <line x1="12" y1="15" x2="12" y2="3" />
-      </svg>
-      {label}
-    </button>
+    <div className="mt-1.5">
+      <button
+        onClick={onClick}
+        disabled={state === "running"}
+        className="inline-flex items-center gap-1.5 rounded-md bg-accent-soft px-2.5 py-1.5 text-[11px] font-medium text-accent-bright transition-colors hover:bg-accent-mid disabled:opacity-60"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        {label}
+      </button>
+      {state === "running" && total > 0 && (
+        <div className="mt-1.5 h-[3px] w-full max-w-[200px] overflow-hidden rounded-full bg-bg-dark">
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-150"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
