@@ -65,6 +65,13 @@ message Packet {
     INVITE_UNREGISTER_REQ = 47;  // community→central (shared secret)
     INVITE_RESOLVE_REQ = 48;     // client→central (JWT)
     INVITE_RESOLVE_RES = 49;     // central→client
+
+    // Persistent channel messages + per-channel retention.
+    CHANNEL_HISTORY_REQ = 50;    // client→community
+    CHANNEL_HISTORY_RES = 51;    // community→client
+    CHANNEL_UPDATE_REQ = 52;     // client→community (owner-only)
+    CHANNEL_UPDATE_RES = 53;     // community→client
+    CHANNEL_PRUNED = 54;         // community→client: retention sweep happened
   }
 
   Type type = 1;
@@ -130,6 +137,12 @@ message Packet {
     InviteUnregisterRequest invite_unregister_req = 49;
     InviteResolveRequest invite_resolve_req = 50;
     InviteResolveResponse invite_resolve_res = 51;
+
+    ChannelHistoryRequest channel_history_req = 52;
+    ChannelHistoryResponse channel_history_res = 53;
+    ChannelUpdateRequest channel_update_req = 54;
+    ChannelUpdateResponse channel_update_res = 55;
+    ChannelPruned channel_pruned = 56;
   }
 }
 
@@ -235,6 +248,15 @@ message ChannelInfo {
   Type type = 3;
   // Opus bitrate (kbps) for voice channels. 0 / unset means "use client default".
   int32 voice_bitrate_kbps = 4;
+  // Per-channel retention in days. 0 = keep forever.
+  // Text retention governs the message row itself; attachment retentions
+  // soft-delete the attachment blob while leaving a tombstone row so the
+  // client can render "file X was cleaned up after N days".
+  int32 retention_days_text = 5;
+  int32 retention_days_image = 6;
+  int32 retention_days_video = 7;
+  int32 retention_days_document = 8;
+  int32 retention_days_audio = 9;
 }
 
 message CommunityAuthRequest {
@@ -266,6 +288,80 @@ message ChannelMessage {
   string channel_id = 2;
   string content = 3;
   int64 timestamp = 4;
+  // Server-assigned monotonic id (used as pagination cursor and dedupe key).
+  // Zero when a client is sending; server populates before broadcast + persist.
+  int64 id = 5;
+  // Attachments associated with this message. Ordered by position ASC.
+  repeated Attachment attachments = 6;
+}
+
+message Attachment {
+  // Attachment kind — aligns with retention_days_{image,video,document,audio}.
+  enum Kind {
+    IMAGE = 0;
+    VIDEO = 1;
+    DOCUMENT = 2;
+    AUDIO = 3;
+  }
+  int64 id = 1;
+  int64 message_id = 2;
+  Kind kind = 3;
+  string filename = 4;
+  string mime = 5;
+  int64 size_bytes = 6;
+  // Relative URL or storage identifier; empty when the attachment has been
+  // purged by retention (tombstone row preserved for client rendering).
+  string url = 7;
+  int32 position = 8;
+  int64 created_at = 9;
+  // 0 = still present. Nonzero = unix seconds when retention removed the blob.
+  int64 purged_at = 10;
+}
+
+message ChannelHistoryRequest {
+  string channel_id = 1;
+  // Return messages with id < before_id. 0 means "most recent".
+  int64 before_id = 2;
+  // Server-enforced cap (hard max regardless of client value).
+  int32 limit = 3;
+}
+
+message ChannelHistoryResponse {
+  string channel_id = 1;
+  // Ordered from oldest to newest within the page.
+  repeated ChannelMessage messages = 2;
+  // True when more messages exist older than the oldest one returned.
+  bool has_more = 3;
+}
+
+message ChannelUpdateRequest {
+  string channel_id = 1;
+  // All five retention values — client sends the full snapshot. 0 = forever.
+  int32 retention_days_text = 2;
+  int32 retention_days_image = 3;
+  int32 retention_days_video = 4;
+  int32 retention_days_document = 5;
+  int32 retention_days_audio = 6;
+}
+
+message ChannelUpdateResponse {
+  bool success = 1;
+  string message = 2;
+  // Echo of the updated channel so clients can refresh their local copy.
+  ChannelInfo channel = 3;
+}
+
+message AttachmentTombstone {
+  int64 attachment_id = 1;
+  int64 purged_at = 2;
+}
+
+message ChannelPruned {
+  string channel_id = 1;
+  // Message rows fully removed by text retention.
+  repeated int64 deleted_message_ids = 2;
+  // Attachments soft-deleted into tombstones (blob gone, metadata retained).
+  repeated AttachmentTombstone purged_attachments = 3;
 }
 
 message JoinVoiceRequest {

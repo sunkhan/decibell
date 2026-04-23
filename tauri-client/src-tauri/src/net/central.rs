@@ -345,9 +345,11 @@ impl CentralClient {
                         &app,
                         "dm".to_string(),
                         msg.sender,
-                        msg.recipient,  // NEW — pass recipient through
+                        msg.recipient,
                         msg.content,
                         msg.timestamp.to_string(),
+                        0,         // DMs aren't persisted; no server id
+                        Vec::new(), // no attachments on DMs yet
                     );
                 }
                 Some(packet::Payload::PresenceUpdate(update)) => {

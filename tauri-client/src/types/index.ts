@@ -22,13 +22,35 @@ export interface Channel {
   name: string;
   type: "text" | "voice";
   voiceBitrateKbps?: number;
+  retentionDaysText: number;     // 0 = forever
+  retentionDaysImage: number;
+  retentionDaysVideo: number;
+  retentionDaysDocument: number;
+  retentionDaysAudio: number;
+}
+
+export type AttachmentKind = "image" | "video" | "document" | "audio";
+
+export interface Attachment {
+  id: number;
+  messageId: number;
+  kind: AttachmentKind;
+  filename: string;
+  mime: string;
+  sizeBytes: number;
+  url: string;
+  position: number;
+  createdAt: number;
+  purgedAt: number; // 0 = present; nonzero unix seconds = tombstone
 }
 
 export interface Message {
+  id: number;        // 0 for DMs, server-assigned for channel messages
   sender: string;
   content: string;
   timestamp: string;
   channelId: string;
+  attachments: Attachment[];
 }
 
 export interface DmMessage {

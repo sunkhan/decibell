@@ -63,6 +63,37 @@ pub struct ChannelInfoPayload {
     pub name: String,
     pub r#type: String,
     pub voice_bitrate_kbps: i32,
+    pub retention_days_text: i32,
+    pub retention_days_image: i32,
+    pub retention_days_video: i32,
+    pub retention_days_document: i32,
+    pub retention_days_audio: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentPayload {
+    pub id: i64,
+    pub message_id: i64,
+    pub kind: String, // "image" | "video" | "document" | "audio"
+    pub filename: String,
+    pub mime: String,
+    pub size_bytes: i64,
+    pub url: String,
+    pub position: i32,
+    pub created_at: i64,
+    pub purged_at: i64, // 0 = present, nonzero = tombstone timestamp
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMessagePayload {
+    pub id: i64,
+    pub sender: String,
+    pub channel_id: String,
+    pub content: String,
+    pub timestamp: i64,
+    pub attachments: Vec<AttachmentPayload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,12 +110,16 @@ pub struct CommunityAuthRespondedPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MessageReceivedPayload {
     pub context: String,
     pub sender: String,
     pub recipient: String,  // populated for DMs, empty for channel messages
     pub content: String,
     pub timestamp: String,
+    // Server-assigned message id for channel messages. 0 for DMs (not persisted).
+    pub id: i64,
+    pub attachments: Vec<AttachmentPayload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,19 +217,103 @@ pub fn emit_message_received(
     app: &AppHandle,
     context: String,
     sender: String,
-    recipient: String,  // NEW
+    recipient: String,
     content: String,
     timestamp: String,
+    id: i64,
+    attachments: Vec<AttachmentPayload>,
 ) {
     let _ = app.emit(
         MESSAGE_RECEIVED,
         MessageReceivedPayload {
             context,
             sender,
-            recipient,  // NEW
+            recipient,
             content,
             timestamp,
+            id,
+            attachments,
         },
+    );
+}
+
+// --- Channel history + pruning ---
+pub const CHANNEL_HISTORY_RECEIVED: &str = "channel_history_received";
+pub const CHANNEL_PRUNED: &str = "channel_pruned";
+pub const CHANNEL_UPDATED: &str = "channel_updated";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelHistoryReceivedPayload {
+    pub server_id: String,
+    pub channel_id: String,
+    pub messages: Vec<ChannelMessagePayload>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentTombstonePayload {
+    pub attachment_id: i64,
+    pub purged_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelPrunedPayload {
+    pub server_id: String,
+    pub channel_id: String,
+    pub deleted_message_ids: Vec<i64>,
+    pub purged_attachments: Vec<AttachmentTombstonePayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelUpdatedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub channel: Option<ChannelInfoPayload>,
+}
+
+pub fn emit_channel_history_received(
+    app: &AppHandle,
+    server_id: String,
+    channel_id: String,
+    messages: Vec<ChannelMessagePayload>,
+    has_more: bool,
+) {
+    let _ = app.emit(
+        CHANNEL_HISTORY_RECEIVED,
+        ChannelHistoryReceivedPayload { server_id, channel_id, messages, has_more },
+    );
+}
+
+pub fn emit_channel_pruned(
+    app: &AppHandle,
+    server_id: String,
+    channel_id: String,
+    deleted_message_ids: Vec<i64>,
+    purged_attachments: Vec<AttachmentTombstonePayload>,
+) {
+    let _ = app.emit(
+        CHANNEL_PRUNED,
+        ChannelPrunedPayload {
+            server_id, channel_id, deleted_message_ids, purged_attachments,
+        },
+    );
+}
+
+pub fn emit_channel_updated(
+    app: &AppHandle,
+    server_id: String,
+    success: bool,
+    message: String,
+    channel: Option<ChannelInfoPayload>,
+) {
+    let _ = app.emit(
+        CHANNEL_UPDATED,
+        ChannelUpdatedPayload { server_id, success, message, channel },
     );
 }
 

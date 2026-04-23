@@ -58,6 +58,8 @@ pub fn run() {
             commands::community::parse_invite_link,
             commands::community::resolve_invite_code,
             commands::channels::send_channel_message,
+            commands::channels::request_channel_history,
+            commands::channels::update_channel_retention,
             commands::friends::request_friend_list,
             commands::friends::send_friend_action,
             commands::messaging::send_private_message,

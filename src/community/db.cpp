@@ -151,6 +151,112 @@ void CommunityDb::init_schema_() {
         "  banned_by TEXT NOT NULL DEFAULT '',"
         "  reason TEXT NOT NULL DEFAULT ''"
         ");");
+
+    // --- v2 schema additions: persistent messages + per-channel retention ---
+    migrate_to_v2_();
+}
+
+namespace {
+// Returns true if the table has a column with the given name. Used to make
+// column-add migrations idempotent without a full ALTER-TABLE error dance.
+bool column_exists(sqlite3* db, const char* table, const char* column) {
+    std::string sql = std::string("PRAGMA table_info(") + table + ");";
+    Stmt q(db, sql.c_str());
+    if (!q.s) return false;
+    while (q.step() == SQLITE_ROW) {
+        // PRAGMA table_info columns: cid(0) name(1) type(2) notnull(3) dflt(4) pk(5)
+        if (q.col_text(1) == column) return true;
+    }
+    return false;
+}
+} // namespace
+
+void CommunityDb::migrate_to_v2_() {
+    // Per-channel retention columns on `channels`. 0 = keep forever.
+    // Text retention governs the message row itself; attachment retentions
+    // soft-delete the blob while leaving a metadata tombstone.
+    struct ChannelCol { const char* name; } cols[] = {
+        { "retention_days_text"     },
+        { "retention_days_image"    },
+        { "retention_days_video"    },
+        { "retention_days_document" },
+        { "retention_days_audio"    },
+    };
+    for (const auto& c : cols) {
+        if (!column_exists(db_, "channels", c.name)) {
+            std::string sql = std::string("ALTER TABLE channels ADD COLUMN ")
+                              + c.name + " INTEGER NOT NULL DEFAULT 0;";
+            exec_sql(db_, sql.c_str());
+        }
+    }
+
+    // Persistent messages.
+    exec_sql(db_,
+        "CREATE TABLE IF NOT EXISTS messages ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  channel_id TEXT NOT NULL,"
+        "  sender TEXT NOT NULL,"
+        "  content TEXT NOT NULL,"
+        "  timestamp INTEGER NOT NULL"
+        ");");
+    exec_sql(db_,
+        "CREATE INDEX IF NOT EXISTS idx_messages_channel_id "
+        "ON messages(channel_id, id DESC);");
+    exec_sql(db_,
+        "CREATE INDEX IF NOT EXISTS idx_messages_channel_ts "
+        "ON messages(channel_id, timestamp);");
+
+    // Attachments — tombstone on purge (storage_path = NULL, purged_at != 0)
+    // rather than DELETE so the UI can render "file X cleaned up after N days".
+    exec_sql(db_,
+        "CREATE TABLE IF NOT EXISTS attachments ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  message_id INTEGER NOT NULL,"
+        "  kind INTEGER NOT NULL,"
+        "  filename TEXT NOT NULL,"
+        "  mime TEXT NOT NULL DEFAULT '',"
+        "  size_bytes INTEGER NOT NULL DEFAULT 0,"
+        "  storage_path TEXT,"
+        "  position INTEGER NOT NULL DEFAULT 0,"
+        "  created_at INTEGER NOT NULL,"
+        "  purged_at INTEGER NOT NULL DEFAULT 0,"
+        "  FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE"
+        ");");
+    exec_sql(db_,
+        "CREATE INDEX IF NOT EXISTS idx_attachments_message "
+        "ON attachments(message_id);");
+    exec_sql(db_,
+        "CREATE INDEX IF NOT EXISTS idx_attachments_kind_created "
+        "ON attachments(kind, created_at) WHERE purged_at = 0;");
+
+    // FTS5 virtual table shadowing messages.content. Populated/kept in sync
+    // via triggers so search is ready the moment we ship a search UI.
+    // `content='messages'` keeps FTS5 content-less (stored in the source
+    // table) to halve overhead vs. a fully-materialized FTS copy.
+    exec_sql(db_,
+        "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5("
+        "  content, sender UNINDEXED, channel_id UNINDEXED,"
+        "  content='messages', content_rowid='id'"
+        ");");
+    exec_sql(db_,
+        "CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN "
+        "  INSERT INTO messages_fts(rowid, content, sender, channel_id) "
+        "  VALUES (new.id, new.content, new.sender, new.channel_id);"
+        "END;");
+    exec_sql(db_,
+        "CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN "
+        "  INSERT INTO messages_fts(messages_fts, rowid, content, sender, channel_id) "
+        "  VALUES('delete', old.id, old.content, old.sender, old.channel_id);"
+        "END;");
+    exec_sql(db_,
+        "CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN "
+        "  INSERT INTO messages_fts(messages_fts, rowid, content, sender, channel_id) "
+        "  VALUES('delete', old.id, old.content, old.sender, old.channel_id);"
+        "  INSERT INTO messages_fts(rowid, content, sender, channel_id) "
+        "  VALUES (new.id, new.content, new.sender, new.channel_id);"
+        "END;");
+
+    set_meta_("schema_version", "2");
 }
 
 void CommunityDb::seed_if_empty_(const std::string& owner,
@@ -499,7 +605,9 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<DbChannel> out;
     Stmt q(db_,
-        "SELECT id, name, type, position, voice_bitrate_kbps "
+        "SELECT id, name, type, position, voice_bitrate_kbps, "
+        "  retention_days_text, retention_days_image, retention_days_video, "
+        "  retention_days_document, retention_days_audio "
         "FROM channels ORDER BY position ASC, id ASC;");
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) {
@@ -509,8 +617,264 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
         c.type = q.col_int(2);
         c.position = q.col_int(3);
         c.voice_bitrate_kbps = q.col_int(4);
+        c.retention_days_text     = q.col_int(5);
+        c.retention_days_image    = q.col_int(6);
+        c.retention_days_video    = q.col_int(7);
+        c.retention_days_document = q.col_int(8);
+        c.retention_days_audio    = q.col_int(9);
         out.push_back(std::move(c));
     }
+    return out;
+}
+
+std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_,
+        "SELECT id, name, type, position, voice_bitrate_kbps, "
+        "  retention_days_text, retention_days_image, retention_days_video, "
+        "  retention_days_document, retention_days_audio "
+        "FROM channels WHERE id=?;");
+    if (!q.s) return std::nullopt;
+    q.bind_text(1, channel_id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    DbChannel c;
+    c.id = q.col_text(0);
+    c.name = q.col_text(1);
+    c.type = q.col_int(2);
+    c.position = q.col_int(3);
+    c.voice_bitrate_kbps = q.col_int(4);
+    c.retention_days_text     = q.col_int(5);
+    c.retention_days_image    = q.col_int(6);
+    c.retention_days_video    = q.col_int(7);
+    c.retention_days_document = q.col_int(8);
+    c.retention_days_audio    = q.col_int(9);
+    return c;
+}
+
+bool CommunityDb::update_channel_retention(const std::string& channel_id,
+                                           int32_t text_days,
+                                           int32_t image_days,
+                                           int32_t video_days,
+                                           int32_t document_days,
+                                           int32_t audio_days) {
+    auto clamp = [](int32_t v) { return v < 0 ? 0 : v; };
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_,
+        "UPDATE channels SET "
+        "  retention_days_text=?, retention_days_image=?, retention_days_video=?, "
+        "  retention_days_document=?, retention_days_audio=? "
+        "WHERE id=?;");
+    if (!q.s) return false;
+    q.bind_int(1, clamp(text_days));
+    q.bind_int(2, clamp(image_days));
+    q.bind_int(3, clamp(video_days));
+    q.bind_int(4, clamp(document_days));
+    q.bind_int(5, clamp(audio_days));
+    q.bind_text(6, channel_id);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
+}
+
+int64_t CommunityDb::insert_message(const std::string& channel_id,
+                                    const std::string& sender,
+                                    const std::string& content,
+                                    int64_t timestamp) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_,
+        "INSERT INTO messages(channel_id, sender, content, timestamp) "
+        "VALUES(?, ?, ?, ?);");
+    if (!q.s) return 0;
+    q.bind_text(1, channel_id);
+    q.bind_text(2, sender);
+    q.bind_text(3, content);
+    q.bind_int64(4, timestamp);
+    if (q.step() != SQLITE_DONE) return 0;
+    return sqlite3_last_insert_rowid(db_);
+}
+
+std::vector<DbMessage> CommunityDb::fetch_messages(const std::string& channel_id,
+                                                   int64_t before_id,
+                                                   int32_t limit,
+                                                   bool* has_more) const {
+    if (has_more) *has_more = false;
+    // Cap limit server-side regardless of client input.
+    if (limit <= 0) limit = 50;
+    if (limit > 200) limit = 200;
+    // Fetch one extra row so we can tell the caller whether more exist older
+    // than the returned page without a second query.
+    const int32_t fetch = limit + 1;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<DbMessage> out;
+    Stmt q(db_,
+        before_id > 0
+            ? "SELECT id, channel_id, sender, content, timestamp FROM messages "
+              "WHERE channel_id=? AND id<? ORDER BY id DESC LIMIT ?;"
+            : "SELECT id, channel_id, sender, content, timestamp FROM messages "
+              "WHERE channel_id=? ORDER BY id DESC LIMIT ?;");
+    if (!q.s) return out;
+    q.bind_text(1, channel_id);
+    int next_idx = 2;
+    if (before_id > 0) {
+        q.bind_int64(next_idx++, before_id);
+    }
+    q.bind_int(next_idx, fetch);
+
+    while (q.step() == SQLITE_ROW) {
+        DbMessage m;
+        m.id = q.col_int64(0);
+        m.channel_id = q.col_text(1);
+        m.sender = q.col_text(2);
+        m.content = q.col_text(3);
+        m.timestamp = q.col_int64(4);
+        out.push_back(std::move(m));
+    }
+
+    if (static_cast<int32_t>(out.size()) > limit) {
+        out.pop_back();
+        if (has_more) *has_more = true;
+    }
+    return out;
+}
+
+std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
+    const std::vector<int64_t>& message_ids) const {
+    std::vector<DbAttachment> out;
+    if (message_ids.empty()) return out;
+
+    // Build `?,?,?` placeholder list sized to input. Bounded by fetch_messages
+    // cap so this never explodes.
+    std::string placeholders;
+    placeholders.reserve(message_ids.size() * 2);
+    for (size_t i = 0; i < message_ids.size(); ++i) {
+        if (i > 0) placeholders.push_back(',');
+        placeholders.push_back('?');
+    }
+    const std::string sql =
+        "SELECT id, message_id, kind, filename, mime, size_bytes, "
+        "  COALESCE(storage_path, ''), position, created_at, purged_at "
+        "FROM attachments WHERE message_id IN (" + placeholders + ") "
+        "ORDER BY message_id ASC, position ASC;";
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, sql.c_str());
+    if (!q.s) return out;
+    for (size_t i = 0; i < message_ids.size(); ++i) {
+        q.bind_int64(static_cast<int>(i + 1), message_ids[i]);
+    }
+    while (q.step() == SQLITE_ROW) {
+        DbAttachment a;
+        a.id = q.col_int64(0);
+        a.message_id = q.col_int64(1);
+        a.kind = q.col_int(2);
+        a.filename = q.col_text(3);
+        a.mime = q.col_text(4);
+        a.size_bytes = q.col_int64(5);
+        a.storage_path = q.col_text(6);
+        a.position = q.col_int(7);
+        a.created_at = q.col_int64(8);
+        a.purged_at = q.col_int64(9);
+        out.push_back(std::move(a));
+    }
+    return out;
+}
+
+CommunityDb::PrunedTextResult CommunityDb::prune_text_messages(
+    const std::string& channel_id, int64_t cutoff_ts) {
+    PrunedTextResult out;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Collect doomed message ids + any still-present attachment blobs that
+    // need to be unlinked from disk (CASCADE drops the DB rows but not files).
+    std::vector<int64_t> doomed;
+    {
+        Stmt q(db_,
+            "SELECT id FROM messages WHERE channel_id=? AND timestamp<?;");
+        if (!q.s) return out;
+        q.bind_text(1, channel_id);
+        q.bind_int64(2, cutoff_ts);
+        while (q.step() == SQLITE_ROW) {
+            doomed.push_back(q.col_int64(0));
+        }
+    }
+    if (doomed.empty()) return out;
+
+    {
+        Stmt q(db_,
+            "SELECT storage_path FROM attachments "
+            "WHERE message_id IN (SELECT id FROM messages "
+            "                     WHERE channel_id=? AND timestamp<?) "
+            "  AND storage_path IS NOT NULL;");
+        if (q.s) {
+            q.bind_text(1, channel_id);
+            q.bind_int64(2, cutoff_ts);
+            while (q.step() == SQLITE_ROW) {
+                out.unlink_paths.push_back(q.col_text(0));
+            }
+        }
+    }
+
+    {
+        Stmt q(db_, "DELETE FROM messages WHERE channel_id=? AND timestamp<?;");
+        if (q.s) {
+            q.bind_text(1, channel_id);
+            q.bind_int64(2, cutoff_ts);
+            q.step();
+        }
+    }
+
+    out.deleted_ids = std::move(doomed);
+    return out;
+}
+
+std::vector<PurgedAttachmentInfo> CommunityDb::prune_attachments(
+    const std::string& channel_id, int32_t kind, int64_t cutoff_ts) {
+    std::vector<PurgedAttachmentInfo> out;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Find attachments to tombstone. Scoped by channel via the messages JOIN.
+    {
+        Stmt q(db_,
+            "SELECT a.id, a.message_id, COALESCE(a.storage_path, '') "
+            "FROM attachments a "
+            "JOIN messages m ON m.id = a.message_id "
+            "WHERE m.channel_id=? AND a.kind=? AND a.created_at<? "
+            "  AND a.purged_at=0;");
+        if (!q.s) return out;
+        q.bind_text(1, channel_id);
+        q.bind_int(2, kind);
+        q.bind_int64(3, cutoff_ts);
+        while (q.step() == SQLITE_ROW) {
+            PurgedAttachmentInfo p;
+            p.attachment_id = q.col_int64(0);
+            p.message_id = q.col_int64(1);
+            p.storage_path = q.col_text(2);
+            out.push_back(std::move(p));
+        }
+    }
+    if (out.empty()) return out;
+
+    // Soft-delete: storage_path→NULL, purged_at→now. Single UPDATE rather
+    // than a loop — attachments.id list is bounded by this channel+kind page.
+    const int64_t now = now_seconds();
+    std::string placeholders;
+    placeholders.reserve(out.size() * 2);
+    for (size_t i = 0; i < out.size(); ++i) {
+        if (i > 0) placeholders.push_back(',');
+        placeholders.push_back('?');
+    }
+    const std::string sql =
+        "UPDATE attachments SET storage_path=NULL, purged_at=? "
+        "WHERE id IN (" + placeholders + ");";
+    Stmt q(db_, sql.c_str());
+    if (q.s) {
+        q.bind_int64(1, now);
+        for (size_t i = 0; i < out.size(); ++i) {
+            q.bind_int64(static_cast<int>(i + 2), out[i].attachment_id);
+        }
+        q.step();
+    }
+    for (auto& p : out) p.purged_at = now;
     return out;
 }
 

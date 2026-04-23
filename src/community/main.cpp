@@ -8,6 +8,7 @@
 #endif
 
 #include <ctime>
+#include <filesystem>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -18,6 +19,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <system_error>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -53,6 +55,12 @@ public:
     // flips without having to re-open the server. The owner also receives
     // the ban list; everyone else gets members-only.
     void broadcast_members();
+    // Runs one retention sweep across every channel in the DB — deletes
+    // messages past `retention_days_text` and tombstones attachments past
+    // their per-kind cutoff. Broadcasts a CHANNEL_PRUNED to every
+    // authenticated session for each channel that had anything removed so
+    // live UIs drop stale messages/attachments without a reload.
+    void run_retention_sweep();
     void broadcast_to_voice_channel(const char* data, size_t length, const std::string& channel_id, std::shared_ptr<Session> sender, boost::asio::ip::udp::socket& udp_socket);
     void broadcast_to_voice_channel_tcp(const chatproj::Packet& packet, const std::string& channel_id);
     void relay_keyframe_request(const std::string& target_username, boost::asio::ip::udp::socket& udp_socket);
@@ -448,8 +456,131 @@ private:
             auto* msg = routed.mutable_channel_msg();
             msg->set_sender(username_); // Enforce identity
 
+            // Persist before broadcast so the id we echo to clients matches
+            // what history_res will return. Server stamps the authoritative
+            // timestamp at the same time to ensure retention ordering isn't
+            // subject to client clock drift.
+            const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
+            msg->set_timestamp(now_ts);
+            if (auto* db = manager_.db()) {
+                const int64_t id = db->insert_message(
+                    msg->channel_id(), username_, msg->content(), now_ts);
+                if (id > 0) {
+                    msg->set_id(id);
+                } else {
+                    std::cerr << "[Community] Failed to persist CHANNEL_MSG from "
+                              << username_ << " in #" << msg->channel_id() << "\n";
+                }
+            }
+
             manager_.broadcast_to_members(routed);
             std::cout << "[#" << msg->channel_id() << "] " << username_ << ": " << msg->content() << "\n";
+        }
+
+        // --- CHANNEL HISTORY REQUEST ---
+        else if (packet.type() == chatproj::Packet::CHANNEL_HISTORY_REQ) {
+            auto* db = manager_.db();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::CHANNEL_HISTORY_RES);
+            auto* res = p.mutable_channel_history_res();
+            const auto& req = packet.channel_history_req();
+            res->set_channel_id(req.channel_id());
+            if (!db) { send_packet(p); return; }
+
+            bool has_more = false;
+            auto msgs = db->fetch_messages(
+                req.channel_id(), req.before_id(), req.limit(), &has_more);
+
+            // Load attachments for this page in one query.
+            std::vector<int64_t> msg_ids;
+            msg_ids.reserve(msgs.size());
+            for (const auto& m : msgs) msg_ids.push_back(m.id);
+            auto attachments = db->fetch_attachments_for_messages(msg_ids);
+
+            std::unordered_map<int64_t, std::vector<const chatproj::DbAttachment*>> by_msg;
+            for (const auto& a : attachments) {
+                by_msg[a.message_id].push_back(&a);
+            }
+
+            // Reverse so the client receives oldest→newest within the page,
+            // matching the order they'll render.
+            for (auto it = msgs.rbegin(); it != msgs.rend(); ++it) {
+                auto* cm = res->add_messages();
+                cm->set_id(it->id);
+                cm->set_sender(it->sender);
+                cm->set_channel_id(it->channel_id);
+                cm->set_content(it->content);
+                cm->set_timestamp(it->timestamp);
+                auto atts_it = by_msg.find(it->id);
+                if (atts_it != by_msg.end()) {
+                    for (const auto* a : atts_it->second) {
+                        auto* proto_a = cm->add_attachments();
+                        proto_a->set_id(a->id);
+                        proto_a->set_message_id(a->message_id);
+                        proto_a->set_kind(
+                            static_cast<chatproj::Attachment::Kind>(a->kind));
+                        proto_a->set_filename(a->filename);
+                        proto_a->set_mime(a->mime);
+                        proto_a->set_size_bytes(a->size_bytes);
+                        proto_a->set_url(a->storage_path);
+                        proto_a->set_position(a->position);
+                        proto_a->set_created_at(a->created_at);
+                        proto_a->set_purged_at(a->purged_at);
+                    }
+                }
+            }
+            res->set_has_more(has_more);
+            send_packet(p);
+        }
+
+        // --- CHANNEL UPDATE (retention settings) ---
+        else if (packet.type() == chatproj::Packet::CHANNEL_UPDATE_REQ) {
+            auto* db = manager_.db();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::CHANNEL_UPDATE_RES);
+            auto* res = p.mutable_channel_update_res();
+            if (!db) {
+                res->set_success(false);
+                res->set_message("Server misconfigured.");
+                send_packet(p);
+                return;
+            }
+            if (db->owner() != username_) {
+                res->set_success(false);
+                res->set_message("Only the server owner can edit channels.");
+                send_packet(p);
+                return;
+            }
+            const auto& req = packet.channel_update_req();
+            bool ok = db->update_channel_retention(
+                req.channel_id(),
+                req.retention_days_text(),
+                req.retention_days_image(),
+                req.retention_days_video(),
+                req.retention_days_document(),
+                req.retention_days_audio());
+            res->set_success(ok);
+            res->set_message(ok ? "Channel updated." : "Channel not found.");
+            if (ok) {
+                if (auto ch = db->get_channel(req.channel_id())) {
+                    auto* info = res->mutable_channel();
+                    info->set_id(ch->id);
+                    info->set_name(ch->name);
+                    info->set_type(ch->type == 1
+                                    ? chatproj::ChannelInfo::VOICE
+                                    : chatproj::ChannelInfo::TEXT);
+                    info->set_voice_bitrate_kbps(ch->voice_bitrate_kbps);
+                    info->set_retention_days_text(ch->retention_days_text);
+                    info->set_retention_days_image(ch->retention_days_image);
+                    info->set_retention_days_video(ch->retention_days_video);
+                    info->set_retention_days_document(ch->retention_days_document);
+                    info->set_retention_days_audio(ch->retention_days_audio);
+                }
+            }
+            // Fan out to every authenticated session so everyone sees the new
+            // retention settings immediately (they need it rendered in the
+            // channel sidebar + any open edit modals).
+            manager_.broadcast_to_members(p);
         }
 
         // --- INVITE: CREATE ---
@@ -710,6 +841,11 @@ private:
                                    ? chatproj::ChannelInfo::VOICE
                                    : chatproj::ChannelInfo::TEXT);
                     info->set_voice_bitrate_kbps(ch.voice_bitrate_kbps);
+                    info->set_retention_days_text(ch.retention_days_text);
+                    info->set_retention_days_image(ch.retention_days_image);
+                    info->set_retention_days_video(ch.retention_days_video);
+                    info->set_retention_days_document(ch.retention_days_document);
+                    info->set_retention_days_audio(ch.retention_days_audio);
                 }
                 res->set_server_name(db->server_name());
                 res->set_server_description(db->server_description());
@@ -989,6 +1125,90 @@ void SessionManager::broadcast_members() {
 
     for (const auto& [session, is_owner] : targets) {
         session->deliver(is_owner ? framed_with_bans : framed_no_bans);
+    }
+}
+
+void SessionManager::run_retention_sweep() {
+    if (!db_) return;
+    const int64_t now = static_cast<int64_t>(std::time(nullptr));
+
+    struct ChannelPrune {
+        std::string channel_id;
+        std::vector<int64_t> deleted_message_ids;
+        std::vector<chatproj::PurgedAttachmentInfo> purged_attachments;
+    };
+    std::vector<ChannelPrune> sweeps;
+    std::vector<std::string> unlink_paths;
+
+    for (const auto& ch : db_->list_channels()) {
+        ChannelPrune cp;
+        cp.channel_id = ch.id;
+
+        // Attachments first — if text retention also fires, message-row
+        // deletion CASCADEs the remaining attachment rows anyway.
+        struct KindMap { int kind; int32_t days; } kinds[] = {
+            { 0, ch.retention_days_image },    // chatproj::Attachment::IMAGE
+            { 1, ch.retention_days_video },    // VIDEO
+            { 2, ch.retention_days_document }, // DOCUMENT
+            { 3, ch.retention_days_audio },    // AUDIO
+        };
+        for (const auto& k : kinds) {
+            if (k.days <= 0) continue;
+            const int64_t cutoff = now - (static_cast<int64_t>(k.days) * 86400);
+            auto purged = db_->prune_attachments(ch.id, k.kind, cutoff);
+            for (auto& p : purged) {
+                if (!p.storage_path.empty()) {
+                    unlink_paths.push_back(p.storage_path);
+                }
+                cp.purged_attachments.push_back(std::move(p));
+            }
+        }
+
+        // Text retention: remove whole message rows past their cutoff. Any
+        // still-present attachment blobs belonging to them get collected so
+        // the server can unlink them from disk.
+        if (ch.retention_days_text > 0) {
+            const int64_t cutoff = now - (static_cast<int64_t>(ch.retention_days_text) * 86400);
+            auto pruned = db_->prune_text_messages(ch.id, cutoff);
+            cp.deleted_message_ids = std::move(pruned.deleted_ids);
+            for (auto& p : pruned.unlink_paths) {
+                unlink_paths.push_back(std::move(p));
+            }
+        }
+
+        if (!cp.deleted_message_ids.empty() || !cp.purged_attachments.empty()) {
+            sweeps.push_back(std::move(cp));
+        }
+    }
+
+    // Unlink attachment blobs from disk. Errors are tolerated — missing files
+    // just mean a prior sweep already cleaned them.
+    for (const auto& path : unlink_paths) {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    if (sweeps.empty()) return;
+
+    // Build one CHANNEL_PRUNED packet per affected channel and fan out to every
+    // authenticated session so their local state stays in sync without reload.
+    for (const auto& cp : sweeps) {
+        chatproj::Packet p;
+        p.set_type(chatproj::Packet::CHANNEL_PRUNED);
+        auto* msg = p.mutable_channel_pruned();
+        msg->set_channel_id(cp.channel_id);
+        for (auto id : cp.deleted_message_ids) {
+            msg->add_deleted_message_ids(id);
+        }
+        for (const auto& pa : cp.purged_attachments) {
+            auto* t = msg->add_purged_attachments();
+            t->set_attachment_id(pa.attachment_id);
+            t->set_purged_at(pa.purged_at);
+        }
+        broadcast_to_members(p);
+        std::cout << "[Community] Retention sweep on #" << cp.channel_id
+                  << ": " << cp.deleted_message_ids.size() << " messages, "
+                  << cp.purged_attachments.size() << " attachments\n";
     }
 }
 
@@ -1734,6 +1954,22 @@ int main() {
         send_heartbeat(io_context, heartbeat_timer, central_host, 8080,
                        hb_name, hb_desc, public_ip, 8082,
                        manager, jwt_secret);
+
+        // Retention pruner. Fires every 10 minutes — long enough to be
+        // negligible overhead, short enough that users see retention-capped
+        // content disappear within one coffee break of the cutoff.
+        boost::asio::steady_timer retention_timer(io_context);
+        std::function<void(const boost::system::error_code&)> retention_fn;
+        retention_fn = [&](const boost::system::error_code& ec) {
+            if (ec) return;
+            manager.run_retention_sweep();
+            retention_timer.expires_after(std::chrono::minutes(10));
+            retention_timer.async_wait(retention_fn);
+        };
+        // First sweep after ~30s so the server has settled and any fresh-open
+        // DB migrations are past.
+        retention_timer.expires_after(std::chrono::seconds(30));
+        retention_timer.async_wait(retention_fn);
 
         io_context.run();
     } catch (std::exception& e) {

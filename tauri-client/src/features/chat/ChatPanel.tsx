@@ -65,6 +65,9 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   const activeChannelId = useChatStore((s) => s.activeChannelId);
   const messagesByChannel = useChatStore((s) => s.messagesByChannel);
   const channelsByServer = useChatStore((s) => s.channelsByServer);
+  const hasMoreHistory = useChatStore((s) => s.hasMoreHistory);
+  const historyLoading = useChatStore((s) => s.historyLoading);
+  const historyFetched = useChatStore((s) => s.historyFetched);
   const activeView = useUiStore((s) => s.activeView);
 
   const [input, setInput] = useState("");
@@ -72,6 +75,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   const [sendError, setSendError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<RichInputHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
 
@@ -94,6 +98,47 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     editorRef.current?.setValue(stored);
     setInput(stored);
   }, [activeChannelId]);
+
+  // First-open history fetch. Fires once per channel the user visits; server
+  // caps the page size so this is bounded regardless of channel volume.
+  useEffect(() => {
+    if (!activeServerId || !activeChannelId) return;
+    if (historyFetched[activeChannelId]) return;
+    useChatStore.getState().markHistoryFetched(activeChannelId);
+    useChatStore.getState().setHistoryLoading(activeChannelId, true);
+    invoke("request_channel_history", {
+      serverId: activeServerId,
+      channelId: activeChannelId,
+      beforeId: 0,
+      limit: 50,
+    }).catch((err) => {
+      console.error("request_channel_history failed", err);
+      useChatStore.getState().setHistoryLoading(activeChannelId, false);
+    });
+  }, [activeServerId, activeChannelId, historyFetched]);
+
+  // Scroll-to-top pagination. When the user scrolls within ~100px of the top
+  // and there's more history, fetch the next older page using the oldest id
+  // currently loaded as the cursor.
+  const handleScroll = () => {
+    const el = messagesContainerRef.current;
+    if (!el || !activeServerId || !activeChannelId) return;
+    if (el.scrollTop > 100) return;
+    if (!hasMoreHistory[activeChannelId]) return;
+    if (historyLoading[activeChannelId]) return;
+    const firstId = messages.find((m) => m.id !== 0)?.id ?? 0;
+    if (firstId === 0) return;
+    useChatStore.getState().setHistoryLoading(activeChannelId, true);
+    invoke("request_channel_history", {
+      serverId: activeServerId,
+      channelId: activeChannelId,
+      beforeId: firstId,
+      limit: 50,
+    }).catch((err) => {
+      console.error("request_channel_history (paginate) failed", err);
+      useChatStore.getState().setHistoryLoading(activeChannelId, false);
+    });
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -164,13 +209,30 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
       {!hideHeader && <ChatHeader />}
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-4">
-        {messages.length === 0 ? (
+      <div
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-4 py-4"
+      >
+        {activeChannelId && historyLoading[activeChannelId] && (
+          <div className="flex justify-center py-2 text-[11px] text-text-muted">
+            Loading older messages…
+          </div>
+        )}
+        {activeChannelId &&
+          !historyLoading[activeChannelId] &&
+          hasMoreHistory[activeChannelId] === false &&
+          messages.length > 0 && (
+            <div className="flex justify-center py-2 text-[11px] text-text-muted">
+              Start of #{channelName ?? "channel"}
+            </div>
+          )}
+        {messages.length === 0 && !historyLoading[activeChannelId ?? ""] ? (
           <WelcomeState channelName={channelName ?? "channel"} />
         ) : (
           messages.map((msg, i) => (
             <MessageBubble
-              key={`${msg.timestamp}-${msg.sender}-${i}`}
+              key={msg.id !== 0 ? msg.id : `${msg.timestamp}-${msg.sender}-${i}`}
               message={msg}
               grouped={shouldGroup(messages[i - 1], msg)}
               serverId={activeServerId}

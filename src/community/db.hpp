@@ -31,6 +31,42 @@ struct DbChannel {
     int32_t type = 0; // matches chatproj::ChannelInfo::Type
     int32_t position = 0;
     int32_t voice_bitrate_kbps = 0;
+    // Per-channel retention in days. 0 = forever.
+    int32_t retention_days_text = 0;
+    int32_t retention_days_image = 0;
+    int32_t retention_days_video = 0;
+    int32_t retention_days_document = 0;
+    int32_t retention_days_audio = 0;
+};
+
+struct DbMessage {
+    int64_t id = 0;
+    std::string channel_id;
+    std::string sender;
+    std::string content;
+    int64_t timestamp = 0;
+};
+
+struct DbAttachment {
+    int64_t id = 0;
+    int64_t message_id = 0;
+    int32_t kind = 0;      // matches chatproj::Attachment::Kind
+    std::string filename;
+    std::string mime;
+    int64_t size_bytes = 0;
+    std::string storage_path; // empty when purged
+    int32_t position = 0;
+    int64_t created_at = 0;
+    int64_t purged_at = 0;  // 0 = still present
+};
+
+// Returned from prune_attachments so the server can broadcast tombstone
+// updates to live clients and unlink blobs from disk.
+struct PurgedAttachmentInfo {
+    int64_t attachment_id = 0;
+    int64_t message_id = 0;
+    int64_t purged_at = 0;
+    std::string storage_path; // path that needs to be unlink()'d from disk
 };
 
 struct DbBan {
@@ -108,8 +144,57 @@ public:
     // --- channels ---
     std::vector<DbChannel> list_channels() const;
 
+    // Update all five retention values at once. Returns false if the channel
+    // doesn't exist or on DB error. Negative values are clamped to 0.
+    bool update_channel_retention(const std::string& channel_id,
+                                  int32_t text_days,
+                                  int32_t image_days,
+                                  int32_t video_days,
+                                  int32_t document_days,
+                                  int32_t audio_days);
+    // Fetch a single channel with retention populated. nullopt if unknown.
+    std::optional<DbChannel> get_channel(const std::string& channel_id) const;
+
+    // --- messages ---
+    // Insert a new message, return its autoincrement id (0 on failure).
+    int64_t insert_message(const std::string& channel_id,
+                           const std::string& sender,
+                           const std::string& content,
+                           int64_t timestamp);
+    // Newest-first page. `before_id = 0` means "most recent". Results are
+    // ordered newest→oldest; caller reverses if they want oldest→newest.
+    // `has_more` is set to true if more messages exist older than the page.
+    std::vector<DbMessage> fetch_messages(const std::string& channel_id,
+                                          int64_t before_id,
+                                          int32_t limit,
+                                          bool* has_more) const;
+    // Load all attachments belonging to any of the given message ids.
+    // Ordered by (message_id ASC, position ASC).
+    std::vector<DbAttachment> fetch_attachments_for_messages(
+        const std::vector<int64_t>& message_ids) const;
+
+    // --- retention pruning ---
+    // Delete messages in `channel_id` whose timestamp is strictly older than
+    // `cutoff_ts`. Returns (deleted_message_ids, storage_paths_of_remaining_
+    // attachments_that_need_unlink). CASCADE handles attachment rows; the
+    // caller handles filesystem cleanup of blobs.
+    struct PrunedTextResult {
+        std::vector<int64_t> deleted_ids;
+        std::vector<std::string> unlink_paths;
+    };
+    PrunedTextResult prune_text_messages(const std::string& channel_id,
+                                         int64_t cutoff_ts);
+    // Soft-delete attachments in `channel_id` of `kind` whose created_at is
+    // strictly older than `cutoff_ts`. Sets storage_path=NULL, purged_at=now,
+    // returns metadata needed to broadcast tombstones + unlink blobs.
+    std::vector<PurgedAttachmentInfo> prune_attachments(
+        const std::string& channel_id,
+        int32_t kind,
+        int64_t cutoff_ts);
+
 private:
     void init_schema_();
+    void migrate_to_v2_();
     void seed_if_empty_(const std::string& owner,
                         const std::string& name,
                         const std::string& desc);

@@ -120,10 +120,13 @@ export default function DmChatPanel() {
     );
   }
 
-  // Map DmMessages to Message shape for MessageBubble compatibility
+  // Map DmMessages to Message shape for MessageBubble compatibility. DMs
+  // aren't persisted server-side, so id is always 0 and attachments are empty.
   const bubbleMessages = messages.map((m) => ({
     ...m,
+    id: 0,
     channelId: "",
+    attachments: [],
   }));
 
   return (

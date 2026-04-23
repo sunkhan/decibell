@@ -2,6 +2,7 @@ import type { Message } from "../../types";
 import { stringToColor, stringToGradient } from "../../utils/colors";
 import { useUiStore } from "../../stores/uiStore";
 import MessageText from "./MessageText";
+import AttachmentList from "./AttachmentList";
 
 function parseTimestamp(ts: string): Date {
   const asEpoch = parseInt(ts, 10);
@@ -56,9 +57,12 @@ export default function MessageBubble({ message, grouped, serverId }: Props) {
           </span>
         </div>
         <div className="select-text min-w-0 flex-1">
-          <p className="break-all text-sm leading-snug text-text-primary [overflow-wrap:anywhere]">
-            <MessageText content={message.content} />
-          </p>
+          {message.content && (
+            <p className="break-all text-sm leading-snug text-text-primary [overflow-wrap:anywhere]">
+              <MessageText content={message.content} />
+            </p>
+          )}
+          <AttachmentList attachments={message.attachments} />
         </div>
       </div>
     );
@@ -95,9 +99,12 @@ export default function MessageBubble({ message, grouped, serverId }: Props) {
             {formatTimestamp(message.timestamp)}
           </span>
         </div>
-        <p className="mt-0.5 break-all text-sm leading-relaxed text-text-primary [overflow-wrap:anywhere]">
-          <MessageText content={message.content} />
-        </p>
+        {message.content && (
+          <p className="mt-0.5 break-all text-sm leading-relaxed text-text-primary [overflow-wrap:anywhere]">
+            <MessageText content={message.content} />
+          </p>
+        )}
+        <AttachmentList attachments={message.attachments} />
       </div>
     </div>
   );

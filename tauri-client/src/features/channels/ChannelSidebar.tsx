@@ -273,6 +273,11 @@ export default function ChannelSidebar() {
         {showServerMenu && activeServerId && (
           <ServerActionsDropdown
             isOwner={isOwner}
+            canEditChannel={
+              isOwner &&
+              !!activeChannelId &&
+              (channels.find((c) => c.id === activeChannelId)?.type === "text")
+            }
             onMembers={() => {
               setShowServerMenu(false);
               openModal("members-manage");
@@ -280,6 +285,10 @@ export default function ChannelSidebar() {
             onInvites={() => {
               setShowServerMenu(false);
               openModal("invite-manage");
+            }}
+            onChannelSettings={() => {
+              setShowServerMenu(false);
+              openModal("channel-settings");
             }}
             onDisconnect={() => {
               setShowServerMenu(false);

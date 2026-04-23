@@ -14,15 +14,34 @@ interface ServerInfoPayload {
   memberCount: number;
 }
 
+interface ChannelInfoWire {
+  id: string;
+  name: string;
+  type: string;
+  voiceBitrateKbps: number;
+  retentionDaysText: number;
+  retentionDaysImage: number;
+  retentionDaysVideo: number;
+  retentionDaysDocument: number;
+  retentionDaysAudio: number;
+}
+
 interface CommunityAuthPayload {
   serverId: string;
   success: boolean;
   message: string;
-  channels: { id: string; name: string; type: string; voiceBitrateKbps: number }[];
+  channels: ChannelInfoWire[];
   errorCode: string;
   serverName: string;
   serverDescription: string;
   ownerUsername: string;
+}
+
+interface ChannelUpdatedPayload {
+  serverId: string;
+  success: boolean;
+  message: string;
+  channel: ChannelInfoWire | null;
 }
 
 interface InviteCreateRespondedPayload {
@@ -104,6 +123,11 @@ export function useServerEvents() {
             name: ch.name,
             type: ch.type as "text" | "voice",
             voiceBitrateKbps: ch.voiceBitrateKbps > 0 ? ch.voiceBitrateKbps : undefined,
+            retentionDaysText: ch.retentionDaysText,
+            retentionDaysImage: ch.retentionDaysImage,
+            retentionDaysVideo: ch.retentionDaysVideo,
+            retentionDaysDocument: ch.retentionDaysDocument,
+            retentionDaysAudio: ch.retentionDaysAudio,
           }));
           store.setChannelsForServer(serverId, typedChannels);
           const firstText = typedChannels.find((ch) => ch.type === "text");
@@ -189,6 +213,25 @@ export function useServerEvents() {
       }
     );
 
+    const unlistenChannelUpdated = listen<ChannelUpdatedPayload>(
+      "channel_updated",
+      (event) => {
+        const { serverId, success, channel } = event.payload;
+        if (!success || !channel) return;
+        useChatStore.getState().upsertChannel(serverId, {
+          id: channel.id,
+          name: channel.name,
+          type: channel.type as "text" | "voice",
+          voiceBitrateKbps: channel.voiceBitrateKbps > 0 ? channel.voiceBitrateKbps : undefined,
+          retentionDaysText: channel.retentionDaysText,
+          retentionDaysImage: channel.retentionDaysImage,
+          retentionDaysVideo: channel.retentionDaysVideo,
+          retentionDaysDocument: channel.retentionDaysDocument,
+          retentionDaysAudio: channel.retentionDaysAudio,
+        });
+      },
+    );
+
     const unlistenDeepLink = listen<DeepLinkPayload>(
       "deep_link_received",
       async (event) => {
@@ -212,6 +255,7 @@ export function useServerEvents() {
       unlistenMembers.then((fn) => fn());
       unlistenMod.then((fn) => fn());
       unlistenRevoked.then((fn) => fn());
+      unlistenChannelUpdated.then((fn) => fn());
       unlistenDeepLink.then((fn) => fn());
     };
   }, []);

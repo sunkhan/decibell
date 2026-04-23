@@ -124,6 +124,8 @@ impl CommunityClient {
                 channel_id: channel_id.into(),
                 content: content.into(),
                 timestamp,
+                id: 0,
+                attachments: Vec::new(),
             }),
             Some(&self.jwt),
         );
@@ -393,6 +395,11 @@ impl CommunityClient {
                             }
                             .to_string(),
                             voice_bitrate_kbps: c.voice_bitrate_kbps,
+                            retention_days_text: c.retention_days_text,
+                            retention_days_image: c.retention_days_image,
+                            retention_days_video: c.retention_days_video,
+                            retention_days_document: c.retention_days_document,
+                            retention_days_audio: c.retention_days_audio,
                         })
                         .collect();
                     events::emit_community_auth_responded(
@@ -496,6 +503,9 @@ impl CommunityClient {
                 }
                 Some(packet::Payload::ChannelMsg(msg)) => {
                     let context = msg.channel_id.clone();
+                    let id = msg.id;
+                    let attachments = msg.attachments.into_iter()
+                        .map(map_attachment).collect();
                     events::emit_message_received(
                         &app,
                         context,
@@ -503,6 +513,67 @@ impl CommunityClient {
                         String::new(),  // No recipient for channel messages
                         msg.content,
                         msg.timestamp.to_string(),
+                        id,
+                        attachments,
+                    );
+                }
+                Some(packet::Payload::ChannelHistoryRes(resp)) => {
+                    let messages = resp.messages.into_iter()
+                        .map(|m| events::ChannelMessagePayload {
+                            id: m.id,
+                            sender: m.sender,
+                            channel_id: m.channel_id,
+                            content: m.content,
+                            timestamp: m.timestamp,
+                            attachments: m.attachments.into_iter()
+                                .map(map_attachment).collect(),
+                        })
+                        .collect();
+                    events::emit_channel_history_received(
+                        &app,
+                        server_id.clone(),
+                        resp.channel_id,
+                        messages,
+                        resp.has_more,
+                    );
+                }
+                Some(packet::Payload::ChannelPruned(msg)) => {
+                    let tombstones = msg.purged_attachments.into_iter()
+                        .map(|t| events::AttachmentTombstonePayload {
+                            attachment_id: t.attachment_id,
+                            purged_at: t.purged_at,
+                        })
+                        .collect();
+                    events::emit_channel_pruned(
+                        &app,
+                        server_id.clone(),
+                        msg.channel_id,
+                        msg.deleted_message_ids,
+                        tombstones,
+                    );
+                }
+                Some(packet::Payload::ChannelUpdateRes(resp)) => {
+                    let channel = resp.channel.map(|c| events::ChannelInfoPayload {
+                        id: c.id,
+                        name: c.name,
+                        r#type: match channel_info::Type::try_from(c.r#type) {
+                            Ok(channel_info::Type::Text) => "text",
+                            Ok(channel_info::Type::Voice) => "voice",
+                            Err(_) => "unknown",
+                        }.to_string(),
+                        voice_bitrate_kbps: c.voice_bitrate_kbps,
+                        retention_days_text: c.retention_days_text,
+                        retention_days_image: c.retention_days_image,
+                        retention_days_video: c.retention_days_video,
+                        retention_days_document: c.retention_days_document,
+                        retention_days_audio: c.retention_days_audio,
+                    });
+                    events::emit_channel_updated(
+                        &app,
+                        server_id.clone(),
+                        resp.success,
+                        resp.message,
+                        channel,
                     );
                 }
                 Some(packet::Payload::VoicePresenceUpdate(update)) => {
@@ -566,5 +637,27 @@ impl CommunityClient {
             drop(s);
             Self::start_reconnect(sid, host, port, jwt, app, state);
         }
+    }
+}
+
+fn map_attachment(a: Attachment) -> events::AttachmentPayload {
+    events::AttachmentPayload {
+        id: a.id,
+        message_id: a.message_id,
+        kind: match attachment::Kind::try_from(a.kind) {
+            Ok(attachment::Kind::Image) => "image",
+            Ok(attachment::Kind::Video) => "video",
+            Ok(attachment::Kind::Document) => "document",
+            Ok(attachment::Kind::Audio) => "audio",
+            Err(_) => "unknown",
+        }
+        .to_string(),
+        filename: a.filename,
+        mime: a.mime,
+        size_bytes: a.size_bytes,
+        url: a.url,
+        position: a.position,
+        created_at: a.created_at,
+        purged_at: a.purged_at,
     }
 }

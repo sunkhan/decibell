@@ -4,6 +4,81 @@ use crate::net::connection::build_packet;
 use crate::net::proto::*;
 use crate::state::SharedState;
 
+async fn send_for_server(
+    server_id: &str,
+    state: &State<'_, SharedState>,
+    pkt_type: packet::Type,
+    payload: packet::Payload,
+) -> Result<(), String> {
+    let (write_tx, data) = {
+        let s = state.lock().await;
+        let client = s.communities
+            .get(server_id)
+            .ok_or(format!("Not connected to community {}", server_id))?;
+        let tx = client.connection_write_tx()
+            .ok_or("Community connection lost")?;
+        let pkt = build_packet(pkt_type, payload, Some(&client.jwt));
+        (tx, pkt)
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("Connection closed".to_string()),
+        Err(_) => Err("Send timed out".to_string()),
+    }
+}
+
+/// Request a page of persisted messages for `channel_id`. `before_id = 0`
+/// means most-recent; non-zero gets older messages for pagination.
+#[tauri::command]
+pub async fn request_channel_history(
+    server_id: String,
+    channel_id: String,
+    before_id: i64,
+    limit: i32,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    send_for_server(
+        &server_id,
+        &state,
+        packet::Type::ChannelHistoryReq,
+        packet::Payload::ChannelHistoryReq(ChannelHistoryRequest {
+            channel_id,
+            before_id,
+            limit,
+        }),
+    )
+    .await
+}
+
+/// Update channel retention (owner-only, enforced server-side). All five
+/// values are sent as a snapshot; 0 means "keep forever".
+#[tauri::command]
+pub async fn update_channel_retention(
+    server_id: String,
+    channel_id: String,
+    retention_days_text: i32,
+    retention_days_image: i32,
+    retention_days_video: i32,
+    retention_days_document: i32,
+    retention_days_audio: i32,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    send_for_server(
+        &server_id,
+        &state,
+        packet::Type::ChannelUpdateReq,
+        packet::Payload::ChannelUpdateReq(ChannelUpdateRequest {
+            channel_id,
+            retention_days_text,
+            retention_days_image,
+            retention_days_video,
+            retention_days_document,
+            retention_days_audio,
+        }),
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn send_channel_message(
     server_id: String,
@@ -30,6 +105,8 @@ pub async fn send_channel_message(
                 channel_id: channel_id.into(),
                 content: message.into(),
                 timestamp,
+                id: 0, // server assigns on persist
+                attachments: Vec::new(),
             }),
             Some(&client.jwt),
         );
