@@ -52,6 +52,7 @@ target_link_libraries(decibell_server PRIVATE
 add_executable(decibell_community
     src/community/main.cpp
     src/community/db.cpp
+    src/community/attachment_http.cpp
 )
 target_link_libraries(decibell_community PRIVATE
     decibell_common

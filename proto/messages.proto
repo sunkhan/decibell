@@ -281,6 +281,13 @@ message CommunityAuthResponse {
   string server_name = 5;
   string server_description = 6;
   string owner_username = 7;
+  // Maximum attachment size (bytes) this server accepts per upload.
+  // 0 means unlimited. Clients use this to pre-validate before sending the
+  // init request; server enforces authoritatively.
+  int64 max_attachment_bytes = 8;
+  // Port for the HTTP attachment endpoint (upload/download). Typically
+  // community server TCP port + 3. 0 means "feature not available".
+  int32 attachment_port = 9;
 }
 
 message ChannelMessage {

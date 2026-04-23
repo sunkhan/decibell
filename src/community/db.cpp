@@ -208,6 +208,16 @@ void CommunityDb::migrate_to_v2_() {
 
     // Attachments — tombstone on purge (storage_path = NULL, purged_at != 0)
     // rather than DELETE so the UI can render "file X cleaned up after N days".
+    //
+    // message_id=0 means "pending" — the attachment is mid-upload or the
+    // uploader hasn't yet referenced it in a CHANNEL_MSG. Abandoned pending
+    // rows older than 1 hour are swept by the retention loop.
+    //
+    // upload_status:
+    //   'uploading' — bytes still arriving; do NOT serve or bind
+    //   'ready'     — file is final on disk at storage_path
+    // Defaults to 'ready' for backwards compatibility on fresh v3 installs
+    // (so any manually-inserted rows don't get treated as pending).
     exec_sql(db_,
         "CREATE TABLE IF NOT EXISTS attachments ("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -220,6 +230,10 @@ void CommunityDb::migrate_to_v2_() {
         "  position INTEGER NOT NULL DEFAULT 0,"
         "  created_at INTEGER NOT NULL,"
         "  purged_at INTEGER NOT NULL DEFAULT 0,"
+        "  upload_status TEXT NOT NULL DEFAULT 'ready',"
+        "  expected_size INTEGER NOT NULL DEFAULT 0,"
+        "  uploader TEXT NOT NULL DEFAULT '',"
+        "  channel_id TEXT NOT NULL DEFAULT '',"
         "  FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE"
         ");");
     exec_sql(db_,
@@ -228,6 +242,26 @@ void CommunityDb::migrate_to_v2_() {
     exec_sql(db_,
         "CREATE INDEX IF NOT EXISTS idx_attachments_kind_created "
         "ON attachments(kind, created_at) WHERE purged_at = 0;");
+    // Additive migration for pre-v3 DBs that have the attachments table but
+    // not the upload-lifecycle columns. CREATE TABLE above is a no-op if the
+    // table exists, so we ALTER each new column in idempotently.
+    struct AttachCol { const char* name; const char* ddl; };
+    const AttachCol attach_cols[] = {
+        { "upload_status", "upload_status TEXT NOT NULL DEFAULT 'ready'" },
+        { "expected_size", "expected_size INTEGER NOT NULL DEFAULT 0" },
+        { "uploader",      "uploader TEXT NOT NULL DEFAULT ''" },
+        { "channel_id",    "channel_id TEXT NOT NULL DEFAULT ''" },
+    };
+    for (const auto& c : attach_cols) {
+        if (!column_exists(db_, "attachments", c.name)) {
+            std::string sql = std::string("ALTER TABLE attachments ADD COLUMN ") + c.ddl + ";";
+            exec_sql(db_, sql.c_str());
+        }
+    }
+    // For sweeping abandoned pending uploads cheaply.
+    exec_sql(db_,
+        "CREATE INDEX IF NOT EXISTS idx_attachments_pending "
+        "ON attachments(created_at) WHERE message_id = 0;");
 
     // FTS5 virtual table shadowing messages.content. Populated/kept in sync
     // via triggers so search is ready the moment we ship a search UI.
@@ -256,7 +290,7 @@ void CommunityDb::migrate_to_v2_() {
         "  VALUES (new.id, new.content, new.sender, new.channel_id);"
         "END;");
 
-    set_meta_("schema_version", "2");
+    set_meta_("schema_version", "3");
 }
 
 void CommunityDb::seed_if_empty_(const std::string& owner,
@@ -752,8 +786,10 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
     }
     const std::string sql =
         "SELECT id, message_id, kind, filename, mime, size_bytes, "
-        "  COALESCE(storage_path, ''), position, created_at, purged_at "
+        "  COALESCE(storage_path, ''), position, created_at, purged_at, "
+        "  upload_status, expected_size, uploader "
         "FROM attachments WHERE message_id IN (" + placeholders + ") "
+        "  AND upload_status = 'ready' "
         "ORDER BY message_id ASC, position ASC;";
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -774,9 +810,218 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
         a.position = q.col_int(7);
         a.created_at = q.col_int64(8);
         a.purged_at = q.col_int64(9);
+        a.upload_status = q.col_text(10);
+        a.expected_size = q.col_int64(11);
+        a.uploader = q.col_text(12);
         out.push_back(std::move(a));
     }
     return out;
+}
+
+int64_t CommunityDb::insert_pending_attachment(const std::string& channel_id,
+                                               int32_t kind,
+                                               const std::string& filename,
+                                               const std::string& mime,
+                                               int64_t expected_size,
+                                               const std::string& storage_path,
+                                               const std::string& uploader,
+                                               int32_t position) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_,
+        "INSERT INTO attachments("
+        "  message_id, kind, filename, mime, size_bytes, storage_path, "
+        "  position, created_at, purged_at, upload_status, expected_size, "
+        "  uploader, channel_id"
+        ") VALUES(0, ?, ?, ?, 0, ?, ?, ?, 0, 'uploading', ?, ?, ?);");
+    if (!q.s) return 0;
+    q.bind_int(1, kind);
+    q.bind_text(2, filename);
+    q.bind_text(3, mime);
+    q.bind_text(4, storage_path);
+    q.bind_int(5, position);
+    q.bind_int64(6, now_seconds());
+    q.bind_int64(7, expected_size);
+    q.bind_text(8, uploader);
+    q.bind_text(9, channel_id);
+    if (q.step() != SQLITE_DONE) return 0;
+    return sqlite3_last_insert_rowid(db_);
+}
+
+std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_,
+        "SELECT id, message_id, kind, filename, mime, size_bytes, "
+        "  COALESCE(storage_path, ''), position, created_at, purged_at, "
+        "  upload_status, expected_size, uploader, channel_id "
+        "FROM attachments WHERE id=?;");
+    if (!q.s) return std::nullopt;
+    q.bind_int64(1, attachment_id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    DbAttachment a;
+    a.id = q.col_int64(0);
+    a.message_id = q.col_int64(1);
+    a.kind = q.col_int(2);
+    a.filename = q.col_text(3);
+    a.mime = q.col_text(4);
+    a.size_bytes = q.col_int64(5);
+    a.storage_path = q.col_text(6);
+    a.position = q.col_int(7);
+    a.created_at = q.col_int64(8);
+    a.purged_at = q.col_int64(9);
+    a.upload_status = q.col_text(10);
+    a.expected_size = q.col_int64(11);
+    a.uploader = q.col_text(12);
+    return a;
+}
+
+bool CommunityDb::update_attachment_storage_path(int64_t attachment_id,
+                                                  const std::string& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "UPDATE attachments SET storage_path=? WHERE id=?;");
+    if (!q.s) return false;
+    q.bind_text(1, path);
+    q.bind_int64(2, attachment_id);
+    return q.step() == SQLITE_DONE && sqlite3_changes(db_) > 0;
+}
+
+bool CommunityDb::complete_attachment(int64_t attachment_id, int64_t final_size) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_,
+        "UPDATE attachments SET upload_status='ready', size_bytes=? "
+        "WHERE id=? AND upload_status='uploading';");
+    if (!q.s) return false;
+    q.bind_int64(1, final_size);
+    q.bind_int64(2, attachment_id);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
+}
+
+std::optional<std::string> CommunityDb::abort_pending_attachment(int64_t attachment_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string path;
+    {
+        Stmt q(db_,
+            "SELECT COALESCE(storage_path, '') FROM attachments "
+            "WHERE id=? AND upload_status='uploading';");
+        if (!q.s) return std::nullopt;
+        q.bind_int64(1, attachment_id);
+        if (q.step() != SQLITE_ROW) return std::nullopt;
+        path = q.col_text(0);
+    }
+    Stmt del(db_, "DELETE FROM attachments WHERE id=? AND upload_status='uploading';");
+    if (!del.s) return std::nullopt;
+    del.bind_int64(1, attachment_id);
+    if (del.step() != SQLITE_DONE) return std::nullopt;
+    if (sqlite3_changes(db_) == 0) return std::nullopt;
+    return path;
+}
+
+std::vector<int64_t> CommunityDb::bind_attachments(const std::vector<int64_t>& attachment_ids,
+                                                    int64_t message_id,
+                                                    const std::string& channel_id,
+                                                    const std::string& uploader) {
+    std::vector<int64_t> bound;
+    if (attachment_ids.empty()) return bound;
+
+    std::string placeholders;
+    for (size_t i = 0; i < attachment_ids.size(); ++i) {
+        if (i > 0) placeholders.push_back(',');
+        placeholders.push_back('?');
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    // Collect the ids that are actually eligible for binding. A UPDATE ...
+    // RETURNING would do this in one shot but we stay portable to older SQLite.
+    {
+        const std::string select_sql =
+            "SELECT id FROM attachments "
+            "WHERE id IN (" + placeholders + ") "
+            "  AND upload_status='ready' "
+            "  AND message_id=0 "
+            "  AND uploader=? "
+            "  AND channel_id=?;";
+        Stmt q(db_, select_sql.c_str());
+        if (!q.s) { exec_sql(db_, "ROLLBACK;"); return bound; }
+        for (size_t i = 0; i < attachment_ids.size(); ++i) {
+            q.bind_int64(static_cast<int>(i + 1), attachment_ids[i]);
+        }
+        q.bind_text(static_cast<int>(attachment_ids.size() + 1), uploader);
+        q.bind_text(static_cast<int>(attachment_ids.size() + 2), channel_id);
+        while (q.step() == SQLITE_ROW) {
+            bound.push_back(q.col_int64(0));
+        }
+    }
+    if (bound.empty()) { exec_sql(db_, "ROLLBACK;"); return bound; }
+
+    // Bind them with a single UPDATE — guaranteed to match the eligibility
+    // check since we're inside the transaction.
+    std::string bind_placeholders;
+    for (size_t i = 0; i < bound.size(); ++i) {
+        if (i > 0) bind_placeholders.push_back(',');
+        bind_placeholders.push_back('?');
+    }
+    const std::string update_sql =
+        "UPDATE attachments SET message_id=? "
+        "WHERE id IN (" + bind_placeholders + ");";
+    Stmt upd(db_, update_sql.c_str());
+    if (!upd.s) { exec_sql(db_, "ROLLBACK;"); bound.clear(); return bound; }
+    upd.bind_int64(1, message_id);
+    for (size_t i = 0; i < bound.size(); ++i) {
+        upd.bind_int64(static_cast<int>(i + 2), bound[i]);
+    }
+    if (upd.step() != SQLITE_DONE) { exec_sql(db_, "ROLLBACK;"); bound.clear(); return bound; }
+
+    // Re-number positions in binding order so the client sees them in the
+    // order the uploader committed them, regardless of upload completion order.
+    for (size_t i = 0; i < bound.size(); ++i) {
+        Stmt pos(db_, "UPDATE attachments SET position=? WHERE id=?;");
+        if (!pos.s) continue;
+        pos.bind_int(1, static_cast<int>(i));
+        pos.bind_int64(2, bound[i]);
+        pos.step();
+    }
+
+    exec_sql(db_, "COMMIT;");
+    return bound;
+}
+
+std::vector<DbAttachment> CommunityDb::list_stale_pending_attachments(int64_t cutoff_ts) const {
+    std::vector<DbAttachment> out;
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_,
+        "SELECT id, message_id, kind, filename, mime, size_bytes, "
+        "  COALESCE(storage_path, ''), position, created_at, purged_at, "
+        "  upload_status, expected_size, uploader, channel_id "
+        "FROM attachments WHERE message_id=0 AND created_at<?;");
+    if (!q.s) return out;
+    q.bind_int64(1, cutoff_ts);
+    while (q.step() == SQLITE_ROW) {
+        DbAttachment a;
+        a.id = q.col_int64(0);
+        a.message_id = q.col_int64(1);
+        a.kind = q.col_int(2);
+        a.filename = q.col_text(3);
+        a.mime = q.col_text(4);
+        a.size_bytes = q.col_int64(5);
+        a.storage_path = q.col_text(6);
+        a.position = q.col_int(7);
+        a.created_at = q.col_int64(8);
+        a.purged_at = q.col_int64(9);
+        a.upload_status = q.col_text(10);
+        a.expected_size = q.col_int64(11);
+        a.uploader = q.col_text(12);
+        out.push_back(std::move(a));
+    }
+    return out;
+}
+
+bool CommunityDb::delete_attachment_row(int64_t attachment_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "DELETE FROM attachments WHERE id=?;");
+    if (!q.s) return false;
+    q.bind_int64(1, attachment_id);
+    return q.step() == SQLITE_DONE && sqlite3_changes(db_) > 0;
 }
 
 CommunityDb::PrunedTextResult CommunityDb::prune_text_messages(

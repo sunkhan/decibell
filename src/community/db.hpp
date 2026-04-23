@@ -58,6 +58,13 @@ struct DbAttachment {
     int32_t position = 0;
     int64_t created_at = 0;
     int64_t purged_at = 0;  // 0 = still present
+    // Upload lifecycle:
+    //   'uploading' — bytes still arriving via PATCH, not safe to bind or serve
+    //   'ready'     — full bytes on disk, hash optionally verified, can be
+    //                 bound to a message and downloaded
+    std::string upload_status;
+    int64_t expected_size = 0; // declared at init; used to validate final size
+    std::string uploader;      // username that POSTed /init
 };
 
 // Returned from prune_attachments so the server can broadcast tombstone
@@ -172,6 +179,45 @@ public:
     // Ordered by (message_id ASC, position ASC).
     std::vector<DbAttachment> fetch_attachments_for_messages(
         const std::vector<int64_t>& message_ids) const;
+
+    // --- attachment uploads ---
+    // Create a pending attachment row. Returns the new id (0 on failure).
+    // message_id is 0 until CHANNEL_MSG binds it; status is 'uploading'
+    // until complete_attachment is called.
+    int64_t insert_pending_attachment(const std::string& channel_id,
+                                      int32_t kind,
+                                      const std::string& filename,
+                                      const std::string& mime,
+                                      int64_t expected_size,
+                                      const std::string& storage_path,
+                                      const std::string& uploader,
+                                      int32_t position);
+    std::optional<DbAttachment> get_attachment(int64_t attachment_id) const;
+    // Set/overwrite the storage_path for an attachment. Used at upload init:
+    // we need the row's autoincrement id to build the final path, so the
+    // row is inserted with a placeholder and then updated once we know the id.
+    bool update_attachment_storage_path(int64_t attachment_id,
+                                        const std::string& path);
+    // Called by POST /attachments/:id/complete. Marks the row ready and
+    // writes the final size. Only succeeds on rows in 'uploading' state.
+    bool complete_attachment(int64_t attachment_id, int64_t final_size);
+    // Abort a pending upload — deletes the row and returns the storage_path
+    // so the caller can unlink the partial file on disk.
+    std::optional<std::string> abort_pending_attachment(int64_t attachment_id);
+    // Bind previously-uploaded attachments to a message. Only attachments
+    // that are 'ready', owned by `uploader`, currently unbound (message_id=0),
+    // and belong to `channel_id` get bound. Returns the list of ids that
+    // were successfully bound.
+    std::vector<int64_t> bind_attachments(const std::vector<int64_t>& attachment_ids,
+                                          int64_t message_id,
+                                          const std::string& channel_id,
+                                          const std::string& uploader);
+    // Pending attachments (message_id=0) older than `cutoff_ts` (created_at
+    // in unix seconds). Used by the retention sweep to clean up abandoned
+    // uploads. Returns the rows themselves so the caller can unlink .partial
+    // files before the rows are deleted.
+    std::vector<DbAttachment> list_stale_pending_attachments(int64_t cutoff_ts) const;
+    bool delete_attachment_row(int64_t attachment_id);
 
     // --- retention pruning ---
     // Delete messages in `channel_id` whose timestamp is strictly older than

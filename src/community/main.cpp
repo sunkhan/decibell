@@ -28,6 +28,7 @@
 #include "../common/net_utils.hpp"
 #include "../common/udp_packet.hpp"
 #include "db.hpp"
+#include "attachment_http.hpp"
 
 namespace ssl = boost::asio::ssl;
 using boost::asio::ip::tcp;
@@ -114,6 +115,15 @@ public:
     void sync_invite_register(const std::string& code, int64_t expires_at);
     void sync_invite_unregister(const std::string& code);
 
+    // Attachment config — reported to clients on CommunityAuthResponse so
+    // they know where to upload and what size cap to pre-validate against.
+    void set_attachment_config(int port, int64_t max_bytes) {
+        attachment_port_ = port;
+        max_attachment_bytes_ = max_bytes;
+    }
+    int attachment_port() const { return attachment_port_; }
+    int64_t max_attachment_bytes() const { return max_attachment_bytes_; }
+
 private:
     std::set<std::shared_ptr<Session>> sessions_;
     std::unordered_map<std::string, std::set<std::shared_ptr<Session>>> voice_channels_;
@@ -142,6 +152,9 @@ private:
     std::string central_jwt_secret_;
     std::string public_ip_;
     int community_port_ = 0;
+
+    int attachment_port_ = 0;
+    int64_t max_attachment_bytes_ = 0;
 
     std::mutex mutex_;
 };
@@ -462,19 +475,63 @@ private:
             // subject to client clock drift.
             const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
             msg->set_timestamp(now_ts);
+            int64_t new_id = 0;
             if (auto* db = manager_.db()) {
-                const int64_t id = db->insert_message(
+                new_id = db->insert_message(
                     msg->channel_id(), username_, msg->content(), now_ts);
-                if (id > 0) {
-                    msg->set_id(id);
+                if (new_id > 0) {
+                    msg->set_id(new_id);
                 } else {
                     std::cerr << "[Community] Failed to persist CHANNEL_MSG from "
                               << username_ << " in #" << msg->channel_id() << "\n";
                 }
             }
 
+            // Bind any pre-uploaded attachments the client referenced. Only
+            // the client's own ready uploads for this channel bind; anything
+            // else is silently dropped (reject without ceremony — we never
+            // want one user attaching another's upload).
+            if (auto* db = manager_.db(); db && new_id > 0 && msg->attachments_size() > 0) {
+                std::vector<int64_t> requested;
+                requested.reserve(msg->attachments_size());
+                for (const auto& a : msg->attachments()) {
+                    if (a.id() > 0) requested.push_back(a.id());
+                }
+                auto bound_ids = db->bind_attachments(
+                    requested, new_id, msg->channel_id(), username_);
+
+                // Rebuild the attachments field with authoritative rows so
+                // downstream consumers see every field (filename, mime, size,
+                // created_at, position, etc.) without trusting client input.
+                msg->clear_attachments();
+                if (!bound_ids.empty()) {
+                    auto rows = db->fetch_attachments_for_messages({ new_id });
+                    for (const auto& row : rows) {
+                        auto* pa = msg->add_attachments();
+                        pa->set_id(row.id);
+                        pa->set_message_id(row.message_id);
+                        pa->set_kind(static_cast<chatproj::Attachment::Kind>(row.kind));
+                        pa->set_filename(row.filename);
+                        pa->set_mime(row.mime);
+                        pa->set_size_bytes(row.size_bytes);
+                        pa->set_url(row.storage_path);
+                        pa->set_position(row.position);
+                        pa->set_created_at(row.created_at);
+                        pa->set_purged_at(row.purged_at);
+                    }
+                }
+            } else {
+                // No attachments or no DB — drop any stale client-sent attachment
+                // list so we never broadcast unverified data.
+                msg->clear_attachments();
+            }
+
             manager_.broadcast_to_members(routed);
-            std::cout << "[#" << msg->channel_id() << "] " << username_ << ": " << msg->content() << "\n";
+            std::cout << "[#" << msg->channel_id() << "] " << username_
+                      << ": " << msg->content()
+                      << (msg->attachments_size() > 0
+                          ? (" [+" + std::to_string(msg->attachments_size()) + " attachment(s)]")
+                          : "") << "\n";
         }
 
         // --- CHANNEL HISTORY REQUEST ---
@@ -851,6 +908,8 @@ private:
                 res->set_server_description(db->server_description());
                 res->set_owner_username(db->owner());
             }
+            res->set_max_attachment_bytes(manager_.max_attachment_bytes());
+            res->set_attachment_port(manager_.attachment_port());
         }
 
         send_packet(p);
@@ -1178,6 +1237,31 @@ void SessionManager::run_retention_sweep() {
 
         if (!cp.deleted_message_ids.empty() || !cp.purged_attachments.empty()) {
             sweeps.push_back(std::move(cp));
+        }
+    }
+
+    // Abandoned uploads — rows with message_id=0 still in 'uploading' status
+    // after more than an hour. A client that crashes, loses power, or just
+    // gives up will leave these behind; without this sweep they'd accumulate
+    // indefinitely along with their .partial blobs.
+    {
+        constexpr int64_t kPendingTimeoutSeconds = 3600; // 1 hour
+        const int64_t pending_cutoff = now - kPendingTimeoutSeconds;
+        auto stale = db_->list_stale_pending_attachments(pending_cutoff);
+        for (const auto& a : stale) {
+            if (!a.storage_path.empty()) {
+                std::error_code ec;
+                std::filesystem::remove(a.storage_path + ".partial", ec);
+                // The final path usually doesn't exist for pending rows, but
+                // clean it too just in case a complete() landed with a DB
+                // failure afterwards.
+                std::filesystem::remove(a.storage_path, ec);
+            }
+            db_->delete_attachment_row(a.id);
+        }
+        if (!stale.empty()) {
+            std::cout << "[Community] Retention sweep cleaned up "
+                      << stale.size() << " abandoned pending upload(s)\n";
         }
     }
 
@@ -1887,6 +1971,8 @@ int main() {
         const char* public_ip_env = std::getenv("DECIBELL_PUBLIC_IP");
         const char* owner_env = std::getenv("DECIBELL_OWNER_USERNAME");
         const char* db_path_env = std::getenv("DECIBELL_DB_PATH");
+        const char* attachments_root_env = std::getenv("DECIBELL_ATTACHMENTS_ROOT");
+        const char* max_attachment_env = std::getenv("DECIBELL_MAX_ATTACHMENT_BYTES");
 
         if (!jwt_env) {
             std::cerr << "Missing required environment variable: DECIBELL_JWT_SECRET\n";
@@ -1900,6 +1986,12 @@ int main() {
         std::string public_ip = public_ip_env ? public_ip_env : "127.0.0.1";
         std::string owner_username = owner_env ? owner_env : "";
         std::string db_path = db_path_env ? db_path_env : "decibell_community.db";
+        std::string attachments_root = attachments_root_env ? attachments_root_env : "attachments";
+        int64_t max_attachment_bytes = 100LL * 1024 * 1024; // 100 MB default
+        if (max_attachment_env) {
+            try { max_attachment_bytes = std::stoll(max_attachment_env); }
+            catch (...) { /* keep default on parse failure */ }
+        }
 
         // Open (or create) the persistent DB. If the file doesn't exist yet
         // we require DECIBELL_OWNER_USERNAME so we know who to seed as owner.
@@ -1924,7 +2016,14 @@ int main() {
         SessionManager manager;
         manager.set_db(&db);
         manager.set_central_sync(central_host, 8080, jwt_secret, public_ip, 8082);
+        // Attachment HTTP/TLS listener. port+3 (= 8085 by default).
+        const int attachment_port = 8082 + 3;
+        manager.set_attachment_config(attachment_port, max_attachment_bytes);
         CommunityServer s(io_context, 8082, manager, jwt_secret);
+        AttachmentHttpServer attachment_server(io_context,
+                                               static_cast<unsigned short>(attachment_port),
+                                               db, jwt_secret, attachments_root,
+                                               max_attachment_bytes);
         std::cout << "Decibell Community Server running on port 8082...\n";
         std::cout << "[Community] Owner: " << db.owner()
                   << " | Members: " << manager.member_count() << "\n";
