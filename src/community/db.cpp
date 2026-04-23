@@ -304,50 +304,82 @@ void CommunityDb::migrate_to_v2_() {
     // with a 500. Recreate the table without the FK; orphan cleanup is now
     // explicit in prune_text_messages and the pending-uploads sweep.
     //
-    // Skip if attachments was just freshly created without the FK (i.e.,
-    // we're on a brand-new DB) — detected by the absence of a foreign
-    // key on the table.
+    // Detect via the literal CREATE TABLE text in sqlite_master rather than
+    // PRAGMA foreign_key_list — the PRAGMA returns no rows in some sqlite
+    // builds depending on PRAGMA foreign_keys state, which silently
+    // skipped this migration in the field.
     {
-        bool has_fk = false;
-        Stmt fkq(db_, "PRAGMA foreign_key_list(attachments);");
-        if (fkq.s) {
-            while (fkq.step() == SQLITE_ROW) { has_fk = true; break; }
+        std::string create_sql;
+        {
+            Stmt q(db_,
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='attachments';");
+            if (q.s && q.step() == SQLITE_ROW) {
+                create_sql = q.col_text(0);
+            }
         }
+        const bool has_fk =
+            create_sql.find("FOREIGN KEY") != std::string::npos ||
+            create_sql.find("foreign key") != std::string::npos ||
+            create_sql.find("REFERENCES")  != std::string::npos;
+
         if (has_fk) {
+            std::cerr << "[DB] migrating attachments table to v4 "
+                         "(dropping FK on message_id)\n";
+
             // SQLite forbids changing PRAGMA foreign_keys mid-transaction —
-            // toggle it before BEGIN, restore after COMMIT.
-            exec_sql(db_, "PRAGMA foreign_keys=OFF;");
-            exec_sql(db_, "BEGIN;");
-            exec_sql(db_,
-                "CREATE TABLE attachments_v4 ("
-                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "  message_id INTEGER NOT NULL DEFAULT 0,"
-                "  kind INTEGER NOT NULL,"
-                "  filename TEXT NOT NULL,"
-                "  mime TEXT NOT NULL DEFAULT '',"
-                "  size_bytes INTEGER NOT NULL DEFAULT 0,"
-                "  storage_path TEXT,"
-                "  position INTEGER NOT NULL DEFAULT 0,"
-                "  created_at INTEGER NOT NULL,"
-                "  purged_at INTEGER NOT NULL DEFAULT 0,"
-                "  upload_status TEXT NOT NULL DEFAULT 'ready',"
-                "  expected_size INTEGER NOT NULL DEFAULT 0,"
-                "  uploader TEXT NOT NULL DEFAULT '',"
-                "  channel_id TEXT NOT NULL DEFAULT ''"
-                ");");
-            exec_sql(db_,
-                "INSERT INTO attachments_v4 "
-                "  (id, message_id, kind, filename, mime, size_bytes, "
-                "   storage_path, position, created_at, purged_at, "
-                "   upload_status, expected_size, uploader, channel_id) "
-                "SELECT id, message_id, kind, filename, mime, size_bytes, "
-                "       storage_path, position, created_at, purged_at, "
-                "       upload_status, expected_size, uploader, channel_id "
-                "FROM attachments;");
-            exec_sql(db_, "DROP TABLE attachments;");
-            exec_sql(db_, "ALTER TABLE attachments_v4 RENAME TO attachments;");
-            exec_sql(db_, "COMMIT;");
-            exec_sql(db_, "PRAGMA foreign_keys=ON;");
+            // toggle it before BEGIN, restore after COMMIT. Bail out
+            // immediately on any failure so we don't leave the table in
+            // half-renamed state.
+            auto must = [&](const char* sql) -> bool {
+                if (!exec_sql(db_, sql)) {
+                    std::cerr << "[DB] v4 migration aborted at: " << sql << "\n";
+                    return false;
+                }
+                return true;
+            };
+
+            if (!must("PRAGMA foreign_keys=OFF;")) return;
+            if (!must("BEGIN;")) return;
+            bool ok =
+                must("CREATE TABLE attachments_v4 ("
+                     "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                     "  message_id INTEGER NOT NULL DEFAULT 0,"
+                     "  kind INTEGER NOT NULL,"
+                     "  filename TEXT NOT NULL,"
+                     "  mime TEXT NOT NULL DEFAULT '',"
+                     "  size_bytes INTEGER NOT NULL DEFAULT 0,"
+                     "  storage_path TEXT,"
+                     "  position INTEGER NOT NULL DEFAULT 0,"
+                     "  created_at INTEGER NOT NULL,"
+                     "  purged_at INTEGER NOT NULL DEFAULT 0,"
+                     "  upload_status TEXT NOT NULL DEFAULT 'ready',"
+                     "  expected_size INTEGER NOT NULL DEFAULT 0,"
+                     "  uploader TEXT NOT NULL DEFAULT '',"
+                     "  channel_id TEXT NOT NULL DEFAULT ''"
+                     ");") &&
+                must("INSERT INTO attachments_v4 "
+                     "  (id, message_id, kind, filename, mime, size_bytes, "
+                     "   storage_path, position, created_at, purged_at, "
+                     "   upload_status, expected_size, uploader, channel_id) "
+                     "SELECT id, message_id, kind, filename, mime, size_bytes, "
+                     "       storage_path, position, created_at, purged_at, "
+                     "       upload_status, expected_size, uploader, channel_id "
+                     "FROM attachments;") &&
+                must("DROP TABLE attachments;") &&
+                must("ALTER TABLE attachments_v4 RENAME TO attachments;");
+
+            if (!ok) {
+                exec_sql(db_, "ROLLBACK;");
+                exec_sql(db_, "PRAGMA foreign_keys=ON;");
+                return;
+            }
+            if (!must("COMMIT;")) {
+                exec_sql(db_, "ROLLBACK;");
+                exec_sql(db_, "PRAGMA foreign_keys=ON;");
+                return;
+            }
+            must("PRAGMA foreign_keys=ON;");
 
             // DROP TABLE drops indices too — recreate.
             exec_sql(db_,
@@ -359,6 +391,8 @@ void CommunityDb::migrate_to_v2_() {
             exec_sql(db_,
                 "CREATE INDEX IF NOT EXISTS idx_attachments_pending "
                 "ON attachments(created_at) WHERE message_id = 0;");
+
+            std::cerr << "[DB] attachments table migrated to v4 (no FK)\n";
         }
     }
     set_meta_("schema_version", "4");
