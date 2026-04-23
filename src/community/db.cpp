@@ -340,6 +340,10 @@ void CommunityDb::migrate_to_v2_() {
             };
 
             if (!must("PRAGMA foreign_keys=OFF;")) return;
+            // Wipe any leftover from a prior aborted migration attempt so
+            // the CREATE below doesn't fail with "table already exists".
+            // Safe in the no-leftover case — DROP IF EXISTS is a no-op.
+            must("DROP TABLE IF EXISTS attachments_v4;");
             if (!must("BEGIN;")) return;
             bool ok =
                 must("CREATE TABLE attachments_v4 ("
