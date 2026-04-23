@@ -240,6 +240,24 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     prevMessageCountRef.current = messages.length;
   }, [activeChannelId, messages.length, messages[0]?.id]);  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Image attachments render as a small placeholder first, then expand to
+  // their real height once the data URL fetches in. The append-time
+  // useLayoutEffect above ran with the placeholder height, so we'd land
+  // a few hundred px short of the bottom for any message ending with an
+  // image. Catch the <img> load event in capture phase (it doesn't bubble)
+  // and re-pin to bottom if the user was already near it.
+  useEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const onLoad = (e: Event) => {
+      if ((e.target as HTMLElement | null)?.tagName !== "IMG") return;
+      if (!wasNearBottomRef.current) return;
+      el.scrollTop = el.scrollHeight;
+    };
+    el.addEventListener("load", onLoad, true);
+    return () => el.removeEventListener("load", onLoad, true);
+  }, []);
+
   // Auto-focus editor when user starts typing anywhere
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
