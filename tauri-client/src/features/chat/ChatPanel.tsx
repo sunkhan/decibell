@@ -1,13 +1,17 @@
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraftsStore } from "../../stores/draftsStore";
+import { useAttachmentsStore, type PendingAttachment } from "../../stores/attachmentsStore";
 import MessageBubble, { shouldGroup } from "./MessageBubble";
 import { useChatEvents } from "./useChatEvents";
 import WelcomeState from "./WelcomeState";
 import EmojiPicker from "./EmojiPicker";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
+import PendingAttachmentsRow from "./PendingAttachmentsRow";
+import { kindFromMime, formatBytes } from "./attachmentHelpers";
 
 export function ChatHeader() {
   const activeServerId = useChatStore((s) => s.activeServerId);
@@ -242,7 +246,23 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
 
   const handleSend = async () => {
     const value = editorRef.current?.getValue() ?? input;
-    if (!value.trim() || !activeServerId || !activeChannelId) return;
+    if (!activeServerId || !activeChannelId) return;
+
+    // Pull pending attachments for this channel. Sending is blocked unless
+    // every one is in a terminal state — we refuse to send while a file is
+    // still uploading so the user doesn't see their message fire without its
+    // attachments.
+    const pending = useAttachmentsStore.getState().selectForChannel(activeChannelId);
+    const stillUploading = pending.some((a) => a.status === "uploading");
+    if (stillUploading) {
+      setSendError("Wait for uploads to finish.");
+      return;
+    }
+    const readyIds = pending
+      .filter((a) => a.status === "ready" && a.attachmentId)
+      .map((a) => a.attachmentId as number);
+    if (!value.trim() && readyIds.length === 0) return;
+
     setSending(true);
     setSendError(null);
     try {
@@ -250,16 +270,101 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
         serverId: activeServerId,
         channelId: activeChannelId,
         message: value.trim(),
+        attachmentIds: readyIds,
       });
       editorRef.current?.clear();
       setInput("");
       useDraftsStore.getState().clearChannelDraft(activeChannelId);
       setPickerOpen(false);
+      useAttachmentsStore.getState().clearChannel(activeChannelId);
     } catch (err) {
       setSendError(String(err));
     } finally {
       setSending(false);
     }
+  };
+
+  // --- File picker + upload kick-off -------------------------------------
+
+  const serverAttachmentConfig = useChatStore((s) => s.serverAttachmentConfig);
+
+  const handleAttach = async () => {
+    if (!activeServerId || !activeChannelId) return;
+    const cfg = serverAttachmentConfig[activeServerId];
+    if (!cfg || cfg.port === 0) {
+      setSendError("This server does not support attachments.");
+      return;
+    }
+    let picked: string[] | null = null;
+    try {
+      const selection = await openDialog({
+        multiple: true,
+        directory: false,
+        title: "Choose files to attach",
+      });
+      if (!selection) return; // user cancelled
+      picked = Array.isArray(selection) ? selection : [selection];
+    } catch (err) {
+      setSendError(`File picker failed: ${err}`);
+      return;
+    }
+    if (!picked || picked.length === 0) return;
+
+    for (const filePath of picked) {
+      await startUpload(filePath);
+    }
+  };
+
+  const startUpload = async (filePath: string) => {
+    if (!activeServerId || !activeChannelId) return;
+    let meta: { filename: string; sizeBytes: number; mime: string };
+    try {
+      meta = await invoke<{ filename: string; sizeBytes: number; mime: string }>(
+        "stat_attachment_file",
+        { path: filePath }
+      );
+    } catch (err) {
+      setSendError(`Could not read ${filePath}: ${err}`);
+      return;
+    }
+
+    const cfg = serverAttachmentConfig[activeServerId];
+    if (cfg && cfg.maxBytes > 0 && meta.sizeBytes > cfg.maxBytes) {
+      setSendError(
+        `${meta.filename} is ${formatBytes(meta.sizeBytes)}; this server's cap is ${formatBytes(cfg.maxBytes)}.`
+      );
+      return;
+    }
+
+    const pendingId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const entry: PendingAttachment = {
+      pendingId,
+      channelId: activeChannelId,
+      filename: meta.filename,
+      mime: meta.mime,
+      kind: kindFromMime(meta.mime),
+      totalBytes: meta.sizeBytes,
+      transferredBytes: 0,
+      status: "uploading",
+    };
+    useAttachmentsStore.getState().addPending(entry);
+
+    // Fire-and-forget — upload progress/completion events update the store.
+    invoke("upload_attachment", {
+      req: {
+        pendingId,
+        serverId: activeServerId,
+        channelId: activeChannelId,
+        filePath,
+        filename: meta.filename,
+        mime: meta.mime,
+      },
+    }).catch((err) => {
+      // The Rust path also emits attachment_upload_failed; this catch is
+      // defensive so an exception from the bridge itself doesn't leave the
+      // card spinning forever.
+      useAttachmentsStore.getState().markFailed(pendingId, String(err), false);
+    });
   };
 
   const handleInputChange = (value: string) => {
@@ -327,10 +432,17 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
         <p className="px-4 text-xs text-error">{sendError}</p>
       )}
 
+      {/* Pending attachments (uploaded / uploading) for this channel */}
+      {activeChannelId && <PendingAttachmentsRow channelId={activeChannelId} />}
+
       {/* Input bar */}
       <div className="px-3 pb-2">
         <div className="flex min-h-[54px] items-center gap-2.5 rounded-xl border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
-          <button className="flex h-7 w-7 shrink-0 self-end items-center justify-center rounded-full bg-surface-hover text-text-muted transition-colors hover:bg-accent-soft hover:text-accent">
+          <button
+            onClick={handleAttach}
+            title="Attach files"
+            className="flex h-7 w-7 shrink-0 self-end items-center justify-center rounded-full bg-surface-hover text-text-muted transition-colors hover:bg-accent-soft hover:text-accent"
+          >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" />
             </svg>

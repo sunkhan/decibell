@@ -19,6 +19,12 @@
     "opener:default",
     "updater:default",
     "process:default",
-    "deep-link:default"
+    "deep-link:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:default",
+    "fs:allow-read-file",
+    "fs:allow-stat"
   ]
 }

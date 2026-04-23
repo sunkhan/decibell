@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useChatStore } from "../../stores/chatStore";
+import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import type { Attachment, AttachmentKind } from "../../types";
 
 interface MessagePayload {
@@ -105,10 +106,78 @@ export function useChatEvents() {
       );
     });
 
+    // --- attachment upload progress / complete / failed ---
+
+    interface UploadProgressPayload {
+      pendingId: string;
+      serverId: string;
+      channelId: string;
+      attachmentId: number;
+      filename: string;
+      transferredBytes: number;
+      totalBytes: number;
+    }
+    interface UploadCompletePayload {
+      pendingId: string;
+      serverId: string;
+      channelId: string;
+      attachmentId: number;
+      filename: string;
+      mime: string;
+      kind: string;
+      sizeBytes: number;
+    }
+    interface UploadFailedPayload {
+      pendingId: string;
+      serverId: string;
+      channelId: string;
+      attachmentId: number;
+      filename: string;
+      message: string;
+      cancelled: boolean;
+    }
+
+    const unlistenUploadProgress = listen<UploadProgressPayload>(
+      "attachment_upload_progress",
+      (event) => {
+        useAttachmentsStore.getState().updateProgress(
+          event.payload.pendingId,
+          event.payload.transferredBytes,
+        );
+      },
+    );
+
+    const unlistenUploadComplete = listen<UploadCompletePayload>(
+      "attachment_upload_complete",
+      (event) => {
+        useAttachmentsStore.getState().markReady(
+          event.payload.pendingId,
+          event.payload.attachmentId,
+          normalizeKind(event.payload.kind),
+          event.payload.mime,
+          event.payload.filename,
+        );
+      },
+    );
+
+    const unlistenUploadFailed = listen<UploadFailedPayload>(
+      "attachment_upload_failed",
+      (event) => {
+        useAttachmentsStore.getState().markFailed(
+          event.payload.pendingId,
+          event.payload.message,
+          event.payload.cancelled,
+        );
+      },
+    );
+
     return () => {
       unlistenMsg.then((fn) => fn());
       unlistenHistory.then((fn) => fn());
       unlistenPruned.then((fn) => fn());
+      unlistenUploadProgress.then((fn) => fn());
+      unlistenUploadComplete.then((fn) => fn());
+      unlistenUploadFailed.then((fn) => fn());
     };
   }, []);
 }

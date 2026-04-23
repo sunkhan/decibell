@@ -476,6 +476,75 @@ impl net_attach::DownloadObserver for NullDownloadObs {
 
 // ---- settings: throttle knobs ----
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileMeta {
+    pub filename: String,
+    pub size_bytes: u64,
+    pub mime: String,
+}
+
+/// Cheap metadata lookup for a file the user picked. UI uses this to
+/// populate the pending-attachment card (filename + size + kind) before the
+/// upload begins. MIME is inferred from the extension — good enough to route
+/// to the right retention bucket; the server doesn't use it for anything
+/// security-sensitive.
+#[tauri::command]
+pub async fn stat_attachment_file(path: String) -> Result<FileMeta, String> {
+    let pb = PathBuf::from(&path);
+    let meta = tokio::fs::metadata(&pb)
+        .await
+        .map_err(|e| format!("stat {}: {}", path, e))?;
+    let filename = pb
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    let mime = mime_from_extension(&filename);
+    Ok(FileMeta {
+        filename,
+        size_bytes: meta.len(),
+        mime,
+    })
+}
+
+fn mime_from_extension(filename: &str) -> String {
+    let ext = std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" | "oga" => "audio/ogg",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "7z" => "application/x-7z-compressed",
+        "tar" => "application/x-tar",
+        "gz" => "application/gzip",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
 #[tauri::command]
 pub async fn set_transfer_limits(
     upload_bps: u64,

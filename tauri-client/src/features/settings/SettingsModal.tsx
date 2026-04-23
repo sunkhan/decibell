@@ -3,6 +3,7 @@ import { useUiStore } from "../../stores/uiStore";
 import AccountTab from "./tabs/AccountTab";
 import PrivacyTab from "./tabs/PrivacyTab";
 import AudioTab from "./tabs/AudioTab";
+import NetworkTab from "./tabs/NetworkTab";
 import AboutTab from "./tabs/AboutTab";
 import { useEffect, useState, useCallback } from "react";
 
@@ -40,6 +41,19 @@ const TABS = [
       </svg>
     ),
     component: AudioTab,
+  },
+  {
+    id: "network",
+    label: "Network",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M5 12h14" />
+        <path d="M12 5v14" />
+        <path d="M5 5l14 14" />
+        <path d="M19 5L5 19" />
+      </svg>
+    ),
+    component: NetworkTab,
   },
   {
     id: "about",

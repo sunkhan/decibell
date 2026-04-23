@@ -84,6 +84,10 @@ pub async fn send_channel_message(
     server_id: String,
     channel_id: String,
     message: String,
+    // Previously-uploaded attachment ids to bind to this message. Server
+    // verifies ownership, channel scope, and 'ready' status — anything
+    // that doesn't pass is silently dropped from the broadcast.
+    attachment_ids: Option<Vec<i64>>,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     let (write_tx, data) = {
@@ -98,6 +102,26 @@ pub async fn send_channel_message(
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
+
+        // Populate attachment ids as stubs; server replaces with authoritative
+        // rows before broadcast, so every other field is irrelevant here.
+        let attachments: Vec<Attachment> = attachment_ids
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| Attachment {
+                id,
+                message_id: 0,
+                kind: 0,
+                filename: String::new(),
+                mime: String::new(),
+                size_bytes: 0,
+                url: String::new(),
+                position: 0,
+                created_at: 0,
+                purged_at: 0,
+            })
+            .collect();
+
         let pkt = build_packet(
             packet::Type::ChannelMsg,
             packet::Payload::ChannelMsg(ChannelMessage {
@@ -106,7 +130,7 @@ pub async fn send_channel_message(
                 content: message.into(),
                 timestamp,
                 id: 0, // server assigns on persist
-                attachments: Vec::new(),
+                attachments,
             }),
             Some(&client.jwt),
         );

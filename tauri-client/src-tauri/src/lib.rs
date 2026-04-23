@@ -22,6 +22,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             use tauri::Manager;
             use tauri_plugin_deep_link::DeepLinkExt;
@@ -97,6 +99,7 @@ pub fn run() {
             commands::attachments::download_attachment,
             commands::attachments::fetch_attachment_blob,
             commands::attachments::set_transfer_limits,
+            commands::attachments::stat_attachment_file,
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
