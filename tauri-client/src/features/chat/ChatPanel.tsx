@@ -365,12 +365,19 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
 
   const startUpload = async (filePath: string) => {
     if (!activeServerId || !activeChannelId) return;
-    let meta: { filename: string; sizeBytes: number; mime: string };
+    // stat_attachment_file also decodes image dimensions for image MIME
+    // types (0/0 for anything else) so we can feed them to the upload and
+    // let the server broadcast them downstream.
+    type StatResult = {
+      filename: string;
+      sizeBytes: number;
+      mime: string;
+      width: number;
+      height: number;
+    };
+    let meta: StatResult;
     try {
-      meta = await invoke<{ filename: string; sizeBytes: number; mime: string }>(
-        "stat_attachment_file",
-        { path: filePath }
-      );
+      meta = await invoke<StatResult>("stat_attachment_file", { path: filePath });
     } catch (err) {
       setSendError(`Could not read ${filePath}: ${err}`);
       return;
@@ -406,6 +413,8 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
         filePath,
         filename: meta.filename,
         mime: meta.mime,
+        width: meta.width,
+        height: meta.height,
       },
     }).catch((err) => {
       // The Rust path also emits attachment_upload_failed; this catch is
