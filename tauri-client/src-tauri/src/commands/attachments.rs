@@ -436,18 +436,23 @@ pub async fn download_attachment(
         .map(|_| ())
 }
 
-/// Fetch the attachment as bytes (for inline preview of small files like
-/// images). Returns a data URL ready to drop into <img src>. Skips progress
-/// events since this is used for inline render, not user-visible transfers.
+/// Fetch the raw bytes of an attachment for inline preview. Returned as a
+/// tauri::ipc::Response so the IPC layer transports them as binary rather
+/// than a JSON-encoded base64 string — with many images on screen the
+/// base64-in-DOM path became the dominant scroll cost.
+///
+/// On the JS side: `const bytes = await invoke<ArrayBuffer>(...)` → wrap in
+/// a Blob → URL.createObjectURL. The DOM then holds a tiny `blob:` URL
+/// instead of a multi-megabyte data URL that's diffed on every render.
+///
+/// No progress events — used for inline render only, not user-visible
+/// transfers.
 #[tauri::command]
-pub async fn fetch_attachment_blob(
+pub async fn fetch_attachment_bytes(
     server_id: String,
     attachment_id: i64,
-    mime: String,
     state: State<'_, SharedState>,
-) -> Result<String, String> {
-    use base64::Engine;
-
+) -> Result<tauri::ipc::Response, String> {
     let (host, port, jwt, rate) = {
         let s = state.lock().await;
         let client = s
@@ -472,8 +477,7 @@ pub async fn fetch_attachment_blob(
     net_attach::stream_get(&host, port, &jwt, attachment_id, 0, &mut buf, &throttle, &null_obs)
         .await?;
 
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
-    Ok(format!("data:{};base64,{}", mime, b64))
+    Ok(tauri::ipc::Response::new(buf))
 }
 
 struct NullDownloadObs;

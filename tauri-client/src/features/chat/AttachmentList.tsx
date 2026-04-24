@@ -143,28 +143,50 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
   const hasFetched = useRef(false);
 
   // Lazy-load: fetch the image blob only once the card scrolls into view.
+  // Returned as raw bytes via tauri::ipc::Response, wrapped into an object
+  // URL so the DOM holds a tiny `blob:` reference rather than a
+  // multi-megabyte base64 string that gets diffed on every re-render.
   useEffect(() => {
     if (!serverId) return;
     if (hasFetched.current) return;
     if (attachment.sizeBytes > INLINE_PREVIEW_CAP) return; // too big to inline
     const el = containerRef.current;
     if (!el) return;
+    let cancelled = false;
     const io = new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting)) {
         hasFetched.current = true;
         io.disconnect();
-        invoke<string>("fetch_attachment_blob", {
+        invoke<ArrayBuffer>("fetch_attachment_bytes", {
           serverId,
           attachmentId: attachment.id,
-          mime: attachment.mime || "application/octet-stream",
         })
-          .then(setUrl)
-          .catch((e) => setError(String(e)));
+          .then((buf) => {
+            if (cancelled) return;
+            const blob = new Blob([buf], {
+              type: attachment.mime || "application/octet-stream",
+            });
+            setUrl(URL.createObjectURL(blob));
+          })
+          .catch((e) => {
+            if (!cancelled) setError(String(e));
+          });
       }
     }, { rootMargin: "200px 0px" });
     io.observe(el);
-    return () => io.disconnect();
+    return () => {
+      cancelled = true;
+      io.disconnect();
+    };
   }, [serverId, attachment.id, attachment.sizeBytes, attachment.mime]);
+
+  // Revoke the object URL when the component unmounts or the url changes,
+  // so the browser can free the decoded image bytes instead of holding
+  // them for the lifetime of the page.
+  useEffect(() => {
+    if (!url) return;
+    return () => URL.revokeObjectURL(url);
+  }, [url]);
 
   const tooLargeForPreview = attachment.sizeBytes > INLINE_PREVIEW_CAP;
   const box = reserveBox(attachment);
@@ -185,6 +207,7 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
             alt={attachment.filename}
             className="h-full w-full object-contain"
             draggable={false}
+            decoding="async"
           />
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-bg-dark/40 text-[11px] text-text-muted">
@@ -221,7 +244,7 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-8"
           onClick={() => setExpanded(false)}
         >
-          <img src={url} alt={attachment.filename} className="max-h-full max-w-full object-contain" />
+          <img src={url} alt={attachment.filename} decoding="async" className="max-h-full max-w-full object-contain" />
         </div>
       )}
     </div>

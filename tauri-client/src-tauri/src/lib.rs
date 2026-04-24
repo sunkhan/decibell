@@ -97,7 +97,7 @@ pub fn run() {
             commands::attachments::upload_attachment,
             commands::attachments::cancel_attachment_upload,
             commands::attachments::download_attachment,
-            commands::attachments::fetch_attachment_blob,
+            commands::attachments::fetch_attachment_bytes,
             commands::attachments::set_transfer_limits,
             commands::attachments::stat_attachment_file,
         ])
