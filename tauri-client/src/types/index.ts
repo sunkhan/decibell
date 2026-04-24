@@ -42,6 +42,11 @@ export interface Attachment {
   position: number;
   createdAt: number;
   purgedAt: number; // 0 = present; nonzero unix seconds = tombstone
+  // Intrinsic pixel dimensions, 0 when unknown (non-image or legacy row).
+  // Used client-side to reserve placeholder space so images don't cause
+  // layout shift when the data URL loads in.
+  width: number;
+  height: number;
 }
 
 export interface Message {

@@ -20,6 +20,13 @@ pub struct UploadRequest {
     pub file_path: String,
     pub filename: String,
     pub mime: String,
+    // Intrinsic image dimensions, read client-side before upload. 0 when
+    // the file isn't an image. Forwarded into the /init metadata so
+    // downstream viewers can reserve the right placeholder.
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +141,7 @@ pub async fn upload_attachment(
     let init = match net_attach::post_init(
         &host, port, &jwt,
         &req.channel_id, &req.filename, &req.mime, total_bytes as i64,
+        req.width, req.height,
     )
     .await
     {
@@ -482,6 +490,12 @@ pub struct FileMeta {
     pub filename: String,
     pub size_bytes: u64,
     pub mime: String,
+    // 0 when dimensions couldn't be read (non-image kind or unsupported format).
+    // We pass these through to /attachments/init so downstream viewers
+    // reserve the right placeholder size on first render — no layout shift
+    // when the data URL loads in.
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Cheap metadata lookup for a file the user picked. UI uses this to
@@ -500,10 +514,26 @@ pub async fn stat_attachment_file(path: String) -> Result<FileMeta, String> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".to_string());
     let mime = mime_from_extension(&filename);
+
+    // For images, read intrinsic dimensions. image::image_dimensions reads
+    // only the header bytes (cheap — a few KB even for huge images) so
+    // this scales fine to 15 GB files as long as the format has dimensions
+    // encoded near the start. Non-images and unreadable files report 0/0.
+    let (width, height) = if mime.starts_with("image/") {
+        match image::image_dimensions(&pb) {
+            Ok((w, h)) => (w, h),
+            Err(_) => (0, 0),
+        }
+    } else {
+        (0, 0)
+    };
+
     Ok(FileMeta {
         filename,
         size_bytes: meta.len(),
         mime,
+        width,
+        height,
     })
 }
 

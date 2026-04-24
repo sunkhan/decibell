@@ -203,12 +203,16 @@ pub async fn post_init(
     filename: &str,
     mime: &str,
     size: i64,
+    width: u32,
+    height: u32,
 ) -> Result<InitResponse, String> {
     let body = serde_json::json!({
         "channelId": channel_id,
         "filename": filename,
         "mime": mime,
         "size": size,
+        "width": width,
+        "height": height,
     })
     .to_string();
     let mut stream = connect_tls(host, port).await?;

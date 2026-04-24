@@ -323,6 +323,12 @@ message Attachment {
   int64 created_at = 9;
   // 0 = still present. Nonzero = unix seconds when retention removed the blob.
   int64 purged_at = 10;
+  // Intrinsic pixel dimensions for image/video attachments. 0 = unknown
+  // (older row or non-image kind). Clients use these to reserve the right
+  // amount of space on first render so the data URL loading in later
+  // doesn't cause a layout shift.
+  uint32 width = 11;
+  uint32 height = 12;
 }
 
 message ChannelHistoryRequest {

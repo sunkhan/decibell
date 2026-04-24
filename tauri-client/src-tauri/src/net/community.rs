@@ -679,5 +679,7 @@ fn map_attachment(a: Attachment) -> events::AttachmentPayload {
         position: a.position,
         created_at: a.created_at,
         purged_at: a.purged_at,
+        width: a.width,
+        height: a.height,
     }
 }

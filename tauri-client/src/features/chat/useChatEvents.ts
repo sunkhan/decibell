@@ -21,6 +21,8 @@ interface MessagePayload {
     position: number;
     createdAt: number;
     purgedAt: number;
+    width: number;
+    height: number;
   }>;
 }
 
@@ -64,6 +66,8 @@ function mapAttachment(a: MessagePayload["attachments"][number]): Attachment {
     position: a.position,
     createdAt: a.createdAt,
     purgedAt: a.purgedAt,
+    width: a.width ?? 0,
+    height: a.height ?? 0,
   };
 }
 

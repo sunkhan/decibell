@@ -289,12 +289,18 @@ private:
     void do_init_with_body() {
         std::string filename, mime, channel_id;
         int64_t size = 0;
+        int32_t width = 0, height = 0;
         try {
             auto j = json::parse(std::string(body_.begin(), body_.end()));
             channel_id = j.value("channelId", "");
             filename   = j.value("filename",  "");
             mime       = j.value("mime",      "application/octet-stream");
             size       = j.value("size",      (int64_t)0);
+            // Optional: uploader client reads image dimensions and forwards
+            // them so downstream viewers can reserve the right placeholder
+            // size before the image data URL loads. Zero = unknown.
+            width      = j.value("width",     0);
+            height     = j.value("height",    0);
         } catch (...) { send_error(400, "Bad Request"); return; }
 
         if (channel_id.empty() || filename.empty() || size <= 0) {
@@ -322,7 +328,7 @@ private:
 
         const int64_t new_id = db_.insert_pending_attachment(
             channel_id, kind, filename, mime, size, /*storage_path*/ "", username_,
-            /*position*/ 0);
+            /*position*/ 0, width, height);
         if (new_id == 0) {
             std::cerr << "[AttachmentHttp] init: insert_pending_attachment "
                          "returned 0 (see [DB] log for SQLite error)\n";

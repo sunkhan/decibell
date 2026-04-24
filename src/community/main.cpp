@@ -518,6 +518,8 @@ private:
                         pa->set_position(row.position);
                         pa->set_created_at(row.created_at);
                         pa->set_purged_at(row.purged_at);
+                        pa->set_width(static_cast<uint32_t>(row.width));
+                        pa->set_height(static_cast<uint32_t>(row.height));
                     }
                 }
             } else {
@@ -583,6 +585,8 @@ private:
                         proto_a->set_position(a->position);
                         proto_a->set_created_at(a->created_at);
                         proto_a->set_purged_at(a->purged_at);
+                        proto_a->set_width(static_cast<uint32_t>(a->width));
+                        proto_a->set_height(static_cast<uint32_t>(a->height));
                     }
                 }
             }

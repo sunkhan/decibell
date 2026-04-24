@@ -65,6 +65,10 @@ struct DbAttachment {
     std::string upload_status;
     int64_t expected_size = 0; // declared at init; used to validate final size
     std::string uploader;      // username that POSTed /init
+    // Intrinsic pixel dimensions; 0 if unknown (older row or non-image kind).
+    // Populated from the uploader's init metadata.
+    int32_t width = 0;
+    int32_t height = 0;
 };
 
 // Returned from prune_attachments so the server can broadcast tombstone
@@ -191,7 +195,9 @@ public:
                                       int64_t expected_size,
                                       const std::string& storage_path,
                                       const std::string& uploader,
-                                      int32_t position);
+                                      int32_t position,
+                                      int32_t width,
+                                      int32_t height);
     std::optional<DbAttachment> get_attachment(int64_t attachment_id) const;
     // Set/overwrite the storage_path for an attachment. Used at upload init:
     // we need the row's autoincrement id to build the final path, so the

@@ -119,6 +119,8 @@ pub async fn send_channel_message(
                 position: 0,
                 created_at: 0,
                 purged_at: 0,
+                width: 0,
+                height: 0,
             })
             .collect();
 

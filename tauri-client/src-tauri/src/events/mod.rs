@@ -83,6 +83,9 @@ pub struct AttachmentPayload {
     pub position: i32,
     pub created_at: i64,
     pub purged_at: i64, // 0 = present, nonzero = tombstone timestamp
+    // Intrinsic image dimensions, 0 when unknown (non-image or legacy row).
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

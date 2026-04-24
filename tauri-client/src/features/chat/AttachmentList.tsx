@@ -88,6 +88,53 @@ function Tombstone({ attachment }: { attachment: Attachment }) {
   );
 }
 
+// Cap for the inline preview box — matches the pre-aspect-ratio layout we
+// shipped before so bubbles don't suddenly get wider.
+const PREVIEW_MAX_W = 400;
+const PREVIEW_MAX_H = 360;
+
+// Fallback for attachments missing dimensions (legacy rows uploaded before
+// this change, or files whose dimensions couldn't be decoded). A boring
+// rectangle that roughly matches a typical landscape image proportion.
+const PREVIEW_FALLBACK_W = 260;
+const PREVIEW_FALLBACK_H = 180;
+
+// Compute the pixel box we'll reserve for this image. Scaled down so the
+// longest side fits within the max, aspect ratio preserved.
+function reserveBox(attachment: Attachment): { width: number; height: number; known: boolean } {
+  const w = attachment.width;
+  const h = attachment.height;
+  if (w <= 0 || h <= 0) {
+    return { width: PREVIEW_FALLBACK_W, height: PREVIEW_FALLBACK_H, known: false };
+  }
+  const scale = Math.min(1, PREVIEW_MAX_W / w, PREVIEW_MAX_H / h);
+  return {
+    width: Math.max(1, Math.round(w * scale)),
+    height: Math.max(1, Math.round(h * scale)),
+    known: true,
+  };
+}
+
+function ImagePlaceholderIcon() {
+  return (
+    <svg
+      width="28"
+      height="28"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="text-text-muted/70"
+    >
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <polyline points="21 15 16 10 5 21" />
+    </svg>
+  );
+}
+
 function ImagePreview({ attachment, serverId }: { attachment: Attachment; serverId: string | null }) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -120,29 +167,37 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
   }, [serverId, attachment.id, attachment.sizeBytes, attachment.mime]);
 
   const tooLargeForPreview = attachment.sizeBytes > INLINE_PREVIEW_CAP;
+  const box = reserveBox(attachment);
 
   return (
     <div ref={containerRef} className="mt-2">
       <button
         onClick={() => url && setExpanded(true)}
-        className="group relative overflow-hidden rounded-[10px] border border-border-divider bg-bg-light"
-        style={{ maxWidth: 400 }}
+        // The outer box is a FIXED size from first render. The <img> fills
+        // it with object-contain when the data URL lands — no layout shift.
+        className="group relative block overflow-hidden rounded-[10px] border border-border-divider bg-bg-light"
+        style={{ width: box.width, height: box.height }}
         disabled={!url}
       >
         {url ? (
           <img
             src={url}
             alt={attachment.filename}
-            className="max-h-[360px] max-w-full object-contain"
+            className="h-full w-full object-contain"
             draggable={false}
           />
         ) : (
-          <div className="flex h-[120px] w-[240px] items-center justify-center text-[12px] text-text-muted">
-            {error
-              ? `Failed to load: ${error}`
-              : tooLargeForPreview
-                ? `${attachment.filename} (${formatBytes(attachment.sizeBytes)}) — download to view`
-                : "Loading preview…"}
+          <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-bg-dark/40 text-[11px] text-text-muted">
+            <ImagePlaceholderIcon />
+            <span className="px-2 text-center">
+              {error
+                ? `Failed to load: ${error}`
+                : tooLargeForPreview
+                  ? `${attachment.filename} • ${formatBytes(attachment.sizeBytes)} — download to view`
+                  : box.known
+                    ? ""
+                    : attachment.filename}
+            </span>
           </div>
         )}
         {url && (

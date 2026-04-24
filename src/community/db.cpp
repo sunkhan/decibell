@@ -237,7 +237,9 @@ void CommunityDb::migrate_to_v2_() {
         "  upload_status TEXT NOT NULL DEFAULT 'ready',"
         "  expected_size INTEGER NOT NULL DEFAULT 0,"
         "  uploader TEXT NOT NULL DEFAULT '',"
-        "  channel_id TEXT NOT NULL DEFAULT ''"
+        "  channel_id TEXT NOT NULL DEFAULT '',"
+        "  width INTEGER NOT NULL DEFAULT 0,"
+        "  height INTEGER NOT NULL DEFAULT 0"
         ");");
     exec_sql(db_,
         "CREATE INDEX IF NOT EXISTS idx_attachments_message "
@@ -254,6 +256,8 @@ void CommunityDb::migrate_to_v2_() {
         { "expected_size", "expected_size INTEGER NOT NULL DEFAULT 0" },
         { "uploader",      "uploader TEXT NOT NULL DEFAULT ''" },
         { "channel_id",    "channel_id TEXT NOT NULL DEFAULT ''" },
+        { "width",         "width INTEGER NOT NULL DEFAULT 0" },
+        { "height",        "height INTEGER NOT NULL DEFAULT 0" },
     };
     for (const auto& c : attach_cols) {
         if (!column_exists(db_, "attachments", c.name)) {
@@ -345,6 +349,11 @@ void CommunityDb::migrate_to_v2_() {
             // Safe in the no-leftover case — DROP IF EXISTS is a no-op.
             must("DROP TABLE IF EXISTS attachments_v4;");
             if (!must("BEGIN;")) return;
+            // The v4 rebuild preserves every post-v2 column we've added
+            // since — including width/height, back-filled by the ALTER
+            // loop above. That way the rebuild's INSERT doesn't silently
+            // drop fresh columns and we don't have to chase schema drift
+            // across two launches.
             bool ok =
                 must("CREATE TABLE attachments_v4 ("
                      "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -360,15 +369,19 @@ void CommunityDb::migrate_to_v2_() {
                      "  upload_status TEXT NOT NULL DEFAULT 'ready',"
                      "  expected_size INTEGER NOT NULL DEFAULT 0,"
                      "  uploader TEXT NOT NULL DEFAULT '',"
-                     "  channel_id TEXT NOT NULL DEFAULT ''"
+                     "  channel_id TEXT NOT NULL DEFAULT '',"
+                     "  width INTEGER NOT NULL DEFAULT 0,"
+                     "  height INTEGER NOT NULL DEFAULT 0"
                      ");") &&
                 must("INSERT INTO attachments_v4 "
                      "  (id, message_id, kind, filename, mime, size_bytes, "
                      "   storage_path, position, created_at, purged_at, "
-                     "   upload_status, expected_size, uploader, channel_id) "
+                     "   upload_status, expected_size, uploader, channel_id, "
+                     "   width, height) "
                      "SELECT id, message_id, kind, filename, mime, size_bytes, "
                      "       storage_path, position, created_at, purged_at, "
-                     "       upload_status, expected_size, uploader, channel_id "
+                     "       upload_status, expected_size, uploader, channel_id, "
+                     "       width, height "
                      "FROM attachments;") &&
                 must("DROP TABLE attachments;") &&
                 must("ALTER TABLE attachments_v4 RENAME TO attachments;");
@@ -896,7 +909,7 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
     const std::string sql =
         "SELECT id, message_id, kind, filename, mime, size_bytes, "
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
-        "  upload_status, expected_size, uploader "
+        "  upload_status, expected_size, uploader, width, height "
         "FROM attachments WHERE message_id IN (" + placeholders + ") "
         "  AND upload_status = 'ready' "
         "ORDER BY message_id ASC, position ASC;";
@@ -922,6 +935,8 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
         a.upload_status = q.col_text(10);
         a.expected_size = q.col_int64(11);
         a.uploader = q.col_text(12);
+        a.width = q.col_int(13);
+        a.height = q.col_int(14);
         out.push_back(std::move(a));
     }
     return out;
@@ -934,19 +949,26 @@ int64_t CommunityDb::insert_pending_attachment(const std::string& channel_id,
                                                int64_t expected_size,
                                                const std::string& storage_path,
                                                const std::string& uploader,
-                                               int32_t position) {
+                                               int32_t position,
+                                               int32_t width,
+                                               int32_t height) {
     std::lock_guard<std::mutex> lock(mutex_);
     Stmt q(db_,
         "INSERT INTO attachments("
         "  message_id, kind, filename, mime, size_bytes, storage_path, "
         "  position, created_at, purged_at, upload_status, expected_size, "
-        "  uploader, channel_id"
-        ") VALUES(0, ?, ?, ?, 0, ?, ?, ?, 0, 'uploading', ?, ?, ?);");
+        "  uploader, channel_id, width, height"
+        ") VALUES(0, ?, ?, ?, 0, ?, ?, ?, 0, 'uploading', ?, ?, ?, ?, ?);");
     if (!q.s) {
         std::cerr << "[DB] insert_pending_attachment prepare failed: "
                   << sqlite3_errmsg(db_) << "\n";
         return 0;
     }
+    // Clamp dimensions defensively — we don't want client-supplied values
+    // to end up negative, and absurdly large numbers are almost certainly
+    // junk that shouldn't drive placeholder sizing.
+    const int32_t w = width  < 0 ? 0 : (width  > 16384 ? 16384 : width);
+    const int32_t h = height < 0 ? 0 : (height > 16384 ? 16384 : height);
     q.bind_int(1, kind);
     q.bind_text(2, filename);
     q.bind_text(3, mime);
@@ -956,6 +978,8 @@ int64_t CommunityDb::insert_pending_attachment(const std::string& channel_id,
     q.bind_int64(7, expected_size);
     q.bind_text(8, uploader);
     q.bind_text(9, channel_id);
+    q.bind_int(10, w);
+    q.bind_int(11, h);
     int rc = q.step();
     if (rc != SQLITE_DONE) {
         std::cerr << "[DB] insert_pending_attachment step failed (rc=" << rc
@@ -970,7 +994,7 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
     Stmt q(db_,
         "SELECT id, message_id, kind, filename, mime, size_bytes, "
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
-        "  upload_status, expected_size, uploader, channel_id "
+        "  upload_status, expected_size, uploader, channel_id, width, height "
         "FROM attachments WHERE id=?;");
     if (!q.s) return std::nullopt;
     q.bind_int64(1, attachment_id);
@@ -989,6 +1013,8 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
     a.upload_status = q.col_text(10);
     a.expected_size = q.col_int64(11);
     a.uploader = q.col_text(12);
+    a.width = q.col_int(14);
+    a.height = q.col_int(15);
     return a;
 }
 
