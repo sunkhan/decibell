@@ -207,7 +207,12 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
           </div>
         )}
       </button>
-      {(tooLargeForPreview || !url) && (
+      {/* Only show the Download button when inline preview isn't happening:
+          either the file is too big to inline or the fetch actually failed.
+          Previously we also showed it while `!url` during a normal fetch,
+          which flashed the button on for the few hundred ms between the
+          placeholder and the image landing. */}
+      {(tooLargeForPreview || error !== null) && (
         <DownloadButton attachment={attachment} serverId={serverId} />
       )}
 
