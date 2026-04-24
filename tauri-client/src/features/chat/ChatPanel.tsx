@@ -391,6 +391,13 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
             ref={virtuosoRef}
             data={messages}
             firstItemIndex={firstItemIndex}
+            // Pin the initial render to the last (newest) message. The
+            // imperative scrollToIndex in the useEffect above is a backup
+            // for the case where data arrives after Virtuoso has mounted
+            // (which is our normal flow — channel opens before history
+            // lands), but having this prop set still helps Virtuoso size
+            // its measurement anchor correctly.
+            initialTopMostItemIndex={{ index: "LAST", align: "end" }}
             // "auto" = pin to bottom on append ONLY when the user was
             // already at the bottom. Matches our old wasNearBottomRef logic
             // natively.
@@ -469,8 +476,10 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
       {/* Pending attachments (uploaded / uploading) for this channel */}
       {activeChannelId && <PendingAttachmentsRow channelId={activeChannelId} />}
 
-      {/* Input bar */}
-      <div className="px-3 pb-2">
+      {/* Input bar. Matched top + bottom padding so the breathing room
+          between the last message and the input row mirrors the gap between
+          the input row and the bottom of the client. */}
+      <div className="px-3 py-2">
         <div className="flex min-h-[54px] items-center gap-2.5 rounded-xl border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
           <button
             onClick={handleAttach}
