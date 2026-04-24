@@ -21,6 +21,11 @@ interface ChatState {
   // Channels whose initial history page has been fetched, so we don't keep
   // re-fetching every time the user switches back to an empty channel.
   historyFetched: Record<string, boolean>;
+  // Virtuoso's "firstItemIndex" for each channel. Starts at a large fixed
+  // value on first load, decrements by `messages.length` on every prepend.
+  // Virtuoso uses this to keep the currently-visible row stable when older
+  // history slots in at the top.
+  firstItemIndexByChannel: Record<string, number>;
   onlineUsers: string[];
   connectedServers: Set<string>;
   serverOwner: Record<string, string>;
@@ -90,6 +95,7 @@ export const useChatStore = create<ChatState>((set) => ({
   hasMoreHistory: {},
   historyLoading: {},
   historyFetched: {},
+  firstItemIndexByChannel: {},
   onlineUsers: [],
   connectedServers: new Set(),
   serverOwner: {},
@@ -130,9 +136,20 @@ export const useChatStore = create<ChatState>((set) => ({
     const withId = merged.filter((m) => m.id !== 0).sort((a, b) => a.id - b.id);
     const ephemeral = merged.filter((m) => m.id === 0);
     merged = [...withId, ...ephemeral];
+    // Virtuoso's firstItemIndex decrements by the number of freshly-added
+    // rows so the visible row stays anchored when older history slots in
+    // above. Seed with a big number on first prepend so we never hit 0.
+    const INITIAL_FIRST_INDEX = 1_000_000_000;
+    const currentFirst =
+      state.firstItemIndexByChannel[channelId] ?? INITIAL_FIRST_INDEX;
+    const nextFirst = currentFirst - fresh.length;
     return {
       messagesByChannel: { ...state.messagesByChannel, [channelId]: merged },
       hasMoreHistory: { ...state.hasMoreHistory, [channelId]: hasMore },
+      firstItemIndexByChannel: {
+        ...state.firstItemIndexByChannel,
+        [channelId]: nextFirst,
+      },
     };
   }),
   setHistoryLoading: (channelId, loading) => set((state) => ({

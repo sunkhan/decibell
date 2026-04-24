@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { Virtuoso } from "react-virtuoso";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraftsStore } from "../../stores/draftsStore";
@@ -12,6 +13,11 @@ import EmojiPicker from "./EmojiPicker";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 import PendingAttachmentsRow from "./PendingAttachmentsRow";
 import { kindFromMime, formatBytes } from "./attachmentHelpers";
+
+// Must match the INITIAL_FIRST_INDEX seed in chatStore.prependHistory. Keeps
+// Virtuoso's firstItemIndex anchored well above zero so any realistic amount
+// of prepending still leaves room to decrement.
+const INITIAL_FIRST_INDEX = 1_000_000_000;
 
 export function ChatHeader() {
   const activeServerId = useChatStore((s) => s.activeServerId);
@@ -72,32 +78,15 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   const hasMoreHistory = useChatStore((s) => s.hasMoreHistory);
   const historyLoading = useChatStore((s) => s.historyLoading);
   const historyFetched = useChatStore((s) => s.historyFetched);
+  const firstItemIndexByChannel = useChatStore((s) => s.firstItemIndexByChannel);
   const activeView = useUiStore((s) => s.activeView);
 
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const messagesContentRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<RichInputHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
-  // Scroll-coordination refs. These drive the useLayoutEffect below that
-  // decides how to move scrollTop after the message list changes.
-  //   prevChannel:      last channel we rendered — a mismatch means "jump to bottom".
-  //   prevFirstId:      first (oldest) rendered id — a smaller new value means
-  //                     older messages just prepended.
-  //   prevMessageCount: so we can tell append from no-op.
-  //   wasNearBottom:    sticky-follow heuristic: only auto-scroll on append if
-  //                     the user was already within ~80px of the bottom.
-  //   pendingPrependAnchor: captured by the scroll handler right before firing
-  //                     a user-initiated older-page request, so the layout
-  //                     effect can preserve the visual anchor.
-  const prevChannelRef = useRef<string | null>(null);
-  const prevFirstIdRef = useRef<number>(0);
-  const prevMessageCountRef = useRef<number>(0);
-  const wasNearBottomRef = useRef<boolean>(true);
-  const pendingPrependAnchor = useRef<{ prevSH: number; prevST: number } | null>(null);
 
   const messages = activeChannelId
     ? messagesByChannel[activeChannelId] ?? []
@@ -108,6 +97,13 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
         (ch) => ch.id === activeChannelId
       )?.name
     : null;
+
+  // Virtuoso's sliding index for the oldest currently-loaded item. Decrements
+  // on each prepend (managed in chatStore.prependHistory) so the virtualizer
+  // can anchor the visible row without our own pre-scroll measurement dance.
+  const firstItemIndex = activeChannelId
+    ? firstItemIndexByChannel[activeChannelId] ?? INITIAL_FIRST_INDEX
+    : INITIAL_FIRST_INDEX;
 
   useEffect(() => {
     setSendError(null);
@@ -137,6 +133,10 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     });
   }, [activeServerId, activeChannelId, historyFetched]);
 
+  // Virtuoso calls this whenever the top of the list scrolls into view
+  // (including, helpfully, when the initial page doesn't fill the viewport
+  // so there's no scrollbar to interact with). Our own guards prevent
+  // double-fires while a request is already in flight.
   const fetchOlderPage = () => {
     if (!activeServerId || !activeChannelId) return;
     if (!hasMoreHistory[activeChannelId]) return;
@@ -154,128 +154,6 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
       useChatStore.getState().setHistoryLoading(activeChannelId!, false);
     });
   };
-
-  const handleScroll = () => {
-    const el = messagesContainerRef.current;
-    if (!el) return;
-    // Update the sticky-follow heuristic on every scroll event. The layout
-    // effect reads this after append to decide whether to auto-scroll.
-    wasNearBottomRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    // Near-top: user wants older history. Capture current scroll state so the
-    // layout effect can preserve the visual anchor after prepend, then fire.
-    if (el.scrollTop <= 100 && activeChannelId && hasMoreHistory[activeChannelId] && !historyLoading[activeChannelId]) {
-      pendingPrependAnchor.current = { prevSH: el.scrollHeight, prevST: el.scrollTop };
-      fetchOlderPage();
-    }
-  };
-
-  // Viewport-fill auto-paginate: when the first page doesn't overflow the
-  // container there's no scrollbar, so scroll-based pagination never fires.
-  // Pull the next page silently until the viewport is filled or hasMore=false.
-  //
-  // Deps: only `messages.length` (along with the active channel/server). The
-  // hasMoreHistory and historyLoading Records change reference on *every*
-  // store action against them, and depending on those would re-fire this
-  // effect mid-flight before its own setHistoryLoading(true) settles —
-  // which under bad timing can rapidly nest setStates and trip React's
-  // "Maximum update depth exceeded" guard. Reading the latest values via
-  // .getState() inside keeps the guard checks accurate without making the
-  // effect itself fan out.
-  useEffect(() => {
-    if (!activeServerId || !activeChannelId) return;
-    const ch = activeChannelId;
-    const s = useChatStore.getState();
-    if (!s.hasMoreHistory[ch]) return;
-    if (s.historyLoading[ch]) return;
-    const el = messagesContainerRef.current;
-    if (!el) return;
-    if (el.scrollHeight <= el.clientHeight + 10) {
-      fetchOlderPage();
-    }
-  }, [messages.length, activeServerId, activeChannelId]);  // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Scroll coordination. Runs synchronously after every render but before
-  // paint, so the user never sees an intermediate frame at the wrong position.
-  useLayoutEffect(() => {
-    const el = messagesContainerRef.current;
-    if (!el) return;
-
-    const channelChanged = prevChannelRef.current !== activeChannelId;
-    const firstId = messages.find((m) => m.id !== 0)?.id ?? 0;
-    const prependDetected =
-      !channelChanged &&
-      firstId !== 0 &&
-      prevFirstIdRef.current !== 0 &&
-      firstId < prevFirstIdRef.current;
-    const appendDetected =
-      !channelChanged &&
-      !prependDetected &&
-      messages.length > prevMessageCountRef.current;
-
-    if (channelChanged) {
-      // Instant jump to newest — no animation, no flash.
-      el.scrollTop = el.scrollHeight;
-      wasNearBottomRef.current = true;
-    } else if (prependDetected) {
-      if (pendingPrependAnchor.current) {
-        // User-initiated scroll-to-top: keep the visible message under the
-        // same viewport y-offset by shifting scrollTop by the added height.
-        const { prevSH, prevST } = pendingPrependAnchor.current;
-        el.scrollTop = el.scrollHeight - prevSH + prevST;
-        pendingPrependAnchor.current = null;
-      } else {
-        // Auto-fill prepend (viewport wasn't yet scrollable) — keep the user
-        // pinned to the newest content rather than the newly-revealed oldest.
-        el.scrollTop = el.scrollHeight;
-      }
-    } else if (appendDetected && wasNearBottomRef.current) {
-      // New real-time message arrived while the user was at/near the bottom.
-      el.scrollTop = el.scrollHeight;
-    }
-    // If append happened while user was scrolled up reading history, do
-    // nothing — their position stays where it was.
-
-    prevChannelRef.current = activeChannelId;
-    prevFirstIdRef.current = firstId;
-    prevMessageCountRef.current = messages.length;
-  }, [activeChannelId, messages.length, messages[0]?.id]);  // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Stay-at-bottom for asynchronous content growth.
-  //
-  // Image attachments (and potentially anything else that loads after
-  // mount — fonts, future embedded media, etc.) render at one height,
-  // then expand once their underlying data lands. The append-time
-  // useLayoutEffect above already ran with the smaller height, so a
-  // message ending in something that grows would leave the user a few
-  // hundred px short of the actual bottom.
-  //
-  // ResizeObserver on the inner content div catches every size change in
-  // one place, regardless of cause — much more reliable than chasing
-  // individual async events. Whenever the content gets taller and the
-  // user was within the near-bottom threshold, pin to the new bottom.
-  useEffect(() => {
-    const container = messagesContainerRef.current;
-    const content = messagesContentRef.current;
-    if (!container || !content) return;
-    let lastHeight = content.scrollHeight;
-    const ro = new ResizeObserver(() => {
-      const newHeight = content.scrollHeight;
-      if (newHeight === lastHeight) return;
-      const grew = newHeight > lastHeight;
-      lastHeight = newHeight;
-      if (!grew) return;
-      if (!wasNearBottomRef.current) return;
-      // requestAnimationFrame ensures the browser has applied the new
-      // layout before we read scrollHeight on the container.
-      requestAnimationFrame(() => {
-        if (!messagesContainerRef.current) return;
-        messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
-      });
-    });
-    ro.observe(content);
-    return () => ro.disconnect();
-  }, []);
 
   // Auto-focus editor when user starts typing anywhere
   useEffect(() => {
@@ -296,10 +174,6 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     const value = editorRef.current?.getValue() ?? input;
     if (!activeServerId || !activeChannelId) return;
 
-    // Pull pending attachments for this channel. Sending is blocked unless
-    // every one is in a terminal state — we refuse to send while a file is
-    // still uploading so the user doesn't see their message fire without its
-    // attachments.
     const pending = useAttachmentsStore.getState().selectForChannel(activeChannelId);
     const stillUploading = pending.some((a) => a.status === "uploading");
     if (stillUploading) {
@@ -350,7 +224,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
         directory: false,
         title: "Choose files to attach",
       });
-      if (!selection) return; // user cancelled
+      if (!selection) return;
       picked = Array.isArray(selection) ? selection : [selection];
     } catch (err) {
       setSendError(`File picker failed: ${err}`);
@@ -365,9 +239,6 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
 
   const startUpload = async (filePath: string) => {
     if (!activeServerId || !activeChannelId) return;
-    // stat_attachment_file also decodes image dimensions for image MIME
-    // types (0/0 for anything else) so we can feed them to the upload and
-    // let the server broadcast them downstream.
     type StatResult = {
       filename: string;
       sizeBytes: number;
@@ -404,7 +275,6 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     };
     useAttachmentsStore.getState().addPending(entry);
 
-    // Fire-and-forget — upload progress/completion events update the store.
     invoke("upload_attachment", {
       req: {
         pendingId,
@@ -417,9 +287,6 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
         height: meta.height,
       },
     }).catch((err) => {
-      // The Rust path also emits attachment_upload_failed; this catch is
-      // defensive so an exception from the bridge itself doesn't leave the
-      // card spinning forever.
       useAttachmentsStore.getState().markFailed(pendingId, String(err), false);
     });
   };
@@ -435,7 +302,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     editorRef.current?.insertEmoji(emoji);
   };
 
-  // Empty state
+  // Empty-state short-circuits
   if (activeView === "home" || !activeChannelId) {
     return (
       <div className="flex flex-1 items-center justify-center bg-bg-mid">
@@ -446,46 +313,87 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     );
   }
 
+  const isEmpty = messages.length === 0;
+  const isLoadingFirstPage =
+    isEmpty &&
+    (historyLoading[activeChannelId] ||
+      !historyFetched[activeChannelId]);
+
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-bg-mid">
       {/* Channel header */}
       {!hideHeader && <ChatHeader />}
 
       {/* Messages */}
-      <div
-        ref={messagesContainerRef}
-        onScroll={handleScroll}
-        className="flex-1 overflow-y-auto"
-      >
-        {/* Inner content wrapper — what the ResizeObserver watches so any
-            async height growth (image loads, etc.) re-pins to bottom. */}
-        <div ref={messagesContentRef} className="px-4 py-4">
-          {activeChannelId && historyLoading[activeChannelId] && (
-            <div className="flex justify-center py-2 text-[11px] text-text-muted">
-              Loading older messages…
-            </div>
-          )}
-          {activeChannelId &&
-            !historyLoading[activeChannelId] &&
-            hasMoreHistory[activeChannelId] === false &&
-            messages.length > 0 && (
-              <div className="flex justify-center py-2 text-[11px] text-text-muted">
-                Start of #{channelName ?? "channel"}
-              </div>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {isEmpty ? (
+          <div className="flex flex-1 items-center justify-center">
+            {isLoadingFirstPage ? (
+              <span className="text-[12px] text-text-muted">Loading…</span>
+            ) : (
+              <WelcomeState channelName={channelName ?? "channel"} />
             )}
-          {messages.length === 0 && !historyLoading[activeChannelId ?? ""] ? (
-            <WelcomeState channelName={channelName ?? "channel"} />
-          ) : (
-            messages.map((msg, i) => (
-              <MessageBubble
-                key={msg.id !== 0 ? msg.id : `${msg.timestamp}-${msg.sender}-${i}`}
-                message={msg}
-                grouped={shouldGroup(messages[i - 1], msg)}
-                serverId={activeServerId}
-              />
-            ))
-          )}
-        </div>
+          </div>
+        ) : (
+          <Virtuoso
+            // `key` forces a fresh Virtuoso instance per channel so scroll
+            // position, measurement cache, and initialTopMostItemIndex all
+            // reset correctly on channel switch.
+            key={activeChannelId}
+            data={messages}
+            firstItemIndex={firstItemIndex}
+            initialTopMostItemIndex={messages.length - 1}
+            // "auto" = pin to bottom on append ONLY when the user was
+            // already at the bottom. Matches our old wasNearBottomRef logic
+            // natively.
+            followOutput="auto"
+            startReached={fetchOlderPage}
+            // Virtuoso passes virtual indices (shifted by firstItemIndex);
+            // key by the underlying message id so identity is stable across
+            // prepend-driven index shifts.
+            computeItemKey={(_index, message) =>
+              message && message.id !== 0
+                ? String(message.id)
+                : message
+                  ? `eph-${message.timestamp}-${message.sender}`
+                  : `idx-${_index}`
+            }
+            components={{
+              Header: () => {
+                if (historyLoading[activeChannelId]) {
+                  return (
+                    <div className="flex justify-center py-2 text-[11px] text-text-muted">
+                      Loading older messages…
+                    </div>
+                  );
+                }
+                if (hasMoreHistory[activeChannelId] === false) {
+                  return (
+                    <div className="flex justify-center py-2 text-[11px] text-text-muted">
+                      Start of #{channelName ?? "channel"}
+                    </div>
+                  );
+                }
+                return null;
+              },
+            }}
+            itemContent={(index, message) => {
+              const position = index - firstItemIndex;
+              const prevMessage =
+                position > 0 ? messages[position - 1] : undefined;
+              return (
+                <div className="px-4">
+                  <MessageBubble
+                    message={message}
+                    grouped={shouldGroup(prevMessage, message)}
+                    serverId={activeServerId}
+                  />
+                </div>
+              );
+            }}
+            style={{ flex: 1, minHeight: 0 }}
+          />
+        )}
       </div>
 
       {/* Send error */}

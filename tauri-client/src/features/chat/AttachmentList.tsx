@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { Attachment } from "../../types";
+import { cacheImage, getCachedImage } from "./imageCache";
 
 // ---- shared helpers --------------------------------------------------------
 
@@ -136,11 +137,15 @@ function ImagePlaceholderIcon() {
 }
 
 function ImagePreview({ attachment, serverId }: { attachment: Attachment; serverId: string | null }) {
-  const [url, setUrl] = useState<string | null>(null);
+  // Consult the module-level cache first so a virtualized unmount/remount
+  // during scroll doesn't re-fetch the same image. The cache owns the
+  // object URL's lifecycle — we don't revoke on unmount, the LRU eviction
+  // in imageCache.ts does that when an entry falls out of the window.
+  const [url, setUrl] = useState<string | null>(() => getCachedImage(attachment.id));
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const hasFetched = useRef(false);
+  const hasFetched = useRef(url !== null);
 
   // Lazy-load: fetch the image blob only once the card scrolls into view.
   // Returned as raw bytes via tauri::ipc::Response, wrapped into an object
@@ -166,7 +171,9 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
             const blob = new Blob([buf], {
               type: attachment.mime || "application/octet-stream",
             });
-            setUrl(URL.createObjectURL(blob));
+            const objectUrl = URL.createObjectURL(blob);
+            cacheImage(attachment.id, objectUrl);
+            setUrl(objectUrl);
           })
           .catch((e) => {
             if (!cancelled) setError(String(e));
@@ -179,14 +186,6 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
       io.disconnect();
     };
   }, [serverId, attachment.id, attachment.sizeBytes, attachment.mime]);
-
-  // Revoke the object URL when the component unmounts or the url changes,
-  // so the browser can free the decoded image bytes instead of holding
-  // them for the lifetime of the page.
-  useEffect(() => {
-    if (!url) return;
-    return () => URL.revokeObjectURL(url);
-  }, [url]);
 
   const tooLargeForPreview = attachment.sizeBytes > INLINE_PREVIEW_CAP;
   const box = reserveBox(attachment);
