@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Virtuoso } from "react-virtuoso";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraftsStore } from "../../stores/draftsStore";
@@ -18,6 +18,18 @@ import { kindFromMime, formatBytes } from "./attachmentHelpers";
 // Virtuoso's firstItemIndex anchored well above zero so any realistic amount
 // of prepending still leaves room to decrement.
 const INITIAL_FIRST_INDEX = 1_000_000_000;
+
+// Stable key for a message (server id when known; ephemeral tuple otherwise).
+// Shared between Virtuoso's computeItemKey and the grouping memo so the two
+// stay in lockstep.
+function messageKey(
+  message: { id: number; timestamp: string; sender: string },
+  fallbackIndex: number,
+): string {
+  return message.id !== 0
+    ? String(message.id)
+    : `eph-${message.timestamp}-${message.sender}-${fallbackIndex}`;
+}
 
 export function ChatHeader() {
   const activeServerId = useChatStore((s) => s.activeServerId);
@@ -87,6 +99,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   const [pickerOpen, setPickerOpen] = useState(false);
   const editorRef = useRef<RichInputHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
 
   const messages = activeChannelId
     ? messagesByChannel[activeChannelId] ?? []
@@ -104,6 +117,41 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   const firstItemIndex = activeChannelId
     ? firstItemIndexByChannel[activeChannelId] ?? INITIAL_FIRST_INDEX
     : INITIAL_FIRST_INDEX;
+
+  // Pre-compute grouped-with-previous for every message so itemContent is a
+  // pure lookup and immune to any closure timing weirdness during Virtuoso
+  // re-renders (the prior approach recomputed from an index+firstItemIndex
+  // math inside itemContent, which could briefly read mismatched values
+  // during measurement passes and flash avatar/header on top rows).
+  const groupedByMessageKey = useMemo(() => {
+    const map = new Map<string, boolean>();
+    for (let i = 0; i < messages.length; i++) {
+      const key = messageKey(messages[i], i);
+      map.set(key, i > 0 ? shouldGroup(messages[i - 1], messages[i]) : false);
+    }
+    return map;
+  }, [messages]);
+
+  // One-shot: when a channel's first history page lands, jump to the
+  // newest message. Captured per-channel so revisiting an already-populated
+  // channel also re-jumps (users expect to land at newest). Uses
+  // requestAnimationFrame to run after Virtuoso has measured the new rows.
+  const scrolledInitiallyForRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!activeChannelId || messages.length === 0) return;
+    if (scrolledInitiallyForRef.current.has(activeChannelId)) return;
+    scrolledInitiallyForRef.current.add(activeChannelId);
+    const channelAtScrollTime = activeChannelId;
+    requestAnimationFrame(() => {
+      // Bail if the user already switched channels in the meantime.
+      if (useChatStore.getState().activeChannelId !== channelAtScrollTime) return;
+      virtuosoRef.current?.scrollToIndex({
+        index: "LAST",
+        align: "end",
+        behavior: "auto",
+      });
+    });
+  }, [activeChannelId, messages.length]);
 
   useEffect(() => {
     setSendError(null);
@@ -337,27 +385,39 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
         ) : (
           <Virtuoso
             // `key` forces a fresh Virtuoso instance per channel so scroll
-            // position, measurement cache, and initialTopMostItemIndex all
+            // position, measurement cache, and scrollToIndex state all
             // reset correctly on channel switch.
             key={activeChannelId}
+            ref={virtuosoRef}
             data={messages}
             firstItemIndex={firstItemIndex}
-            initialTopMostItemIndex={messages.length - 1}
             // "auto" = pin to bottom on append ONLY when the user was
             // already at the bottom. Matches our old wasNearBottomRef logic
             // natively.
             followOutput="auto"
+            // Overscan in px: pre-mounts rows around the viewport so rows
+            // are already measured by the time they scroll into view. Bigger
+            // top buffer because scrolling upward through history is the
+            // scenario that benefits most.
+            increaseViewportBy={{ top: 800, bottom: 200 }}
             startReached={fetchOlderPage}
+            // Pre-fetch when the user is within ~5 items of the oldest
+            // loaded row, not just AT the absolute top. Gives the server
+            // round-trip a head start so momentum scrolling doesn't stall
+            // while waiting for the older page.
+            rangeChanged={({ startIndex }) => {
+              if (!activeChannelId) return;
+              const position = startIndex - firstItemIndex;
+              if (position <= 5) fetchOlderPage();
+            }}
             // Virtuoso passes virtual indices (shifted by firstItemIndex);
             // key by the underlying message id so identity is stable across
             // prepend-driven index shifts.
-            computeItemKey={(_index, message) =>
-              message && message.id !== 0
-                ? String(message.id)
-                : message
-                  ? `eph-${message.timestamp}-${message.sender}`
-                  : `idx-${_index}`
-            }
+            computeItemKey={(index, message) => {
+              if (!message) return `idx-${index}`;
+              const position = index - firstItemIndex;
+              return messageKey(message, position);
+            }}
             components={{
               Header: () => {
                 if (historyLoading[activeChannelId]) {
@@ -379,13 +439,18 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
             }}
             itemContent={(index, message) => {
               const position = index - firstItemIndex;
-              const prevMessage =
-                position > 0 ? messages[position - 1] : undefined;
+              // Read grouped from the memoized map rather than recomputing
+              // here — closure timing during Virtuoso remeasure can briefly
+              // pass a stale `messages` slice, which flashed avatars on
+              // rows that should have been grouped.
+              const grouped = groupedByMessageKey.get(
+                messageKey(message, position),
+              ) ?? false;
               return (
                 <div className="px-4">
                   <MessageBubble
                     message={message}
-                    grouped={shouldGroup(prevMessage, message)}
+                    grouped={grouped}
                     serverId={activeServerId}
                   />
                 </div>
