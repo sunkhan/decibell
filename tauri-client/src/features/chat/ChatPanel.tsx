@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Virtuoso } from "react-virtuoso";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraftsStore } from "../../stores/draftsStore";
@@ -55,10 +55,35 @@ function MessagesView({
   historyLoading: boolean;
   fetchOlderPage: () => void;
 }) {
-  // Captured once at mount, stable for the component's lifetime.
-  const [initialTopMostItemIndex] = useState(() =>
-    Math.max(0, messages.length - 1),
-  );
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+
+  // Imperative scroll to the newest message right after Virtuoso mounts.
+  //
+  // We deliberately don't use `initialTopMostItemIndex` — having it set
+  // (with any value) makes Virtuoso re-anchor on every prepend, which
+  // fights firstItemIndex anchoring and produces stuttery scroll-up.
+  // Without it, prepend behavior is buttery smooth.
+  //
+  // Timing: setTimeout(0) defers past the current event-loop tick so
+  // Virtuoso has a chance to measure rendered rows before we scroll.
+  // requestAnimationFrame alone isn't enough on slower frames — it
+  // sometimes fires before measurement settles, and the scroll lands
+  // at the top instead of the bottom.
+  //
+  // Empty deps + key={channelId} on the parent means this fires exactly
+  // once per channel visit.
+  useEffect(() => {
+    if (messages.length === 0) return;
+    const id = setTimeout(() => {
+      virtuosoRef.current?.scrollToIndex({
+        index: messages.length - 1,
+        align: "end",
+        behavior: "auto",
+      });
+    }, 0);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const groupedByMessageKey = useMemo(() => {
     const map = new Map<string, boolean>();
@@ -71,9 +96,9 @@ function MessagesView({
 
   return (
     <Virtuoso
+      ref={virtuosoRef}
       data={messages}
       firstItemIndex={firstItemIndex}
-      initialTopMostItemIndex={initialTopMostItemIndex}
       followOutput="auto"
       increaseViewportBy={{ top: 800, bottom: 200 }}
       startReached={fetchOlderPage}
