@@ -79,6 +79,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   const [sendError, setSendError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const messagesContentRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<RichInputHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   // Scroll-coordination refs. These drive the useLayoutEffect below that
@@ -240,22 +241,40 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     prevMessageCountRef.current = messages.length;
   }, [activeChannelId, messages.length, messages[0]?.id]);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Image attachments render as a small placeholder first, then expand to
-  // their real height once the data URL fetches in. The append-time
-  // useLayoutEffect above ran with the placeholder height, so we'd land
-  // a few hundred px short of the bottom for any message ending with an
-  // image. Catch the <img> load event in capture phase (it doesn't bubble)
-  // and re-pin to bottom if the user was already near it.
+  // Stay-at-bottom for asynchronous content growth.
+  //
+  // Image attachments (and potentially anything else that loads after
+  // mount — fonts, future embedded media, etc.) render at one height,
+  // then expand once their underlying data lands. The append-time
+  // useLayoutEffect above already ran with the smaller height, so a
+  // message ending in something that grows would leave the user a few
+  // hundred px short of the actual bottom.
+  //
+  // ResizeObserver on the inner content div catches every size change in
+  // one place, regardless of cause — much more reliable than chasing
+  // individual async events. Whenever the content gets taller and the
+  // user was within the near-bottom threshold, pin to the new bottom.
   useEffect(() => {
-    const el = messagesContainerRef.current;
-    if (!el) return;
-    const onLoad = (e: Event) => {
-      if ((e.target as HTMLElement | null)?.tagName !== "IMG") return;
+    const container = messagesContainerRef.current;
+    const content = messagesContentRef.current;
+    if (!container || !content) return;
+    let lastHeight = content.scrollHeight;
+    const ro = new ResizeObserver(() => {
+      const newHeight = content.scrollHeight;
+      if (newHeight === lastHeight) return;
+      const grew = newHeight > lastHeight;
+      lastHeight = newHeight;
+      if (!grew) return;
       if (!wasNearBottomRef.current) return;
-      el.scrollTop = el.scrollHeight;
-    };
-    el.addEventListener("load", onLoad, true);
-    return () => el.removeEventListener("load", onLoad, true);
+      // requestAnimationFrame ensures the browser has applied the new
+      // layout before we read scrollHeight on the container.
+      requestAnimationFrame(() => {
+        if (!messagesContainerRef.current) return;
+        messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+      });
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
   }, []);
 
   // Auto-focus editor when user starts typing anywhere
@@ -427,33 +446,37 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
       <div
         ref={messagesContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-4 py-4"
+        className="flex-1 overflow-y-auto"
       >
-        {activeChannelId && historyLoading[activeChannelId] && (
-          <div className="flex justify-center py-2 text-[11px] text-text-muted">
-            Loading older messages…
-          </div>
-        )}
-        {activeChannelId &&
-          !historyLoading[activeChannelId] &&
-          hasMoreHistory[activeChannelId] === false &&
-          messages.length > 0 && (
+        {/* Inner content wrapper — what the ResizeObserver watches so any
+            async height growth (image loads, etc.) re-pins to bottom. */}
+        <div ref={messagesContentRef} className="px-4 py-4">
+          {activeChannelId && historyLoading[activeChannelId] && (
             <div className="flex justify-center py-2 text-[11px] text-text-muted">
-              Start of #{channelName ?? "channel"}
+              Loading older messages…
             </div>
           )}
-        {messages.length === 0 && !historyLoading[activeChannelId ?? ""] ? (
-          <WelcomeState channelName={channelName ?? "channel"} />
-        ) : (
-          messages.map((msg, i) => (
-            <MessageBubble
-              key={msg.id !== 0 ? msg.id : `${msg.timestamp}-${msg.sender}-${i}`}
-              message={msg}
-              grouped={shouldGroup(messages[i - 1], msg)}
-              serverId={activeServerId}
-            />
-          ))
-        )}
+          {activeChannelId &&
+            !historyLoading[activeChannelId] &&
+            hasMoreHistory[activeChannelId] === false &&
+            messages.length > 0 && (
+              <div className="flex justify-center py-2 text-[11px] text-text-muted">
+                Start of #{channelName ?? "channel"}
+              </div>
+            )}
+          {messages.length === 0 && !historyLoading[activeChannelId ?? ""] ? (
+            <WelcomeState channelName={channelName ?? "channel"} />
+          ) : (
+            messages.map((msg, i) => (
+              <MessageBubble
+                key={msg.id !== 0 ? msg.id : `${msg.timestamp}-${msg.sender}-${i}`}
+                message={msg}
+                grouped={shouldGroup(messages[i - 1], msg)}
+                serverId={activeServerId}
+              />
+            ))
+          )}
+        </div>
       </div>
 
       {/* Send error */}
