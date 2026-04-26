@@ -138,10 +138,40 @@ export function startQueuedUpload(p: PendingAttachment): Promise<{ ok: boolean }
       s === "ready" || s === "failed" || s === "cancelled";
     const isOk = (s: PendingAttachment["status"] | undefined) => s === "ready";
 
+    // Ship the captured thumbnail (if any) and only resolve once the
+    // server has stored it. Awaiting this is what keeps the outgoing
+    // ChannelMsg from racing the thumbnail POST — without the await,
+    // receivers would see thumbnail_size_bytes=0 baked into their
+    // message and never lazy-fetch even after the bytes land. A
+    // thumbnail failure is non-fatal — message goes regardless, just
+    // without a server-side poster.
+    const finalize = async (ok: boolean) => {
+      if (ok) {
+        const blob = pendingThumbnails.get(p.pendingId);
+        const attachmentId = useAttachmentsStore
+          .getState()
+          .byPendingId[p.pendingId]?.attachmentId;
+        if (blob && attachmentId) {
+          try {
+            const buf = await blob.arrayBuffer();
+            await invoke("upload_attachment_thumbnail", {
+              serverId: p.serverId,
+              attachmentId,
+              bytes: Array.from(new Uint8Array(buf)),
+            });
+          } catch (err) {
+            console.warn("[upload] thumbnail upload failed", err);
+          }
+        }
+      }
+      pendingThumbnails.delete(p.pendingId);
+      resolve({ ok });
+    };
+
     // Already terminal? (Race between markUploading and an immediate event.)
     const now = useAttachmentsStore.getState().byPendingId[p.pendingId]?.status;
     if (isTerminal(now)) {
-      resolve({ ok: isOk(now) });
+      void finalize(isOk(now));
       return;
     }
 
@@ -157,32 +187,7 @@ export function startQueuedUpload(p: PendingAttachment): Promise<{ ok: boolean }
       }
       if (isTerminal(status)) {
         unsub();
-        const ok = isOk(status);
-        if (ok) {
-          // Fire-and-forget the thumbnail upload. Failure is non-fatal —
-          // the placeholder just shows its plain look on the receiver
-          // side. Send the message either way.
-          const blob = pendingThumbnails.get(p.pendingId);
-          const attachmentId = useAttachmentsStore
-            .getState()
-            .byPendingId[p.pendingId]?.attachmentId;
-          if (blob && attachmentId) {
-            blob
-              .arrayBuffer()
-              .then((buf) =>
-                invoke("upload_attachment_thumbnail", {
-                  serverId: p.serverId,
-                  attachmentId,
-                  bytes: Array.from(new Uint8Array(buf)),
-                }),
-              )
-              .catch((err) => {
-                console.warn("[upload] thumbnail upload failed", err);
-              });
-          }
-        }
-        pendingThumbnails.delete(p.pendingId);
-        resolve({ ok });
+        void finalize(isOk(status));
       }
     });
   });
