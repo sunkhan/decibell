@@ -240,7 +240,8 @@ void CommunityDb::migrate_to_v2_() {
         "  channel_id TEXT NOT NULL DEFAULT '',"
         "  width INTEGER NOT NULL DEFAULT 0,"
         "  height INTEGER NOT NULL DEFAULT 0,"
-        "  thumbnail_size_bytes INTEGER NOT NULL DEFAULT 0"
+        "  thumbnail_size_bytes INTEGER NOT NULL DEFAULT 0,"
+        "  thumbnail_sizes_mask INTEGER NOT NULL DEFAULT 0"
         ");");
     exec_sql(db_,
         "CREATE INDEX IF NOT EXISTS idx_attachments_message "
@@ -261,6 +262,8 @@ void CommunityDb::migrate_to_v2_() {
         { "height",        "height INTEGER NOT NULL DEFAULT 0" },
         { "thumbnail_size_bytes",
                            "thumbnail_size_bytes INTEGER NOT NULL DEFAULT 0" },
+        { "thumbnail_sizes_mask",
+                           "thumbnail_sizes_mask INTEGER NOT NULL DEFAULT 0" },
     };
     for (const auto& c : attach_cols) {
         if (!column_exists(db_, "attachments", c.name)) {
@@ -268,6 +271,14 @@ void CommunityDb::migrate_to_v2_() {
             exec_sql(db_, sql.c_str());
         }
     }
+    // Backfill: rows that were uploaded under the legacy single-size
+    // thumbnail scheme have their bytes counted but no bit set in the
+    // new mask. Mark them as having the 320 px size (bit 0) so the
+    // size-aware GET handler can route to the legacy ".thumb.jpg"
+    // file. Idempotent — re-running just touches the same rows.
+    exec_sql(db_,
+        "UPDATE attachments SET thumbnail_sizes_mask = 1 "
+        "WHERE thumbnail_size_bytes > 0 AND thumbnail_sizes_mask = 0;");
     // For sweeping abandoned pending uploads cheaply.
     exec_sql(db_,
         "CREATE INDEX IF NOT EXISTS idx_attachments_pending "
@@ -375,17 +386,18 @@ void CommunityDb::migrate_to_v2_() {
                      "  channel_id TEXT NOT NULL DEFAULT '',"
                      "  width INTEGER NOT NULL DEFAULT 0,"
                      "  height INTEGER NOT NULL DEFAULT 0,"
-                     "  thumbnail_size_bytes INTEGER NOT NULL DEFAULT 0"
+                     "  thumbnail_size_bytes INTEGER NOT NULL DEFAULT 0,"
+                     "  thumbnail_sizes_mask INTEGER NOT NULL DEFAULT 0"
                      ");") &&
                 must("INSERT INTO attachments_v4 "
                      "  (id, message_id, kind, filename, mime, size_bytes, "
                      "   storage_path, position, created_at, purged_at, "
                      "   upload_status, expected_size, uploader, channel_id, "
-                     "   width, height, thumbnail_size_bytes) "
+                     "   width, height, thumbnail_size_bytes, thumbnail_sizes_mask) "
                      "SELECT id, message_id, kind, filename, mime, size_bytes, "
                      "       storage_path, position, created_at, purged_at, "
                      "       upload_status, expected_size, uploader, channel_id, "
-                     "       width, height, thumbnail_size_bytes "
+                     "       width, height, thumbnail_size_bytes, thumbnail_sizes_mask "
                      "FROM attachments;") &&
                 must("DROP TABLE attachments;") &&
                 must("ALTER TABLE attachments_v4 RENAME TO attachments;");
@@ -914,7 +926,7 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
         "SELECT id, message_id, kind, filename, mime, size_bytes, "
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
         "  upload_status, expected_size, uploader, width, height, "
-        "  thumbnail_size_bytes "
+        "  thumbnail_size_bytes, thumbnail_sizes_mask "
         "FROM attachments WHERE message_id IN (" + placeholders + ") "
         "  AND upload_status = 'ready' "
         "ORDER BY message_id ASC, position ASC;";
@@ -943,6 +955,7 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
         a.width = q.col_int(13);
         a.height = q.col_int(14);
         a.thumbnail_size_bytes = q.col_int64(15);
+        a.thumbnail_sizes_mask = q.col_int(16);
         out.push_back(std::move(a));
     }
     return out;
@@ -1001,7 +1014,7 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
         "SELECT id, message_id, kind, filename, mime, size_bytes, "
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
         "  upload_status, expected_size, uploader, channel_id, width, height, "
-        "  thumbnail_size_bytes "
+        "  thumbnail_size_bytes, thumbnail_sizes_mask "
         "FROM attachments WHERE id=?;");
     if (!q.s) return std::nullopt;
     q.bind_int64(1, attachment_id);
@@ -1023,6 +1036,7 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
     a.width = q.col_int(14);
     a.height = q.col_int(15);
     a.thumbnail_size_bytes = q.col_int64(16);
+    a.thumbnail_sizes_mask = q.col_int(17);
     return a;
 }
 
@@ -1074,6 +1088,27 @@ bool CommunityDb::set_attachment_thumbnail_size(int64_t attachment_id, int64_t s
     if (!q.s) return false;
     q.bind_int64(1, size < 0 ? 0 : size);
     q.bind_int64(2, attachment_id);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
+}
+
+bool CommunityDb::add_attachment_thumbnail_size(int64_t attachment_id,
+                                                int32_t size_bit,
+                                                int64_t bytes) {
+    if (size_bit == 0 || bytes < 0) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    // OR the bit and accumulate bytes. Re-uploads of the same size add
+    // their new byte count again — the total drifts slightly upward but
+    // it's only used as a presence/sizing hint, not for billing.
+    Stmt q(db_,
+        "UPDATE attachments "
+        "SET thumbnail_size_bytes = thumbnail_size_bytes + ?, "
+        "    thumbnail_sizes_mask = thumbnail_sizes_mask | ? "
+        "WHERE id=?;");
+    if (!q.s) return false;
+    q.bind_int64(1, bytes);
+    q.bind_int(2, size_bit);
+    q.bind_int64(3, attachment_id);
     if (q.step() != SQLITE_DONE) return false;
     return sqlite3_changes(db_) > 0;
 }

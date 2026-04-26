@@ -341,27 +341,35 @@ pub async fn post_complete(
         .map_err(|e| format!("complete response parse: {}", e))
 }
 
-/// POST /attachments/:id/thumbnail — uploads the raw JPEG bytes of a
-/// thumbnail to attach to an already-`ready` attachment. Server stores
-/// the bytes at `<storage_path>.thumb.jpg` and stamps the size on the
-/// attachment row so downstream consumers can lazy-fetch via
-/// `?variant=thumb` on GET.
+/// POST /attachments/:id/thumbnail[?size=N] — uploads the raw JPEG
+/// bytes of a thumbnail to attach to an already-`ready` attachment.
+/// `size` selects which pre-generated size variant this is (320/640/
+/// 1280 px long-edge). Pass `None` for the legacy single-size path —
+/// server writes to `<storage_path>.thumb.jpg` and only sets the
+/// bytes-only DB field. Pass `Some(n)` for the new multi-size path —
+/// server writes to `<storage_path>.thumb-Npx.jpg` and OR-s the
+/// matching bit into the row's mask.
 pub async fn post_thumbnail(
     host: &str,
     port: u16,
     jwt: &str,
     id: i64,
+    size: Option<u32>,
     bytes: &[u8],
 ) -> Result<(), String> {
     let mut stream = connect_tls(host, port).await?;
+    let query = match size {
+        Some(n) => format!("?size={}", n),
+        None => String::new(),
+    };
     let head = format!(
-        "POST /attachments/{id}/thumbnail HTTP/1.1\r\n\
+        "POST /attachments/{id}/thumbnail{query} HTTP/1.1\r\n\
          Host: {host}:{port}\r\n\
          Authorization: Bearer {jwt}\r\n\
          Content-Type: image/jpeg\r\n\
          Content-Length: {len}\r\n\
          Connection: close\r\n\r\n",
-        id = id, host = host, port = port, jwt = jwt, len = bytes.len()
+        id = id, query = query, host = host, port = port, jwt = jwt, len = bytes.len()
     );
     stream.write_all(head.as_bytes()).await
         .map_err(|e| format!("Write thumbnail head: {}", e))?;
@@ -444,9 +452,11 @@ pub async fn stream_get<W: tokio::io::AsyncWrite + Unpin>(
     stream_get_inner(host, port, jwt, id, None, start, writer, throttle, observer).await
 }
 
-/// Like `stream_get` but with `?variant=<name>` appended so the server
-/// returns the named sibling file (e.g. `thumb` for `.thumb.jpg`).
-/// No Range — variant fetches are tiny and only get called once per
+/// Like `stream_get` but with `?variant=<name>[&size=<px>]` appended so
+/// the server returns the named sibling file. `size` is honored only
+/// for `variant=thumb` and selects which pre-generated thumbnail size
+/// to fetch; `None` lets the server pick the largest available. No
+/// Range — variant fetches are tiny and only get called once per
 /// placeholder scroll-in.
 pub async fn stream_get_variant<W: tokio::io::AsyncWrite + Unpin>(
     host: &str,
@@ -454,11 +464,12 @@ pub async fn stream_get_variant<W: tokio::io::AsyncWrite + Unpin>(
     jwt: &str,
     id: i64,
     variant: &str,
+    size: Option<u32>,
     writer: W,
     throttle: &RateLimiter,
     observer: &dyn DownloadObserver,
 ) -> Result<u64, String> {
-    stream_get_inner(host, port, jwt, id, Some(variant), 0, writer, throttle, observer).await
+    stream_get_inner(host, port, jwt, id, Some((variant, size)), 0, writer, throttle, observer).await
 }
 
 async fn stream_get_inner<W: tokio::io::AsyncWrite + Unpin>(
@@ -466,7 +477,7 @@ async fn stream_get_inner<W: tokio::io::AsyncWrite + Unpin>(
     port: u16,
     jwt: &str,
     id: i64,
-    variant: Option<&str>,
+    variant: Option<(&str, Option<u32>)>,
     start: u64,
     mut writer: W,
     throttle: &RateLimiter,
@@ -479,7 +490,8 @@ async fn stream_get_inner<W: tokio::io::AsyncWrite + Unpin>(
         String::new()
     };
     let query = match variant {
-        Some(v) => format!("?variant={}", v),
+        Some((v, Some(sz))) => format!("?variant={}&size={}", v, sz),
+        Some((v, None)) => format!("?variant={}", v),
         None => String::new(),
     };
     let head = format!(

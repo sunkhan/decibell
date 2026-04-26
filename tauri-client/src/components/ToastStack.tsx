@@ -51,15 +51,15 @@ function ToastCard({ toast }: { toast: ToastT }) {
 
   return (
     <div
-      className={`pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-xl border bg-bg-light px-4 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,255,255,0.02)] animate-[toastIn_0.25s_ease_both] ${SEVERITY_BORDER[toast.severity]}`}
+      className={`pointer-events-auto flex w-full max-w-md items-start gap-3 rounded-xl border bg-bg-light px-4 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,255,255,0.02)] animate-[toastIn_0.25s_ease_both] ${SEVERITY_BORDER[toast.severity]}`}
     >
-      <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${SEVERITY_ICON_BG[toast.severity]}`}>
+      <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${SEVERITY_ICON_BG[toast.severity]}`}>
         <SeverityIcon severity={toast.severity} />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-[13px] font-medium text-text-primary">{toast.title}</p>
+        <p className="text-[13px] font-medium text-text-primary [overflow-wrap:anywhere]">{toast.title}</p>
         {toast.body && (
-          <p className="mt-0.5 truncate text-[11px] leading-relaxed text-text-muted [overflow-wrap:anywhere]">
+          <p className="mt-0.5 text-[11px] leading-relaxed text-text-muted [overflow-wrap:anywhere]">
             {toast.body}
           </p>
         )}
@@ -67,7 +67,7 @@ function ToastCard({ toast }: { toast: ToastT }) {
       <button
         onClick={() => dismiss(toast.id)}
         aria-label="Dismiss"
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+        className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
           <line x1="18" y1="6" x2="6" y2="18" />

@@ -1,9 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
+import { THUMB_SIZES, type ThumbSize } from "./imageMetadata";
 
 export interface VideoMetadata {
   width: number;
   height: number;
-  thumbnail: Blob | null;
+  // Map of long-edge px → encoded JPEG blob. Empty when extraction
+  // failed. May contain a subset of THUMB_SIZES (skipping sizes >= the
+  // source's long edge to avoid upscaling).
+  thumbnails: Map<ThumbSize, Blob>;
 }
 
 interface StagedMedia {
@@ -23,13 +27,12 @@ interface StagedMedia {
 // dimensions / thumbnail, and the placeholder falls back to its plain
 // look. The caller logs and moves on.
 
-const TARGET_THUMB_LONG_EDGE = 320;
 const JPEG_QUALITY = 0.7;
 const SEEK_POSITION_SECONDS = 1.0;
 const METADATA_TIMEOUT_MS = 15000;
 
 export async function extractVideoMetadata(filePath: string): Promise<VideoMetadata> {
-  const empty: VideoMetadata = { width: 0, height: 0, thumbnail: null };
+  const empty: VideoMetadata = { width: 0, height: 0, thumbnails: new Map() };
   let staged: StagedMedia | null = null;
   try {
     staged = await invoke<StagedMedia>("stage_file_for_media", { path: filePath });
@@ -82,33 +85,34 @@ export async function extractVideoMetadata(filePath: string): Promise<VideoMetad
       const seekTarget = isFinite(video.duration) && video.duration > SEEK_POSITION_SECONDS
         ? SEEK_POSITION_SECONDS
         : 0;
-      const onSeeked = () => {
+      const onSeeked = async () => {
         try {
-          const scale = Math.min(1, TARGET_THUMB_LONG_EDGE / Math.max(width, height));
-          const tw = Math.max(1, Math.round(width * scale));
-          const th = Math.max(1, Math.round(height * scale));
-          const canvas = document.createElement("canvas");
-          canvas.width = tw;
-          canvas.height = th;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) {
-            window.clearTimeout(timer);
-            finish({ width, height, thumbnail: null });
-            return;
+          const longEdge = Math.max(width, height);
+          const thumbnails = new Map<ThumbSize, Blob>();
+          // Encode each predefined size from the same captured frame.
+          // Skip sizes >= the source long edge to avoid upscaling.
+          for (const target of THUMB_SIZES) {
+            if (target >= longEdge && thumbnails.size > 0) break;
+            const scale = Math.min(1, target / longEdge);
+            const tw = Math.max(1, Math.round(width * scale));
+            const th = Math.max(1, Math.round(height * scale));
+            const canvas = document.createElement("canvas");
+            canvas.width = tw;
+            canvas.height = th;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) continue;
+            ctx.drawImage(video, 0, 0, tw, th);
+            const blob: Blob | null = await new Promise((res) =>
+              canvas.toBlob(res, "image/jpeg", JPEG_QUALITY),
+            );
+            if (blob) thumbnails.set(target, blob);
           }
-          ctx.drawImage(video, 0, 0, tw, th);
-          canvas.toBlob(
-            (blob) => {
-              window.clearTimeout(timer);
-              finish({ width, height, thumbnail: blob });
-            },
-            "image/jpeg",
-            JPEG_QUALITY,
-          );
+          window.clearTimeout(timer);
+          finish({ width, height, thumbnails });
         } catch (err) {
           console.warn("[video-meta] capture failed", err);
           window.clearTimeout(timer);
-          finish({ width, height, thumbnail: null });
+          finish({ width, height, thumbnails: new Map() });
         }
       };
       video.addEventListener("seeked", onSeeked, { once: true });

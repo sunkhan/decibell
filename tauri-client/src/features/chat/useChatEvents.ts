@@ -24,6 +24,7 @@ interface MessagePayload {
     width: number;
     height: number;
     thumbnailSizeBytes: number;
+    thumbnailSizesMask: number;
   }>;
 }
 
@@ -70,6 +71,7 @@ function mapAttachment(a: MessagePayload["attachments"][number]): Attachment {
     width: a.width ?? 0,
     height: a.height ?? 0,
     thumbnailSizeBytes: a.thumbnailSizeBytes ?? 0,
+    thumbnailSizesMask: a.thumbnailSizesMask ?? 0,
   };
 }
 

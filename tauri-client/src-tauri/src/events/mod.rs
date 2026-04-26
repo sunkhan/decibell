@@ -86,10 +86,14 @@ pub struct AttachmentPayload {
     // Intrinsic image dimensions, 0 when unknown (non-image or legacy row).
     pub width: u32,
     pub height: u32,
-    // Size of the JPEG thumbnail stored alongside this attachment on the
-    // server (0 = none). Lets video placeholders decide whether to lazy-
-    // fetch a poster preview via /attachments/:id?variant=thumb.
+    // Total bytes across all server-stored thumbnail sizes for this
+    // attachment (0 = none). Used as a "fetch makes sense" flag.
     pub thumbnail_size_bytes: u32,
+    // Bitmask of pre-generated thumbnail sizes available on the server.
+    // bit 0 = 320 px long-edge, bit 1 = 640 px, bit 2 = 1280 px. 0 with
+    // thumbnail_size_bytes > 0 means a legacy single-size upload (320,
+    // served from the legacy path without &size=).
+    pub thumbnail_sizes_mask: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -701,18 +701,17 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
         <p className="px-4 text-xs text-error">{sendError}</p>
       )}
 
-      {/* Pending attachments (uploaded / uploading) for this channel */}
-      {activeChannelId && <PendingAttachmentsRow channelId={activeChannelId} />}
-
-      {/* Input bar. Matched top + bottom padding so the breathing room
-          between the last message and the input row mirrors the gap between
-          the input row and the bottom of the client.
-          Drop-target wiring: when a file drag enters the window, the input
-          bar lights up; the more saturated state kicks in when the cursor
-          is actually over it. */}
+      {/* Input bar. Pending attachments live inside the same rounded
+          chrome (above the textarea row) so adding files visibly
+          expands the bar upward, matching Discord's pattern. The bar
+          itself is a flex column: pending tiles row on top, controls
+          row on bottom.
+          Drop-target wiring: when a file drag enters the window, the
+          input bar lights up; the more saturated state kicks in when
+          the cursor is actually over it. */}
       <div className="px-3 py-2" data-drop-target="active-input">
         <div
-          className={`relative flex min-h-[54px] items-center gap-2.5 rounded-xl border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)] ${
+          className={`relative flex min-h-[54px] flex-col gap-2.5 rounded-xl border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)] ${
             dropHoveredHere
               ? "border-accent bg-accent-soft/50 animate-[dropTargetIn_0.18s_ease_both]"
               : dragActive
@@ -720,6 +719,8 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
                 : "border-border"
           }`}
         >
+          {activeChannelId && <PendingAttachmentsRow channelId={activeChannelId} />}
+          <div className="flex items-center gap-2.5">
           {dropHoveredHere && (
             <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-accent-soft/80 to-accent-soft/40 backdrop-blur-[3px]">
               <svg
@@ -792,6 +793,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
                 <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
               </svg>
             </button>
+          </div>
           </div>
         </div>
       </div>

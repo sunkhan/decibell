@@ -522,6 +522,8 @@ private:
                         pa->set_height(static_cast<uint32_t>(row.height));
                         pa->set_thumbnail_size_bytes(
                             static_cast<uint32_t>(row.thumbnail_size_bytes));
+                        pa->set_thumbnail_sizes_mask(
+                            static_cast<uint32_t>(row.thumbnail_sizes_mask));
                     }
                 }
             } else {
@@ -591,6 +593,8 @@ private:
                         proto_a->set_height(static_cast<uint32_t>(a->height));
                         proto_a->set_thumbnail_size_bytes(
                             static_cast<uint32_t>(a->thumbnail_size_bytes));
+                        proto_a->set_thumbnail_sizes_mask(
+                            static_cast<uint32_t>(a->thumbnail_sizes_mask));
                     }
                 }
             }
@@ -1261,6 +1265,9 @@ void SessionManager::run_retention_sweep() {
                 std::error_code ec;
                 std::filesystem::remove(a.storage_path + ".partial", ec);
                 std::filesystem::remove(a.storage_path + ".thumb.jpg", ec);
+                std::filesystem::remove(a.storage_path + ".thumb-320px.jpg", ec);
+                std::filesystem::remove(a.storage_path + ".thumb-640px.jpg", ec);
+                std::filesystem::remove(a.storage_path + ".thumb-1280px.jpg", ec);
                 // The final path usually doesn't exist for pending rows, but
                 // clean it too just in case a complete() landed with a DB
                 // failure afterwards.
@@ -1274,13 +1281,17 @@ void SessionManager::run_retention_sweep() {
         }
     }
 
-    // Unlink attachment blobs from disk. Errors are tolerated — missing files
-    // just mean a prior sweep already cleaned them. Also unlink the sibling
-    // thumbnail (if present) so video posters don't outlive their parent.
+    // Unlink attachment blobs from disk. Errors are tolerated — missing
+    // files just mean a prior sweep already cleaned them. Also unlink
+    // every sibling thumbnail variant (legacy single-file + the three
+    // pre-generated sizes) so posters don't outlive their parent.
     for (const auto& path : unlink_paths) {
         std::error_code ec;
         std::filesystem::remove(path, ec);
         std::filesystem::remove(path + ".thumb.jpg", ec);
+        std::filesystem::remove(path + ".thumb-320px.jpg", ec);
+        std::filesystem::remove(path + ".thumb-640px.jpg", ec);
+        std::filesystem::remove(path + ".thumb-1280px.jpg", ec);
     }
 
     if (sweeps.empty()) return;

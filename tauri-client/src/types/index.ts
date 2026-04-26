@@ -47,11 +47,14 @@ export interface Attachment {
   // layout shift when the data URL loads in.
   width: number;
   height: number;
-  // Size in bytes of the JPEG thumbnail stored alongside this attachment
-  // on the server. 0 = no thumbnail (legacy row, audio/document, or video
-  // upload where extraction failed). Drives the lazy-fetch decision in
-  // `VideoPlayer`.
+  // Total bytes across all server-stored thumbnail sizes (0 = no
+  // thumbnails). Used as a "fetch makes sense" flag.
   thumbnailSizeBytes: number;
+  // Bitmask of pre-generated thumbnail sizes available on the server.
+  // bit 0 = 320 px long-edge, bit 1 = 640 px, bit 2 = 1280 px. 0 with
+  // thumbnailSizeBytes > 0 = legacy single-size upload (320, served
+  // from the legacy `.thumb.jpg` path without &size= on the request).
+  thumbnailSizesMask: number;
 }
 
 export interface Message {

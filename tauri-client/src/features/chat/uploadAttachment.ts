@@ -3,15 +3,15 @@ import { useAttachmentsStore, type PendingAttachment } from "../../stores/attach
 import { toast } from "../../stores/toastStore";
 import { kindFromMime, formatBytes } from "./attachmentHelpers";
 import { extractVideoMetadata } from "./videoMetadata";
-import { extractImageMetadata } from "./imageMetadata";
+import { extractImageMetadata, type ThumbSize } from "./imageMetadata";
 
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
-// Captured at queue time, shipped after the main upload completes. Keyed
-// by pendingId so we don't have to thread Blobs through the zustand
-// store (Blobs are not serialization-friendly + zustand devtools choke
-// on them).
-const pendingThumbnails = new Map<string, Blob>();
+// Captured at queue time, shipped after the main upload completes.
+// Keyed by pendingId. Each pending upload stores a map of long-edge
+// size → JPEG blob; finalize() POSTs each size sequentially under the
+// same upload-attachment-thumbnail IPC.
+const pendingThumbnails = new Map<string, Map<ThumbSize, Blob>>();
 
 export type UploadResult =
   | { ok: true; pendingId: string }
@@ -71,6 +71,7 @@ export async function uploadAttachment(opts: {
   let width = meta.width;
   let height = meta.height;
   const kind = kindFromMime(meta.mime);
+  let thumbnailUrl: string | undefined;
 
   // For image / video kinds, extract a small JPEG thumbnail and (for
   // video) intrinsic dimensions client-side. The Rust stat path can
@@ -80,6 +81,17 @@ export async function uploadAttachment(opts: {
   // a single code path. Thumbnail is ~30 KB JPEG; uploaded after the
   // main file completes via the existing finalize() path.
   const pendingId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  // For the local composer-tile preview we want the smallest size we
+  // captured (lowest decode cost, the tile is only ~128 px). The rest
+  // of the sizes get uploaded after the main file completes.
+  const stashThumbnails = (thumbnails: Map<ThumbSize, Blob>) => {
+    if (thumbnails.size === 0) return;
+    pendingThumbnails.set(pendingId, thumbnails);
+    const smallestSize = Math.min(...thumbnails.keys()) as ThumbSize;
+    const smallestBlob = thumbnails.get(smallestSize);
+    if (smallestBlob) thumbnailUrl = URL.createObjectURL(smallestBlob);
+  };
+
   if (kind === "video") {
     try {
       const vm = await extractVideoMetadata(opts.filePath);
@@ -87,9 +99,7 @@ export async function uploadAttachment(opts: {
         width = vm.width;
         height = vm.height;
       }
-      if (vm.thumbnail) {
-        pendingThumbnails.set(pendingId, vm.thumbnail);
-      }
+      stashThumbnails(vm.thumbnails);
     } catch (err) {
       console.warn("[upload] video metadata extraction failed", err);
     }
@@ -104,9 +114,7 @@ export async function uploadAttachment(opts: {
         width = im.width;
         height = im.height;
       }
-      if (im.thumbnail) {
-        pendingThumbnails.set(pendingId, im.thumbnail);
-      }
+      stashThumbnails(im.thumbnails);
     } catch (err) {
       console.warn("[upload] image metadata extraction failed", err);
     }
@@ -125,6 +133,7 @@ export async function uploadAttachment(opts: {
     totalBytes: meta.sizeBytes,
     transferredBytes: 0,
     status: "queued",
+    thumbnailUrl,
   };
   useAttachmentsStore.getState().addPending(entry);
   return { ok: true, pendingId };
@@ -167,20 +176,31 @@ export function startQueuedUpload(p: PendingAttachment): Promise<{ ok: boolean }
     // without a server-side poster.
     const finalize = async (ok: boolean) => {
       if (ok) {
-        const blob = pendingThumbnails.get(p.pendingId);
+        const thumbnails = pendingThumbnails.get(p.pendingId);
         const attachmentId = useAttachmentsStore
           .getState()
           .byPendingId[p.pendingId]?.attachmentId;
-        if (blob && attachmentId) {
-          try {
-            const buf = await blob.arrayBuffer();
-            await invoke("upload_attachment_thumbnail", {
-              serverId: p.serverId,
-              attachmentId,
-              bytes: Array.from(new Uint8Array(buf)),
-            });
-          } catch (err) {
-            console.warn("[upload] thumbnail upload failed", err);
+        if (thumbnails && thumbnails.size > 0 && attachmentId) {
+          // Ship sizes smallest-first so a partial failure leaves the
+          // most useful (smallest, fastest-to-fetch) sizes available.
+          // Sequential POSTs share TLS handshake cost but stay well
+          // under a second total — each thumb is ~10–50 KB.
+          const sizes = [...thumbnails.keys()].sort((a, b) => a - b);
+          for (const size of sizes) {
+            const blob = thumbnails.get(size);
+            if (!blob) continue;
+            try {
+              const buf = await blob.arrayBuffer();
+              await invoke("upload_attachment_thumbnail", {
+                serverId: p.serverId,
+                attachmentId,
+                size,
+                bytes: Array.from(new Uint8Array(buf)),
+              });
+            } catch (err) {
+              console.warn("[upload] thumbnail upload failed", { size, err });
+              // Keep going — partial coverage is better than none.
+            }
           }
         }
       }

@@ -39,6 +39,10 @@ export interface PendingAttachment {
   // send_channel_message will reference.
   attachmentId?: number;
   error?: string;
+  // Object URL of a small JPEG thumbnail captured at queue time
+  // (image/video kinds). Drives the tile preview in the composer
+  // chrome. Revoked when the entry is removed or the channel cleared.
+  thumbnailUrl?: string;
 }
 
 interface AttachmentsState {
@@ -129,6 +133,7 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
   removePending: (pendingId) => set((state) => {
     const existing = state.byPendingId[pendingId];
     if (!existing) return state;
+    if (existing.thumbnailUrl) URL.revokeObjectURL(existing.thumbnailUrl);
     const { [pendingId]: _, ...rest } = state.byPendingId;
     const order = state.orderByChannel[existing.channelId] ?? [];
     return {
@@ -143,7 +148,11 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
   clearChannel: (channelId) => set((state) => {
     const order = state.orderByChannel[channelId] ?? [];
     const next = { ...state.byPendingId };
-    for (const id of order) delete next[id];
+    for (const id of order) {
+      const entry = next[id];
+      if (entry?.thumbnailUrl) URL.revokeObjectURL(entry.thumbnailUrl);
+      delete next[id];
+    }
     return {
       byPendingId: next,
       orderByChannel: { ...state.orderByChannel, [channelId]: [] },

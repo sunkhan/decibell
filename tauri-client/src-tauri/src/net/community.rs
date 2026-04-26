@@ -682,5 +682,6 @@ fn map_attachment(a: Attachment) -> events::AttachmentPayload {
         width: a.width,
         height: a.height,
         thumbnail_size_bytes: a.thumbnail_size_bytes,
+        thumbnail_sizes_mask: a.thumbnail_sizes_mask,
     }
 }

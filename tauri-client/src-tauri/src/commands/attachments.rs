@@ -357,6 +357,9 @@ async fn stream_file_in_chunks(
 pub async fn upload_attachment_thumbnail(
     server_id: String,
     attachment_id: i64,
+    // None → legacy single-size endpoint (`.thumb.jpg`). Some(N) →
+    // pre-generated size variant (320/640/1280); server validates.
+    size: Option<u32>,
     bytes: Vec<u8>,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
@@ -374,7 +377,7 @@ pub async fn upload_attachment_thumbnail(
         }
         (client.host.clone(), client.attachment_port, client.jwt.clone())
     };
-    net_attach::post_thumbnail(&host, port, &jwt, attachment_id, &bytes).await
+    net_attach::post_thumbnail(&host, port, &jwt, attachment_id, size, &bytes).await
 }
 
 /// Fetch the raw JPEG bytes of a server-side thumbnail. Like
@@ -386,6 +389,10 @@ pub async fn upload_attachment_thumbnail(
 pub async fn fetch_attachment_thumbnail(
     server_id: String,
     attachment_id: i64,
+    // None → server picks the largest available size. Some(N) requests
+    // 320, 640, or 1280; server falls back to the nearest if the
+    // exact size isn't available, or to the legacy `.thumb.jpg`.
+    size: Option<u32>,
     state: State<'_, SharedState>,
 ) -> Result<tauri::ipc::Response, String> {
     let (host, port, jwt, rate) = {
@@ -408,7 +415,7 @@ pub async fn fetch_attachment_thumbnail(
     let null_obs = NullDownloadObs;
     let mut buf: Vec<u8> = Vec::new();
     net_attach::stream_get_variant(
-        &host, port, &jwt, attachment_id, "thumb", &mut buf, &throttle, &null_obs,
+        &host, port, &jwt, attachment_id, "thumb", size, &mut buf, &throttle, &null_obs,
     )
     .await?;
     Ok(tauri::ipc::Response::new(buf))

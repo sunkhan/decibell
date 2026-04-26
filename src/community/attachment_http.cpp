@@ -549,16 +549,80 @@ private:
         if (att->purged_at != 0)                { send_error(410, "Gone"); return; }
         if (!db_.is_member(username_))          { send_error(403, "Forbidden"); return; }
 
-        // ?variant=thumb diverts to the JPEG thumbnail file. Reuses the same
-        // GET endpoint and auth check rather than introducing a parallel
-        // route. Range/partial isn't worth supporting for tiny thumbs.
+        // ?variant=thumb[&size=N] diverts to a JPEG thumbnail file.
+        // Reuses the same GET endpoint and auth check rather than
+        // introducing a parallel route. Range/partial isn't worth
+        // supporting for tiny thumbs.
+        //
+        // Size resolution: if `size` is one of 320/640/1280, look for
+        // <storage_path>.thumb-Npx.jpg. If `size` is missing, pick the
+        // largest available. Legacy single-size uploads fall back to
+        // <storage_path>.thumb.jpg when size=320 or no size given.
         const auto var_it = req_.query.find("variant");
         if (var_it != req_.query.end() && var_it->second == "thumb") {
             if (att->thumbnail_size_bytes <= 0) { send_error(404, "Not Found"); return; }
-            const std::string thumb_path = att->storage_path + ".thumb.jpg";
+
+            // Parse requested size (optional). 0 = "pick best".
+            int requested = 0;
+            if (const auto sz_it = req_.query.find("size"); sz_it != req_.query.end()) {
+                try { requested = std::stoi(sz_it->second); } catch (...) { requested = 0; }
+                if (requested != 320 && requested != 640 && requested != 1280) {
+                    send_error(400, "Bad Request"); return;
+                }
+            }
+
+            // Pick the served size: requested if available, else nearest
+            // smaller that exists, else largest available, else legacy.
+            const int mask = att->thumbnail_sizes_mask;
+            const auto bit_for = [](int sz) -> int {
+                if (sz == 320) return 1;
+                if (sz == 640) return 2;
+                if (sz == 1280) return 4;
+                return 0;
+            };
+            int chosen = 0;
+            if (requested != 0 && (mask & bit_for(requested))) {
+                chosen = requested;
+            } else {
+                // Pick the smallest size >= requested. If requested = 0
+                // (no preference), pick the largest available.
+                const int prefs[3] = { 320, 640, 1280 };
+                if (requested == 0) {
+                    for (int i = 2; i >= 0; --i) {
+                        if (mask & bit_for(prefs[i])) { chosen = prefs[i]; break; }
+                    }
+                } else {
+                    for (int i = 0; i < 3; ++i) {
+                        if (prefs[i] >= requested && (mask & bit_for(prefs[i]))) {
+                            chosen = prefs[i]; break;
+                        }
+                    }
+                    // Fallback to largest available if none >= requested.
+                    if (chosen == 0) {
+                        for (int i = 2; i >= 0; --i) {
+                            if (mask & bit_for(prefs[i])) { chosen = prefs[i]; break; }
+                        }
+                    }
+                }
+            }
+
+            std::string thumb_path;
+            if (chosen != 0) {
+                thumb_path = att->storage_path + ".thumb-" + std::to_string(chosen) + "px.jpg";
+            } else {
+                // Legacy upload: mask=0 but bytes>0 means a single
+                // .thumb.jpg lives next to the file (size 320).
+                thumb_path = att->storage_path + ".thumb.jpg";
+            }
+
             std::error_code thumb_ec;
             if (!std::filesystem::exists(thumb_path, thumb_ec)) {
-                send_error(404, "Not Found"); return;
+                // Final fallback: legacy file when the size-named one
+                // doesn't exist. Covers a partially-migrated row.
+                thumb_path = att->storage_path + ".thumb.jpg";
+                if (!std::filesystem::exists(thumb_path, thumb_ec)) {
+                    send_error(404, "Not Found"); return;
+                }
             }
             const int64_t thumb_total = static_cast<int64_t>(
                 std::filesystem::file_size(thumb_path, thumb_ec));
@@ -642,7 +706,7 @@ private:
     // chew up disk. Writes to "<storage_path>.thumb.jpg" and stamps the
     // size onto the attachment row so downstream consumers know it exists.
 
-    static constexpr int64_t MAX_THUMB_BYTES = 256 * 1024;
+    static constexpr int64_t MAX_THUMB_BYTES = 512 * 1024;
 
     void handle_thumbnail_upload(int64_t id) {
         auto att = db_.get_attachment(id);
@@ -654,8 +718,23 @@ private:
             send_error(413, "Payload Too Large"); return;
         }
 
+        // ?size=N selects which pre-generated size this upload targets.
+        // Missing / invalid → legacy single-file behaviour, which writes
+        // <storage_path>.thumb.jpg and uses the legacy DB path.
+        thumb_size_px_ = 0;
+        if (const auto sz_it = req_.query.find("size"); sz_it != req_.query.end()) {
+            int requested = 0;
+            try { requested = std::stoi(sz_it->second); } catch (...) { requested = 0; }
+            if (requested != 320 && requested != 640 && requested != 1280) {
+                send_error(400, "Bad Request"); return;
+            }
+            thumb_size_px_ = requested;
+        }
+
         thumb_id_       = id;
-        thumb_path_     = att->storage_path + ".thumb.jpg";
+        thumb_path_     = thumb_size_px_ != 0
+            ? att->storage_path + ".thumb-" + std::to_string(thumb_size_px_) + "px.jpg"
+            : att->storage_path + ".thumb.jpg";
         thumb_remain_   = req_.content_length;
         thumb_buf_.clear();
         thumb_buf_.reserve(static_cast<size_t>(req_.content_length));
@@ -712,8 +791,19 @@ private:
             std::filesystem::remove(tmp_path, rm_ec);
             send_error(500, "Internal Server Error"); return;
         }
-        if (!db_.set_attachment_thumbnail_size(
-                thumb_id_, static_cast<int64_t>(thumb_buf_.size()))) {
+        const int64_t bytes = static_cast<int64_t>(thumb_buf_.size());
+        bool ok = false;
+        if (thumb_size_px_ == 0) {
+            // Legacy single-thumb path. Stamps the row's bytes-only field.
+            ok = db_.set_attachment_thumbnail_size(thumb_id_, bytes);
+        } else {
+            const int bit =
+                thumb_size_px_ == 320  ? 1 :
+                thumb_size_px_ == 640  ? 2 :
+                thumb_size_px_ == 1280 ? 4 : 0;
+            ok = db_.add_attachment_thumbnail_size(thumb_id_, bit, bytes);
+        }
+        if (!ok) {
             send_error(500, "Internal Server Error"); return;
         }
         send_raw_and_close(
@@ -754,6 +844,9 @@ private:
         std::error_code ec;
         std::filesystem::remove(*path + ".partial", ec);
         std::filesystem::remove(*path + ".thumb.jpg", ec);
+        std::filesystem::remove(*path + ".thumb-320px.jpg", ec);
+        std::filesystem::remove(*path + ".thumb-640px.jpg", ec);
+        std::filesystem::remove(*path + ".thumb-1280px.jpg", ec);
         send_raw_and_close("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     }
 
@@ -809,6 +902,7 @@ private:
     // Thumbnail upload state
     int64_t thumb_id_ = 0;
     int64_t thumb_remain_ = 0;
+    int thumb_size_px_ = 0; // 0 = legacy single-file path
     std::string thumb_path_;
     std::vector<char> thumb_buf_;
 };

@@ -329,11 +329,16 @@ message Attachment {
   // doesn't cause a layout shift.
   uint32 width = 11;
   uint32 height = 12;
-  // Size in bytes of the JPEG thumbnail stored alongside the main file on
-  // the server. 0 = no thumbnail (audio/document, or video uploaded before
-  // this feature). Clients use the presence (>0) to know whether to lazy-
-  // fetch the thumbnail via GET /attachments/:id?variant=thumb.
+  // Total bytes across all server-stored JPEG thumbnails for this
+  // attachment. 0 = no thumbnails (audio/document, or pre-thumbnail
+  // upload). Clients use the presence (>0) to know whether to lazy-
+  // fetch via GET /attachments/:id?variant=thumb[&size=N].
   uint32 thumbnail_size_bytes = 13;
+  // Bitmask of pre-generated thumbnail sizes that exist on the server.
+  // bit 0 = 320 px long-edge, bit 1 = 640 px, bit 2 = 1280 px. 0 with
+  // thumbnail_size_bytes > 0 means a legacy single-size upload (320 px,
+  // served from .thumb.jpg without the new naming).
+  uint32 thumbnail_sizes_mask = 14;
 }
 
 message ChannelHistoryRequest {

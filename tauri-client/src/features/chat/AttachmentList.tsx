@@ -10,7 +10,7 @@ import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { useActiveVideoStore } from "../../stores/activeVideoStore";
 import { useVideoCacheVersionStore } from "../../stores/videoCacheVersionStore";
 import { cacheVideo, getCachedVideo } from "./tempVideoCache";
-import { fetchThumbnail, getCachedThumbnail } from "./attachmentThumbnailCache";
+import { fetchThumbnail, getCachedThumbnail, pickSize } from "./attachmentThumbnailCache";
 
 // ---- shared helpers --------------------------------------------------------
 
@@ -199,10 +199,28 @@ function ImagePreview({
   // The viewer always fetches the full bytes via openViewer below.
   const useServerThumb = attachment.thumbnailSizeBytes > 0;
 
+  // We need `box` (the reserved CSS pixel box) before we can decide
+  // which pre-generated thumbnail size to fetch. Mirror the chat-view
+  // selectors here so the size pick happens at first render.
+  const viewW = useChatStore((s) => s.chatViewSize?.width ?? 0);
+  const viewH = useChatStore((s) => s.chatViewSize?.height ?? 0);
+  const chatViewSize = viewW > 0 && viewH > 0 ? { width: viewW, height: viewH } : null;
+  const box = reserveBox(attachment, chatViewSize);
+
+  // Pick the right pre-generated size based on the cell's display long
+  // edge and the device pixel ratio. Cheap, re-evaluated each render.
+  // For grid mode the box dims aren't authoritative (the cell width
+  // comes from the parent), so use the chat-view-derived `box` as a
+  // reasonable proxy — slight oversizing is preferable to undersizing.
+  const targetPx = box.width > 0
+    ? Math.round(Math.max(box.width, box.height) * (window.devicePixelRatio || 1))
+    : 320;
+  const wantedSize = useServerThumb ? pickSize(targetPx, attachment.thumbnailSizesMask) : null;
+
   // Consult the right module-level cache first so a virtualized
   // unmount/remount during scroll doesn't re-fetch.
   const [url, setUrl] = useState<string | null>(() =>
-    useServerThumb ? getCachedThumbnail(attachment.id) : getCachedImage(attachment.id),
+    useServerThumb ? getCachedThumbnail(attachment.id, wantedSize) : getCachedImage(attachment.id),
   );
   const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -245,7 +263,7 @@ function ImagePreview({
         hasFetched.current = true;
         io.disconnect();
         const fetcher = useServerThumb
-          ? fetchThumbnail(serverId, attachment.id)
+          ? fetchThumbnail(serverId, attachment.id, wantedSize)
           : getOrFetchImage(serverId, attachment.id, attachment.mime);
         fetcher
           .then((objectUrl) => {
@@ -262,17 +280,9 @@ function ImagePreview({
       cancelled = true;
       io.disconnect();
     };
-  }, [serverId, attachment.id, attachment.sizeBytes, attachment.mime, useServerThumb]);
+  }, [serverId, attachment.id, attachment.sizeBytes, attachment.mime, useServerThumb, wantedSize]);
 
   const tooLargeForPreview = attachment.sizeBytes > INLINE_PREVIEW_CAP;
-  // Subscribe to width and height as primitives so a chatStore set
-  // that creates a new {width, height} object with identical values
-  // doesn't re-render every mounted ImagePreview. zustand compares
-  // primitives with Object.is, so unchanged dims = no re-render.
-  const viewW = useChatStore((s) => s.chatViewSize?.width ?? 0);
-  const viewH = useChatStore((s) => s.chatViewSize?.height ?? 0);
-  const chatViewSize = viewW > 0 && viewH > 0 ? { width: viewW, height: viewH } : null;
-  const box = reserveBox(attachment, chatViewSize);
 
   const buttonStyle: React.CSSProperties | undefined = fillCell
     ? undefined
@@ -646,8 +656,14 @@ function VideoPlayer({
   // video locally) win when both are present — they're a better
   // representation of "where the user left off" than the upload-time
   // first-frame thumbnail.
+  const videoTargetPx = Math.round(
+    Math.max(box.width, box.height) * (window.devicePixelRatio || 1),
+  );
+  const videoWantedSize = attachment.thumbnailSizeBytes > 0
+    ? pickSize(videoTargetPx, attachment.thumbnailSizesMask)
+    : null;
   const [serverThumb, setServerThumb] = useState<string | null>(() =>
-    getCachedThumbnail(attachment.id),
+    getCachedThumbnail(attachment.id, videoWantedSize),
   );
   useEffect(() => {
     if (!serverId) return;
@@ -655,11 +671,11 @@ function VideoPlayer({
     if (attachment.thumbnailSizeBytes <= 0) return;
     if (serverThumb) return;
     let cancelled = false;
-    fetchThumbnail(serverId, attachment.id).then((url) => {
+    fetchThumbnail(serverId, attachment.id, videoWantedSize).then((url) => {
       if (!cancelled && url) setServerThumb(url);
     });
     return () => { cancelled = true; };
-  }, [serverId, attachment.id, attachment.thumbnailSizeBytes, livePoster, serverThumb]);
+  }, [serverId, attachment.id, attachment.thumbnailSizeBytes, livePoster, serverThumb, videoWantedSize]);
 
   const posterUrl = livePoster ?? serverThumb;
   const fmtTime = (s: number) => {
@@ -756,10 +772,10 @@ function gridRowCounts(n: number): number[] {
     case 4: return [2, 2];
     case 5: return [2, 3];
     case 6: return [3, 3];
-    case 7: return [3, 4];
-    case 8: return [4, 4];
+    case 7: return [1, 3, 3];
+    case 8: return [2, 3, 3];
     case 9: return [3, 3, 3];
-    case 10: return [5, 5];
+    case 10: return [1, 3, 3, 3];
     default: return [n];
   }
 }
