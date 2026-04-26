@@ -1221,6 +1221,59 @@ bool CommunityDb::delete_attachment_row(int64_t attachment_id) {
     return q.step() == SQLITE_DONE && sqlite3_changes(db_) > 0;
 }
 
+CommunityDb::WipeChannelResult CommunityDb::wipe_channel(const std::string& channel_id) {
+    WipeChannelResult out;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Pull every storage_path the channel owns BEFORE we delete the
+    // rows — once they're gone we can't reconstruct the disk paths.
+    // Includes ready, uploading, and tombstoned rows; harmless to call
+    // remove() on a path that's already missing.
+    {
+        Stmt q(db_,
+            "SELECT COALESCE(storage_path, '') FROM attachments "
+            "WHERE channel_id=?;");
+        if (!q.s) return out;
+        q.bind_text(1, channel_id);
+        while (q.step() == SQLITE_ROW) {
+            std::string p = q.col_text(0);
+            if (!p.empty()) out.unlink_paths.push_back(std::move(p));
+        }
+    }
+
+    // Wrap the destructive bit in a transaction so a failure mid-way
+    // doesn't leave us with messages without their attachments (or vice
+    // versa). The AFTER DELETE trigger on messages mirrors deletes into
+    // FTS5 row-by-row.
+    if (!exec_sql(db_, "BEGIN;")) return out;
+
+    auto rollback_and_return = [&](WipeChannelResult& r) -> WipeChannelResult& {
+        exec_sql(db_, "ROLLBACK;");
+        r.deleted_message_count = 0;
+        r.deleted_attachment_count = 0;
+        r.unlink_paths.clear();
+        return r;
+    };
+
+    {
+        Stmt del(db_, "DELETE FROM attachments WHERE channel_id=?;");
+        if (!del.s) return rollback_and_return(out);
+        del.bind_text(1, channel_id);
+        if (del.step() != SQLITE_DONE) return rollback_and_return(out);
+        out.deleted_attachment_count = sqlite3_changes(db_);
+    }
+    {
+        Stmt del(db_, "DELETE FROM messages WHERE channel_id=?;");
+        if (!del.s) return rollback_and_return(out);
+        del.bind_text(1, channel_id);
+        if (del.step() != SQLITE_DONE) return rollback_and_return(out);
+        out.deleted_message_count = sqlite3_changes(db_);
+    }
+
+    if (!exec_sql(db_, "COMMIT;")) return rollback_and_return(out);
+    return out;
+}
+
 CommunityDb::PrunedTextResult CommunityDb::prune_text_messages(
     const std::string& channel_id, int64_t cutoff_ts) {
     PrunedTextResult out;

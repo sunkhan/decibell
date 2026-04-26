@@ -68,6 +68,10 @@ interface ChatState {
     deletedMessageIds: number[],
     attachmentTombstones: Array<{ attachmentId: number; purgedAt: number }>,
   ) => void;
+  // Drops every cached message + history-fetched marker for a channel.
+  // Called from the CHANNEL_WIPED event handler. Cheaper than asking the
+  // server to ship every deleted id over the wire.
+  applyChannelWiped: (channelId: string) => void;
   setOnlineUsers: (users: string[]) => void;
   addConnectedServer: (serverId: string) => void;
   removeConnectedServer: (serverId: string) => void;
@@ -213,6 +217,17 @@ export const useChatStore = create<ChatState>((set) => ({
   markHistoryFetched: (channelId) => set((state) => ({
     historyFetched: { ...state.historyFetched, [channelId]: true },
   })),
+  applyChannelWiped: (channelId) => set((state) => {
+    // Reset every per-channel slice so the next history fetch sees a
+    // clean slate. The hasMoreHistory entry gets cleared too so the
+    // "Load earlier messages" prompt doesn't tease content that no
+    // longer exists.
+    return {
+      messagesByChannel: { ...state.messagesByChannel, [channelId]: [] },
+      hasMoreHistory: { ...state.hasMoreHistory, [channelId]: false },
+      historyFetched: { ...state.historyFetched, [channelId]: true },
+    };
+  }),
   applyChannelPruned: (channelId, deletedMessageIds, attachmentTombstones) => set((state) => {
     const existing = state.messagesByChannel[channelId] ?? [];
     const deletedSet = new Set(deletedMessageIds);

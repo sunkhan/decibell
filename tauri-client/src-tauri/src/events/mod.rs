@@ -258,6 +258,8 @@ pub fn emit_message_received(
 pub const CHANNEL_HISTORY_RECEIVED: &str = "channel_history_received";
 pub const CHANNEL_PRUNED: &str = "channel_pruned";
 pub const CHANNEL_UPDATED: &str = "channel_updated";
+pub const CHANNEL_WIPE_RESPONDED: &str = "channel_wipe_responded";
+pub const CHANNEL_WIPED: &str = "channel_wiped";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -331,6 +333,57 @@ pub fn emit_channel_updated(
     let _ = app.emit(
         CHANNEL_UPDATED,
         ChannelUpdatedPayload { server_id, success, message, channel },
+    );
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelWipeRespondedPayload {
+    pub server_id: String,
+    pub channel_id: String,
+    pub success: bool,
+    pub message: String,
+    pub deleted_message_count: i64,
+    pub deleted_attachment_count: i64,
+}
+
+pub fn emit_channel_wipe_responded(
+    app: &AppHandle,
+    server_id: String,
+    channel_id: String,
+    success: bool,
+    message: String,
+    deleted_message_count: i64,
+    deleted_attachment_count: i64,
+) {
+    let _ = app.emit(
+        CHANNEL_WIPE_RESPONDED,
+        ChannelWipeRespondedPayload {
+            server_id, channel_id, success, message,
+            deleted_message_count, deleted_attachment_count,
+        },
+    );
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelWipedPayload {
+    pub server_id: String,
+    pub channel_id: String,
+    pub wiped_at: i64,
+    pub wiped_by: String,
+}
+
+pub fn emit_channel_wiped(
+    app: &AppHandle,
+    server_id: String,
+    channel_id: String,
+    wiped_at: i64,
+    wiped_by: String,
+) {
+    let _ = app.emit(
+        CHANNEL_WIPED,
+        ChannelWipedPayload { server_id, channel_id, wiped_at, wiped_by },
     );
 }
 

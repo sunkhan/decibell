@@ -247,6 +247,22 @@ public:
     std::vector<DbAttachment> list_stale_pending_attachments(int64_t cutoff_ts) const;
     bool delete_attachment_row(int64_t attachment_id);
 
+    // --- owner-initiated wipe ---
+    // Result of a full channel wipe — the count fields are returned to
+    // the calling client for confirmation feedback, the unlink_paths
+    // are filesystem cleanup the server applies after the DB commit.
+    struct WipeChannelResult {
+        int64_t deleted_message_count = 0;
+        int64_t deleted_attachment_count = 0;
+        std::vector<std::string> unlink_paths;
+    };
+    // Delete every message + attachment row for `channel_id`, returning
+    // the counts and the storage paths whose blobs (and thumbnails) the
+    // server should unlink. The AFTER DELETE trigger on messages mirrors
+    // the deletes into the FTS5 index. Wrapped in a transaction so a
+    // failure mid-way leaves the channel intact.
+    WipeChannelResult wipe_channel(const std::string& channel_id);
+
     // --- retention pruning ---
     // Delete messages in `channel_id` whose timestamp is strictly older than
     // `cutoff_ts`. Returns (deleted_message_ids, storage_paths_of_remaining_

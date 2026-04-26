@@ -50,6 +50,30 @@ pub async fn request_channel_history(
     .await
 }
 
+/// Owner-only: nuke every message and attachment in `channel_id`.
+/// Server validates ownership, applies the wipe, replies with a
+/// CHANNEL_WIPE_RES (deleted counts) and broadcasts a CHANNEL_WIPED
+/// to every member so their local state drops the channel's history
+/// without re-fetching. The IPC returns immediately after the packet
+/// is queued — the result lands later as the `channel_wipe_responded`
+/// Tauri event.
+#[tauri::command]
+pub async fn wipe_channel_history(
+    server_id: String,
+    channel_id: String,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    send_for_server(
+        &server_id,
+        &state,
+        packet::Type::ChannelWipeReq,
+        packet::Payload::ChannelWipeReq(ChannelWipeRequest {
+            channel_id,
+        }),
+    )
+    .await
+}
+
 /// Update channel retention (owner-only, enforced server-side). All five
 /// values are sent as a snapshot; 0 means "keep forever".
 #[tauri::command]

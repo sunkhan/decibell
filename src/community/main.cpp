@@ -652,6 +652,70 @@ private:
             manager_.broadcast_to_members(p);
         }
 
+        // --- CHANNEL WIPE (owner-only nuke of all history in a channel) ---
+        else if (packet.type() == chatproj::Packet::CHANNEL_WIPE_REQ) {
+            auto* db = manager_.db();
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::CHANNEL_WIPE_RES);
+            auto* res = rsp.mutable_channel_wipe_res();
+            const auto& req = packet.channel_wipe_req();
+            res->set_channel_id(req.channel_id());
+
+            if (!db) {
+                res->set_success(false);
+                res->set_message("Server misconfigured.");
+                send_packet(rsp);
+                return;
+            }
+            if (db->owner() != username_) {
+                res->set_success(false);
+                res->set_message("Only the server owner can wipe channel history.");
+                send_packet(rsp);
+                return;
+            }
+            if (!db->get_channel(req.channel_id())) {
+                res->set_success(false);
+                res->set_message("Channel not found.");
+                send_packet(rsp);
+                return;
+            }
+
+            auto wipe = db->wipe_channel(req.channel_id());
+            res->set_success(true);
+            res->set_message("Channel wiped.");
+            res->set_deleted_message_count(wipe.deleted_message_count);
+            res->set_deleted_attachment_count(wipe.deleted_attachment_count);
+            send_packet(rsp);
+
+            // Filesystem cleanup — every blob plus its sibling thumbnail
+            // variants. Errors are tolerated; a stray file just shows up
+            // in the next retention sweep or a future wipe.
+            for (const auto& path : wipe.unlink_paths) {
+                std::error_code ec;
+                std::filesystem::remove(path, ec);
+                std::filesystem::remove(path + ".partial", ec);
+                std::filesystem::remove(path + ".thumb.jpg", ec);
+                std::filesystem::remove(path + ".thumb-320px.jpg", ec);
+                std::filesystem::remove(path + ".thumb-640px.jpg", ec);
+                std::filesystem::remove(path + ".thumb-1280px.jpg", ec);
+            }
+
+            // Broadcast to every authenticated session so they drop the
+            // channel's locally-cached messages without re-fetching.
+            chatproj::Packet bcast;
+            bcast.set_type(chatproj::Packet::CHANNEL_WIPED);
+            auto* bw = bcast.mutable_channel_wiped();
+            bw->set_channel_id(req.channel_id());
+            bw->set_wiped_at(static_cast<int64_t>(std::time(nullptr)));
+            bw->set_wiped_by(username_);
+            manager_.broadcast_to_members(bcast);
+
+            std::cout << "[Community] #" << req.channel_id()
+                      << " wiped by " << username_
+                      << ": " << wipe.deleted_message_count << " messages, "
+                      << wipe.deleted_attachment_count << " attachments\n";
+        }
+
         // --- INVITE: CREATE ---
         else if (packet.type() == chatproj::Packet::INVITE_CREATE_REQ) {
             auto* db = manager_.db();

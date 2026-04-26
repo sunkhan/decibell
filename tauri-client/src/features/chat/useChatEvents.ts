@@ -114,6 +114,16 @@ export function useChatEvents() {
       );
     });
 
+    interface WipedPayload {
+      serverId: string;
+      channelId: string;
+      wipedAt: number;
+      wipedBy: string;
+    }
+    const unlistenWiped = listen<WipedPayload>("channel_wiped", (event) => {
+      useChatStore.getState().applyChannelWiped(event.payload.channelId);
+    });
+
     // --- attachment upload progress / complete / failed ---
 
     interface UploadProgressPayload {
@@ -183,6 +193,7 @@ export function useChatEvents() {
       unlistenMsg.then((fn) => fn());
       unlistenHistory.then((fn) => fn());
       unlistenPruned.then((fn) => fn());
+      unlistenWiped.then((fn) => fn());
       unlistenUploadProgress.then((fn) => fn());
       unlistenUploadComplete.then((fn) => fn());
       unlistenUploadFailed.then((fn) => fn());

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
+import { toast } from "../../stores/toastStore";
 import type { Channel } from "../../types";
 
 type RetentionField =
@@ -114,6 +116,9 @@ export default function ChannelSettingsModal() {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
+  const [wipeConfirmText, setWipeConfirmText] = useState("");
+  const [wiping, setWiping] = useState(false);
 
   // Reset draft whenever the modal opens or the underlying channel changes.
   useEffect(() => {
@@ -126,7 +131,39 @@ export default function ChannelSettingsModal() {
       retentionDaysAudio: presetValue(channel.retentionDaysAudio),
     });
     setError(null);
+    setWipeConfirmOpen(false);
+    setWipeConfirmText("");
   }, [activeModal, channel?.id]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Surface the server's CHANNEL_WIPE_RES as a toast. The CHANNEL_WIPED
+  // broadcast that follows clears the local message store via
+  // useChatEvents, so we don't have to do anything else here.
+  useEffect(() => {
+    if (activeModal !== "channel-settings") return;
+    const unlisten = listen<{
+      serverId: string;
+      channelId: string;
+      success: boolean;
+      message: string;
+      deletedMessageCount: number;
+      deletedAttachmentCount: number;
+    }>("channel_wipe_responded", (event) => {
+      if (event.payload.serverId !== activeServerId) return;
+      if (event.payload.channelId !== channel?.id) return;
+      setWiping(false);
+      if (event.payload.success) {
+        toast.success(
+          "Channel history wiped",
+          `Removed ${event.payload.deletedMessageCount.toLocaleString()} message(s) and ${event.payload.deletedAttachmentCount.toLocaleString()} attachment(s).`,
+        );
+        setWipeConfirmOpen(false);
+        setWipeConfirmText("");
+      } else {
+        toast.error("Wipe failed", event.payload.message || "Unknown error.");
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [activeModal, activeServerId, channel?.id]);
 
   if (activeModal !== "channel-settings" || !channel || !activeServerId) return null;
 
@@ -161,6 +198,24 @@ export default function ChannelSettingsModal() {
       setError(String(err));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleWipe = async () => {
+    if (!isOwner || wiping) return;
+    if (wipeConfirmText !== channel.name) return;
+    setWiping(true);
+    try {
+      await invoke("wipe_channel_history", {
+        serverId: activeServerId,
+        channelId: channel.id,
+      });
+      // No-op until the channel_wipe_responded event lands — see the
+      // listener above, which handles success/error toasts and resets
+      // the wiping flag.
+    } catch (err) {
+      setWiping(false);
+      toast.error("Wipe failed", String(err));
     }
   };
 
@@ -246,6 +301,76 @@ export default function ChannelSettingsModal() {
             <p className="mt-3 text-[12px] text-text-muted">
               Only the server owner can edit these.
             </p>
+          )}
+
+          {isOwner && (
+            <div className="mt-6">
+              <div className="mb-3 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-error">
+                Danger zone
+              </div>
+              <div className="rounded-[10px] border border-error/25 bg-error/5 p-3">
+                <div className="flex items-start gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-text-primary">
+                      Wipe channel history
+                    </div>
+                    <p className="mt-0.5 text-[11.5px] leading-relaxed text-text-muted">
+                      Permanently deletes every message and attachment in
+                      #{channel.name}. The channel itself, members, and
+                      retention settings stay. Cannot be undone.
+                    </p>
+                  </div>
+                  {!wipeConfirmOpen && (
+                    <button
+                      onClick={() => setWipeConfirmOpen(true)}
+                      className="shrink-0 rounded-md border border-error/40 bg-error/10 px-3 py-1.5 text-[11.5px] font-semibold text-error transition-colors hover:border-error/70 hover:bg-error/20"
+                    >
+                      Wipe…
+                    </button>
+                  )}
+                </div>
+
+                {wipeConfirmOpen && (
+                  <div className="mt-3 border-t border-error/20 pt-3">
+                    <label className="mb-1.5 block text-[11px] text-text-muted">
+                      Type <span className="font-mono text-text-primary">{channel.name}</span> to confirm:
+                    </label>
+                    <input
+                      autoFocus
+                      type="text"
+                      value={wipeConfirmText}
+                      onChange={(e) => setWipeConfirmText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && wipeConfirmText === channel.name && !wiping) {
+                          handleWipe();
+                        }
+                      }}
+                      placeholder={channel.name}
+                      className="w-full rounded-md border border-border bg-bg-lighter px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-error"
+                    />
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        onClick={() => {
+                          setWipeConfirmOpen(false);
+                          setWipeConfirmText("");
+                        }}
+                        disabled={wiping}
+                        className="flex-1 rounded-md bg-bg-light py-1.5 text-[11.5px] font-medium text-text-primary transition-colors hover:bg-bg-lighter disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleWipe}
+                        disabled={wiping || wipeConfirmText !== channel.name}
+                        className="flex-1 rounded-md bg-error py-1.5 text-[11.5px] font-semibold text-white transition-all hover:bg-error/85 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {wiping ? "Wiping…" : "Wipe history"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </div>
 

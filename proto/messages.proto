@@ -72,6 +72,9 @@ message Packet {
     CHANNEL_UPDATE_REQ = 52;     // client→community (owner-only)
     CHANNEL_UPDATE_RES = 53;     // community→client
     CHANNEL_PRUNED = 54;         // community→client: retention sweep happened
+    CHANNEL_WIPE_REQ = 55;       // client→community (owner-only): nuke all messages in a channel
+    CHANNEL_WIPE_RES = 56;       // community→requester: result of the wipe
+    CHANNEL_WIPED = 57;          // community→all members: channel was wiped, drop local message state
   }
 
   Type type = 1;
@@ -143,6 +146,9 @@ message Packet {
     ChannelUpdateRequest channel_update_req = 54;
     ChannelUpdateResponse channel_update_res = 55;
     ChannelPruned channel_pruned = 56;
+    ChannelWipeRequest channel_wipe_req = 57;
+    ChannelWipeResponse channel_wipe_res = 58;
+    ChannelWiped channel_wiped = 59;
   }
 }
 
@@ -385,6 +391,32 @@ message ChannelPruned {
   repeated int64 deleted_message_ids = 2;
   // Attachments soft-deleted into tombstones (blob gone, metadata retained).
   repeated AttachmentTombstone purged_attachments = 3;
+}
+
+// Owner-initiated full wipe of a channel's history. Sent by the
+// requesting client; the server validates ownership before acting.
+message ChannelWipeRequest {
+  string channel_id = 1;
+}
+
+// Reply to the requesting client only. Counts let the UI show
+// confirmation feedback without re-fetching history.
+message ChannelWipeResponse {
+  bool success = 1;
+  string message = 2;
+  string channel_id = 3;
+  int64 deleted_message_count = 4;
+  int64 deleted_attachment_count = 5;
+}
+
+// Broadcast to every authenticated session after a successful wipe.
+// Lets clients drop the channel's locally-cached message state without
+// shipping every deleted message id over the wire.
+message ChannelWiped {
+  string channel_id = 1;
+  // Wall-clock unix seconds when the wipe completed.
+  int64 wiped_at = 2;
+  string wiped_by = 3;
 }
 
 message JoinVoiceRequest {

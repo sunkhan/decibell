@@ -131,6 +131,7 @@ pub fn run() {
             commands::channels::send_channel_message,
             commands::channels::request_channel_history,
             commands::channels::update_channel_retention,
+            commands::channels::wipe_channel_history,
             commands::friends::request_friend_list,
             commands::friends::send_friend_action,
             commands::messaging::send_private_message,

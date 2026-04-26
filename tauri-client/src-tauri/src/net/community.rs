@@ -572,6 +572,26 @@ impl CommunityClient {
                         tombstones,
                     );
                 }
+                Some(packet::Payload::ChannelWipeRes(resp)) => {
+                    events::emit_channel_wipe_responded(
+                        &app,
+                        server_id.clone(),
+                        resp.channel_id,
+                        resp.success,
+                        resp.message,
+                        resp.deleted_message_count,
+                        resp.deleted_attachment_count,
+                    );
+                }
+                Some(packet::Payload::ChannelWiped(msg)) => {
+                    events::emit_channel_wiped(
+                        &app,
+                        server_id.clone(),
+                        msg.channel_id,
+                        msg.wiped_at,
+                        msg.wiped_by,
+                    );
+                }
                 Some(packet::Payload::ChannelUpdateRes(resp)) => {
                     let channel = resp.channel.map(|c| events::ChannelInfoPayload {
                         id: c.id,
