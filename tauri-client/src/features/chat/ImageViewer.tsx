@@ -4,7 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Attachment } from "../../types";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
-import { cacheImage, copyAttachmentToClipboard, getCachedImage, getOrFetchImage } from "./imageCache";
+import { copyAttachmentToClipboard, getCachedImage, getOrFetchImage } from "./imageCache";
+import { fetchThumbnail, getCachedThumbnail, pickSize } from "./attachmentThumbnailCache";
 import { toast } from "../../stores/toastStore";
 
 const MIN_ZOOM = 0.1;
@@ -59,9 +60,17 @@ export default function ImageViewer() {
   const hasPrev = index > 0;
   const hasNext = index < images.length - 1;
 
-  const [url, setUrl] = useState<string | null>(null);
+  // `fullUrl` is the high-res original; `thumbUrl` is the largest
+  // server-side pre-generated thumbnail. We render the thumb the
+  // moment it's available so the user gets immediate feedback while
+  // the multi-megabyte original transits, then upgrade to the full
+  // image once it lands. Looks like a brief blur-up.
+  const [fullUrl, setFullUrl] = useState<string | null>(null);
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const url = fullUrl ?? thumbUrl;
+  const showingThumb = !fullUrl && !!thumbUrl;
 
   // Zoom + pan, reset on image change.
   const [zoom, setZoom] = useState(1);
@@ -71,19 +80,54 @@ export default function ImageViewer() {
     setPan(ZERO);
   }, [current?.id]);
 
-  // Fetch current image.
+  // Fetch current image. Two parallel requests: the largest server
+  // thumbnail (small, lands fast — used as immediate placeholder) and
+  // the full original (slow, swapped in when ready). The thumbnail
+  // request is skipped for legacy attachments (mask=0) since they'd
+  // just hit the legacy 320 file with a single ~30 KB body anyway.
   useEffect(() => {
     if (!open || !current || !serverId) {
-      setUrl(null);
+      setFullUrl(null);
+      setThumbUrl(null);
       return;
     }
     let cancelled = false;
     setLoading(true);
     setError(null);
+
+    // Seed from cache so a re-open of the same image is instant.
+    const cachedFull = getCachedImage(current.id);
+    if (cachedFull) {
+      setFullUrl(cachedFull);
+      setLoading(false);
+    } else {
+      setFullUrl(null);
+      // Pick the largest pre-generated size we have for the placeholder.
+      const thumbSize = current.thumbnailSizeBytes > 0
+        ? pickSize(Number.MAX_SAFE_INTEGER, current.thumbnailSizesMask)
+        : null;
+      const cachedThumb = current.thumbnailSizeBytes > 0
+        ? getCachedThumbnail(current.id, thumbSize)
+        : null;
+      setThumbUrl(cachedThumb);
+
+      // Kick off the placeholder fetch (no-op if cached).
+      if (current.thumbnailSizeBytes > 0 && !cachedThumb) {
+        fetchThumbnail(serverId, current.id, thumbSize).then((u) => {
+          if (cancelled || !u) return;
+          // Only set if the full hasn't already arrived — otherwise
+          // we'd briefly downgrade visible quality.
+          setThumbUrl((prev) => prev ?? u);
+        });
+      }
+    }
+
+    // Always request the full bytes — they're what the viewer actually
+    // shows. Dedup is handled by getOrFetchImage's inflight map.
     getOrFetchImage(serverId, current.id, current.mime)
       .then((u) => {
         if (cancelled) return;
-        setUrl(u);
+        setFullUrl(u);
         setLoading(false);
       })
       .catch((e) => {
@@ -96,15 +140,15 @@ export default function ImageViewer() {
     };
   }, [open, current?.id, current?.mime, serverId]);
 
-  // Prefetch neighbours so arrow nav feels instant.
+  // Prefetch only the immediate next neighbour so arrow nav feels
+  // instant without firing several full-image transfers in parallel
+  // when the user opens a busy viewer.
   useEffect(() => {
     if (!open || !serverId) return;
-    [index - 1, index + 1]
-      .filter((i) => i >= 0 && i < images.length)
-      .forEach((i) => {
-        const t = images[i];
-        getOrFetchImage(serverId, t.id, t.mime).catch(() => {});
-      });
+    const target = images[index + 1];
+    if (target) {
+      getOrFetchImage(serverId, target.id, target.mime).catch(() => {});
+    }
   }, [open, index, images, serverId]);
 
   // Refs used by clampPan and pointer/wheel handlers.
@@ -259,10 +303,13 @@ export default function ImageViewer() {
 
   if (!open || !current) return null;
 
-  const imageStyle = {
+  const imageStyle: React.CSSProperties = {
     transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-    transition: "none" as const,
-    opacity: loading ? 0.4 : 1,
+    transition: "filter 200ms ease",
+    opacity: !url ? 0.4 : 1,
+    // Blur the low-res placeholder so the upgrade to full reads as a
+    // sharpen; no-op once the full bytes land.
+    filter: showingThumb ? "blur(8px)" : "none",
   };
 
   return (
@@ -457,7 +504,17 @@ function FilmStripThumb({
   serverId: string | null;
   buttonRef: (el: HTMLButtonElement | null) => void;
 }) {
-  const [url, setUrl] = useState<string | null>(() => getCachedImage(image.id));
+  // Filmstrip tiles are 56 × 56 px (≈ 112 px @2× DPR) — the smallest
+  // pre-generated 320 size is the right pick. This was previously
+  // fetching the FULL original (multi-MB per tile), which fanned out
+  // to hundreds of MB whenever the user opened the viewer in a busy
+  // channel. Falls back to the legacy thumbnail or full image only
+  // when the attachment has no server thumbnail at all.
+  const useServerThumb = image.thumbnailSizeBytes > 0;
+  const initialThumb = useServerThumb
+    ? getCachedThumbnail(image.id, pickSize(112, image.thumbnailSizesMask))
+    : getCachedImage(image.id);
+  const [url, setUrl] = useState<string | null>(initialThumb);
   const localRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -469,12 +526,12 @@ function FilmStripThumb({
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) {
           io.disconnect();
-          getOrFetchImage(serverId, image.id, image.mime)
+          const fetcher = useServerThumb
+            ? fetchThumbnail(serverId, image.id, pickSize(112, image.thumbnailSizesMask))
+            : getOrFetchImage(serverId, image.id, image.mime);
+          fetcher
             .then((u) => {
-              if (!cancelled) {
-                cacheImage(image.id, u);
-                setUrl(u);
-              }
+              if (!cancelled && u) setUrl(u);
             })
             .catch(() => {});
         }
@@ -486,7 +543,7 @@ function FilmStripThumb({
       cancelled = true;
       io.disconnect();
     };
-  }, [url, image.id, image.mime, serverId]);
+  }, [url, image.id, image.mime, image.thumbnailSizeBytes, image.thumbnailSizesMask, serverId, useServerThumb]);
 
   return (
     <button

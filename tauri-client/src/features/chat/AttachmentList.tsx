@@ -8,9 +8,11 @@ import { useChatStore } from "../../stores/chatStore";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { useActiveVideoStore } from "../../stores/activeVideoStore";
+import { useActiveAudioStore } from "../../stores/activeAudioStore";
 import { useVideoCacheVersionStore } from "../../stores/videoCacheVersionStore";
 import { cacheVideo, getCachedVideo } from "./tempVideoCache";
 import { fetchThumbnail, getCachedThumbnail, pickSize } from "./attachmentThumbnailCache";
+import { audioSeek, audioToggle } from "./audioController";
 
 // ---- shared helpers --------------------------------------------------------
 
@@ -509,12 +511,17 @@ function DownloadButton({
   );
 }
 
-function AudioIcon() {
+function AudioIcon({ size = 18 }: { size?: number }) {
+  // Waveform inside a rounded frame — reads as "audio file" at a glance,
+  // distinct from the music-note + record-dots used elsewhere.
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 18V5l12-2v13" />
-      <circle cx="6" cy="18" r="3" />
-      <circle cx="18" cy="16" r="3" />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="3" />
+      <line x1="7" y1="10" x2="7" y2="14" />
+      <line x1="10" y1="8" x2="10" y2="16" />
+      <line x1="13" y1="11" x2="13" y2="13" />
+      <line x1="16" y1="9" x2="16" y2="15" />
+      <line x1="19" y1="11" x2="19" y2="13" />
     </svg>
   );
 }
@@ -524,6 +531,194 @@ function DocIcon() {
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
     </svg>
+  );
+}
+
+function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverId: string | null }) {
+  // Presentational only: the actual <audio> element lives in
+  // PersistentAudioLayer at app level so playback survives Virtuoso
+  // row unmounts. This widget reads playback state from
+  // useActiveAudioStore and dispatches commands via audioController.
+  const channelId = useChatStore((s) => s.activeChannelId) ?? "";
+  const activeAttachmentId = useActiveAudioStore((s) => s.active?.attachmentId);
+  const isActive = activeAttachmentId === attachment.id;
+  // Subscribing to the playback fields only when active means inactive
+  // rows don't re-render on every timeupdate tick of someone else's
+  // playing audio.
+  const playing = useActiveAudioStore((s) => (isActive ? s.playing : false));
+  const time = useActiveAudioStore((s) => (isActive ? s.time : 0));
+  const duration = useActiveAudioStore((s) => (isActive ? s.duration : 0));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fmt = (s: number) => {
+    if (!isFinite(s) || s < 0) return "0:00";
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
+  };
+  // Use the live duration from the playing element when available,
+  // otherwise fall back to the upload-time durationMs the server
+  // shipped with the attachment metadata. Lets receivers see "3:45"
+  // before they ever click play.
+  const seededDuration = attachment.durationMs > 0 ? attachment.durationMs / 1000 : 0;
+  const displayDuration = duration > 0 ? duration : seededDuration;
+  const progress = displayDuration > 0 ? (time / displayDuration) * 100 : 0;
+
+  const onPlay = async () => {
+    if (!serverId) return;
+    if (isActive) {
+      audioToggle();
+      return;
+    }
+    if (loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const { path, url } = await invoke<{ path: string; url: string }>(
+        "save_attachment_to_temp",
+        { serverId, attachmentId: attachment.id, filename: attachment.filename },
+      );
+      // Replaces any previously-active audio. The persistent layer's
+      // tempPath-watcher unlinks the old file from disk.
+      useActiveAudioStore.getState().setActive({
+        attachmentId: attachment.id,
+        serverId,
+        channelId,
+        src: url,
+        tempPath: path,
+        filename: attachment.filename,
+      });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onScrubDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    // Scrub requires the live element duration — the seeded value is
+    // display-only (the persistent layer doesn't yet know how to seek
+    // before metadata loads). Disable until the audio is active and
+    // metadata has landed.
+    if (!isActive || !duration) return;
+    const seek = (cx: number, track: HTMLElement) => {
+      const r = track.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (cx - r.left) / r.width));
+      audioSeek(ratio * duration);
+    };
+    seek(e.clientX, e.currentTarget);
+    const track = e.currentTarget;
+    const onMove = (ev: MouseEvent) => seek(ev.clientX, track);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const onDownload = async () => {
+    if (!serverId) return;
+    let dest: string | null = null;
+    try {
+      dest = await pickSavePath({
+        title: "Save audio",
+        defaultName: attachment.filename || "audio",
+      });
+    } catch (err) {
+      console.error("pickSavePath", err);
+      return;
+    }
+    if (!dest) return;
+    try {
+      await invoke("download_attachment", {
+        req: { serverId, attachmentId: attachment.id, destinationPath: dest },
+      });
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  return (
+    <div className="mt-2 flex w-full max-w-[400px] flex-col gap-2.5 rounded-xl border border-border-divider bg-bg-light p-3">
+      {/* Top row: kind icon + filename + size + small download button */}
+      <div className="flex items-center gap-2.5">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent">
+          <AudioIcon size={18} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12.5px] font-medium text-text-primary" title={attachment.filename}>
+            {attachment.filename}
+          </div>
+          <div className="text-[10.5px] text-text-muted">
+            {formatBytes(attachment.sizeBytes)}
+          </div>
+        </div>
+        <button
+          onClick={onDownload}
+          title="Download"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Bottom row: play/pause + scrub + time */}
+      <div className="flex items-center gap-2.5">
+        <button
+          onClick={onPlay}
+          disabled={loading || !!error}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white shadow-[0_2px_10px_rgba(56,143,255,0.35)] transition-all hover:scale-105 hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+          title={playing ? "Pause" : "Play"}
+        >
+          {loading ? (
+            <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+          ) : error ? (
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          ) : playing ? (
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="5" width="4" height="14" rx="1" />
+              <rect x="14" y="5" width="4" height="14" rx="1" />
+            </svg>
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          )}
+        </button>
+
+        <div
+          onMouseDown={duration ? onScrubDown : undefined}
+          className={`group relative flex h-3 flex-1 items-center ${duration ? "cursor-pointer" : "cursor-default"}`}
+        >
+          <div className="pointer-events-none absolute inset-x-0 h-[3px] rounded-full bg-white/15" />
+          <div
+            className="pointer-events-none absolute h-[3px] rounded-full bg-accent"
+            style={{ width: `${progress}%` }}
+          />
+          <div
+            className="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-darkest opacity-0 transition-opacity group-hover:opacity-100"
+            style={{ left: `${progress}%` }}
+          />
+        </div>
+
+        <span className="shrink-0 select-none tabular-nums text-[10.5px] text-text-muted">
+          {fmt(time)} / {fmt(displayDuration)}
+        </span>
+      </div>
+
+      {error && (
+        <p className="text-[11px] text-error">Failed to load: {error}</p>
+      )}
+    </div>
   );
 }
 
@@ -755,7 +950,7 @@ function LiveAttachment({
     case "video":
       return <VideoPlayer attachment={attachment} serverId={serverId} fillCell={fillCell} />;
     case "audio":
-      return <FileCard attachment={attachment} serverId={serverId} icon={<AudioIcon />} />;
+      return <AudioPlayer attachment={attachment} serverId={serverId} />;
     case "document":
     default:
       return <FileCard attachment={attachment} serverId={serverId} icon={<DocIcon />} />;

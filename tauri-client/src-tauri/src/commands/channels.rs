@@ -147,6 +147,7 @@ pub async fn send_channel_message(
                 height: 0,
                 thumbnail_size_bytes: 0,
                 thumbnail_sizes_mask: 0,
+                duration_ms: 0,
             })
             .collect();
 

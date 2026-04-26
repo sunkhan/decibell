@@ -338,6 +338,21 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   const editorRef = useRef<RichInputHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
 
+  // True when at least one pending attachment is in a sendable state
+  // (queued or ready). Lets the send button light up even when the
+  // text input is empty, mirroring handleSend's own gating logic.
+  // Subscribing as a primitive bool means the button only re-renders
+  // when the flag flips, not on every progress tick.
+  const hasSendableAttachments = useAttachmentsStore((s) => {
+    if (!activeChannelId) return false;
+    const order = s.orderByChannel[activeChannelId] ?? [];
+    for (const id of order) {
+      const a = s.byPendingId[id];
+      if (a && (a.status === "queued" || a.status === "ready")) return true;
+    }
+    return false;
+  });
+
   // Publish the messages-area dimensions to the store so image previews
   // can size against them. Implemented as a *callback ref* (not
   // useEffect on a useRef) because ChatPanel early-returns in home/DM
@@ -620,6 +635,11 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     for (const filePath of picked) {
       await startUpload(filePath);
     }
+
+    // Hand focus back to the editor so a follow-up Enter sends the
+    // message instead of re-firing the attach button (which holds
+    // focus after the file dialog closes).
+    editorRef.current?.focus();
   };
 
   const startUpload = async (filePath: string) => {
@@ -786,7 +806,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
             </div>
             <button
               onClick={handleSend}
-              disabled={!input.trim()}
+              disabled={!input.trim() && !hasSendableAttachments}
               className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">

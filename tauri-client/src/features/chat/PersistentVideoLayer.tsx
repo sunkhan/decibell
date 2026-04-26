@@ -1,5 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useActiveVideoStore } from "../../stores/activeVideoStore";
+import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
+import { toast } from "../../stores/toastStore";
+import { pickSavePath } from "./filePicker";
 import { getCachedVideo, setVideoPoster, updateCachedVideoState } from "./tempVideoCache";
 
 // Single mounted-once <video> element that survives Virtuoso row
@@ -223,6 +227,79 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     if (v.paused) v.play().catch(() => {});
     else v.pause();
   };
+
+  // Single-click toggles play after a short delay so that a double-
+  // click (which fires after both single-clicks) can cancel it and
+  // toggle fullscreen instead. Mirrors YouTube's behaviour. The 220 ms
+  // delay sits just above a typical OS dblclick interval.
+  const clickTimeoutRef = useRef<number | null>(null);
+  const handleSingleClick = () => {
+    if (clickTimeoutRef.current !== null) return;
+    clickTimeoutRef.current = window.setTimeout(() => {
+      clickTimeoutRef.current = null;
+      togglePlay();
+    }, 220);
+  };
+  const handleDoubleClick = () => {
+    if (clickTimeoutRef.current !== null) {
+      window.clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
+    setFullscreen(!fullscreen);
+  };
+  // Cleanup the pending single-click on unmount so it doesn't fire
+  // against a torn-down videoRef.
+  useEffect(() => {
+    return () => {
+      if (clickTimeoutRef.current !== null) {
+        window.clearTimeout(clickTimeoutRef.current);
+        clickTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleDownload = async () => {
+    let dest: string | null = null;
+    try {
+      dest = await pickSavePath({
+        title: "Save video",
+        defaultName: active.filename || "video",
+      });
+    } catch (err) {
+      toast.error("Save dialog failed", String(err));
+      return;
+    }
+    if (!dest) return;
+    try {
+      await invoke("download_attachment", {
+        req: {
+          serverId: active.serverId,
+          attachmentId: active.attachmentId,
+          destinationPath: dest,
+        },
+      });
+      toast.success("Video saved", active.filename);
+    } catch (err) {
+      toast.error("Save failed", String(err));
+    }
+  };
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    // Suppress the context menu on the controls bar so right-clicking
+    // a button doesn't pop up a "Save video" menu over it. Anything
+    // outside the bar (the video itself) gets the menu.
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("[data-controls-bar]")) return;
+    e.preventDefault();
+    useImageContextMenuStore.getState().show({
+      x: e.clientX,
+      y: e.clientY,
+      serverId: active.serverId,
+      attachmentId: active.attachmentId,
+      filename: active.filename,
+      kind: "video",
+    });
+  };
   const toggleMute = () => {
     const v = videoRef.current;
     if (!v) return;
@@ -352,18 +429,20 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
         if (playing) resetIdleTimer();
       }}
       onKeyDown={handleKey}
+      onDoubleClick={handleDoubleClick}
+      onContextMenu={handleContextMenu}
     >
       <video
         ref={videoRef}
         autoPlay
-        onClick={togglePlay}
+        onClick={handleSingleClick}
         className={`h-full w-full ${cursorHidden ? "cursor-none" : "cursor-pointer"} bg-bg-darkest object-contain`}
       />
 
       {/* Paused overlay — accent play button */}
       {!playing && (
         <button
-          onClick={togglePlay}
+          onClick={handleSingleClick}
           className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-black/30"
         >
           <div className="flex h-12 w-20 items-center justify-center rounded-xl bg-accent shadow-[0_4px_20px_rgba(56,143,255,0.35)] transition-all hover:scale-110 hover:bg-accent-hover hover:shadow-[0_6px_28px_rgba(56,143,255,0.45)]">
@@ -374,8 +453,36 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
         </button>
       )}
 
+      {/* Top-right download button — fullscreen only. Inherits the
+          same visibility rules as the bottom controls bar so it fades
+          out with the cursor on idle. */}
+      {fullscreen && (
+        <div
+          data-controls-bar
+          className={`pointer-events-none absolute right-4 top-4 transition-all duration-300 ease-out ${
+            controlsVisible ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
+          }`}
+        >
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDownload();
+            }}
+            title="Download"
+            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-md bg-bg-darkest/85 text-white/85 backdrop-blur-md transition-colors hover:bg-bg-darkest hover:text-white"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
+        </div>
+      )}
+
       {/* Controls overlay */}
       <div
+        data-controls-bar
         className={`pointer-events-none absolute inset-x-0 bottom-0 transition-all duration-300 ease-out ${
           controlsVisible ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
         }`}

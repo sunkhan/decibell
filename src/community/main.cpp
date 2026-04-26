@@ -524,6 +524,7 @@ private:
                             static_cast<uint32_t>(row.thumbnail_size_bytes));
                         pa->set_thumbnail_sizes_mask(
                             static_cast<uint32_t>(row.thumbnail_sizes_mask));
+                        pa->set_duration_ms(static_cast<uint32_t>(row.duration_ms));
                     }
                 }
             } else {
@@ -595,6 +596,7 @@ private:
                             static_cast<uint32_t>(a->thumbnail_size_bytes));
                         proto_a->set_thumbnail_sizes_mask(
                             static_cast<uint32_t>(a->thumbnail_sizes_mask));
+                        proto_a->set_duration_ms(static_cast<uint32_t>(a->duration_ms));
                     }
                 }
             }

@@ -55,6 +55,9 @@ export interface Attachment {
   // thumbnailSizeBytes > 0 = legacy single-size upload (320, served
   // from the legacy `.thumb.jpg` path without &size= on the request).
   thumbnailSizesMask: number;
+  // Duration in milliseconds for audio + video attachments. 0 = unknown
+  // (legacy row, non-media kind, or extraction failed at upload time).
+  durationMs: number;
 }
 
 export interface Message {

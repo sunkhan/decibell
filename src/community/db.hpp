@@ -78,6 +78,9 @@ struct DbAttachment {
     // Bitmask of pre-generated thumbnail sizes available on disk.
     // bit 0 = 320 px long-edge, bit 1 = 640 px, bit 2 = 1280 px.
     int32_t thumbnail_sizes_mask = 0;
+    // Duration in milliseconds for audio/video attachments; 0 unknown.
+    // Populated from the uploader's /init metadata.
+    int32_t duration_ms = 0;
 };
 
 // Returned from prune_attachments so the server can broadcast tombstone
@@ -206,7 +209,8 @@ public:
                                       const std::string& uploader,
                                       int32_t position,
                                       int32_t width,
-                                      int32_t height);
+                                      int32_t height,
+                                      int32_t duration_ms);
     std::optional<DbAttachment> get_attachment(int64_t attachment_id) const;
     // Set/overwrite the storage_path for an attachment. Used at upload init:
     // we need the row's autoincrement id to build the final path, so the

@@ -43,6 +43,10 @@ export interface PendingAttachment {
   // (image/video kinds). Drives the tile preview in the composer
   // chrome. Revoked when the entry is removed or the channel cleared.
   thumbnailUrl?: string;
+  // Duration (ms) for audio/video, captured at queue time. Forwarded
+  // to the server via /init so receivers can show "0:00 / 3:45"
+  // before the file is downloaded.
+  durationMs?: number;
 }
 
 interface AttachmentsState {

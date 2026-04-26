@@ -27,9 +27,12 @@ function KindIcon({ kind, size = 20 }: { kind: PendingAttachment["kind"]; size?:
     case "audio":
       return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
-          <path d="M9 18V5l12-2v13" />
-          <circle cx="6" cy="18" r="3" />
-          <circle cx="18" cy="16" r="3" />
+          <rect x="3" y="3" width="18" height="18" rx="3" />
+          <line x1="7" y1="10" x2="7" y2="14" />
+          <line x1="10" y1="8" x2="10" y2="16" />
+          <line x1="13" y1="11" x2="13" y2="13" />
+          <line x1="16" y1="9" x2="16" y2="15" />
+          <line x1="19" y1="11" x2="19" y2="13" />
         </svg>
       );
     default:

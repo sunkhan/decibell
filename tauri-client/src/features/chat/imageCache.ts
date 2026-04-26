@@ -13,7 +13,12 @@ import { invoke } from "@tauri-apps/api/core";
 // the entry to the "most recent" end via delete+reinsert, which is
 // JavaScript's Map iteration order.
 
-const MAX_ENTRIES = 50;
+// Holds full-resolution image bytes (Blob object URLs). Each entry can
+// be many megabytes for high-quality originals, so the cap stays small
+// — the working set for the viewer is "current + a couple of
+// neighbours", and inline previews use the much smaller server
+// thumbnails via attachmentThumbnailCache.
+const MAX_ENTRIES = 8;
 const cache = new Map<number, string>();
 // Concurrent fetches for the same id collapse to a single promise.
 // Without this, a rapid re-mount during scroll (or a viewer fetch

@@ -205,6 +205,7 @@ pub async fn post_init(
     size: i64,
     width: u32,
     height: u32,
+    duration_ms: u32,
 ) -> Result<InitResponse, String> {
     let body = serde_json::json!({
         "channelId": channel_id,
@@ -213,6 +214,7 @@ pub async fn post_init(
         "size": size,
         "width": width,
         "height": height,
+        "durationMs": duration_ms,
     })
     .to_string();
     let mut stream = connect_tls(host, port).await?;

@@ -345,6 +345,11 @@ message Attachment {
   // thumbnail_size_bytes > 0 means a legacy single-size upload (320 px,
   // served from .thumb.jpg without the new naming).
   uint32 thumbnail_sizes_mask = 14;
+  // Duration in milliseconds for audio + video attachments. Read at
+  // upload time client-side and shipped in /attachments/init so chat
+  // UIs can show "0:00 / 3:45" before the file is downloaded. 0 =
+  // unknown (legacy row, non-media kind, or extraction failed).
+  uint32 duration_ms = 15;
 }
 
 message ChannelHistoryRequest {

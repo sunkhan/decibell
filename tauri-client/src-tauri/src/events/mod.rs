@@ -94,6 +94,9 @@ pub struct AttachmentPayload {
     // thumbnail_size_bytes > 0 means a legacy single-size upload (320,
     // served from the legacy path without &size=).
     pub thumbnail_sizes_mask: u32,
+    // Audio + video duration in ms; 0 unknown. Read at upload time
+    // client-side and shipped through /attachments/init.
+    pub duration_ms: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

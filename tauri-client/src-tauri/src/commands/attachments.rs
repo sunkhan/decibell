@@ -27,6 +27,10 @@ pub struct UploadRequest {
     pub width: u32,
     #[serde(default)]
     pub height: u32,
+    // Audio + video duration in ms, read client-side. Lets receivers
+    // show a duration label (e.g. "3:45") before downloading the file.
+    #[serde(default)]
+    pub duration_ms: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,7 +145,7 @@ pub async fn upload_attachment(
     let init = match net_attach::post_init(
         &host, port, &jwt,
         &req.channel_id, &req.filename, &req.mime, total_bytes as i64,
-        req.width, req.height,
+        req.width, req.height, req.duration_ms,
     )
     .await
     {

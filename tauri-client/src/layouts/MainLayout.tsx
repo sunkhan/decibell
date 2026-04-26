@@ -13,6 +13,7 @@ import ToastStack from "../components/ToastStack";
 import ImageViewer from "../features/chat/ImageViewer";
 import ImageContextMenu from "../components/ImageContextMenu";
 import PersistentVideoLayer from "../features/chat/PersistentVideoLayer";
+import PersistentAudioLayer from "../features/chat/PersistentAudioLayer";
 import ChannelSidebar from "../features/channels/ChannelSidebar";
 import UserPanel from "../features/channels/UserPanel";
 import ChatPanel, { ChatHeader } from "../features/chat/ChatPanel";
@@ -114,6 +115,7 @@ export default function MainLayout() {
       <ImageViewer />
       <ImageContextMenu />
       <PersistentVideoLayer />
+      <PersistentAudioLayer />
       <UserProfilePopup />
       <UserContextMenu />
       <SettingsModal />

@@ -4,6 +4,7 @@ import { toast } from "../../stores/toastStore";
 import { kindFromMime, formatBytes } from "./attachmentHelpers";
 import { extractVideoMetadata } from "./videoMetadata";
 import { extractImageMetadata, type ThumbSize } from "./imageMetadata";
+import { extractAudioMetadata } from "./audioMetadata";
 
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
@@ -72,6 +73,7 @@ export async function uploadAttachment(opts: {
   let height = meta.height;
   const kind = kindFromMime(meta.mime);
   let thumbnailUrl: string | undefined;
+  let durationMs = 0;
 
   // For image / video kinds, extract a small JPEG thumbnail and (for
   // video) intrinsic dimensions client-side. The Rust stat path can
@@ -118,6 +120,13 @@ export async function uploadAttachment(opts: {
     } catch (err) {
       console.warn("[upload] image metadata extraction failed", err);
     }
+  } else if (kind === "audio") {
+    try {
+      const am = await extractAudioMetadata(opts.filePath);
+      durationMs = am.durationMs;
+    } catch (err) {
+      console.warn("[upload] audio metadata extraction failed", err);
+    }
   }
 
   const entry: PendingAttachment = {
@@ -134,6 +143,7 @@ export async function uploadAttachment(opts: {
     transferredBytes: 0,
     status: "queued",
     thumbnailUrl,
+    durationMs,
   };
   useAttachmentsStore.getState().addPending(entry);
   return { ok: true, pendingId };
@@ -157,6 +167,7 @@ export function startQueuedUpload(p: PendingAttachment): Promise<{ ok: boolean }
       mime: p.mime,
       width: p.width,
       height: p.height,
+      durationMs: p.durationMs ?? 0,
     },
   }).catch((err) => {
     useAttachmentsStore.getState().markFailed(p.pendingId, String(err), false);
