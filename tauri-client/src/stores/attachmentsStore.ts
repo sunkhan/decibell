@@ -11,11 +11,24 @@ import type { AttachmentKind } from "../types";
 // hits send, we pass `attachmentId`s to send_channel_message and clear the
 // channel's pending list. When the user removes one via the × button we
 // cancel the in-flight upload (or just drop the entry if it's already ready).
-export type PendingStatus = "uploading" | "ready" | "failed" | "cancelled";
+// Lifecycle:
+//   queued    — selected by the user but not yet sent. The file is on disk,
+//                metadata is captured, but no upload has started.
+//   uploading — the user hit send; the Rust upload is in flight.
+//   ready     — server returned an attachment_id; included in the next sent
+//                message. Stays here briefly until the message actually goes.
+//   failed    — Rust reported an error. User can remove + try again.
+//   cancelled — user clicked × during upload.
+export type PendingStatus = "queued" | "uploading" | "ready" | "failed" | "cancelled";
 
 export interface PendingAttachment {
   pendingId: string;
   channelId: string;
+  // Captured at queue time so handleSend can launch the upload later.
+  serverId: string;
+  filePath: string;
+  width: number;
+  height: number;
   filename: string;
   mime: string;
   kind: AttachmentKind;
@@ -36,6 +49,7 @@ interface AttachmentsState {
 
   addPending: (a: PendingAttachment) => void;
   updateProgress: (pendingId: string, transferred: number) => void;
+  markUploading: (pendingId: string) => void;
   markReady: (pendingId: string, attachmentId: number, kind: AttachmentKind, mime: string, filename: string) => void;
   markFailed: (pendingId: string, error: string, cancelled: boolean) => void;
   removePending: (pendingId: string) => void;
@@ -63,6 +77,17 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
       byPendingId: {
         ...state.byPendingId,
         [pendingId]: { ...existing, transferredBytes: transferred },
+      },
+    };
+  }),
+
+  markUploading: (pendingId) => set((state) => {
+    const existing = state.byPendingId[pendingId];
+    if (!existing || existing.status !== "queued") return state;
+    return {
+      byPendingId: {
+        ...state.byPendingId,
+        [pendingId]: { ...existing, status: "uploading", transferredBytes: 0 },
       },
     };
   }),

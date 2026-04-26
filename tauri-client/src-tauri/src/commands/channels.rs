@@ -121,6 +121,7 @@ pub async fn send_channel_message(
                 purged_at: 0,
                 width: 0,
                 height: 0,
+                thumbnail_size_bytes: 0,
             })
             .collect();
 

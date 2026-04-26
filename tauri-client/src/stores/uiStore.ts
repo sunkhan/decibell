@@ -43,6 +43,19 @@ interface UiState {
   downloadLimitBps: number;
   setUploadLimitBps: (value: number) => void;
   setDownloadLimitBps: (value: number) => void;
+  /// LRU cap on the in-memory channel cache (messages, scroll position,
+  /// history flags). The N most-recently-visited channels stay; older
+  /// ones are evicted on the next channel switch.
+  channelCacheSize: number;
+  setChannelCacheSize: (value: number) => void;
+  // File drag-and-drop state. Set by the Tauri drag-drop listener; read by
+  // the chat input and channel sidebar to render droppable affordances.
+  // `dragHoveredKey` tracks which specific drop target the cursor is over
+  // so it can render the "active" highlight while others stay subtle.
+  dragActive: boolean;
+  dragHoveredKey: string | null;
+  setDragActive: (value: boolean) => void;
+  setDragHoveredKey: (key: string | null) => void;
   inputDevice: string | null;
   outputDevice: string | null;
   separateStreamOutput: boolean;
@@ -92,6 +105,12 @@ export const useUiStore = create<UiState>((set) => ({
   downloadLimitBps: 0,
   setUploadLimitBps: (value) => set({ uploadLimitBps: value }),
   setDownloadLimitBps: (value) => set({ downloadLimitBps: value }),
+  channelCacheSize: 10,
+  setChannelCacheSize: (value) => set({ channelCacheSize: value }),
+  dragActive: false,
+  dragHoveredKey: null,
+  setDragActive: (value) => set({ dragActive: value }),
+  setDragHoveredKey: (key) => set({ dragHoveredKey: key }),
   inputDevice: null,
   outputDevice: null,
   separateStreamOutput: false,

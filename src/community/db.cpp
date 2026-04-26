@@ -239,7 +239,8 @@ void CommunityDb::migrate_to_v2_() {
         "  uploader TEXT NOT NULL DEFAULT '',"
         "  channel_id TEXT NOT NULL DEFAULT '',"
         "  width INTEGER NOT NULL DEFAULT 0,"
-        "  height INTEGER NOT NULL DEFAULT 0"
+        "  height INTEGER NOT NULL DEFAULT 0,"
+        "  thumbnail_size_bytes INTEGER NOT NULL DEFAULT 0"
         ");");
     exec_sql(db_,
         "CREATE INDEX IF NOT EXISTS idx_attachments_message "
@@ -258,6 +259,8 @@ void CommunityDb::migrate_to_v2_() {
         { "channel_id",    "channel_id TEXT NOT NULL DEFAULT ''" },
         { "width",         "width INTEGER NOT NULL DEFAULT 0" },
         { "height",        "height INTEGER NOT NULL DEFAULT 0" },
+        { "thumbnail_size_bytes",
+                           "thumbnail_size_bytes INTEGER NOT NULL DEFAULT 0" },
     };
     for (const auto& c : attach_cols) {
         if (!column_exists(db_, "attachments", c.name)) {
@@ -371,17 +374,18 @@ void CommunityDb::migrate_to_v2_() {
                      "  uploader TEXT NOT NULL DEFAULT '',"
                      "  channel_id TEXT NOT NULL DEFAULT '',"
                      "  width INTEGER NOT NULL DEFAULT 0,"
-                     "  height INTEGER NOT NULL DEFAULT 0"
+                     "  height INTEGER NOT NULL DEFAULT 0,"
+                     "  thumbnail_size_bytes INTEGER NOT NULL DEFAULT 0"
                      ");") &&
                 must("INSERT INTO attachments_v4 "
                      "  (id, message_id, kind, filename, mime, size_bytes, "
                      "   storage_path, position, created_at, purged_at, "
                      "   upload_status, expected_size, uploader, channel_id, "
-                     "   width, height) "
+                     "   width, height, thumbnail_size_bytes) "
                      "SELECT id, message_id, kind, filename, mime, size_bytes, "
                      "       storage_path, position, created_at, purged_at, "
                      "       upload_status, expected_size, uploader, channel_id, "
-                     "       width, height "
+                     "       width, height, thumbnail_size_bytes "
                      "FROM attachments;") &&
                 must("DROP TABLE attachments;") &&
                 must("ALTER TABLE attachments_v4 RENAME TO attachments;");
@@ -909,7 +913,8 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
     const std::string sql =
         "SELECT id, message_id, kind, filename, mime, size_bytes, "
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
-        "  upload_status, expected_size, uploader, width, height "
+        "  upload_status, expected_size, uploader, width, height, "
+        "  thumbnail_size_bytes "
         "FROM attachments WHERE message_id IN (" + placeholders + ") "
         "  AND upload_status = 'ready' "
         "ORDER BY message_id ASC, position ASC;";
@@ -937,6 +942,7 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
         a.uploader = q.col_text(12);
         a.width = q.col_int(13);
         a.height = q.col_int(14);
+        a.thumbnail_size_bytes = q.col_int64(15);
         out.push_back(std::move(a));
     }
     return out;
@@ -994,7 +1000,8 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
     Stmt q(db_,
         "SELECT id, message_id, kind, filename, mime, size_bytes, "
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
-        "  upload_status, expected_size, uploader, channel_id, width, height "
+        "  upload_status, expected_size, uploader, channel_id, width, height, "
+        "  thumbnail_size_bytes "
         "FROM attachments WHERE id=?;");
     if (!q.s) return std::nullopt;
     q.bind_int64(1, attachment_id);
@@ -1015,6 +1022,7 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
     a.uploader = q.col_text(12);
     a.width = q.col_int(14);
     a.height = q.col_int(15);
+    a.thumbnail_size_bytes = q.col_int64(16);
     return a;
 }
 
@@ -1058,6 +1066,16 @@ std::optional<std::string> CommunityDb::abort_pending_attachment(int64_t attachm
     if (del.step() != SQLITE_DONE) return std::nullopt;
     if (sqlite3_changes(db_) == 0) return std::nullopt;
     return path;
+}
+
+bool CommunityDb::set_attachment_thumbnail_size(int64_t attachment_id, int64_t size) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "UPDATE attachments SET thumbnail_size_bytes=? WHERE id=?;");
+    if (!q.s) return false;
+    q.bind_int64(1, size < 0 ? 0 : size);
+    q.bind_int64(2, attachment_id);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
 }
 
 std::vector<int64_t> CommunityDb::bind_attachments(const std::vector<int64_t>& attachment_ids,

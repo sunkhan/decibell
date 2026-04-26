@@ -348,6 +348,72 @@ async fn stream_file_in_chunks(
     Ok(())
 }
 
+/// Uploads a JPEG thumbnail for an already-`ready` attachment. Called by
+/// the JS upload pipeline right after the main upload completes (and
+/// only when a thumbnail was successfully extracted client-side). Errors
+/// are non-fatal — the message can still send without a thumbnail; the
+/// placeholder just falls back to its plain look.
+#[tauri::command]
+pub async fn upload_attachment_thumbnail(
+    server_id: String,
+    attachment_id: i64,
+    bytes: Vec<u8>,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("Empty thumbnail bytes".to_string());
+    }
+    let (host, port, jwt) = {
+        let s = state.lock().await;
+        let client = s
+            .communities
+            .get(&server_id)
+            .ok_or_else(|| format!("Not connected to community {}", server_id))?;
+        if client.attachment_port == 0 {
+            return Err("Server did not advertise an attachment port".to_string());
+        }
+        (client.host.clone(), client.attachment_port, client.jwt.clone())
+    };
+    net_attach::post_thumbnail(&host, port, &jwt, attachment_id, &bytes).await
+}
+
+/// Fetch the raw JPEG bytes of a server-side thumbnail. Like
+/// `fetch_attachment_bytes` but with `?variant=thumb` so the server
+/// returns the sibling `.thumb.jpg` file instead of the main attachment.
+/// Used by `VideoPlayer` to lazy-load a poster preview when the
+/// placeholder scrolls into view.
+#[tauri::command]
+pub async fn fetch_attachment_thumbnail(
+    server_id: String,
+    attachment_id: i64,
+    state: State<'_, SharedState>,
+) -> Result<tauri::ipc::Response, String> {
+    let (host, port, jwt, rate) = {
+        let s = state.lock().await;
+        let client = s
+            .communities
+            .get(&server_id)
+            .ok_or_else(|| format!("Not connected to community {}", server_id))?;
+        if client.attachment_port == 0 {
+            return Err("Server did not advertise an attachment port".to_string());
+        }
+        (
+            client.host.clone(),
+            client.attachment_port,
+            client.jwt.clone(),
+            s.download_limit_bps.clone(),
+        )
+    };
+    let throttle = net_attach::RateLimiter::new(rate);
+    let null_obs = NullDownloadObs;
+    let mut buf: Vec<u8> = Vec::new();
+    net_attach::stream_get_variant(
+        &host, port, &jwt, attachment_id, "thumb", &mut buf, &throttle, &null_obs,
+    )
+    .await?;
+    Ok(tauri::ipc::Response::new(buf))
+}
+
 #[tauri::command]
 pub async fn cancel_attachment_upload(
     pending_id: String,
@@ -395,6 +461,155 @@ impl net_attach::DownloadObserver for DownloadObs {
     fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TempAttachment {
+    /// Absolute path of the saved temp file. Use for `cleanup_temp_attachment`.
+    pub path: String,
+    /// `http://127.0.0.1:PORT/<filename>` URL served by the local media
+    /// server. WebKit's GStreamer pipeline can play from this URL with
+    /// proper seek + decode behaviour.
+    pub url: String,
+}
+
+/// Downloads an attachment to a generated temp file and returns both
+/// the path (for cleanup) and a localhost HTTP URL (for `<video>`/`<audio>`
+/// src). The local media server serves files matching `decibell-attach-*`
+/// from the OS temp dir, so this URL is only routable inside the user's
+/// machine.
+#[tauri::command]
+pub async fn save_attachment_to_temp(
+    server_id: String,
+    attachment_id: i64,
+    filename: String,
+    app: AppHandle,
+    state: State<'_, SharedState>,
+) -> Result<TempAttachment, String> {
+    let extension = std::path::Path::new(&filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let temp_name = format!("decibell-attach-{}-{}.{}", now, attachment_id, extension);
+    let temp_path = crate::local_media_server::cache_dir().join(&temp_name);
+    let path_str = temp_path
+        .to_str()
+        .ok_or_else(|| "Temp path contains non-UTF-8 characters".to_string())?
+        .to_string();
+
+    let port = {
+        let s = state.lock().await;
+        s.local_media_port
+    };
+    if port == 0 {
+        return Err("Local media server isn't running".to_string());
+    }
+
+    download_attachment(
+        DownloadRequest {
+            server_id,
+            attachment_id,
+            destination_path: path_str.clone(),
+        },
+        app,
+        state,
+    )
+    .await?;
+
+    let url = format!(
+        "http://127.0.0.1:{}/{}",
+        port,
+        urlencoding::encode(&temp_name)
+    );
+    Ok(TempAttachment { path: path_str, url })
+}
+
+/// Makes a user-picked file accessible to the local media server (and
+/// therefore to a hidden `<video>` element in the renderer) so the JS
+/// upload flow can read its dimensions + capture a thumbnail frame.
+/// Hard-links the source path into the cache dir under our
+/// `decibell-attach-` namespace; falls back to a copy if the source
+/// lives on a different filesystem. Returns the localhost URL plus the
+/// staged path so the caller can clean up after extraction.
+#[tauri::command]
+pub async fn stage_file_for_media(
+    path: String,
+    state: State<'_, SharedState>,
+) -> Result<TempAttachment, String> {
+    let src = std::path::PathBuf::from(&path);
+    if !src.exists() {
+        return Err(format!("Source file not found: {}", path));
+    }
+    let extension = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin");
+    // nanos + an atomic counter keep the suffix unique across rapid calls
+    // without pulling in a randomness dep. These files are short-lived
+    // (cleanup runs as soon as JS-side extraction finishes), so collision
+    // resistance only needs to cover concurrent uploads from the same UI.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staged_name = format!("decibell-attach-stage-{}-{}.{}", nanos, seq, extension);
+    let staged_path = crate::local_media_server::cache_dir().join(&staged_name);
+
+    // Try hard link first — zero copy, instant. Fails across filesystems
+    // or on platforms where the source isn't supported, in which case we
+    // fall back to a regular copy.
+    if std::fs::hard_link(&src, &staged_path).is_err() {
+        tokio::fs::copy(&src, &staged_path)
+            .await
+            .map_err(|e| format!("Stage copy {} → {}: {}", src.display(), staged_path.display(), e))?;
+    }
+
+    let port = {
+        let s = state.lock().await;
+        s.local_media_port
+    };
+    if port == 0 {
+        return Err("Local media server isn't running".to_string());
+    }
+
+    let path_str = staged_path
+        .to_str()
+        .ok_or_else(|| "Staged path contains non-UTF-8 characters".to_string())?
+        .to_string();
+    let url = format!(
+        "http://127.0.0.1:{}/{}",
+        port,
+        urlencoding::encode(&staged_name)
+    );
+    Ok(TempAttachment { path: path_str, url })
+}
+
+/// Deletes a temp file previously created by `save_attachment_to_temp`.
+/// Validates the path is in the OS temp dir and uses our prefix so a
+/// caller can't trick us into deleting arbitrary files.
+#[tauri::command]
+pub async fn cleanup_temp_attachment(path: String) -> Result<(), String> {
+    let p = std::path::PathBuf::from(&path);
+    let cache_dir = crate::local_media_server::cache_dir();
+    if p.parent() != Some(cache_dir.as_path()) {
+        return Ok(());
+    }
+    let in_namespace = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("decibell-attach-"));
+    if !in_namespace {
+        return Ok(());
+    }
+    let _ = tokio::fs::remove_file(&p).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -605,4 +820,346 @@ pub async fn set_transfer_limits(
     };
     crate::config::save(&app, None, &settings)?;
     Ok(())
+}
+
+/// Persist clipboard-pasted bytes to a temp file and return its absolute
+/// path. The frontend then runs that path through the same upload pipeline
+/// the file picker uses, avoiding any duplication of the upload logic.
+///
+/// Filename is sanitized — only alphanumerics, `.`, `-`, `_`, and spaces
+/// survive — and a millisecond timestamp prefix prevents collisions
+/// across rapid pastes. Cleanup is delegated to the OS temp-dir lifecycle;
+/// trying to delete after upload would race with retries.
+#[tauri::command]
+pub async fn save_paste_to_temp(
+    bytes: Vec<u8>,
+    filename: String,
+) -> Result<String, String> {
+    let mut safe_name: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    safe_name = safe_name.trim().to_string();
+    if safe_name.is_empty() || safe_name.starts_with('.') {
+        safe_name = "paste".to_string();
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let temp_name = format!("decibell-paste-{}-{}", now, safe_name);
+    let temp_path = std::env::temp_dir().join(&temp_name);
+
+    // Async I/O via tokio::fs::write. The await yields the executor
+    // thread back to the runtime during the actual disk write, so
+    // other commands aren't queued behind a large paste's flush.
+    tokio::fs::write(&temp_path, &bytes)
+        .await
+        .map_err(|e| format!("Write temp file: {}", e))?;
+
+    temp_path
+        .to_str()
+        .map(String::from)
+        .ok_or_else(|| "Temp path contains non-UTF-8 characters".to_string())
+}
+
+/// PNG bytes for an image currently sitting on the OS clipboard, or
+/// `None` if the clipboard doesn't carry an image.
+///
+/// Why this exists: WebKitGTK on Linux does not expose clipboard images
+/// via the JS `paste` event (the event fires with empty `clipboardData`
+/// for screenshot-style copies). We work around it by reading the OS
+/// clipboard from Rust through `arboard`, which speaks the underlying
+/// X11/Wayland protocols directly. Same fallback also catches "Copy
+/// Image" from browsers — those put HTML markup, not bytes, into the
+/// JS clipboard, but the OS clipboard often has the actual image too.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClipboardImage {
+    pub bytes: Vec<u8>,
+    pub mime: String,
+}
+
+fn try_arboard() -> Option<ClipboardImage> {
+    use std::io::Cursor;
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    let img = clipboard.get_image().ok()?;
+    let width = img.width as u32;
+    let height = img.height as u32;
+    let buf = image::RgbaImage::from_raw(width, height, img.bytes.into_owned())?;
+    let mut png_bytes = Vec::new();
+    buf.write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .ok()?;
+    Some(ClipboardImage {
+        bytes: png_bytes,
+        mime: "image/png".into(),
+    })
+}
+
+/// Wayland-compositor-agnostic fallback. arboard's Wayland backend
+/// uses `wlr-data-control` which not every compositor implements (and
+/// even those that do can flake out depending on protocol version).
+/// `wl-paste` (from the `wl-clipboard` package) speaks whichever
+/// protocol the compositor exposes, so it's the most universal way to
+/// read an image off the system clipboard on Wayland.
+#[cfg(target_os = "linux")]
+fn try_wl_paste() -> Option<ClipboardImage> {
+    use std::process::Command;
+
+    let types_out = Command::new("wl-paste").arg("--list-types").output().ok()?;
+    if !types_out.status.success() {
+        return None;
+    }
+    let types_str = String::from_utf8_lossy(&types_out.stdout);
+
+    // Pick the first image MIME the clipboard advertises that we can
+    // hand straight to the upload pipeline. Order doesn't really matter
+    // for correctness, but PNG first matches what most screenshot tools
+    // produce.
+    let mime = [
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/bmp",
+        "image/gif",
+        "image/tiff",
+    ]
+    .into_iter()
+    .find(|m| types_str.lines().any(|line| line.trim() == *m))?;
+
+    let read_out = Command::new("wl-paste")
+        .arg("--no-newline")
+        .arg("--type")
+        .arg(mime)
+        .output()
+        .ok()?;
+    if !read_out.status.success() || read_out.stdout.is_empty() {
+        return None;
+    }
+
+    Some(ClipboardImage {
+        bytes: read_out.stdout,
+        mime: mime.to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn read_clipboard_image() -> Result<Option<ClipboardImage>, String> {
+    if let Some(img) = try_arboard() {
+        return Ok(Some(img));
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(img) = try_wl_paste() {
+        return Ok(Some(img));
+    }
+    Ok(None)
+}
+
+/// Returns absolute filesystem paths for any `file://` URIs sitting on
+/// the clipboard. WebKitGTK lists `text/uri-list` in `clipboardData.types`
+/// but `getData()` for non-text MIME types is gated behind a security
+/// policy that returns an empty string, so on Linux we read the URI list
+/// directly via `wl-paste`. Returns an empty list when the clipboard
+/// doesn't carry file URIs (or on platforms where this isn't needed —
+/// Windows surfaces file copies through `clipboardData.files` directly).
+#[tauri::command]
+pub fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        let out = match Command::new("wl-paste")
+            .arg("--no-newline")
+            .arg("--type")
+            .arg("text/uri-list")
+            .output()
+        {
+            Ok(o) if o.status.success() => o,
+            _ => return Ok(Vec::new()),
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let paths: Vec<String> = text
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| l.starts_with("file://"))
+            .filter_map(|uri| {
+                // file:// + absolute path. Strip the scheme and percent-decode.
+                let stripped = uri.strip_prefix("file://")?;
+                Some(percent_decode(stripped))
+            })
+            .collect();
+        return Ok(paths);
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(Vec::new())
+}
+
+#[cfg(target_os = "linux")]
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push(((h << 4) | l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Open the XDG Desktop Portal's file chooser. Returns absolute paths
+/// for selected files (file:// URIs converted to local paths). Empty
+/// vec when the user cancels. Linux-only — other platforms still use
+/// `tauri-plugin-dialog` from the frontend.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub async fn pick_attachments_xdg(
+    title: String,
+    multiple: bool,
+) -> Result<Vec<String>, String> {
+    use ashpd::desktop::file_chooser::OpenFileRequest;
+
+    let response = OpenFileRequest::default()
+        .title(title.as_str())
+        .multiple(multiple)
+        .send()
+        .await
+        .map_err(|e| format!("Portal request failed: {}", e))?;
+
+    let response = match response.response() {
+        Ok(r) => r,
+        // ResponseError::Cancelled is the normal user-dismissed-the-dialog
+        // case; surface as an empty selection rather than a Tauri error.
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut paths = Vec::new();
+    for uri in response.uris() {
+        let s = uri.to_string();
+        if let Some(stripped) = s.strip_prefix("file://") {
+            paths.push(percent_decode(stripped));
+        }
+    }
+    Ok(paths)
+}
+
+/// Copy a decoded image to the system clipboard. Accepts the raw bytes
+/// of an image in any common encoding (PNG/JPEG/WEBP/etc.) — we decode
+/// once, then push to the clipboard via `arboard` (which speaks
+/// X11 / Win32 / NSPasteboard / Wayland data-control). On Linux, if
+/// arboard fails (e.g., compositor doesn't expose data-control), we
+/// re-encode to PNG and shell out to `wl-copy`.
+#[tauri::command]
+pub async fn copy_image_to_clipboard(bytes: Vec<u8>) -> Result<(), String> {
+    let decoded = image::load_from_memory(&bytes)
+        .map_err(|e| format!("Decode image: {}", e))?;
+    let rgba = decoded.to_rgba8();
+    let (width, height) = (rgba.width(), rgba.height());
+
+    // On Wayland, prefer `wl-copy` — arboard's data-control path will
+    // happily report success on compositors (e.g. Niri) where the data
+    // never actually reaches the clipboard, leaving a misleading "Image
+    // copied" toast with nothing to paste.
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WAYLAND_DISPLAY").is_ok() {
+            if try_wl_copy_image(width, height, rgba.as_raw()).is_ok() {
+                return Ok(());
+            }
+            // Wayland-but-wl-copy-failed: fall through to arboard as a
+            // last resort.
+        }
+    }
+
+    if try_arboard_set_image(width as usize, height as usize, rgba.as_raw()).is_ok() {
+        return Ok(());
+    }
+
+    Err("Failed to copy image to clipboard".into())
+}
+
+fn try_arboard_set_image(width: usize, height: usize, rgba: &[u8]) -> Result<(), String> {
+    use std::borrow::Cow;
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    let img = arboard::ImageData {
+        width,
+        height,
+        bytes: Cow::Borrowed(rgba),
+    };
+    clipboard.set_image(img).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn try_wl_copy_image(width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+    use std::io::{Cursor, Write};
+    use std::process::{Command, Stdio};
+
+    // Re-encode RGBA → PNG so any pasting app accepts it.
+    let buf = image::RgbaImage::from_raw(width, height, rgba.to_vec())
+        .ok_or_else(|| "RGBA buffer doesn't match dimensions".to_string())?;
+    let mut png = Vec::new();
+    buf.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| format!("PNG encode: {}", e))?;
+
+    let mut child = Command::new("wl-copy")
+        .arg("--type")
+        .arg("image/png")
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Spawn wl-copy: {}", e))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(&png).map_err(|e| e.to_string())?;
+    }
+    drop(child.stdin.take());
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!("wl-copy exited with {}", status));
+    }
+    Ok(())
+}
+
+/// XDG Desktop Portal save-file dialog. Returns the chosen absolute
+/// path, or `None` when the user cancels. Linux-only.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub async fn pick_save_path_xdg(
+    title: String,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    use ashpd::desktop::file_chooser::SaveFileRequest;
+
+    let response = SaveFileRequest::default()
+        .title(title.as_str())
+        .current_name(default_name.as_str())
+        .send()
+        .await
+        .map_err(|e| format!("Portal request failed: {}", e))?;
+
+    let response = match response.response() {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+
+    for uri in response.uris() {
+        let s = uri.to_string();
+        if let Some(stripped) = s.strip_prefix("file://") {
+            return Ok(Some(percent_decode(stripped)));
+        }
+    }
+    Ok(None)
 }

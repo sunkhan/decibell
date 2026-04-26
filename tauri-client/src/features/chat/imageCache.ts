@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+
 // Module-level LRU cache of attachment-id → blob: URL.
 //
 // Virtualization means an ImagePreview for an attachment scrolled out of the
@@ -39,4 +41,47 @@ export function cacheImage(attachmentId: number, url: string): void {
 export function clearImageCache(): void {
   for (const url of cache.values()) URL.revokeObjectURL(url);
   cache.clear();
+}
+
+/**
+ * Returns a cached blob URL for an attachment, fetching from the server
+ * if not present. Used by the full-screen viewer when navigating to an
+ * image that hasn't been loaded inline yet.
+ */
+export async function getOrFetchImage(
+  serverId: string,
+  attachmentId: number,
+  mime: string,
+): Promise<string> {
+  const cached = getCachedImage(attachmentId);
+  if (cached) return cached;
+  const buf = await invoke<ArrayBuffer>("fetch_attachment_bytes", {
+    serverId,
+    attachmentId,
+  });
+  const blob = new Blob([buf], { type: mime || "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  cacheImage(attachmentId, url);
+  return url;
+}
+
+/**
+ * Push the bytes of an attachment to the OS clipboard. Uses the LRU
+ * blob if cached, otherwise fetches via `getOrFetchImage` first. The
+ * actual clipboard write happens in Rust (arboard / wl-copy).
+ */
+export async function copyAttachmentToClipboard(
+  serverId: string,
+  attachmentId: number,
+  mime: string = "image/png",
+): Promise<void> {
+  let blobUrl = getCachedImage(attachmentId);
+  if (!blobUrl) {
+    blobUrl = await getOrFetchImage(serverId, attachmentId, mime);
+  }
+  const blob = await fetch(blobUrl).then((r) => r.blob());
+  const buf = await blob.arrayBuffer();
+  await invoke("copy_image_to_clipboard", {
+    bytes: Array.from(new Uint8Array(buf)),
+  });
 }

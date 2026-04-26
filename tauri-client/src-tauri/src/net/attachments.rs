@@ -341,6 +341,41 @@ pub async fn post_complete(
         .map_err(|e| format!("complete response parse: {}", e))
 }
 
+/// POST /attachments/:id/thumbnail — uploads the raw JPEG bytes of a
+/// thumbnail to attach to an already-`ready` attachment. Server stores
+/// the bytes at `<storage_path>.thumb.jpg` and stamps the size on the
+/// attachment row so downstream consumers can lazy-fetch via
+/// `?variant=thumb` on GET.
+pub async fn post_thumbnail(
+    host: &str,
+    port: u16,
+    jwt: &str,
+    id: i64,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let mut stream = connect_tls(host, port).await?;
+    let head = format!(
+        "POST /attachments/{id}/thumbnail HTTP/1.1\r\n\
+         Host: {host}:{port}\r\n\
+         Authorization: Bearer {jwt}\r\n\
+         Content-Type: image/jpeg\r\n\
+         Content-Length: {len}\r\n\
+         Connection: close\r\n\r\n",
+        id = id, host = host, port = port, jwt = jwt, len = bytes.len()
+    );
+    stream.write_all(head.as_bytes()).await
+        .map_err(|e| format!("Write thumbnail head: {}", e))?;
+    stream.write_all(bytes).await
+        .map_err(|e| format!("Write thumbnail body: {}", e))?;
+    stream.flush().await
+        .map_err(|e| format!("Flush thumbnail: {}", e))?;
+    let resp = read_full_response(stream).await?;
+    if resp.status != 204 {
+        return Err(format!("thumbnail upload failed: HTTP {} {}", resp.status, resp.reason));
+    }
+    Ok(())
+}
+
 /// DELETE /attachments/:id — abort a pending upload on the server side.
 pub async fn delete_pending(
     host: &str,
@@ -402,6 +437,37 @@ pub async fn stream_get<W: tokio::io::AsyncWrite + Unpin>(
     jwt: &str,
     id: i64,
     start: u64,
+    writer: W,
+    throttle: &RateLimiter,
+    observer: &dyn DownloadObserver,
+) -> Result<u64, String> {
+    stream_get_inner(host, port, jwt, id, None, start, writer, throttle, observer).await
+}
+
+/// Like `stream_get` but with `?variant=<name>` appended so the server
+/// returns the named sibling file (e.g. `thumb` for `.thumb.jpg`).
+/// No Range — variant fetches are tiny and only get called once per
+/// placeholder scroll-in.
+pub async fn stream_get_variant<W: tokio::io::AsyncWrite + Unpin>(
+    host: &str,
+    port: u16,
+    jwt: &str,
+    id: i64,
+    variant: &str,
+    writer: W,
+    throttle: &RateLimiter,
+    observer: &dyn DownloadObserver,
+) -> Result<u64, String> {
+    stream_get_inner(host, port, jwt, id, Some(variant), 0, writer, throttle, observer).await
+}
+
+async fn stream_get_inner<W: tokio::io::AsyncWrite + Unpin>(
+    host: &str,
+    port: u16,
+    jwt: &str,
+    id: i64,
+    variant: Option<&str>,
+    start: u64,
     mut writer: W,
     throttle: &RateLimiter,
     observer: &dyn DownloadObserver,
@@ -412,13 +478,17 @@ pub async fn stream_get<W: tokio::io::AsyncWrite + Unpin>(
     } else {
         String::new()
     };
+    let query = match variant {
+        Some(v) => format!("?variant={}", v),
+        None => String::new(),
+    };
     let head = format!(
-        "GET /attachments/{id} HTTP/1.1\r\n\
+        "GET /attachments/{id}{query} HTTP/1.1\r\n\
          Host: {host}:{port}\r\n\
          Authorization: Bearer {jwt}\r\n\
          {range}\
          Connection: close\r\n\r\n",
-        id = id, host = host, port = port, jwt = jwt, range = range_hdr
+        id = id, query = query, host = host, port = port, jwt = jwt, range = range_hdr
     );
     stream.write_all(head.as_bytes()).await.map_err(|e| format!("Write get: {}", e))?;
     stream.flush().await.map_err(|e| format!("Flush get: {}", e))?;

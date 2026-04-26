@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { pickSavePath } from "./filePicker";
 import type { Attachment } from "../../types";
 import { cacheImage, getCachedImage } from "./imageCache";
+import { useChatStore } from "../../stores/chatStore";
+import { useImageViewerStore } from "../../stores/imageViewerStore";
+import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
+import { useActiveVideoStore } from "../../stores/activeVideoStore";
+import { useVideoCacheVersionStore } from "../../stores/videoCacheVersionStore";
+import { cacheVideo, getCachedVideo } from "./tempVideoCache";
+import { fetchThumbnail, getCachedThumbnail } from "./videoThumbnailCache";
 
 // ---- shared helpers --------------------------------------------------------
 
@@ -89,26 +96,63 @@ function Tombstone({ attachment }: { attachment: Attachment }) {
   );
 }
 
-// Cap for the inline preview box — matches the pre-aspect-ratio layout we
-// shipped before so bubbles don't suddenly get wider.
-const PREVIEW_MAX_W = 400;
-const PREVIEW_MAX_H = 360;
-
-// Fallback for attachments missing dimensions (legacy rows uploaded before
-// this change, or files whose dimensions couldn't be decoded). A boring
-// rectangle that roughly matches a typical landscape image proportion.
+// Used before the chat view reports its first measurement, and as the
+// fallback caps when an attachment has no intrinsic dimensions.
+const PREVIEW_FALLBACK_MAX_W = 400;
+const PREVIEW_FALLBACK_MAX_H = 360;
 const PREVIEW_FALLBACK_W = 260;
 const PREVIEW_FALLBACK_H = 180;
 
-// Compute the pixel box we'll reserve for this image. Scaled down so the
-// longest side fits within the max, aspect ratio preserved.
-function reserveBox(attachment: Attachment): { width: number; height: number; known: boolean } {
+// Image dimensions scale as the **square root** of chat-view dimensions.
+// A linear "75% of chat width" looks great on small/medium chats but
+// produces unbearably large images in fullscreen layouts; sqrt grows
+// monotonically yet sub-linearly, so the curve flattens out as chats
+// widen — without resorting to a hard cap. The coefficients are tuned
+// so a typical small panel (~500 × 600) renders images in the same
+// neighbourhood (~400 × 390) the previous linear scaling produced.
+// Floor reserves keep avatar + bubble padding intact on narrow panels.
+const HORIZONTAL_BUBBLE_RESERVE_MIN = 80;
+const VERTICAL_BUBBLE_RESERVE_MIN = 60;
+const IMAGE_WIDTH_SQRT_COEFF = 18;
+const IMAGE_HEIGHT_SQRT_COEFF = 16;
+function maxImageWidth(viewWidth: number): number {
+  return Math.max(
+    120,
+    Math.min(
+      IMAGE_WIDTH_SQRT_COEFF * Math.sqrt(viewWidth),
+      viewWidth - HORIZONTAL_BUBBLE_RESERVE_MIN,
+    ),
+  );
+}
+function maxImageHeight(viewHeight: number): number {
+  return Math.max(
+    120,
+    Math.min(
+      IMAGE_HEIGHT_SQRT_COEFF * Math.sqrt(viewHeight),
+      viewHeight - VERTICAL_BUBBLE_RESERVE_MIN,
+    ),
+  );
+}
+interface ChatViewSize {
+  width: number;
+  height: number;
+}
+
+/** Compute the pixel box we'll reserve for this image. Scaled down so the
+ *  image fits within the sqrt-derived caps, aspect ratio preserved. Small
+ *  images render at natural size — we never upscale. */
+function reserveBox(
+  attachment: Attachment,
+  viewSize: ChatViewSize | null,
+): { width: number; height: number; known: boolean } {
   const w = attachment.width;
   const h = attachment.height;
   if (w <= 0 || h <= 0) {
     return { width: PREVIEW_FALLBACK_W, height: PREVIEW_FALLBACK_H, known: false };
   }
-  const scale = Math.min(1, PREVIEW_MAX_W / w, PREVIEW_MAX_H / h);
+  const maxW = viewSize ? maxImageWidth(viewSize.width) : PREVIEW_FALLBACK_MAX_W;
+  const maxH = viewSize ? maxImageHeight(viewSize.height) : PREVIEW_FALLBACK_MAX_H;
+  const scale = Math.min(1, maxW / w, maxH / h);
   return {
     width: Math.max(1, Math.round(w * scale)),
     height: Math.max(1, Math.round(h * scale)),
@@ -143,9 +187,28 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
   // in imageCache.ts does that when an entry falls out of the window.
   const [url, setUrl] = useState<string | null>(() => getCachedImage(attachment.id));
   const [error, setError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const hasFetched = useRef(url !== null);
+
+  // Open the full-screen viewer with every live image in the active
+  // channel as the navigable list. We snapshot at click time so the
+  // viewer doesn't churn when chatStore updates afterwards.
+  const openViewer = () => {
+    if (!serverId) return;
+    const chat = useChatStore.getState();
+    const channelId = chat.activeChannelId;
+    if (!channelId) return;
+    const messages = chat.messagesByChannel[channelId] ?? [];
+    const siblings = messages
+      .flatMap((m) => m.attachments)
+      .filter((a) => a.kind === "image" && a.purgedAt === 0 && a.sizeBytes <= INLINE_PREVIEW_CAP);
+    const startIdx = siblings.findIndex((a) => a.id === attachment.id);
+    useImageViewerStore.getState().show(
+      siblings.length > 0 ? siblings : [attachment],
+      serverId,
+      Math.max(0, startIdx),
+    );
+  };
 
   // Lazy-load: fetch the image blob only once the card scrolls into view.
   // Returned as raw bytes via tauri::ipc::Response, wrapped into an object
@@ -188,15 +251,27 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
   }, [serverId, attachment.id, attachment.sizeBytes, attachment.mime]);
 
   const tooLargeForPreview = attachment.sizeBytes > INLINE_PREVIEW_CAP;
-  const box = reserveBox(attachment);
+  const chatViewSize = useChatStore((s) => s.chatViewSize);
+  const box = reserveBox(attachment, chatViewSize);
 
   return (
     <div ref={containerRef} className="mt-2">
       <button
-        onClick={() => url && setExpanded(true)}
+        onClick={() => url && openViewer()}
+        onContextMenu={(e) => {
+          if (!serverId) return;
+          e.preventDefault();
+          useImageContextMenuStore.getState().show({
+            x: e.clientX,
+            y: e.clientY,
+            serverId,
+            attachmentId: attachment.id,
+            filename: attachment.filename,
+          });
+        }}
         // The outer box is a FIXED size from first render. The <img> fills
         // it with object-contain when the data URL lands — no layout shift.
-        className="group relative block overflow-hidden rounded-[10px] border border-border-divider bg-bg-light"
+        className="group relative block cursor-pointer overflow-hidden rounded-[10px] border border-border-divider bg-bg-light transition-transform hover:scale-[1.005] disabled:cursor-default"
         style={{ width: box.width, height: box.height }}
         disabled={!url}
       >
@@ -238,14 +313,6 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
         <DownloadButton attachment={attachment} serverId={serverId} />
       )}
 
-      {expanded && url && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-8"
-          onClick={() => setExpanded(false)}
-        >
-          <img src={url} alt={attachment.filename} decoding="async" className="max-h-full max-w-full object-contain" />
-        </div>
-      )}
     </div>
   );
 }
@@ -311,9 +378,9 @@ function DownloadButton({
     if (!serverId) return;
     let destination: string | null = null;
     try {
-      destination = await saveDialog({
-        defaultPath: attachment.filename || "download",
+      destination = await pickSavePath({
         title: "Save attachment",
+        defaultName: attachment.filename || "download",
       });
     } catch (err) {
       setError(String(err));
@@ -395,14 +462,6 @@ function DownloadButton({
   );
 }
 
-function VideoIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polygon points="23 7 16 12 23 17 23 7" />
-      <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-    </svg>
-  );
-}
 function AudioIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -421,12 +480,202 @@ function DocIcon() {
   );
 }
 
+// Default poster aspect ratio when a video doesn't carry intrinsic
+// dimensions (uploaded before we extract them, or unsupported codec).
+// 16:9 is the most common case for chat-shared clips.
+const VIDEO_DEFAULT_W = 480;
+const VIDEO_DEFAULT_H = 270;
+
+function videoBox(attachment: Attachment, viewSize: ChatViewSize | null): { width: number; height: number } {
+  const w = attachment.width > 0 ? attachment.width : VIDEO_DEFAULT_W;
+  const h = attachment.height > 0 ? attachment.height : VIDEO_DEFAULT_H;
+  const maxW = viewSize ? maxImageWidth(viewSize.width) : PREVIEW_FALLBACK_MAX_W;
+  const maxH = viewSize ? maxImageHeight(viewSize.height) : PREVIEW_FALLBACK_MAX_H;
+  const scale = Math.min(1, maxW / w, maxH / h);
+  return {
+    width: Math.max(1, Math.round(w * scale)),
+    height: Math.max(1, Math.round(h * scale)),
+  };
+}
+
+function VideoPlayer({ attachment, serverId }: { attachment: Attachment; serverId: string | null }) {
+  // The chat-side VideoPlayer is now just a *placeholder* that owns
+  // the visual slot in the message bubble. The actual <video> element
+  // lives in `PersistentVideoLayer` (mounted at app level) and is
+  // overlaid on top of this placeholder via fixed positioning. That
+  // architecture lets the video keep playing through Virtuoso row
+  // unmounts (scroll-away).
+  const channelId = useChatStore((s) => s.activeChannelId) ?? "";
+  const placeholderRef = useRef<HTMLDivElement | null>(null);
+  const cachedAtMount = useRef(getCachedVideo(channelId, attachment.id)).current;
+  const [, setTempPath] = useState<string | null>(cachedAtMount?.path ?? null);
+  const [assetUrl, setAssetUrl] = useState<string | null>(cachedAtMount?.url ?? null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const chatViewSize = useChatStore((s) => s.chatViewSize);
+  const box = videoBox(attachment, chatViewSize);
+
+  // Am I the active video right now? If so, register my placeholder
+  // element as the host so PersistentVideoLayer overlays its <video>
+  // on top of me.
+  const activeAttachmentId = useActiveVideoStore((s) => s.active?.attachmentId);
+  const isActive = activeAttachmentId === attachment.id;
+  useEffect(() => {
+    if (!isActive) return;
+    useActiveVideoStore.getState().setHostElement(placeholderRef.current);
+    return () => {
+      // Only clear if WE were the host (concurrent re-mounts of the
+      // same id might race; checking identity prevents a wrong clear).
+      if (useActiveVideoStore.getState().hostElement === placeholderRef.current) {
+        useActiveVideoStore.getState().setHostElement(null);
+      }
+    };
+  }, [isActive]);
+
+  const activate = (url: string) => {
+    if (!serverId) return;
+    useActiveVideoStore.getState().setActive({
+      attachmentId: attachment.id,
+      serverId,
+      channelId,
+      src: url,
+      filename: attachment.filename,
+      width: attachment.width || box.width,
+      height: attachment.height || box.height,
+    });
+  };
+
+  const onPlay = async () => {
+    if (!serverId || loading) return;
+    // Cached: just activate; the persistent layer reads the cached
+    // lastTime and resumes. No re-download.
+    if (assetUrl) {
+      activate(assetUrl);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const { path, url } = await invoke<{ path: string; url: string }>(
+        "save_attachment_to_temp",
+        {
+          serverId,
+          attachmentId: attachment.id,
+          filename: attachment.filename,
+        },
+      );
+      setTempPath(path);
+      setAssetUrl(url);
+      cacheVideo(channelId, {
+        path,
+        url,
+        attachmentId: attachment.id,
+        lastTime: 0,
+        wasPlaying: true,
+        posterUrl: null,
+      });
+      activate(url);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Subscribe to the cache version store so we re-render when
+  // PersistentVideoLayer captures a poster frame for *any* attachment.
+  // The cache itself is a plain Map; this is the reactivity bridge.
+  useVideoCacheVersionStore((s) => s.version);
+
+  // Read the cached entry on every render so the poster + lastTime
+  // stay fresh — they're updated by PersistentVideoLayer (timeupdate
+  // and unmount). cachedAtMount is just for the initial state.
+  const liveCached = getCachedVideo(channelId, attachment.id);
+  const livePoster = liveCached?.posterUrl ?? null;
+  const lastTime = liveCached?.lastTime ?? 0;
+
+  // Lazy-fetch the server-side thumbnail when this row is mounted and
+  // the attachment carries one. Live captured posters (from playing the
+  // video locally) win when both are present — they're a better
+  // representation of "where the user left off" than the upload-time
+  // first-frame thumbnail.
+  const [serverThumb, setServerThumb] = useState<string | null>(() =>
+    getCachedThumbnail(attachment.id),
+  );
+  useEffect(() => {
+    if (!serverId) return;
+    if (livePoster) return; // live capture takes priority — don't fetch
+    if (attachment.thumbnailSizeBytes <= 0) return;
+    if (serverThumb) return;
+    let cancelled = false;
+    fetchThumbnail(serverId, attachment.id).then((url) => {
+      if (!cancelled && url) setServerThumb(url);
+    });
+    return () => { cancelled = true; };
+  }, [serverId, attachment.id, attachment.thumbnailSizeBytes, livePoster, serverThumb]);
+
+  const posterUrl = livePoster ?? serverThumb;
+  const fmtTime = (s: number) => {
+    if (!isFinite(s) || s <= 0) return null;
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
+  };
+  const resumeStamp = fmtTime(lastTime);
+
+  // Render the placeholder. When this video is the active one, the
+  // PersistentVideoLayer overlays its <video> element on top of this
+  // div via fixed positioning, so visually you see the player. When
+  // it's not active, you see the poster button below — with the
+  // captured frame as the background if one's been cached, so it
+  // reads as "paused video" instead of "unclicked".
+  return (
+    <div
+      ref={placeholderRef}
+      className="mt-2 overflow-hidden rounded-xl border border-border bg-bg-darkest"
+      style={{ width: box.width, height: box.height }}
+    >
+      <button
+        onClick={onPlay}
+        disabled={loading || !!error || isActive}
+        title={attachment.filename}
+        className="group relative flex h-full w-full cursor-pointer items-center justify-center bg-bg-darkest bg-cover bg-center disabled:cursor-default"
+        style={posterUrl ? { backgroundImage: `url(${posterUrl})` } : undefined}
+      >
+        {posterUrl && !loading && !error && (
+          <div className="pointer-events-none absolute inset-0 bg-black/30" />
+        )}
+        {loading ? (
+          <div className="relative h-12 w-12 animate-spin rounded-full border-2 border-white/15 border-t-accent" />
+        ) : error ? (
+          <div className="relative px-4 text-center text-[12px] text-error">
+            Failed to load: {error}
+          </div>
+        ) : (
+          <div className="relative flex h-12 w-20 items-center justify-center rounded-xl bg-accent shadow-[0_4px_20px_rgba(56,143,255,0.35)] transition-all group-hover:scale-110 group-hover:bg-accent-hover group-hover:shadow-[0_6px_28px_rgba(56,143,255,0.45)]">
+            <svg className="h-7 w-7 text-white" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </div>
+        )}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-3.5 pb-2.5 pt-10 text-[11px]">
+          <span className="truncate text-text-secondary">{attachment.filename}</span>
+          <span className="shrink-0 tabular-nums text-text-muted">
+            {resumeStamp ? `Paused at ${resumeStamp}` : formatBytes(attachment.sizeBytes)}
+          </span>
+        </div>
+      </button>
+    </div>
+  );
+}
+
+
 function LiveAttachment({ attachment, serverId }: { attachment: Attachment; serverId: string | null }) {
   switch (attachment.kind) {
     case "image":
       return <ImagePreview attachment={attachment} serverId={serverId} />;
     case "video":
-      return <FileCard attachment={attachment} serverId={serverId} icon={<VideoIcon />} />;
+      return <VideoPlayer attachment={attachment} serverId={serverId} />;
     case "audio":
       return <FileCard attachment={attachment} serverId={serverId} icon={<AudioIcon />} />;
     case "document":

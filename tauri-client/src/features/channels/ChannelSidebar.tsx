@@ -64,6 +64,8 @@ export default function ChannelSidebar() {
   const channelPresence = useVoiceStore((s) => s.channelPresence);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const openModal = useUiStore((s) => s.openModal);
+  const dragActive = useUiStore((s) => s.dragActive);
+  const dragHoveredKey = useUiStore((s) => s.dragHoveredKey);
   const conversations = useDmStore((s) => s.conversations);
   const activeDmUser = useDmStore((s) => s.activeDmUser);
   const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
@@ -318,22 +320,61 @@ export default function ChannelSidebar() {
                 Text Channels
               </h3>
             </div>
-            {!textCollapsed && textChannels.map((ch) => (
-              <button
-                key={ch.id}
-                onClick={() => handleChannelClick(ch.id)}
-                className={`flex w-full items-center gap-2 rounded-md px-2.5 py-[7px] text-sm transition-colors ${
-                  activeChannelId === ch.id && activeView === "server"
-                    ? "bg-accent-soft text-text-bright font-semibold"
-                    : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
-                }`}
-              >
-                <span className={`font-channel text-[16px] font-medium ${activeChannelId === ch.id && activeView === "server" ? "text-accent-bright" : "text-text-muted"}`}>
-                  #
-                </span>
-                <span className="truncate font-channel">{ch.name}</span>
-              </button>
-            ))}
+            {!textCollapsed && textChannels.map((ch) => {
+              const dropKey = `channel:${activeServerId}:${ch.id}`;
+              const isHoveredDrop = dragHoveredKey === dropKey;
+              const isActive = activeChannelId === ch.id && activeView === "server";
+              return (
+                <button
+                  key={ch.id}
+                  onClick={() => handleChannelClick(ch.id)}
+                  data-drop-target={dropKey}
+                  data-server-id={activeServerId ?? ""}
+                  data-channel-id={ch.id}
+                  className={`relative flex w-full items-center gap-2 rounded-md px-2.5 py-[7px] text-sm transition-all ${
+                    isHoveredDrop
+                      ? "bg-accent text-white animate-[dropTargetIn_0.18s_ease_both]"
+                      : isActive
+                        ? "bg-accent-soft text-text-bright font-semibold"
+                        : dragActive
+                          ? "text-text-secondary bg-accent-soft/30 animate-[dropPulse_1.6s_ease-in-out_infinite]"
+                          : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                  }`}
+                >
+                  <span
+                    className={`font-channel text-[16px] font-medium transition-colors ${
+                      isHoveredDrop
+                        ? "text-white"
+                        : isActive
+                          ? "text-accent-bright"
+                          : dragActive
+                            ? "text-accent"
+                            : "text-text-muted"
+                    }`}
+                  >
+                    #
+                  </span>
+                  <span className="truncate font-channel">{ch.name}</span>
+                  {isHoveredDrop && (
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="ml-auto shrink-0 text-white animate-[dropTargetIn_0.18s_ease_both]"
+                    >
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="17 8 12 3 7 8" />
+                      <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
           </div>
         )}
 

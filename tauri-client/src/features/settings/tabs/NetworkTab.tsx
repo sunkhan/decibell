@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { useUiStore } from "../../../stores/uiStore";
+import { useChatStore } from "../../../stores/chatStore";
 import { saveSettings } from "../saveSettings";
 
 // Presets tuned around typical broadband allowances. "Unlimited" is the top
@@ -137,6 +138,99 @@ export default function NetworkTab() {
         valueBps={downloadLimitBps}
         onChange={(bps) => apply(uploadLimitBps, bps)}
       />
+
+      <div className="mt-4">
+        <h3 className="mb-2 font-display text-[14px] font-semibold text-text-primary">
+          Channel cache
+        </h3>
+        <p className="mb-4 text-[12px] text-text-muted">
+          How many recently-visited channels keep their messages and scroll
+          position in memory. Channels beyond the cap are dropped on the next
+          switch and will re-fetch when you visit them again. Higher = faster
+          channel switching at the cost of RAM.
+        </p>
+        <ChannelCacheRow />
+      </div>
+    </div>
+  );
+}
+
+const CACHE_PRESETS = [5, 10, 20, 50, 100];
+
+function ChannelCacheRow() {
+  const channelCacheSize = useUiStore((s) => s.channelCacheSize);
+  const setChannelCacheSize = useUiStore((s) => s.setChannelCacheSize);
+  const enforceChannelCacheSize = useChatStore((s) => s.enforceChannelCacheSize);
+
+  const [customStr, setCustomStr] = useState<string>(
+    CACHE_PRESETS.includes(channelCacheSize) ? "" : String(channelCacheSize),
+  );
+  useEffect(() => {
+    if (!CACHE_PRESETS.includes(channelCacheSize)) {
+      setCustomStr(String(channelCacheSize));
+    }
+  }, [channelCacheSize]);
+
+  const apply = (next: number) => {
+    const clamped = Math.max(1, Math.min(1000, Math.round(next)));
+    setChannelCacheSize(clamped);
+    saveSettings();
+    // Apply immediately — shrinking the cap should evict on the spot,
+    // not wait for the next channel switch.
+    enforceChannelCacheSize();
+  };
+
+  return (
+    <div className="rounded-[10px] border border-border-divider bg-bg-light p-4">
+      <div className="mb-0.5 text-[13px] font-medium text-text-primary">
+        Cached channel count
+      </div>
+      <div className="mb-3 text-[11.5px] text-text-muted">
+        Default 10. Each cached channel holds at most ~1000 messages and a few
+        KB of scroll state — roughly 0.5–1 MB per channel.
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {CACHE_PRESETS.map((n) => {
+          const selected = channelCacheSize === n;
+          return (
+            <button
+              key={n}
+              onClick={() => {
+                apply(n);
+                setCustomStr("");
+              }}
+              className={`rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors ${
+                selected
+                  ? "bg-accent text-white"
+                  : "bg-bg-mid text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+              }`}
+            >
+              {n}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 flex items-center gap-2">
+        <label className="text-[11.5px] text-text-muted">Custom:</label>
+        <input
+          type="number"
+          min={1}
+          max={1000}
+          step={1}
+          inputMode="numeric"
+          value={customStr}
+          placeholder="e.g. 25"
+          onChange={(e) => setCustomStr(e.target.value)}
+          onBlur={() => {
+            const n = parseInt(customStr, 10);
+            if (!isNaN(n) && n >= 1) apply(n);
+          }}
+          className="w-28 rounded-md border border-border bg-bg-mid px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-accent"
+        />
+        <span className="text-[11.5px] text-text-muted">channels</span>
+      </div>
     </div>
   );
 }

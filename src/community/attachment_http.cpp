@@ -238,6 +238,7 @@ private:
             if (req_.method == "GET"   && tail.empty())              return handle_get(id);
             if (req_.method == "DELETE" && tail.empty())             return handle_delete(id);
             if (req_.method == "POST"  && tail == "/complete")       return handle_complete(id);
+            if (req_.method == "POST"  && tail == "/thumbnail")      return handle_thumbnail_upload(id);
         }
         send_error(404, "Not Found");
     }
@@ -548,6 +549,39 @@ private:
         if (att->purged_at != 0)                { send_error(410, "Gone"); return; }
         if (!db_.is_member(username_))          { send_error(403, "Forbidden"); return; }
 
+        // ?variant=thumb diverts to the JPEG thumbnail file. Reuses the same
+        // GET endpoint and auth check rather than introducing a parallel
+        // route. Range/partial isn't worth supporting for tiny thumbs.
+        const auto var_it = req_.query.find("variant");
+        if (var_it != req_.query.end() && var_it->second == "thumb") {
+            if (att->thumbnail_size_bytes <= 0) { send_error(404, "Not Found"); return; }
+            const std::string thumb_path = att->storage_path + ".thumb.jpg";
+            std::error_code thumb_ec;
+            if (!std::filesystem::exists(thumb_path, thumb_ec)) {
+                send_error(404, "Not Found"); return;
+            }
+            const int64_t thumb_total = static_cast<int64_t>(
+                std::filesystem::file_size(thumb_path, thumb_ec));
+            if (thumb_ec) { send_error(500, "Internal Server Error"); return; }
+            auto thumb_fp = std::make_shared<std::FILE*>(
+                std::fopen(thumb_path.c_str(), "rb"));
+            if (!*thumb_fp) { send_error(500, "Internal Server Error"); return; }
+            std::string thumb_headers =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: image/jpeg\r\n"
+                "Content-Length: " + std::to_string(thumb_total) + "\r\n"
+                "Connection: close\r\n\r\n";
+            auto self_t = shared_from_this();
+            auto hdr_t = std::make_shared<std::string>(std::move(thumb_headers));
+            boost::asio::async_write(socket_, boost::asio::buffer(*hdr_t),
+                [this, self_t, hdr_t, thumb_fp, thumb_total](
+                    const boost::system::error_code& ec, std::size_t) {
+                    if (ec) { std::fclose(*thumb_fp); return; }
+                    send_file_body(thumb_fp, thumb_total);
+                });
+            return;
+        }
+
         std::error_code ec;
         if (!std::filesystem::exists(att->storage_path, ec)) {
             send_error(410, "Gone"); return;
@@ -601,6 +635,91 @@ private:
             });
     }
 
+    // ---- endpoint: POST /attachments/<id>/thumbnail ----
+    //
+    // Uploader-only, called once after /complete. Body is the raw JPEG bytes
+    // of the thumbnail; cap small (256 KB) so a misbehaving client can't
+    // chew up disk. Writes to "<storage_path>.thumb.jpg" and stamps the
+    // size onto the attachment row so downstream consumers know it exists.
+
+    static constexpr int64_t MAX_THUMB_BYTES = 256 * 1024;
+
+    void handle_thumbnail_upload(int64_t id) {
+        auto att = db_.get_attachment(id);
+        if (!att)                            { send_error(404, "Not Found"); return; }
+        if (att->upload_status != "ready")   { send_error(409, "Conflict"); return; }
+        if (att->uploader != username_)      { send_error(403, "Forbidden"); return; }
+        if (req_.content_length <= 0 ||
+            req_.content_length > MAX_THUMB_BYTES) {
+            send_error(413, "Payload Too Large"); return;
+        }
+
+        thumb_id_       = id;
+        thumb_path_     = att->storage_path + ".thumb.jpg";
+        thumb_remain_   = req_.content_length;
+        thumb_buf_.clear();
+        thumb_buf_.reserve(static_cast<size_t>(req_.content_length));
+
+        // Drain whatever body bytes piggy-backed on the head read.
+        if (head_buf_.size() > 0) {
+            const size_t have = std::min<size_t>(
+                head_buf_.size(), static_cast<size_t>(thumb_remain_));
+            const char* src = boost::asio::buffers_begin(head_buf_.data()).operator->();
+            thumb_buf_.insert(thumb_buf_.end(), src, src + have);
+            head_buf_.consume(have);
+            thumb_remain_ -= static_cast<int64_t>(have);
+        }
+        if (thumb_remain_ == 0) return finish_thumbnail();
+        read_thumbnail_chunk();
+    }
+
+    void read_thumbnail_chunk() {
+        auto self = shared_from_this();
+        const size_t want = static_cast<size_t>(
+            std::min<int64_t>(thumb_remain_, 64 * 1024));
+        const size_t base = thumb_buf_.size();
+        thumb_buf_.resize(base + want);
+        boost::asio::async_read(socket_,
+            boost::asio::buffer(thumb_buf_.data() + base, want),
+            [this, self](const boost::system::error_code& ec, std::size_t n) {
+                if (ec) return;
+                thumb_remain_ -= static_cast<int64_t>(n);
+                if (thumb_remain_ == 0) return finish_thumbnail();
+                read_thumbnail_chunk();
+            });
+    }
+
+    void finish_thumbnail() {
+        // Write atomically via a .tmp sibling so a crash mid-write doesn't
+        // leave a half-thumbnail that fools the next GET.
+        const std::string tmp_path = thumb_path_ + ".tmp";
+        {
+            std::ofstream f(tmp_path, std::ios::binary | std::ios::trunc);
+            if (!f.good()) {
+                send_error(500, "Internal Server Error"); return;
+            }
+            f.write(thumb_buf_.data(), static_cast<std::streamsize>(thumb_buf_.size()));
+            if (!f.good()) {
+                std::error_code rm_ec;
+                std::filesystem::remove(tmp_path, rm_ec);
+                send_error(500, "Internal Server Error"); return;
+            }
+        }
+        std::error_code rn_ec;
+        std::filesystem::rename(tmp_path, thumb_path_, rn_ec);
+        if (rn_ec) {
+            std::error_code rm_ec;
+            std::filesystem::remove(tmp_path, rm_ec);
+            send_error(500, "Internal Server Error"); return;
+        }
+        if (!db_.set_attachment_thumbnail_size(
+                thumb_id_, static_cast<int64_t>(thumb_buf_.size()))) {
+            send_error(500, "Internal Server Error"); return;
+        }
+        send_raw_and_close(
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    }
+
     void send_file_body(std::shared_ptr<std::FILE*> fp, int64_t remaining) {
         if (remaining == 0) {
             if (fp && *fp) { std::fclose(*fp); *fp = nullptr; }
@@ -634,6 +753,7 @@ private:
         if (!path) { send_error(500, "Internal Server Error"); return; }
         std::error_code ec;
         std::filesystem::remove(*path + ".partial", ec);
+        std::filesystem::remove(*path + ".thumb.jpg", ec);
         send_raw_and_close("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     }
 
@@ -685,6 +805,12 @@ private:
     int64_t patch_remain_ = 0;
     std::shared_ptr<std::FILE*> patch_fp_;
     std::vector<char> patch_chunk_;
+
+    // Thumbnail upload state
+    int64_t thumb_id_ = 0;
+    int64_t thumb_remain_ = 0;
+    std::string thumb_path_;
+    std::vector<char> thumb_buf_;
 };
 
 } // namespace

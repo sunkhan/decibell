@@ -1,18 +1,19 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { pickFiles } from "./filePicker";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraftsStore } from "../../stores/draftsStore";
-import { useAttachmentsStore, type PendingAttachment } from "../../stores/attachmentsStore";
+import { useAttachmentsStore } from "../../stores/attachmentsStore";
+import { toast } from "../../stores/toastStore";
 import MessageBubble, { shouldGroup } from "./MessageBubble";
 import { useChatEvents } from "./useChatEvents";
 import WelcomeState from "./WelcomeState";
 import EmojiPicker from "./EmojiPicker";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 import PendingAttachmentsRow from "./PendingAttachmentsRow";
-import { kindFromMime, formatBytes } from "./attachmentHelpers";
+import { uploadAttachment, startQueuedUpload } from "./uploadAttachment";
 
 // Must match the INITIAL_FIRST_INDEX seed in chatStore.prependHistory. Keeps
 // Virtuoso's firstItemIndex anchored well above zero so any realistic amount
@@ -39,6 +40,7 @@ function messageKey(
 // on each prepend, which was fighting with firstItemIndex anchoring and
 // causing the scroll-up stutter.
 function MessagesView({
+  channelId,
   serverId,
   channelName,
   messages,
@@ -47,6 +49,7 @@ function MessagesView({
   historyLoading,
   fetchOlderPage,
 }: {
+  channelId: string;
   serverId: string | null;
   channelName: string | null;
   messages: import("../../types").Message[];
@@ -57,22 +60,77 @@ function MessagesView({
 }) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
 
-  // Imperative scroll to the newest message right after Virtuoso mounts.
+  // "Jump to present" button visibility. Shown when more than 50 messages
+  // sit below the user's current viewport — the rangeChanged callback
+  // updates this whenever scroll changes the visible range. setState
+  // bails out when the boolean is unchanged, so this doesn't churn on
+  // every scroll frame.
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+
+  // Pull this channel's saved scroll snapshot (if any) once, at mount.
+  // We deliberately don't subscribe — the snapshot is consumed exactly
+  // once by `restoreStateFrom` and any subsequent updates would just
+  // cause a useless re-render.
+  const restoredState = useRef(
+    useChatStore.getState().channelScrollState[channelId],
+  ).current;
+
+  // Save the Virtuoso state into the store every time the user pauses
+  // scrolling. We can't rely on an unmount-time save: when `key` changes
+  // on this component, the *new* MessagesView renders (and reads the
+  // saved state) before React runs the old one's cleanup, so a save in
+  // cleanup arrives too late for the immediately-next visit. Plus
+  // `getState` is async — its callback may not even fire before the
+  // remount. Saving on every scroll-stop keeps the store in sync with
+  // the latest position so any subsequent visit can restore cleanly.
+  const saveScrollState = (scrolling: boolean) => {
+    if (scrolling) return;
+    virtuosoRef.current?.getState((state) => {
+      useChatStore.getState().setChannelScrollState(channelId, state);
+    });
+  };
+
+  // Warm-up phase: briefly disable top virtualization so every loaded
+  // row mounts and Virtuoso measures it. Once heights are cached and
+  // we re-engage virtualization, previously-measured rows mount and
+  // unmount silently on scroll — no scroll-position compensation,
+  // no stutter.
   //
-  // We deliberately don't use `initialTopMostItemIndex` — having it set
-  // (with any value) makes Virtuoso re-anchor on every prepend, which
-  // fights firstItemIndex anchoring and produces stuttery scroll-up.
-  // Without it, prepend behavior is buttery smooth.
+  // Two triggers invalidate Virtuoso's height cache for unmounted rows:
+  //   1. Prepend (firstItemIndex changes) — new rows have no cached size.
+  //   2. Resize (chatViewSize changes) — image previews adopt new
+  //      dimensions, so rows that were unmounted during the resize have
+  //      stale cached heights and would stutter on scroll-back-to.
   //
-  // Timing: setTimeout(0) defers past the current event-loop tick so
-  // Virtuoso has a chance to measure rendered rows before we scroll.
-  // requestAnimationFrame alone isn't enough on slower frames — it
-  // sometimes fires before measurement settles, and the scroll lands
-  // at the top instead of the bottom.
-  //
-  // Empty deps + key={channelId} on the parent means this fires exactly
-  // once per channel visit.
+  // Resize is debounced ~200 ms so a drag-resize doesn't keep retriggering
+  // the warm-up while the user is still dragging. Once the size stops
+  // changing, a 500 ms warm-up runs and re-measures every row at the
+  // new size.
+  const chatViewSize = useChatStore((s) => s.chatViewSize);
+  const sizeKey = chatViewSize
+    ? `${Math.round(chatViewSize.width)}x${Math.round(chatViewSize.height)}`
+    : "";
+  const [stableSizeKey, setStableSizeKey] = useState("");
   useEffect(() => {
+    if (sizeKey === stableSizeKey) return;
+    const id = setTimeout(() => setStableSizeKey(sizeKey), 200);
+    return () => clearTimeout(id);
+  }, [sizeKey, stableSizeKey]);
+
+  const warmKey = `${firstItemIndex}|${stableSizeKey}`;
+  const [warmedKey, setWarmedKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (warmedKey === warmKey) return;
+    const id = setTimeout(() => setWarmedKey(warmKey), 500);
+    return () => clearTimeout(id);
+  }, [warmKey, warmedKey]);
+  const isWarmingUp = warmedKey !== warmKey;
+
+  // Imperative scroll to the newest message right after Virtuoso mounts.
+  // Skipped when we have a saved snapshot — `restoreStateFrom` will land
+  // us at the previous scroll position instead.
+  useEffect(() => {
+    if (restoredState) return;
     if (messages.length === 0) return;
     const id = setTimeout(() => {
       virtuosoRef.current?.scrollToIndex({
@@ -94,17 +152,62 @@ function MessagesView({
     return map;
   }, [messages]);
 
+  const jumpToBottom = () => {
+    setShowJumpToBottom(false);
+    virtuosoRef.current?.scrollToIndex({
+      index: messages.length - 1,
+      align: "end",
+      behavior: "smooth",
+    });
+  };
+
   return (
+    <div className="relative flex min-h-0 flex-1 flex-col">
     <Virtuoso
       ref={virtuosoRef}
       data={messages}
       firstItemIndex={firstItemIndex}
+      restoreStateFrom={restoredState}
+      // Estimate of an average chat row's height. Without this hint
+      // Virtuoso assumes ~32px and has to reconcile its scroll offset
+      // against the real measured height every time a row mounts during
+      // scroll — the dominant per-frame cost on long histories. Seeding
+      // with a value close to truth (header/avatar row ~70px, grouped
+      // body row ~40px → ~64 average) keeps that compensation small.
+      defaultItemHeight={64}
       followOutput="auto"
-      increaseViewportBy={{ top: 800, bottom: 200 }}
+      // `atBottomThreshold` defines the pixel window near the bottom in
+      // which Virtuoso still considers us "at bottom". The default (~4px)
+      // is too tight — during rapid message spam, momentary scroll drift
+      // between appends flips state to "not at bottom" and followOutput
+      // stops tracking, so new messages pile up just off-screen. 150px
+      // absorbs that jitter without feeling sticky.
+      atBottomThreshold={150}
+      isScrolling={saveScrollState}
+      // During warm-up, top overscan is unbounded so every loaded row
+      // mounts and gets measured. Once heights are cached we drop back
+      // to a small overscan and let Virtuoso virtualize normally —
+      // virtualizing measured rows is silent (no scroll-position
+      // compensation), which is what makes scroll-up stay smooth while
+      // most rows are unmounted to free memory.
+      increaseViewportBy={{
+        top: isWarmingUp ? Number.MAX_SAFE_INTEGER : 3000,
+        bottom: 400,
+      }}
       startReached={fetchOlderPage}
-      rangeChanged={({ startIndex }) => {
+      rangeChanged={({ startIndex, endIndex }) => {
+        // Fire the next-page fetch well before the user reaches the top
+        // so the network roundtrip overlaps with their scrolling rather
+        // than blocking it.
         const position = startIndex - firstItemIndex;
-        if (position <= 5) fetchOlderPage();
+        if (position <= 30) fetchOlderPage();
+
+        // Show the jump-to-bottom button once more than 50 messages sit
+        // below the visible window. setState bails on unchanged values
+        // so this is cheap on every-frame fires.
+        const lastVisible = endIndex - firstItemIndex;
+        const messagesBelow = messages.length - 1 - lastVisible;
+        setShowJumpToBottom(messagesBelow > 50);
       }}
       computeItemKey={(index, message) => {
         if (!message) return `idx-${index}`;
@@ -134,18 +237,33 @@ function MessagesView({
         const position = index - firstItemIndex;
         const grouped =
           groupedByMessageKey.get(messageKey(message, position)) ?? false;
+        const isLast = position === messages.length - 1;
         return (
           <div className="px-4">
             <MessageBubble
               message={message}
               grouped={grouped}
               serverId={serverId}
+              isLast={isLast}
             />
           </div>
         );
       }}
       style={{ flex: 1, minHeight: 0 }}
     />
+    {showJumpToBottom && (
+      <button
+        onClick={jumpToBottom}
+        title="Jump to present"
+        className="absolute bottom-3 right-4 z-10 flex cursor-pointer items-center gap-1.5 rounded-xl bg-accent px-3 py-2 text-[12px] font-medium text-white shadow-[0_4px_16px_var(--color-accent-soft)] transition-all hover:bg-accent-hover active:scale-95 animate-[fadeUp_0.18s_ease_both]"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+        Jump to present
+      </button>
+    )}
+    </div>
   );
 }
 
@@ -210,13 +328,59 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
   const historyFetched = useChatStore((s) => s.historyFetched);
   const firstItemIndexByChannel = useChatStore((s) => s.firstItemIndexByChannel);
   const activeView = useUiStore((s) => s.activeView);
+  const dragActive = useUiStore((s) => s.dragActive);
+  const dragHoveredKey = useUiStore((s) => s.dragHoveredKey);
+  const dropHoveredHere = dragHoveredKey === "active-input";
 
   const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const editorRef = useRef<RichInputHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
+
+  // Publish the messages-area dimensions to the store so image previews
+  // can size against them. Implemented as a *callback ref* (not
+  // useEffect on a useRef) because ChatPanel early-returns in home/DM
+  // view, so the messages container only exists conditionally — a
+  // useEffect with [] deps would never see the element if first mount
+  // was in the empty-state path. Callback refs fire whenever the
+  // observed element is attached or detached, so the ResizeObserver
+  // also attaches/detaches accordingly. Updates are RAF-throttled to
+  // avoid re-rendering every visible image bubble at frame rate during
+  // a drag-resize.
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const measureFrameRef = useRef(0);
+  useEffect(() => {
+    return () => {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      cancelAnimationFrame(measureFrameRef.current);
+      useChatStore.getState().setChatViewSize(null);
+    };
+  }, []);
+  const setMessagesContainerRef = useCallback((el: HTMLDivElement | null) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
+    cancelAnimationFrame(measureFrameRef.current);
+    if (!el) {
+      useChatStore.getState().setChatViewSize(null);
+      return;
+    }
+    const measure = () => {
+      cancelAnimationFrame(measureFrameRef.current);
+      measureFrameRef.current = requestAnimationFrame(() => {
+        const r = el.getBoundingClientRect();
+        useChatStore.getState().setChatViewSize({
+          width: r.width,
+          height: r.height,
+        });
+      });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    observerRef.current = ro;
+  }, []);
 
   const messages = activeChannelId
     ? messagesByChannel[activeChannelId] ?? []
@@ -261,12 +425,50 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
       serverId: activeServerId,
       channelId: activeChannelId,
       beforeId: 0,
-      limit: 50,
+      limit: 150,
     }).catch((err) => {
       console.error("request_channel_history failed", err);
       useChatStore.getState().setHistoryLoading(activeChannelId, false);
     });
   }, [activeServerId, activeChannelId, historyFetched]);
+
+  // Background-chain history pages until we have a healthy buffer (~1000
+  // messages) loaded for the active channel.
+  //
+  // Why: each prepend grows scrollHeight and forces Virtuoso to re-anchor
+  // the visible content (firstItemIndex compensation), which "fights" any
+  // active wheel/drag scroll the user is performing — the scrollbar thumb
+  // appears to lag because the list is growing as fast as they scroll.
+  // The cleanest fix is to load enough upfront that typical scroll-up
+  // sessions never trigger another prepend. 1000 messages covers nearly
+  // all realistic chat sessions; channels larger than that fall back to
+  // the existing on-demand pagination, which is the right tradeoff.
+  //
+  // Implementation note: this effect re-runs after every prepend (because
+  // `messages` reference changes), naturally chaining the next fetch
+  // until either the cap is hit or the server says no more history.
+  // historyLoading guards prevent overlap with the user's own scroll-up
+  // fetches.
+  const PREFETCH_TARGET = 1000;
+  useEffect(() => {
+    if (!activeServerId || !activeChannelId) return;
+    if (messages.length === 0) return;
+    if (messages.length >= PREFETCH_TARGET) return;
+    if (!hasMoreHistory[activeChannelId]) return;
+    if (historyLoading[activeChannelId]) return;
+    const firstId = messages.find((m) => m.id !== 0)?.id ?? 0;
+    if (firstId === 0) return;
+    useChatStore.getState().setHistoryLoading(activeChannelId, true);
+    invoke("request_channel_history", {
+      serverId: activeServerId,
+      channelId: activeChannelId,
+      beforeId: firstId,
+      limit: 100,
+    }).catch((err) => {
+      console.error("background history prefetch failed", err);
+      useChatStore.getState().setHistoryLoading(activeChannelId, false);
+    });
+  }, [activeServerId, activeChannelId, messages, hasMoreHistory, historyLoading]);
 
   // Virtuoso calls this whenever the top of the list scrolls into view
   // (including, helpfully, when the initial page doesn't fill the viewport
@@ -283,7 +485,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
       serverId: activeServerId,
       channelId: activeChannelId,
       beforeId: firstId,
-      limit: 50,
+      limit: 100,
     }).catch((err) => {
       console.error("request_channel_history (paginate) failed", err);
       useChatStore.getState().setHistoryLoading(activeChannelId!, false);
@@ -299,6 +501,10 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
       const tag = target?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (target?.isContentEditable) return;
+      // Skip when the user is interacting with a video player (focused
+      // wrapper carries `data-video-player`). Otherwise pressing Space
+      // to pause/play would steal focus into the chat composer.
+      if (target?.closest("[data-video-player]")) return;
       editorRef.current?.focus();
     };
     document.addEventListener("keydown", onKeyDown);
@@ -309,36 +515,86 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     const value = editorRef.current?.getValue() ?? input;
     if (!activeServerId || !activeChannelId) return;
 
-    const pending = useAttachmentsStore.getState().selectForChannel(activeChannelId);
-    const stillUploading = pending.some((a) => a.status === "uploading");
-    if (stillUploading) {
-      setSendError("Wait for uploads to finish.");
+    const channelId = activeChannelId;
+    const serverId = activeServerId;
+    const pending = useAttachmentsStore.getState().selectForChannel(channelId);
+    const queuedItems = pending.filter((a) => a.status === "queued");
+    const readyItems = pending.filter((a) => a.status === "ready" && a.attachmentId);
+    const failedOrCancelled = pending.filter(
+      (a) => a.status === "failed" || a.status === "cancelled",
+    );
+    const trimmed = value.trim();
+
+    if (!trimmed && queuedItems.length === 0 && readyItems.length === 0) return;
+
+    if (failedOrCancelled.length > 0) {
+      toast.error(
+        "Some attachments need attention",
+        "Remove the failed/cancelled attachments before sending.",
+      );
       return;
     }
-    const readyIds = pending
-      .filter((a) => a.status === "ready" && a.attachmentId)
-      .map((a) => a.attachmentId as number);
-    if (!value.trim() && readyIds.length === 0) return;
 
-    setSending(true);
-    setSendError(null);
-    try {
-      await invoke("send_channel_message", {
-        serverId: activeServerId,
-        channelId: activeChannelId,
-        message: value.trim(),
-        attachmentIds: readyIds,
-      });
-      editorRef.current?.clear();
-      setInput("");
-      useDraftsStore.getState().clearChannelDraft(activeChannelId);
-      setPickerOpen(false);
-      useAttachmentsStore.getState().clearChannel(activeChannelId);
-    } catch (err) {
-      setSendError(String(err));
-    } finally {
-      setSending(false);
+    // Snapshot the pendings that belong to *this* send. Marking the queued
+    // ones `uploading` immediately means a subsequent handleSend (e.g.,
+    // the user hits send again with new attachments while this batch is
+    // still uploading) won't re-snapshot them — its own pending filter
+    // skips items that aren't queued/ready.
+    for (const q of queuedItems) {
+      useAttachmentsStore.getState().markUploading(q.pendingId);
     }
+    const snapshotIds = new Set([
+      ...queuedItems.map((p) => p.pendingId),
+      ...readyItems.map((p) => p.pendingId),
+    ]);
+
+    // Clear the composer immediately so the user can keep typing/sending.
+    editorRef.current?.clear();
+    setInput("");
+    setSendError(null);
+    useDraftsStore.getState().clearChannelDraft(channelId);
+    setPickerOpen(false);
+
+    // Background task — upload, send, then remove this snapshot's items
+    // from the pending row. Errors land in toasts since the inline red
+    // text below the messages would be invisible by the time we hit them.
+    void (async () => {
+      try {
+        if (queuedItems.length > 0) {
+          const results = await Promise.all(queuedItems.map((q) => startQueuedUpload(q)));
+          if (results.some((r) => !r.ok)) {
+            toast.error(
+              "Upload failed",
+              "Couldn't upload one or more attachments. Remove them and try again.",
+            );
+            return;
+          }
+        }
+
+        const finalPending = useAttachmentsStore.getState().selectForChannel(channelId);
+        const readyIds = finalPending
+          .filter(
+            (a) =>
+              snapshotIds.has(a.pendingId) &&
+              a.status === "ready" &&
+              a.attachmentId,
+          )
+          .map((a) => a.attachmentId as number);
+
+        await invoke("send_channel_message", {
+          serverId,
+          channelId,
+          message: trimmed,
+          attachmentIds: readyIds,
+        });
+
+        for (const id of snapshotIds) {
+          useAttachmentsStore.getState().removePending(id);
+        }
+      } catch (err) {
+        toast.error("Send failed", String(err));
+      }
+    })();
   };
 
   // --- File picker + upload kick-off -------------------------------------
@@ -349,23 +605,17 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     if (!activeServerId || !activeChannelId) return;
     const cfg = serverAttachmentConfig[activeServerId];
     if (!cfg || cfg.port === 0) {
-      setSendError("This server does not support attachments.");
+      toast.error("Attachments unavailable", "This server does not accept file uploads.");
       return;
     }
-    let picked: string[] | null = null;
+    let picked: string[] = [];
     try {
-      const selection = await openDialog({
-        multiple: true,
-        directory: false,
-        title: "Choose files to attach",
-      });
-      if (!selection) return;
-      picked = Array.isArray(selection) ? selection : [selection];
+      picked = await pickFiles({ title: "Choose files to attach", multiple: true });
     } catch (err) {
-      setSendError(`File picker failed: ${err}`);
+      toast.error("File picker failed", String(err));
       return;
     }
-    if (!picked || picked.length === 0) return;
+    if (picked.length === 0) return;
 
     for (const filePath of picked) {
       await startUpload(filePath);
@@ -374,55 +624,14 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
 
   const startUpload = async (filePath: string) => {
     if (!activeServerId || !activeChannelId) return;
-    type StatResult = {
-      filename: string;
-      sizeBytes: number;
-      mime: string;
-      width: number;
-      height: number;
-    };
-    let meta: StatResult;
-    try {
-      meta = await invoke<StatResult>("stat_attachment_file", { path: filePath });
-    } catch (err) {
-      setSendError(`Could not read ${filePath}: ${err}`);
-      return;
-    }
-
     const cfg = serverAttachmentConfig[activeServerId];
-    if (cfg && cfg.maxBytes > 0 && meta.sizeBytes > cfg.maxBytes) {
-      setSendError(
-        `${meta.filename} is ${formatBytes(meta.sizeBytes)}; this server's cap is ${formatBytes(cfg.maxBytes)}.`
-      );
-      return;
-    }
-
-    const pendingId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const entry: PendingAttachment = {
-      pendingId,
+    // uploadAttachment surfaces its own errors via toast; we only need to
+    // await it to keep the for-loop in handleAttach sequential.
+    await uploadAttachment({
+      filePath,
+      serverId: activeServerId,
       channelId: activeChannelId,
-      filename: meta.filename,
-      mime: meta.mime,
-      kind: kindFromMime(meta.mime),
-      totalBytes: meta.sizeBytes,
-      transferredBytes: 0,
-      status: "uploading",
-    };
-    useAttachmentsStore.getState().addPending(entry);
-
-    invoke("upload_attachment", {
-      req: {
-        pendingId,
-        serverId: activeServerId,
-        channelId: activeChannelId,
-        filePath,
-        filename: meta.filename,
-        mime: meta.mime,
-        width: meta.width,
-        height: meta.height,
-      },
-    }).catch((err) => {
-      useAttachmentsStore.getState().markFailed(pendingId, String(err), false);
+      maxBytes: cfg?.maxBytes ?? 0,
     });
   };
 
@@ -460,7 +669,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
       {!hideHeader && <ChatHeader />}
 
       {/* Messages */}
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div ref={setMessagesContainerRef} className="flex min-h-0 flex-1 flex-col">
         {isEmpty ? (
           <div className="flex flex-1 items-center justify-center">
             {isLoadingFirstPage ? (
@@ -471,11 +680,11 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
           </div>
         ) : (
           <MessagesView
-            // key={channelId} ensures a fresh MessagesView instance per
-            // channel, so the lazy useState that captures
-            // initialTopMostItemIndex re-runs and lands at the newest
-            // message every channel switch.
+            // key={channelId} ensures a fresh Virtuoso instance per
+            // channel — important for `restoreStateFrom` since that prop
+            // is only consumed at mount.
             key={activeChannelId}
+            channelId={activeChannelId}
             serverId={activeServerId}
             channelName={channelName ?? null}
             messages={messages}
@@ -497,9 +706,42 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
 
       {/* Input bar. Matched top + bottom padding so the breathing room
           between the last message and the input row mirrors the gap between
-          the input row and the bottom of the client. */}
-      <div className="px-3 py-2">
-        <div className="flex min-h-[54px] items-center gap-2.5 rounded-xl border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
+          the input row and the bottom of the client.
+          Drop-target wiring: when a file drag enters the window, the input
+          bar lights up; the more saturated state kicks in when the cursor
+          is actually over it. */}
+      <div className="px-3 py-2" data-drop-target="active-input">
+        <div
+          className={`relative flex min-h-[54px] items-center gap-2.5 rounded-xl border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)] ${
+            dropHoveredHere
+              ? "border-accent bg-accent-soft/50 animate-[dropTargetIn_0.18s_ease_both]"
+              : dragActive
+                ? "border-transparent animate-[dropPulse_1.6s_ease-in-out_infinite]"
+                : "border-border"
+          }`}
+        >
+          {dropHoveredHere && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-accent-soft/80 to-accent-soft/40 backdrop-blur-[3px]">
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="text-accent-bright animate-[dropTargetIn_0.18s_ease_both]"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              <span className="text-[13px] font-semibold text-accent-bright">
+                Drop to upload to #{channelName ?? "channel"}
+              </span>
+            </div>
+          )}
           <button
             onClick={handleAttach}
             title="Attach files"
@@ -513,7 +755,6 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
             ref={editorRef}
             onChange={handleInputChange}
             onEnter={handleSend}
-            disabled={sending}
             placeholder={`Message #${channelName ?? "channel"}`}
             className="flex-1 bg-transparent text-sm leading-snug text-text-primary"
             maxHeight={160}
@@ -544,7 +785,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
             </div>
             <button
               onClick={handleSend}
-              disabled={sending || !input.trim()}
+              disabled={!input.trim()}
               className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">

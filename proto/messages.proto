@@ -329,6 +329,11 @@ message Attachment {
   // doesn't cause a layout shift.
   uint32 width = 11;
   uint32 height = 12;
+  // Size in bytes of the JPEG thumbnail stored alongside the main file on
+  // the server. 0 = no thumbnail (audio/document, or video uploaded before
+  // this feature). Clients use the presence (>0) to know whether to lazy-
+  // fetch the thumbnail via GET /attachments/:id?variant=thumb.
+  uint32 thumbnail_size_bytes = 13;
 }
 
 message ChannelHistoryRequest {

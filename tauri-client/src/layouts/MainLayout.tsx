@@ -9,6 +9,10 @@ import MembersAdminPanel from "../features/servers/MembersAdminPanel";
 import ChannelSettingsModal from "../features/servers/ChannelSettingsModal";
 import DeepLinkJoinModal from "../features/servers/DeepLinkJoinModal";
 import MembershipRevokedToast from "../features/servers/MembershipRevokedToast";
+import ToastStack from "../components/ToastStack";
+import ImageViewer from "../features/chat/ImageViewer";
+import ImageContextMenu from "../components/ImageContextMenu";
+import PersistentVideoLayer from "../features/chat/PersistentVideoLayer";
 import ChannelSidebar from "../features/channels/ChannelSidebar";
 import UserPanel from "../features/channels/UserPanel";
 import ChatPanel, { ChatHeader } from "../features/chat/ChatPanel";
@@ -106,6 +110,10 @@ export default function MainLayout() {
       <ChannelSettingsModal />
       <DeepLinkJoinModal />
       <MembershipRevokedToast />
+      <ToastStack />
+      <ImageViewer />
+      <ImageContextMenu />
+      <PersistentVideoLayer />
       <UserProfilePopup />
       <UserContextMenu />
       <SettingsModal />

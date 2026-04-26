@@ -45,6 +45,7 @@ function PendingCard({ a }: { a: PendingAttachment }) {
 
   const label = (() => {
     switch (a.status) {
+      case "queued":    return `${formatBytes(a.totalBytes)} • queued`;
       case "uploading": return `${formatBytes(a.transferredBytes)} / ${formatBytes(a.totalBytes)}`;
       case "ready":     return `${formatBytes(a.totalBytes)}`;
       case "failed":    return a.error ?? "Upload failed";

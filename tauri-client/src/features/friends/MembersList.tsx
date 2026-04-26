@@ -92,7 +92,7 @@ export default function MembersList() {
           {[0, 0.15, 0.3, 0.45, 0.6].map((delay, i) => (
             <div
               key={i}
-              className="w-[3px] rounded-[2px] bg-accent animate-[waveBar_1.2s_ease-in-out_infinite]"
+              className="h-[14px] w-[3px] origin-bottom rounded-[2px] bg-accent animate-[waveBar_1.2s_ease-in-out_infinite]"
               style={{ animationDelay: `${delay}s` }}
             />
           ))}

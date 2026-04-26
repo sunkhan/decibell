@@ -520,6 +520,8 @@ private:
                         pa->set_purged_at(row.purged_at);
                         pa->set_width(static_cast<uint32_t>(row.width));
                         pa->set_height(static_cast<uint32_t>(row.height));
+                        pa->set_thumbnail_size_bytes(
+                            static_cast<uint32_t>(row.thumbnail_size_bytes));
                     }
                 }
             } else {
@@ -587,6 +589,8 @@ private:
                         proto_a->set_purged_at(a->purged_at);
                         proto_a->set_width(static_cast<uint32_t>(a->width));
                         proto_a->set_height(static_cast<uint32_t>(a->height));
+                        proto_a->set_thumbnail_size_bytes(
+                            static_cast<uint32_t>(a->thumbnail_size_bytes));
                     }
                 }
             }
@@ -1256,6 +1260,7 @@ void SessionManager::run_retention_sweep() {
             if (!a.storage_path.empty()) {
                 std::error_code ec;
                 std::filesystem::remove(a.storage_path + ".partial", ec);
+                std::filesystem::remove(a.storage_path + ".thumb.jpg", ec);
                 // The final path usually doesn't exist for pending rows, but
                 // clean it too just in case a complete() landed with a DB
                 // failure afterwards.
@@ -1270,10 +1275,12 @@ void SessionManager::run_retention_sweep() {
     }
 
     // Unlink attachment blobs from disk. Errors are tolerated — missing files
-    // just mean a prior sweep already cleaned them.
+    // just mean a prior sweep already cleaned them. Also unlink the sibling
+    // thumbnail (if present) so video posters don't outlive their parent.
     for (const auto& path : unlink_paths) {
         std::error_code ec;
         std::filesystem::remove(path, ec);
+        std::filesystem::remove(path + ".thumb.jpg", ec);
     }
 
     if (sweeps.empty()) return;

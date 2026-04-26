@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { Message } from "../../types";
 import { stringToColor, stringToGradient } from "../../utils/colors";
 import { useUiStore } from "../../stores/uiStore";
@@ -41,15 +42,20 @@ interface Props {
   message: Message;
   grouped: boolean;
   serverId?: string | null;
+  // True when this message sits at the bottom of the list. Only the tail
+  // row fades in — historic rows mounted by the virtualizer during
+  // scroll-up don't animate. Animating every freshly-mounted bubble
+  // turned out to be a major paint-queue contributor.
+  isLast?: boolean;
 }
 
-export default function MessageBubble({ message, grouped, serverId }: Props) {
+function MessageBubble({ message, grouped, serverId, isLast }: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
 
   if (grouped) {
     return (
-      <div className="group flex gap-3 rounded-xl px-2 py-px transition-colors hover:bg-white/[0.015]">
+      <div className="group flex gap-3 rounded-xl px-2 py-px hover:bg-white/[0.015]">
         {/* Spacer matching avatar width — hover timestamp */}
         <div className="flex w-[38px] shrink-0 items-baseline justify-end">
           <span className="text-[10px] font-medium leading-none text-text-muted opacity-0 group-hover:opacity-100">
@@ -69,7 +75,7 @@ export default function MessageBubble({ message, grouped, serverId }: Props) {
   }
 
   return (
-    <div className="group flex gap-3 rounded-xl px-2 pt-2.5 pb-0.5 transition-colors hover:bg-white/[0.015] animate-[fadeUp_0.3s_ease_both]">
+    <div className={`group flex gap-3 rounded-xl px-2 pt-2.5 pb-0.5 hover:bg-white/[0.015]${isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""}`}>
       {/* Avatar */}
       <div
         className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-lg text-[15px] font-bold text-white"
@@ -109,3 +115,5 @@ export default function MessageBubble({ message, grouped, serverId }: Props) {
     </div>
   );
 }
+
+export default memo(MessageBubble);

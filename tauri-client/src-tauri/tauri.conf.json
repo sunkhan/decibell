@@ -21,7 +21,16 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$TEMP/decibell-attach-*",
+          "$TEMP/decibell-attach-*/**",
+          "/tmp/decibell-attach-*",
+          "/var/tmp/decibell-attach-*"
+        ]
+      }
     }
   },
   "bundle": {

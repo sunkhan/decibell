@@ -40,6 +40,13 @@ pub struct AppState {
     /// In-flight uploads keyed by client-side pending id. Lets the UI cancel
     /// mid-stream and the upload task to poll the flag between sub-chunks.
     pub active_uploads: HashMap<String, Arc<AtomicBool>>,
+    /// Local HTTP media server's port. Powers `<video>`/`<audio>` playback —
+    /// WebKitGTK's GStreamer pipeline can't consume custom URI schemes
+    /// (asset://) or cross-origin file:// URLs, but it handles
+    /// http://127.0.0.1:PORT/... cleanly via souphttpsrc, with proper
+    /// Range support for seeking. Set once at app init; 0 if startup
+    /// failed (in which case media playback falls back to errors).
+    pub local_media_port: u16,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;

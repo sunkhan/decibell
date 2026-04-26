@@ -9,6 +9,8 @@ import { useUiStore } from "./stores/uiStore";
 import { useDmStore } from "./stores/dmStore";
 import { useVoiceStore } from "./stores/voiceStore";
 import { useWindowTitle } from "./hooks/useWindowTitle";
+import { useDragDrop } from "./features/chat/useDragDrop";
+import { usePasteToAttach } from "./features/chat/usePasteToAttach";
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -57,6 +59,8 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
 export default function App() {
   const [ready, setReady] = useState(false);
   useWindowTitle();
+  useDragDrop();
+  usePasteToAttach();
 
   useEffect(() => {
     (async () => {
@@ -78,6 +82,7 @@ export default function App() {
             agc_enabled: boolean;
             upload_limit_bps: number;
             download_limit_bps: number;
+            channel_cache_size: number;
           };
         }>("load_config");
 
@@ -107,6 +112,9 @@ export default function App() {
           uploadBps: settings.upload_limit_bps || 0,
           downloadBps: settings.download_limit_bps || 0,
         }).catch(console.error);
+
+        // 0 means "no value persisted" — use the in-store default of 10.
+        useUiStore.getState().setChannelCacheSize(settings.channel_cache_size || 10);
 
         // Restore per-user volume and mute settings
         if (settings.user_volumes) {

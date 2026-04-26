@@ -23,6 +23,7 @@ interface MessagePayload {
     purgedAt: number;
     width: number;
     height: number;
+    thumbnailSizeBytes: number;
   }>;
 }
 
@@ -68,6 +69,7 @@ function mapAttachment(a: MessagePayload["attachments"][number]): Attachment {
     purgedAt: a.purgedAt,
     width: a.width ?? 0,
     height: a.height ?? 0,
+    thumbnailSizeBytes: a.thumbnailSizeBytes ?? 0,
   };
 }
 

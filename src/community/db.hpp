@@ -69,6 +69,10 @@ struct DbAttachment {
     // Populated from the uploader's init metadata.
     int32_t width = 0;
     int32_t height = 0;
+    // Size in bytes of the JPEG thumbnail stored at "<storage_path>.thumb.jpg".
+    // 0 = no thumbnail. Clients use this to decide whether to lazy-fetch a
+    // poster preview for video attachments via ?variant=thumb on GET.
+    int64_t thumbnail_size_bytes = 0;
 };
 
 // Returned from prune_attachments so the server can broadcast tombstone
@@ -210,6 +214,10 @@ public:
     // Abort a pending upload — deletes the row and returns the storage_path
     // so the caller can unlink the partial file on disk.
     std::optional<std::string> abort_pending_attachment(int64_t attachment_id);
+    // Record the size of a JPEG thumbnail saved next to the main attachment
+    // file. Called from POST /attachments/:id/thumbnail after the bytes are
+    // on disk. Setting size=0 effectively clears the flag.
+    bool set_attachment_thumbnail_size(int64_t attachment_id, int64_t size);
     // Bind previously-uploaded attachments to a message. Only attachments
     // that are 'ready', owned by `uploader`, currently unbound (message_id=0),
     // and belong to `channel_id` get bound. Returns the list of ids that

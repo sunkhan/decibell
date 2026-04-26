@@ -1,5 +1,7 @@
 import { create } from "zustand";
+import type { StateSnapshot } from "react-virtuoso";
 import type { CommunityServer, Channel, Message, ServerMember, ServerInvite } from "../types";
+import { useUiStore } from "./uiStore";
 
 export interface PendingInvite {
   host: string;
@@ -26,6 +28,21 @@ interface ChatState {
   // Virtuoso uses this to keep the currently-visible row stable when older
   // history slots in at the top.
   firstItemIndexByChannel: Record<string, number>;
+  // Last-known Virtuoso scroll snapshot per channel — captured on
+  // unmount, fed back as `restoreStateFrom` on remount. The snapshot
+  // includes scrollTop and Virtuoso's row-size cache, so returning to a
+  // channel skips both the scroll-to-bottom dance and the warm-up cost.
+  channelScrollState: Record<string, StateSnapshot>;
+  // Most-recently-visited channels first. Drives the LRU cache
+  // eviction in `setActiveChannel` — channels beyond the configured
+  // cap (uiStore.channelCacheSize) are dropped from messagesByChannel,
+  // channelScrollState, and the per-channel history flags.
+  channelAccessOrder: string[];
+  // Live size of the chat-view area (the Virtuoso container). Powers
+  // image-preview sizing so attachments render at natural size when
+  // they fit and scale down when they don't. `null` until ChatPanel
+  // mounts and reports its first measurement.
+  chatViewSize: { width: number; height: number } | null;
   onlineUsers: string[];
   connectedServers: Set<string>;
   serverOwner: Record<string, string>;
@@ -62,6 +79,12 @@ interface ChatState {
   upsertInvite: (serverId: string, invite: ServerInvite) => void;
   removeInvite: (serverId: string, code: string) => void;
   setPendingInvite: (invite: PendingInvite | null) => void;
+  setChannelScrollState: (channelId: string, state: StateSnapshot) => void;
+  // Re-applies the LRU cap (read live from uiStore.channelCacheSize) to
+  // every cached-channel slice. Called when the cap setting changes so
+  // shrinking it takes effect immediately, not just on the next switch.
+  enforceChannelCacheSize: () => void;
+  setChatViewSize: (size: { width: number; height: number } | null) => void;
 }
 
 // Merge a new message into an existing list, sorted by id ascending and
@@ -96,6 +119,9 @@ export const useChatStore = create<ChatState>((set) => ({
   historyLoading: {},
   historyFetched: {},
   firstItemIndexByChannel: {},
+  channelScrollState: {},
+  channelAccessOrder: [],
+  chatViewSize: null,
   onlineUsers: [],
   connectedServers: new Set(),
   serverOwner: {},
@@ -107,7 +133,36 @@ export const useChatStore = create<ChatState>((set) => ({
   pendingInvite: null,
   setServers: (servers) => set({ servers }),
   setActiveServer: (serverId) => set({ activeServerId: serverId }),
-  setActiveChannel: (channelId) => set({ activeChannelId: channelId }),
+  setActiveChannel: (channelId) => set((state) => {
+    if (!channelId) return { activeChannelId: null };
+    const cap = Math.max(1, useUiStore.getState().channelCacheSize || 10);
+    // Move channelId to the front of the access order.
+    const reordered = [
+      channelId,
+      ...state.channelAccessOrder.filter((id) => id !== channelId),
+    ];
+    if (reordered.length <= cap) {
+      return { activeChannelId: channelId, channelAccessOrder: reordered };
+    }
+    // Over the cap — drop the tail and prune every cached slice for
+    // channels that fell off.
+    const keep = reordered.slice(0, cap);
+    const keepSet = new Set(keep);
+    const filter = <T,>(rec: Record<string, T>): Record<string, T> =>
+      Object.fromEntries(
+        Object.entries(rec).filter(([id]) => keepSet.has(id)),
+      );
+    return {
+      activeChannelId: channelId,
+      channelAccessOrder: keep,
+      messagesByChannel: filter(state.messagesByChannel),
+      channelScrollState: filter(state.channelScrollState),
+      firstItemIndexByChannel: filter(state.firstItemIndexByChannel),
+      historyFetched: filter(state.historyFetched),
+      hasMoreHistory: filter(state.hasMoreHistory),
+      historyLoading: filter(state.historyLoading),
+    };
+  }),
   setChannelsForServer: (serverId, channels) => set((state) => ({ channelsByServer: { ...state.channelsByServer, [serverId]: channels } })),
   upsertChannel: (serverId, channel) => set((state) => {
     const existing = state.channelsByServer[serverId] ?? [];
@@ -204,4 +259,33 @@ export const useChatStore = create<ChatState>((set) => ({
     return { invitesByServer: { ...state.invitesByServer, [serverId]: existing.filter((i) => i.code !== code) } };
   }),
   setPendingInvite: (invite) => set({ pendingInvite: invite }),
+  setChannelScrollState: (channelId, state) => set((s) => ({
+    channelScrollState: { ...s.channelScrollState, [channelId]: state },
+  })),
+  setChatViewSize: (size) => set({ chatViewSize: size }),
+  enforceChannelCacheSize: () => set((state) => {
+    const cap = Math.max(1, useUiStore.getState().channelCacheSize || 10);
+    if (state.channelAccessOrder.length <= cap) return {};
+    // Always retain the active channel even if it's somehow not in the
+    // top `cap` of the access order (defensive).
+    const keep = state.channelAccessOrder.slice(0, cap);
+    if (state.activeChannelId && !keep.includes(state.activeChannelId)) {
+      keep.pop();
+      keep.unshift(state.activeChannelId);
+    }
+    const keepSet = new Set(keep);
+    const filter = <T,>(rec: Record<string, T>): Record<string, T> =>
+      Object.fromEntries(
+        Object.entries(rec).filter(([id]) => keepSet.has(id)),
+      );
+    return {
+      channelAccessOrder: keep,
+      messagesByChannel: filter(state.messagesByChannel),
+      channelScrollState: filter(state.channelScrollState),
+      firstItemIndexByChannel: filter(state.firstItemIndexByChannel),
+      historyFetched: filter(state.historyFetched),
+      hasMoreHistory: filter(state.hasMoreHistory),
+      historyLoading: filter(state.historyLoading),
+    };
+  }),
 }));

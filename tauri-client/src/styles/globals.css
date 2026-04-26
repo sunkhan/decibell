@@ -165,8 +165,44 @@ button, a, [class*="transition"] {
 }
 
 @keyframes waveBar {
-  0%, 100% { height: 4px; }
-  50% { height: 14px; }
+  /* Animate scaleY rather than `height` so the bars stay GPU-composited.
+     Animating layout-affecting properties on an `infinite` keyframe
+     dirties the paint queue every frame for the entire page — measurable
+     as hundreds of forced layouts during chat scroll. */
+  0%, 100% { transform: scaleY(0.286); }
+  50%      { transform: scaleY(1); }
+}
+
+/* Drop-target "available" state — slow, breathing accent glow that draws
+   the eye to every droppable surface while a file drag is in flight. Only
+   `box-shadow` is animated (composited); no layout/paint cost on the
+   surrounding tree. */
+@keyframes dropPulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(56,143,255,0.32),
+      0 0 14px 0 rgba(56,143,255,0.10);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1.5px rgba(56,143,255,0.60),
+      0 0 22px 4px rgba(56,143,255,0.22);
+  }
+}
+
+/* Drop-target "hovered" state — a quick swell when the cursor lands on a
+   target, then idles. */
+@keyframes dropTargetIn {
+  from { transform: scale(0.97); }
+  to   { transform: scale(1); }
+}
+
+/* Toast entrance — slides down from above the top edge while fading in.
+   Toasts are anchored to top-center so the down-slide reads as them
+   "dropping in" from off-screen. */
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes pickerIn {

@@ -47,6 +47,11 @@ export interface Attachment {
   // layout shift when the data URL loads in.
   width: number;
   height: number;
+  // Size in bytes of the JPEG thumbnail stored alongside this attachment
+  // on the server. 0 = no thumbnail (legacy row, audio/document, or video
+  // upload where extraction failed). Drives the lazy-fetch decision in
+  // `VideoPlayer`.
+  thumbnailSizeBytes: number;
 }
 
 export interface Message {
