@@ -133,6 +133,7 @@ impl CommunityClient {
                 timestamp,
                 id: 0,
                 attachments: Vec::new(),
+                nonce: String::new(),
             }),
             Some(&self.jwt),
         );
@@ -524,6 +525,7 @@ impl CommunityClient {
                 Some(packet::Payload::ChannelMsg(msg)) => {
                     let context = msg.channel_id.clone();
                     let id = msg.id;
+                    let nonce = msg.nonce.clone();
                     let attachments = msg.attachments.into_iter()
                         .map(map_attachment).collect();
                     events::emit_message_received(
@@ -535,6 +537,7 @@ impl CommunityClient {
                         msg.timestamp.to_string(),
                         id,
                         attachments,
+                        nonce,
                     );
                 }
                 Some(packet::Payload::ChannelHistoryRes(resp)) => {
@@ -547,6 +550,7 @@ impl CommunityClient {
                             timestamp: m.timestamp,
                             attachments: m.attachments.into_iter()
                                 .map(map_attachment).collect(),
+                            nonce: m.nonce,
                         })
                         .collect();
                     events::emit_channel_history_received(

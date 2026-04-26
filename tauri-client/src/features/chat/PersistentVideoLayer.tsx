@@ -51,19 +51,47 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
   const [pos, setPos] = useState<{ left: number; top: number; width: number; height: number } | null>(
     null,
   );
+  // Clip rect of the host's nearest scrollable ancestor (the chat
+  // messages list). Since the wrapper is `position: fixed` it escapes
+  // that ancestor's overflow:hidden, so we manually clip-path the
+  // wrapper so the video doesn't bleed over the input bar / channel
+  // header when the host is partially or fully out of the visible
+  // chat area.
+  const [clipRect, setClipRect] = useState<{ top: number; bottom: number } | null>(null);
 
   useEffect(() => {
     if (!hostElement) {
       setPos(null);
+      setClipRect(null);
       return;
     }
+    // Find the nearest scrollable ancestor once per host-change.
+    // Re-evaluating on every scroll tick would be wasteful and the
+    // chat scroll container doesn't change for a given host.
+    let scrollParent: HTMLElement | null = hostElement.parentElement;
+    while (scrollParent) {
+      const cs = window.getComputedStyle(scrollParent);
+      if (/(auto|scroll|hidden)/.test(cs.overflowY) ||
+          /(auto|scroll|hidden)/.test(cs.overflow)) {
+        break;
+      }
+      scrollParent = scrollParent.parentElement;
+    }
+
     const update = () => {
       const r = hostElement.getBoundingClientRect();
       setPos({ left: r.left, top: r.top, width: r.width, height: r.height });
+      if (scrollParent) {
+        const sr = scrollParent.getBoundingClientRect();
+        setClipRect({ top: sr.top, bottom: sr.bottom });
+      } else {
+        setClipRect(null);
+      }
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(hostElement);
+    if (scrollParent) ro.observe(scrollParent);
     let frame = 0;
     const onScrollOrResize = () => {
       cancelAnimationFrame(frame);
@@ -349,6 +377,17 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   };
+  // Scroll-wheel volume — 5% step per notch, same as the audio player.
+  const onVolumeWheel = (e: React.WheelEvent) => {
+    const v = videoRef.current;
+    if (!v) return;
+    e.preventDefault();
+    const step = e.deltaY < 0 ? 0.05 : -0.05;
+    const next = Math.max(0, Math.min(1, (v.muted ? 0 : v.volume) + step));
+    v.volume = next;
+    if (next > 0 && v.muted) v.muted = false;
+    if (next === 0) v.muted = true;
+  };
 
   const seekRateRef = useRef(0);
   const handleKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -387,6 +426,19 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
   };
   const progress = duration > 0 ? (time / duration) * 100 : 0;
 
+  // Translate the chat-area clip rect into an element-local inset so
+  // the wrapper hides anything that's scrolled above the chat top or
+  // below its bottom (input bar, channel header). Skipped in fullscreen
+  // since the wrapper takes over the viewport.
+  let clipPath: string | undefined;
+  if (!fullscreen && pos && clipRect) {
+    const topInset = Math.max(0, clipRect.top - pos.top);
+    const bottomInset = Math.max(0, pos.top + pos.height - clipRect.bottom);
+    if (topInset > 0 || bottomInset > 0) {
+      clipPath = `inset(${topInset}px 0 ${bottomInset}px 0)`;
+    }
+  }
+
   const wrapperStyle: React.CSSProperties = fullscreen
     ? { position: "fixed", inset: 0, zIndex: 100 }
     : pos
@@ -397,6 +449,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
           width: pos.width,
           height: pos.height,
           zIndex: 30,
+          clipPath,
         }
       : {
           position: "fixed",
@@ -439,14 +492,21 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
         className={`h-full w-full ${cursorHidden ? "cursor-none" : "cursor-pointer"} bg-bg-darkest object-contain`}
       />
 
-      {/* Paused overlay — accent play button */}
+      {/* Paused overlay — glassmorphic play button. The full-frame
+          scrim is gone; a radial gradient just behind the button
+          gives it a subtle pedestal so it stays readable on bright
+          frames without dimming the rest of the captured frame. */}
       {!playing && (
         <button
           onClick={handleSingleClick}
-          className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-black/30"
+          className="pointer-events-auto absolute inset-0 flex items-center justify-center"
+          style={{
+            background:
+              "radial-gradient(circle at center, rgba(0,0,0,0.42) 0%, rgba(0,0,0,0.18) 18%, rgba(0,0,0,0) 38%)",
+          }}
         >
-          <div className="flex h-12 w-20 items-center justify-center rounded-xl bg-accent shadow-[0_4px_20px_rgba(56,143,255,0.35)] transition-all hover:scale-110 hover:bg-accent-hover hover:shadow-[0_6px_28px_rgba(56,143,255,0.45)]">
-            <svg className="h-7 w-7 text-white" viewBox="0 0 24 24" fill="currentColor">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/20 bg-white/15 backdrop-blur-md shadow-[0_4px_20px_rgba(0,0,0,0.35)] transition-all hover:scale-110 hover:bg-white/25 hover:border-white/30">
+            <svg className="h-7 w-7 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)]" viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z" />
             </svg>
           </div>
@@ -542,6 +602,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
               <div
                 className="group relative flex h-3 w-20 cursor-pointer items-center"
                 onMouseDown={onVolumeDown}
+                onWheel={onVolumeWheel}
                 title="Volume"
               >
                 <div className="pointer-events-none absolute inset-x-0 h-[4px] rounded-full bg-white/15" />

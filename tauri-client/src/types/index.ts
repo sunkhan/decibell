@@ -67,6 +67,16 @@ export interface Message {
   timestamp: string;
   channelId: string;
   attachments: Attachment[];
+  // Client-generated UUID. Set on optimistic bubbles the sender
+  // injects locally; the server echoes it in the broadcast so the
+  // sending client can match the real message back to the optimistic
+  // and dedup. Empty for messages from history or from other users.
+  nonce?: string;
+  // pendingIds for in-flight uploads belonging to this optimistic
+  // message. The bubble looks them up in attachmentsStore for live
+  // upload progress. Cleared when the message reconciles with the
+  // server's broadcast.
+  pendingAttachmentIds?: string[];
 }
 
 export interface DmMessage {

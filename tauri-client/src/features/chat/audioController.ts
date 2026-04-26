@@ -25,3 +25,18 @@ export function audioSeek(t: number): void {
   const max = element.duration || 0;
   element.currentTime = Math.max(0, Math.min(max, t));
 }
+
+export function audioSetVolume(v: number): void {
+  if (!element) return;
+  const clamped = Math.max(0, Math.min(1, v));
+  element.volume = clamped;
+  // Setting a non-zero volume implicitly unmutes — matches the
+  // pattern in the video player.
+  if (clamped > 0 && element.muted) element.muted = false;
+  if (clamped === 0) element.muted = true;
+}
+
+export function audioToggleMute(): void {
+  if (!element) return;
+  element.muted = !element.muted;
+}

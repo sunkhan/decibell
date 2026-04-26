@@ -350,6 +350,7 @@ impl CentralClient {
                         msg.timestamp.to_string(),
                         0,         // DMs aren't persisted; no server id
                         Vec::new(), // no attachments on DMs yet
+                        String::new(), // DMs don't carry a nonce
                     );
                 }
                 Some(packet::Payload::PresenceUpdate(update)) => {

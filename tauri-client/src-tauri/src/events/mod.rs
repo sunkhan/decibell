@@ -108,6 +108,12 @@ pub struct ChannelMessagePayload {
     pub content: String,
     pub timestamp: i64,
     pub attachments: Vec<AttachmentPayload>,
+    // Client-generated UUID echoed back by the server. Lets the
+    // sender's client dedup the optimistic bubble against the real
+    // broadcast. Empty for messages from history (originating client
+    // long gone, no optimistic to dedup) and for incoming messages
+    // from other users (no optimistic on this client to dedup against).
+    pub nonce: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +142,9 @@ pub struct MessageReceivedPayload {
     // Server-assigned message id for channel messages. 0 for DMs (not persisted).
     pub id: i64,
     pub attachments: Vec<AttachmentPayload>,
+    // Client-generated UUID echoed by the server. Empty for incoming
+    // messages from other users (their nonce is irrelevant to us).
+    pub nonce: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,6 +251,7 @@ pub fn emit_message_received(
     timestamp: String,
     id: i64,
     attachments: Vec<AttachmentPayload>,
+    nonce: String,
 ) {
     let _ = app.emit(
         MESSAGE_RECEIVED,
@@ -253,6 +263,7 @@ pub fn emit_message_received(
             timestamp,
             id,
             attachments,
+            nonce,
         },
     );
 }

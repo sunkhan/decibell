@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect } from "react";
 import { useActiveAudioStore } from "../../stores/activeAudioStore";
 import { useChatStore } from "../../stores/chatStore";
 import { bindAudioElement } from "./audioController";
+import { getCachedAudio, updateCachedAudioState } from "./tempAudioCache";
 
 // App-level <audio> host. Survives Virtuoso row unmounts so audio
 // keeps playing as the user scrolls through the channel. Mirrors
@@ -14,23 +14,11 @@ export default function PersistentAudioLayer() {
   const active = useActiveAudioStore((s) => s.active);
   const setActive = useActiveAudioStore((s) => s.setActive);
   const setPlaybackState = useActiveAudioStore((s) => s.setPlaybackState);
-  // Track the path that's currently on disk so we can unlink the
-  // *previous* file when the active changes (or clears).
-  const previousTempRef = useRef<string | null>(null);
-
-  // Cleanup the prior temp file whenever active.tempPath changes.
-  // Includes the active=null transition (channel switch, replaced).
-  useEffect(() => {
-    const cur = active?.tempPath ?? null;
-    const prev = previousTempRef.current;
-    if (prev && prev !== cur) {
-      invoke("cleanup_temp_attachment", { path: prev }).catch(() => {});
-    }
-    previousTempRef.current = cur;
-  }, [active?.tempPath]);
 
   // Stop audio on channel switch — matches the video-layer policy and
   // bounds the temp-file lifetime to a single channel session.
+  // tempAudioCache owns the unlinks; we just clear active here so the
+  // element drops the now-doomed src before the cache deletes the file.
   useEffect(() => {
     let last = useChatStore.getState().activeChannelId;
     return useChatStore.subscribe((state) => {
@@ -51,16 +39,47 @@ export default function PersistentAudioLayer() {
       // Re-key by attachment id so switching forces a fresh element
       // (drops any decoder buffers / buffered ranges from the old src).
       key={active.attachmentId}
-      ref={(el) => bindAudioElement(el)}
+      ref={(el) => {
+        bindAudioElement(el);
+        if (el) {
+          // Seed the fresh element with the user's preserved volume +
+          // mute so swapping attachments doesn't reset their levels.
+          const s = useActiveAudioStore.getState();
+          el.volume = s.volume;
+          el.muted = s.muted;
+        }
+      }}
       src={active.src}
       autoPlay
       preload="auto"
       onPlay={() => setPlaybackState({ playing: true })}
       onPause={() => setPlaybackState({ playing: false })}
       onEnded={() => setPlaybackState({ playing: false })}
-      onTimeUpdate={(e) => setPlaybackState({ time: e.currentTarget.currentTime })}
-      onLoadedMetadata={(e) => setPlaybackState({ duration: e.currentTarget.duration || 0 })}
+      onTimeUpdate={(e) => {
+        setPlaybackState({ time: e.currentTarget.currentTime });
+        // Persist position so a re-click on this attachment resumes
+        // from where the user paused. Write happens ~4×/sec, which
+        // is the timeupdate event's natural cadence — cheap.
+        updateCachedAudioState(active.channelId, active.attachmentId, e.currentTarget.currentTime);
+      }}
+      onLoadedMetadata={(e) => {
+        const el = e.currentTarget;
+        setPlaybackState({ duration: el.duration || 0 });
+        // Resume from the cached lastTime if the user previously
+        // paused this attachment mid-playback. Skip when the cached
+        // value is past the file's end (defensive — shouldn't happen).
+        const cached = getCachedAudio(active.channelId, active.attachmentId);
+        if (cached && cached.lastTime > 0 && cached.lastTime < el.duration) {
+          el.currentTime = cached.lastTime;
+        }
+      }}
       onDurationChange={(e) => setPlaybackState({ duration: e.currentTarget.duration || 0 })}
+      onVolumeChange={(e) =>
+        setPlaybackState({
+          volume: e.currentTarget.volume,
+          muted: e.currentTarget.muted,
+        })
+      }
     />
   );
 }

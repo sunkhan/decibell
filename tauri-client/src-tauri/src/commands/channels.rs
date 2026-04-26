@@ -112,6 +112,10 @@ pub async fn send_channel_message(
     // verifies ownership, channel scope, and 'ready' status — anything
     // that doesn't pass is silently dropped from the broadcast.
     attachment_ids: Option<Vec<i64>>,
+    // Client-generated UUID for optimistic-bubble dedup. Server echoes
+    // it in the broadcast so the sending client can match the real
+    // message back to its own optimistic placeholder.
+    nonce: Option<String>,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     let (write_tx, data) = {
@@ -160,6 +164,7 @@ pub async fn send_channel_message(
                 timestamp,
                 id: 0, // server assigns on persist
                 attachments,
+                nonce: nonce.unwrap_or_default(),
             }),
             Some(&client.jwt),
         );

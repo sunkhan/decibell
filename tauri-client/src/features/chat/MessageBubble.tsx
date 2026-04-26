@@ -4,6 +4,7 @@ import { stringToColor, stringToGradient } from "../../utils/colors";
 import { useUiStore } from "../../stores/uiStore";
 import MessageText from "./MessageText";
 import AttachmentList from "./AttachmentList";
+import BubbleInflightAttachments from "./BubbleInflightAttachments";
 
 function parseTimestamp(ts: string): Date {
   const asEpoch = parseInt(ts, 10);
@@ -69,6 +70,9 @@ function MessageBubble({ message, grouped, serverId, isLast }: Props) {
             </p>
           )}
           <AttachmentList attachments={message.attachments} serverId={serverId ?? null} />
+          {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
+            <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
+          )}
         </div>
       </div>
     );

@@ -6,6 +6,7 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraftsStore } from "../../stores/draftsStore";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
+import { useAuthStore } from "../../stores/authStore";
 import { toast } from "../../stores/toastStore";
 import MessageBubble, { shouldGroup } from "./MessageBubble";
 import { useChatEvents } from "./useChatEvents";
@@ -348,7 +349,8 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     const order = s.orderByChannel[activeChannelId] ?? [];
     for (const id of order) {
       const a = s.byPendingId[id];
-      if (a && (a.status === "queued" || a.status === "ready")) return true;
+      if (!a || a.outbound) continue;
+      if (a.status === "queued" || a.status === "ready") return true;
     }
     return false;
   });
@@ -558,10 +560,37 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     for (const q of queuedItems) {
       useAttachmentsStore.getState().markUploading(q.pendingId);
     }
-    const snapshotIds = new Set([
+    const snapshotIdArr = [
       ...queuedItems.map((p) => p.pendingId),
       ...readyItems.map((p) => p.pendingId),
-    ]);
+    ];
+
+    // Build an optimistic message and inject it into the chat
+    // immediately. Server echoes the nonce in the broadcast so
+    // useChatEvents can dedup the optimistic against the real one.
+    const sender = useAuthStore.getState().username;
+    const nonce = (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    if (sender && (trimmed || snapshotIdArr.length > 0)) {
+      useChatStore.getState().addMessage({
+        id: 0,
+        sender,
+        channelId,
+        content: trimmed,
+        timestamp: String(Math.floor(Date.now() / 1000)),
+        attachments: [],
+        nonce,
+        pendingAttachmentIds: snapshotIdArr.length > 0 ? snapshotIdArr : undefined,
+      });
+    }
+
+    // Pull the snapshot out of the composer immediately so the user
+    // can queue more attachments. The entries themselves stay in the
+    // store with live progress so the bubble keeps rendering them.
+    if (snapshotIdArr.length > 0) {
+      useAttachmentsStore.getState().markOutbound(snapshotIdArr);
+    }
 
     // Clear the composer immediately so the user can keep typing/sending.
     editorRef.current?.clear();
@@ -570,9 +599,9 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
     useDraftsStore.getState().clearChannelDraft(channelId);
     setPickerOpen(false);
 
-    // Background task — upload, send, then remove this snapshot's items
-    // from the pending row. Errors land in toasts since the inline red
-    // text below the messages would be invisible by the time we hit them.
+    // Background task — upload, send. Pending entries are reaped when
+    // the dedup in useChatEvents matches the server's broadcast back
+    // to this nonce, so no removePending here.
     void (async () => {
       try {
         if (queuedItems.length > 0) {
@@ -586,26 +615,21 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
           }
         }
 
-        const finalPending = useAttachmentsStore.getState().selectForChannel(channelId);
-        const readyIds = finalPending
-          .filter(
-            (a) =>
-              snapshotIds.has(a.pendingId) &&
-              a.status === "ready" &&
-              a.attachmentId,
-          )
-          .map((a) => a.attachmentId as number);
+        // Read latest state — uploads finishing flipped status to
+        // `ready` and populated attachmentId.
+        const byId = useAttachmentsStore.getState().byPendingId;
+        const readyIds = snapshotIdArr
+          .map((id) => byId[id])
+          .filter((a) => a && a.status === "ready" && a.attachmentId)
+          .map((a) => a!.attachmentId as number);
 
         await invoke("send_channel_message", {
           serverId,
           channelId,
           message: trimmed,
           attachmentIds: readyIds,
+          nonce,
         });
-
-        for (const id of snapshotIds) {
-          useAttachmentsStore.getState().removePending(id);
-        }
       } catch (err) {
         toast.error("Send failed", String(err));
       }
@@ -766,7 +790,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
           <button
             onClick={handleAttach}
             title="Attach files"
-            className="flex h-7 w-7 shrink-0 self-end items-center justify-center rounded-full bg-surface-hover text-text-muted transition-colors hover:bg-accent-soft hover:text-accent"
+            className="flex h-[34px] w-[34px] shrink-0 self-end items-center justify-center rounded-lg bg-surface-hover text-text-muted transition-colors hover:bg-accent-soft hover:text-accent"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" />
@@ -785,7 +809,7 @@ export default function ChatPanel({ hideHeader = false }: { hideHeader?: boolean
               <button
                 ref={emojiTriggerRef}
                 onClick={() => setPickerOpen((v) => !v)}
-                className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-md transition-colors ${
+                className={`flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-md transition-colors ${
                   pickerOpen
                     ? "bg-surface-hover text-text-secondary"
                     : "text-text-muted hover:text-text-secondary"

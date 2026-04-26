@@ -306,6 +306,12 @@ message ChannelMessage {
   int64 id = 5;
   // Attachments associated with this message. Ordered by position ASC.
   repeated Attachment attachments = 6;
+  // Client-generated UUID for optimistic-bubble dedup. Server echoes
+  // this back unchanged in the broadcast — never persisted, just round-
+  // tripped within the broadcast that fires within milliseconds of
+  // CHANNEL_MSG arrival. Empty for messages re-fetched from history
+  // (the originating client is long gone, no optimistic to dedup).
+  string nonce = 7;
 }
 
 message Attachment {

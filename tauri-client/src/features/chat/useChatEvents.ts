@@ -10,6 +10,7 @@ interface MessagePayload {
   content: string;
   timestamp: string;
   id: number;
+  nonce: string;
   attachments: Array<{
     id: number;
     messageId: number;
@@ -81,13 +82,34 @@ export function useChatEvents() {
   useEffect(() => {
     const unlistenMsg = listen<MessagePayload>("message_received", (event) => {
       if (event.payload.context === "dm") return;
+      const channelId = event.payload.context;
+      const incomingNonce = event.payload.nonce ?? "";
+
+      // Dedup cleanup: if the incoming message echoes one of our own
+      // optimistic bubbles (matched by nonce), the optimistic's pending
+      // entries have done their job — reap them so the attachment store
+      // doesn't keep stale records around. mergeMessage drops the
+      // optimistic itself by the same nonce.
+      if (incomingNonce) {
+        const messages = useChatStore.getState().messagesByChannel[channelId] ?? [];
+        const optimistic = messages.find(
+          (m) => m.id === 0 && m.nonce === incomingNonce,
+        );
+        if (optimistic?.pendingAttachmentIds) {
+          for (const id of optimistic.pendingAttachmentIds) {
+            useAttachmentsStore.getState().removePending(id);
+          }
+        }
+      }
+
       useChatStore.getState().addMessage({
         id: event.payload.id,
         sender: event.payload.sender,
         content: event.payload.content,
         timestamp: event.payload.timestamp,
-        channelId: event.payload.context,
+        channelId,
         attachments: (event.payload.attachments ?? []).map(mapAttachment),
+        nonce: incomingNonce || undefined,
       });
     });
 

@@ -98,9 +98,15 @@ function mergeMessage(existing: Message[], incoming: Message): Message[] {
   if (incoming.id === 0) {
     return [...existing, incoming];
   }
-  // Replace any existing entry with the same id (upsert). Common path: history
-  // re-fetch after a reconnect.
-  const filtered = existing.filter((m) => m.id !== incoming.id);
+  // Real message arriving from the server. If it carries a nonce that
+  // matches one of our optimistic id=0 placeholders, drop the placeholder
+  // — the real entry takes its place. Also dedup any prior entry with
+  // the same real id (history re-fetch after reconnect).
+  const filtered = existing.filter((m) => {
+    if (m.id === incoming.id) return false;
+    if (m.id === 0 && incoming.nonce && m.nonce === incoming.nonce) return false;
+    return true;
+  });
   // Find insertion point by id.
   let idx = filtered.length;
   for (let i = filtered.length - 1; i >= 0; --i) {

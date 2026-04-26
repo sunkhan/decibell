@@ -12,7 +12,8 @@ import { useActiveAudioStore } from "../../stores/activeAudioStore";
 import { useVideoCacheVersionStore } from "../../stores/videoCacheVersionStore";
 import { cacheVideo, getCachedVideo } from "./tempVideoCache";
 import { fetchThumbnail, getCachedThumbnail, pickSize } from "./attachmentThumbnailCache";
-import { audioSeek, audioToggle } from "./audioController";
+import { audioSeek, audioSetVolume, audioToggle, audioToggleMute } from "./audioController";
+import { cacheAudio, getCachedAudio, peekCachedAudio } from "./tempAudioCache";
 
 // ---- shared helpers --------------------------------------------------------
 
@@ -512,16 +513,15 @@ function DownloadButton({
 }
 
 function AudioIcon({ size = 18 }: { size?: number }) {
-  // Waveform inside a rounded frame — reads as "audio file" at a glance,
-  // distinct from the music-note + record-dots used elsewhere.
+  // Symmetric audio-spectrum waveform: five bars peaking in the middle,
+  // tapering at the edges. Reads unambiguously as "audio".
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="18" height="18" rx="3" />
-      <line x1="7" y1="10" x2="7" y2="14" />
-      <line x1="10" y1="8" x2="10" y2="16" />
-      <line x1="13" y1="11" x2="13" y2="13" />
-      <line x1="16" y1="9" x2="16" y2="15" />
-      <line x1="19" y1="11" x2="19" y2="13" />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <line x1="4" y1="9" x2="4" y2="15" />
+      <line x1="8" y1="6" x2="8" y2="18" />
+      <line x1="12" y1="3" x2="12" y2="21" />
+      <line x1="16" y1="6" x2="16" y2="18" />
+      <line x1="20" y1="9" x2="20" y2="15" />
     </svg>
   );
 }
@@ -546,10 +546,28 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
   // rows don't re-render on every timeupdate tick of someone else's
   // playing audio.
   const playing = useActiveAudioStore((s) => (isActive ? s.playing : false));
-  const time = useActiveAudioStore((s) => (isActive ? s.time : 0));
+  const liveTime = useActiveAudioStore((s) => (isActive ? s.time : 0));
   const duration = useActiveAudioStore((s) => (isActive ? s.duration : 0));
+  // For inactive rows, fall back to the cached lastTime so the
+  // paused-at position stays visually pinned on the progress bar
+  // when the user starts a different audio. Cache value freezes at
+  // pause / active-swap, so a static read per render is enough.
+  const cachedLastTime = !isActive
+    ? peekCachedAudio(channelId, attachment.id)?.lastTime ?? 0
+    : 0;
+  const time = isActive ? liveTime : cachedLastTime;
+  // Volume + mute are global to the persistent player — render the
+  // current values regardless of which attachment is active so the
+  // user's level always reflects reality. The volume cluster also
+  // operates on the global element, so any audio row's slider /
+  // mute / wheel can adjust the level as long as *some* audio is
+  // bound (`hasActiveAudio`).
+  const volume = useActiveAudioStore((s) => s.volume);
+  const muted = useActiveAudioStore((s) => s.muted);
+  const hasActiveAudio = useActiveAudioStore((s) => !!s.active);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
 
   const fmt = (s: number) => {
     if (!isFinite(s) || s < 0) return "0:00";
@@ -571,6 +589,21 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
       audioToggle();
       return;
     }
+    // Cached temp file? Reuse it — the persistent layer's
+    // loadedmetadata handler will seek back to the saved lastTime.
+    // No re-download, no disk churn.
+    const cached = getCachedAudio(channelId, attachment.id);
+    if (cached) {
+      useActiveAudioStore.getState().setActive({
+        attachmentId: attachment.id,
+        serverId,
+        channelId,
+        src: cached.url,
+        tempPath: cached.path,
+        filename: attachment.filename,
+      });
+      return;
+    }
     if (loading) return;
     setLoading(true);
     setError(null);
@@ -579,8 +612,16 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
         "save_attachment_to_temp",
         { serverId, attachmentId: attachment.id, filename: attachment.filename },
       );
-      // Replaces any previously-active audio. The persistent layer's
-      // tempPath-watcher unlinks the old file from disk.
+      // Cache the temp file so re-clicking play later resumes from
+      // the saved position instead of re-downloading. LRU eviction
+      // (cap 5/channel) and channel-switch clearing handle disk
+      // cleanup — we don't unlink on active swap anymore.
+      cacheAudio(channelId, {
+        path,
+        url,
+        attachmentId: attachment.id,
+        lastTime: 0,
+      });
       useActiveAudioStore.getState().setActive({
         attachmentId: attachment.id,
         serverId,
@@ -640,18 +681,81 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
     }
   };
 
+  // Drag-to-set volume on the slider track. Operates on the global
+  // persistent element, so any row's slider works as long as *some*
+  // audio is bound.
+  const onVolumeMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!hasActiveAudio) return;
+    const seek = (cx: number, track: HTMLElement) => {
+      const r = track.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (cx - r.left) / r.width));
+      audioSetVolume(ratio);
+    };
+    seek(e.clientX, e.currentTarget);
+    const track = e.currentTarget;
+    const onMove = (ev: MouseEvent) => seek(ev.clientX, track);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  // Scroll-wheel volume — attached imperatively with passive:false
+  // so preventDefault actually blocks the surrounding chat scroll.
+  // React's synthetic onWheel ends up passive in this nested DOM
+  // (the audio player sits inside the chat's scroll container), so
+  // a JSX onWheel handler can change volume but can't suppress the
+  // chat scroll. The video player doesn't hit this because its
+  // wheel target lives in a position:fixed overlay outside the
+  // scroller.
+  const volumeBarRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = volumeBarRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const step = e.deltaY < 0 ? 0.05 : -0.05;
+      audioSetVolume((muted ? 0 : volume) + step);
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, [muted, volume]);
+
+  // Focus + Space toggles play. Same pattern as PersistentVideoLayer:
+  // tabIndex on the wrapper, focus-on-mousedown so clicking the card
+  // lights up keyboard control, onKeyDown on the wrapper.
+  const onWrapperKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+    if (e.key === " " || e.code === "Space") {
+      e.preventDefault();
+      void onPlay();
+    }
+  };
+
+  const volumeDisplay = muted ? 0 : volume;
+
   return (
-    <div className="mt-2 flex w-full max-w-[400px] flex-col gap-2.5 rounded-xl border border-border-divider bg-bg-light p-3">
+    <div
+      ref={wrapperRef}
+      tabIndex={-1}
+      onMouseDownCapture={() => wrapperRef.current?.focus()}
+      onKeyDown={onWrapperKeyDown}
+      className="mt-2 flex w-full max-w-[400px] flex-col gap-2.5 rounded-xl border border-border bg-bg-light p-3 shadow-[0_4px_16px_rgba(0,0,0,0.3)] outline-none"
+    >
       {/* Top row: kind icon + filename + size + small download button */}
-      <div className="flex items-center gap-2.5">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent">
+      <div className="flex items-center gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-accent-soft text-accent-bright">
           <AudioIcon size={18} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12.5px] font-medium text-text-primary" title={attachment.filename}>
+          <div className="truncate text-[13px] font-medium text-text-primary" title={attachment.filename}>
             {attachment.filename}
           </div>
-          <div className="text-[10.5px] text-text-muted">
+          <div className="text-[11px] text-text-muted">
             {formatBytes(attachment.sizeBytes)}
           </div>
         </div>
@@ -660,7 +764,7 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
           title="Download"
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
             <polyline points="7 10 12 15 17 10" />
             <line x1="12" y1="15" x2="12" y2="3" />
@@ -673,7 +777,7 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
         <button
           onClick={onPlay}
           disabled={loading || !!error}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white shadow-[0_2px_10px_rgba(56,143,255,0.35)] transition-all hover:scale-105 hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-8 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-white shadow-[0_2px_8px_rgba(56,143,255,0.25)] transition-all hover:bg-accent-hover hover:scale-105 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
           title={playing ? "Pause" : "Play"}
         >
           {loading ? (
@@ -684,12 +788,12 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
           ) : playing ? (
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <rect x="6" y="5" width="4" height="14" rx="1" />
               <rect x="14" y="5" width="4" height="14" rx="1" />
             </svg>
           ) : (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z" />
             </svg>
           )}
@@ -699,20 +803,60 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
           onMouseDown={duration ? onScrubDown : undefined}
           className={`group relative flex h-3 flex-1 items-center ${duration ? "cursor-pointer" : "cursor-default"}`}
         >
-          <div className="pointer-events-none absolute inset-x-0 h-[3px] rounded-full bg-white/15" />
+          <div className="pointer-events-none absolute inset-x-0 h-[4px] rounded-full bg-bg-lighter" />
           <div
-            className="pointer-events-none absolute h-[3px] rounded-full bg-accent"
+            className="pointer-events-none absolute h-[4px] rounded-full bg-accent"
             style={{ width: `${progress}%` }}
           />
           <div
-            className="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-darkest opacity-0 transition-opacity group-hover:opacity-100"
+            className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-light opacity-0 shadow-[0_0_6px_rgba(56,143,255,0.3)] transition-opacity group-hover:opacity-100"
             style={{ left: `${progress}%` }}
           />
         </div>
 
-        <span className="shrink-0 select-none tabular-nums text-[10.5px] text-text-muted">
+        <span className="shrink-0 select-none text-[11px] tabular-nums text-text-secondary">
           {fmt(time)} / {fmt(displayDuration)}
         </span>
+
+        {/* Volume cluster — speaker toggle + thin slider. Wheel over
+            the slider raises/lowers volume. Disabled (visually dim
+            and inert) until this audio is the active one, since the
+            persistent layer's volume only changes a live element. */}
+        <button
+          onClick={() => hasActiveAudio && audioToggleMute()}
+          disabled={!hasActiveAudio}
+          title={muted ? "Unmute" : "Mute"}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary disabled:opacity-40"
+        >
+          {muted || volume === 0 ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+              <line x1="23" y1="9" x2="17" y2="15" />
+              <line x1="17" y1="9" x2="23" y2="15" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+              <path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07" />
+            </svg>
+          )}
+        </button>
+        <div
+          ref={volumeBarRef}
+          onMouseDown={onVolumeMouseDown}
+          title="Volume"
+          className={`group relative flex h-3 w-16 shrink-0 items-center ${hasActiveAudio ? "cursor-pointer" : "cursor-default opacity-40"}`}
+        >
+          <div className="pointer-events-none absolute inset-x-0 h-[3px] rounded-full bg-bg-lighter" />
+          <div
+            className="pointer-events-none absolute h-[3px] rounded-full bg-accent"
+            style={{ width: `${volumeDisplay * 100}%` }}
+          />
+          <div
+            className="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-light opacity-0 transition-opacity group-hover:opacity-100"
+            style={{ left: `${volumeDisplay * 100}%` }}
+          />
+        </div>
       </div>
 
       {error && (
@@ -917,7 +1061,7 @@ function VideoPlayer({
             Failed to load: {error}
           </div>
         ) : (
-          <div className="relative flex h-12 w-20 items-center justify-center rounded-xl bg-accent shadow-[0_4px_20px_rgba(56,143,255,0.35)] transition-all group-hover:scale-110 group-hover:bg-accent-hover group-hover:shadow-[0_6px_28px_rgba(56,143,255,0.45)]">
+          <div className="relative flex h-12 w-12 items-center justify-center rounded-xl bg-accent shadow-[0_2px_8px_rgba(56,143,255,0.15)] transition-all group-hover:scale-110 group-hover:bg-accent-hover group-hover:shadow-[0_3px_12px_rgba(56,143,255,0.22)]">
             <svg className="h-7 w-7 text-white" viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z" />
             </svg>

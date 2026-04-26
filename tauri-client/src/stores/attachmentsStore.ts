@@ -47,6 +47,12 @@ export interface PendingAttachment {
   // to the server via /init so receivers can show "0:00 / 3:45"
   // before the file is downloaded.
   durationMs?: number;
+  // True once the user has hit send and this entry has been associated
+  // with an optimistic message in the chat. Composer's selectForChannel
+  // filters these out so they vanish from the input bar instantly,
+  // while the entry itself stays alive in the store so the optimistic
+  // bubble can read its live upload progress.
+  outbound?: boolean;
 }
 
 interface AttachmentsState {
@@ -62,6 +68,21 @@ interface AttachmentsState {
   markFailed: (pendingId: string, error: string, cancelled: boolean) => void;
   removePending: (pendingId: string) => void;
   clearChannel: (channelId: string) => void;
+  /// Move `fromPendingId` to sit immediately before or after
+  /// `toPendingId` in its channel's order. Both ids must already
+  /// be in the same channel; otherwise this is a no-op. Used by
+  /// drag-to-reorder in the composer pending row.
+  reorderPending: (
+    channelId: string,
+    fromPendingId: string,
+    toPendingId: string,
+    position: "before" | "after",
+  ) => void;
+  /// Mark a set of pending entries as outbound so they disappear
+  /// from the composer immediately. The entries stay in the store
+  /// (still updating progress) so the optimistic message bubble can
+  /// keep rendering them until reconciliation.
+  markOutbound: (pendingIds: string[]) => void;
   /// Helper: returns pending attachments for a channel in display order.
   selectForChannel: (channelId: string) => PendingAttachment[];
 }
@@ -149,6 +170,26 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
     };
   }),
 
+  reorderPending: (channelId, fromPendingId, toPendingId, position) => set((state) => {
+    if (fromPendingId === toPendingId) return state;
+    const order = state.orderByChannel[channelId];
+    if (!order) return state;
+    const fromIdx = order.indexOf(fromPendingId);
+    const toIdx = order.indexOf(toPendingId);
+    if (fromIdx === -1 || toIdx === -1) return state;
+    const next = order.slice();
+    next.splice(fromIdx, 1);
+    // Recompute target index AFTER removal — splice shifts everything
+    // right of fromIdx down by one. Insertion sits before/after the
+    // target's new position depending on which edge the user dropped on.
+    const adjustedTo = toIdx > fromIdx ? toIdx - 1 : toIdx;
+    const insertAt = position === "after" ? adjustedTo + 1 : adjustedTo;
+    next.splice(insertAt, 0, fromPendingId);
+    return {
+      orderByChannel: { ...state.orderByChannel, [channelId]: next },
+    };
+  }),
+
   clearChannel: (channelId) => set((state) => {
     const order = state.orderByChannel[channelId] ?? [];
     const next = { ...state.byPendingId };
@@ -163,9 +204,24 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
     };
   }),
 
+  markOutbound: (pendingIds) => set((state) => {
+    const next = { ...state.byPendingId };
+    for (const id of pendingIds) {
+      const e = next[id];
+      if (e) next[id] = { ...e, outbound: true };
+    }
+    return { byPendingId: next };
+  }),
+
   selectForChannel: (channelId) => {
     const state = get();
     const order = state.orderByChannel[channelId] ?? [];
-    return order.map((id) => state.byPendingId[id]).filter((x): x is PendingAttachment => !!x);
+    // Composer view: filter out entries that have been associated
+    // with an optimistic message. They're still in the store driving
+    // upload progress for the bubble — they just shouldn't appear in
+    // the input bar anymore.
+    return order
+      .map((id) => state.byPendingId[id])
+      .filter((x): x is PendingAttachment => !!x && !x.outbound);
   },
 }));

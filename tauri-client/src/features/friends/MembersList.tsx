@@ -23,7 +23,7 @@ export default function MembersList() {
   const renderRow = (username: string, isOnline: boolean) => (
     <div
       key={username}
-      className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-[7px] transition-colors hover:bg-surface-hover"
+      className="group flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-[7px] transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(username, { x: rect.right + 8, y: rect.top }, activeServerId);
@@ -49,8 +49,8 @@ export default function MembersList() {
         />
       </div>
       <span
-        className={`truncate font-channel text-[13px] font-medium ${
-          isOnline ? "text-text-primary" : "text-text-muted"
+        className={`truncate font-channel text-[13px] font-medium transition-colors ${
+          isOnline ? "text-text-secondary group-hover:text-text-primary" : "text-text-muted"
         }`}
       >
         {username}
