@@ -3,14 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { pickSavePath } from "./filePicker";
 import type { Attachment } from "../../types";
-import { cacheImage, getCachedImage } from "./imageCache";
+import { getCachedImage, getOrFetchImage } from "./imageCache";
 import { useChatStore } from "../../stores/chatStore";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { useActiveVideoStore } from "../../stores/activeVideoStore";
 import { useVideoCacheVersionStore } from "../../stores/videoCacheVersionStore";
 import { cacheVideo, getCachedVideo } from "./tempVideoCache";
-import { fetchThumbnail, getCachedThumbnail } from "./videoThumbnailCache";
+import { fetchThumbnail, getCachedThumbnail } from "./attachmentThumbnailCache";
 
 // ---- shared helpers --------------------------------------------------------
 
@@ -180,12 +180,30 @@ function ImagePlaceholderIcon() {
   );
 }
 
-function ImagePreview({ attachment, serverId }: { attachment: Attachment; serverId: string | null }) {
-  // Consult the module-level cache first so a virtualized unmount/remount
-  // during scroll doesn't re-fetch the same image. The cache owns the
-  // object URL's lifecycle — we don't revoke on unmount, the LRU eviction
-  // in imageCache.ts does that when an entry falls out of the window.
-  const [url, setUrl] = useState<string | null>(() => getCachedImage(attachment.id));
+function ImagePreview({
+  attachment,
+  serverId,
+  fillCell = false,
+}: {
+  attachment: Attachment;
+  serverId: string | null;
+  // When true, fill the parent's box (used by the multi-image grid) and
+  // crop with object-cover so adjacent cells line up to a clean grid.
+  // When false (default, single-attachment case), reserve a sqrt-scaled
+  // box and use object-contain to preserve the full image.
+  fillCell?: boolean;
+}) {
+  // Inline preview prefers the server-side thumbnail (~30 KB JPEG) over
+  // the original. Falls back to the full image only for legacy rows
+  // uploaded before image thumbnails existed (thumbnailSizeBytes === 0).
+  // The viewer always fetches the full bytes via openViewer below.
+  const useServerThumb = attachment.thumbnailSizeBytes > 0;
+
+  // Consult the right module-level cache first so a virtualized
+  // unmount/remount during scroll doesn't re-fetch.
+  const [url, setUrl] = useState<string | null>(() =>
+    useServerThumb ? getCachedThumbnail(attachment.id) : getCachedImage(attachment.id),
+  );
   const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hasFetched = useRef(url !== null);
@@ -210,14 +228,15 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
     );
   };
 
-  // Lazy-load: fetch the image blob only once the card scrolls into view.
-  // Returned as raw bytes via tauri::ipc::Response, wrapped into an object
-  // URL so the DOM holds a tiny `blob:` reference rather than a
-  // multi-megabyte base64 string that gets diffed on every re-render.
+  // Lazy-load: fetch only once the card scrolls into view. For thumbnail
+  // path the bytes are tiny (~30 KB) so we don't gate on size. For the
+  // legacy full-image fallback we still respect INLINE_PREVIEW_CAP.
+  // Both paths dedup concurrent fetches in their respective caches, so
+  // a rapid scroll over the same row doesn't fan out duplicate IPCs.
   useEffect(() => {
     if (!serverId) return;
     if (hasFetched.current) return;
-    if (attachment.sizeBytes > INLINE_PREVIEW_CAP) return; // too big to inline
+    if (!useServerThumb && attachment.sizeBytes > INLINE_PREVIEW_CAP) return;
     const el = containerRef.current;
     if (!el) return;
     let cancelled = false;
@@ -225,17 +244,12 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
       if (entries.some((e) => e.isIntersecting)) {
         hasFetched.current = true;
         io.disconnect();
-        invoke<ArrayBuffer>("fetch_attachment_bytes", {
-          serverId,
-          attachmentId: attachment.id,
-        })
-          .then((buf) => {
-            if (cancelled) return;
-            const blob = new Blob([buf], {
-              type: attachment.mime || "application/octet-stream",
-            });
-            const objectUrl = URL.createObjectURL(blob);
-            cacheImage(attachment.id, objectUrl);
+        const fetcher = useServerThumb
+          ? fetchThumbnail(serverId, attachment.id)
+          : getOrFetchImage(serverId, attachment.id, attachment.mime);
+        fetcher
+          .then((objectUrl) => {
+            if (cancelled || !objectUrl) return;
             setUrl(objectUrl);
           })
           .catch((e) => {
@@ -248,14 +262,30 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
       cancelled = true;
       io.disconnect();
     };
-  }, [serverId, attachment.id, attachment.sizeBytes, attachment.mime]);
+  }, [serverId, attachment.id, attachment.sizeBytes, attachment.mime, useServerThumb]);
 
   const tooLargeForPreview = attachment.sizeBytes > INLINE_PREVIEW_CAP;
-  const chatViewSize = useChatStore((s) => s.chatViewSize);
+  // Subscribe to width and height as primitives so a chatStore set
+  // that creates a new {width, height} object with identical values
+  // doesn't re-render every mounted ImagePreview. zustand compares
+  // primitives with Object.is, so unchanged dims = no re-render.
+  const viewW = useChatStore((s) => s.chatViewSize?.width ?? 0);
+  const viewH = useChatStore((s) => s.chatViewSize?.height ?? 0);
+  const chatViewSize = viewW > 0 && viewH > 0 ? { width: viewW, height: viewH } : null;
   const box = reserveBox(attachment, chatViewSize);
 
+  const buttonStyle: React.CSSProperties | undefined = fillCell
+    ? undefined
+    : { width: box.width, height: box.height };
+  const buttonClass = fillCell
+    ? "group relative block h-full w-full cursor-pointer overflow-hidden bg-bg-light transition-transform hover:scale-[1.005] disabled:cursor-default"
+    : "group relative block cursor-pointer overflow-hidden rounded-[10px] border border-border-divider bg-bg-light transition-transform hover:scale-[1.005] disabled:cursor-default";
+  const imgClass = fillCell
+    ? "h-full w-full object-cover"
+    : "h-full w-full object-contain";
+
   return (
-    <div ref={containerRef} className="mt-2">
+    <div ref={containerRef} className={fillCell ? "h-full w-full" : "mt-2"}>
       <button
         onClick={() => url && openViewer()}
         onContextMenu={(e) => {
@@ -269,19 +299,25 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
             filename: attachment.filename,
           });
         }}
-        // The outer box is a FIXED size from first render. The <img> fills
-        // it with object-contain when the data URL lands — no layout shift.
-        className="group relative block cursor-pointer overflow-hidden rounded-[10px] border border-border-divider bg-bg-light transition-transform hover:scale-[1.005] disabled:cursor-default"
-        style={{ width: box.width, height: box.height }}
+        className={buttonClass}
+        style={buttonStyle}
         disabled={!url}
       >
         {url ? (
           <img
             src={url}
             alt={attachment.filename}
-            className="h-full w-full object-contain"
+            className={imgClass}
             draggable={false}
             decoding="async"
+            // Native lazy + intrinsic dimensions hint the engine to
+            // decode at the box size rather than full source resolution
+            // — a 12 MP phone photo decodes to ~48 MB of RGBA at source
+            // res, ~150 KB at 200×200 px. With server thumbnails the
+            // source is already small, but the hint keeps WebKit honest.
+            loading="lazy"
+            width={attachment.width > 0 ? attachment.width : undefined}
+            height={attachment.height > 0 ? attachment.height : undefined}
           />
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-bg-dark/40 text-[11px] text-text-muted">
@@ -290,14 +326,16 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
               {error
                 ? `Failed to load: ${error}`
                 : tooLargeForPreview
-                  ? `${attachment.filename} • ${formatBytes(attachment.sizeBytes)} — download to view`
+                  ? fillCell
+                    ? formatBytes(attachment.sizeBytes)
+                    : `${attachment.filename} • ${formatBytes(attachment.sizeBytes)} — download to view`
                   : box.known
                     ? ""
                     : attachment.filename}
             </span>
           </div>
         )}
-        {url && (
+        {url && !fillCell && (
           <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-2 py-1 text-[10.5px] text-white opacity-0 transition-opacity group-hover:opacity-100">
             {attachment.filename}
             {attachment.sizeBytes ? ` • ${formatBytes(attachment.sizeBytes)}` : ""}
@@ -306,10 +344,9 @@ function ImagePreview({ attachment, serverId }: { attachment: Attachment; server
       </button>
       {/* Only show the Download button when inline preview isn't happening:
           either the file is too big to inline or the fetch actually failed.
-          Previously we also showed it while `!url` during a normal fetch,
-          which flashed the button on for the few hundred ms between the
-          placeholder and the image landing. */}
-      {(tooLargeForPreview || error !== null) && (
+          In grid mode we suppress this since each cell is sized to fit the
+          grid — a download button below would break the row alignment. */}
+      {!fillCell && (tooLargeForPreview || error !== null) && (
         <DownloadButton attachment={attachment} serverId={serverId} />
       )}
 
@@ -498,7 +535,15 @@ function videoBox(attachment: Attachment, viewSize: ChatViewSize | null): { widt
   };
 }
 
-function VideoPlayer({ attachment, serverId }: { attachment: Attachment; serverId: string | null }) {
+function VideoPlayer({
+  attachment,
+  serverId,
+  fillCell = false,
+}: {
+  attachment: Attachment;
+  serverId: string | null;
+  fillCell?: boolean;
+}) {
   // The chat-side VideoPlayer is now just a *placeholder* that owns
   // the visual slot in the message bubble. The actual <video> element
   // lives in `PersistentVideoLayer` (mounted at app level) and is
@@ -512,7 +557,9 @@ function VideoPlayer({ attachment, serverId }: { attachment: Attachment; serverI
   const [assetUrl, setAssetUrl] = useState<string | null>(cachedAtMount?.url ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const chatViewSize = useChatStore((s) => s.chatViewSize);
+  const viewW = useChatStore((s) => s.chatViewSize?.width ?? 0);
+  const viewH = useChatStore((s) => s.chatViewSize?.height ?? 0);
+  const chatViewSize = viewW > 0 && viewH > 0 ? { width: viewW, height: viewH } : null;
   const box = videoBox(attachment, chatViewSize);
 
   // Am I the active video right now? If so, register my placeholder
@@ -629,12 +676,19 @@ function VideoPlayer({ attachment, serverId }: { attachment: Attachment; serverI
   // it's not active, you see the poster button below — with the
   // captured frame as the background if one's been cached, so it
   // reads as "paused video" instead of "unclicked".
+  // In grid mode the cell sets dimensions (h-full w-full) and the
+  // outer card chrome is dropped — the grid container provides the
+  // rounded corners + gaps. PersistentVideoLayer tracks the placeholder
+  // ref's bounding rect via ResizeObserver, so it picks up either box.
+  const wrapperClass = fillCell
+    ? "h-full w-full overflow-hidden bg-bg-darkest"
+    : "mt-2 overflow-hidden rounded-xl border border-border bg-bg-darkest";
+  const wrapperStyle: React.CSSProperties | undefined = fillCell
+    ? undefined
+    : { width: box.width, height: box.height };
+
   return (
-    <div
-      ref={placeholderRef}
-      className="mt-2 overflow-hidden rounded-xl border border-border bg-bg-darkest"
-      style={{ width: box.width, height: box.height }}
-    >
+    <div ref={placeholderRef} className={wrapperClass} style={wrapperStyle}>
       <button
         onClick={onPlay}
         disabled={loading || !!error || isActive}
@@ -670,18 +724,89 @@ function VideoPlayer({ attachment, serverId }: { attachment: Attachment; serverI
 }
 
 
-function LiveAttachment({ attachment, serverId }: { attachment: Attachment; serverId: string | null }) {
+function LiveAttachment({
+  attachment,
+  serverId,
+  fillCell = false,
+}: {
+  attachment: Attachment;
+  serverId: string | null;
+  fillCell?: boolean;
+}) {
   switch (attachment.kind) {
     case "image":
-      return <ImagePreview attachment={attachment} serverId={serverId} />;
+      return <ImagePreview attachment={attachment} serverId={serverId} fillCell={fillCell} />;
     case "video":
-      return <VideoPlayer attachment={attachment} serverId={serverId} />;
+      return <VideoPlayer attachment={attachment} serverId={serverId} fillCell={fillCell} />;
     case "audio":
       return <FileCard attachment={attachment} serverId={serverId} icon={<AudioIcon />} />;
     case "document":
     default:
       return <FileCard attachment={attachment} serverId={serverId} icon={<DocIcon />} />;
   }
+}
+
+// Discord-style row layouts. Sum of each entry equals the count.
+// Picked to keep cells from getting too narrow at high counts while
+// matching what readers visually expect from chat-attachment grids.
+function gridRowCounts(n: number): number[] {
+  switch (n) {
+    case 2: return [2];
+    case 3: return [3];
+    case 4: return [2, 2];
+    case 5: return [2, 3];
+    case 6: return [3, 3];
+    case 7: return [3, 4];
+    case 8: return [4, 4];
+    case 9: return [3, 3, 3];
+    case 10: return [5, 5];
+    default: return [n];
+  }
+}
+
+const GRID_GAP_PX = 4;
+const GRID_ROW_HEIGHT_PX = 180;
+const GRID_MAX_WIDTH_PX = 540;
+const GRID_MIN_WIDTH_PX = 320;
+
+function MediaGrid({
+  items,
+  serverId,
+}: {
+  items: Attachment[];
+  serverId: string | null;
+}) {
+  const viewW = useChatStore((s) => s.chatViewSize?.width ?? 0);
+  const cap = viewW > 0 ? maxImageWidth(viewW) : GRID_MAX_WIDTH_PX;
+  const containerWidth = Math.min(GRID_MAX_WIDTH_PX, Math.max(GRID_MIN_WIDTH_PX, cap));
+
+  const rows: Attachment[][] = [];
+  let cursor = 0;
+  for (const cols of gridRowCounts(items.length)) {
+    rows.push(items.slice(cursor, cursor + cols));
+    cursor += cols;
+  }
+
+  return (
+    <div
+      className="mt-2 flex flex-col overflow-hidden rounded-[10px] border border-border-divider"
+      style={{ width: containerWidth, gap: GRID_GAP_PX }}
+    >
+      {rows.map((row, ri) => (
+        <div
+          key={ri}
+          className="flex"
+          style={{ gap: GRID_GAP_PX, height: GRID_ROW_HEIGHT_PX }}
+        >
+          {row.map((att) => (
+            <div key={att.id} className="min-w-0 flex-1 overflow-hidden">
+              <LiveAttachment attachment={att} serverId={serverId} fillCell />
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export default function AttachmentList({
@@ -693,9 +818,32 @@ export default function AttachmentList({
 }) {
   if (attachments.length === 0) return null;
   const ordered = [...attachments].sort((a, b) => a.position - b.position);
+
+  // Split into the visual grid (live image/video) vs. everything else
+  // (audio + documents render as cards; tombstones get the strikethrough
+  // treatment). The grid only kicks in for >=2 live media — single
+  // images/videos keep their existing aspect-preserving layout.
+  const gridable: Attachment[] = [];
+  const remainder: Attachment[] = [];
+  for (const a of ordered) {
+    if (a.purgedAt === 0 && (a.kind === "image" || a.kind === "video")) {
+      gridable.push(a);
+    } else {
+      remainder.push(a);
+    }
+  }
+  const useGrid = gridable.length >= 2;
+
   return (
     <div className="mt-1 flex flex-col gap-1">
-      {ordered.map((a) =>
+      {useGrid ? (
+        <MediaGrid items={gridable} serverId={serverId} />
+      ) : (
+        gridable.map((a) => (
+          <LiveAttachment key={a.id} attachment={a} serverId={serverId} />
+        ))
+      )}
+      {remainder.map((a) =>
         a.purgedAt > 0
           ? <Tombstone key={a.id} attachment={a} />
           : <LiveAttachment key={a.id} attachment={a} serverId={serverId} />,

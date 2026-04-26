@@ -15,6 +15,12 @@ import { invoke } from "@tauri-apps/api/core";
 
 const MAX_ENTRIES = 50;
 const cache = new Map<number, string>();
+// Concurrent fetches for the same id collapse to a single promise.
+// Without this, a rapid re-mount during scroll (or a viewer fetch
+// racing the inline preview) fans out duplicate IPC calls that each
+// transit the full image bytes through Rust → IPC bridge before the
+// `cancelled` flag prevents the second one from being used.
+const inflight = new Map<number, Promise<string>>();
 
 export function getCachedImage(attachmentId: number): string | null {
   const url = cache.get(attachmentId);
@@ -48,21 +54,31 @@ export function clearImageCache(): void {
  * if not present. Used by the full-screen viewer when navigating to an
  * image that hasn't been loaded inline yet.
  */
-export async function getOrFetchImage(
+export function getOrFetchImage(
   serverId: string,
   attachmentId: number,
   mime: string,
 ): Promise<string> {
   const cached = getCachedImage(attachmentId);
-  if (cached) return cached;
-  const buf = await invoke<ArrayBuffer>("fetch_attachment_bytes", {
+  if (cached) return Promise.resolve(cached);
+  const pending = inflight.get(attachmentId);
+  if (pending) return pending;
+
+  const promise = invoke<ArrayBuffer>("fetch_attachment_bytes", {
     serverId,
     attachmentId,
-  });
-  const blob = new Blob([buf], { type: mime || "application/octet-stream" });
-  const url = URL.createObjectURL(blob);
-  cacheImage(attachmentId, url);
-  return url;
+  })
+    .then((buf) => {
+      const blob = new Blob([buf], { type: mime || "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      cacheImage(attachmentId, url);
+      return url;
+    })
+    .finally(() => {
+      inflight.delete(attachmentId);
+    });
+  inflight.set(attachmentId, promise);
+  return promise;
 }
 
 /**

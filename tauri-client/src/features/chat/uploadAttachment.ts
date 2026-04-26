@@ -3,6 +3,7 @@ import { useAttachmentsStore, type PendingAttachment } from "../../stores/attach
 import { toast } from "../../stores/toastStore";
 import { kindFromMime, formatBytes } from "./attachmentHelpers";
 import { extractVideoMetadata } from "./videoMetadata";
+import { extractImageMetadata } from "./imageMetadata";
 
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
@@ -71,11 +72,13 @@ export async function uploadAttachment(opts: {
   let height = meta.height;
   const kind = kindFromMime(meta.mime);
 
-  // For video kind, the Rust stat path doesn't read dimensions (no
-  // decoder dep), so we extract here via a hidden <video> element. The
-  // same pass yields a JPEG thumbnail blob we ship after the main
-  // upload completes. Fast (<1s for typical videos) since only the
-  // header + first frame need to be decoded.
+  // For image / video kinds, extract a small JPEG thumbnail and (for
+  // video) intrinsic dimensions client-side. The Rust stat path can
+  // read dimensions for some image formats but not videos, and not
+  // every WebKit-supported image format (HEIC/AVIF/etc.). Using a
+  // <video>/<img> here covers everything the renderer can display in
+  // a single code path. Thumbnail is ~30 KB JPEG; uploaded after the
+  // main file completes via the existing finalize() path.
   const pendingId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   if (kind === "video") {
     try {
@@ -89,6 +92,23 @@ export async function uploadAttachment(opts: {
       }
     } catch (err) {
       console.warn("[upload] video metadata extraction failed", err);
+    }
+  } else if (kind === "image") {
+    try {
+      const im = await extractImageMetadata(opts.filePath);
+      // Only overwrite Rust-side dims when our extractor learned
+      // something — Rust's image::image_dimensions handles common
+      // formats (PNG/JPEG/WebP) and is what we want when both succeed
+      // since it doesn't decode pixels.
+      if (im.width > 0 && im.height > 0 && (width === 0 || height === 0)) {
+        width = im.width;
+        height = im.height;
+      }
+      if (im.thumbnail) {
+        pendingThumbnails.set(pendingId, im.thumbnail);
+      }
+    } catch (err) {
+      console.warn("[upload] image metadata extraction failed", err);
     }
   }
 

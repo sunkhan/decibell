@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 
 // Module-level LRU cache of server-side thumbnail object URLs, keyed by
-// attachment id. Survives Virtuoso row unmounts so scrolling away and
-// back doesn't re-download. Capped so a long history of videos doesn't
+// attachment id. Used for both image and video thumbnails — the server
+// stores them at the same `<storage_path>.thumb.jpg` location and the
+// fetch path is identical. Survives Virtuoso row unmounts so scrolling
+// away and back doesn't re-download. Capped so a long history doesn't
 // pile up object URLs forever. In-flight fetches are deduped so a
 // rapid re-mount of the same row doesn't fan out duplicate IPC calls.
 
