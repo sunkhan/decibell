@@ -74,6 +74,23 @@ fn fill_id(dest: &mut [u8; SENDER_ID_SIZE], src: &str) {
 }
 
 impl UdpVideoPacket {
+    /// Construct a video packet with an explicit codec byte. Used by the
+    /// video send pipeline so the per-packet codec field reflects the
+    /// active encoder rather than always the H.264_HW default.
+    pub fn new_with_codec(
+        sender_id_str: &str,
+        frame_id: u32,
+        packet_index: u16,
+        total_packets: u16,
+        is_keyframe: bool,
+        codec: u8,
+        data: &[u8],
+    ) -> Self {
+        let mut pkt = Self::new(sender_id_str, frame_id, packet_index, total_packets, is_keyframe, data);
+        pkt.codec = codec;
+        pkt
+    }
+
     pub fn new(
         sender_id_str: &str,
         frame_id: u32,

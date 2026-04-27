@@ -1,6 +1,6 @@
 use tauri::{AppHandle, State};
 use crate::state::SharedState;
-use crate::media::{capture, encoder::EncoderConfig, VideoEngine, AudioStreamEngine};
+use crate::media::{capture, caps::CodecKind, encoder::EncoderConfig, VideoEngine, AudioStreamEngine};
 use crate::net::connection::build_packet;
 use crate::net::proto::*;
 
@@ -20,6 +20,11 @@ pub async fn start_screen_share(
     video_bitrate_kbps: Option<u32>,
     share_audio: bool,
     audio_bitrate_kbps: Option<u32>,
+    // Plan B Task 7 dev shim: explicit codec value (1=H264_HW, 2=H264_SW,
+    // 3=H265, 4=AV1). When None or 0, defaults to H264_HW. Plan C Task 11
+    // replaces this with enforced_codec driven by the production UI
+    // dropdown plus auto-pick from the LCD picker for Auto mode.
+    force_codec: Option<u8>,
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
@@ -46,6 +51,15 @@ pub async fn start_screen_share(
         "medium" => 6000,
         _ => 10000,
     });
+
+    // Resolve dev force_codec → CodecKind.
+    let target_codec = match force_codec {
+        None | Some(0) | Some(1) => CodecKind::H264Hw,
+        Some(2) => CodecKind::H264Sw,
+        Some(3) => CodecKind::H265,
+        Some(4) => CodecKind::Av1,
+        Some(other) => return Err(format!("Unknown codec value: {}", other)),
+    };
 
     eprintln!("[stream] start_screen_share: server='{}', channel='{}', source='{}', {}x{} @ {}fps",
         server_id, channel_id, source_id, width, height, fps);
@@ -84,10 +98,11 @@ pub async fn start_screen_share(
             has_audio: share_audio,
             resolution_width: enc_width,
             resolution_height: enc_height,
-            // Codec fields populated in Plan C Task 11 (production enforce dropdown).
-            // Plan B Task 7 wires the dev-only force_codec path through here.
-            chosen_codec: 0,   // CODEC_UNKNOWN — server treats as legacy = H264_HW
-            enforced_codec: 0, // CODEC_UNKNOWN — auto-negotiation enabled
+            // Plan B Task 7: chosen_codec reflects the dev force_codec or
+            // the H264Hw default. enforced_codec stays UNKNOWN — Plan C
+            // Task 11 wires the production enforce dropdown.
+            chosen_codec: target_codec as i32,
+            enforced_codec: 0,
         }),
         Some(&client.jwt),
     );
@@ -115,6 +130,7 @@ pub async fn start_screen_share(
         sender_id.clone(),
         encoder_config,
         fps,
+        target_codec,
         app.clone(),
         thumbnail_write_tx,
         thumbnail_channel_id,

@@ -127,6 +127,10 @@ pub fn run_video_send_pipeline(
     sender_id: String,
     config: EncoderConfig,
     target_fps: u32,
+    // Codec to use for encoding. Plan B Task 7: passed through from
+    // start_screen_share's force_codec parameter; Plan C will replace
+    // this with the LCD picker output.
+    target_codec: crate::media::caps::CodecKind,
 ) {
     // GPU context is lazily initialized on first DMA-BUF frame (Linux only).
     // On NVIDIA+KWin, PipeWire provides MemFd (not DmaBuf), so GPU code never
@@ -142,7 +146,7 @@ pub fn run_video_send_pipeline(
     // Plan B: codec defaults to H264Hw; Plan B Task 7 plumbs the dev
     // force_codec parameter through here, Plan C plumbs the production
     // codec selection from the LCD picker.
-    let mut encoder = match H264Encoder::new(crate::media::caps::CodecKind::H264Hw, &config) {
+    let mut encoder = match H264Encoder::new(target_codec, &config) {
         Ok(e) => e,
         Err(e) => {
             let _ = event_tx.send(VideoPipelineEvent::Error(e));
@@ -412,13 +416,15 @@ pub fn run_video_send_pipeline(
 
                 let mut send_ok = 0u32;
                 let mut send_err = 0u32;
+                let codec_byte = encoder.codec as u8;
                 for (i, chunk) in chunks.iter().enumerate() {
-                    let pkt = UdpVideoPacket::new(
+                    let pkt = UdpVideoPacket::new_with_codec(
                         &sender_id,
                         frame_id,
                         i as u16,
                         total,
                         encoded.is_keyframe,
+                        codec_byte,
                         chunk,
                     );
                     match socket.send(&pkt.to_bytes()) {
@@ -484,8 +490,9 @@ pub fn run_video_send_pipeline(
     for encoded in encoder.flush() {
         let chunks: Vec<&[u8]> = encoded.data.chunks(UDP_MAX_PAYLOAD).collect();
         let total = chunks.len() as u16;
+        let codec_byte = encoder.codec as u8;
         for (i, chunk) in chunks.iter().enumerate() {
-            let pkt = UdpVideoPacket::new(&sender_id, frame_id, i as u16, total, encoded.is_keyframe, chunk);
+            let pkt = UdpVideoPacket::new_with_codec(&sender_id, frame_id, i as u16, total, encoded.is_keyframe, codec_byte, chunk);
             let _ = socket.send(&pkt.to_bytes());
         }
         frame_id = frame_id.wrapping_add(1);

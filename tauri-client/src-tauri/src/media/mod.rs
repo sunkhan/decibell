@@ -599,6 +599,7 @@ impl VideoEngine {
         sender_id: String,
         config: encoder::EncoderConfig,
         target_fps: u32,
+        target_codec: caps::CodecKind,
         app: AppHandle,
         thumbnail_write_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
         thumbnail_channel_id: Option<String>,
@@ -620,6 +621,7 @@ impl VideoEngine {
                     sender_id,
                     config,
                     target_fps,
+                    target_codec,
                 );
             })
             .expect("spawn video pipeline thread");
