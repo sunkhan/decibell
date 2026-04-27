@@ -224,12 +224,20 @@ pub struct EncoderConfig {
 
 #[derive(Debug)]
 pub struct EncodedFrame {
-    /// H.264 data in AVCC format (4-byte length-prefixed NAL units).
+    /// Encoded bitstream in the format the WebCodecs decoder expects:
+    ///   - H.264 / H.265 → length-prefixed NALU (AVCC / HVCC)
+    ///   - AV1           → OBU stream
+    /// Codec is identified via the surrounding pipeline's CodecKind, NOT
+    /// stored in this struct (it would duplicate H264Encoder.codec).
     pub data: Vec<u8>,
     pub is_keyframe: bool,
     pub pts: u64,
-    /// avcC decoder configuration record (present on keyframes only).
-    /// Needed by WebCodecs VideoDecoder as the `description` parameter.
+    /// Codec decoder-configuration record, present on keyframes only:
+    ///   - H.264 → avcC (built from SPS/PPS extracted from annex-B)
+    ///   - H.265 → hvcC (FFmpeg encoder.extradata())
+    ///   - AV1   → av1C (FFmpeg encoder.extradata())
+    /// Field name kept stable for diff hygiene; semantics are codec-aware.
+    /// Pass these bytes verbatim to WebCodecs VideoDecoder.configure({description}).
     pub avcc_description: Option<Vec<u8>>,
 }
 
@@ -893,33 +901,36 @@ impl H264Encoder {
         self.is_vaapi_hw
     }
 
-    /// Receive one encoded packet and convert to AVCC format.
+    /// Receive one encoded packet and produce a codec-appropriate EncodedFrame.
     fn receive_one_packet(&mut self) -> Option<EncodedFrame> {
         let mut packet = ffmpeg_next::Packet::empty();
         match self.encoder.receive_packet(&mut packet) {
             Ok(()) => {
-                let annexb_data = packet.data().unwrap_or(&[]).to_vec();
+                let raw_data = packet.data().unwrap_or(&[]).to_vec();
                 let is_keyframe = packet.is_key();
-                let avcc_data = annexb_to_avcc(&annexb_data);
-                let avcc_description = if is_keyframe {
-                    let desc = extract_avcc_description(&annexb_data);
-                    if desc.is_some() {
-                        eprintln!("[encoder] Keyframe avcC description extracted ({} bytes)", desc.as_ref().unwrap().len());
-                    } else {
-                        eprintln!("[encoder] WARNING: Keyframe missing SPS/PPS!");
-                    }
-                    desc
-                } else {
-                    None
-                };
-                Some(EncodedFrame {
-                    data: avcc_data,
-                    is_keyframe,
-                    pts: packet.pts().unwrap_or(0) as u64,
-                    avcc_description,
-                })
+                let pts = packet.pts().unwrap_or(0) as u64;
+                self.build_encoded_frame(raw_data, is_keyframe, pts)
             }
             Err(_) => None,
+        }
+    }
+
+    /// Copy the encoder's extradata as the WebCodecs description record.
+    /// FFmpeg populates this with the codec-appropriate config record
+    /// (avcC / hvcC / av1C) once the encoder is open. The label argument
+    /// is for logging only.
+    fn read_extradata_for_description(&self, label: &str) -> Option<Vec<u8>> {
+        unsafe {
+            let ctx_ptr = self.encoder.as_ptr();
+            let extradata = (*ctx_ptr).extradata;
+            let size = (*ctx_ptr).extradata_size as usize;
+            if extradata.is_null() || size == 0 {
+                eprintln!("[encoder] WARNING: {} keyframe has no extradata", label);
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(extradata, size).to_vec();
+            eprintln!("[encoder] {} description extracted ({} bytes)", label, bytes.len());
+            Some(bytes)
         }
     }
 
@@ -1138,23 +1149,41 @@ impl H264Encoder {
         let mut packet = ffmpeg_next::Packet::empty();
         while self.encoder.receive_packet(&mut packet).is_ok() {
             if let Some(data) = packet.data() {
-                let annexb_data = data.to_vec();
-                let is_keyframe = packet.is_key();
-                let avcc_data = annexb_to_avcc(&annexb_data);
-                let avcc_description = if is_keyframe {
-                    extract_avcc_description(&annexb_data)
-                } else {
-                    None
-                };
-                frames.push(EncodedFrame {
-                    data: avcc_data,
-                    is_keyframe,
-                    pts: packet.pts().unwrap_or(0) as u64,
-                    avcc_description,
-                });
+                if let Some(frame) = self.build_encoded_frame(
+                    data.to_vec(),
+                    packet.is_key(),
+                    packet.pts().unwrap_or(0) as u64,
+                ) {
+                    frames.push(frame);
+                }
             }
         }
         frames
+    }
+
+    /// Codec-aware bitstream conversion + description extraction. Shared
+    /// between receive_one_packet and flush so both produce the right
+    /// EncodedFrame shape per codec.
+    fn build_encoded_frame(&self, raw_data: Vec<u8>, is_keyframe: bool, pts: u64) -> Option<EncodedFrame> {
+        use crate::media::caps::CodecKind;
+        let (data, description) = match self.codec {
+            CodecKind::H264Hw | CodecKind::H264Sw => {
+                let avcc_data = annexb_to_avcc(&raw_data);
+                let desc = if is_keyframe { extract_avcc_description(&raw_data) } else { None };
+                (avcc_data, desc)
+            }
+            CodecKind::H265 => {
+                let hvcc_data = annexb_to_avcc(&raw_data);
+                let desc = if is_keyframe { self.read_extradata_for_description("hvcC") } else { None };
+                (hvcc_data, desc)
+            }
+            CodecKind::Av1 => {
+                let desc = if is_keyframe { self.read_extradata_for_description("av1C") } else { None };
+                (raw_data, desc)
+            }
+            CodecKind::Unknown => return None,
+        };
+        Some(EncodedFrame { data, is_keyframe, pts, avcc_description: description })
     }
 }
 
