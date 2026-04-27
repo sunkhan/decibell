@@ -71,7 +71,9 @@ public:
     std::shared_ptr<Session> find_session_by_token(const std::string& token, const std::string& jwt_secret);
 
     // Screen Sharing
-    void start_stream(std::shared_ptr<Session> session, const std::string& channel_id, bool has_audio);
+    void start_stream(std::shared_ptr<Session> session, const std::string& channel_id,
+                      bool has_audio, uint32_t fps, uint32_t width, uint32_t height,
+                      chatproj::VideoCodec chosen_codec, chatproj::VideoCodec enforced_codec);
     void stop_stream(std::shared_ptr<Session> session, const std::string& channel_id);
     void broadcast_stream_presence(const std::string& channel_id);
 
@@ -129,7 +131,19 @@ private:
     std::unordered_map<std::string, std::set<std::shared_ptr<Session>>> voice_channels_;
     
     // channel_id -> map of username -> stream info
-    struct StreamInfo { bool has_audio; };
+    struct StreamInfo {
+        bool has_audio;
+        // Codec/resolution/fps tracked here so STREAM_PRESENCE_UPDATE can
+        // broadcast them to all viewers (drives the codec/lock badge and
+        // the grayed-out watch button on the viewer side). Populated from
+        // StartStreamRequest and updated mid-stream by STREAM_CODEC_CHANGED_NOTIFY
+        // (Plan C). Defaults match legacy clients pre-negotiation.
+        uint32_t fps = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        chatproj::VideoCodec current_codec = chatproj::CODEC_H264_HW;
+        chatproj::VideoCodec enforced_codec = chatproj::CODEC_UNKNOWN;
+    };
     std::unordered_map<std::string, std::unordered_map<std::string, StreamInfo>> active_streams_;
 
     // channel_id -> streamer_username -> set of watcher sessions
@@ -204,6 +218,19 @@ public:
     std::string get_token() const { return token_; }
     std::string get_udp_key() const { return udp_key_; }
     bool is_authenticated() const { return authenticated_; }
+
+    // Codec capabilities advertised by this client. Populated from
+    // JoinVoiceRequest.capabilities and updated mid-session by
+    // UPDATE_CAPABILITIES_REQ. Read-only access for SessionManager when
+    // building VoicePresenceUpdate.user_capabilities.
+    void set_capabilities(const chatproj::ClientCapabilities& caps) {
+        std::lock_guard<std::mutex> lock(capabilities_mutex_);
+        capabilities_ = caps;
+    }
+    chatproj::ClientCapabilities get_capabilities() const {
+        std::lock_guard<std::mutex> lock(capabilities_mutex_);
+        return capabilities_;
+    }
 
     // Forcibly close the underlying TCP socket. Any in-flight reads/writes
     // will error out, which triggers SessionManager::leave via the normal
@@ -398,10 +425,27 @@ private:
 
         // --- JOIN VOICE CHANNEL ---
         if (packet.type() == chatproj::Packet::JOIN_VOICE_REQ) {
-            std::string target_channel = packet.join_voice_req().channel_id();
+            const auto& jvr = packet.join_voice_req();
+            std::string target_channel = jvr.channel_id();
+            // Capture client capabilities (Plan A Group 7). Empty when sent
+            // by a legacy client; treated downstream as "H.264 only".
+            if (jvr.has_capabilities()) {
+                set_capabilities(jvr.capabilities());
+            }
             manager_.join_voice_channel(shared_from_this(), target_channel, current_voice_channel_);
             current_voice_channel_ = target_channel;
             std::cout << "[Community] " << username_ << " joined voice channel " << target_channel << "\n";
+        }
+
+        // --- UPDATE CAPABILITIES (mid-session caps refresh — spec §4.6) ---
+        else if (packet.type() == chatproj::Packet::UPDATE_CAPABILITIES_REQ) {
+            const auto& req = packet.update_capabilities_req();
+            if (req.has_capabilities()) {
+                set_capabilities(req.capabilities());
+                if (!current_voice_channel_.empty()) {
+                    manager_.broadcast_voice_presence(current_voice_channel_);
+                }
+            }
         }
 
         // --- LEAVE VOICE CHANNEL ---
@@ -417,7 +461,18 @@ private:
         // --- START STREAM ---
         else if (packet.type() == chatproj::Packet::START_STREAM_REQ) {
             const auto& req = packet.start_stream_req();
-            manager_.start_stream(shared_from_this(), req.channel_id(), req.has_audio());
+            // Codec defaults: legacy clients (pre-negotiation) leave both
+            // chosen_codec and enforced_codec as CODEC_UNKNOWN. Treat
+            // chosen_codec=UNKNOWN as H264_HW (the only codec they ever sent)
+            // so existing viewers' badges show something sensible. enforced
+            // stays UNKNOWN — no enforcement.
+            chatproj::VideoCodec chosen = req.chosen_codec();
+            if (chosen == chatproj::CODEC_UNKNOWN) chosen = chatproj::CODEC_H264_HW;
+            manager_.start_stream(
+                shared_from_this(), req.channel_id(), req.has_audio(),
+                static_cast<uint32_t>(req.target_fps()),
+                req.resolution_width(), req.resolution_height(),
+                chosen, req.enforced_codec());
             std::cout << "[Community] " << username_ << " started screen share in " << req.channel_id() << "\n";
         }
 
@@ -1022,6 +1077,8 @@ private:
     bool is_deafened_ = false;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
     std::mutex write_mutex_;
+    chatproj::ClientCapabilities capabilities_;
+    mutable std::mutex capabilities_mutex_;
 };
 
 // Implementations of SessionManager methods
@@ -1075,7 +1132,9 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
     }
 }
 
-void SessionManager::start_stream(std::shared_ptr<Session> session, const std::string& channel_id, bool has_audio) {
+void SessionManager::start_stream(std::shared_ptr<Session> session, const std::string& channel_id,
+                                  bool has_audio, uint32_t fps, uint32_t width, uint32_t height,
+                                  chatproj::VideoCodec chosen_codec, chatproj::VideoCodec enforced_codec) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         // Enforce stream limit (0 = unlimited)
@@ -1083,7 +1142,14 @@ void SessionManager::start_stream(std::shared_ptr<Session> session, const std::s
             std::cout << "[Community] Stream limit reached in " << channel_id << ", rejecting " << session->get_username() << "\n";
             return;
         }
-        active_streams_[channel_id][session->get_username()] = { has_audio };
+        StreamInfo info;
+        info.has_audio = has_audio;
+        info.fps = fps;
+        info.width = width;
+        info.height = height;
+        info.current_codec = chosen_codec;
+        info.enforced_codec = enforced_codec;
+        active_streams_[channel_id][session->get_username()] = info;
     }
     broadcast_stream_presence(channel_id);
 }
@@ -1126,6 +1192,13 @@ void SessionManager::broadcast_stream_presence(const std::string& channel_id) {
                 info->set_stream_id(pair.first + "_screen");
                 info->set_owner_username(pair.first);
                 info->set_has_audio(pair.second.has_audio);
+                // Plan A Group 7: ship live codec/resolution/fps so viewers
+                // can drive the codec badge and watch-button gating.
+                info->set_resolution_width(pair.second.width);
+                info->set_resolution_height(pair.second.height);
+                info->set_fps(pair.second.fps);
+                info->set_current_codec(pair.second.current_codec);
+                info->set_enforced_codec(pair.second.enforced_codec);
             }
         }
         packet.SerializeToString(&serialized);
@@ -1535,6 +1608,10 @@ void SessionManager::broadcast_voice_presence(const std::string& channel_id) {
                 state->set_username(session->get_username());
                 state->set_is_muted(session->is_muted());
                 state->set_is_deafened(session->is_deafened());
+                // Parallel array: user_capabilities[i] belongs to active_users[i].
+                // Plan A Group 7: ship per-user caps so peers can drive the
+                // LCD picker, watch-button gating, and codec badge locally.
+                *update->add_user_capabilities() = session->get_capabilities();
             }
         }
 
@@ -1570,6 +1647,7 @@ void SessionManager::send_initial_voice_presences(std::shared_ptr<Session> sessi
             state->set_username(s->get_username());
             state->set_is_muted(s->is_muted());
             state->set_is_deafened(s->is_deafened());
+            *update->add_user_capabilities() = s->get_capabilities();
         }
 
         std::string serialized;
@@ -1599,6 +1677,11 @@ void SessionManager::send_initial_voice_presences(std::shared_ptr<Session> sessi
             info->set_stream_id(stream.first + "_screen");
             info->set_owner_username(stream.first);
             info->set_has_audio(stream.second.has_audio);
+            info->set_resolution_width(stream.second.width);
+            info->set_resolution_height(stream.second.height);
+            info->set_fps(stream.second.fps);
+            info->set_current_codec(stream.second.current_codec);
+            info->set_enforced_codec(stream.second.enforced_codec);
         }
 
         std::string serialized;
