@@ -12,7 +12,11 @@ pub const PACKET_TYPE_FEC: u8 = 4;
 
 pub const FEC_GROUP_SIZE: u16 = 5;
 
-pub const CODEC_H264: u8 = 1;
+pub const CODEC_UNKNOWN: u8 = 0;
+pub const CODEC_H264_HW: u8 = 1;
+pub const CODEC_H264_SW: u8 = 2;
+pub const CODEC_H265: u8 = 3;
+pub const CODEC_AV1: u8 = 4;
 
 #[repr(C, packed)]
 #[derive(Clone)]
@@ -93,7 +97,7 @@ impl UdpVideoPacket {
             total_packets,
             payload_size: data_len as u16,
             is_keyframe,
-            codec: CODEC_H264,
+            codec: CODEC_H264_HW,
             payload,
         }
     }
@@ -288,7 +292,7 @@ mod tests {
         assert_eq!(pidx, 0);
         assert_eq!(total, 3);
         assert!(kf);
-        assert_eq!(codec, CODEC_H264);
+        assert_eq!(codec, CODEC_H264_HW);
         assert_eq!(psize, data.len() as u16);
         assert_eq!(decoded.payload_data(), data);
         assert_eq!(decoded.sender_username(), "testuser");
