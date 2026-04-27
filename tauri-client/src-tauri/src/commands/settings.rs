@@ -358,3 +358,107 @@ pub async fn stop_mic_test(
     s.mic_test_stop = None;
     Ok(())
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Codec capability commands (Plan A Group 5)
+// ──────────────────────────────────────────────────────────────────────
+
+use crate::media::caps::{self, CodecCap, CodecKind};
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CapsResponse {
+    pub encode: Vec<CodecCap>,
+    pub decode: Vec<CodecCap>,
+}
+
+/// Returns the merged ClientCapabilities the next JoinVoiceRequest would
+/// send. React uses this to render the Codecs settings panel summary.
+///
+/// Lock discipline: snapshot the toggles + decoder caps under the AppState
+/// lock briefly, then run the (potentially-slow) probe outside the lock.
+#[tauri::command]
+pub async fn get_caps(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+) -> Result<CapsResponse, String> {
+    // Read toggles from persisted settings (no AppState lock needed).
+    let settings = config::load(&app)?.settings;
+    let use_av1 = settings.use_av1;
+    let use_h265 = settings.use_h265;
+
+    // Read decoder caps under the AppState lock, then drop the guard.
+    let decoder_caps = {
+        let s = state.lock().await;
+        s.decoder_caps.clone()
+    };
+
+    // Probe (cached) outside any lock — first call may take ~hundreds of ms.
+    let encode = caps::get_or_probe_encoders(&app);
+    let filtered_encode: Vec<CodecCap> = encode
+        .into_iter()
+        .filter(|c| match c.codec {
+            CodecKind::Av1 => use_av1,
+            CodecKind::H265 => use_h265,
+            _ => true,
+        })
+        .collect();
+
+    Ok(CapsResponse { encode: filtered_encode, decode: decoder_caps })
+}
+
+/// Re-runs the encoder probe (force, ignoring cache) and returns the new
+/// merged caps. Settings → "Refresh codec capabilities" button.
+#[tauri::command]
+pub async fn refresh_caps(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+) -> Result<CapsResponse, String> {
+    // Probe outside any lock.
+    caps::refresh_encoders(&app);
+    get_caps(app, state).await
+}
+
+/// React calls this at app boot (and again after a refresh) with the
+/// WebCodecs decoder probe result.
+#[tauri::command]
+pub async fn set_decoder_caps(
+    decoder_caps: Vec<CodecCap>,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let mut s = state.lock().await;
+    s.decoder_caps = decoder_caps;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct CodecSettingsPayload {
+    pub use_av1: bool,
+    pub use_h265: bool,
+}
+
+/// Read the codec preference toggles. Lives in AppSettings (config.json),
+/// not AppState — avoids a sync problem and keeps AppState lean.
+#[tauri::command]
+pub async fn get_codec_settings(
+    app: AppHandle,
+) -> Result<CodecSettingsPayload, String> {
+    let settings = config::load(&app)?.settings;
+    Ok(CodecSettingsPayload {
+        use_av1: settings.use_av1,
+        use_h265: settings.use_h265,
+    })
+}
+
+/// Write the codec preference toggles to disk. The next JoinVoiceRequest
+/// (or UpdateCapabilitiesRequest) will see the new values.
+#[tauri::command]
+pub async fn set_codec_settings(
+    settings: CodecSettingsPayload,
+    app: AppHandle,
+) -> Result<(), String> {
+    let mut current = config::load(&app)?.settings;
+    current.use_av1 = settings.use_av1;
+    current.use_h265 = settings.use_h265;
+    config::save(&app, None, &current)?;
+    Ok(())
+}

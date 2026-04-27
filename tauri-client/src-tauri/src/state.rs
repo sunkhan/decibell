@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
+use crate::media::caps::CodecCap;
 use crate::media::{VoiceEngine, VideoEngine, AudioStreamEngine};
 use crate::net::central::CentralClient;
 use crate::net::community::CommunityClient;
@@ -47,6 +48,12 @@ pub struct AppState {
     /// Range support for seeking. Set once at app init; 0 if startup
     /// failed (in which case media playback falls back to errors).
     pub local_media_port: u16,
+    /// WebCodecs decoder capabilities probed in the React layer and
+    /// shipped here via the `set_decoder_caps` command at app boot
+    /// (and again on Settings → Refresh). Empty until React calls in.
+    /// Encode caps live separately in caps.rs's static cache because
+    /// they don't change during a session unless explicitly refreshed.
+    pub decoder_caps: Vec<CodecCap>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;

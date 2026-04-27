@@ -65,7 +65,19 @@ pub struct AppSettings {
     pub media_video_volume: Option<f64>,
     #[serde(default)]
     pub media_video_muted: bool,
+
+    /// Codec preference toggles (spec §7.1). When false, that codec is
+    /// removed from the encode list before advertisement to peers, so
+    /// the streamer never auto-picks it. Both default true; the
+    /// Settings → Codecs panel grays the toggle out when the local
+    /// hardware does not support that codec at all.
+    #[serde(default = "default_true")]
+    pub use_av1: bool,
+    #[serde(default = "default_true")]
+    pub use_h265: bool,
 }
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Credentials {
