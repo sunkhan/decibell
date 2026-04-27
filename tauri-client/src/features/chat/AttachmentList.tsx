@@ -9,6 +9,7 @@ import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { useActiveVideoStore } from "../../stores/activeVideoStore";
 import { useActiveAudioStore } from "../../stores/activeAudioStore";
+import { useUiStore } from "../../stores/uiStore";
 import { useVideoCacheVersionStore } from "../../stores/videoCacheVersionStore";
 import { cacheVideo, getCachedVideo } from "./tempVideoCache";
 import { fetchThumbnail, getCachedThumbnail, pickSize } from "./attachmentThumbnailCache";
@@ -556,15 +557,12 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
     ? peekCachedAudio(channelId, attachment.id)?.lastTime ?? 0
     : 0;
   const time = isActive ? liveTime : cachedLastTime;
-  // Volume + mute are global to the persistent player — render the
-  // current values regardless of which attachment is active so the
-  // user's level always reflects reality. The volume cluster also
-  // operates on the global element, so any audio row's slider /
-  // mute / wheel can adjust the level as long as *some* audio is
-  // bound (`hasActiveAudio`).
-  const volume = useActiveAudioStore((s) => s.volume);
-  const muted = useActiveAudioStore((s) => s.muted);
-  const hasActiveAudio = useActiveAudioStore((s) => !!s.active);
+  // Volume + mute live in uiStore so any audio row's slider / mute /
+  // wheel can adjust the persisted level — even before the user has
+  // played anything. The persistent layer seeds new elements from
+  // these values and mirrors element changes back here.
+  const volume = useUiStore((s) => s.mediaAudioVolume);
+  const muted = useUiStore((s) => s.mediaAudioMuted);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -681,11 +679,11 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
     }
   };
 
-  // Drag-to-set volume on the slider track. Operates on the global
-  // persistent element, so any row's slider works as long as *some*
-  // audio is bound.
+  // Drag-to-set volume on the slider track. Routes through
+  // audioController, which writes to the live element when one is
+  // bound and falls back to uiStore + persist when not — so users
+  // can pre-tune the level before pressing play.
   const onVolumeMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!hasActiveAudio) return;
     const seek = (cx: number, track: HTMLElement) => {
       const r = track.getBoundingClientRect();
       const ratio = Math.max(0, Math.min(1, (cx - r.left) / r.width));
@@ -819,14 +817,12 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
         </span>
 
         {/* Volume cluster — speaker toggle + thin slider. Wheel over
-            the slider raises/lowers volume. Disabled (visually dim
-            and inert) until this audio is the active one, since the
-            persistent layer's volume only changes a live element. */}
+            the slider raises/lowers volume. Always interactive, even
+            before the first play, so users can pre-tune the level. */}
         <button
-          onClick={() => hasActiveAudio && audioToggleMute()}
-          disabled={!hasActiveAudio}
+          onClick={() => audioToggleMute()}
           title={muted ? "Unmute" : "Mute"}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary disabled:opacity-40"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
         >
           {muted || volume === 0 ? (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -845,7 +841,7 @@ function AudioPlayer({ attachment, serverId }: { attachment: Attachment; serverI
           ref={volumeBarRef}
           onMouseDown={onVolumeMouseDown}
           title="Volume"
-          className={`group relative flex h-3 w-16 shrink-0 items-center ${hasActiveAudio ? "cursor-pointer" : "cursor-default opacity-40"}`}
+          className="group relative flex h-3 w-16 shrink-0 cursor-pointer items-center"
         >
           <div className="pointer-events-none absolute inset-x-0 h-[3px] rounded-full bg-bg-lighter" />
           <div

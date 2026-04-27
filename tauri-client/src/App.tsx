@@ -83,6 +83,10 @@ export default function App() {
             upload_limit_bps: number;
             download_limit_bps: number;
             channel_cache_size: number;
+            media_audio_volume: number | null;
+            media_audio_muted: boolean;
+            media_video_volume: number | null;
+            media_video_muted: boolean;
           };
         }>("load_config");
 
@@ -115,6 +119,17 @@ export default function App() {
 
         // 0 means "no value persisted" — use the in-store default of 10.
         useUiStore.getState().setChannelCacheSize(settings.channel_cache_size || 10);
+
+        // Restore media-player volumes. null = never saved → keep store
+        // defaults (1.0 / false) instead of overwriting them with 0.
+        if (settings.media_audio_volume != null) {
+          useUiStore.getState().setMediaAudioVolume(settings.media_audio_volume);
+        }
+        useUiStore.getState().setMediaAudioMuted(settings.media_audio_muted);
+        if (settings.media_video_volume != null) {
+          useUiStore.getState().setMediaVideoVolume(settings.media_video_volume);
+        }
+        useUiStore.getState().setMediaVideoMuted(settings.media_video_muted);
 
         // Restore per-user volume and mute settings
         if (settings.user_volumes) {

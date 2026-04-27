@@ -1,7 +1,9 @@
 import { useEffect } from "react";
 import { useActiveAudioStore } from "../../stores/activeAudioStore";
 import { useChatStore } from "../../stores/chatStore";
+import { useUiStore } from "../../stores/uiStore";
 import { bindAudioElement } from "./audioController";
+import { saveSettings } from "../settings/saveSettings";
 import { getCachedAudio, updateCachedAudioState } from "./tempAudioCache";
 
 // App-level <audio> host. Survives Virtuoso row unmounts so audio
@@ -42,11 +44,12 @@ export default function PersistentAudioLayer() {
       ref={(el) => {
         bindAudioElement(el);
         if (el) {
-          // Seed the fresh element with the user's preserved volume +
-          // mute so swapping attachments doesn't reset their levels.
-          const s = useActiveAudioStore.getState();
-          el.volume = s.volume;
-          el.muted = s.muted;
+          // Seed the fresh element with the user's persisted volume +
+          // mute. Lives in uiStore so it survives restarts and tracks
+          // the same write path as every other persisted setting.
+          const s = useUiStore.getState();
+          el.volume = s.mediaAudioVolume;
+          el.muted = s.mediaAudioMuted;
         }
       }}
       src={active.src}
@@ -74,12 +77,20 @@ export default function PersistentAudioLayer() {
         }
       }}
       onDurationChange={(e) => setPlaybackState({ duration: e.currentTarget.duration || 0 })}
-      onVolumeChange={(e) =>
-        setPlaybackState({
-          volume: e.currentTarget.volume,
-          muted: e.currentTarget.muted,
-        })
-      }
+      onVolumeChange={(e) => {
+        // Mirror element → uiStore so any chat-side slider re-renders
+        // with the live value, and persist so the level survives
+        // restarts. Skip the save when nothing actually changed
+        // (the seeding write above fires this once on mount).
+        const ui = useUiStore.getState();
+        const v = e.currentTarget.volume;
+        const m = e.currentTarget.muted;
+        if (v !== ui.mediaAudioVolume || m !== ui.mediaAudioMuted) {
+          ui.setMediaAudioVolume(v);
+          ui.setMediaAudioMuted(m);
+          saveSettings();
+        }
+      }}
     />
   );
 }

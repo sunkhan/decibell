@@ -48,6 +48,18 @@ interface UiState {
   /// ones are evicted on the next channel switch.
   channelCacheSize: number;
   setChannelCacheSize: (value: number) => void;
+  // Persisted volume + mute state for the chat-attachment audio and video
+  // players. Lives here (not in active*Stores) so users can pre-adjust
+  // levels before pressing play, and so values survive restarts via
+  // saveSettings (same path as every other knob in this store).
+  mediaAudioVolume: number;
+  mediaAudioMuted: boolean;
+  mediaVideoVolume: number;
+  mediaVideoMuted: boolean;
+  setMediaAudioVolume: (value: number) => void;
+  setMediaAudioMuted: (value: boolean) => void;
+  setMediaVideoVolume: (value: number) => void;
+  setMediaVideoMuted: (value: boolean) => void;
   // File drag-and-drop state. Set by the Tauri drag-drop listener; read by
   // the chat input and channel sidebar to render droppable affordances.
   // `dragHoveredKey` tracks which specific drop target the cursor is over
@@ -107,6 +119,14 @@ export const useUiStore = create<UiState>((set) => ({
   setDownloadLimitBps: (value) => set({ downloadLimitBps: value }),
   channelCacheSize: 10,
   setChannelCacheSize: (value) => set({ channelCacheSize: value }),
+  mediaAudioVolume: 1,
+  mediaAudioMuted: false,
+  mediaVideoVolume: 1,
+  mediaVideoMuted: false,
+  setMediaAudioVolume: (value) => set({ mediaAudioVolume: Math.max(0, Math.min(1, value)) }),
+  setMediaAudioMuted: (value) => set({ mediaAudioMuted: value }),
+  setMediaVideoVolume: (value) => set({ mediaVideoVolume: Math.max(0, Math.min(1, value)) }),
+  setMediaVideoMuted: (value) => set({ mediaVideoMuted: value }),
   dragActive: false,
   dragHoveredKey: null,
   setDragActive: (value) => set({ dragActive: value }),

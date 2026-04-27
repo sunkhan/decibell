@@ -56,6 +56,15 @@ pub struct AppSettings {
     /// than evicting everything.
     #[serde(default)]
     pub channel_cache_size: u32,
+    /// Persisted volume (0.0–1.0) for the chat audio-attachment player.
+    /// None = never set; client falls back to 1.0.
+    pub media_audio_volume: Option<f64>,
+    #[serde(default)]
+    pub media_audio_muted: bool,
+    /// Persisted volume (0.0–1.0) for the chat video-attachment player.
+    pub media_video_volume: Option<f64>,
+    #[serde(default)]
+    pub media_video_muted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

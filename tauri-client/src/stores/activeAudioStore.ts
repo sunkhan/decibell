@@ -8,6 +8,10 @@ import { create } from "zustand";
 // state from here and sends commands via audioController; the actual
 // <audio> element lives in PersistentAudioLayer at the app level so
 // playback survives Virtuoso row unmounts when the user scrolls.
+//
+// Volume + mute are NOT stored here — they live in uiStore so they
+// can be tuned before any audio is bound and persist across restarts
+// alongside every other saved setting.
 
 export interface ActiveAudio {
   attachmentId: number;
@@ -27,13 +31,8 @@ interface State {
   playing: boolean;
   time: number;
   duration: number;
-  // Volume + mute mirror the element. Persisted across attachment
-  // swaps so the user's preferred level stays put when they play
-  // a different audio. Mute is independent of volume slider value.
-  volume: number;
-  muted: boolean;
   setActive: (a: ActiveAudio | null) => void;
-  setPlaybackState: (s: Partial<Pick<State, "playing" | "time" | "duration" | "volume" | "muted">>) => void;
+  setPlaybackState: (s: Partial<Pick<State, "playing" | "time" | "duration">>) => void;
 }
 
 export const useActiveAudioStore = create<State>((set) => ({
@@ -41,11 +40,8 @@ export const useActiveAudioStore = create<State>((set) => ({
   playing: false,
   time: 0,
   duration: 0,
-  volume: 1,
-  muted: false,
   // Reset playback state when active changes — old time/duration
   // values would briefly show on the new attachment otherwise.
-  // Volume + mute are intentionally preserved across swaps.
   setActive: (a) => set({ active: a, playing: false, time: 0, duration: 0 }),
   setPlaybackState: (s) => set(s),
 }));

@@ -2,8 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useActiveVideoStore } from "../../stores/activeVideoStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
+import { useUiStore } from "../../stores/uiStore";
 import { toast } from "../../stores/toastStore";
 import { pickSavePath } from "./filePicker";
+import { saveSettings } from "../settings/saveSettings";
 import { getCachedVideo, setVideoPoster, updateCachedVideoState } from "./tempVideoCache";
 
 // Single mounted-once <video> element that survives Virtuoso row
@@ -43,6 +45,11 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     if (!v) return;
     capturedVideoRef.current = v;
     v.crossOrigin = "anonymous";
+    // Seed volume + mute from the persisted level *before* setting
+    // src so the element never plays a frame at the wrong loudness.
+    const ui = useUiStore.getState();
+    v.volume = ui.mediaVideoVolume;
+    v.muted = ui.mediaVideoMuted;
     v.src = active.src;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -111,8 +118,11 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [muted, setMuted] = useState(false);
-  const [volume, setVolume] = useState(1);
+  // Volume + mute live in uiStore so they persist across restarts.
+  // We seed the element from these on mount and mirror element-side
+  // changes back via the volumechange listener below.
+  const muted = useUiStore((s) => s.mediaVideoMuted);
+  const volume = useUiStore((s) => s.mediaVideoVolume);
   const [scrubbing, setScrubbing] = useState(false);
   const [hover, setHover] = useState(false);
   const [fullscreen, setFullscreenState] = useState(false);
@@ -213,8 +223,15 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     };
     const onDur = () => setDuration(v.duration || 0);
     const onVolume = () => {
-      setMuted(v.muted);
-      setVolume(v.volume);
+      // Mirror element → uiStore + persist. Skip when nothing changed
+      // so the seeding-time volumechange doesn't trigger a redundant
+      // settings save on every fresh mount.
+      const ui = useUiStore.getState();
+      if (v.volume !== ui.mediaVideoVolume || v.muted !== ui.mediaVideoMuted) {
+        ui.setMediaVideoVolume(v.volume);
+        ui.setMediaVideoMuted(v.muted);
+        saveSettings();
+      }
     };
     v.addEventListener("play", onPlay);
     v.addEventListener("pause", onPause);
@@ -222,8 +239,6 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     v.addEventListener("loadedmetadata", onDur);
     v.addEventListener("durationchange", onDur);
     v.addEventListener("volumechange", onVolume);
-    setVolume(v.volume);
-    setMuted(v.muted);
     return () => {
       v.removeEventListener("play", onPlay);
       v.removeEventListener("pause", onPause);
