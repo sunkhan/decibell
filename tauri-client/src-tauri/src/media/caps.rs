@@ -161,6 +161,28 @@ pub fn refresh_encoders(app: &AppHandle) -> Vec<CodecCap> {
     probed
 }
 
+/// Build the proto ClientCapabilities message from current encoder probe
+/// (filtered by user toggles) + decoder caps held in state. Used by
+/// commands that send JoinVoiceRequest or UpdateCapabilitiesRequest.
+pub fn build_client_capabilities(
+    encoder_caps: &[CodecCap],
+    decoder_caps: &[CodecCap],
+) -> crate::net::proto::ClientCapabilities {
+    crate::net::proto::ClientCapabilities {
+        encode: encoder_caps.iter().map(cap_to_proto).collect(),
+        decode: decoder_caps.iter().map(cap_to_proto).collect(),
+    }
+}
+
+fn cap_to_proto(c: &CodecCap) -> crate::net::proto::CodecCapability {
+    crate::net::proto::CodecCapability {
+        codec: c.codec as i32,
+        max_width: c.max_width,
+        max_height: c.max_height,
+        max_fps: c.max_fps,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

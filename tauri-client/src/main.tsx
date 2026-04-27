@@ -1,7 +1,18 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
 import "./styles/globals.css";
+import { probeDecoders } from "./utils/decoderProbe";
+
+// Probe WebCodecs decoder capabilities at boot and ship them to Rust
+// so the next JoinVoiceRequest can advertise the merged caps to peers.
+// Cached in localStorage; user can refresh via Settings → Codecs.
+probeDecoders().then((decoderCaps) => {
+  invoke("set_decoder_caps", { decoderCaps }).catch((e) =>
+    console.warn("[caps] failed to ship decoder caps to Rust:", e)
+  );
+});
 
 // ── Disable browser-default context menu ─────────────────────────────────────
 // Allow right-click on text inputs/textareas (paste, etc.) but block everywhere

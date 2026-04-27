@@ -41,9 +41,31 @@ pub async fn join_voice_channel(
         Some(k) if k > 0 => k * 1000,
         _ => crate::media::codec::OpusEncoder::DEFAULT_BITRATE_BPS,
     };
+
+    // Build ClientCapabilities OUTSIDE the AppState lock — the encoder
+    // probe and config read can be slow on first call. (Plan A Group 6
+    // Task 12)
+    let codec_settings = crate::config::load(&app)?.settings;
+    let encoder_caps_all = crate::media::caps::get_or_probe_encoders(&app);
+    let filtered_encode: Vec<_> = encoder_caps_all
+        .into_iter()
+        .filter(|c| match c.codec {
+            crate::media::caps::CodecKind::Av1 => codec_settings.use_av1,
+            crate::media::caps::CodecKind::H265 => codec_settings.use_h265,
+            _ => true,
+        })
+        .collect();
+
     // Take old engines and collect packets under the lock, then release
     let (old_audio_stream, old_video, old_voice, leave_sends, join_tx, join_data, state_sends, is_muted, is_deafened) = {
         let mut s = state.lock().await;
+
+        // Decoder caps live on AppState — read inside the lock. Cheap clone.
+        let decoder_caps = s.decoder_caps.clone();
+        let capabilities = Some(crate::media::caps::build_client_capabilities(
+            &filtered_encode,
+            &decoder_caps,
+        ));
 
         let mut leave_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
         let old_audio_stream = s.audio_stream_engine.take();
@@ -72,7 +94,7 @@ pub async fn join_voice_channel(
             packet::Type::JoinVoiceReq,
             packet::Payload::JoinVoiceReq(JoinVoiceRequest {
                 channel_id: channel_id.clone().into(),
-                capabilities: None, // populated in Plan A Group 6 Task 12
+                capabilities,
             }),
             Some(&client.jwt),
         );

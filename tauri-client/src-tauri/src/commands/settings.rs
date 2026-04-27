@@ -364,6 +364,8 @@ pub async fn stop_mic_test(
 // ──────────────────────────────────────────────────────────────────────
 
 use crate::media::caps::{self, CodecCap, CodecKind};
+use crate::net::connection::build_packet;
+use crate::net::proto::{packet, UpdateCapabilitiesRequest};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CapsResponse {
@@ -408,14 +410,18 @@ pub async fn get_caps(
 
 /// Re-runs the encoder probe (force, ignoring cache) and returns the new
 /// merged caps. Settings → "Refresh codec capabilities" button.
+///
+/// Also broadcasts UpdateCapabilitiesRequest to every connected community
+/// server so peers see the new caps without a leave/rejoin (spec §4.6).
 #[tauri::command]
 pub async fn refresh_caps(
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<CapsResponse, String> {
-    // Probe outside any lock.
     caps::refresh_encoders(&app);
-    get_caps(app, state).await
+    let resp = get_caps(app.clone(), state.clone()).await?;
+    broadcast_update_capabilities(&state, &resp).await;
+    Ok(resp)
 }
 
 /// React calls this at app boot (and again after a refresh) with the
@@ -449,16 +455,57 @@ pub async fn get_codec_settings(
     })
 }
 
-/// Write the codec preference toggles to disk. The next JoinVoiceRequest
-/// (or UpdateCapabilitiesRequest) will see the new values.
+/// Write the codec preference toggles to disk and push the new caps to
+/// every connected community server (spec §4.6).
 #[tauri::command]
 pub async fn set_codec_settings(
     settings: CodecSettingsPayload,
     app: AppHandle,
+    state: State<'_, SharedState>,
 ) -> Result<(), String> {
     let mut current = config::load(&app)?.settings;
     current.use_av1 = settings.use_av1;
     current.use_h265 = settings.use_h265;
     config::save(&app, None, &current)?;
+
+    // Build new caps with the toggles applied and broadcast.
+    let resp = get_caps(app, state.clone()).await?;
+    broadcast_update_capabilities(&state, &resp).await;
     Ok(())
+}
+
+/// Send UpdateCapabilitiesRequest to every connected community server.
+/// Used by refresh_caps and set_codec_settings.
+///
+/// Lock discipline: snapshot (write_tx, jwt) per community under the
+/// AppState lock, drop the lock, then send packets outside the lock.
+async fn broadcast_update_capabilities(
+    state: &State<'_, SharedState>,
+    caps_resp: &CapsResponse,
+) {
+    let proto_caps = caps::build_client_capabilities(&caps_resp.encode, &caps_resp.decode);
+    let payload = packet::Payload::UpdateCapabilitiesReq(UpdateCapabilitiesRequest {
+        capabilities: Some(proto_caps),
+    });
+
+    let sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = {
+        let s = state.lock().await;
+        s.communities
+            .values()
+            .filter_map(|c| {
+                c.connection_write_tx().map(|tx| {
+                    let data = build_packet(
+                        packet::Type::UpdateCapabilitiesReq,
+                        payload.clone(),
+                        Some(&c.jwt),
+                    );
+                    (tx, data)
+                })
+            })
+            .collect()
+    };
+
+    for (tx, data) in sends {
+        let _ = tx.send(data).await;
+    }
 }
