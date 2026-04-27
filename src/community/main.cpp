@@ -80,6 +80,23 @@ public:
     // Watcher tracking
     void add_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
     void remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
+    // Plan C: tell the streamer that a watcher just joined or left their stream.
+    // Drives the streamer's CodecSelector (LCD picker + debounce/cooldown).
+    void notify_streamer_of_watcher(const std::string& channel_id,
+                                    const std::string& streamer_username,
+                                    const std::string& watcher_username,
+                                    chatproj::StreamWatcherNotify::Action action);
+    // Plan C: returns true if the stream has enforced_codec set AND the
+    // candidate watcher's caps don't include that codec. Defensive — UI
+    // should already gray out the watch button.
+    bool watcher_blocked_by_enforcement(const std::string& channel_id,
+                                        const std::string& streamer_username,
+                                        std::shared_ptr<Session> watcher);
+    // Plan C: streamer announces a mid-stream codec change. Validate
+    // ownership, update registry, rebroadcast presence + forward notify
+    // for toast text.
+    void handle_stream_codec_changed(const chatproj::Packet& packet,
+                                     const std::string& sender_username);
     void broadcast_to_watchers(const char* data, size_t length, const std::string& channel_id, const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket);
     void set_udp_socket(boost::asio::ip::udp::socket* sock) { udp_socket_ptr_ = sock; }
     void set_media_udp_socket(boost::asio::ip::udp::socket* sock) { media_udp_socket_ptr_ = sock; }
@@ -486,10 +503,23 @@ private:
         // --- WATCH STREAM ---
         else if (packet.type() == chatproj::Packet::WATCH_STREAM_REQ) {
             const auto& req = packet.watch_stream_req();
-            manager_.add_watcher(shared_from_this(), req.channel_id(), req.target_username());
-            std::cout << "[Community] " << username_ << " watching " << req.target_username() << "'s stream in " << req.channel_id() << "\n";
-            // Send PLI to streamer so new watcher gets a keyframe
-            manager_.relay_keyframe_request_internal(req.target_username());
+            // Plan C: defensive — drop the request if the stream is
+            // codec-locked and the watcher can't decode that codec.
+            if (manager_.watcher_blocked_by_enforcement(
+                    req.channel_id(), req.target_username(), shared_from_this())) {
+                std::cout << "[Community] dropped WATCH_STREAM_REQ from " << username_
+                          << " (can't decode enforced codec on " << req.target_username()
+                          << "'s stream)\n";
+            } else {
+                manager_.add_watcher(shared_from_this(), req.channel_id(), req.target_username());
+                std::cout << "[Community] " << username_ << " watching " << req.target_username() << "'s stream in " << req.channel_id() << "\n";
+                // Plan C: notify streamer for LCD recompute.
+                manager_.notify_streamer_of_watcher(
+                    req.channel_id(), req.target_username(), username_,
+                    chatproj::StreamWatcherNotify::JOINED);
+                // Send PLI to streamer so new watcher gets a keyframe
+                manager_.relay_keyframe_request_internal(req.target_username());
+            }
         }
 
         // --- STOP WATCHING STREAM ---
@@ -497,6 +527,15 @@ private:
             const auto& req = packet.stop_watching_req();
             manager_.remove_watcher(shared_from_this(), req.channel_id(), req.target_username());
             std::cout << "[Community] " << username_ << " stopped watching " << req.target_username() << "'s stream\n";
+            // Plan C: notify streamer so cooldown timer can start.
+            manager_.notify_streamer_of_watcher(
+                req.channel_id(), req.target_username(), username_,
+                chatproj::StreamWatcherNotify::LEFT);
+        }
+
+        // --- STREAM CODEC CHANGED (Plan C) ---
+        else if (packet.type() == chatproj::Packet::STREAM_CODEC_CHANGED_NOTIFY) {
+            manager_.handle_stream_codec_changed(packet, username_);
         }
 
         // --- STREAM THUMBNAIL UPDATE ---
@@ -1240,6 +1279,9 @@ void SessionManager::join_voice_channel(std::shared_ptr<Session> session, const 
 }
 
 void SessionManager::leave_voice_channel(std::shared_ptr<Session> session, const std::string& current_channel) {
+    // Plan C: collect (channel, streamer) pairs we need to notify AFTER
+    // releasing the lock — notify_streamer_of_watcher takes its own lock.
+    std::vector<std::string> streamers_to_notify;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!current_channel.empty()) {
@@ -1248,13 +1290,20 @@ void SessionManager::leave_voice_channel(std::shared_ptr<Session> session, const
             auto ch_it = stream_watchers_.find(current_channel);
             if (ch_it != stream_watchers_.end()) {
                 for (auto& [streamer, watchers] : ch_it->second) {
-                    watchers.erase(session);
+                    if (watchers.erase(session) > 0) {
+                        streamers_to_notify.push_back(streamer);
+                    }
                 }
             }
         }
     }
     if (!current_channel.empty()) {
         broadcast_voice_presence(current_channel);
+        // Plan C: tell each streamer the watcher left (drives cooldown).
+        for (const auto& streamer : streamers_to_notify) {
+            notify_streamer_of_watcher(current_channel, streamer, session->get_username(),
+                                       chatproj::StreamWatcherNotify::LEFT);
+        }
     }
 }
 
@@ -1543,6 +1592,83 @@ void SessionManager::relay_nack(const char* data, size_t length, const std::stri
 void SessionManager::add_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username) {
     std::lock_guard<std::mutex> lock(mutex_);
     stream_watchers_[channel_id][streamer_username].insert(watcher);
+}
+
+bool SessionManager::watcher_blocked_by_enforcement(
+    const std::string& channel_id,
+    const std::string& streamer_username,
+    std::shared_ptr<Session> watcher) {
+    chatproj::VideoCodec enforced;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto ch_it = active_streams_.find(channel_id);
+        if (ch_it == active_streams_.end()) return false;
+        auto st_it = ch_it->second.find(streamer_username);
+        if (st_it == ch_it->second.end()) return false;
+        enforced = st_it->second.enforced_codec;
+    }
+    if (enforced == chatproj::CODEC_UNKNOWN) return false;
+    auto caps = watcher->get_capabilities();
+    for (const auto& dec : caps.decode()) {
+        if (dec.codec() == enforced) return false;
+    }
+    return true;
+}
+
+void SessionManager::notify_streamer_of_watcher(
+    const std::string& channel_id,
+    const std::string& streamer_username,
+    const std::string& watcher_username,
+    chatproj::StreamWatcherNotify::Action action) {
+    auto streamer = find_session_by_username(streamer_username);
+    if (!streamer) return; // streamer offline / not connected
+
+    chatproj::Packet pkt;
+    pkt.set_type(chatproj::Packet::STREAM_WATCHER_NOTIFY);
+    pkt.set_timestamp(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    auto* notify = pkt.mutable_stream_watcher_notify();
+    notify->set_channel_id(channel_id);
+    notify->set_streamer_username(streamer_username);
+    notify->set_watcher_username(watcher_username);
+    notify->set_action(action);
+
+    std::string serialized;
+    pkt.SerializeToString(&serialized);
+    uint32_t length = htonl(static_cast<uint32_t>(serialized.size()));
+    auto framed = std::make_shared<std::vector<uint8_t>>();
+    framed->resize(4 + serialized.size());
+    std::memcpy(framed->data(), &length, 4);
+    std::memcpy(framed->data() + 4, serialized.data(), serialized.size());
+    streamer->deliver(framed);
+}
+
+void SessionManager::handle_stream_codec_changed(
+    const chatproj::Packet& packet,
+    const std::string& sender_username) {
+    if (!packet.has_stream_codec_changed_notify()) return;
+    const auto& notify = packet.stream_codec_changed_notify();
+    // Validate sender owns the stream — otherwise drop.
+    if (notify.streamer_username() != sender_username) {
+        std::cout << "[Community] STREAM_CODEC_CHANGED_NOTIFY from non-owner ignored ("
+                  << sender_username << " vs " << notify.streamer_username() << ")\n";
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto ch_it = active_streams_.find(notify.channel_id());
+        if (ch_it == active_streams_.end()) return;
+        auto st_it = ch_it->second.find(sender_username);
+        if (st_it == ch_it->second.end()) return;
+        st_it->second.current_codec = notify.new_codec();
+        st_it->second.width = notify.new_width();
+        st_it->second.height = notify.new_height();
+        st_it->second.fps = notify.new_fps();
+    }
+    // Rebroadcast presence so all viewers' badges update.
+    broadcast_stream_presence(notify.channel_id());
+    // Forward the original notify so viewers get the toast text + reason.
+    broadcast_to_voice_channel_tcp(packet, notify.channel_id());
 }
 
 void SessionManager::remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username) {
