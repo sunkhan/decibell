@@ -701,6 +701,21 @@ impl CommunityClient {
                         update.thumbnail_data,
                     );
                 }
+                // Plan C: server forwarded a stream's codec change. Emit a
+                // Tauri event so React can show the toast + update the badge.
+                // (Badge is also driven by the rebroadcast STREAM_PRESENCE_UPDATE
+                // that the server sends alongside the notify.)
+                Some(packet::Payload::StreamCodecChangedNotify(notify)) => {
+                    events::emit_stream_codec_changed(&app, events::StreamCodecChangedPayload {
+                        channel_id: notify.channel_id,
+                        streamer_username: notify.streamer_username,
+                        new_codec: notify.new_codec,
+                        new_width: notify.new_width,
+                        new_height: notify.new_height,
+                        new_fps: notify.new_fps,
+                        reason: notify.reason,
+                    });
+                }
                 // Plan C: server tells us a watcher (un)subscribed to OUR stream.
                 // Broadcast to whatever video pipeline is currently running.
                 Some(packet::Payload::StreamWatcherNotify(notify)) => {

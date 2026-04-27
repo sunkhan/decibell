@@ -183,6 +183,38 @@ export function useVoiceEvents() {
       }
     ));
 
+    // Plan C: codec change toast — fires whenever the streamer renegotiates.
+    promises.push(listen<{
+      channelId: string;
+      streamerUsername: string;
+      newCodec: number;
+      newWidth: number;
+      newHeight: number;
+      newFps: number;
+      reason: number;
+    }>("stream_codec_changed", async (event) => {
+      const { buildCodecToast } = await import("../../utils/codecToasts");
+      const { useToastStore } = await import("../../stores/toastStore");
+      const isLocalUserStreamer = event.payload.streamerUsername === username;
+      const toast = buildCodecToast({
+        channelId: event.payload.channelId,
+        streamerUsername: event.payload.streamerUsername,
+        newCodec: event.payload.newCodec as import("../../types").VideoCodec,
+        newWidth: event.payload.newWidth,
+        newHeight: event.payload.newHeight,
+        newFps: event.payload.newFps,
+        reason: event.payload.reason as import("../../types").StreamCodecChangeReason,
+      }, isLocalUserStreamer);
+      if (toast) {
+        useToastStore.getState().push({
+          severity: "info",
+          title: "Stream codec changed",
+          body: toast.text,
+          duration: 4000,
+        });
+      }
+    }));
+
     return () => {
       for (const p of promises) {
         p.then((fn) => fn());

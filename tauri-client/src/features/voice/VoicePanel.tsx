@@ -8,6 +8,9 @@ import { stringToGradient } from "../../utils/colors";
 import StreamViewPanel from "./StreamViewPanel";
 import StreamVideoPlayer from "./StreamVideoPlayer";
 import CaptureSourcePicker from "./CaptureSourcePicker";
+import { CodecBadge } from "./CodecBadge";
+import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
+import { canWatchStream } from "../../utils/canWatchStream";
 import { useStreamThumbnails } from "./useStreamThumbnails";
 
 const EMPTY_CHANNELS: never[] = [];
@@ -194,18 +197,37 @@ export default function VoicePanel() {
                 {activeStreams.map((stream) => {
                   const isWatching = watchingStreams.includes(stream.ownerUsername);
                   const thumbnail = streamThumbnails[stream.ownerUsername];
+                  const decodeCaps = useCodecSettingsStore.getState().decodeCaps;
+                  // Plan C: own streams are always "watchable" by self; only
+                  // gate other people's streams against our local decode caps.
+                  const isOwnStream = stream.ownerUsername === ownUsername;
+                  const { canWatch, reason } = isOwnStream
+                    ? { canWatch: true, reason: undefined }
+                    : canWatchStream(stream, decodeCaps);
                   return (
                     <button
                       key={stream.streamId}
-                      onClick={() => handleWatchStream(stream.ownerUsername)}
+                      disabled={!canWatch}
+                      title={reason}
+                      onClick={() => canWatch && handleWatchStream(stream.ownerUsername)}
                       className={`group relative overflow-hidden rounded-xl border transition-all hover:shadow-lg hover:shadow-accent/5 ${
-                        isWatching
+                        !canWatch
+                          ? "cursor-not-allowed border-border opacity-50"
+                          : isWatching
                           ? "border-accent/60 ring-1 ring-accent/30"
                           : "border-border bg-bg-primary hover:border-accent/50"
                       }`}
                     >
                       {/* Stream preview: live video if watching, thumbnail otherwise */}
                       <div className="relative aspect-video w-full bg-bg-secondary">
+                        <CodecBadge
+                          codec={stream.currentCodec}
+                          width={stream.resolutionWidth}
+                          height={stream.resolutionHeight}
+                          fps={stream.fps}
+                          enforced={stream.enforcedCodec !== 0}
+                          size="small"
+                        />
                         {isWatching ? (
                           <StreamVideoPlayer
                             streamerUsername={stream.ownerUsername}

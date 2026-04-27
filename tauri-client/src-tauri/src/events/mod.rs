@@ -488,6 +488,29 @@ pub fn emit_voice_state_changed(app: &AppHandle, is_muted: bool, is_deafened: bo
 
 pub const STREAM_PRESENCE_UPDATED: &str = "stream_presence_updated";
 
+// Plan C: codec swap event forwarded from server. Drives the toast
+// notification in React.
+pub const STREAM_CODEC_CHANGED: &str = "stream_codec_changed";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamCodecChangedPayload {
+    pub channel_id: String,
+    pub streamer_username: String,
+    pub new_codec: i32,
+    pub new_width: u32,
+    pub new_height: u32,
+    pub new_fps: u32,
+    pub reason: i32,
+}
+
+pub fn emit_stream_codec_changed(
+    app: &AppHandle,
+    payload: StreamCodecChangedPayload,
+) {
+    let _ = app.emit(STREAM_CODEC_CHANGED, payload);
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamInfoPayload {
