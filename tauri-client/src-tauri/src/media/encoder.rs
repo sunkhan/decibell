@@ -261,6 +261,30 @@ impl H264Encoder {
         context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
         context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
         context.set_gop(config.fps * config.keyframe_interval_secs);
+
+        // For HEVC and AV1 we read the codec-config record (hvcC / av1C) from
+        // FFmpeg's `extradata` post-open. Without AV_CODEC_FLAG_GLOBAL_HEADER,
+        // NVENC (etc.) embeds VPS/SPS/PPS inline in each keyframe and leaves
+        // extradata empty — the build_encoded_frame path then fails to ship
+        // a description and WebCodecs can't configure the decoder.
+        // For H.264 we keep the bitstream-parse path (extract_avcc_description
+        // from the annex-B SPS/PPS NALs in keyframes), so we do NOT enable
+        // global headers there — flipping that flag would remove the inline
+        // SPS/PPS and break the existing parser.
+        match target_codec {
+            crate::media::caps::CodecKind::H265 | crate::media::caps::CodecKind::Av1 => {
+                // ffmpeg-next exposes the flag value via the sys crate; raw OR
+                // is the safest path that preserves whatever else FFmpeg may
+                // have set on the context already.
+                const AV_CODEC_FLAG_GLOBAL_HEADER: i32 = 1 << 22;
+                unsafe {
+                    let p = context.as_mut_ptr();
+                    (*p).flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+                }
+            }
+            _ => {}
+        }
+
         // Disable B-frames for real-time streaming — B-frames require reordering
         // which adds latency and can cause artifacts with simple decoders.
         context.set_max_b_frames(0);
