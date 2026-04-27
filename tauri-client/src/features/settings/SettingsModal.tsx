@@ -4,6 +4,7 @@ import AccountTab from "./tabs/AccountTab";
 import PrivacyTab from "./tabs/PrivacyTab";
 import AudioTab from "./tabs/AudioTab";
 import NetworkTab from "./tabs/NetworkTab";
+import CodecsTab from "./tabs/CodecsTab";
 import AboutTab from "./tabs/AboutTab";
 import { useEffect, useState, useCallback } from "react";
 
@@ -54,6 +55,18 @@ const TABS = [
       </svg>
     ),
     component: NetworkTab,
+  },
+  {
+    id: "codecs",
+    label: "Codecs",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="6" width="18" height="12" rx="2" />
+        <path d="M9 10l4 2-4 2z" fill="currentColor" stroke="none" />
+        <path d="M16 10v4" />
+      </svg>
+    ),
+    component: CodecsTab,
   },
   {
     id: "about",

@@ -429,11 +429,31 @@ pub struct VoiceUserStatePayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CodecCapabilityPayload {
+    pub codec: i32,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub max_fps: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientCapabilitiesPayload {
+    pub encode: Vec<CodecCapabilityPayload>,
+    pub decode: Vec<CodecCapabilityPayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VoicePresenceUpdatedPayload {
     pub server_id: String,
     pub channel_id: String,
     pub participants: Vec<String>,
     pub user_states: Vec<VoiceUserStatePayload>,
+    /// Parallel to participants — user_capabilities[i] belongs to
+    /// participants[i]. Drives JS-side LCD evaluation, watch-button
+    /// gating, and codec badge rendering.
+    pub user_capabilities: Vec<ClientCapabilitiesPayload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -449,10 +469,13 @@ pub fn emit_voice_presence_updated(
     channel_id: String,
     participants: Vec<String>,
     user_states: Vec<VoiceUserStatePayload>,
+    user_capabilities: Vec<ClientCapabilitiesPayload>,
 ) {
     let _ = app.emit(
         VOICE_PRESENCE_UPDATED,
-        VoicePresenceUpdatedPayload { server_id, channel_id, participants, user_states },
+        VoicePresenceUpdatedPayload {
+            server_id, channel_id, participants, user_states, user_capabilities,
+        },
     );
 }
 
@@ -474,6 +497,13 @@ pub struct StreamInfoPayload {
     pub resolution_width: u32,
     pub resolution_height: u32,
     pub fps: u32,
+    /// VideoCodec enum value — drives codec badge + per-packet decoder
+    /// reconfiguration awareness on the viewer side.
+    pub current_codec: i32,
+    /// VideoCodec.UNKNOWN (0) when not enforced. Drives lock icon on
+    /// the badge and grayed-out watch button when local client lacks
+    /// the codec in its decode caps.
+    pub enforced_codec: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

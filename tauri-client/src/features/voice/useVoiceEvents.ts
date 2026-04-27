@@ -28,12 +28,12 @@ export function useVoiceEvents() {
     const promises: Promise<() => void>[] = [];
     let prevParticipants: Set<string> | null = null;
 
-    promises.push(listen<{ serverId: string; channelId: string; participants: string[]; userStates: { username: string; isMuted: boolean; isDeafened: boolean }[] }>(
+    promises.push(listen<{ serverId: string; channelId: string; participants: string[]; userStates: { username: string; isMuted: boolean; isDeafened: boolean }[]; userCapabilities?: import("../../types").ClientCapabilities[] }>(
       "voice_presence_updated",
       (event) => {
-        const { channelId, participants, userStates } = event.payload;
+        const { channelId, participants, userStates, userCapabilities } = event.payload;
         // Always update per-channel presence map with user states
-        setChannelPresence(channelId, participants, userStates);
+        setChannelPresence(channelId, participants, userStates, userCapabilities);
 
         // Play join/leave sounds for other users in our connected channel
         const connectedId = useVoiceStore.getState().connectedChannelId;
@@ -146,9 +146,8 @@ export function useVoiceEvents() {
           resolutionWidth: s.resolutionWidth || 0,
           resolutionHeight: s.resolutionHeight || 0,
           fps: s.fps || 0,
-          // Default to UNKNOWN until server-side broadcast (Plan A Group 7)
-          // populates these fields. UNKNOWN is treated as "legacy / no
-          // negotiation info" by the badge and watch-button gating.
+          // Server now populates these (Plan A Group 7); fall back to
+          // UNKNOWN if the field is absent (older server build).
           currentCodec: (s.currentCodec ?? VideoCodec.UNKNOWN) as VideoCodec,
           enforcedCodec: (s.enforcedCodec ?? VideoCodec.UNKNOWN) as VideoCodec,
         }));

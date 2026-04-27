@@ -634,12 +634,31 @@ impl CommunityClient {
                             is_deafened: s.is_deafened,
                         })
                         .collect();
+                    let user_capabilities: Vec<events::ClientCapabilitiesPayload> = update
+                        .user_capabilities
+                        .into_iter()
+                        .map(|c| events::ClientCapabilitiesPayload {
+                            encode: c.encode.into_iter().map(|cc| events::CodecCapabilityPayload {
+                                codec: cc.codec,
+                                max_width: cc.max_width,
+                                max_height: cc.max_height,
+                                max_fps: cc.max_fps,
+                            }).collect(),
+                            decode: c.decode.into_iter().map(|cc| events::CodecCapabilityPayload {
+                                codec: cc.codec,
+                                max_width: cc.max_width,
+                                max_height: cc.max_height,
+                                max_fps: cc.max_fps,
+                            }).collect(),
+                        })
+                        .collect();
                     events::emit_voice_presence_updated(
                         &app,
                         server_id.clone(),
                         update.channel_id,
                         update.active_users,
                         user_states,
+                        user_capabilities,
                     );
                 }
                 Some(packet::Payload::StreamPresenceUpdate(update)) => {
@@ -654,6 +673,8 @@ impl CommunityClient {
                             resolution_width: s.resolution_width,
                             resolution_height: s.resolution_height,
                             fps: s.fps,
+                            current_codec: s.current_codec,
+                            enforced_codec: s.enforced_codec,
                         }).collect(),
                     );
                 }

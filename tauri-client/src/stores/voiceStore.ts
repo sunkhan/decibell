@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { VoiceParticipant, StreamInfo } from "../types";
+import type { VoiceParticipant, StreamInfo, ClientCapabilities, VideoCodec } from "../types";
 
 interface VoiceState {
   connectedServerId: string | null;
@@ -21,7 +21,20 @@ interface VoiceState {
   setSpeaking: (username: string, speaking: boolean) => void;
   setLatency: (ms: number) => void;
   setError: (error: string | null) => void;
-  setChannelPresence: (channelId: string, users: string[], userStates?: { username: string; isMuted: boolean; isDeafened: boolean }[]) => void;
+  setChannelPresence: (
+    channelId: string,
+    users: string[],
+    userStates?: { username: string; isMuted: boolean; isDeafened: boolean }[],
+    userCapabilities?: ClientCapabilities[],
+  ) => void;
+  /// Username → that user's advertised codec capabilities, populated
+  /// from VoicePresenceUpdate.user_capabilities. Drives JS-side LCD
+  /// evaluation for the streamer (Plan C) and watch-button gating.
+  userCapabilities: Record<string, ClientCapabilities>;
+  /// Local helper: does any user in voice have this codec in their decode caps?
+  /// Returns true when caps unknown, so the watch button is permissive
+  /// for legacy peers that haven't shipped capabilities yet.
+  canDecode: (username: string, codec: VideoCodec) => boolean;
   setUserState: (username: string, isMuted: boolean, isDeafened: boolean) => void;
   streamThumbnails: Record<string, string>;
   setStreamThumbnail: (username: string, dataUrl: string) => void;
@@ -90,7 +103,7 @@ export const useVoiceStore = create<VoiceState>((set) => ({
     })),
   setLatency: (ms) => set({ latencyMs: ms }),
   setError: (error) => set({ error }),
-  setChannelPresence: (channelId, users, userStates) =>
+  setChannelPresence: (channelId, users, userStates, userCapabilities) =>
     set((state) => {
       const stateMap: Record<string, { isMuted: boolean; isDeafened: boolean }> = {};
       if (userStates) {
@@ -98,11 +111,29 @@ export const useVoiceStore = create<VoiceState>((set) => ({
           stateMap[s.username] = { isMuted: s.isMuted, isDeafened: s.isDeafened };
         }
       }
+      // userCapabilities is parallel to users — userCapabilities[i] belongs
+      // to users[i]. Merge into the global username→caps map so other voice
+      // channels' members are not lost.
+      const newCaps = { ...state.userCapabilities };
+      if (userCapabilities && userCapabilities.length === users.length) {
+        users.forEach((u, i) => {
+          newCaps[u] = userCapabilities[i];
+        });
+      }
       return {
         channelPresence: { ...state.channelPresence, [channelId]: users },
         channelUserStates: { ...state.channelUserStates, [channelId]: stateMap },
+        userCapabilities: newCaps,
       };
     }),
+  userCapabilities: {},
+  canDecode: (username, codec) => {
+    // Unknown codec is always "decodable" (treat as legacy / no info).
+    if (codec === 0) return true;
+    const caps = (useVoiceStore.getState().userCapabilities as Record<string, ClientCapabilities>)[username];
+    if (!caps) return true; // legacy peer with no caps advertised
+    return caps.decode.some((c) => c.codec === codec);
+  },
   setUserState: (username, isMuted, isDeafened) =>
     set((state) => ({
       participants: state.participants.map((p) =>
