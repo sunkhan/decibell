@@ -1,7 +1,9 @@
 pub mod audio_device;
 pub mod audio_stream_pipeline;
+pub mod bitrate_preset;
 pub mod caps;
 pub mod capture;
+pub mod codec_selection;
 #[cfg(target_os = "linux")]
 pub mod capture_audio_pipewire;
 #[cfg(target_os = "linux")]

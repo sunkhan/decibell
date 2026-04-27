@@ -99,3 +99,8 @@ windows = { version = "0.61", features = [
     "Win32_Networking_WinSock",
     "Win32_System_IO",
 ] }
+
+[dev-dependencies]
+# tokio test-util gives us tokio::time::pause() / advance() for the
+# CodecSelector debounce/cooldown timer tests.
+tokio = { version = "1", features = ["full", "test-util"] }
