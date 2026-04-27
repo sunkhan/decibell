@@ -105,6 +105,7 @@ message Packet {
     // Video codec negotiation.
     STREAM_CODEC_CHANGED_NOTIFY = 58;  // streamer→server→all in channel
     UPDATE_CAPABILITIES_REQ = 59;      // client→community when caps refreshed mid-session
+    STREAM_WATCHER_NOTIFY = 60;        // server→streamer on watch/unwatch (Plan C)
   }
 
   Type type = 1;
@@ -182,6 +183,7 @@ message Packet {
 
     StreamCodecChangedNotify stream_codec_changed_notify = 60;
     UpdateCapabilitiesRequest update_capabilities_req = 61;
+    StreamWatcherNotify stream_watcher_notify = 62;
   }
 }
 
@@ -710,4 +712,21 @@ message StreamCodecChangedNotify {
 // the user having to leave and rejoin the voice channel.
 message UpdateCapabilitiesRequest {
   ClientCapabilities capabilities = 1;
+}
+
+// Sent by the community server to the streamer when a watcher joins or
+// leaves their stream (or disconnects from voice while watching). The
+// streamer uses this to drive the LCD picker and decide whether to
+// renegotiate the codec. Only the stream owner receives this — other
+// channel members don't need to know.
+message StreamWatcherNotify {
+  string channel_id = 1;
+  string streamer_username = 2;
+  string watcher_username = 3;
+  enum Action {
+    ACTION_UNKNOWN = 0;
+    JOINED = 1;
+    LEFT = 2;
+  }
+  Action action = 4;
 }

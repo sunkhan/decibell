@@ -133,6 +133,26 @@ export interface ClientCapabilities {
   decode: CodecCapability[];
 }
 
+// Notify reasons for StreamCodecChangedNotify (Plan C). Numeric values
+// must match the enum in proto/messages.proto.
+export const StreamCodecChangeReason = {
+  UNKNOWN: 0,
+  WATCHER_JOINED_LOW_CAPS: 1,
+  LIMITING_WATCHER_LEFT: 2,
+  STREAMER_INITIATED: 3,
+} as const;
+export type StreamCodecChangeReason = (typeof StreamCodecChangeReason)[keyof typeof StreamCodecChangeReason];
+
+export interface StreamCodecChangedNotify {
+  channelId: string;
+  streamerUsername: string;
+  newCodec: VideoCodec;
+  newWidth: number;
+  newHeight: number;
+  newFps: number;
+  reason: StreamCodecChangeReason;
+}
+
 export interface ServerMember {
   username: string;
   joinedAt: number;
