@@ -65,7 +65,7 @@ interface VoiceState {
   disconnect: () => void;
 }
 
-export const useVoiceStore = create<VoiceState>((set) => ({
+export const useVoiceStore = create<VoiceState>((set, get) => ({
   connectedServerId: null,
   connectedChannelId: null,
   participants: [],
@@ -127,12 +127,12 @@ export const useVoiceStore = create<VoiceState>((set) => ({
       };
     }),
   userCapabilities: {},
-  canDecode: (username, codec) => {
+  canDecode: (username: string, codec: VideoCodec): boolean => {
     // Unknown codec is always "decodable" (treat as legacy / no info).
     if (codec === 0) return true;
-    const caps = (useVoiceStore.getState().userCapabilities as Record<string, ClientCapabilities>)[username];
+    const caps = get().userCapabilities[username];
     if (!caps) return true; // legacy peer with no caps advertised
-    return caps.decode.some((c) => c.codec === codec);
+    return caps.decode.some((c: { codec: VideoCodec }) => c.codec === codec);
   },
   setUserState: (username, isMuted, isDeafened) =>
     set((state) => ({
