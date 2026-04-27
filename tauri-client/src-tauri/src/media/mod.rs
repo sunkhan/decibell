@@ -606,9 +606,88 @@ impl VideoEngine {
         thumbnail_write_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
         thumbnail_channel_id: Option<String>,
         self_username: String,
+        // Plan C: codec negotiation context. When None, the pipeline runs
+        // without a CodecSelector — used by paths that don't have a
+        // matching community connection (defensive; production always
+        // passes Some(...) from start_screen_share).
+        ctx: Option<video_pipeline::StreamerContext>,
+        // Channel for sending the StreamCodecChangedNotify packet to the
+        // community server when a codec swap completes.
+        community_write_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+        // JWT for the community connection — needed to wrap the notify
+        // packet with proper auth.
+        jwt: Option<String>,
+        // Plan C: streamer's current encode caps (post-toggle filtering)
+        // and toggles, for the CodecSelector. When None, the selector is
+        // not created and no auto-negotiation runs.
+        encode_caps: Option<Vec<caps::CodecCap>>,
+        toggles: Option<codec_selection::Toggles>,
+        enforced_codec: Option<caps::CodecKind>,
+        // Plan C: shared handles cloned from AppState so the pipeline
+        // never re-locks AppState during operation.
+        watcher_event_tx: tokio::sync::broadcast::Sender<crate::state::WatcherEvent>,
+        voice_caps_cache: Arc<std::sync::RwLock<std::collections::HashMap<String, caps::PeerCaps>>>,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
+
+        // ── Plan C: build the CodecSelector and spawn the watcher listener ──
+        // The selector lives outside the pipeline thread; the pipeline
+        // polls swap_rx for swap events. Watcher events come from the
+        // community connection via a broadcast channel and feed the
+        // selector inside a tokio task.
+        let (swap_rx_for_pipeline, selector_for_pipeline) = if let (
+            Some(c), Some(enc), Some(tog),
+        ) = (ctx.as_ref(), encode_caps.as_ref(), toggles.as_ref()) {
+            let initial = codec_selection::StreamSettings {
+                codec: target_codec,
+                width: config.width,
+                height: config.height,
+                fps: target_fps,
+            };
+            let (selector, swap_rx) = codec_selection::CodecSelector::new(
+                initial, enforced_codec, enc.clone(), tog.clone(),
+            );
+            let selector = Arc::new(selector);
+
+            // Spawn the watcher event listener — drives the selector.
+            let mut watcher_rx = watcher_event_tx.subscribe();
+            let selector_for_listener = selector.clone();
+            let streamer_username = c.streamer_username.clone();
+            tokio::spawn(async move {
+                while let Ok(evt) = watcher_rx.recv().await {
+                    if evt.streamer_username != streamer_username { continue; }
+                    let watcher_decode = {
+                        match voice_caps_cache.read() {
+                            Ok(cache) => cache.get(&evt.watcher_username)
+                                .map(|c| c.decode.clone()),
+                            Err(_) => None,
+                        }
+                    };
+                    let watcher_decode = match watcher_decode {
+                        Some(d) => d,
+                        None => {
+                            eprintln!("[codec-listener] watcher caps unknown for {}", evt.watcher_username);
+                            continue;
+                        }
+                    };
+                    const JOINED: i32 = 1; // chatproj::StreamWatcherNotify::JOINED
+                    const LEFT: i32 = 2;   // chatproj::StreamWatcherNotify::LEFT
+                    match evt.action {
+                        JOINED => selector_for_listener.on_watcher_joined(evt.watcher_username, watcher_decode),
+                        LEFT => selector_for_listener.on_watcher_left(&evt.watcher_username),
+                        _ => {}
+                    }
+                }
+            });
+            (Some(swap_rx), Some(selector))
+        } else {
+            (None, None)
+        };
+
+        let ctx_for_pipeline = ctx.clone();
+        let community_write_tx_for_pipeline = community_write_tx.clone();
+        let jwt_for_pipeline = jwt.clone();
 
         let pipeline_thread = thread::Builder::new()
             .name("decibell-video".to_string())
@@ -624,6 +703,11 @@ impl VideoEngine {
                     config,
                     target_fps,
                     target_codec,
+                    ctx_for_pipeline,
+                    community_write_tx_for_pipeline,
+                    jwt_for_pipeline,
+                    swap_rx_for_pipeline,
+                    selector_for_pipeline,
                 );
             })
             .expect("spawn video pipeline thread");

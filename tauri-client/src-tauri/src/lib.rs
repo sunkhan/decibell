@@ -109,7 +109,7 @@ pub fn run() {
 
             Ok(())
         })
-        .manage(Arc::new(Mutex::new(AppState::default())) as SharedState)
+        .manage(Arc::new(Mutex::new(AppState::new())) as SharedState)
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::auth::login,

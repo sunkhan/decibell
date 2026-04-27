@@ -34,6 +34,16 @@ pub struct CodecCap {
     pub max_fps: u32,
 }
 
+/// Plan C: per-user encode + decode capability snapshot held in
+/// AppState.voice_caps_cache. Populated from VoicePresenceUpdate
+/// payloads; the streamer's CodecSelector reads watcher decode caps
+/// from here when STREAM_WATCHER_NOTIFY events arrive.
+#[derive(Clone, Debug, Default)]
+pub struct PeerCaps {
+    pub encode: Vec<CodecCap>,
+    pub decode: Vec<CodecCap>,
+}
+
 /// Process-wide cache of the probed encoder caps. Populated lazily on the
 /// first call to `get_or_probe_encoders` and rebuilt on `refresh_encoders`.
 /// Decoder caps live separately in AppState (set from JS via Tauri command).

@@ -121,6 +121,41 @@ pub async fn start_screen_share(
     let thumbnail_channel_id = Some(channel_id.clone());
     let self_username = s.username.clone().unwrap_or_default();
 
+    // Plan C: Codec negotiation context + handles. Snapshot under the
+    // existing AppState lock so the pipeline thread never re-locks.
+    let community_write_tx = client.connection_write_tx();
+    let jwt = client.jwt.clone();
+    let watcher_event_tx = s.watcher_event_tx.clone();
+    let voice_caps_cache = s.voice_caps_cache.clone();
+
+    // Resolve Quality preset for codec-aware bitrate recompute on swaps.
+    let quality_preset = match (quality.as_str(), video_bitrate_kbps) {
+        ("low", _) => crate::media::bitrate_preset::Quality::Low,
+        ("medium", _) => crate::media::bitrate_preset::Quality::Medium,
+        ("custom", Some(kbps)) => crate::media::bitrate_preset::Quality::Custom(kbps),
+        _ => crate::media::bitrate_preset::Quality::High,
+    };
+
+    let stream_ctx = crate::media::video_pipeline::StreamerContext {
+        channel_id: channel_id.clone(),
+        streamer_username: self_username.clone(),
+        quality: quality_preset,
+    };
+
+    // Encode caps for the LCD picker — same probe + toggle filter that
+    // commands::voice::join_voice_channel uses to populate JoinVoiceRequest.
+    let codec_settings = crate::config::load(&app)?.settings;
+    let encoder_caps_all = crate::media::caps::get_or_probe_encoders(&app);
+    let encode_caps_filtered: Vec<_> = encoder_caps_all.into_iter().filter(|c| match c.codec {
+        crate::media::caps::CodecKind::Av1 => codec_settings.use_av1,
+        crate::media::caps::CodecKind::H265 => codec_settings.use_h265,
+        _ => true,
+    }).collect();
+    let toggles = crate::media::codec_selection::Toggles {
+        use_av1: codec_settings.use_av1,
+        use_h265: codec_settings.use_h265,
+    };
+
     // Start video pipeline
     let video_engine = VideoEngine::start(
         capture_output.receiver,
@@ -135,6 +170,14 @@ pub async fn start_screen_share(
         thumbnail_write_tx,
         thumbnail_channel_id,
         self_username,
+        Some(stream_ctx),
+        community_write_tx,
+        Some(jwt),
+        Some(encode_caps_filtered),
+        Some(toggles),
+        None, // enforced_codec — Plan C UI dropdown wires this in Group 6
+        watcher_event_tx,
+        voice_caps_cache,
     );
 
     // Wire up keyframe forwarding: voice bridge → video encoder

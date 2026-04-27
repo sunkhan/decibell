@@ -636,15 +636,15 @@ impl CommunityClient {
                         .collect();
                     let user_capabilities: Vec<events::ClientCapabilitiesPayload> = update
                         .user_capabilities
-                        .into_iter()
+                        .iter()
                         .map(|c| events::ClientCapabilitiesPayload {
-                            encode: c.encode.into_iter().map(|cc| events::CodecCapabilityPayload {
+                            encode: c.encode.iter().map(|cc| events::CodecCapabilityPayload {
                                 codec: cc.codec,
                                 max_width: cc.max_width,
                                 max_height: cc.max_height,
                                 max_fps: cc.max_fps,
                             }).collect(),
-                            decode: c.decode.into_iter().map(|cc| events::CodecCapabilityPayload {
+                            decode: c.decode.iter().map(|cc| events::CodecCapabilityPayload {
                                 codec: cc.codec,
                                 max_width: cc.max_width,
                                 max_height: cc.max_height,
@@ -652,6 +652,22 @@ impl CommunityClient {
                             }).collect(),
                         })
                         .collect();
+                    // Plan C: also write a Rust-side mirror for the
+                    // CodecSelector to consume on STREAM_WATCHER_NOTIFY.
+                    let cache_arc = {
+                        let s = state.lock().await;
+                        s.voice_caps_cache.clone()
+                    };
+                    if let Ok(mut cache) = cache_arc.write() {
+                        for (i, username) in update.active_users.iter().enumerate() {
+                            if let Some(caps) = update.user_capabilities.get(i) {
+                                cache.insert(username.clone(), crate::media::caps::PeerCaps {
+                                    encode: caps.encode.iter().map(proto_to_codec_cap).collect(),
+                                    decode: caps.decode.iter().map(proto_to_codec_cap).collect(),
+                                });
+                            }
+                        }
+                    }
                     events::emit_voice_presence_updated(
                         &app,
                         server_id.clone(),
@@ -685,6 +701,17 @@ impl CommunityClient {
                         update.thumbnail_data,
                     );
                 }
+                // Plan C: server tells us a watcher (un)subscribed to OUR stream.
+                // Broadcast to whatever video pipeline is currently running.
+                Some(packet::Payload::StreamWatcherNotify(notify)) => {
+                    let s = state.lock().await;
+                    let _ = s.watcher_event_tx.send(crate::state::WatcherEvent {
+                        channel_id: notify.channel_id,
+                        streamer_username: notify.streamer_username,
+                        watcher_username: notify.watcher_username,
+                        action: notify.action,
+                    });
+                }
                 _ => {
                     log::debug!(
                         "Unhandled community {} packet type: {}",
@@ -706,6 +733,25 @@ impl CommunityClient {
             drop(s);
             Self::start_reconnect(sid, host, port, jwt, app, state);
         }
+    }
+}
+
+/// Plan C: convert proto CodecCapability → internal CodecCap. Used to
+/// populate AppState.voice_caps_cache from VoicePresenceUpdate handlers.
+fn proto_to_codec_cap(p: &crate::net::proto::CodecCapability) -> crate::media::caps::CodecCap {
+    use crate::media::caps::CodecKind;
+    let codec = match p.codec {
+        1 => CodecKind::H264Hw,
+        2 => CodecKind::H264Sw,
+        3 => CodecKind::H265,
+        4 => CodecKind::Av1,
+        _ => CodecKind::Unknown,
+    };
+    crate::media::caps::CodecCap {
+        codec,
+        max_width: p.max_width,
+        max_height: p.max_height,
+        max_fps: p.max_fps,
     }
 }
 

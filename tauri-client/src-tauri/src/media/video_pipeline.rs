@@ -5,7 +5,19 @@ use std::time::{Duration, Instant};
 
 use super::capture::{PixelFormat, RawFrame};
 use super::encoder::{EncoderConfig, H264Encoder};
+use super::bitrate_preset::{self, Quality};
+use super::codec_selection::{CodecSelector, SwapEvent, SwapReason};
 use super::video_packet::{UdpFecPacket, UdpVideoPacket, FEC_GROUP_SIZE, UDP_MAX_PAYLOAD};
+
+/// Plan C: pipeline-side context for codec swap operations. Holds the
+/// values needed to (1) build the StreamCodecChangedNotify packet and
+/// (2) recompute bitrate per codec when swapping.
+#[derive(Clone, Debug)]
+pub struct StreamerContext {
+    pub channel_id: String,
+    pub streamer_username: String,
+    pub quality: Quality,
+}
 
 pub enum VideoPipelineControl {
     ForceKeyframe,
@@ -127,10 +139,21 @@ pub fn run_video_send_pipeline(
     sender_id: String,
     config: EncoderConfig,
     target_fps: u32,
-    // Codec to use for encoding. Plan B Task 7: passed through from
-    // start_screen_share's force_codec parameter; Plan C will replace
-    // this with the LCD picker output.
+    // Initial codec for encoding. Plan B Task 7: passed through from
+    // start_screen_share. Plan C: also the initial codec for the
+    // CodecSelector; swap_rx fires when the LCD picker chooses different.
     target_codec: crate::media::caps::CodecKind,
+    // Plan C: streamer context for building StreamCodecChangedNotify.
+    // None = no codec negotiation (legacy path).
+    ctx: Option<StreamerContext>,
+    // Channel + JWT for sending the StreamCodecChangedNotify packet
+    // when a swap completes.
+    community_write_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+    jwt: Option<String>,
+    // Receiver of swap events from the CodecSelector. None = no negotiation.
+    mut swap_rx: Option<tokio::sync::mpsc::UnboundedReceiver<SwapEvent>>,
+    // Selector handle for record_swap callback. None = no negotiation.
+    selector: Option<Arc<CodecSelector>>,
 ) {
     // GPU context is lazily initialized on first DMA-BUF frame (Linux only).
     // On NVIDIA+KWin, PipeWire provides MemFd (not DmaBuf), so GPU code never
@@ -192,6 +215,25 @@ pub fn run_video_send_pipeline(
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => { shutdown_requested = true; break; }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+
+        // Plan C: poll codec swap events from the selector. Non-blocking.
+        if let Some(rx) = swap_rx.as_mut() {
+            match rx.try_recv() {
+                Ok(swap) => {
+                    if let (Some(c), Some(sel)) = (ctx.as_ref(), selector.as_ref()) {
+                        match perform_swap(&swap, c, sel.as_ref(), &mut encoder,
+                                           community_write_tx.as_ref(), jwt.as_deref()) {
+                            Ok(()) => {}
+                            Err(e) => eprintln!("[codec-swap] failed: {}", e),
+                        }
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    swap_rx = None; // selector dropped, give up polling
+                }
+            }
         }
 
         // ── Receive frame: try GPU channel first (Linux), then CPU channel ──
@@ -504,4 +546,76 @@ pub fn run_video_send_pipeline(
         eprintln!("[video-send] Capture source ended, signalling CaptureEnded");
         let _ = event_tx.send(VideoPipelineEvent::CaptureEnded);
     }
+}
+
+/// Plan C swap implementation: build a new encoder for the target codec
+/// + dimensions, send StreamCodecChangedNotify to the community server
+/// (which will rebroadcast presence + forward the notify for toasts),
+/// atomically replace the active encoder, force a keyframe so viewers
+/// can configure their decoder, and tell the selector the swap landed.
+fn perform_swap(
+    swap: &SwapEvent,
+    ctx: &StreamerContext,
+    selector: &CodecSelector,
+    encoder: &mut H264Encoder,
+    community_write_tx: Option<&tokio::sync::mpsc::Sender<Vec<u8>>>,
+    jwt: Option<&str>,
+) -> Result<(), String> {
+    use crate::net::connection::build_packet;
+    use crate::net::proto::{packet, Packet, StreamCodecChangedNotify};
+
+    eprintln!("[codec-swap] {:?} → {:?} ({:?}) at {}x{}@{}",
+        encoder.codec, swap.target.codec, swap.reason,
+        swap.target.width, swap.target.height, swap.target.fps);
+
+    // Codec-aware bitrate (spec §8) — recompute from preset table so
+    // visual quality stays roughly comparable across the swap.
+    let new_bitrate = bitrate_preset::bitrate_kbps(
+        ctx.quality, swap.target.codec,
+        swap.target.width, swap.target.height, swap.target.fps,
+    );
+    let new_config = EncoderConfig {
+        width: swap.target.width,
+        height: swap.target.height,
+        fps: swap.target.fps,
+        bitrate_kbps: new_bitrate,
+        keyframe_interval_secs: 2,
+    };
+
+    // Build the new encoder OUT-OF-LOCK so the in-flight encoder isn't
+    // disturbed during the (potentially slow) construction.
+    let new_encoder = H264Encoder::new(swap.target.codec, &new_config)
+        .map_err(|e| format!("build new encoder: {}", e))?;
+
+    // Send the notify BEFORE swapping so toast appears just as the visual
+    // transition begins (spec §6).
+    if let (Some(tx), Some(jwt)) = (community_write_tx, jwt) {
+        let reason_int = match swap.reason {
+            SwapReason::WatcherJoinedLowCaps => 1, // Reason::WATCHER_JOINED_LOW_CAPS
+            SwapReason::LimitingWatcherLeft => 2,  // Reason::LIMITING_WATCHER_LEFT
+            SwapReason::StreamerInitiated => 3,    // Reason::STREAMER_INITIATED
+        };
+        let notify = StreamCodecChangedNotify {
+            channel_id: ctx.channel_id.clone(),
+            streamer_username: ctx.streamer_username.clone(),
+            new_codec: swap.target.codec as i32,
+            new_width: swap.target.width,
+            new_height: swap.target.height,
+            new_fps: swap.target.fps,
+            reason: reason_int,
+        };
+        let data = build_packet(
+            packet::Type::StreamCodecChangedNotify,
+            packet::Payload::StreamCodecChangedNotify(notify),
+            Some(jwt),
+        );
+        let _ = tx.try_send(data); // non-blocking; sender pool may be full briefly
+        let _ = Packet::default(); // suppress unused-import warning on Packet
+    }
+
+    // Atomic swap. Old encoder dropped immediately when reassigned.
+    *encoder = new_encoder;
+    encoder.force_keyframe();
+    selector.record_swap(swap.target);
+    Ok(())
 }
