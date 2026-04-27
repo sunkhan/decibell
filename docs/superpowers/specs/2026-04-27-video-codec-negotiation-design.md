@@ -75,6 +75,7 @@ There is no "x264 decode" entry — any H.264 decoder handles any valid H.264 st
 - **When** — once on first launch. Result written to `caps.json` in the app data directory. Reused on every subsequent launch.
 - **Manual refresh** — "Refresh codec capabilities" button in Settings → Codecs re-runs the probe and rewrites the file. Also re-emits the new caps to any connected community server (sends a fresh `JoinVoiceRequest`-equivalent capability update — exact mechanics in §4.6).
 - **User toggles** — the "Use AV1 codec when available" and "Use H.265/HEVC codec when available" settings are filters applied on top of the probe result. Disabled toggle → that codec is removed from the encode list before advertisement. Decode list is not filtered (decoding is cheap; no reason to refuse incoming streams).
+- **H.264 decode fallback** — H.264 decode is always present in the advertised decode list. WebCodecs handles H.264 universally; if the probe somehow fails for `avc1.640033` (e.g. a transient initialization error), the entry is still added with the H.264 decode policy ceiling so the LCD picker can always converge.
 
 ---
 
@@ -153,7 +154,7 @@ Given a set of watchers `W` and the streamer's encode caps:
      - `height = min` analogous
      - `fps = min` analogous
      - Return `(C, width, height, fps)`.
-3. If no codec satisfies all watchers (extremely unlikely in practice — H.264 decode is universal in WebCodecs), pick the highest-priority codec satisfying the most watchers; the server-side defensive check in §4.5 will have rejected the incompatible watchers' `WatchStreamRequest` already.
+3. If no codec satisfies all watchers — essentially unreachable in practice because H.264 decode is universal in WebCodecs and the H.264 decode fallback in §3.3 guarantees every client has H.264 in `decode_caps` — the streamer logs an error, picks the highest-priority codec satisfying the most watchers, and proceeds. Watchers without the picked codec will see their WebCodecs decoder fail to configure when the codec byte arrives and end up with a blank video tile. The auto-pick path does not involve any server-side rejection of `WatchStreamRequest`; the only such rejection happens under enforcement (§5.5).
 
 ### 5.2 At stream start
 
@@ -172,7 +173,7 @@ Given a set of watchers `W` and the streamer's encode caps:
 
 - Compute `target = lcd(remaining watchers, …)`.
 - If `target == current_settings`: nothing to do.
-- Else if `target` is an upgrade (higher-priority codec or larger dims): start the **30 second upgrade cooldown** timer. If any watch event during the cooldown causes a downgrade recompute (`target` becomes equal to or lower than `current_settings`), cancel the cooldown — we're staying. When the cooldown fires, swap to `target` and send `StreamCodecChangedNotify` with `reason = LIMITING_WATCHER_LEFT`.
+- Else if `target` is an upgrade (higher-priority codec or larger dims): start the **30 second upgrade cooldown** timer. If any watch event during the cooldown causes `target` to become equal to or lower than `current_settings`, cancel the cooldown — the current settings are now adequate, no swap needed. If `target` rises further during the cooldown (another constraint lifts), the timer is **not** reset — it continues to its original deadline and swaps to whatever `target` is when it fires. This prevents indefinitely deferred upgrades when watchers churn. When the cooldown fires, swap to `target` and send `StreamCodecChangedNotify` with `reason = LIMITING_WATCHER_LEFT`.
 
 ### 5.5 Enforcement
 
