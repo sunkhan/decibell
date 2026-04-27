@@ -145,13 +145,19 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       // ── WebCodecs path (Windows + any codec) ──────────────────────────
       if (!decoder || decoder.state === "closed") return;
 
-      // Track the per-packet codec byte. On first keyframe (or when codec
-      // changes — Plan C will handle that), reconfigure the decoder with
-      // the right codec string + description.
+      // Track the per-packet codec byte. When codec changes mid-stream
+      // (Plan C codec swap), reset the decoder and wait for the new
+      // codec's first keyframe + description before decoding again.
+      // Defensively request a keyframe so we don't sit blank if the
+      // notify-then-keyframe ordering races on the wire.
       const incomingCodec = (codec ?? VideoCodec.H264_HW) as VideoCodec;
       if (incomingCodec !== activeCodecRef.current) {
+        console.log("[StreamVideoPlayer] codec change",
+          activeCodecRef.current, "→", incomingCodec);
         activeCodecRef.current = incomingCodec;
-        descriptionRef.current = null;  // force re-configure on next keyframe
+        descriptionRef.current = null;
+        needsKeyframeRef.current = true; // drop deltas until new-codec keyframe
+        invoke("request_keyframe", { targetUsername: streamerUsername }).catch(() => {});
       }
 
       if (keyframe && description && !descriptionRef.current) {
