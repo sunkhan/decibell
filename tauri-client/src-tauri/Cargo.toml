@@ -31,6 +31,15 @@ audiopus = "0.3.0-rc.0"
 rubato = "0.16"
 ringbuf = "0.4"
 ffmpeg-next = "8"
+# Required FFmpeg encoders (verify in your vcpkg / system FFmpeg build):
+#   - libx264          (H.264 software, codec value 2)
+#   - h264_nvenc / h264_amf / h264_qsv / h264_mf   (H.264 hardware, codec 1)
+#   - hevc_nvenc / hevc_amf / hevc_qsv / hevc_mf   (H.265 hardware, codec 3)
+#   - av1_nvenc  / av1_amf  / av1_qsv              (AV1 hardware, codec 4)
+# Linux additionally uses h264_vaapi / hevc_vaapi / av1_vaapi where present.
+# vcpkg recipe (Windows): vcpkg install "ffmpeg[x264,nvcodec,amf,qsv]:x64-windows"
+# Missing encoders are degraded-but-not-fatal: the probe in caps.rs skips
+# them, so the user simply won't be able to stream with that codec.
 base64 = "0.22"
 aes-gcm = "0.10"
 sha2 = "0.10"
