@@ -9,14 +9,17 @@
 //! after the first launch. Subsequent launches read from disk; the user can
 //! force a re-probe via the "Refresh codec capabilities" button in Settings.
 
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize, Serializer};
 use std::path::PathBuf;
 use std::sync::RwLock;
 use tauri::{AppHandle, Manager};
 
 /// Wire-compatible numeric values from proto/messages.proto VideoCodec enum.
-/// Repr is u8 to match the byte stamped in UdpVideoPacket.codec.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Repr is u8 to match the byte stamped in UdpVideoPacket.codec, AND the
+/// serde impls below force serialization as u8 so values cross the
+/// Rust↔JS Tauri boundary as numbers (matching the TS VideoCodec enum
+/// in src/types/index.ts) rather than as variant-name strings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CodecKind {
     Unknown = 0,
@@ -24,6 +27,26 @@ pub enum CodecKind {
     H264Sw = 2,
     H265 = 3,
     Av1 = 4,
+}
+
+impl Serialize for CodecKind {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u8(*self as u8)
+    }
+}
+
+impl<'de> Deserialize<'de> for CodecKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = u8::deserialize(d)?;
+        match v {
+            0 => Ok(CodecKind::Unknown),
+            1 => Ok(CodecKind::H264Hw),
+            2 => Ok(CodecKind::H264Sw),
+            3 => Ok(CodecKind::H265),
+            4 => Ok(CodecKind::Av1),
+            other => Err(D::Error::custom(format!("invalid CodecKind value: {}", other))),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
