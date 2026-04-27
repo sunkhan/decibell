@@ -28,13 +28,14 @@ enum UdpPacketType : uint8_t {
 // Max missing packet indices per NACK — keeps packet under MTU
 constexpr uint16_t NACK_MAX_ENTRIES = 64;
 
-enum VideoCodec : uint8_t {
-    CODEC_UNKNOWN = 0,   // legacy VP9 slot, retired — server has always ignored this byte on relay
-    CODEC_H264_HW = 1,   // hardware H.264 (NVENC/AMF/QSV/MF) — preserves existing wire value
-    CODEC_H264_SW = 2,   // x264 software encoder
-    CODEC_H265 = 3,      // HEVC, hardware
-    CODEC_AV1 = 4        // AV1, hardware
-};
+// VideoCodec wire values are owned by proto/messages.proto (chatproj::VideoCodec).
+// UdpVideoPacket.codec stays a plain uint8_t for fixed packet layout — cast
+// to/from chatproj::VideoCodec at the boundaries that actually need names.
+//   0 = CODEC_UNKNOWN (legacy VP9 slot, retired)
+//   1 = CODEC_H264_HW (hardware H.264, preserves existing wire value)
+//   2 = CODEC_H264_SW (x264)
+//   3 = CODEC_H265
+//   4 = CODEC_AV1
 
 // Sent by a viewer to request the streamer to emit a keyframe immediately (PLI)
 struct UdpKeyframeRequest {
