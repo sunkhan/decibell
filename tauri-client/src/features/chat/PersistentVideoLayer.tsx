@@ -492,27 +492,6 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
         className={`h-full w-full ${cursorHidden ? "cursor-none" : "cursor-pointer"} bg-bg-darkest object-contain`}
       />
 
-      {/* Paused overlay — glassmorphic play button. The full-frame
-          scrim is gone; a radial gradient just behind the button
-          gives it a subtle pedestal so it stays readable on bright
-          frames without dimming the rest of the captured frame. */}
-      {!playing && (
-        <button
-          onClick={handleSingleClick}
-          className="pointer-events-auto absolute inset-0 flex items-center justify-center"
-          style={{
-            background:
-              "radial-gradient(circle at center, rgba(0,0,0,0.42) 0%, rgba(0,0,0,0.18) 18%, rgba(0,0,0,0) 38%)",
-          }}
-        >
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/20 bg-white/15 backdrop-blur-md shadow-[0_4px_20px_rgba(0,0,0,0.35)] transition-all hover:scale-110 hover:bg-white/25 hover:border-white/30">
-            <svg className="h-7 w-7 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)]" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          </div>
-        </button>
-      )}
-
       {/* Top-right download button — fullscreen only. Inherits the
           same visibility rules as the bottom controls bar so it fades
           out with the cursor on idle. */}

@@ -7,6 +7,10 @@ import { formatBytes } from "./attachmentHelpers";
 // drag-drop hook (which listens for OS-level file drags) doesn't
 // react to internal tile-reorder drags.
 const REORDER_MIME = "application/x-decibell-pending-attachment";
+// Sentinel hover-id for the end-of-row drop zone (placed past the
+// last tile so users can drop into "after the last item" without
+// having to land on the rightmost tile's narrow right half).
+const END_ZONE_ID = "__end_zone__";
 
 const TILE_SIZE = 128; // px (square)
 
@@ -30,9 +34,11 @@ function KindIcon({ kind, size = 18 }: { kind: PendingAttachment["kind"]; size?:
     case "audio":
       return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-          <path d="M9 18V5l12-2v13" />
-          <circle cx="6" cy="18" r="3" />
-          <circle cx="18" cy="16" r="3" />
+          <line x1="4" y1="9" x2="4" y2="15" />
+          <line x1="8" y1="6" x2="8" y2="18" />
+          <line x1="12" y1="3" x2="12" y2="21" />
+          <line x1="16" y1="6" x2="16" y2="18" />
+          <line x1="20" y1="9" x2="20" y2="15" />
         </svg>
       );
     default:
@@ -194,8 +200,8 @@ function PendingTile({
 
         {a.kind === "video" && showThumb && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <div className="flex h-12 w-16 items-center justify-center rounded-xl bg-accent/85 shadow-[0_2px_10px_rgba(0,0,0,0.35)]">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+            <div className="flex h-9 w-9 items-center justify-center rounded-md bg-accent/85 shadow-[0_2px_10px_rgba(0,0,0,0.35)]">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
                 <path d="M8 5v14l11-7z" />
               </svg>
             </div>
@@ -258,7 +264,12 @@ export default function PendingAttachmentsRow({ channelId }: { channelId: string
   const byPendingId = useAttachmentsStore((s) => s.byPendingId);
   const items = useMemo(() => {
     const order = orderByChannel[channelId] ?? [];
-    return order.map((id) => byPendingId[id]).filter((x): x is PendingAttachment => !!x);
+    // Skip outbound entries — those have been associated with an
+    // optimistic message in the chat and shouldn't render in the
+    // composer anymore (their progress shows in the bubble instead).
+    return order
+      .map((id) => byPendingId[id])
+      .filter((x): x is PendingAttachment => !!x && !x.outbound);
   }, [orderByChannel, byPendingId, channelId]);
   // Drag state shared across tiles so each can render the right
   // insertion cue. Lives at the row level (not module-level) so
@@ -329,6 +340,7 @@ export default function PendingAttachmentsRow({ channelId }: { channelId: string
   }, [items]);
 
   if (items.length === 0) return null;
+  const lastId = items[items.length - 1].pendingId;
   return (
     <div
       ref={containerRef}
@@ -337,6 +349,63 @@ export default function PendingAttachmentsRow({ channelId }: { channelId: string
       {items.map((a) => (
         <PendingTile key={a.pendingId} a={a} drag={drag} setDrag={setDrag} />
       ))}
+      {/* End-of-row drop zone — only present during a drag. Lets the
+          user place a tile at the end by dropping in the dead space
+          past the rightmost tile, which the per-tile drop targets
+          can't catch (the cursor is outside any tile's bounds). */}
+      {drag.draggingId && (
+        <EndDropZone channelId={channelId} lastItemId={lastId} drag={drag} setDrag={setDrag} />
+      )}
+    </div>
+  );
+}
+
+function EndDropZone({
+  channelId,
+  lastItemId,
+  drag,
+  setDrag,
+}: {
+  channelId: string;
+  lastItemId: string;
+  drag: DragState;
+  setDrag: (s: DragState) => void;
+}) {
+  const reorder = useAttachmentsStore((s) => s.reorderPending);
+  const isHover = drag.hoverId === END_ZONE_ID;
+
+  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.dataTransfer.types.includes(REORDER_MIME)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (drag.hoverId !== END_ZONE_ID) {
+      setDrag({ ...drag, hoverId: END_ZONE_ID, side: "after" });
+    }
+  };
+
+  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.dataTransfer.types.includes(REORDER_MIME)) return;
+    e.preventDefault();
+    const fromId = e.dataTransfer.getData(REORDER_MIME);
+    if (fromId && fromId !== lastItemId) {
+      reorder(channelId, fromId, lastItemId, "after");
+    }
+    setDrag({ draggingId: null, hoverId: null, side: null });
+  };
+
+  return (
+    <div
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className="relative shrink-0"
+      style={{ width: 64, alignSelf: "stretch" }}
+    >
+      {isHover && (
+        <div
+          className="pointer-events-none absolute left-1.5 top-0 w-[3px] rounded-full bg-accent shadow-[0_0_8px_rgba(56,143,255,0.7)]"
+          style={{ height: TILE_SIZE }}
+        />
+      )}
     </div>
   );
 }

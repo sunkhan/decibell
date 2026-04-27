@@ -1,4 +1,3 @@
-import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -12,21 +11,8 @@ export default function ServerBar() {
   const setActiveChannel = useChatStore((s) => s.setActiveChannel);
   const activeView = useUiStore((s) => s.activeView);
   const setActiveView = useUiStore((s) => s.setActiveView);
-  const openModal = useUiStore((s) => s.openModal);
-  const [showMenu, setShowMenu] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   const connected = servers.filter((s) => connectedServers.has(s.id));
-
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setShowMenu(false);
-      }
-    };
-    if (showMenu) document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [showMenu]);
 
   const handleServerClick = (serverId: string) => {
     const currentChannel = useChatStore.getState().activeChannelId;
@@ -118,41 +104,21 @@ export default function ServerBar() {
         <div className="mx-1 h-6 w-px shrink-0 bg-border-divider" />
       )}
 
-      {/* Add server button with dropdown */}
-      <div className="relative" ref={menuRef}>
-        <button
-          onClick={() => setShowMenu(!showMenu)}
-          className={`flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-lg text-lg transition-all duration-200 ${
-            activeView === "browse"
-              ? "bg-success text-white"
-              : "border-[1.5px] border-dashed border-text-muted text-text-muted hover:border-accent hover:bg-accent-soft hover:text-accent"
-          }`}
-          title="Add Server"
-        >
-          <svg className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-        </button>
-        {showMenu && (
-          <div className="absolute left-0 top-full z-50 mt-2 w-48 rounded-xl border border-border bg-bg-secondary p-1.5 shadow-2xl">
-            <button
-              onClick={() => { setShowMenu(false); setActiveView("browse"); }}
-              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-primary transition-colors hover:bg-surface-hover"
-            >
-              <span className="text-text-muted">☰</span>
-              Browse Servers
-            </button>
-            <button
-              onClick={() => { setShowMenu(false); openModal("direct-connect"); }}
-              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-primary transition-colors hover:bg-surface-hover"
-            >
-              <span className="text-text-muted">→</span>
-              Direct Connect
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Add server button — direct route to the browse view. */}
+      <button
+        onClick={() => setActiveView("browse")}
+        className={`flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-lg text-lg transition-all duration-200 ${
+          activeView === "browse"
+            ? "bg-success text-white"
+            : "border-[1.5px] border-dashed border-text-muted text-text-muted hover:border-accent hover:bg-accent-soft hover:text-accent"
+        }`}
+        title="Browse servers"
+      >
+        <svg className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+          <line x1="12" y1="5" x2="12" y2="19" />
+          <line x1="5" y1="12" x2="19" y2="12" />
+        </svg>
+      </button>
       </div>
     </div>
   );

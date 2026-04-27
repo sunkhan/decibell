@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import DmSidebar from "./DmSidebar";
 import ServerBar from "../features/servers/ServerBar";
-import ServerDiscoveryModal from "../features/servers/ServerDiscoveryModal";
 import ServerBrowseView from "../features/servers/ServerBrowseView";
 import InviteModal from "../features/servers/InviteModal";
 import MembersAdminPanel from "../features/servers/MembersAdminPanel";
@@ -105,7 +104,6 @@ export default function MainLayout() {
         )}
       </div>
 
-      <ServerDiscoveryModal />
       <InviteModal />
       <MembersAdminPanel />
       <ChannelSettingsModal />
