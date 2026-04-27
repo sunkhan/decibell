@@ -1,6 +1,32 @@
 syntax = "proto3";
 package chatproj;
 
+// --- Video codec negotiation ---
+// Wire-compatible with the legacy single-codec setup: CODEC_H264_HW = 1
+// preserves the value the existing Tauri client has been stamping in
+// UdpVideoPacket.codec since launch. CODEC_UNKNOWN = 0 reclaims the
+// retired CODEC_VP9 slot — server has always been codec-agnostic on
+// the relay path so the change has no on-wire impact.
+enum VideoCodec {
+  CODEC_UNKNOWN = 0;
+  CODEC_H264_HW = 1;
+  CODEC_H264_SW = 2;
+  CODEC_H265 = 3;
+  CODEC_AV1 = 4;
+}
+
+message CodecCapability {
+  VideoCodec codec = 1;
+  uint32 max_width = 2;
+  uint32 max_height = 3;
+  uint32 max_fps = 4;
+}
+
+message ClientCapabilities {
+  repeated CodecCapability encode = 1;
+  repeated CodecCapability decode = 2;
+}
+
 message Packet {
   enum Type {
     UNKNOWN = 0;
@@ -75,6 +101,10 @@ message Packet {
     CHANNEL_WIPE_REQ = 55;       // client→community (owner-only): nuke all messages in a channel
     CHANNEL_WIPE_RES = 56;       // community→requester: result of the wipe
     CHANNEL_WIPED = 57;          // community→all members: channel was wiped, drop local message state
+
+    // Video codec negotiation.
+    STREAM_CODEC_CHANGED_NOTIFY = 58;  // streamer→server→all in channel
+    UPDATE_CAPABILITIES_REQ = 59;      // client→community when caps refreshed mid-session
   }
 
   Type type = 1;
@@ -149,6 +179,9 @@ message Packet {
     ChannelWipeRequest channel_wipe_req = 57;
     ChannelWipeResponse channel_wipe_res = 58;
     ChannelWiped channel_wiped = 59;
+
+    StreamCodecChangedNotify stream_codec_changed_notify = 60;
+    UpdateCapabilitiesRequest update_capabilities_req = 61;
   }
 }
 
@@ -432,6 +465,10 @@ message ChannelWiped {
 
 message JoinVoiceRequest {
   string channel_id = 1;
+  // Capabilities of the joining client. Empty when sent by an older
+  // client that pre-dates negotiation; server treats that as "H.264
+  // decode/encode only, conservative ceilings" for back-compat.
+  ClientCapabilities capabilities = 2;
 }
 
 message LeaveVoiceRequest {
@@ -447,6 +484,9 @@ message VoicePresenceUpdate {
   string channel_id = 1;
   repeated string active_users = 2;
   repeated VoiceUserState user_states = 3;
+  // Parallel to user_states/active_users — same length, same order.
+  // user_capabilities[i] belongs to active_users[i].
+  repeated ClientCapabilities user_capabilities = 4;
 }
 
 message VoiceStateNotify {
@@ -461,6 +501,11 @@ message VideoStreamInfo {
   uint32 resolution_width = 4;
   uint32 resolution_height = 5;
   uint32 fps = 6;
+  // Live current codec. Changes mid-stream when the streamer renegotiates.
+  VideoCodec current_codec = 7;
+  // CODEC_UNKNOWN if the streamer chose Auto. Drives the lock badge
+  // and the grayed-out watch button.
+  VideoCodec enforced_codec = 8;
 }
 
 message StreamPresenceUpdate {
@@ -475,6 +520,13 @@ message StartStreamRequest {
   bool has_audio = 4;
   uint32 resolution_width = 5;
   uint32 resolution_height = 6;
+  // Codec the streamer is starting with. Auto-picked from the streamer's
+  // encode caps (filtered by user toggles) when enforced_codec is UNKNOWN.
+  VideoCodec chosen_codec = 7;
+  // CODEC_UNKNOWN = no enforcement, auto-negotiation enabled.
+  // Anything else = streamer locks the stream to this codec; viewers
+  // without it see a grayed-out watch button (computed locally).
+  VideoCodec enforced_codec = 8;
 }
 
 message StopStreamRequest {
@@ -629,4 +681,33 @@ message InviteResolveResponse {
   uint32 port = 4;
   // Echoed so the client can correlate concurrent lookups.
   string code = 5;
+}
+
+// --- Video codec negotiation messages ---
+
+// Sent by the streamer when it switches codec/resolution/fps mid-stream.
+// Server validates the sender owns the stream, updates the registry
+// entry, and rebroadcasts StreamPresenceUpdate to the channel.
+message StreamCodecChangedNotify {
+  string channel_id = 1;
+  string streamer_username = 2;
+  VideoCodec new_codec = 3;
+  uint32 new_width = 4;
+  uint32 new_height = 5;
+  uint32 new_fps = 6;
+  enum Reason {
+    REASON_UNKNOWN = 0;
+    WATCHER_JOINED_LOW_CAPS = 1;
+    LIMITING_WATCHER_LEFT = 2;
+    STREAMER_INITIATED = 3;
+  }
+  Reason reason = 7;
+}
+
+// Sent by a client mid-session when the user clicks "Refresh codec
+// capabilities" in Settings. Server stores the new caps on the session
+// and rebroadcasts VoicePresenceUpdate so peers see the change without
+// the user having to leave and rejoin the voice channel.
+message UpdateCapabilitiesRequest {
+  ClientCapabilities capabilities = 1;
 }

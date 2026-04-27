@@ -84,6 +84,10 @@ pub async fn start_screen_share(
             has_audio: share_audio,
             resolution_width: enc_width,
             resolution_height: enc_height,
+            // Codec fields populated in Plan C Task 11 (production enforce dropdown).
+            // Plan B Task 7 wires the dev-only force_codec path through here.
+            chosen_codec: 0,   // CODEC_UNKNOWN — server treats as legacy = H264_HW
+            enforced_codec: 0, // CODEC_UNKNOWN — auto-negotiation enabled
         }),
         Some(&client.jwt),
     );

@@ -146,6 +146,7 @@ impl CommunityClient {
             packet::Type::JoinVoiceReq,
             packet::Payload::JoinVoiceReq(JoinVoiceRequest {
                 channel_id: channel_id.into(),
+                capabilities: None, // populated in Plan A Group 6 Task 12
             }),
             Some(&self.jwt),
         );
@@ -194,6 +195,9 @@ impl CommunityClient {
                 has_audio,
                 resolution_width,
                 resolution_height,
+                // See commands/streaming.rs comment — populated in later plan tasks.
+                chosen_codec: 0,
+                enforced_codec: 0,
             }),
             Some(&self.jwt),
         );

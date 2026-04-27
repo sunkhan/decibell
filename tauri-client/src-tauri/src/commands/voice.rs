@@ -72,6 +72,7 @@ pub async fn join_voice_channel(
             packet::Type::JoinVoiceReq,
             packet::Payload::JoinVoiceReq(JoinVoiceRequest {
                 channel_id: channel_id.clone().into(),
+                capabilities: None, // populated in Plan A Group 6 Task 12
             }),
             Some(&client.jwt),
         );
