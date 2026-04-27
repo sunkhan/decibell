@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
-import type { StreamInfo } from "../../types";
+import { VideoCodec, type StreamInfo } from "../../types";
 import { playSound } from "../../utils/sounds";
 
 /** Convert dB to linear gain: 10^(dB/20), with -40 dB floor mapped to 0. */
@@ -136,7 +136,7 @@ export function useVoiceEvents() {
 
     let prevStreamOwners: Set<string> | null = null;
 
-    promises.push(listen<{ streams: { streamId: string; ownerUsername: string; hasAudio: boolean; resolutionWidth: number; resolutionHeight: number; fps: number }[] }>(
+    promises.push(listen<{ streams: { streamId: string; ownerUsername: string; hasAudio: boolean; resolutionWidth: number; resolutionHeight: number; fps: number; currentCodec?: number; enforcedCodec?: number }[] }>(
       "stream_presence_updated",
       (event) => {
         const mapped: StreamInfo[] = event.payload.streams.map((s) => ({
@@ -146,6 +146,11 @@ export function useVoiceEvents() {
           resolutionWidth: s.resolutionWidth || 0,
           resolutionHeight: s.resolutionHeight || 0,
           fps: s.fps || 0,
+          // Default to UNKNOWN until server-side broadcast (Plan A Group 7)
+          // populates these fields. UNKNOWN is treated as "legacy / no
+          // negotiation info" by the badge and watch-button gating.
+          currentCodec: (s.currentCodec ?? VideoCodec.UNKNOWN) as VideoCodec,
+          enforcedCodec: (s.enforcedCodec ?? VideoCodec.UNKNOWN) as VideoCodec,
         }));
 
         // Play stream start/stop sounds for other users

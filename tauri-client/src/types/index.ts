@@ -100,6 +100,37 @@ export interface StreamInfo {
   resolutionWidth: number;
   resolutionHeight: number;
   fps: number;
+  // Live current codec on the wire. Drives the WebCodecs decoder
+  // configuration on the viewer side and the codec badge on the player.
+  currentCodec: VideoCodec;
+  // VideoCodec.UNKNOWN = no enforcement, auto-negotiation enabled.
+  // Anything else = streamer locked the stream; viewers without the
+  // codec see a grayed-out watch button + lock icon on the badge.
+  enforcedCodec: VideoCodec;
+}
+
+// Mirrors the VideoCodec enum in proto/messages.proto. Numeric values
+// must match the wire — they are also the byte stamped in
+// UdpVideoPacket.codec.
+export const VideoCodec = {
+  UNKNOWN: 0,
+  H264_HW: 1,
+  H264_SW: 2,
+  H265: 3,
+  AV1: 4,
+} as const;
+export type VideoCodec = (typeof VideoCodec)[keyof typeof VideoCodec];
+
+export interface CodecCapability {
+  codec: VideoCodec;
+  maxWidth: number;
+  maxHeight: number;
+  maxFps: number;
+}
+
+export interface ClientCapabilities {
+  encode: CodecCapability[];
+  decode: CodecCapability[];
 }
 
 export interface ServerMember {
