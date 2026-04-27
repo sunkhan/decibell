@@ -129,7 +129,10 @@ pub fn run_video_send_pipeline(
 
     // Always start with the standard encoder (works for CPU/MemFd frames).
     // Replaced with a GPU encoder if DMA-BUF frames arrive.
-    let mut encoder = match H264Encoder::new(&config) {
+    // Plan B: codec defaults to H264Hw; Plan B Task 7 plumbs the dev
+    // force_codec parameter through here, Plan C plumbs the production
+    // codec selection from the LCD picker.
+    let mut encoder = match H264Encoder::new(crate::media::caps::CodecKind::H264Hw, &config) {
         Ok(e) => e,
         Err(e) => {
             let _ = event_tx.send(VideoPipelineEvent::Error(e));

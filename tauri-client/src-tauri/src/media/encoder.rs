@@ -169,8 +169,16 @@ impl SwsScaler {
     }
 }
 
-/// H.264 hardware encoder using FFmpeg's C API via ffmpeg-next.
+/// Video encoder using FFmpeg's C API via ffmpeg-next. Despite the name
+/// (kept stable for diff hygiene) this struct now supports H.264, H.265,
+/// AV1, and x264 software via the `codec` field — selected at construction
+/// time. Per-codec backends and config tuning live in find_hw_encoder /
+/// codec_options below.
 pub struct H264Encoder {
+    /// Which codec this encoder produces. Plumbs through to the
+    /// per-packet UdpVideoPacket.codec byte (Plan B Task 7) and to
+    /// codec-specific config / extradata handling (Plan B Tasks 4-5).
+    pub codec: crate::media::caps::CodecKind,
     encoder: ffmpeg_next::encoder::Video,
     frame_count: u64,
     keyframe_interval: u64,
@@ -226,12 +234,13 @@ pub struct EncodedFrame {
 }
 
 impl H264Encoder {
-    /// Create a new H.264 hardware encoder.
-    /// Tries hardware encoders in order: NVENC, VA-API (Linux), AMF/QSV (Windows).
-    pub fn new(config: &EncoderConfig) -> Result<Self, String> {
+    /// Create a new video encoder for the given codec.
+    /// Tries codec-specific backends in order: NVENC, VA-API (Linux), AMF/QSV/MF (Windows).
+    /// For CodecKind::H264Sw, picks libx264 (no hardware fallback).
+    pub fn new(target_codec: crate::media::caps::CodecKind, config: &EncoderConfig) -> Result<Self, String> {
         ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
 
-        let (codec, codec_name) = Self::find_hw_encoder()?;
+        let (codec, codec_name) = Self::find_hw_encoder(target_codec)?;
         let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
             .encoder()
             .video()
@@ -248,9 +257,10 @@ impl H264Encoder {
         // which adds latency and can cause artifacts with simple decoders.
         context.set_max_b_frames(0);
 
-        // NVENC accepts BGRA directly — the GPU handles BGRA→NV12 conversion
-        // internally, eliminating expensive CPU-based sws_scale.
-        let supports_bgra_input = cfg!(target_os = "linux") && codec_name == "h264_nvenc";
+        // NVENC (any codec) accepts BGRA directly — the GPU handles BGRA→NV12
+        // conversion internally, eliminating expensive CPU-based sws_scale.
+        let supports_bgra_input = cfg!(target_os = "linux") &&
+            (codec_name == "h264_nvenc" || codec_name == "hevc_nvenc" || codec_name == "av1_nvenc");
 
         if supports_bgra_input {
             context.set_format(ffmpeg_next::format::Pixel::BGRA);
@@ -266,7 +276,8 @@ impl H264Encoder {
 
         let mut opts = ffmpeg_next::Dictionary::new();
         match codec_name.as_str() {
-            "h264_nvenc" => {
+            // ── NVENC family (H.264 / HEVC / AV1) — same option vocabulary ──
+            "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" => {
                 opts.set("forced_idr", "1");
                 opts.set("preset", "p5");
                 opts.set("tune", "ull");
@@ -275,21 +286,31 @@ impl H264Encoder {
                 let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
                 unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
             }
-            "h264_amf" => {
+            // ── AMF family (AMD) ──
+            "h264_amf" | "hevc_amf" | "av1_amf" => {
                 opts.set("usage", "ultralowlatency");
                 opts.set("quality", "speed");
             }
-            "h264_qsv" => {
+            // ── QSV family (Intel) ──
+            "h264_qsv" | "hevc_qsv" | "av1_qsv" => {
                 opts.set("preset", "veryfast");
                 opts.set("forced_idr", "1");
             }
-            "h264_mf" => {
+            // ── Media Foundation (Windows) — H.264 + HEVC only ──
+            "h264_mf" | "hevc_mf" => {
                 opts.set("rate_control", "cbr");
                 opts.set("scenario", "display_remoting");
                 opts.set("hw_encoding", "1");
             }
+            // ── x264 software encoder ──
+            "libx264" => {
+                opts.set("preset", "veryfast");
+                opts.set("tune", "zerolatency");
+                opts.set("nal-hrd", "cbr");
+                opts.set("forced-idr", "1");
+            }
             _ => {
-                // h264_vaapi — use defaults
+                // h264_vaapi / hevc_vaapi / av1_vaapi — use defaults
             }
         }
 
@@ -298,7 +319,8 @@ impl H264Encoder {
             .map_err(|e| format!("Open encoder: {}", e))?;
 
         let input_fmt = if supports_bgra_input { "BGRA (GPU convert)" } else { "NV12" };
-        eprintln!("[encoder] H.264 encoder opened: {} — {}x{} @ {}fps, {}kbps, input={}", codec_name, config.width, config.height, config.fps, config.bitrate_kbps, input_fmt);
+        eprintln!("[encoder] {:?} encoder opened: {} — {}x{} @ {}fps, {}kbps, input={}",
+                  target_codec, codec_name, config.width, config.height, config.fps, config.bitrate_kbps, input_fmt);
 
         let nv12_frame = ffmpeg_next::frame::Video::new(
             ffmpeg_next::format::Pixel::NV12, config.width, config.height,
@@ -313,6 +335,7 @@ impl H264Encoder {
         };
 
         Ok(H264Encoder {
+            codec: target_codec,
             encoder,
             frame_count: 0,
             keyframe_interval: (config.fps * config.keyframe_interval_secs) as u64,
@@ -333,21 +356,44 @@ impl H264Encoder {
         })
     }
 
-    /// Find the best available hardware H.264 encoder.
-    fn find_hw_encoder() -> Result<(ffmpeg_next::Codec, String), String> {
-        let candidates = if cfg!(target_os = "linux") {
-            vec!["h264_nvenc", "h264_vaapi"]
-        } else {
-            vec!["h264_nvenc", "h264_amf", "h264_qsv", "h264_mf"]
+    /// Find the best available encoder backend for the given codec.
+    /// Hardware backends tried in priority order; for CodecKind::H264Sw the
+    /// only candidate is libx264 (no hardware fallback — software is the
+    /// codec). CodecKind::Unknown returns an error.
+    fn find_hw_encoder(
+        target_codec: crate::media::caps::CodecKind,
+    ) -> Result<(ffmpeg_next::Codec, String), String> {
+        use crate::media::caps::CodecKind;
+        let candidates: Vec<&str> = match target_codec {
+            CodecKind::H264Hw => if cfg!(target_os = "linux") {
+                vec!["h264_nvenc", "h264_vaapi", "h264_amf"]
+            } else {
+                vec!["h264_nvenc", "h264_amf", "h264_qsv", "h264_mf"]
+            },
+            CodecKind::H264Sw => vec!["libx264"],
+            CodecKind::H265 => if cfg!(target_os = "linux") {
+                vec!["hevc_nvenc", "hevc_vaapi", "hevc_amf"]
+            } else {
+                vec!["hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_mf"]
+            },
+            CodecKind::Av1 => if cfg!(target_os = "linux") {
+                vec!["av1_nvenc", "av1_vaapi", "av1_amf"]
+            } else {
+                vec!["av1_nvenc", "av1_amf", "av1_qsv"]
+            },
+            CodecKind::Unknown => return Err("Cannot construct encoder for CODEC_UNKNOWN".to_string()),
         };
 
         for name in &candidates {
             if let Some(codec) = ffmpeg_next::encoder::find_by_name(name) {
-                log::info!("Using H.264 encoder: {}", name);
+                log::info!("Using {:?} encoder: {}", target_codec, name);
                 return Ok((codec, name.to_string()));
             }
         }
-        Err("No hardware H.264 encoder found. Install NVIDIA drivers (NVENC) or ensure VA-API/Media Foundation is available.".to_string())
+        Err(format!(
+            "No encoder available for {:?}. Tried: {:?}. Check FFmpeg build features and hardware drivers.",
+            target_codec, candidates
+        ))
     }
 
     /// Initialize CUDA hardware frame encoding for NVENC.
@@ -633,6 +679,8 @@ impl H264Encoder {
         );
 
         Ok(H264Encoder {
+            // VAAPI path is currently H.264-only (Plan B Group 2 limits scope).
+            codec: crate::media::caps::CodecKind::H264Hw,
             encoder,
             frame_count: 0,
             keyframe_interval: (config.fps * config.keyframe_interval_secs) as u64,
@@ -790,6 +838,8 @@ impl H264Encoder {
         );
 
         Ok(H264Encoder {
+            // CUDA path is currently H.264-only (Plan B Group 2 limits scope).
+            codec: crate::media::caps::CodecKind::H264Hw,
             encoder,
             frame_count: 0,
             keyframe_interval: (config.fps * config.keyframe_interval_secs) as u64,
