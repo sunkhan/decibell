@@ -1,6 +1,8 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { VideoCodec } from "../../types";
+import { videoCodecToWebCodecsString } from "../../utils/codecMap";
 
 interface Props {
   streamerUsername: string;
@@ -13,7 +15,11 @@ interface StreamFramePayload {
   data: string; // base64-encoded frame data
   timestamp: number;
   keyframe: boolean;
-  description: string | null; // base64-encoded avcC record (h264 keyframes only)
+  description: string | null; // base64-encoded codec description (avcC/hvcC/av1C)
+  // Codec byte from the per-packet UdpVideoPacket header (Plan B Group 4).
+  // Drives WebCodecs decoder configuration. Optional for back-compat with
+  // self-preview events emitted before this field was added.
+  codec?: number;
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -36,9 +42,15 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
   const needsKeyframeRef = useRef(true);
   const [hasFirstFrame, setHasFirstFrame] = useState(false);
 
+  // Codec for the stream this player is rendering. Updated when the per-packet
+  // codec byte arrives in stream_frame events (Plan C will reconfigure the
+  // decoder mid-stream when this changes). For Plan B, the codec is set once
+  // from the first frame and stays put.
+  const activeCodecRef = useRef<VideoCodec>(VideoCodec.H264_HW);
+
   const configureDecoder = useCallback((decoder: VideoDecoder, description?: ArrayBuffer) => {
     const config: VideoDecoderConfig = {
-      codec: "avc1.640033",
+      codec: videoCodecToWebCodecsString(activeCodecRef.current),
       hardwareAcceleration: "prefer-hardware",
     };
     if (description) {
@@ -121,7 +133,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     };
 
     const unlisten = listen<StreamFramePayload>("stream_frame", (event) => {
-      const { username, format, data, timestamp, keyframe, description } = event.payload;
+      const { username, format, data, timestamp, keyframe, description, codec } = event.payload;
       if (username !== streamerUsername) return;
 
       // ── JPEG path (Linux: Rust-side decoded) ──────────────────────────
@@ -130,8 +142,17 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         return;
       }
 
-      // ── H.264 WebCodecs path (Windows) ────────────────────────────────
+      // ── WebCodecs path (Windows + any codec) ──────────────────────────
       if (!decoder || decoder.state === "closed") return;
+
+      // Track the per-packet codec byte. On first keyframe (or when codec
+      // changes — Plan C will handle that), reconfigure the decoder with
+      // the right codec string + description.
+      const incomingCodec = (codec ?? VideoCodec.H264_HW) as VideoCodec;
+      if (incomingCodec !== activeCodecRef.current) {
+        activeCodecRef.current = incomingCodec;
+        descriptionRef.current = null;  // force re-configure on next keyframe
+      }
 
       if (keyframe && description && !descriptionRef.current) {
         const descBytes = base64ToBytes(description);

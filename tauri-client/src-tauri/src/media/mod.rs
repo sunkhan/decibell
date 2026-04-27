@@ -223,7 +223,14 @@ impl VoiceEngine {
                             }
                             use base64::Engine;
                             let b64_data = base64::engine::general_purpose::STANDARD.encode(&frame.data);
-                            let b64_desc = if frame.is_keyframe {
+                            // Description extraction is currently H.264-only — for HEVC/AV1
+                            // the receiver-side bitstream parser doesn't exist yet (Plan C
+                            // will rework description flow to ship in-band from the encoder).
+                            // For non-H.264 streams the viewer will rely on WebCodecs accepting
+                            // the bitstream without an explicit description, which works for
+                            // the common cases (modern Chromium-based webview).
+                            let b64_desc = if frame.is_keyframe && frame.codec <= 2 {
+                                // codec values 1 (H264_HW) and 2 (H264_SW) — both use H.264 bitstream
                                 encoder::extract_avcc_description_from_avcc(&frame.data)
                                     .map(|d| {
                                         eprintln!("[video-bridge] avcC description: {} bytes", d.len());
@@ -239,6 +246,9 @@ impl VoiceEngine {
                                 "timestamp": frame.frame_id as u64 * 33_333,
                                 "keyframe": frame.is_keyframe,
                                 "description": b64_desc,
+                                // Plan B: codec byte from the per-packet header. React reads
+                                // this to pick the WebCodecs codec string (avc1/hev1/av01).
+                                "codec": frame.codec,
                             }));
                         }
                         #[cfg(target_os = "linux")]
@@ -646,18 +656,18 @@ impl VideoEngine {
                             let _ = tx.try_send(data);
                         }
                     }
-                    Ok(video_pipeline::VideoPipelineEvent::EncodedFrame { data, is_keyframe, frame_id }) => {
+                    Ok(video_pipeline::VideoPipelineEvent::EncodedFrame { data, is_keyframe, frame_id, codec, description }) => {
                         use base64::Engine;
                         let b64_data = base64::engine::general_purpose::STANDARD.encode(&data);
-                        let b64_desc = if is_keyframe {
-                            encoder::extract_avcc_description_from_avcc(&data)
-                                .map(|d| base64::engine::general_purpose::STANDARD.encode(&d))
-                        } else {
-                            None
-                        };
+                        // Description comes straight from the encoder (Plan B Group 3:
+                        // avcC for H.264, hvcC for H.265, av1C for AV1 — all read from
+                        // FFmpeg extradata or AVCC bitstream parsing).
+                        let b64_desc = description.as_ref().map(|d|
+                            base64::engine::general_purpose::STANDARD.encode(d)
+                        );
                         if frame_id % 60 == 0 || is_keyframe {
-                            eprintln!("[self-preview-bridge] emit stream_frame user='{}' frame={} bytes={} keyframe={} desc={}",
-                                self_username, frame_id, data.len(), is_keyframe,
+                            eprintln!("[self-preview-bridge] emit stream_frame user='{}' frame={} bytes={} keyframe={} codec={} desc={}",
+                                self_username, frame_id, data.len(), is_keyframe, codec,
                                 b64_desc.as_ref().map(|d| d.len()).unwrap_or(0));
                         }
                         let _ = app.emit("stream_frame", serde_json::json!({
@@ -667,6 +677,7 @@ impl VideoEngine {
                             "timestamp": frame_id as u64 * 33_333,
                             "keyframe": is_keyframe,
                             "description": b64_desc,
+                            "codec": codec,
                         }));
                     }
                     Ok(_) => {}

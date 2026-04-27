@@ -10,6 +10,10 @@ pub struct ReassembledFrame {
     pub data: Vec<u8>,
     pub is_keyframe: bool,
     pub streamer_username: String,
+    /// Codec byte from the per-packet UdpVideoPacket.codec field
+    /// (taken from the first packet of the frame). Drives WebCodecs
+    /// decoder configuration on the viewer side.
+    pub codec: u8,
 }
 
 /// Stored FEC group data for recovery.
@@ -28,6 +32,9 @@ struct FrameAssembly {
     is_keyframe: bool,
     created_at: Instant,
     streamer_username: String,
+    /// Codec byte from the first packet of the frame. Plan B: drives
+    /// WebCodecs decoder configuration on the viewer side.
+    codec: u8,
     fec_groups: Vec<FecGroup>,
     fec_recovered: bool,
 }
@@ -140,6 +147,7 @@ impl VideoReceiver {
         let payload_size = { pkt.payload_size };
         let username = pkt.sender_username();
 
+        let pkt_codec = { pkt.codec };
         let frame = self.frames_in_progress.entry(frame_id).or_insert_with(|| {
             FrameAssembly {
                 total_packets,
@@ -148,6 +156,7 @@ impl VideoReceiver {
                 is_keyframe,
                 created_at: Instant::now(),
                 streamer_username: username.clone(),
+                codec: pkt_codec,
                 fec_groups: Vec::new(),
                 fec_recovered: false,
             }
@@ -170,6 +179,7 @@ impl VideoReceiver {
                 data: assembly.reassemble(),
                 is_keyframe: assembly.is_keyframe,
                 streamer_username: assembly.streamer_username,
+                codec: assembly.codec,
             });
         }
 
@@ -202,6 +212,7 @@ impl VideoReceiver {
                 data: assembly.reassemble(),
                 is_keyframe: assembly.is_keyframe,
                 streamer_username: assembly.streamer_username,
+                codec: assembly.codec,
             });
         }
 

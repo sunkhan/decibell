@@ -24,7 +24,17 @@ pub enum VideoPipelineEvent {
     ThumbnailReady(Vec<u8>),
     /// Emitted for every successfully encoded frame, but only when self-preview
     /// is enabled (see `VideoPipelineControl::SetSelfPreview`).
-    EncodedFrame { data: Vec<u8>, is_keyframe: bool, frame_id: u32 },
+    EncodedFrame {
+        data: Vec<u8>,
+        is_keyframe: bool,
+        frame_id: u32,
+        /// Codec byte from the active encoder (CodecKind as u8). Drives
+        /// the WebCodecs decoder selection on the self-preview viewer.
+        codec: u8,
+        /// Decoder configuration record (avcC/hvcC/av1C) — present on
+        /// keyframes only. Forwarded as-is to the WebCodecs description.
+        description: Option<Vec<u8>>,
+    },
 }
 
 /// Convert a raw frame to a small JPEG thumbnail.
@@ -381,6 +391,8 @@ pub fn run_video_send_pipeline(
                         data: encoded.data.clone(),
                         is_keyframe: encoded.is_keyframe,
                         frame_id,
+                        codec: encoder.codec as u8,
+                        description: encoded.avcc_description.clone(),
                     });
                 }
                 // Packetize: split encoded data into UDP_MAX_PAYLOAD-sized chunks
