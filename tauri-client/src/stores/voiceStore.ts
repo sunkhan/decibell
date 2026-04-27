@@ -49,6 +49,11 @@ interface VoiceState {
     videoBitrateKbps: number;
     shareAudio: boolean;
     audioBitrateKbps: 128 | 192;
+    /// Plan C: streamer-side codec choice. UNKNOWN = Auto (LCD picker
+    /// at start + auto-renegotiation as watchers come and go). Anything
+    /// else = the streamer explicitly forced this codec; viewers without
+    /// it see a grayed-out watch button and can't subscribe.
+    enforcedCodec: VideoCodec;
   };
   setWatching: (username: string | null) => void;
   addWatching: (username: string) => void;
@@ -156,6 +161,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     videoBitrateKbps: 10000,
     shareAudio: false,
     audioBitrateKbps: 128,
+    enforcedCodec: 0 as VideoCodec, // VideoCodec.UNKNOWN — Auto mode
   },
   setWatching: (username) => set({ watching: username }),
   addWatching: (username) =>

@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useVoiceStore } from "../../stores/voiceStore";
+import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
+import { VideoCodec } from "../../types";
 import { playSound } from "../../utils/sounds";
 
 interface CaptureSource {
@@ -106,6 +108,11 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
         videoBitrateKbps: streamSettings.videoBitrateKbps,
         shareAudio: streamSettings.shareAudio,
         audioBitrateKbps: streamSettings.audioBitrateKbps,
+        // Plan C: when the user explicitly picked a codec (not "Auto"),
+        // forceCodec is the codec value AND streaming.rs marks it as
+        // enforced on the wire so viewers without it see grayed Watch.
+        forceCodec: streamSettings.enforcedCodec === VideoCodec.UNKNOWN
+          ? null : streamSettings.enforcedCodec,
       });
       useVoiceStore.getState().setIsStreaming(true);
       playSound("stream_start");
@@ -267,6 +274,9 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
             </div>
           </div>
 
+          {/* Plan C: Codec — Auto + per-encodable codec from probe */}
+          <CodecPicker />
+
           {/* Row 2: Video quality */}
           <div>
             <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
@@ -384,5 +394,56 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
       </div>
     </div>,
     document.body
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Plan C: Codec picker. Reads encodable codecs from codecSettingsStore
+// (probed at app boot, filtered by user toggles). "Auto" is the default;
+// selecting a specific codec marks the stream as enforced — viewers
+// without that decoder can't subscribe.
+// ──────────────────────────────────────────────────────────────────────
+function CodecPicker() {
+  const streamSettings = useVoiceStore((s) => s.streamSettings);
+  const setStreamSettings = useVoiceStore((s) => s.setStreamSettings);
+  const { encodeCaps, load, loaded } = useCodecSettingsStore();
+  useEffect(() => { if (!loaded) load().catch(() => {}); }, [loaded, load]);
+
+  const codecLabel = (c: VideoCodec): string => {
+    switch (c) {
+      case VideoCodec.AV1: return "Force AV1";
+      case VideoCodec.H265: return "Force H.265";
+      case VideoCodec.H264_HW: return "Force H.264";
+      case VideoCodec.H264_SW: return "Force H.264 (software)";
+      default: return "Auto (recommended)";
+    }
+  };
+
+  return (
+    <div>
+      <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+        Codec
+      </label>
+      <select
+        value={streamSettings.enforcedCodec}
+        onChange={(e) =>
+          setStreamSettings({ enforcedCodec: Number(e.target.value) as VideoCodec })
+        }
+        title="Forcing a codec prevents viewers without that decoder from watching this stream."
+        className="w-full rounded-[8px] border border-border-divider bg-bg-darkest px-3 py-2 text-[13px] text-text-primary focus:outline-none focus:border-accent"
+      >
+        <option value={VideoCodec.UNKNOWN}>{codecLabel(VideoCodec.UNKNOWN)}</option>
+        {encodeCaps.map((c) => (
+          <option key={c.codec} value={c.codec}>
+            {codecLabel(c.codec)}
+          </option>
+        ))}
+      </select>
+      {streamSettings.enforcedCodec !== VideoCodec.UNKNOWN && (
+        <p className="mt-1 text-[11px] text-text-muted">
+          Viewers without this decoder won't be able to watch.
+        </p>
+      )}
+    </div>
   );
 }

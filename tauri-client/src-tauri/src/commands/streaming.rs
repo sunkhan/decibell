@@ -52,13 +52,22 @@ pub async fn start_screen_share(
         _ => 10000,
     });
 
-    // Resolve dev force_codec → CodecKind.
+    // Resolve force_codec → CodecKind.
+    // Plan C semantics: None or 0 = Auto (no enforcement, LCD picker
+    // selects initial codec from streamer's encode caps). Otherwise the
+    // user explicitly forced a codec — that codec becomes both the
+    // initial and the enforced codec on the wire (viewers without it
+    // see grayed-out Watch button + can't subscribe).
     let target_codec = match force_codec {
         None | Some(0) | Some(1) => CodecKind::H264Hw,
         Some(2) => CodecKind::H264Sw,
         Some(3) => CodecKind::H265,
         Some(4) => CodecKind::Av1,
         Some(other) => return Err(format!("Unknown codec value: {}", other)),
+    };
+    let enforced_codec_value: i32 = match force_codec {
+        None | Some(0) => 0,           // Auto — no enforcement
+        Some(c) => c as i32,           // user picked X — enforce
     };
 
     eprintln!("[stream] start_screen_share: server='{}', channel='{}', source='{}', {}x{} @ {}fps",
@@ -102,7 +111,7 @@ pub async fn start_screen_share(
             // the H264Hw default. enforced_codec stays UNKNOWN — Plan C
             // Task 11 wires the production enforce dropdown.
             chosen_codec: target_codec as i32,
-            enforced_codec: 0,
+            enforced_codec: enforced_codec_value,
         }),
         Some(&client.jwt),
     );
@@ -175,7 +184,10 @@ pub async fn start_screen_share(
         Some(jwt),
         Some(encode_caps_filtered),
         Some(toggles),
-        None, // enforced_codec — Plan C UI dropdown wires this in Group 6
+        // Plan C Group 6: when the user picked a specific codec in the
+        // dialog, lock the selector to that codec — auto-renegotiation
+        // is disabled for the rest of the stream.
+        if enforced_codec_value == 0 { None } else { Some(target_codec) },
         watcher_event_tx,
         voice_caps_cache,
     );
