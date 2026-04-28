@@ -673,6 +673,14 @@ pub enum CaptureError {
 }
 
 pub trait GpuCaptureSource: Send {
+    /// Native width of the source (monitor or window) in luma pixels.
+    /// Used by the VideoProcessor to size the input view; may differ
+    /// from the encoder's target width when the user requests scaling.
+    fn width(&self) -> u32;
+
+    /// Native height of the source. See width().
+    fn height(&self) -> u32;
+
     /// Returns the next available frame, or Ok(None) on timeout. The
     /// returned GpuFrame is valid until release_current_frame() is called.
     fn next_frame(&mut self) -> Result<Option<GpuFrame>, CaptureError>;
@@ -767,6 +775,9 @@ impl DxgiSource {
 }
 
 impl GpuCaptureSource for DxgiSource {
+    fn width(&self) -> u32 { self.width }
+    fn height(&self) -> u32 { self.height }
+
     fn next_frame(&mut self) -> Result<Option<GpuFrame>, CaptureError> {
         if self.frame_acquired {
             return Err(CaptureError::Other(
@@ -932,6 +943,9 @@ impl WgcSource {
 }
 
 impl GpuCaptureSource for WgcSource {
+    fn width(&self) -> u32 { self.width }
+    fn height(&self) -> u32 { self.height }
+
     fn next_frame(&mut self) -> Result<Option<GpuFrame>, CaptureError> {
         let frame = match self.frame_pool.TryGetNextFrame() {
             Ok(f) => f,
@@ -1105,13 +1119,13 @@ impl GpuStreamingPipeline {
                 return Err(format!("Unknown source ID prefix: {}", source_id));
             };
 
-        // We need width/height from the source for the VideoProcessor.
-        // Both sources expose width()/height() — but the trait doesn't, so
-        // we read them via downcast. Simpler: read from the config (the
-        // pipeline is constructed AFTER the source so config has the dims).
-        let (src_w, src_h) = (config.width, config.height);
+        // Source native dims for the VideoProcessor input view; may differ
+        // from encoder target dims when the user requests scaling.
+        let src_w = capture.width();
+        let src_h = capture.height();
 
-        // GPU color converter (BGRA→NV12).
+        // GPU color converter (BGRA src_w×src_h → NV12 config.width×config.height).
+        // Same blit handles both color conversion and scaling in one op.
         let converter = VideoProcessor::new(&device, src_w, src_h, config.width, config.height)
             .map_err(|e| format!("VideoProcessor::new: {}", e))?;
 
