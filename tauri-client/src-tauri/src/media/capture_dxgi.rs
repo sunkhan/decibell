@@ -837,3 +837,120 @@ fn dxgi_capture_thread(
         Ok(())
     }
 }
+
+// ─── GPU zero-copy capture source (Plan-D-1) ───────────────────────────────
+// DxgiSource implements GpuCaptureSource — DXGI Desktop Duplication that
+// hands BGRA D3D11 textures into the shared-device GPU pipeline. The
+// existing `start_capture` (above) keeps the CPU-readback path for
+// libx264 + the GPU-init-failed fallback.
+
+use super::gpu_capture::{CaptureError, GpuCaptureSource, GpuFrame};
+
+pub struct DxgiSource {
+    duplication: IDXGIOutputDuplication,
+    width: u32,
+    height: u32,
+    start_time: std::time::Instant,
+    frame_acquired: bool,
+}
+
+impl DxgiSource {
+    /// Create a DXGI source for the given monitor index, using the supplied
+    /// shared D3D11 device. The device must be on the same adapter as the
+    /// target output (use `create_device_for_adapter` to ensure this).
+    pub fn new(
+        adapter_idx: u32,
+        output_idx: u32,
+        device: &ID3D11Device,
+    ) -> Result<Self, String> {
+        unsafe {
+            let factory: IDXGIFactory1 =
+                CreateDXGIFactory1().map_err(|e| format!("CreateDXGIFactory1: {}", e))?;
+            let adapter: IDXGIAdapter1 = factory
+                .EnumAdapters1(adapter_idx)
+                .map_err(|e| format!("EnumAdapters1({}): {}", adapter_idx, e))?;
+            let output: IDXGIOutput = adapter
+                .EnumOutputs(output_idx)
+                .map_err(|e| format!("EnumOutputs({}): {}", output_idx, e))?;
+            let output1: IDXGIOutput1 = output
+                .cast()
+                .map_err(|e| format!("Cast IDXGIOutput1: {}", e))?;
+
+            let desc = output.GetDesc().map_err(|e| format!("GetDesc: {}", e))?;
+            let coords = desc.DesktopCoordinates;
+            let width = (coords.right - coords.left).unsigned_abs();
+            let height = (coords.bottom - coords.top).unsigned_abs();
+
+            let duplication: IDXGIOutputDuplication = output1
+                .DuplicateOutput(device)
+                .map_err(|e| format!("DuplicateOutput: {}", e))?;
+
+            Ok(DxgiSource {
+                duplication,
+                width,
+                height,
+                start_time: std::time::Instant::now(),
+                frame_acquired: false,
+            })
+        }
+    }
+}
+
+impl GpuCaptureSource for DxgiSource {
+    fn width(&self) -> u32 { self.width }
+    fn height(&self) -> u32 { self.height }
+
+    fn next_frame(&mut self) -> Result<Option<GpuFrame>, CaptureError> {
+        if self.frame_acquired {
+            return Err(CaptureError::Other(
+                "Previous frame not released — call release_current_frame first".into(),
+            ));
+        }
+        unsafe {
+            let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
+            let mut desktop_resource: Option<IDXGIResource> = None;
+            let hr = self.duplication.AcquireNextFrame(
+                16, // ms timeout — ~one frame at 60fps
+                &mut frame_info,
+                &mut desktop_resource,
+            );
+            match hr {
+                Ok(()) => {}
+                Err(e) => {
+                    let code = e.code().0 as u32;
+                    if code == 0x887A0027 { return Ok(None); }   // WAIT_TIMEOUT
+                    if code == 0x887A0026 { return Err(CaptureError::AccessLost); }
+                    return Err(CaptureError::Other(format!("AcquireNextFrame: {}", e)));
+                }
+            }
+            let resource = match desktop_resource {
+                Some(r) => r,
+                None => {
+                    let _ = self.duplication.ReleaseFrame();
+                    return Ok(None);
+                }
+            };
+            let texture: ID3D11Texture2D = resource
+                .cast()
+                .map_err(|e| CaptureError::Other(format!("Cast IDXGIResource→ID3D11Texture2D: {}", e)))?;
+            self.frame_acquired = true;
+            Ok(Some(GpuFrame {
+                texture,
+                width: self.width,
+                height: self.height,
+                timestamp_us: self.start_time.elapsed().as_micros() as u64,
+            }))
+        }
+    }
+
+    fn release_current_frame(&mut self) {
+        if self.frame_acquired {
+            unsafe { let _ = self.duplication.ReleaseFrame(); }
+            self.frame_acquired = false;
+        }
+    }
+}
+
+impl Drop for DxgiSource {
+    fn drop(&mut self) { self.release_current_frame(); }
+}
