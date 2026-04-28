@@ -436,6 +436,23 @@ pub async fn set_decoder_caps(
     Ok(())
 }
 
+/// Linux-only: probe what the Rust ffmpeg decoder can actually open on
+/// this machine. JS calls this when WebCodecs is unavailable (WebKitGTK)
+/// instead of returning an empty/H.264-only cap set, so the LCD picker
+/// can converge on AV1 / HEVC when the Linux watcher's GPU supports them.
+/// On non-Linux this returns an empty Vec — JS shouldn't call it there.
+#[tauri::command]
+pub async fn probe_decoders_native() -> Result<Vec<CodecCap>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(crate::media::video_decoder::probe_decoders())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct CodecSettingsPayload {
     pub use_av1: bool,

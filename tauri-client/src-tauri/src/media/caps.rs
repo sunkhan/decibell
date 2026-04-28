@@ -49,7 +49,12 @@ impl<'de> Deserialize<'de> for CodecKind {
     }
 }
 
+/// camelCase serde so the JS side's CodecCapability TS interface
+/// (maxWidth / maxHeight / maxFps) round-trips correctly through Tauri.
+/// Without this, get_caps returns snake_case fields and the Codecs
+/// Settings tab silently renders "undefined×undefined @ undefinedfps".
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CodecCap {
     pub codec: CodecKind,
     pub max_width: u32,

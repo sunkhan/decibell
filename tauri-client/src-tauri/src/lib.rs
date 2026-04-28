@@ -166,6 +166,7 @@ pub fn run() {
             commands::settings::get_caps,
             commands::settings::refresh_caps,
             commands::settings::set_decoder_caps,
+            commands::settings::probe_decoders_native,
             commands::settings::get_codec_settings,
             commands::settings::set_codec_settings,
             commands::sounds::play_sound,
