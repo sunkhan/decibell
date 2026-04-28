@@ -17,6 +17,8 @@ pub mod capture_wgc;
 #[cfg(target_os = "windows")]
 pub mod video_processor;
 #[cfg(target_os = "windows")]
+pub mod thumbnail_reader;
+#[cfg(target_os = "windows")]
 pub mod gpu_capture;
 #[cfg(target_os = "windows")]
 pub mod gpu_pipeline;
@@ -719,67 +721,10 @@ impl VideoEngine {
             .expect("spawn video pipeline thread");
 
         // Bridge video pipeline events to Tauri — runs on the blocking pool
-        // to avoid consuming a Tokio worker thread.
-        let event_bridge = tokio::task::spawn_blocking(move || {
-            loop {
-                match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                    Ok(video_pipeline::VideoPipelineEvent::CaptureEnded) => {
-                        eprintln!("[video-engine] Capture source ended, emitting stream_capture_ended");
-                        let _ = app.emit("stream_capture_ended", ());
-                    }
-                    Ok(video_pipeline::VideoPipelineEvent::Error(msg)) => {
-                        let _ = app.emit("voice_error", serde_json::json!({
-                            "message": format!("Video: {}", msg),
-                        }));
-                    }
-                    Ok(video_pipeline::VideoPipelineEvent::ThumbnailReady(jpeg)) => {
-                        // Send thumbnail via cloned write_tx. Use try_send (non-blocking)
-                        // since we're on the blocking pool and can't use .await.
-                        if let (Some(ref tx), Some(ref ch_id)) = (&thumbnail_write_tx, &thumbnail_channel_id) {
-                            use super::net::connection::build_packet;
-                            use super::net::proto::*;
-                            let data = build_packet(
-                                packet::Type::StreamThumbnailUpdate,
-                                packet::Payload::StreamThumbnailUpdate(StreamThumbnailUpdate {
-                                    channel_id: ch_id.clone(),
-                                    owner_username: String::new(),
-                                    thumbnail_data: jpeg,
-                                }),
-                                None,
-                            );
-                            let _ = tx.try_send(data);
-                        }
-                    }
-                    Ok(video_pipeline::VideoPipelineEvent::EncodedFrame { data, is_keyframe, frame_id, codec, description }) => {
-                        use base64::Engine;
-                        let b64_data = base64::engine::general_purpose::STANDARD.encode(&data);
-                        // Description comes straight from the encoder (Plan B Group 3:
-                        // avcC for H.264, hvcC for H.265, av1C for AV1 — all read from
-                        // FFmpeg extradata or AVCC bitstream parsing).
-                        let b64_desc = description.as_ref().map(|d|
-                            base64::engine::general_purpose::STANDARD.encode(d)
-                        );
-                        if frame_id % 60 == 0 || is_keyframe {
-                            eprintln!("[self-preview-bridge] emit stream_frame user='{}' frame={} bytes={} keyframe={} codec={} desc={}",
-                                self_username, frame_id, data.len(), is_keyframe, codec,
-                                b64_desc.as_ref().map(|d| d.len()).unwrap_or(0));
-                        }
-                        let _ = app.emit("stream_frame", serde_json::json!({
-                            "username": self_username,
-                            "format": "h264",
-                            "data": b64_data,
-                            "timestamp": frame_id as u64 * 33_333,
-                            "keyframe": is_keyframe,
-                            "description": b64_desc,
-                            "codec": codec,
-                        }));
-                    }
-                    Ok(_) => {}
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            }
-        });
+        // to avoid consuming a Tokio worker thread. Shared with start_gpu().
+        let event_bridge = spawn_video_event_bridge(
+            event_rx, app, thumbnail_write_tx, thumbnail_channel_id, self_username,
+        );
 
         VideoEngine {
             pipeline_thread: Some(pipeline_thread),
@@ -807,12 +752,200 @@ impl VideoEngine {
     pub fn pipeline_control_tx(&self) -> mpsc::Sender<video_pipeline::VideoPipelineControl> {
         self.pipeline_control_tx.clone()
     }
+
+    /// Windows-only: start the zero-copy GPU pipeline (capture + BGRA→NV12 +
+    /// NVENC, all on the GPU). Returns Err on any D3D11/NVENC build step
+    /// so caller can fall back to the CPU path. On success, the returned
+    /// VideoEngine + (effective_width, effective_height) — needed because
+    /// "source" resolution resolves to the capture surface's native dims
+    /// only after the capture interface is opened.
+    #[cfg(target_os = "windows")]
+    pub fn start_gpu(
+        source_id: String,
+        target_codec: caps::CodecKind,
+        config: encoder::EncoderConfig,
+        target_fps: u32,
+        socket: Arc<UdpSocket>,
+        sender_id: String,
+        app: AppHandle,
+        thumbnail_write_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+        thumbnail_channel_id: Option<String>,
+        self_username: String,
+        ctx: Option<video_pipeline::StreamerContext>,
+        community_write_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+        jwt: Option<String>,
+        encode_caps: Option<Vec<caps::CodecCap>>,
+        toggles: Option<codec_selection::Toggles>,
+        enforced_codec: Option<caps::CodecKind>,
+        watcher_event_tx: tokio::sync::broadcast::Sender<crate::state::WatcherEvent>,
+        voice_caps_cache: Arc<std::sync::RwLock<std::collections::HashMap<String, caps::PeerCaps>>>,
+    ) -> Result<(Self, u32, u32), String> {
+        let (control_tx, control_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+
+        // Build the pipeline first — failure here is the trigger for the
+        // CPU fallback toast in start_screen_share.
+        let pipeline = gpu_pipeline::GpuStreamingPipeline::build(
+            target_codec, &source_id, config.clone(),
+        )?;
+        let eff_w = pipeline.effective_width();
+        let eff_h = pipeline.effective_height();
+
+        // ── Mirror VideoEngine::start's CodecSelector setup ──
+        let (swap_rx_for_pipeline, selector_for_pipeline) = if let (
+            Some(c), Some(enc), Some(tog),
+        ) = (ctx.as_ref(), encode_caps.as_ref(), toggles.as_ref()) {
+            let initial = codec_selection::StreamSettings {
+                codec: target_codec,
+                width: eff_w,
+                height: eff_h,
+                fps: target_fps,
+            };
+            let (selector, swap_rx) = codec_selection::CodecSelector::new(
+                initial, enforced_codec, enc.clone(), tog.clone(),
+            );
+            let selector = Arc::new(selector);
+
+            let mut watcher_rx = watcher_event_tx.subscribe();
+            let selector_for_listener = selector.clone();
+            let streamer_username = c.streamer_username.clone();
+            tokio::spawn(async move {
+                while let Ok(evt) = watcher_rx.recv().await {
+                    if evt.streamer_username != streamer_username { continue; }
+                    let watcher_decode = {
+                        match voice_caps_cache.read() {
+                            Ok(cache) => cache.get(&evt.watcher_username)
+                                .map(|c| c.decode.clone()),
+                            Err(_) => None,
+                        }
+                    };
+                    let watcher_decode = match watcher_decode {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    const JOINED: i32 = 1;
+                    const LEFT: i32 = 2;
+                    match evt.action {
+                        JOINED => selector_for_listener.on_watcher_joined(evt.watcher_username, watcher_decode),
+                        LEFT => selector_for_listener.on_watcher_left(&evt.watcher_username),
+                        _ => {}
+                    }
+                }
+            });
+            (Some(swap_rx), Some(selector))
+        } else {
+            (None, None)
+        };
+
+        let ctx_for_pipeline = ctx.clone();
+        let community_write_tx_for_pipeline = community_write_tx.clone();
+        let jwt_for_pipeline = jwt.clone();
+
+        let pipeline_thread = thread::Builder::new()
+            .name("decibell-video-gpu".to_string())
+            .spawn(move || {
+                pipeline.run(
+                    control_rx,
+                    event_tx,
+                    socket,
+                    sender_id,
+                    ctx_for_pipeline,
+                    community_write_tx_for_pipeline,
+                    jwt_for_pipeline,
+                    swap_rx_for_pipeline,
+                    selector_for_pipeline,
+                );
+            })
+            .map_err(|e| format!("spawn GPU pipeline thread: {}", e))?;
+
+        let event_bridge = spawn_video_event_bridge(
+            event_rx, app, thumbnail_write_tx, thumbnail_channel_id, self_username,
+        );
+
+        Ok((
+            VideoEngine {
+                pipeline_thread: Some(pipeline_thread),
+                event_bridge: Some(event_bridge),
+                pipeline_control_tx: control_tx,
+            },
+            eff_w,
+            eff_h,
+        ))
+    }
 }
 
 impl Drop for VideoEngine {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Spawn the Tauri-side bridge that translates VideoPipelineEvents into
+/// app.emit() calls + thumbnail packets. Runs on the blocking pool so
+/// it never consumes a Tokio worker. Shared between VideoEngine::start
+/// (CPU pipeline) and VideoEngine::start_gpu (Windows zero-copy path).
+fn spawn_video_event_bridge(
+    event_rx: mpsc::Receiver<video_pipeline::VideoPipelineEvent>,
+    app: AppHandle,
+    thumbnail_write_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+    thumbnail_channel_id: Option<String>,
+    self_username: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::task::spawn_blocking(move || {
+        loop {
+            match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(video_pipeline::VideoPipelineEvent::CaptureEnded) => {
+                    eprintln!("[video-engine] Capture source ended, emitting stream_capture_ended");
+                    let _ = app.emit("stream_capture_ended", ());
+                }
+                Ok(video_pipeline::VideoPipelineEvent::Error(msg)) => {
+                    let _ = app.emit("voice_error", serde_json::json!({
+                        "message": format!("Video: {}", msg),
+                    }));
+                }
+                Ok(video_pipeline::VideoPipelineEvent::ThumbnailReady(jpeg)) => {
+                    if let (Some(ref tx), Some(ref ch_id)) = (&thumbnail_write_tx, &thumbnail_channel_id) {
+                        use super::net::connection::build_packet;
+                        use super::net::proto::*;
+                        let data = build_packet(
+                            packet::Type::StreamThumbnailUpdate,
+                            packet::Payload::StreamThumbnailUpdate(StreamThumbnailUpdate {
+                                channel_id: ch_id.clone(),
+                                owner_username: String::new(),
+                                thumbnail_data: jpeg,
+                            }),
+                            None,
+                        );
+                        let _ = tx.try_send(data);
+                    }
+                }
+                Ok(video_pipeline::VideoPipelineEvent::EncodedFrame { data, is_keyframe, frame_id, codec, description }) => {
+                    use base64::Engine;
+                    let b64_data = base64::engine::general_purpose::STANDARD.encode(&data);
+                    let b64_desc = description.as_ref().map(|d|
+                        base64::engine::general_purpose::STANDARD.encode(d)
+                    );
+                    if frame_id % 60 == 0 || is_keyframe {
+                        eprintln!("[self-preview-bridge] emit stream_frame user='{}' frame={} bytes={} keyframe={} codec={} desc={}",
+                            self_username, frame_id, data.len(), is_keyframe, codec,
+                            b64_desc.as_ref().map(|d| d.len()).unwrap_or(0));
+                    }
+                    let _ = app.emit("stream_frame", serde_json::json!({
+                        "username": self_username,
+                        "format": "h264",
+                        "data": b64_data,
+                        "timestamp": frame_id as u64 * 33_333,
+                        "keyframe": is_keyframe,
+                        "description": b64_desc,
+                        "codec": codec,
+                    }));
+                }
+                Ok(_) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    })
 }
 
 pub struct AudioStreamEngine {
