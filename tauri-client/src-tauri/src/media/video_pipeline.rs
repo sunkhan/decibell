@@ -619,3 +619,43 @@ fn perform_swap(
     selector.record_swap(swap.target);
     Ok(())
 }
+
+/// Public helper: split an EncodedFrame into UdpVideoPacket fragments and
+/// send them on the given UDP socket. Used by the GPU zero-copy pipeline
+/// (gpu_pipeline.rs) where the on_encoded callback gets an EncodedFrame
+/// and needs to ship it via UDP without going through the existing
+/// run_video_send_pipeline thread. Returns (sent_ok, sent_err) counts.
+///
+/// The CPU pipeline path (run_video_send_pipeline above) does its own
+/// inline packetization with surrounding FEC/stats logic; that path is
+/// unchanged. Eventually both paths could share this helper, but the
+/// existing CPU code is intentionally not refactored here.
+pub fn send_encoded_frame_as_packets(
+    socket: &std::net::UdpSocket,
+    sender_id: &str,
+    frame_id: u32,
+    encoded: &super::encoder::EncodedFrame,
+    codec_byte: u8,
+) -> (u32, u32) {
+    use super::video_packet::{UdpVideoPacket, UDP_MAX_PAYLOAD};
+    let chunks: Vec<&[u8]> = encoded.data.chunks(UDP_MAX_PAYLOAD).collect();
+    let total = chunks.len() as u16;
+    let mut send_ok = 0u32;
+    let mut send_err = 0u32;
+    for (i, chunk) in chunks.iter().enumerate() {
+        let pkt = UdpVideoPacket::new_with_codec(
+            sender_id,
+            frame_id,
+            i as u16,
+            total,
+            encoded.is_keyframe,
+            codec_byte,
+            chunk,
+        );
+        match socket.send(&pkt.to_bytes()) {
+            Ok(_) => send_ok += 1,
+            Err(_) => send_err += 1,
+        }
+    }
+    (send_ok, send_err)
+}
