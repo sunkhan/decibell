@@ -1554,6 +1554,126 @@ impl H264Encoder {
         };
         Some(EncodedFrame { data, is_keyframe, pts, avcc_description: description })
     }
+
+    /// Allocate a D3D11 NV12 texture from the encoder's hw_frames_ctx pool.
+    /// Caller blits BGRA→NV12 into the returned frame's texture, then submits
+    /// via encode_d3d11_frame.
+    #[cfg(target_os = "windows")]
+    pub fn acquire_pool_frame(&mut self) -> Result<D3d11PoolFrame, String> {
+        use ffmpeg_next::sys::*;
+        unsafe {
+            let av_frame = av_frame_alloc();
+            if av_frame.is_null() {
+                return Err("av_frame_alloc failed".into());
+            }
+            // Read the encoder's hw_frames_ctx (set in new_d3d11).
+            let ctx_ptr = self.encoder.as_ptr();
+            let frames_ref = (*ctx_ptr).hw_frames_ctx;
+            if frames_ref.is_null() {
+                let mut frame_ptr = av_frame;
+                av_frame_free(&mut frame_ptr);
+                return Err("encoder has no hw_frames_ctx — was it built via new_d3d11?".into());
+            }
+            let rc = av_hwframe_get_buffer(frames_ref, av_frame, 0);
+            if rc < 0 {
+                let mut frame_ptr = av_frame;
+                av_frame_free(&mut frame_ptr);
+                return Err(format!("av_hwframe_get_buffer: {}", rc));
+            }
+            Ok(D3d11PoolFrame { av_frame })
+        }
+    }
+
+    /// Submit a pool frame (already filled by VideoProcessor) to the encoder.
+    /// Returns the next encoded packet if one is ready, or None if the encoder
+    /// is buffering.
+    #[cfg(target_os = "windows")]
+    pub fn encode_d3d11_frame(
+        &mut self,
+        pool_frame: D3d11PoolFrame,
+    ) -> Result<Option<EncodedFrame>, String> {
+        use ffmpeg_next::sys::*;
+        unsafe {
+            let pts = self.frame_count as i64;
+            (*pool_frame.av_frame).pts = pts;
+
+            // Force keyframe if requested (responds to PLI).
+            if self.force_next_keyframe {
+                (*pool_frame.av_frame).pict_type = AVPictureType::AV_PICTURE_TYPE_I;
+                (*pool_frame.av_frame).flags |= AV_FRAME_FLAG_KEY as i32;
+                self.force_next_keyframe = false;
+            } else {
+                (*pool_frame.av_frame).pict_type = AVPictureType::AV_PICTURE_TYPE_NONE;
+            }
+
+            // Submit via sys API (ffmpeg-next has no public typed wrapper for
+            // sending a raw AVFrame). EAGAIN means "drain a packet first then
+            // retry" — same handling as the existing encode_nv12_frame path.
+            let ctx_ptr = self.encoder.as_mut_ptr();
+            let mut rc = avcodec_send_frame(ctx_ptr, pool_frame.av_frame);
+            if rc == ffmpeg_next::error::EAGAIN {
+                let _ = self.receive_one_packet();
+                rc = avcodec_send_frame(ctx_ptr, pool_frame.av_frame);
+            }
+            if rc < 0 && rc != ffmpeg_next::error::EAGAIN {
+                return Err(format!("avcodec_send_frame: {}", rc));
+            }
+            // pool_frame is dropped here, releasing the texture back to the pool.
+            // FFmpeg internally retains a ref while encoding.
+            drop(pool_frame);
+        }
+
+        self.frame_count += 1;
+        Ok(self.receive_one_packet())
+    }
+}
+
+/// Wraps an AVFrame allocated from the D3D11 hw_frames_ctx pool. The frame's
+/// data[0] is a pointer to a pool-managed ID3D11Texture2D — the caller's
+/// VideoProcessor blits BGRA→NV12 into that texture, then submits the wrapper
+/// via H264Encoder::encode_d3d11_frame.
+#[cfg(target_os = "windows")]
+pub struct D3d11PoolFrame {
+    av_frame: *mut ffmpeg_next::sys::AVFrame,
+}
+
+#[cfg(target_os = "windows")]
+impl D3d11PoolFrame {
+    /// Get the D3D11 texture this pool frame wraps. The VideoProcessor
+    /// blits BGRA→NV12 directly into this texture.
+    pub fn texture(&self) -> windows::Win32::Graphics::Direct3D11::ID3D11Texture2D {
+        use windows::core::Interface;
+        use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+        unsafe {
+            // FFmpeg's D3D11VA convention: frame->data[0] is the
+            // ID3D11Texture2D*, frame->data[1] is the array slice index
+            // (intptr_t). The pool gives us texture array slice 0 typically.
+            let raw_tex = (*self.av_frame).data[0] as *mut std::ffi::c_void;
+            // Build a Rust-owned ID3D11Texture2D wrapper that bumps the
+            // refcount; FFmpeg keeps its own ref and releases when the
+            // AVFrame is freed in our Drop.
+            let tex: ID3D11Texture2D = ID3D11Texture2D::from_raw_borrowed(&raw_tex)
+                .expect("D3D11 pool texture pointer was null")
+                .clone();
+            tex
+        }
+    }
+
+    /// The array-slice index for the D3D11 texture (FFmpeg's pool may
+    /// share one texture array across the pool with per-slice access).
+    #[allow(dead_code)]
+    pub fn array_slice(&self) -> usize {
+        unsafe { (*self.av_frame).data[1] as usize }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for D3d11PoolFrame {
+    fn drop(&mut self) {
+        unsafe {
+            ffmpeg_next::sys::av_frame_free(&mut self.av_frame);
+        }
+    }
 }
 
 impl Drop for H264Encoder {
