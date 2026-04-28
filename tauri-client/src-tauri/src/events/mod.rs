@@ -511,6 +511,20 @@ pub fn emit_stream_codec_changed(
     let _ = app.emit(STREAM_CODEC_CHANGED, payload);
 }
 
+// Plan-D-1: emitted when the GPU zero-copy pipeline fails to start
+// and we fall back to the CPU readback path.
+pub const STREAM_GPU_FALLBACK: &str = "stream_gpu_fallback";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamGpuFallbackPayload {
+    pub error: String,
+}
+
+pub fn emit_stream_gpu_fallback(app: &AppHandle, error: String) {
+    let _ = app.emit(STREAM_GPU_FALLBACK, StreamGpuFallbackPayload { error });
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamInfoPayload {
