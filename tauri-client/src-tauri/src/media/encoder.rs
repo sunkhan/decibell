@@ -93,6 +93,26 @@ fn parse_annexb_nals_hevc(data: &[u8]) -> Vec<(u8, &[u8])> {
 /// Profile/tier/level read from the SPS profile_tier_level (12 fixed bytes
 /// at byte offsets 3..15 of the SPS NAL — payload byte 1 onward, after
 /// the 2-byte NAL header and the 1-byte sps_video_parameter_set_id field).
+/// Strip H.26x emulation prevention bytes: any `00 00 03` sequence in
+/// a NAL has the `03` inserted to prevent the byte stream from being
+/// mistaken for a start code. Reverse that to get the raw RBSP so we
+/// can read fixed-position fields (profile_tier_level, level_idc, etc.)
+/// at the correct offsets.
+fn unescape_rbsp(nal_bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(nal_bytes.len());
+    let mut zero_count = 0usize;
+    for &b in nal_bytes {
+        if zero_count >= 2 && b == 0x03 {
+            // emulation prevention byte — drop it
+            zero_count = 0;
+        } else {
+            out.push(b);
+            zero_count = if b == 0 { zero_count + 1 } else { 0 };
+        }
+    }
+    out
+}
+
 fn build_hevc_hvcc(annexb_extradata: &[u8]) -> Option<Vec<u8>> {
     let nals = parse_annexb_nals_hevc(annexb_extradata);
     let vps: Vec<&[u8]> = nals.iter().filter(|(t, _)| *t == 32).map(|(_, d)| *d).collect();
@@ -105,15 +125,21 @@ fn build_hevc_hvcc(annexb_extradata: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
 
-    let sps0 = sps[0];
+    let sps0_raw = sps[0];
+    // Read fixed-position SPS fields from the unescaped RBSP. Reading raw
+    // NAL bytes directly causes wrong values when emulation prevention
+    // bytes (00 00 03) sit within the profile_tier_level or earlier — e.g.
+    // shifts level_idc by N bytes per emulation byte ahead of it.
+    let sps0 = unescape_rbsp(sps0_raw);
     if sps0.len() < 15 {
-        eprintln!("[encoder] hvcC build failed — SPS too short ({} bytes)", sps0.len());
+        eprintln!("[encoder] hvcC build failed — SPS RBSP too short ({} bytes)", sps0.len());
         return None;
     }
 
-    // Diagnostic: dump full SPS so we can decode the conformance window
-    // and chroma_format_idc by hand when the decoder reports wrong dims.
-    eprintln!("[encoder] HEVC SPS ({} bytes): {:02X?}", sps0.len(), sps0);
+    // Diagnostic: log both raw NAL and unescaped RBSP so a future bug
+    // here is one log line away from being obvious.
+    eprintln!("[encoder] HEVC SPS NAL ({} bytes): {:02X?}", sps0_raw.len(), sps0_raw);
+    eprintln!("[encoder] HEVC SPS RBSP ({} bytes): {:02X?}", sps0.len(), &sps0[..sps0.len().min(20)]);
 
     // sps[2] = sps_video_parameter_set_id<<4 | sps_max_sub_layers_minus1<<1 | sps_temporal_id_nesting_flag
     // sps[3..15] = profile_tier_level (12 bytes — see H.265 spec 7.3.3)
@@ -426,6 +452,12 @@ impl H264Encoder {
                 opts.set("preset", "p5");
                 opts.set("tune", "ull");
                 opts.set("rc", "cbr");
+                // hevc_nvenc with tune=ull was producing tiny ~5KB frames at
+                // 1440p with only the top-left quadrant of picture data.
+                // Forcing single-slice fixed the partial-picture symptom.
+                if codec_name == "hevc_nvenc" {
+                    opts.set("slices", "1");
+                }
                 // VBV buffer: ~4 frames of headroom for rate control
                 let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
                 unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
