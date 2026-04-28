@@ -42,6 +42,114 @@ fn parse_annexb_nals(data: &[u8]) -> Vec<(u8, &[u8])> {
     nals
 }
 
+/// Parse HEVC Annex B bitstream into individual NAL units.
+/// Differs from the H.264 version: HEVC NAL header is 2 bytes (vs 1) and
+/// nal_unit_type lives in bits 1-6 of the first header byte (vs bits 0-4).
+/// Returns (nal_type, nal_data_with_2byte_header).
+fn parse_annexb_nals_hevc(data: &[u8]) -> Vec<(u8, &[u8])> {
+    let mut nals = Vec::new();
+    let len = data.len();
+    let mut i = 0;
+    let mut nal_starts: Vec<usize> = Vec::new();
+
+    while i < len {
+        if i + 3 <= len && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            nal_starts.push(i + 3);
+            i += 3;
+        } else if i + 4 <= len && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1 {
+            nal_starts.push(i + 4);
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+
+    for (idx, &start) in nal_starts.iter().enumerate() {
+        let end = if idx + 1 < nal_starts.len() {
+            let next = nal_starts[idx + 1];
+            if next >= 4 && data[next - 4] == 0 && data[next - 3] == 0 && data[next - 2] == 0 && data[next - 1] == 1 {
+                next - 4
+            } else {
+                next - 3
+            }
+        } else {
+            len
+        };
+        if start < end && start + 2 <= end {
+            let nal_type = (data[start] >> 1) & 0x3F;
+            nals.push((nal_type, &data[start..end]));
+        }
+    }
+    nals
+}
+
+/// Build a HEVCDecoderConfigurationRecord (hvcC, ISO/IEC 14496-15) from
+/// a buffer of annex-B VPS+SPS+PPS NAL units. FFmpeg's hevc_nvenc puts
+/// raw annex-B NALs in extradata even with AV_CODEC_FLAG_GLOBAL_HEADER
+/// set (different convention than av1_nvenc which produces proper av1C),
+/// so we have to translate.
+///
+/// HEVC NAL types: 32 = VPS, 33 = SPS, 34 = PPS.
+/// Profile/tier/level read from the SPS profile_tier_level (12 fixed bytes
+/// at byte offsets 3..15 of the SPS NAL — payload byte 1 onward, after
+/// the 2-byte NAL header and the 1-byte sps_video_parameter_set_id field).
+fn build_hevc_hvcc(annexb_extradata: &[u8]) -> Option<Vec<u8>> {
+    let nals = parse_annexb_nals_hevc(annexb_extradata);
+    let vps: Vec<&[u8]> = nals.iter().filter(|(t, _)| *t == 32).map(|(_, d)| *d).collect();
+    let sps: Vec<&[u8]> = nals.iter().filter(|(t, _)| *t == 33).map(|(_, d)| *d).collect();
+    let pps: Vec<&[u8]> = nals.iter().filter(|(t, _)| *t == 34).map(|(_, d)| *d).collect();
+
+    if vps.is_empty() || sps.is_empty() || pps.is_empty() {
+        eprintln!("[encoder] hvcC build failed — missing NAL types: vps={}, sps={}, pps={}",
+                  vps.len(), sps.len(), pps.len());
+        return None;
+    }
+
+    let sps0 = sps[0];
+    if sps0.len() < 15 {
+        eprintln!("[encoder] hvcC build failed — SPS too short ({} bytes)", sps0.len());
+        return None;
+    }
+
+    // sps[2] = sps_video_parameter_set_id<<4 | sps_max_sub_layers_minus1<<1 | sps_temporal_id_nesting_flag
+    // sps[3..15] = profile_tier_level (12 bytes — see H.265 spec 7.3.3)
+    let profile_byte = sps0[3];
+    let profile_compat = &sps0[4..8];
+    let constraint_flags = &sps0[8..14];
+    let level_idc = sps0[14];
+    let temporal_id_nesting = sps0[2] & 0x01;
+    let max_sub_layers_minus1 = (sps0[2] >> 1) & 0x07;
+
+    let mut hvcc = Vec::with_capacity(64 + annexb_extradata.len());
+    hvcc.push(0x01);                              // configurationVersion
+    hvcc.push(profile_byte);                      // profile_space + tier_flag + profile_idc
+    hvcc.extend_from_slice(profile_compat);       // 4 bytes general_profile_compatibility_flags
+    hvcc.extend_from_slice(constraint_flags);     // 6 bytes general_constraint_indicator_flags
+    hvcc.push(level_idc);
+    hvcc.extend_from_slice(&[0xF0, 0x00]);        // reserved(4)=1111, min_spatial_segmentation_idc=0
+    hvcc.push(0xFC);                              // reserved(6)=111111, parallelismType=0
+    hvcc.push(0xFD);                              // reserved(6)=111111, chroma_format_idc=1 (4:2:0)
+    hvcc.push(0xF8);                              // reserved(5)=11111, bit_depth_luma_minus8=0
+    hvcc.push(0xF8);                              // reserved(5)=11111, bit_depth_chroma_minus8=0
+    hvcc.extend_from_slice(&[0x00, 0x00]);        // avgFrameRate=0
+    // constantFrameRate(2)=0 | numTemporalLayers(3) | temporalIdNested(1) | lengthSizeMinusOne(2)=3
+    let num_temporal_layers = (max_sub_layers_minus1 as u8 + 1) & 0x07;
+    hvcc.push(((num_temporal_layers) << 3) | (temporal_id_nesting << 2) | 0x03);
+    hvcc.push(0x03);                              // numOfArrays = 3 (VPS, SPS, PPS)
+
+    for (nal_type, group) in [(32u8, &vps), (33u8, &sps), (34u8, &pps)] {
+        // array_completeness=1 | reserved=0 | NAL_unit_type(6)
+        hvcc.push(0x80 | (nal_type & 0x3F));
+        hvcc.extend_from_slice(&(group.len() as u16).to_be_bytes());
+        for nal in group {
+            hvcc.extend_from_slice(&(nal.len() as u16).to_be_bytes());
+            hvcc.extend_from_slice(nal);
+        }
+    }
+
+    Some(hvcc)
+}
+
 /// Convert H.264 Annex B format to AVCC format (4-byte length-prefixed NAL units).
 fn annexb_to_avcc(data: &[u8]) -> Vec<u8> {
     let nals = parse_annexb_nals(data);
@@ -939,6 +1047,35 @@ impl H264Encoder {
         }
     }
 
+    /// HEVC-specific: read the encoder's extradata (annex-B VPS+SPS+PPS),
+    /// convert to a proper hvcC record per ISO/IEC 14496-15. Cached on
+    /// first call would be a future optimization (extradata doesn't
+    /// change after encoder open) but for now we rebuild per keyframe.
+    fn build_hvcc_description(&self) -> Option<Vec<u8>> {
+        let raw = self.read_raw_extradata()?;
+        if raw.is_empty() {
+            eprintln!("[encoder] WARNING: HEVC extradata empty");
+            return None;
+        }
+        // Diagnostic: log first 16 bytes so the format is unambiguous in
+        // debug output. annex-B starts with 00 00 00 01, hvcC starts with 01.
+        let preview_len = raw.len().min(16);
+        eprintln!("[encoder] HEVC extradata first {} bytes: {:02X?}", preview_len, &raw[..preview_len]);
+        let hvcc = build_hevc_hvcc(&raw)?;
+        eprintln!("[encoder] hvcC built ({} bytes from {} bytes annex-B)", hvcc.len(), raw.len());
+        Some(hvcc)
+    }
+
+    fn read_raw_extradata(&self) -> Option<Vec<u8>> {
+        unsafe {
+            let ctx_ptr = self.encoder.as_ptr();
+            let extradata = (*ctx_ptr).extradata;
+            let size = (*ctx_ptr).extradata_size as usize;
+            if extradata.is_null() || size == 0 { return None; }
+            Some(std::slice::from_raw_parts(extradata, size).to_vec())
+        }
+    }
+
     /// Copy the encoder's extradata as the WebCodecs description record.
     /// FFmpeg populates this with the codec-appropriate config record
     /// (avcC / hvcC / av1C) once the encoder is open. The label argument
@@ -1198,7 +1335,11 @@ impl H264Encoder {
             }
             CodecKind::H265 => {
                 let hvcc_data = annexb_to_avcc(&raw_data);
-                let desc = if is_keyframe { self.read_extradata_for_description("hvcC") } else { None };
+                let desc = if is_keyframe {
+                    // hevc_nvenc emits raw annex-B VPS+SPS+PPS in extradata
+                    // (NOT a hvcC record), so we have to convert it.
+                    self.build_hvcc_description()
+                } else { None };
                 (hvcc_data, desc)
             }
             CodecKind::Av1 => {
