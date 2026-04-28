@@ -438,35 +438,58 @@ fn run_video_recv_thread(
     let mut last_media_ping = Instant::now() - Duration::from_secs(10);
     let media_ping_interval = Duration::from_secs(3);
 
-    // Linux: H.264 decoder for frames (WebKitGTK lacks WebCodecs) — tries GPU first
+    // Linux: codec-aware decoder for frames (WebKitGTK lacks WebCodecs).
+    // Rebuilt when the per-frame codec byte changes (Plan C swap mid-stream)
+    // since each codec needs its own ffmpeg decoder + HW backend.
     #[cfg(target_os = "linux")]
-    let mut sw_decoder: Option<video_decoder::H264Decoder> = None;
-    #[cfg(target_os = "linux")]
-    let mut sw_decoder_init_attempted = false;
+    let mut linux_decoder: Option<video_decoder::VideoDecoder> = None;
     #[cfg(target_os = "linux")]
     let mut last_decode_time = Instant::now();
 
     // Helper: emit a reassembled video frame.
-    // Linux: decode H.264 → JPEG on this thread, emit VideoFrameDecoded.
-    // Windows: pass raw H.264 AVCC via VideoFrameReady for WebCodecs.
+    // Linux: decode H.264 / HEVC / AV1 → JPEG, emit VideoFrameDecoded.
+    // Windows: pass raw bitstream via VideoFrameReady for WebCodecs.
     let mut emit_frame = |frame: video_receiver::ReassembledFrame| {
         #[cfg(target_os = "linux")]
         {
-            if !sw_decoder_init_attempted {
-                sw_decoder_init_attempted = true;
-                match video_decoder::H264Decoder::new() {
+            // Codec dispatch: convert per-frame codec byte to CodecKind.
+            // If our active decoder doesn't match (first frame, or Plan C
+            // mid-stream swap), drop and rebuild for the new codec.
+            let frame_codec = match frame.codec {
+                1 => caps::CodecKind::H264Hw,
+                2 => caps::CodecKind::H264Sw,
+                3 => caps::CodecKind::H265,
+                4 => caps::CodecKind::Av1,
+                _ => caps::CodecKind::H264Hw, // legacy frames pre-Plan-B default
+            };
+            let need_rebuild = match &linux_decoder {
+                None => true,
+                // H264Hw and H264Sw share the same ffmpeg decoder, so don't
+                // rebuild between them (just a wire-codec metadata swap).
+                Some(dec) => {
+                    let active = dec.codec();
+                    let cur_h264 = matches!(active, caps::CodecKind::H264Hw | caps::CodecKind::H264Sw);
+                    let new_h264 = matches!(frame_codec, caps::CodecKind::H264Hw | caps::CodecKind::H264Sw);
+                    !((cur_h264 && new_h264) || active == frame_codec)
+                }
+            };
+            if need_rebuild {
+                linux_decoder = None;
+                match video_decoder::VideoDecoder::new(frame_codec) {
                     Ok(dec) => {
-                        eprintln!("[video-recv] H.264 decoder initialized");
-                        sw_decoder = Some(dec);
+                        eprintln!("[video-recv] decoder built for {:?}", frame_codec);
+                        linux_decoder = Some(dec);
                     }
-                    Err(e) => eprintln!("[video-recv] Failed to init H.264 decoder: {}", e),
+                    Err(e) => eprintln!("[video-recv] failed to build {:?} decoder: {}", frame_codec, e),
                 }
             }
-            if let Some(ref mut dec) = sw_decoder {
-                // Rate-limit: skip emitting delta frames if last decode was < 25ms ago (~40fps cap)
+            if let Some(ref mut dec) = linux_decoder {
+                // Rate-limit emit: skip JPEG-encoding delta frames if the
+                // last one went out <25ms ago (~40fps cap to the React side).
+                // We still feed every frame into the decoder so references
+                // stay correct.
                 let elapsed = last_decode_time.elapsed();
                 if !frame.is_keyframe && elapsed < Duration::from_millis(25) {
-                    // Still feed to decoder to keep reference frames correct
                     let _ = dec.decode_to_jpeg(&frame.data);
                 } else if let Some(jpeg) = dec.decode_to_jpeg(&frame.data) {
                     last_decode_time = Instant::now();

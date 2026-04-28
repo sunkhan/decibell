@@ -1,14 +1,24 @@
-// WebCodecs decoder capability probe.
+// Decoder capability probe.
 //
-// Calls VideoDecoder.isConfigSupported for each codec we care about and
-// returns the supported set with per-codec policy ceilings (spec §3.2).
+// Two paths:
+//   - Webview HAS WebCodecs (Windows, web): call
+//     VideoDecoder.isConfigSupported per codec — the webview decodes
+//     natively, so this is the authoritative answer.
+//   - Webview LACKS WebCodecs (Linux WebKitGTK): invoke the Rust-side
+//     probe via Tauri (`probe_decoders_native`). Linux decodes H.264 /
+//     HEVC / AV1 in Rust through ffmpeg with NVDEC / VAAPI / software
+//     fallback; the Rust probe walks each codec and reports what
+//     actually opens. Without this, the LCD picker would always
+//     downgrade Linux watchers to H.264 even if their GPU could
+//     happily decode AV1.
+//
 // Result cached in localStorage so we don't re-probe on every app launch
 // — Settings → "Refresh codec capabilities" forces a re-probe.
 //
 // H.264 decode is always present in the result regardless of probe outcome
-// (spec §3.3 fallback) — WebCodecs handles H.264 universally; the
-// LCD picker can always converge as long as every client has it.
+// (spec §3.3 fallback) so the LCD picker always has a converging codec.
 
+import { invoke } from "@tauri-apps/api/core";
 import { VideoCodec, type CodecCapability } from "../types";
 
 // Decode policy ceilings — spec §3.2.
@@ -43,17 +53,14 @@ export async function probeDecoders(force = false): Promise<CodecCapability[]> {
     }
   }
 
-  const out: CodecCapability[] = [];
-  // WebCodecs may not exist in some webviews. In that case we still
-  // advertise H.264 decode via the §3.3 fallback below.
-  const VideoDecoderCtor: typeof VideoDecoder | undefined =
-    typeof VideoDecoder !== "undefined" ? VideoDecoder : undefined;
+  let out: CodecCapability[] = [];
 
-  for (const { codec, webCodecsString } of PROBE_CONFIGS) {
-    let supported = false;
-    if (VideoDecoderCtor) {
+  if (typeof VideoDecoder !== "undefined") {
+    // Path A — webview decodes natively. Probe each codec via WebCodecs.
+    for (const { codec, webCodecsString } of PROBE_CONFIGS) {
+      let supported = false;
       try {
-        const res = await VideoDecoderCtor.isConfigSupported({
+        const res = await VideoDecoder.isConfigSupported({
           codec: webCodecsString,
           hardwareAcceleration: "prefer-hardware",
         });
@@ -61,16 +68,31 @@ export async function probeDecoders(force = false): Promise<CodecCapability[]> {
       } catch {
         supported = false;
       }
+      if (supported) {
+        const ceiling = DECODE_CEILING[codec];
+        out.push({ codec, maxWidth: ceiling.width, maxHeight: ceiling.height, maxFps: ceiling.fps });
+      }
     }
-    if (supported) {
-      const ceiling = DECODE_CEILING[codec];
-      out.push({ codec, maxWidth: ceiling.width, maxHeight: ceiling.height, maxFps: ceiling.fps });
+  } else {
+    // Path B — webview can't decode (Linux WebKitGTK). Ask Rust what
+    // ffmpeg + NVDEC / VAAPI / software can actually open. Rust returns
+    // the same CodecCapability shape (codec / max_width / max_height /
+    // max_fps) so downstream code (set_decoder_caps, JoinVoiceRequest)
+    // works identically regardless of which path filled it.
+    try {
+      const native = await invoke<CodecCapability[]>("probe_decoders_native");
+      if (Array.isArray(native)) {
+        out = native;
+      }
+    } catch (e) {
+      console.error("[decoderProbe] probe_decoders_native failed:", e);
     }
   }
 
-  // §3.3 fallback: H.264 decode is always advertised. WebCodecs handles
-  // H.264 universally; if probe failed, worst case the player surfaces
-  // a per-stream error, but the LCD picker always has a converging codec.
+  // §3.3 fallback: H.264 decode is always advertised so the LCD picker
+  // always has a converging codec. ffmpeg ships H.264 software decode
+  // built in, so the Rust probe should already cover this — this is a
+  // belt-and-braces guarantee.
   if (!out.some((c) => c.codec === VideoCodec.H264_HW)) {
     out.push({
       codec: VideoCodec.H264_HW,
