@@ -4,21 +4,33 @@
 //! presence list still need raw bytes on the CPU. We pay this cost only
 //! every ~5s so the JPEG encode is amortized into noise.
 //!
-//! Pipeline per tick:
-//!   1. VideoProcessorBlt: source BGRA → small DEFAULT BGRA texture
-//!   2. CopyResource: DEFAULT → STAGING (CPU-readable)
-//!   3. Map STAGING → walk rows → image::jpeg encode
+//! Two-phase ASYNC pipeline (no GPU sync in the encode loop):
+//!   Phase 1 — start_capture(): VideoProcessorBlt source BGRA → small
+//!     DEFAULT BGRA, CopyResource DEFAULT → STAGING. Both are submit-only,
+//!     they return immediately without waiting for the GPU.
+//!   Phase 2 — try_finish_capture(): Map STAGING with DO_NOT_WAIT. Returns
+//!     None while the GPU is still processing the copy; once ready, walks
+//!     the rows and emits a JPEG.
+//!
+//! The synchronous Map(READ) flow we used before drained the entire GPU
+//! command queue, blocking the encode loop for ~hundreds of ms — visible
+//! in the per-second fps log as one big drop every 5s. Phase-splitting the
+//! readback removes that stall: the encode loop only ever does cheap
+//! submit-and-poll work, never a sync point.
 //!
 //! Width is fixed at THUMB_WIDTH (320 px); height tracks source aspect.
 
 #![cfg(target_os = "windows")]
 
 use std::io::Cursor;
-use windows::core::{Interface, BOOL};
+use windows::core::{Interface, BOOL, HRESULT};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
 const THUMB_WIDTH: u32 = 320;
+
+/// HRESULT returned by Map() when the GPU hasn't finished writing yet.
+const DXGI_ERROR_WAS_STILL_DRAWING: HRESULT = HRESULT(0x887A000Au32 as i32);
 
 pub struct ThumbnailReader {
     video_device: ID3D11VideoDevice,
@@ -31,6 +43,11 @@ pub struct ThumbnailReader {
     staging: ID3D11Texture2D,
     width: u32,
     height: u32,
+    /// True between start_capture and try_finish_capture-success. Pipeline
+    /// uses this to know whether the staging texture is "in flight" or
+    /// idle. We don't kick off another start_capture until the previous
+    /// one has been read out.
+    pending: bool,
 }
 
 unsafe impl Send for ThumbnailReader {}
@@ -130,18 +147,31 @@ impl ThumbnailReader {
                 staging,
                 width: thumb_w,
                 height: thumb_h,
+                pending: false,
             })
         }
     }
 
-    /// Capture a JPEG thumbnail of the given BGRA source texture.
-    /// Returns Err on any D3D11 / image encode failure. Cost is dominated
-    /// by the Map+JPEG step, called only every ~5s.
-    pub fn capture_jpeg(
-        &self,
+    /// True if a previous start_capture is still in flight on the GPU
+    /// and we haven't successfully drained it via try_finish_capture yet.
+    /// Pipeline checks this to avoid kicking off a second capture while
+    /// the staging texture is still being written.
+    pub fn is_pending(&self) -> bool { self.pending }
+
+    /// Phase 1 — submit GPU work and return immediately.
+    /// VideoProcessorBlt downscales src BGRA → our small dst, then
+    /// CopyResource lands it in our CPU-readable staging texture. Neither
+    /// call waits for the GPU. The pixels become readable some unknown
+    /// number of frames later; try_finish_capture polls for that.
+    ///
+    /// Caller must check is_pending() == false before calling — kicking
+    /// off a second capture while one is in flight would race with the
+    /// GPU's writes to staging.
+    pub fn start_capture(
+        &mut self,
         context: &ID3D11DeviceContext,
         bgra_src: &ID3D11Texture2D,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<(), String> {
         unsafe {
             let input_view_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
                 FourCC: 0,
@@ -192,17 +222,45 @@ impl ThumbnailReader {
                 )
                 .map_err(|e| format!("VideoProcessorBlt (thumb): {}", e))?;
 
-            // Release the COM ref ManuallyDrop kept alive
             std::mem::ManuallyDrop::into_inner(std::ptr::read(&stream.pInputSurface));
 
-            // Copy GPU-only dst → CPU-readable staging.
+            // Submit-only copy. CPU does NOT block here.
             context.CopyResource(&self.staging, &self.dst);
 
-            // Map staging and pull rows into a tight RGB buffer.
+            self.pending = true;
+            Ok(())
+        }
+    }
+
+    /// Phase 2 — non-blocking poll. Returns:
+    ///   Ok(Some(jpeg))  — staging was ready, JPEG built, state cleared.
+    ///   Ok(None)        — GPU still working OR no capture pending; try later.
+    ///   Err(_)          — fatal Map error (state cleared so we recover).
+    pub fn try_finish_capture(
+        &mut self,
+        context: &ID3D11DeviceContext,
+    ) -> Result<Option<Vec<u8>>, String> {
+        if !self.pending {
+            return Ok(None);
+        }
+        unsafe {
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            context
-                .Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-                .map_err(|e| format!("Map staging (thumb): {}", e))?;
+            // DO_NOT_WAIT: returns DXGI_ERROR_WAS_STILL_DRAWING immediately
+            // if the GPU hasn't finished writing the staging texture yet,
+            // instead of blocking the calling thread.
+            match context.Map(
+                &self.staging, 0, D3D11_MAP_READ,
+                D3D11_MAP_FLAG_DO_NOT_WAIT.0 as u32, Some(&mut mapped),
+            ) {
+                Ok(()) => {}
+                Err(e) if e.code() == DXGI_ERROR_WAS_STILL_DRAWING => {
+                    return Ok(None);
+                }
+                Err(e) => {
+                    self.pending = false;
+                    return Err(format!("Map staging (thumb, DO_NOT_WAIT): {}", e));
+                }
+            }
 
             let row_pitch = mapped.RowPitch as usize;
             let w = self.width as usize;
@@ -222,6 +280,7 @@ impl ThumbnailReader {
                 }
             }
             context.Unmap(&self.staging, 0);
+            self.pending = false;
 
             use image::ImageEncoder;
             let mut buf = Cursor::new(Vec::with_capacity(16 * 1024));
@@ -229,7 +288,7 @@ impl ThumbnailReader {
             encoder
                 .write_image(&rgb, self.width, self.height, image::ColorType::Rgb8.into())
                 .map_err(|e| format!("JPEG encode (thumb): {}", e))?;
-            Ok(buf.into_inner())
+            Ok(Some(buf.into_inner()))
         }
     }
 }

@@ -118,28 +118,40 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
             // streams. The decoded picture data IS the full coded size; only
             // the display-dim metadata is wrong. Drawing the codedWidth ×
             // codedHeight source rectangle explicitly bypasses the bug.
-            const w = frame.codedWidth || frame.displayWidth;
-            const h = frame.codedHeight || frame.displayHeight;
+            // Chromium's WebCodecs HEVC decoder mis-reports dims for streams
+            // with no conformance window. Use visibleRect (the *valid pixel*
+            // region as Chromium sees it) as the source rect, then scale up
+            // to codedWidth × codedHeight on the canvas. For H.264 / AV1 the
+            // valid region equals the coded region, so this scale is a no-op.
+            const codedW = frame.codedWidth;
+            const codedH = frame.codedHeight;
+            const vr = frame.visibleRect;
+            const srcX = vr ? vr.x : 0;
+            const srcY = vr ? vr.y : 0;
+            const srcW = vr ? vr.width : codedW;
+            const srcH = vr ? vr.height : codedH;
             if (!dimsLogged
-                || canvas.width !== w
-                || canvas.height !== h) {
+                || canvas.width !== codedW
+                || canvas.height !== codedH) {
               console.log("[StreamVideoPlayer] frame dims",
-                "coded=", frame.codedWidth, "x", frame.codedHeight,
+                "coded=", codedW, "x", codedH,
                 "display=", frame.displayWidth, "x", frame.displayHeight,
+                "visible=", srcX, srcY, srcW, "x", srcH,
                 "canvas was", canvas.width, "x", canvas.height,
                 "rect", canvas.getBoundingClientRect().width.toFixed(0),
                 "x", canvas.getBoundingClientRect().height.toFixed(0));
               dimsLogged = true;
             }
-            if (canvas.width !== w || canvas.height !== h) {
-              canvas.width = w;
-              canvas.height = h;
+            if (canvas.width !== codedW || canvas.height !== codedH) {
+              canvas.width = codedW;
+              canvas.height = codedH;
             }
-            // 9-arg drawImage: extract the full coded rect from the source
-            // (sx=0,sy=0,sw=w,sh=h) and draw at the same size on the canvas.
-            // The 3-arg form would default to displayWidth/displayHeight and
-            // re-introduce the cropping issue.
-            ctx.drawImage(frame, 0, 0, w, h, 0, 0, w, h);
+            // 9-arg drawImage: pull the visibleRect from the source, scale
+            // it up to fill the codedWidth × codedHeight canvas. For non-
+            // HEVC codecs this is identity (visibleRect == coded). For
+            // HEVC where Chromium populates only the visibleRect with valid
+            // pixels, this stretches that area to fill the full canvas.
+            ctx.drawImage(frame, srcX, srcY, srcW, srcH, 0, 0, codedW, codedH);
           }
           frame.close();
           if (!firstFrameSignalled) {

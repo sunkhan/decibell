@@ -44,6 +44,10 @@ pub struct GpuStreamingPipeline {
     /// the VideoProcessor on a swap that changes encoder dims.
     src_width: u32,
     src_height: u32,
+    /// Target frame rate. The loop paces itself to this — DXGI may deliver
+    /// frames faster than this on high-refresh-rate monitors, but encoding
+    /// above target_fps wastes bandwidth and overruns receiver decode.
+    target_fps: u32,
 }
 
 // Safety: built on the caller's thread, immediately moved into the dedicated
@@ -138,6 +142,7 @@ impl GpuStreamingPipeline {
 
         let enc_width = config.width;
         let enc_height = config.height;
+        let target_fps = config.fps;
         Ok(GpuStreamingPipeline {
             device,
             context,
@@ -149,6 +154,7 @@ impl GpuStreamingPipeline {
             enc_height,
             src_width: src_w,
             src_height: src_h,
+            target_fps,
         })
     }
 
@@ -175,7 +181,8 @@ impl GpuStreamingPipeline {
         selector: Option<Arc<CodecSelector>>,
     ) {
         let _ = event_tx.send(VideoPipelineEvent::Started);
-        eprintln!("[gpu-pipeline] started, output {}x{}", self.enc_width, self.enc_height);
+        eprintln!("[gpu-pipeline] started, output {}x{} @ {}fps",
+            self.enc_width, self.enc_height, self.target_fps);
 
         let mut frame_id: u32 = 0;
         let mut self_preview = false;
@@ -183,6 +190,22 @@ impl GpuStreamingPipeline {
 
         let thumbnail_interval = Duration::from_secs(5);
         let mut last_thumbnail_time = Instant::now() - thumbnail_interval;
+
+        // Frame pacing — cap loop rate at target_fps. DXGI duplicate output
+        // delivers frames at the source monitor's refresh rate, which can be
+        // 144Hz / 240Hz on gaming setups. Encoding above target_fps blows
+        // through the bitrate budget (and the receiver's decode/render
+        // cadence), causing visible stutters every GOP boundary as the
+        // decoder catches up.
+        let frame_interval = Duration::from_micros(
+            1_000_000u64 / self.target_fps.max(1) as u64
+        );
+        let mut next_encode_deadline = Instant::now();
+
+        // Per-second fps diagnostic so we can see what the loop is actually
+        // achieving vs. target.
+        let mut fps_window_start = Instant::now();
+        let mut fps_window_count: u32 = 0;
 
         loop {
             // ── Control messages ──
@@ -219,6 +242,24 @@ impl GpuStreamingPipeline {
                 }
             }
 
+            // ── Frame pacing ──
+            // Wait until the next encode slot before pulling a frame from
+            // capture. Drains any DXGI frames that piled up between slots so
+            // we always work with the freshest pixels (skip-to-latest).
+            let now = Instant::now();
+            if now < next_encode_deadline {
+                let wait = next_encode_deadline - now;
+                // Cap sleep so shutdown stays responsive.
+                std::thread::sleep(wait.min(Duration::from_millis(8)));
+                continue;
+            }
+            next_encode_deadline += frame_interval;
+            // If we fell behind by >2 frames (stalled), realign rather than
+            // burning CPU trying to "catch up" past frames that don't exist.
+            if next_encode_deadline + frame_interval < Instant::now() {
+                next_encode_deadline = Instant::now() + frame_interval;
+            }
+
             // ── Capture next frame ──
             let frame = match self.capture.next_frame() {
                 Ok(Some(f)) => f,
@@ -239,17 +280,34 @@ impl GpuStreamingPipeline {
                 Err(CaptureError::Timeout) => continue,
             };
 
-            // ── Thumbnail tick (every 5s, before release_current_frame) ──
+            // ── Thumbnail tick (async: kick off every 5s, drain when ready) ──
+            // Phase 1: every 5s, if no capture is in flight, submit
+            // VideoProcessorBlt + CopyResource to STAGING. Submit-only —
+            // returns immediately. Done before release_current_frame() so
+            // the source BGRA texture is still alive on the GPU.
             let now = Instant::now();
             if now.duration_since(last_thumbnail_time) >= thumbnail_interval {
-                last_thumbnail_time = now;
-                if let Some(ref reader) = self.thumb_reader {
-                    match reader.capture_jpeg(&self.context, &frame.texture) {
-                        Ok(jpeg) => {
+                if let Some(ref mut reader) = self.thumb_reader {
+                    if !reader.is_pending() {
+                        match reader.start_capture(&self.context, &frame.texture) {
+                            Ok(()) => last_thumbnail_time = now,
+                            Err(e) => eprintln!("[gpu-pipeline] thumbnail start failed: {}", e),
+                        }
+                    }
+                }
+            }
+            // Phase 2: try to drain any in-flight capture. Map(DO_NOT_WAIT)
+            // returns immediately whether the GPU has finished writing or
+            // not — no encode-loop stall.
+            if let Some(ref mut reader) = self.thumb_reader {
+                if reader.is_pending() {
+                    match reader.try_finish_capture(&self.context) {
+                        Ok(Some(jpeg)) => {
                             eprintln!("[gpu-pipeline] thumbnail {} bytes", jpeg.len());
                             let _ = event_tx.send(VideoPipelineEvent::ThumbnailReady(jpeg));
                         }
-                        Err(e) => eprintln!("[gpu-pipeline] thumbnail failed: {}", e),
+                        Ok(None) => {} // GPU still drawing, try again next frame
+                        Err(e) => eprintln!("[gpu-pipeline] thumbnail finish failed: {}", e),
                     }
                 }
             }
@@ -286,12 +344,20 @@ impl GpuStreamingPipeline {
                     Self::send_packets(&socket, &sender_id, frame_id,
                                        &encoded, self.encoder.codec as u8);
                     frame_id = frame_id.wrapping_add(1);
+                    fps_window_count += 1;
                 }
                 Ok(None) => {} // encoder still buffering
                 Err(e) => {
                     let _ = event_tx.send(VideoPipelineEvent::Error(format!("encode_d3d11_frame: {}", e)));
                     break;
                 }
+            }
+
+            // Per-second fps log — confirms pacing is hitting target_fps.
+            if fps_window_start.elapsed() >= Duration::from_secs(1) {
+                eprintln!("[gpu-pipeline] {} fps (target {})", fps_window_count, self.target_fps);
+                fps_window_count = 0;
+                fps_window_start = Instant::now();
             }
         }
 
