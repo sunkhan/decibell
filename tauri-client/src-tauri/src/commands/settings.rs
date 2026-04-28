@@ -373,39 +373,44 @@ pub struct CapsResponse {
     pub decode: Vec<CodecCap>,
 }
 
-/// Returns the merged ClientCapabilities the next JoinVoiceRequest would
-/// send. React uses this to render the Codecs settings panel summary.
+/// Returns the raw hardware capabilities — encoders the GPU can run and
+/// decoders the platform can open, regardless of user toggles. The UI
+/// uses this to decide which toggle rows are enable-able (you can't turn
+/// on AV1 if your hardware can't encode it). Toggle filtering happens
+/// elsewhere (broadcast_update_capabilities) so peers only see what the
+/// user has *opted into*.
 ///
-/// Lock discipline: snapshot the toggles + decoder caps under the AppState
-/// lock briefly, then run the (potentially-slow) probe outside the lock.
+/// Lock discipline: snapshot decoder caps under the AppState lock briefly,
+/// then run the (potentially-slow) encoder probe outside the lock.
 #[tauri::command]
 pub async fn get_caps(
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<CapsResponse, String> {
-    // Read toggles from persisted settings (no AppState lock needed).
-    let settings = config::load(&app)?.settings;
-    let use_av1 = settings.use_av1;
-    let use_h265 = settings.use_h265;
-
-    // Read decoder caps under the AppState lock, then drop the guard.
     let decoder_caps = {
         let s = state.lock().await;
         s.decoder_caps.clone()
     };
-
-    // Probe (cached) outside any lock — first call may take ~hundreds of ms.
     let encode = caps::get_or_probe_encoders(&app);
-    let filtered_encode: Vec<CodecCap> = encode
-        .into_iter()
+    Ok(CapsResponse { encode, decode: decoder_caps })
+}
+
+/// Apply the user's codec preference toggles to a raw hardware-probed
+/// encoder cap list. Used by broadcast_update_capabilities + the voice
+/// join / screen share paths so the on-the-wire capability advertisement
+/// only includes codecs the user has actually opted into.
+fn apply_toggle_filter(
+    caps: Vec<CodecCap>,
+    use_av1: bool,
+    use_h265: bool,
+) -> Vec<CodecCap> {
+    caps.into_iter()
         .filter(|c| match c.codec {
             CodecKind::Av1 => use_av1,
             CodecKind::H265 => use_h265,
             _ => true,
         })
-        .collect();
-
-    Ok(CapsResponse { encode: filtered_encode, decode: decoder_caps })
+        .collect()
 }
 
 /// Re-runs the encoder probe (force, ignoring cache) and returns the new
@@ -420,7 +425,8 @@ pub async fn refresh_caps(
 ) -> Result<CapsResponse, String> {
     caps::refresh_encoders(&app);
     let resp = get_caps(app.clone(), state.clone()).await?;
-    broadcast_update_capabilities(&state, &resp).await;
+    let settings = config::load(&app)?.settings;
+    broadcast_update_capabilities(&state, &resp, settings.use_av1, settings.use_h265).await;
     Ok(resp)
 }
 
@@ -491,9 +497,10 @@ pub async fn set_codec_settings(
     current.use_h265 = settings.use_h265;
     config::save(&app, None, &current)?;
 
-    // Build new caps with the toggles applied and broadcast.
+    // Broadcast new caps with toggles applied so peers see the
+    // user-opted-into set.
     let resp = get_caps(app, state.clone()).await?;
-    broadcast_update_capabilities(&state, &resp).await;
+    broadcast_update_capabilities(&state, &resp, settings.use_av1, settings.use_h265).await;
     Ok(())
 }
 
@@ -505,8 +512,13 @@ pub async fn set_codec_settings(
 async fn broadcast_update_capabilities(
     state: &State<'_, SharedState>,
     caps_resp: &CapsResponse,
+    use_av1: bool,
+    use_h265: bool,
 ) {
-    let proto_caps = caps::build_client_capabilities(&caps_resp.encode, &caps_resp.decode);
+    // Apply toggle filter — peers only see codecs the user has opted into,
+    // even though caps_resp.encode is the raw hardware-probed list.
+    let filtered_encode = apply_toggle_filter(caps_resp.encode.clone(), use_av1, use_h265);
+    let proto_caps = caps::build_client_capabilities(&filtered_encode, &caps_resp.decode);
     let payload = packet::Payload::UpdateCapabilitiesReq(UpdateCapabilitiesRequest {
         capabilities: Some(proto_caps),
     });
