@@ -1033,6 +1033,164 @@ impl H264Encoder {
         })
     }
 
+    /// Create a Windows-only D3D11 zero-copy encoder. Frames must come from
+    /// hw_frames_ctx-allocated D3D11 textures (use acquire_pool_frame /
+    /// encode_d3d11_frame). Mirrors new_cuda's pattern but with D3D11VA hwaccel.
+    /// Only supports NVENC encoders (h264_nvenc / hevc_nvenc / av1_nvenc).
+    #[cfg(target_os = "windows")]
+    pub fn new_d3d11(
+        target_codec: crate::media::caps::CodecKind,
+        config: &EncoderConfig,
+        shared_device: *mut std::ffi::c_void, // ID3D11Device, transmuted via .as_raw()
+    ) -> Result<Self, String> {
+        use ffmpeg_next::sys::*;
+
+        ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
+
+        let (codec, codec_name) = Self::find_hw_encoder(target_codec)?;
+        if !codec_name.contains("nvenc") {
+            return Err(format!(
+                "new_d3d11 only supports NVENC encoders, got '{}'",
+                codec_name
+            ));
+        }
+
+        // ── Build hw_device_ctx around the shared D3D11 device ─────────────
+        let hw_device_ref = unsafe {
+            let r = av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
+            if r.is_null() {
+                return Err("av_hwdevice_ctx_alloc(D3D11VA) failed".into());
+            }
+            // Populate the device pointer manually — same trick as new_cuda
+            // does for CUcontext. AVD3D11VADeviceContext.device is the first
+            // field, so the cast lands on it.
+            let hw_dev_ctx = (*r).data as *mut AVHWDeviceContext;
+            let d3d_ctx = (*hw_dev_ctx).hwctx as *mut std::ffi::c_void;
+            *(d3d_ctx as *mut *mut std::ffi::c_void) = shared_device;
+
+            let rc = av_hwdevice_ctx_init(r);
+            if rc < 0 {
+                let mut rr = r;
+                av_buffer_unref(&mut rr);
+                return Err(format!("av_hwdevice_ctx_init(D3D11VA) failed: {}", rc));
+            }
+            eprintln!("[encoder] D3D11VA hw_device_ctx initialized with shared device");
+            r
+        };
+
+        // ── Build hw_frames_ctx (NV12 D3D11 texture pool, size 6) ──────────
+        let hw_frames_ref = unsafe {
+            let r = av_hwframe_ctx_alloc(hw_device_ref);
+            if r.is_null() {
+                let mut hd = hw_device_ref;
+                av_buffer_unref(&mut hd);
+                return Err("av_hwframe_ctx_alloc(D3D11VA) failed".into());
+            }
+            let frames_ctx = (*r).data as *mut AVHWFramesContext;
+            (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_D3D11;
+            (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12;
+            (*frames_ctx).width = config.width as i32;
+            (*frames_ctx).height = config.height as i32;
+            (*frames_ctx).initial_pool_size = 6; // see spec §5
+
+            let rc = av_hwframe_ctx_init(r);
+            if rc < 0 {
+                let mut rr = r;
+                av_buffer_unref(&mut rr);
+                let mut hd = hw_device_ref;
+                av_buffer_unref(&mut hd);
+                return Err(format!("av_hwframe_ctx_init(D3D11VA) failed: {}", rc));
+            }
+            eprintln!("[encoder] D3D11VA hw_frames_ctx initialized ({}x{}, pool=6)",
+                config.width, config.height);
+            r
+        };
+
+        // ── Build encoder context ──────────────────────────────────────────
+        let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
+            .encoder()
+            .video()
+            .map_err(|e| format!("Encoder context: {}", e))?;
+
+        context.set_width(config.width);
+        context.set_height(config.height);
+        context.set_frame_rate(Some(ffmpeg_next::Rational::new(config.fps as i32, 1)));
+        context.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
+        context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
+        context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
+        context.set_gop(config.fps * config.keyframe_interval_secs);
+        context.set_max_b_frames(0);
+
+        // Pixel format is D3D11 (hardware), software-format is NV12.
+        unsafe {
+            let ctx_ptr = context.as_mut_ptr();
+            (*ctx_ptr).pix_fmt = AVPixelFormat::AV_PIX_FMT_D3D11;
+            (*ctx_ptr).hw_device_ctx = av_buffer_ref(hw_device_ref);
+            (*ctx_ptr).hw_frames_ctx = av_buffer_ref(hw_frames_ref);
+            // VBV buffer: ~4 frames of headroom for rate control
+            let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
+            (*ctx_ptr).rc_buffer_size = vbv_bits;
+        }
+
+        context.set_colorspace(ffmpeg_next::color::Space::BT709);
+        context.set_color_range(ffmpeg_next::color::Range::MPEG);
+
+        // Same options dictionary as the existing CPU NVENC path.
+        let mut opts = ffmpeg_next::Dictionary::new();
+        opts.set("forced_idr", "1");
+        opts.set("preset", "p5");
+        opts.set("rc", "cbr");
+        if codec_name == "hevc_nvenc" {
+            opts.set("tune", "ll");
+            opts.set("slices", "1");
+        } else {
+            opts.set("tune", "ull");
+        }
+
+        let encoder = context
+            .open_with(opts)
+            .map_err(|e| {
+                // Clean up if open fails
+                unsafe {
+                    let mut hd = hw_device_ref;
+                    av_buffer_unref(&mut hd);
+                    let mut hf = hw_frames_ref;
+                    av_buffer_unref(&mut hf);
+                }
+                format!("Open D3D11 encoder ({}): {}", codec_name, e)
+            })?;
+
+        eprintln!(
+            "[encoder] D3D11 zero-copy encoder opened: {} — {}x{} @ {}fps, {}kbps",
+            codec_name, config.width, config.height, config.fps, config.bitrate_kbps
+        );
+
+        let nv12_frame = ffmpeg_next::frame::Video::new(
+            ffmpeg_next::format::Pixel::NV12, config.width, config.height,
+        );
+
+        Ok(H264Encoder {
+            codec: target_codec,
+            encoder,
+            frame_count: 0,
+            keyframe_interval: (config.fps * config.keyframe_interval_secs) as u64,
+            force_next_keyframe: false,
+            target_width: config.width,
+            target_height: config.height,
+            nv12_frame,
+            scaler: None,
+            supports_bgra_input: false,
+            bgra_frame: None,
+            bgra_scaler: None,
+            #[cfg(target_os = "linux")]
+            cuda_hw_device_ref: std::ptr::null_mut(),
+            #[cfg(target_os = "linux")]
+            cuda_hw_frames_ref: std::ptr::null_mut(),
+            #[cfg(target_os = "linux")]
+            is_vaapi_hw: false,
+        })
+    }
+
     /// Encode a VA-API hardware frame (AMD/Intel zero-copy path).
     /// The `vaapi_frame` must have format=VAAPI with a valid VASurface.
     #[cfg(target_os = "linux")]
