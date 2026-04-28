@@ -24,7 +24,9 @@ const DECODE_CEILING: Record<number, { width: number; height: number; fps: numbe
 // accepts any compatible variant of the same codec family.
 const PROBE_CONFIGS: { codec: VideoCodec; webCodecsString: string }[] = [
   { codec: VideoCodec.AV1,    webCodecsString: "av01.0.05M.08" },         // Main, level 5.1, 8-bit
-  { codec: VideoCodec.H265,   webCodecsString: "hev1.1.6.L120.B0" },      // Main, level 4.0
+  // Match codecMap.ts — hvc1 (not hev1) for description-only param sets,
+  // L153 = level 5.1 to cover up to 4K@60.
+  { codec: VideoCodec.H265,   webCodecsString: "hvc1.1.6.L153.B0" },      // Main, level 5.1
   { codec: VideoCodec.H264_HW, webCodecsString: "avc1.640033" },          // High, level 5.1
 ];
 
