@@ -22,11 +22,11 @@ const DECODE_CEILING: Record<number, { width: number; height: number; fps: numbe
 // Real streams may use slightly different profile/level codes — once
 // configured with the description record (avcC/hvcC/av1C) the decoder
 // accepts any compatible variant of the same codec family.
+// Match codecMap.ts — same strings used to probe and to configure, so a
+// "supported during probe" claim translates 1:1 to actual decode at runtime.
 const PROBE_CONFIGS: { codec: VideoCodec; webCodecsString: string }[] = [
-  { codec: VideoCodec.AV1,    webCodecsString: "av01.0.05M.08" },         // Main, level 5.1, 8-bit
-  // Match codecMap.ts — hvc1 (not hev1) for description-only param sets,
-  // L153 = level 5.1 to cover up to 4K@60.
-  { codec: VideoCodec.H265,   webCodecsString: "hvc1.1.6.L153.B0" },      // Main, level 5.1
+  { codec: VideoCodec.AV1,    webCodecsString: "av01.0.19M.08" },         // Main, level 6.3, 8-bit
+  { codec: VideoCodec.H265,   webCodecsString: "hvc1.1.6.L186.B0" },      // Main, level 6.2
   { codec: VideoCodec.H264_HW, webCodecsString: "avc1.640033" },          // High, level 5.1
 ];
 

@@ -9,12 +9,14 @@ import { VideoCodec } from "../types";
 
 export function videoCodecToWebCodecsString(c: VideoCodec): string {
   switch (c) {
-    case VideoCodec.AV1:    return "av01.0.05M.08";    // Main, level 5.1, 8-bit
+    // Max defined level for each codec — the string is a capability ceiling
+    // ("decoder, accept anything up to this"); the actual stream description
+    // (av1C / hvcC / avcC) is what Chromium uses to do the work. Higher
+    // ceiling = no risk of artificial gating when we bump encode caps later.
+    case VideoCodec.AV1:    return "av01.0.19M.08";    // Main, level 6.3, 8-bit (covers up to 16K@120)
     // hvc1 (not hev1) — parameter sets live ONLY in the description record
     // because the Rust encoder sets AV_CODEC_FLAG_GLOBAL_HEADER for HEVC.
-    // L153 = level 5.1, covers up to 4K@60; lower levels (L120 = 4.0)
-    // make Chromium's VideoDecoder refuse 1440p+ streams.
-    case VideoCodec.H265:   return "hvc1.1.6.L153.B0"; // Main, level 5.1
+    case VideoCodec.H265:   return "hvc1.1.6.L186.B0"; // Main, level 6.2 (covers up to 8K@120)
     case VideoCodec.H264_HW:
     case VideoCodec.H264_SW: return "avc1.640033";    // High, level 5.1
     default: return "avc1.640033"; // safe fallback for UNKNOWN
