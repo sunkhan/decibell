@@ -215,6 +215,19 @@ export function useVoiceEvents() {
       }
     }));
 
+    // Plan-D-1: GPU zero-copy pipeline failed at start; we silently fell
+    // back to the CPU readback path. Notify the user so they understand
+    // why CPU usage is higher than expected.
+    promises.push(listen<{ error: string }>("stream_gpu_fallback", async (event) => {
+      const { useToastStore } = await import("../../stores/toastStore");
+      useToastStore.getState().push({
+        severity: "warning",
+        title: "GPU encoding unavailable",
+        body: `Streaming via CPU path — higher CPU usage. ${event.payload.error}`,
+        duration: 6000,
+      });
+    }));
+
     return () => {
       for (const p of promises) {
         p.then((fn) => fn());
