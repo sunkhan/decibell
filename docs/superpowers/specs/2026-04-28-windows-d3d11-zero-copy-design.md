@@ -72,11 +72,13 @@ The pipeline owns one `Arc<ID3D11Device>`. All three components — capture, con
 struct GpuStreamingPipeline {
     device: Arc<ID3D11Device>,
     context: ID3D11DeviceContext,
-    capture: CaptureSource,    // DxgiSource | WgcSource
-    converter: VideoProcessor, // BGRA → NV12 blitter
-    encoder: NvencD3d11Encoder,
+    capture: Box<dyn GpuCaptureSource>, // DxgiSource or WgcSource
+    converter: VideoProcessor,           // BGRA → NV12 blitter
+    encoder: H264Encoder,                // built via new_d3d11
 }
 ```
+
+`GpuCaptureSource` is a trait defined in Section 6; both `DxgiSource` and `WgcSource` implement it.
 
 **Device creation:** `D3D11CreateDevice` with `D3D11_CREATE_DEVICE_BGRA_SUPPORT` (already required by the existing VideoProcessor). For DXGI capture, the device must be on the same adapter as the target output (this is the `create_device_for_adapter` helper that already exists in `capture_dxgi.rs`). For WGC, the adapter is arbitrary — we use whichever the chosen source's window is on.
 
@@ -145,7 +147,7 @@ pub trait GpuCaptureSource {
 ```
 
 **`capture_dxgi.rs` changes:**
-- Add `DxgiSource` struct implementing `GpuCaptureSource`. Holds the `IDXGIOutputDuplication` handle. `next_frame()` calls `AcquireNextFrame`, casts the resource to `ID3D11Texture2D`, returns `GpuFrame { texture, ... }`. Caller releases the frame after the converter is done with it (texture acquired this iteration).
+- Add `DxgiSource` struct implementing `GpuCaptureSource`. Holds the `IDXGIOutputDuplication` handle. `next_frame()` calls `AcquireNextFrame`, casts the resource to `ID3D11Texture2D`, returns `GpuFrame { texture, ... }`. The pipeline calls `IDXGIOutputDuplication::ReleaseFrame` after the converter has finished consuming this frame's texture (i.e. after `VideoProcessorBlt` returns) — the source exposes a `release_current_frame()` method for this. Required because DXGI only allows one acquired frame at a time.
 - Remove `convert_and_readback` and the staging texture from this path — the `VideoProcessor` moves out into the pipeline.
 - Remove the dedicated capture thread for the GPU path. The pipeline pulls from `next_frame()` directly in its main loop.
 - The existing `start_capture` returning `Receiver<RawFrame>` (the CPU-readback path) stays in the file unchanged — used by the libx264 fallback and the silent-fallback path from Section 7.
