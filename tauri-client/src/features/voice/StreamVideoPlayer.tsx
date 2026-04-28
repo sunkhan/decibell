@@ -56,6 +56,22 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     if (description) {
       config.description = description;
     }
+    // Diagnostic: explicitly check support before configure so DevTools
+    // shows "your webview can't decode this codec at all" vs. some other
+    // decode failure. HEVC on Windows requires the Microsoft Store "HEVC
+    // Video Extensions" — without it Chromium reports supported=false
+    // for any hvc1.* / hev1.* string.
+    VideoDecoder.isConfigSupported(config).then((res) => {
+      if (!res.supported) {
+        console.error(
+          "[StreamVideoPlayer] WebCodecs reports codec NOT supported:",
+          config.codec,
+          "— full check:", res,
+        );
+      } else {
+        console.log("[StreamVideoPlayer] WebCodecs supports", config.codec);
+      }
+    }).catch((e) => console.error("[StreamVideoPlayer] isConfigSupported threw:", e));
     try {
       decoder.configure(config);
     } catch (e) {

@@ -18,8 +18,8 @@ export function videoCodecToWebCodecsString(c: VideoCodec): string {
     // because the Rust encoder sets AV_CODEC_FLAG_GLOBAL_HEADER for HEVC.
     case VideoCodec.H265:   return "hvc1.1.6.L186.B0"; // Main, level 6.2 (covers up to 8K@120)
     case VideoCodec.H264_HW:
-    case VideoCodec.H264_SW: return "avc1.640033";    // High, level 5.1
-    default: return "avc1.640033"; // safe fallback for UNKNOWN
+    case VideoCodec.H264_SW: return "avc1.64003E";    // High, level 6.2 (covers up to 8K@60)
+    default: return "avc1.64003E"; // safe fallback for UNKNOWN
   }
 }
 

@@ -27,7 +27,7 @@ const DECODE_CEILING: Record<number, { width: number; height: number; fps: numbe
 const PROBE_CONFIGS: { codec: VideoCodec; webCodecsString: string }[] = [
   { codec: VideoCodec.AV1,    webCodecsString: "av01.0.19M.08" },         // Main, level 6.3, 8-bit
   { codec: VideoCodec.H265,   webCodecsString: "hvc1.1.6.L186.B0" },      // Main, level 6.2
-  { codec: VideoCodec.H264_HW, webCodecsString: "avc1.640033" },          // High, level 5.1
+  { codec: VideoCodec.H264_HW, webCodecsString: "avc1.64003E" },          // High, level 6.2
 ];
 
 const LOCAL_STORAGE_KEY = "decibell.decoder_caps.v1";
