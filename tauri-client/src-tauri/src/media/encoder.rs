@@ -400,27 +400,22 @@ impl H264Encoder {
         context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
         context.set_gop(config.fps * config.keyframe_interval_secs);
 
-        // For HEVC and AV1 we read the codec-config record (hvcC / av1C) from
-        // FFmpeg's `extradata` post-open. Without AV_CODEC_FLAG_GLOBAL_HEADER,
-        // NVENC (etc.) embeds VPS/SPS/PPS inline in each keyframe and leaves
-        // extradata empty — the build_encoded_frame path then fails to ship
-        // a description and WebCodecs can't configure the decoder.
-        // For H.264 we keep the bitstream-parse path (extract_avcc_description
-        // from the annex-B SPS/PPS NALs in keyframes), so we do NOT enable
-        // global headers there — flipping that flag would remove the inline
-        // SPS/PPS and break the existing parser.
-        match target_codec {
-            crate::media::caps::CodecKind::H265 | crate::media::caps::CodecKind::Av1 => {
-                // ffmpeg-next exposes the flag value via the sys crate; raw OR
-                // is the safest path that preserves whatever else FFmpeg may
-                // have set on the context already.
-                const AV_CODEC_FLAG_GLOBAL_HEADER: i32 = 1 << 22;
-                unsafe {
-                    let p = context.as_mut_ptr();
-                    (*p).flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-                }
+        // AV1 needs AV_CODEC_FLAG_GLOBAL_HEADER set so FFmpeg populates
+        // extradata with a proper av1C config record (which build_encoded_frame
+        // ships verbatim to WebCodecs as the description).
+        // H.264 and H.265 use a different path: parse SPS/PPS (and VPS for
+        // HEVC) out of the keyframe's annex-B inline NALs and build the
+        // avcC / hvcC manually. This required for HEVC because Chromium's
+        // WebCodecs HEVC decoder rendered NVENC-with-GLOBAL_HEADER bitstreams
+        // as just the top-left ~1/4 of the picture, regardless of slices/tune.
+        // Inline VPS/SPS/PPS in keyframes (no GLOBAL_HEADER) produces a
+        // bitstream the decoder consumes correctly.
+        if target_codec == crate::media::caps::CodecKind::Av1 {
+            const AV_CODEC_FLAG_GLOBAL_HEADER: i32 = 1 << 22;
+            unsafe {
+                let p = context.as_mut_ptr();
+                (*p).flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
             }
-            _ => {}
         }
 
         // Disable B-frames for real-time streaming — B-frames require reordering
@@ -1377,9 +1372,19 @@ impl H264Encoder {
             CodecKind::H265 => {
                 let hvcc_data = annexb_to_avcc(&raw_data);
                 let desc = if is_keyframe {
-                    // hevc_nvenc emits raw annex-B VPS+SPS+PPS in extradata
-                    // (NOT a hvcC record), so we have to convert it.
-                    self.build_hvcc_description()
+                    // Without GLOBAL_HEADER set on the HEVC encoder (see
+                    // H264Encoder::new), VPS/SPS/PPS are inline in each
+                    // keyframe. Build hvcC from those NALs directly — same
+                    // builder we'd otherwise call on extradata, just pointed
+                    // at the keyframe bitstream.
+                    let built = build_hevc_hvcc(&raw_data);
+                    if built.is_some() {
+                        eprintln!("[encoder] hvcC built from keyframe ({} bytes from {} bytes annex-B)",
+                                  built.as_ref().unwrap().len(), raw_data.len());
+                    } else {
+                        eprintln!("[encoder] WARNING: failed to build hvcC from keyframe ({} bytes)", raw_data.len());
+                    }
+                    built
                 } else { None };
                 (hvcc_data, desc)
             }
