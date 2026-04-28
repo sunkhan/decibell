@@ -353,7 +353,7 @@ fn create_d3d11_device() -> Result<(ID3D11Device, ID3D11DeviceContext), String> 
     Ok((device, context))
 }
 
-fn create_winrt_device(device: &ID3D11Device) -> Result<IDirect3DDevice, String> {
+pub(crate) fn create_winrt_device(device: &ID3D11Device) -> Result<IDirect3DDevice, String> {
     unsafe {
         let dxgi_device: IDXGIDevice = device
             .cast()
@@ -410,7 +410,7 @@ fn create_capture_item_for_monitor(id: &str) -> Result<GraphicsCaptureItem, Stri
     }
 }
 
-fn create_capture_item_for_window(id: &str) -> Result<GraphicsCaptureItem, String> {
+pub(crate) fn create_capture_item_for_window(id: &str) -> Result<GraphicsCaptureItem, String> {
     let hwnd_val: usize = id.parse().map_err(|_| format!("Invalid HWND: {}", id))?;
     let hwnd = HWND(hwnd_val as *mut _);
 
@@ -866,5 +866,104 @@ fn wgc_capture_loop(
 
         eprintln!("[capture-wgc] Capture loop exited");
         Ok(())
+    }
+}
+
+// ─── GPU zero-copy capture source (Plan-D-1) ───────────────────────────────
+// WgcSource implements GpuCaptureSource — Windows Graphics Capture handing
+// BGRA D3D11 textures into the shared-device GPU pipeline. The existing
+// `start_capture` (above) keeps the CPU-readback path for libx264 + the
+// GPU-init-failed fallback.
+
+use super::gpu_capture::{CaptureError, GpuCaptureSource, GpuFrame};
+
+pub struct WgcSource {
+    // Hold these so they don't drop while we're still polling.
+    _item: GraphicsCaptureItem,
+    frame_pool: Direct3D11CaptureFramePool,
+    session: GraphicsCaptureSession,
+    width: u32,
+    height: u32,
+    start_time: Instant,
+}
+
+impl WgcSource {
+    /// Create a WGC source for the given window source ID (the raw "window:HWND"
+    /// string from list_window_sources), using the supplied shared D3D11 device.
+    /// WGC will hand out frames in the same device's VRAM.
+    pub fn new(source_id: &str, device: &ID3D11Device) -> Result<Self, String> {
+        let id_part = source_id
+            .strip_prefix("window:")
+            .ok_or_else(|| format!("WgcSource expects 'window:HWND' source ID, got '{}'", source_id))?;
+        let item = create_capture_item_for_window(id_part)?;
+        let size = item.Size().map_err(|e| format!("Size: {}", e))?;
+        let width = size.Width as u32;
+        let height = size.Height as u32;
+
+        let winrt_device = create_winrt_device(device)?;
+
+        let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+            &winrt_device,
+            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            2, // num buffers
+            size,
+        )
+        .map_err(|e| format!("CreateFreeThreaded: {}", e))?;
+
+        let session = frame_pool
+            .CreateCaptureSession(&item)
+            .map_err(|e| format!("CreateCaptureSession: {}", e))?;
+        // Disable yellow capture border (matches existing CPU-path behavior).
+        let _ = session.SetIsBorderRequired(false);
+        session.StartCapture().map_err(|e| format!("StartCapture: {}", e))?;
+
+        Ok(WgcSource {
+            _item: item,
+            frame_pool,
+            session,
+            width,
+            height,
+            start_time: Instant::now(),
+        })
+    }
+}
+
+impl GpuCaptureSource for WgcSource {
+    fn width(&self) -> u32 { self.width }
+    fn height(&self) -> u32 { self.height }
+
+    fn next_frame(&mut self) -> Result<Option<GpuFrame>, CaptureError> {
+        let frame = match self.frame_pool.TryGetNextFrame() {
+            Ok(f) => f,
+            Err(_) => return Ok(None), // no new frame yet
+        };
+        let surface = frame.Surface()
+            .map_err(|e| CaptureError::Other(format!("Surface: {}", e)))?;
+        let interface_access: IDirect3DDxgiInterfaceAccess = surface
+            .cast()
+            .map_err(|e| CaptureError::Other(format!("Cast IDirect3DDxgiInterfaceAccess: {}", e)))?;
+        let texture: ID3D11Texture2D = unsafe {
+            interface_access.GetInterface()
+                .map_err(|e| CaptureError::Other(format!("GetInterface ID3D11Texture2D: {}", e)))?
+        };
+        // The Direct3D11CaptureFrame is dropped at end of this function;
+        // its texture remains valid via the AddRef inside GetInterface.
+        Ok(Some(GpuFrame {
+            texture,
+            width: self.width,
+            height: self.height,
+            timestamp_us: self.start_time.elapsed().as_micros() as u64,
+        }))
+    }
+
+    fn release_current_frame(&mut self) {
+        // WGC manages frame lifetime via the FramePool — no explicit release.
+    }
+}
+
+impl Drop for WgcSource {
+    fn drop(&mut self) {
+        let _ = self.session.Close();
+        let _ = self.frame_pool.Close();
     }
 }
