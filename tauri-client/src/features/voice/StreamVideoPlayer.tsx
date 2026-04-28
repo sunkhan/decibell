@@ -105,11 +105,27 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
 
     // WebCodecs decoder — only created on Windows (or where VideoDecoder exists)
     let decoder: VideoDecoder | null = null;
+    let dimsLogged = false;
     if (hasWebCodecs) {
       decoder = new VideoDecoder({
         output: (frame: VideoFrame) => {
           const ctx = ctxRef.current;
           if (ctx && canvas) {
+            // Diagnostic: log dimensions on the first frame and on any
+            // size change. Tells us whether "partial top-left" is a
+            // decoder dimension issue (frame.coded* wrong) or a
+            // canvas/CSS issue (frame dims correct but display weird).
+            if (!dimsLogged
+                || canvas.width !== frame.displayWidth
+                || canvas.height !== frame.displayHeight) {
+              console.log("[StreamVideoPlayer] frame dims",
+                "coded=", frame.codedWidth, "x", frame.codedHeight,
+                "display=", frame.displayWidth, "x", frame.displayHeight,
+                "canvas was", canvas.width, "x", canvas.height,
+                "rect", canvas.getBoundingClientRect().width.toFixed(0),
+                "x", canvas.getBoundingClientRect().height.toFixed(0));
+              dimsLogged = true;
+            }
             if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
               canvas.width = frame.displayWidth;
               canvas.height = frame.displayHeight;
