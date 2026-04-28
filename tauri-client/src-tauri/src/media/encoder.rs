@@ -111,6 +111,10 @@ fn build_hevc_hvcc(annexb_extradata: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
 
+    // Diagnostic: dump full SPS so we can decode the conformance window
+    // and chroma_format_idc by hand when the decoder reports wrong dims.
+    eprintln!("[encoder] HEVC SPS ({} bytes): {:02X?}", sps0.len(), sps0);
+
     // sps[2] = sps_video_parameter_set_id<<4 | sps_max_sub_layers_minus1<<1 | sps_temporal_id_nesting_flag
     // sps[3..15] = profile_tier_level (12 bytes — see H.265 spec 7.3.3)
     let profile_byte = sps0[3];
