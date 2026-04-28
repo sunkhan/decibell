@@ -450,13 +450,18 @@ impl H264Encoder {
             "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" => {
                 opts.set("forced_idr", "1");
                 opts.set("preset", "p5");
-                opts.set("tune", "ull");
                 opts.set("rc", "cbr");
-                // hevc_nvenc with tune=ull was producing tiny ~5KB frames at
-                // 1440p with only the top-left quadrant of picture data.
-                // Forcing single-slice fixed the partial-picture symptom.
+                // hevc_nvenc with tune=ull was producing pictures that
+                // Chromium's WebCodecs decoder rendered as just the top-left
+                // ~1280x720 region. Switching to tune=ll (still low-latency,
+                // less aggressive) and forcing single-slice produces a
+                // bitstream the decoder handles correctly. H.264 and AV1
+                // NVENC remain on tune=ull where they work fine.
                 if codec_name == "hevc_nvenc" {
+                    opts.set("tune", "ll");
                     opts.set("slices", "1");
+                } else {
+                    opts.set("tune", "ull");
                 }
                 // VBV buffer: ~4 frames of headroom for rate control
                 let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
