@@ -111,13 +111,18 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         output: (frame: VideoFrame) => {
           const ctx = ctxRef.current;
           if (ctx && canvas) {
-            // Diagnostic: log dimensions on the first frame and on any
-            // size change. Tells us whether "partial top-left" is a
-            // decoder dimension issue (frame.coded* wrong) or a
-            // canvas/CSS issue (frame dims correct but display weird).
+            // Use codedWidth/codedHeight rather than displayWidth/displayHeight.
+            // Chromium's WebCodecs HEVC implementation (verified against an
+            // SPS with conformance_window_flag = 0) reports displayWidth =
+            // coded / SubWidthC, i.e. half the actual picture size for 4:2:0
+            // streams. The decoded picture data IS the full coded size; only
+            // the display-dim metadata is wrong. Drawing the codedWidth ×
+            // codedHeight source rectangle explicitly bypasses the bug.
+            const w = frame.codedWidth || frame.displayWidth;
+            const h = frame.codedHeight || frame.displayHeight;
             if (!dimsLogged
-                || canvas.width !== frame.displayWidth
-                || canvas.height !== frame.displayHeight) {
+                || canvas.width !== w
+                || canvas.height !== h) {
               console.log("[StreamVideoPlayer] frame dims",
                 "coded=", frame.codedWidth, "x", frame.codedHeight,
                 "display=", frame.displayWidth, "x", frame.displayHeight,
@@ -126,11 +131,15 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
                 "x", canvas.getBoundingClientRect().height.toFixed(0));
               dimsLogged = true;
             }
-            if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-              canvas.width = frame.displayWidth;
-              canvas.height = frame.displayHeight;
+            if (canvas.width !== w || canvas.height !== h) {
+              canvas.width = w;
+              canvas.height = h;
             }
-            ctx.drawImage(frame, 0, 0);
+            // 9-arg drawImage: extract the full coded rect from the source
+            // (sx=0,sy=0,sw=w,sh=h) and draw at the same size on the canvas.
+            // The 3-arg form would default to displayWidth/displayHeight and
+            // re-introduce the cropping issue.
+            ctx.drawImage(frame, 0, 0, w, h, 0, 0, w, h);
           }
           frame.close();
           if (!firstFrameSignalled) {
