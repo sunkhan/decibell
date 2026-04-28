@@ -170,7 +170,7 @@ pub fn list_sources() -> Result<Vec<CaptureSource>, String> {
 
 // ─── D3D11 Device Setup ─────────────────────────────────────────────────────
 
-fn create_device_for_adapter(
+pub fn create_device_for_adapter(
     adapter: &IDXGIAdapter1,
 ) -> Result<(ID3D11Device, ID3D11DeviceContext), String> {
     let feature_levels = [D3D_FEATURE_LEVEL_11_0];
@@ -199,9 +199,12 @@ fn create_device_for_adapter(
     ))
 }
 
-// ─── VideoProcessor ─────────────────────────────────────────────────────────
+// ─── LegacyVideoProcessor (CPU-readback path) ──────────────────────────────
+// The new GPU-pipeline VideoProcessor lives in `media/video_processor.rs`.
+// This one keeps the staging-texture readback variant in place for the
+// CPU fallback path (used by libx264 + when GPU init fails).
 
-struct VideoProcessor {
+struct LegacyVideoProcessor {
     video_device: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
     processor: ID3D11VideoProcessor,
@@ -213,11 +216,11 @@ struct VideoProcessor {
     output_height: u32,
 }
 
-// Safety: VideoProcessor is created and used on a single capture thread.
+// Safety: LegacyVideoProcessor is created and used on a single capture thread.
 // COM objects are moved once from the spawning thread to the capture thread.
-unsafe impl Send for VideoProcessor {}
+unsafe impl Send for LegacyVideoProcessor {}
 
-impl VideoProcessor {
+impl LegacyVideoProcessor {
     fn new(
         device: &ID3D11Device,
         src_w: u32,
@@ -326,7 +329,7 @@ impl VideoProcessor {
                 .map_err(|e| format!("CreateVideoProcessorOutputView: {}", e))?;
             let output_view = output_view.ok_or("CreateVideoProcessorOutputView returned None")?;
 
-            Ok(VideoProcessor {
+            Ok(LegacyVideoProcessor {
                 video_device,
                 video_context,
                 processor,
@@ -692,7 +695,7 @@ fn dxgi_capture_thread(
             .map_err(|e| format!("CreateTexture2D (intermediate): {}", e))?;
         let intermediate_tex = intermediate_tex.ok_or("CreateTexture2D (intermediate) returned None")?;
 
-        let video_proc = VideoProcessor::new(&device, src_w, src_h, dst_w, dst_h)?;
+        let video_proc = LegacyVideoProcessor::new(&device, src_w, src_h, dst_w, dst_h)?;
 
         eprintln!(
             "[capture-dxgi] Started: monitor {}:{}, {}x{} → {}x{} @ {}fps",

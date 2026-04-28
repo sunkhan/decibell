@@ -15,6 +15,8 @@ pub mod capture_audio_wasapi;
 #[cfg(target_os = "windows")]
 pub mod capture_wgc;
 #[cfg(target_os = "windows")]
+pub mod video_processor;
+#[cfg(target_os = "windows")]
 pub mod capture_dxgi;
 pub mod codec;
 pub mod encoder;
