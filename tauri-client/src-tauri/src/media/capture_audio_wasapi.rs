@@ -165,48 +165,34 @@ fn run_wasapi_capture(
             mix_format.wFormatTag == 3
         };
 
-        // Try each known-working flag combination with a fresh client.
-        // Initialize can only be called once per IAudioClient — a failed call
-        // leaves it in an unusable state, so we re-activate for each attempt.
-        let buffer_duration = 200_000i64; // 20ms in 100ns units
-        let flag_attempts: &[(&str, u32)] = &[
-            ("no flags", 0),
-            ("LOOPBACK", AUDCLNT_STREAMFLAGS_LOOPBACK),
-            ("EVENTCALLBACK", AUDCLNT_STREAMFLAGS_EVENTCALLBACK),
-        ];
-
-        let mut last_err = String::new();
-        for &(label, flags) in flag_attempts {
-            let audio_client = activate_loopback_client(target_pid, exclude)?;
-
-            match audio_client.Initialize(
-                AUDCLNT_SHAREMODE_SHARED,
-                flags,
-                buffer_duration,
-                0,
-                mix_format_ptr,
-                None,
-            ) {
-                Ok(()) => {
-                    eprintln!("[audio-capture] Initialize succeeded with {}", label);
-                    let result = run_capture_loop(
-                        tx, &audio_client, mix_format_ptr,
-                        channels, sample_rate, bits_per_sample, block_align, is_float,
-                    );
-                    CoTaskMemFree(Some(mix_format_ptr as *const _ as *mut _));
-                    CoUninitialize();
-                    return result;
-                }
-                Err(e) => {
-                    eprintln!("[audio-capture] Initialize with {} failed: {}", label, e);
-                    last_err = format!("Initialize ({}): {}", label, e);
-                }
+        // Process-loopback Initialize requires AUDCLNT_STREAMFLAGS_LOOPBACK —
+        // calling without it returns AUDCLNT_E_INVALID_STREAM_FLAG (0x88890021).
+        // 20ms buffer in 100ns units.
+        let buffer_duration = 200_000i64;
+        let audio_client = activate_loopback_client(target_pid, exclude)?;
+        match audio_client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_LOOPBACK,
+            buffer_duration,
+            0,
+            mix_format_ptr,
+            None,
+        ) {
+            Ok(()) => {
+                let result = run_capture_loop(
+                    tx, &audio_client, mix_format_ptr,
+                    channels, sample_rate, bits_per_sample, block_align, is_float,
+                );
+                CoTaskMemFree(Some(mix_format_ptr as *const _ as *mut _));
+                CoUninitialize();
+                result
+            }
+            Err(e) => {
+                CoTaskMemFree(Some(mix_format_ptr as *const _ as *mut _));
+                CoUninitialize();
+                Err(format!("Initialize (LOOPBACK): {}", e))
             }
         }
-
-        CoTaskMemFree(Some(mix_format_ptr as *const _ as *mut _));
-        CoUninitialize();
-        Err(last_err)
     }
 }
 
