@@ -82,6 +82,8 @@ struct GpuStreamingPipeline {
 
 **Device creation:** `D3D11CreateDevice` with `D3D11_CREATE_DEVICE_BGRA_SUPPORT` (already required by the existing VideoProcessor). For DXGI capture, the device must be on the same adapter as the target output (this is the `create_device_for_adapter` helper that already exists in `capture_dxgi.rs`). For WGC, the adapter is arbitrary — we use whichever the chosen source's window is on.
 
+**Multi-monitor caveat:** if the user ever changes the capture source mid-stream to one on a different adapter (UI does not currently allow this, but worth noting for future-proofing), the entire pipeline — device, encoder, frame pool, capture source — must be torn down and rebuilt. D3D11 textures cannot move between adapters. The current "one stream = one source = one adapter" assumption keeps this simple; surface a clear error if mid-stream source-change is added later and the new source is on a different adapter.
+
 **Per-component integration:**
 
 - **DxgiSource** — already takes a device; just becomes "use the shared one" instead of creating its own.
@@ -115,7 +117,7 @@ impl H264Encoder {
 
 **`new_d3d11` steps:**
 1. Wrap `shared_device` in `AVHWDeviceContext` (D3D11VA type) via `av_hwdevice_ctx_alloc` → manually populate the `device` field of `AVD3D11VADeviceContext` → `av_hwdevice_ctx_init`. Mirror the `new_cuda` pattern with `AV_HWDEVICE_TYPE_D3D11VA` instead of `AV_HWDEVICE_TYPE_CUDA`.
-2. Build `hw_frames_ctx` for a pool of NV12 D3D11 textures (`AV_PIX_FMT_D3D11` software-format, `AV_PIX_FMT_NV12` hardware-format, pool size ~4 textures sized `width × height`).
+2. Build `hw_frames_ctx` for a pool of NV12 D3D11 textures (`AV_PIX_FMT_D3D11` software-format, `AV_PIX_FMT_NV12` hardware-format, pool size **6** textures sized `width × height`). NVENC keeps ~3-4 frames in flight internally even with `tune=ull`; pool size 6 gives headroom without measurable VRAM cost (~36 MB at 1440p NV12, ~72 MB at 4K — negligible on any GPU running NVENC).
 3. Find the codec via the existing `find_hw_encoder` (`av1_nvenc` / `hevc_nvenc` / `h264_nvenc`), set `pix_fmt = AV_PIX_FMT_D3D11`, attach `hw_device_ctx` and `hw_frames_ctx` to the encoder context.
 4. Same options dictionary as today's NVENC path (preset p5, tune ull/ll for HEVC, rc cbr, slices=1 for HEVC, VBV buffer size).
 5. `open_with(opts)`.
@@ -234,6 +236,7 @@ These aren't automated tests; they're "open Task Manager, start a stream, eyebal
 - **Linux changes** — existing `new_cuda` and `new_vaapi` paths stay untouched.
 - **HEVC partial-picture rendering bug** — separate ongoing investigation; not affected by this work.
 - **Codec negotiation behavior** — the LCD picker, swap mechanics, and toggle UI from Plan C all keep working as-is. This spec doesn't touch them.
+- **HDR / 10-bit content** — DXGI Desktop Duplication on an HDR display can hand out `R16G16B16A16_FLOAT` textures. The current spec assumes SDR (BGRA → NV12, 8-bit luma + chroma). For HDR, the pipeline would need to use `P010` textures end-to-end (10-bit NV12) and the encoder would need to be opened with a `Main10` profile. The existing `capture_dxgi` already uses `DuplicateOutput1` to let DWM tone-map HDR → SDR for us, so this is invisible today; revisit if/when we want to preserve HDR end-to-end.
 
 ---
 
