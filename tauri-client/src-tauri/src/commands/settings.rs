@@ -453,7 +453,13 @@ pub async fn probe_decoders_native() -> Result<Vec<CodecCap>, String> {
     }
 }
 
+/// camelCase serde so JS's `{ useAv1, useH265 }` round-trips correctly.
+/// Without this, get_codec_settings returned snake_case fields the JS
+/// store read as undefined (toggles always appeared OFF), and
+/// set_codec_settings rejected JS's camelCase input (writes silently
+/// failed, so toggles reverted on the next load).
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CodecSettingsPayload {
     pub use_av1: bool,
     pub use_h265: bool,
