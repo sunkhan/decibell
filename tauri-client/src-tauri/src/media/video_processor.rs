@@ -85,14 +85,82 @@ impl VideoProcessor {
 
     /// Blit BGRA source into a caller-provided NV12 destination texture.
     /// The destination is the encoder's hw_frames_ctx pool texture and
-    /// changes per frame. Filled in Task 2.
+    /// changes per frame.
     pub fn blit_into(
         &self,
         context: &ID3D11DeviceContext,
         bgra_texture: &ID3D11Texture2D,
         nv12_dst: &ID3D11Texture2D,
     ) -> Result<(), String> {
-        let _ = (context, bgra_texture, nv12_dst, BOOL(0));
-        Ok(()) // implemented in Task 2
+        unsafe {
+            // Per-frame input view — captured texture changes each iteration.
+            let input_view_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+                FourCC: 0,
+                ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
+                    Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: 0 },
+                },
+            };
+            let mut input_view: Option<ID3D11VideoProcessorInputView> = None;
+            self.video_device
+                .CreateVideoProcessorInputView(
+                    bgra_texture,
+                    &self.enumerator,
+                    &input_view_desc,
+                    Some(&mut input_view),
+                )
+                .map_err(|e| format!("CreateVideoProcessorInputView: {}", e))?;
+            let input_view = input_view.ok_or("CreateVideoProcessorInputView returned None")?;
+
+            // Per-frame output view — encoder pool hands out a different
+            // texture each call to acquire_pool_frame.
+            let output_view_desc = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
+                ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
+                    Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
+                },
+            };
+            let mut output_view: Option<ID3D11VideoProcessorOutputView> = None;
+            self.video_device
+                .CreateVideoProcessorOutputView(
+                    nv12_dst,
+                    &self.enumerator,
+                    &output_view_desc,
+                    Some(&mut output_view),
+                )
+                .map_err(|e| format!("CreateVideoProcessorOutputView: {}", e))?;
+            let output_view = output_view.ok_or("CreateVideoProcessorOutputView returned None")?;
+
+            let stream = D3D11_VIDEO_PROCESSOR_STREAM {
+                Enable: BOOL(1),
+                OutputIndex: 0,
+                InputFrameOrField: 0,
+                PastFrames: 0,
+                FutureFrames: 0,
+                ppPastSurfaces: std::ptr::null_mut(),
+                pInputSurface: std::mem::ManuallyDrop::new(Some(input_view)),
+                ppFutureSurfaces: std::ptr::null_mut(),
+                ppPastSurfacesRight: std::ptr::null_mut(),
+                pInputSurfaceRight: std::mem::ManuallyDrop::new(None),
+                ppFutureSurfacesRight: std::ptr::null_mut(),
+            };
+
+            self.video_context
+                .VideoProcessorBlt(
+                    &self.processor,
+                    &output_view,
+                    0,
+                    std::slice::from_ref(&stream),
+                )
+                .map_err(|e| format!("VideoProcessorBlt: {}", e))?;
+
+            // Release the COM ref ManuallyDrop kept alive
+            std::mem::ManuallyDrop::into_inner(std::ptr::read(&stream.pInputSurface));
+
+            // Note: no readback. The blit writes BGRA→NV12 directly into
+            // the caller's nv12_dst texture (encoder pool-managed).
+            let _ = context;
+            Ok(())
+        }
     }
 }
