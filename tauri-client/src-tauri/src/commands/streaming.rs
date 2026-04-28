@@ -4,6 +4,14 @@ use crate::media::{capture, caps::CodecKind, encoder::EncoderConfig, VideoEngine
 use crate::net::connection::build_packet;
 use crate::net::proto::*;
 
+/// True when the chosen codec maps to NVENC (the only family the Windows
+/// GPU pipeline currently builds for). H264Sw is libx264 (CPU) so it
+/// must always take the CPU path.
+#[cfg(target_os = "windows")]
+fn is_gpu_eligible(codec: CodecKind) -> bool {
+    matches!(codec, CodecKind::H264Hw | CodecKind::H265 | CodecKind::Av1)
+}
+
 #[tauri::command]
 pub async fn list_capture_sources() -> Result<Vec<capture::CaptureSource>, String> {
     capture::list_sources().await
@@ -73,27 +81,152 @@ pub async fn start_screen_share(
     eprintln!("[stream] start_screen_share: server='{}', channel='{}', source='{}', {}x{} @ {}fps",
         server_id, channel_id, source_id, width, height, fps);
 
-    // Start capture (triggers portal picker dialog on Linux, blocks until user selects)
-    let capture_config = capture::CaptureConfig {
-        target_fps: fps,
-        target_width: width,
-        target_height: height,
+    // ── Snapshot everything we need from AppState under a brief lock ──
+    let (voice_socket, media_socket, sender_id, community_write_tx, jwt,
+         watcher_event_tx, voice_caps_cache, self_username) = {
+        let s = state.lock().await;
+        let voice_engine = s.voice_engine.as_ref()
+            .ok_or("Voice channel disconnected")?;
+        let client = s.communities.get(&server_id)
+            .ok_or(format!("Not connected to community {}", server_id))?;
+        let community_tx = client.connection_write_tx()
+            .ok_or("Community connection lost")?;
+        (
+            voice_engine.voice_socket(),
+            voice_engine.media_socket(),
+            voice_engine.sender_id().to_string(),
+            community_tx,
+            client.jwt.clone(),
+            s.watcher_event_tx.clone(),
+            s.voice_caps_cache.clone(),
+            s.username.clone().unwrap_or_default(),
+        )
     };
-    let capture_output = capture::start_capture(&source_id, &capture_config).await?;
-    let enc_width = capture_output.width;
-    let enc_height = capture_output.height;
 
-    // Lock state to extract needed data, set up engines, then drop before sending
+    // Resolve Quality preset, encode caps, toggles — used by both paths.
+    let quality_preset = match (quality.as_str(), video_bitrate_kbps) {
+        ("low", _) => crate::media::bitrate_preset::Quality::Low,
+        ("medium", _) => crate::media::bitrate_preset::Quality::Medium,
+        ("custom", Some(kbps)) => crate::media::bitrate_preset::Quality::Custom(kbps),
+        _ => crate::media::bitrate_preset::Quality::High,
+    };
+    let stream_ctx = crate::media::video_pipeline::StreamerContext {
+        channel_id: channel_id.clone(),
+        streamer_username: self_username.clone(),
+        quality: quality_preset,
+    };
+    let codec_settings = crate::config::load(&app)?.settings;
+    let encoder_caps_all = crate::media::caps::get_or_probe_encoders(&app);
+    let encode_caps_filtered: Vec<_> = encoder_caps_all.into_iter().filter(|c| match c.codec {
+        crate::media::caps::CodecKind::Av1 => codec_settings.use_av1,
+        crate::media::caps::CodecKind::H265 => codec_settings.use_h265,
+        _ => true,
+    }).collect();
+    let toggles = crate::media::codec_selection::Toggles {
+        use_av1: codec_settings.use_av1,
+        use_h265: codec_settings.use_h265,
+    };
+    let enforced_codec_for_selector = if enforced_codec_value == 0 { None } else { Some(target_codec) };
+    let thumbnail_channel_id = Some(channel_id.clone());
+
+    // ── Plan-D-2: try Windows GPU zero-copy path first ──
+    // GpuStreamingPipeline does its own capture (DXGI/WGC) — we skip the
+    // CPU capture::start_capture entirely on success. On any build error
+    // we surface a toast then fall through to the CPU path so the stream
+    // still starts.
+    #[cfg(target_os = "windows")]
+    let gpu_attempt: Option<(VideoEngine, u32, u32)> = if is_gpu_eligible(target_codec) {
+        let gpu_config = EncoderConfig {
+            width, height, fps, bitrate_kbps,
+            keyframe_interval_secs: 2,
+        };
+        match VideoEngine::start_gpu(
+            source_id.clone(),
+            target_codec,
+            gpu_config,
+            fps,
+            media_socket.clone(),
+            sender_id.clone(),
+            app.clone(),
+            Some(community_write_tx.clone()),
+            thumbnail_channel_id.clone(),
+            self_username.clone(),
+            Some(stream_ctx.clone()),
+            Some(community_write_tx.clone()),
+            Some(jwt.clone()),
+            Some(encode_caps_filtered.clone()),
+            Some(toggles.clone()),
+            enforced_codec_for_selector,
+            watcher_event_tx.clone(),
+            voice_caps_cache.clone(),
+        ) {
+            Ok((engine, eff_w, eff_h)) => {
+                eprintln!("[stream] GPU zero-copy pipeline started ({}x{})", eff_w, eff_h);
+                Some((engine, eff_w, eff_h))
+            }
+            Err(e) => {
+                eprintln!("[stream] GPU pipeline build failed: {} — falling back to CPU", e);
+                crate::events::emit_stream_gpu_fallback(&app, e);
+                None
+            }
+        }
+    } else { None };
+    #[cfg(not(target_os = "windows"))]
+    let gpu_attempt: Option<(VideoEngine, u32, u32)> = None;
+
+    // ── CPU fallback path: existing capture::start_capture + VideoEngine::start ──
+    let (video_engine, enc_width, enc_height) = if let Some((engine, eff_w, eff_h)) = gpu_attempt {
+        (engine, eff_w, eff_h)
+    } else {
+        let capture_config = capture::CaptureConfig {
+            target_fps: fps,
+            target_width: width,
+            target_height: height,
+        };
+        let capture_output = capture::start_capture(&source_id, &capture_config).await?;
+        let enc_w = capture_output.width;
+        let enc_h = capture_output.height;
+        let encoder_config = EncoderConfig {
+            width: enc_w,
+            height: enc_h,
+            fps, bitrate_kbps,
+            keyframe_interval_secs: 2,
+        };
+        let engine = VideoEngine::start(
+            capture_output.receiver,
+            #[cfg(target_os = "linux")]
+            capture_output.gpu_receiver,
+            media_socket.clone(),
+            sender_id.clone(),
+            encoder_config,
+            fps,
+            target_codec,
+            app.clone(),
+            Some(community_write_tx.clone()),
+            thumbnail_channel_id.clone(),
+            self_username.clone(),
+            Some(stream_ctx.clone()),
+            Some(community_write_tx.clone()),
+            Some(jwt.clone()),
+            Some(encode_caps_filtered.clone()),
+            Some(toggles.clone()),
+            enforced_codec_for_selector,
+            watcher_event_tx.clone(),
+            voice_caps_cache.clone(),
+        );
+        (engine, enc_w, enc_h)
+    };
+
+    // ── Re-lock briefly to install the engine + wire keyframe forwarding ──
     let mut s = state.lock().await;
+    if let Some(ref ve) = s.voice_engine {
+        ve.set_keyframe_sender(video_engine.pipeline_control_tx());
+    }
+    s.video_engine = Some(video_engine);
 
-    // Re-check after portal dialog (user may have disconnected)
-    let voice_engine = s.voice_engine.as_ref()
-        .ok_or("Voice channel disconnected during screen selection")?;
-    let voice_socket = voice_engine.voice_socket();
-    let media_socket = voice_engine.media_socket();
-    let sender_id = voice_engine.sender_id().to_string();
-
-    // Get community connection write channel and build the start_stream packet
+    // Build the start_stream packet under the same lock window so we can
+    // re-resolve the community client (it may have been replaced if the
+    // user reconnected during GPU init).
     let client = s.communities.get(&server_id)
         .ok_or(format!("Not connected to community {}", server_id))?;
     let start_stream_tx = client.connection_write_tx()
@@ -107,97 +240,11 @@ pub async fn start_screen_share(
             has_audio: share_audio,
             resolution_width: enc_width,
             resolution_height: enc_height,
-            // Plan B Task 7: chosen_codec reflects the dev force_codec or
-            // the H264Hw default. enforced_codec stays UNKNOWN — Plan C
-            // Task 11 wires the production enforce dropdown.
             chosen_codec: target_codec as i32,
             enforced_codec: enforced_codec_value,
         }),
         Some(&client.jwt),
     );
-
-    let encoder_config = EncoderConfig {
-        width: enc_width,
-        height: enc_height,
-        fps,
-        bitrate_kbps,
-        keyframe_interval_secs: 2,
-    };
-
-    // Clone the community connection's write channel so the video event bridge
-    // can send thumbnails without locking AppState (avoids Tokio deadlock).
-    let thumbnail_write_tx = client.connection_write_tx();
-    let thumbnail_channel_id = Some(channel_id.clone());
-    let self_username = s.username.clone().unwrap_or_default();
-
-    // Plan C: Codec negotiation context + handles. Snapshot under the
-    // existing AppState lock so the pipeline thread never re-locks.
-    let community_write_tx = client.connection_write_tx();
-    let jwt = client.jwt.clone();
-    let watcher_event_tx = s.watcher_event_tx.clone();
-    let voice_caps_cache = s.voice_caps_cache.clone();
-
-    // Resolve Quality preset for codec-aware bitrate recompute on swaps.
-    let quality_preset = match (quality.as_str(), video_bitrate_kbps) {
-        ("low", _) => crate::media::bitrate_preset::Quality::Low,
-        ("medium", _) => crate::media::bitrate_preset::Quality::Medium,
-        ("custom", Some(kbps)) => crate::media::bitrate_preset::Quality::Custom(kbps),
-        _ => crate::media::bitrate_preset::Quality::High,
-    };
-
-    let stream_ctx = crate::media::video_pipeline::StreamerContext {
-        channel_id: channel_id.clone(),
-        streamer_username: self_username.clone(),
-        quality: quality_preset,
-    };
-
-    // Encode caps for the LCD picker — same probe + toggle filter that
-    // commands::voice::join_voice_channel uses to populate JoinVoiceRequest.
-    let codec_settings = crate::config::load(&app)?.settings;
-    let encoder_caps_all = crate::media::caps::get_or_probe_encoders(&app);
-    let encode_caps_filtered: Vec<_> = encoder_caps_all.into_iter().filter(|c| match c.codec {
-        crate::media::caps::CodecKind::Av1 => codec_settings.use_av1,
-        crate::media::caps::CodecKind::H265 => codec_settings.use_h265,
-        _ => true,
-    }).collect();
-    let toggles = crate::media::codec_selection::Toggles {
-        use_av1: codec_settings.use_av1,
-        use_h265: codec_settings.use_h265,
-    };
-
-    // Start video pipeline
-    let video_engine = VideoEngine::start(
-        capture_output.receiver,
-        #[cfg(target_os = "linux")]
-        capture_output.gpu_receiver,
-        media_socket,
-        sender_id.clone(),
-        encoder_config,
-        fps,
-        target_codec,
-        app.clone(),
-        thumbnail_write_tx,
-        thumbnail_channel_id,
-        self_username,
-        Some(stream_ctx),
-        community_write_tx,
-        Some(jwt),
-        Some(encode_caps_filtered),
-        Some(toggles),
-        // Plan C Group 6: when the user picked a specific codec in the
-        // dialog, lock the selector to that codec — auto-renegotiation
-        // is disabled for the rest of the stream.
-        if enforced_codec_value == 0 { None } else { Some(target_codec) },
-        watcher_event_tx,
-        voice_caps_cache,
-    );
-
-    // Wire up keyframe forwarding: voice bridge → video encoder
-    if let Some(ref ve) = s.voice_engine {
-        ve.set_keyframe_sender(video_engine.pipeline_control_tx());
-    }
-
-    s.video_engine = Some(video_engine);
 
     // Start audio stream capture if enabled
     if share_audio {

@@ -1093,6 +1093,30 @@ impl H264Encoder {
             (*frames_ctx).height = config.height as i32;
             (*frames_ctx).initial_pool_size = 6; // see spec §5
 
+            // Override AVD3D11VAFramesContext.BindFlags before init.
+            // FFmpeg's default for NV12 is D3D11_BIND_DECODER |
+            // D3D11_BIND_VIDEO_ENCODER, but D3D11_BIND_VIDEO_ENCODER is the
+            // Media Foundation encoder flag — NVIDIA's driver rejects NV12
+            // texture creation with that combo, returning E_INVALIDARG
+            // (0x80070057) at av_hwframe_ctx_init time.
+            //
+            // For our pipeline the texture must be a VideoProcessor render
+            // target (so blit_into can write NV12 into it) and accessible
+            // as a shader resource (NVENC's D3D11→CUDA interop registers
+            // the texture; SHADER_RESOURCE keeps options open).
+            //
+            // Layout of AVD3D11VAFramesContext (libavutil/hwcontext_d3d11va.h):
+            //   offset  0: ID3D11Texture2D* texture  (8 bytes, x64)
+            //   offset  8: UINT BindFlags           (4 bytes)
+            //   offset 12: UINT MiscFlags           (4 bytes)
+            // ffmpeg-sys-next doesn't generate Rust bindings for the
+            // Windows-only struct, so we poke the field by offset.
+            let frames_hwctx = (*frames_ctx).hwctx as *mut u8;
+            let bind_flags_ptr = frames_hwctx.add(8) as *mut u32;
+            const D3D11_BIND_RENDER_TARGET: u32 = 0x20;
+            const D3D11_BIND_SHADER_RESOURCE: u32 = 0x8;
+            *bind_flags_ptr = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
             let rc = av_hwframe_ctx_init(r);
             if rc < 0 {
                 let mut rr = r;
@@ -1101,7 +1125,7 @@ impl H264Encoder {
                 av_buffer_unref(&mut hd);
                 return Err(format!("av_hwframe_ctx_init(D3D11VA) failed: {}", rc));
             }
-            eprintln!("[encoder] D3D11VA hw_frames_ctx initialized ({}x{}, pool=6)",
+            eprintln!("[encoder] D3D11VA hw_frames_ctx initialized ({}x{}, pool=6, BindFlags=RT|SR)",
                 config.width, config.height);
             r
         };
@@ -1130,6 +1154,17 @@ impl H264Encoder {
             // VBV buffer: ~4 frames of headroom for rate control
             let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
             (*ctx_ptr).rc_buffer_size = vbv_bits;
+
+            // AV1: same GLOBAL_HEADER trick as the CPU constructor — without
+            // it FFmpeg's av1_nvenc keeps the av1C config inline rather than
+            // populating extradata, and read_extradata_for_description("av1C")
+            // returns None so WebCodecs gets no description on keyframes.
+            // H.264 / H.265 build their description by parsing the keyframe
+            // bitstream so they don't need this.
+            if target_codec == crate::media::caps::CodecKind::Av1 {
+                const AV_CODEC_FLAG_GLOBAL_HEADER: i32 = 1 << 22;
+                (*ctx_ptr).flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+            }
         }
 
         context.set_colorspace(ffmpeg_next::color::Space::BT709);

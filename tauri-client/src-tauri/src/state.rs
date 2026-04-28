@@ -78,12 +78,6 @@ pub struct AppState {
     /// startup, drops the AppState lock, and processes events without
     /// touching AppState again.
     pub watcher_event_tx: broadcast::Sender<WatcherEvent>,
-    /// Plan-D-1: shutdown signal for the Windows GPU zero-copy pipeline.
-    /// stop_screen_share sets it to true; the pipeline thread polls it
-    /// each iteration and exits cleanly. None when no GPU pipeline is
-    /// active (CPU path uses VideoEngine's existing shutdown channel).
-    #[cfg(target_os = "windows")]
-    pub gpu_pipeline_shutdown: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl AppState {
@@ -112,8 +106,6 @@ impl AppState {
             decoder_caps: Vec::new(),
             voice_caps_cache: Arc::new(RwLock::new(HashMap::new())),
             watcher_event_tx,
-            #[cfg(target_os = "windows")]
-            gpu_pipeline_shutdown: None,
         }
     }
 }
