@@ -179,11 +179,17 @@ pub fn create_device_for_adapter(
     let mut actual_level = D3D_FEATURE_LEVEL_11_0;
 
     unsafe {
+        // BGRA_SUPPORT is needed for the desktop duplication BGRA framebuffer.
+        // VIDEO_SUPPORT enables ID3D11VideoDevice operations — required by
+        // FFmpeg's d3d11va_frames_init in stricter (vcpkg) FFmpeg 8 builds
+        // where it allocates the NV12 texture pool through the video device
+        // rather than the base device. Without this flag, av_hwframe_ctx_init
+        // fails with AVERROR_UNKNOWN regardless of which BindFlags we pass.
         D3D11CreateDevice(
             adapter,
             D3D_DRIVER_TYPE_UNKNOWN,
             HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
             Some(&feature_levels),
             D3D11_SDK_VERSION,
             Some(&mut device),

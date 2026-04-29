@@ -17,7 +17,7 @@ export default function AboutTab() {
           </div>
         </div>
         <div className="text-[12px] text-text-secondary">
-          Version <span className="font-medium text-text-primary">0.4.6</span>
+          Version <span className="font-medium text-text-primary">0.4.7</span>
         </div>
       </div>
     </div>
