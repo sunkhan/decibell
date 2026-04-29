@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod events;
 mod local_media_server;
+mod logging;
 mod media;
 mod net;
 mod state;
@@ -41,6 +42,11 @@ async fn sweep_temp_attachments(min_age_secs: u64) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize logging FIRST so any panic / eprintln from the rest of
+    // run() is captured. On Windows this redirects STD_ERROR_HANDLE to a
+    // file; on all platforms it installs a panic hook with backtrace.
+    logging::setup();
+
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
