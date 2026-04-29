@@ -79,7 +79,10 @@ pub fn setup() {
     redirect_stderr(&log_path);
 
     let crash_path = dir.join("crash.log");
-    install_panic_hook(crash_path);
+    install_panic_hook(crash_path.clone());
+
+    #[cfg(windows)]
+    install_seh_filter(crash_path);
 
     eprintln!();
     eprintln!("=== Decibell startup {} ===", timestamp_str());
@@ -132,6 +135,70 @@ fn redirect_stderr(_: &std::path::Path) {
     // No-op on Linux: terminal stderr is already user-visible from
     // launchers like the AppImage's --stderr or running the bin directly.
 }
+
+/// Windows-only: catch unhandled SEH (Structured Exception Handling)
+/// exceptions and write a one-liner to crash.log before the OS terminates
+/// the process. This lets us diagnose access violations (0xc0000005) and
+/// other native crashes from C dependencies (FFmpeg, NVIDIA, D3D11) that
+/// Rust's panic hook can't see.
+///
+/// Filter constraints: runs in the context of the crashing thread with
+/// the stack possibly corrupted, so we keep work minimal — open file,
+/// format a single record, close, return EXCEPTION_CONTINUE_SEARCH so
+/// Windows still produces the usual WerFault dump.
+#[cfg(windows)]
+fn install_seh_filter(crash_log_path: PathBuf) {
+    use windows::Win32::System::Diagnostics::Debug::{
+        SetUnhandledExceptionFilter, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
+    };
+
+    // Path for the filter to consume. Leak so the static box outlives the
+    // filter callback (it runs at any time during the process lifetime).
+    let path_static: &'static PathBuf = Box::leak(Box::new(crash_log_path));
+
+    unsafe extern "system" fn filter(info: *const EXCEPTION_POINTERS) -> i32 {
+        let _ = std::panic::catch_unwind(|| {
+            // The leaked path is the only state we need. Pull it from the
+            // global the install function set up — std::sync::OnceLock
+            // would be cleaner but adds atomic ordering complexity in a
+            // crash context, so we use a plain static mut populated once.
+            let path = match SEH_CRASH_PATH.get() {
+                Some(p) => p,
+                None => return,
+            };
+            let mut f = match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                Ok(f) => f,
+                Err(_) => return,
+            };
+            let _ = writeln!(f, "\n=== SEH crash {} ===", timestamp_str());
+            let _ = writeln!(f, "Version: {}", env!("CARGO_PKG_VERSION"));
+            let _ = writeln!(f, "Thread:  {:?}", std::thread::current().name());
+            if !info.is_null() {
+                let er = (*info).ExceptionRecord;
+                if !er.is_null() {
+                    let er = &*er;
+                    let _ = writeln!(f, "Code:    0x{:08X}", er.ExceptionCode.0 as u32);
+                    let _ = writeln!(f, "Address: 0x{:016X}", er.ExceptionAddress as usize);
+                    let _ = writeln!(f, "Flags:   0x{:08X}", er.ExceptionFlags);
+                }
+            }
+            let _ = f.flush();
+        });
+        EXCEPTION_CONTINUE_SEARCH
+    }
+
+    let _ = SEH_CRASH_PATH.set(path_static.clone());
+    unsafe {
+        SetUnhandledExceptionFilter(Some(filter));
+    }
+}
+
+#[cfg(windows)]
+static SEH_CRASH_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 fn install_panic_hook(crash_log_path: PathBuf) {
     let default_hook = std::panic::take_hook();

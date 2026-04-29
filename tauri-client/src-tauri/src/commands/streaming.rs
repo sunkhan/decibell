@@ -4,6 +4,20 @@ use crate::media::{capture, caps::CodecKind, encoder::EncoderConfig, VideoEngine
 use crate::net::connection::build_packet;
 use crate::net::proto::*;
 
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Process-wide flag flipped to true the first time GpuStreamingPipeline::build
+/// fails. Prevents subsequent stream-start attempts from re-entering the GPU
+/// build path, which on some setups (notably the installer-bundled FFmpeg
+/// version mismatch we hit in 0.4.3) leaves the NVIDIA driver / FFmpeg static
+/// state in a broken shape that crashes the second attempt with an SEH access
+/// violation. Resets on app restart. The user's first-attempt fallback toast
+/// already informed them GPU is unavailable; suppressing the toast on later
+/// attempts in the same session keeps the UX clean.
+#[cfg(target_os = "windows")]
+static GPU_PIPELINE_DISABLED: AtomicBool = AtomicBool::new(false);
+
 /// True when the chosen codec maps to NVENC (the only family the Windows
 /// GPU pipeline currently builds for). H264Sw is libx264 (CPU) so it
 /// must always take the CPU path.
@@ -134,8 +148,14 @@ pub async fn start_screen_share(
     // CPU capture::start_capture entirely on success. On any build error
     // we surface a toast then fall through to the CPU path so the stream
     // still starts.
+    //
+    // Fail-fast: if we already failed GPU build once this session, skip
+    // straight to CPU. Some installer-bundled-FFmpeg setups crash on the
+    // second-or-later attempt, so we only let GPU try once per process.
     #[cfg(target_os = "windows")]
-    let gpu_attempt: Option<(VideoEngine, u32, u32)> = if is_gpu_eligible(target_codec) {
+    let gpu_attempt: Option<(VideoEngine, u32, u32)> = if is_gpu_eligible(target_codec)
+        && !GPU_PIPELINE_DISABLED.load(Ordering::Relaxed)
+    {
         let gpu_config = EncoderConfig {
             width, height, fps, bitrate_kbps,
             keyframe_interval_secs: 2,
@@ -165,7 +185,8 @@ pub async fn start_screen_share(
                 Some((engine, eff_w, eff_h))
             }
             Err(e) => {
-                eprintln!("[stream] GPU pipeline build failed: {} — falling back to CPU", e);
+                eprintln!("[stream] GPU pipeline build failed: {} — falling back to CPU (GPU now disabled for this session)", e);
+                GPU_PIPELINE_DISABLED.store(true, Ordering::Relaxed);
                 crate::events::emit_stream_gpu_fallback(&app, e);
                 None
             }
