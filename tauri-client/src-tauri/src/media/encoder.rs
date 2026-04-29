@@ -1083,15 +1083,23 @@ impl H264Encoder {
         // BindFlags for AVD3D11VAFramesContext is the field FFmpeg passes
         // to ID3D11Device::CreateTexture2D. NVIDIA's driver accepts
         // different combinations depending on the texture format,
-        // ArraySize, and driver/FFmpeg build. We've observed:
-        //   - FFmpeg 7 / Gyan / local builds:  RT|SR works.
+        // ArraySize, and FFmpeg build. We've observed:
+        //   - FFmpeg 8 / Gyan / local builds:  RT|SR works,
+        //                                      RT|SR|DEC fails (E_INVALIDARG).
         //   - FFmpeg 8 / vcpkg (CI bundled):   RT|SR fails with
-        //                                      AVERROR_UNKNOWN; RT|SR|DEC works.
-        // So we try the more permissive combo first (which both FFmpeg
-        // builds accept) and fall through to alternates only if needed.
+        //                                      AVERROR_UNKNOWN — needs the
+        //                                      stricter combo.
+        // RT|SR comes first because it's the cheapest combo on NVIDIA and
+        // succeeds on the dev path; RT|SR|DEC is the fallback the vcpkg
+        // build seems to want; RT|DEC is a last-ditch try.
+        //
         // Each attempt rebuilds hw_frames_ref because av_hwframe_ctx_init
         // takes a fresh AVBufferRef and a failed init can leave it
-        // partially populated.
+        // partially populated. We also lower FFmpeg's log level to QUIET
+        // during the trial so the noisy "Could not create the texture
+        // (80070057)" line FFmpeg emits on each failed CreateTexture2D
+        // doesn't show up on the success path — restored before init
+        // logs the chosen combo.
         //
         // Layout of AVD3D11VAFramesContext (libavutil/hwcontext_d3d11va.h):
         //   offset  0: ID3D11Texture2D* texture  (8 bytes, x64)
@@ -1103,14 +1111,17 @@ impl H264Encoder {
         const D3D11_BIND_RENDER_TARGET: u32 = 0x20;
         const D3D11_BIND_DECODER: u32 = 0x200;
         let bind_flag_attempts: &[(&str, u32)] = &[
-            ("RT|SR|DEC", D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DECODER),
             ("RT|SR",     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE),
+            ("RT|SR|DEC", D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DECODER),
             ("RT|DEC",    D3D11_BIND_RENDER_TARGET | D3D11_BIND_DECODER),
         ];
 
         let mut last_err = String::new();
         let mut hw_frames_ref: *mut AVBufferRef = std::ptr::null_mut();
         let mut chosen_label = "";
+
+        let saved_log_level = unsafe { av_log_get_level() };
+        unsafe { av_log_set_level(AV_LOG_QUIET); }
 
         for &(label, flags) in bind_flag_attempts {
             unsafe {
@@ -1136,12 +1147,13 @@ impl H264Encoder {
                     chosen_label = label;
                     break;
                 }
-                eprintln!("[encoder] D3D11VA hw_frames_ctx_init with BindFlags={} failed: {} — trying next", label, rc);
                 last_err = format!("av_hwframe_ctx_init(D3D11VA, {}): {}", label, rc);
                 let mut rr = r;
                 av_buffer_unref(&mut rr);
             }
         }
+
+        unsafe { av_log_set_level(saved_log_level); }
 
         if hw_frames_ref.is_null() {
             unsafe {
