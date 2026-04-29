@@ -71,6 +71,16 @@ jobs:
       - name: Install Windows system dependencies
         if: matrix.target == 'windows'
         run: |
+          # Pin vcpkg to the commit our GPU pipeline was developed against.
+          # Newer commits ship an FFmpeg 8 port whose d3d11va_frames_init
+          # crashes (SEH access violation, address 0x0) on stream start —
+          # see release notes for v0.4.7 / v0.4.8. This commit matches the
+          # user's local vcpkg state where the GPU path works end-to-end.
+          # Re-pin whenever local vcpkg + GPU pipeline are re-validated.
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --quiet origin
+          git -C "$env:VCPKG_INSTALLATION_ROOT" checkout e5a1490e1409d175932ef6014519e9ae149ddb7c
+          & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+
           vcpkg install ffmpeg[nvcodec,amf,qsv]:x64-windows opus:x64-windows
           $installed = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
           # Use vcpkg's bundled pkg-config from msys2 (more reliable than chocolatey pkgconfiglite)
