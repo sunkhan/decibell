@@ -94,14 +94,15 @@ impl GpuStreamingPipeline {
                 let mut context: Option<ID3D11DeviceContext> = None;
                 let mut actual_level = D3D_FEATURE_LEVEL_11_0;
                 unsafe {
-                    // VIDEO_SUPPORT alongside BGRA — see capture_dxgi.rs's
-                    // create_device_for_adapter for the rationale: stricter
-                    // FFmpeg 8 builds need it for d3d11va_frames_init.
+                    // VIDEO_SUPPORT was attempted in 0.4.7 but triggers a
+                    // NULL-pointer-dispatch crash inside vcpkg's FFmpeg 8
+                    // d3d11va_frames_init. Reverted to BGRA-only — see
+                    // capture_dxgi.rs for the full rationale.
                     D3D11CreateDevice(
                         None,
                         D3D_DRIVER_TYPE_HARDWARE,
                         HMODULE::default(),
-                        D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                         Some(&[D3D_FEATURE_LEVEL_11_0]),
                         D3D11_SDK_VERSION,
                         Some(&mut device),

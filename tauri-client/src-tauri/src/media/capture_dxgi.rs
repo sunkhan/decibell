@@ -180,16 +180,18 @@ pub fn create_device_for_adapter(
 
     unsafe {
         // BGRA_SUPPORT is needed for the desktop duplication BGRA framebuffer.
-        // VIDEO_SUPPORT enables ID3D11VideoDevice operations — required by
-        // FFmpeg's d3d11va_frames_init in stricter (vcpkg) FFmpeg 8 builds
-        // where it allocates the NV12 texture pool through the video device
-        // rather than the base device. Without this flag, av_hwframe_ctx_init
-        // fails with AVERROR_UNKNOWN regardless of which BindFlags we pass.
+        // We previously also set VIDEO_SUPPORT here, hoping it'd unblock
+        // vcpkg's FFmpeg 8 d3d11va_frames_init — but it activated a NULL-
+        // pointer-dispatch bug in that path (SEH crash on stream start).
+        // Without VIDEO_SUPPORT, FFmpeg gracefully falls back to AVERROR_
+        // UNKNOWN and our caller switches to the CPU pipeline. The proper
+        // GPU fix is to pre-allocate the NV12 texture pool ourselves so
+        // FFmpeg's texture allocator path is never hit (planned).
         D3D11CreateDevice(
             adapter,
             D3D_DRIVER_TYPE_UNKNOWN,
             HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
             Some(&feature_levels),
             D3D11_SDK_VERSION,
             Some(&mut device),
