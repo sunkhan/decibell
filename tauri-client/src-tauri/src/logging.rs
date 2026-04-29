@@ -88,6 +88,29 @@ pub fn setup() {
     eprintln!("=== Decibell startup {} ===", timestamp_str());
     eprintln!("[logging] log dir: {}", dir.display());
     eprintln!("[logging] version: {}", env!("CARGO_PKG_VERSION"));
+    log_ffmpeg_version();
+}
+
+/// Print the FFmpeg runtime version + libavutil/libavcodec major versions
+/// so dev vs release behaviour differences pinpoint to the actual DLLs
+/// loaded. avutil-60 / avcodec-62 = FFmpeg 8.x; avutil-59 / avcodec-61 =
+/// FFmpeg 7.x. Surfaces silently on platforms where ffmpeg isn't linked.
+fn log_ffmpeg_version() {
+    use std::ffi::CStr;
+    unsafe {
+        let raw = ffmpeg_next::sys::av_version_info();
+        if !raw.is_null() {
+            if let Ok(s) = CStr::from_ptr(raw).to_str() {
+                eprintln!("[ffmpeg] runtime version: {}", s);
+            }
+        }
+        eprintln!(
+            "[ffmpeg] libavutil={} libavcodec={} libavformat={}",
+            ffmpeg_next::sys::avutil_version() >> 16,
+            ffmpeg_next::sys::avcodec_version() >> 16,
+            ffmpeg_next::sys::avformat_version() >> 16,
+        );
+    }
 }
 
 /// Truncate the log file if it has grown beyond 10 MB so we don't fill

@@ -1079,56 +1079,80 @@ impl H264Encoder {
         };
 
         // ── Build hw_frames_ctx (NV12 D3D11 texture pool, size 6) ──────────
-        let hw_frames_ref = unsafe {
-            let r = av_hwframe_ctx_alloc(hw_device_ref);
-            if r.is_null() {
-                let mut hd = hw_device_ref;
-                av_buffer_unref(&mut hd);
-                return Err("av_hwframe_ctx_alloc(D3D11VA) failed".into());
-            }
-            let frames_ctx = (*r).data as *mut AVHWFramesContext;
-            (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_D3D11;
-            (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12;
-            (*frames_ctx).width = config.width as i32;
-            (*frames_ctx).height = config.height as i32;
-            (*frames_ctx).initial_pool_size = 6; // see spec §5
+        //
+        // BindFlags for AVD3D11VAFramesContext is the field FFmpeg passes
+        // to ID3D11Device::CreateTexture2D. NVIDIA's driver accepts
+        // different combinations depending on the texture format,
+        // ArraySize, and driver/FFmpeg build. We've observed:
+        //   - FFmpeg 7 / Gyan / local builds:  RT|SR works.
+        //   - FFmpeg 8 / vcpkg (CI bundled):   RT|SR fails with
+        //                                      AVERROR_UNKNOWN; RT|SR|DEC works.
+        // So we try the more permissive combo first (which both FFmpeg
+        // builds accept) and fall through to alternates only if needed.
+        // Each attempt rebuilds hw_frames_ref because av_hwframe_ctx_init
+        // takes a fresh AVBufferRef and a failed init can leave it
+        // partially populated.
+        //
+        // Layout of AVD3D11VAFramesContext (libavutil/hwcontext_d3d11va.h):
+        //   offset  0: ID3D11Texture2D* texture  (8 bytes, x64)
+        //   offset  8: UINT BindFlags           (4 bytes)
+        //   offset 12: UINT MiscFlags           (4 bytes)
+        // ffmpeg-sys-next doesn't generate Rust bindings for the
+        // Windows-only struct, so we poke the field by offset.
+        const D3D11_BIND_SHADER_RESOURCE: u32 = 0x8;
+        const D3D11_BIND_RENDER_TARGET: u32 = 0x20;
+        const D3D11_BIND_DECODER: u32 = 0x200;
+        let bind_flag_attempts: &[(&str, u32)] = &[
+            ("RT|SR|DEC", D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DECODER),
+            ("RT|SR",     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE),
+            ("RT|DEC",    D3D11_BIND_RENDER_TARGET | D3D11_BIND_DECODER),
+        ];
 
-            // Override AVD3D11VAFramesContext.BindFlags before init.
-            // FFmpeg's default for NV12 is D3D11_BIND_DECODER |
-            // D3D11_BIND_VIDEO_ENCODER, but D3D11_BIND_VIDEO_ENCODER is the
-            // Media Foundation encoder flag — NVIDIA's driver rejects NV12
-            // texture creation with that combo, returning E_INVALIDARG
-            // (0x80070057) at av_hwframe_ctx_init time.
-            //
-            // For our pipeline the texture must be a VideoProcessor render
-            // target (so blit_into can write NV12 into it) and accessible
-            // as a shader resource (NVENC's D3D11→CUDA interop registers
-            // the texture; SHADER_RESOURCE keeps options open).
-            //
-            // Layout of AVD3D11VAFramesContext (libavutil/hwcontext_d3d11va.h):
-            //   offset  0: ID3D11Texture2D* texture  (8 bytes, x64)
-            //   offset  8: UINT BindFlags           (4 bytes)
-            //   offset 12: UINT MiscFlags           (4 bytes)
-            // ffmpeg-sys-next doesn't generate Rust bindings for the
-            // Windows-only struct, so we poke the field by offset.
-            let frames_hwctx = (*frames_ctx).hwctx as *mut u8;
-            let bind_flags_ptr = frames_hwctx.add(8) as *mut u32;
-            const D3D11_BIND_RENDER_TARGET: u32 = 0x20;
-            const D3D11_BIND_SHADER_RESOURCE: u32 = 0x8;
-            *bind_flags_ptr = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        let mut last_err = String::new();
+        let mut hw_frames_ref: *mut AVBufferRef = std::ptr::null_mut();
+        let mut chosen_label = "";
 
-            let rc = av_hwframe_ctx_init(r);
-            if rc < 0 {
+        for &(label, flags) in bind_flag_attempts {
+            unsafe {
+                let r = av_hwframe_ctx_alloc(hw_device_ref);
+                if r.is_null() {
+                    last_err = "av_hwframe_ctx_alloc(D3D11VA) failed".into();
+                    continue;
+                }
+                let frames_ctx = (*r).data as *mut AVHWFramesContext;
+                (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_D3D11;
+                (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12;
+                (*frames_ctx).width = config.width as i32;
+                (*frames_ctx).height = config.height as i32;
+                (*frames_ctx).initial_pool_size = 6; // see spec §5
+
+                let frames_hwctx = (*frames_ctx).hwctx as *mut u8;
+                let bind_flags_ptr = frames_hwctx.add(8) as *mut u32;
+                *bind_flags_ptr = flags;
+
+                let rc = av_hwframe_ctx_init(r);
+                if rc == 0 {
+                    hw_frames_ref = r;
+                    chosen_label = label;
+                    break;
+                }
+                eprintln!("[encoder] D3D11VA hw_frames_ctx_init with BindFlags={} failed: {} — trying next", label, rc);
+                last_err = format!("av_hwframe_ctx_init(D3D11VA, {}): {}", label, rc);
                 let mut rr = r;
                 av_buffer_unref(&mut rr);
+            }
+        }
+
+        if hw_frames_ref.is_null() {
+            unsafe {
                 let mut hd = hw_device_ref;
                 av_buffer_unref(&mut hd);
-                return Err(format!("av_hwframe_ctx_init(D3D11VA) failed: {}", rc));
             }
-            eprintln!("[encoder] D3D11VA hw_frames_ctx initialized ({}x{}, pool=6, BindFlags=RT|SR)",
-                config.width, config.height);
-            r
-        };
+            return Err(format!("av_hwframe_ctx_init(D3D11VA) failed for all BindFlags combos; last: {}", last_err));
+        }
+
+        eprintln!("[encoder] D3D11VA hw_frames_ctx initialized ({}x{}, pool=6, BindFlags={})",
+            config.width, config.height, chosen_label);
 
         // ── Build encoder context ──────────────────────────────────────────
         let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
