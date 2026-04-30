@@ -349,6 +349,16 @@ pub struct H264Encoder {
     /// VA-API: whether this encoder instance uses h264_vaapi with HW frames.
     #[cfg(target_os = "linux")]
     is_vaapi_hw: bool,
+
+    /// Windows QSV (Intel Quick Sync) zero-copy: separate hwdevice + frames
+    /// derived from the D3D11VA pool. The encoder consumes AV_PIX_FMT_QSV
+    /// frames whose underlying texture comes from our D3D11 source pool —
+    /// `source_frames` on the QSV frames context links them. Both refs are
+    /// null on the NVENC/AMF path; we own them and unref on Drop.
+    #[cfg(target_os = "windows")]
+    qsv_hw_device_ref: *mut std::ffi::c_void,
+    #[cfg(target_os = "windows")]
+    qsv_hw_frames_ref: *mut std::ffi::c_void,
 }
 
 #[derive(Debug, Clone)]
@@ -529,6 +539,10 @@ impl H264Encoder {
             cuda_hw_frames_ref: std::ptr::null_mut(),
             #[cfg(target_os = "linux")]
             is_vaapi_hw: false,
+            #[cfg(target_os = "windows")]
+            qsv_hw_device_ref: std::ptr::null_mut(),
+            #[cfg(target_os = "windows")]
+            qsv_hw_frames_ref: std::ptr::null_mut(),
         })
     }
 
@@ -886,6 +900,10 @@ impl H264Encoder {
             cuda_hw_frames_ref: std::ptr::null_mut(),
             #[cfg(target_os = "linux")]
             is_vaapi_hw: true,
+            #[cfg(target_os = "windows")]
+            qsv_hw_device_ref: std::ptr::null_mut(),
+            #[cfg(target_os = "windows")]
+            qsv_hw_frames_ref: std::ptr::null_mut(),
         })
     }
 
@@ -1060,15 +1078,19 @@ impl H264Encoder {
         ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
 
         let (codec, codec_name) = Self::find_hw_encoder(target_codec)?;
-        // GPU zero-copy currently supports NVENC (NVIDIA) and AMF (AMD).
-        // QSV (Intel) needs an extra D3D11→QSV hwdevice derivation step
-        // that's a future addition. Other encoders (mf, vaapi, libx264)
-        // route through the CPU pipeline.
+        // GPU zero-copy supports NVENC (NVIDIA), AMF (AMD), and QSV (Intel).
+        // NVENC/AMF accept AV_PIX_FMT_D3D11 input directly via D3D11VA hwctx;
+        // QSV needs a D3D11VA→QSV hwdevice derivation + a separate QSV
+        // frames context whose source_frames link points back at the D3D11
+        // pool, so VideoProcessor can keep blitting NV12 into D3D11 textures
+        // and the encoder consumes them as AV_PIX_FMT_QSV. Other encoders
+        // (mf, vaapi, libx264) route through the CPU pipeline.
         let is_nvenc = codec_name.contains("nvenc");
         let is_amf = codec_name.contains("_amf");
-        if !is_nvenc && !is_amf {
+        let is_qsv = codec_name.contains("_qsv");
+        if !is_nvenc && !is_amf && !is_qsv {
             return Err(format!(
-                "new_d3d11 supports NVENC and AMF only, got '{}'",
+                "new_d3d11 supports NVENC, AMF, and QSV only, got '{}'",
                 codec_name
             ));
         }
@@ -1184,6 +1206,61 @@ impl H264Encoder {
         eprintln!("[encoder] D3D11VA hw_frames_ctx initialized ({}x{}, pool=6, BindFlags={})",
             config.width, config.height, chosen_label);
 
+        // ── QSV (Intel): derive a QSV hwdevice from the D3D11 hwdevice,
+        //    then derive a QSV frames context from the D3D11 frames pool.
+        //    av_hwframe_ctx_create_derived sets up the source_frames link
+        //    internally — av_hwframe_get_buffer on the QSV pool will allocate
+        //    a D3D11 frame from the source and wrap it as AV_PIX_FMT_QSV
+        //    with mfxHDLPair* in data[3] pointing at the D3D11 texture +
+        //    array index. NVENC/AMF skip this and consume the D3D11 pool
+        //    directly.
+        const AV_HWFRAME_MAP_DIRECT: i32 = 4;
+        let mut qsv_hw_device_ref: *mut AVBufferRef = std::ptr::null_mut();
+        let mut qsv_hw_frames_ref: *mut AVBufferRef = std::ptr::null_mut();
+        let (encoder_pix_fmt, encoder_frames_ref) = if is_qsv {
+            unsafe {
+                let mut qsv_dev: *mut AVBufferRef = std::ptr::null_mut();
+                let rc = av_hwdevice_ctx_create_derived(
+                    &mut qsv_dev,
+                    AVHWDeviceType::AV_HWDEVICE_TYPE_QSV,
+                    hw_device_ref,
+                    0,
+                );
+                if rc < 0 || qsv_dev.is_null() {
+                    let mut hd = hw_device_ref;
+                    av_buffer_unref(&mut hd);
+                    let mut hf = hw_frames_ref;
+                    av_buffer_unref(&mut hf);
+                    return Err(format!("av_hwdevice_ctx_create_derived(QSV): {}", rc));
+                }
+
+                let mut qsv_frames: *mut AVBufferRef = std::ptr::null_mut();
+                let rc = av_hwframe_ctx_create_derived(
+                    &mut qsv_frames,
+                    AVPixelFormat::AV_PIX_FMT_QSV,
+                    qsv_dev,
+                    hw_frames_ref,
+                    AV_HWFRAME_MAP_DIRECT,
+                );
+                if rc < 0 || qsv_frames.is_null() {
+                    av_buffer_unref(&mut qsv_dev);
+                    let mut hd = hw_device_ref;
+                    av_buffer_unref(&mut hd);
+                    let mut hf = hw_frames_ref;
+                    av_buffer_unref(&mut hf);
+                    return Err(format!("av_hwframe_ctx_create_derived(QSV frames): {}", rc));
+                }
+
+                eprintln!("[encoder] QSV hw_frames_ctx initialized ({}x{}, derived from D3D11VA pool)",
+                    config.width, config.height);
+                qsv_hw_device_ref = qsv_dev;
+                qsv_hw_frames_ref = qsv_frames;
+                (AVPixelFormat::AV_PIX_FMT_QSV, qsv_frames)
+            }
+        } else {
+            (AVPixelFormat::AV_PIX_FMT_D3D11, hw_frames_ref)
+        };
+
         // ── Build encoder context ──────────────────────────────────────────
         let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
             .encoder()
@@ -1199,12 +1276,16 @@ impl H264Encoder {
         context.set_gop(config.fps * config.keyframe_interval_secs);
         context.set_max_b_frames(0);
 
-        // Pixel format is D3D11 (hardware), software-format is NV12.
+        // Pixel format depends on encoder family:
+        //   NVENC / AMF  → AV_PIX_FMT_D3D11, hw_frames_ctx = D3D11 pool
+        //   QSV          → AV_PIX_FMT_QSV,   hw_frames_ctx = QSV pool (linked to D3D11)
+        // hw_device_ctx is always the D3D11VA one — FFmpeg uses it for the
+        // source D3D11 device on QSV via the source_frames chain.
         unsafe {
             let ctx_ptr = context.as_mut_ptr();
-            (*ctx_ptr).pix_fmt = AVPixelFormat::AV_PIX_FMT_D3D11;
+            (*ctx_ptr).pix_fmt = encoder_pix_fmt;
             (*ctx_ptr).hw_device_ctx = av_buffer_ref(hw_device_ref);
-            (*ctx_ptr).hw_frames_ctx = av_buffer_ref(hw_frames_ref);
+            (*ctx_ptr).hw_frames_ctx = av_buffer_ref(encoder_frames_ref);
             // VBV buffer: ~4 frames of headroom for rate control
             let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
             (*ctx_ptr).rc_buffer_size = vbv_bits;
@@ -1245,17 +1326,29 @@ impl H264Encoder {
             // the CPU AMF path uses.
             opts.set("usage", "ultralowlatency");
             opts.set("quality", "speed");
+        } else if is_qsv {
+            // QSV (Intel): preset=veryfast biases towards encode speed and
+            // forced_idr=1 lets us respond to viewer keyframe requests.
+            // Same vocabulary as the CPU QSV path.
+            opts.set("preset", "veryfast");
+            opts.set("forced_idr", "1");
         }
 
         let encoder = context
             .open_with(opts)
             .map_err(|e| {
-                // Clean up if open fails
+                // Clean up if open fails — also drop QSV refs if we built them.
                 unsafe {
                     let mut hd = hw_device_ref;
                     av_buffer_unref(&mut hd);
                     let mut hf = hw_frames_ref;
                     av_buffer_unref(&mut hf);
+                    if !qsv_hw_frames_ref.is_null() {
+                        av_buffer_unref(&mut qsv_hw_frames_ref);
+                    }
+                    if !qsv_hw_device_ref.is_null() {
+                        av_buffer_unref(&mut qsv_hw_device_ref);
+                    }
                 }
                 format!("Open D3D11 encoder ({}): {}", codec_name, e)
             })?;
@@ -1288,6 +1381,10 @@ impl H264Encoder {
             cuda_hw_frames_ref: std::ptr::null_mut(),
             #[cfg(target_os = "linux")]
             is_vaapi_hw: false,
+            #[cfg(target_os = "windows")]
+            qsv_hw_device_ref: qsv_hw_device_ref as *mut std::ffi::c_void,
+            #[cfg(target_os = "windows")]
+            qsv_hw_frames_ref: qsv_hw_frames_ref as *mut std::ffi::c_void,
         })
     }
 
@@ -1741,29 +1838,51 @@ pub struct D3d11PoolFrame {
 impl D3d11PoolFrame {
     /// Get the D3D11 texture this pool frame wraps. The VideoProcessor
     /// blits BGRA→NV12 directly into this texture.
+    ///
+    /// Format dispatch:
+    ///   AV_PIX_FMT_D3D11 (NVENC / AMF): data[0] = ID3D11Texture2D*,
+    ///     data[1] = array slice index (intptr_t).
+    ///   AV_PIX_FMT_QSV (Intel): data[3] = mfxHDLPair*, where the first
+    ///     field is the ID3D11Texture2D* from the source D3D11 pool and
+    ///     the second is the array slice index (cast as intptr_t). FFmpeg's
+    ///     QSV hwcontext only fills mfxHDLPair when source_frames is set;
+    ///     our new_d3d11 always sets that for QSV so the layout is stable.
     pub fn texture(&self) -> windows::Win32::Graphics::Direct3D11::ID3D11Texture2D {
+        use ffmpeg_next::sys::AVPixelFormat;
         use windows::core::Interface;
         use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
         unsafe {
-            // FFmpeg's D3D11VA convention: frame->data[0] is the
-            // ID3D11Texture2D*, frame->data[1] is the array slice index
-            // (intptr_t). The pool gives us texture array slice 0 typically.
-            let raw_tex = (*self.av_frame).data[0] as *mut std::ffi::c_void;
-            // Build a Rust-owned ID3D11Texture2D wrapper that bumps the
-            // refcount; FFmpeg keeps its own ref and releases when the
-            // AVFrame is freed in our Drop.
+            let fmt = (*self.av_frame).format;
+            let raw_tex: *mut std::ffi::c_void = if fmt == AVPixelFormat::AV_PIX_FMT_QSV as i32 {
+                let mfx_pair = (*self.av_frame).data[3] as *const *mut std::ffi::c_void;
+                if mfx_pair.is_null() {
+                    panic!("QSV pool frame has null mfxHDLPair pointer");
+                }
+                *mfx_pair
+            } else {
+                (*self.av_frame).data[0] as *mut std::ffi::c_void
+            };
             let tex: ID3D11Texture2D = ID3D11Texture2D::from_raw_borrowed(&raw_tex)
-                .expect("D3D11 pool texture pointer was null")
+                .expect("Pool frame texture pointer was null")
                 .clone();
             tex
         }
     }
 
-    /// The array-slice index for the D3D11 texture (FFmpeg's pool may
-    /// share one texture array across the pool with per-slice access).
+    /// The array-slice index of the underlying D3D11 texture array.
+    /// data[1] for AV_PIX_FMT_D3D11; mfxHDLPair[1] for AV_PIX_FMT_QSV.
     #[allow(dead_code)]
     pub fn array_slice(&self) -> usize {
-        unsafe { (*self.av_frame).data[1] as usize }
+        use ffmpeg_next::sys::AVPixelFormat;
+        unsafe {
+            let fmt = (*self.av_frame).format;
+            if fmt == AVPixelFormat::AV_PIX_FMT_QSV as i32 {
+                let mfx_pair = (*self.av_frame).data[3] as *const usize;
+                *mfx_pair.add(1)
+            } else {
+                (*self.av_frame).data[1] as usize
+            }
+        }
     }
 }
 
@@ -1791,6 +1910,25 @@ impl Drop for H264Encoder {
                     let mut ptr = self.cuda_hw_device_ref as *mut AVBufferRef;
                     av_buffer_unref(&mut ptr);
                     self.cuda_hw_device_ref = std::ptr::null_mut();
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use ffmpeg_next::sys::*;
+            unsafe {
+                // Frames before device — frames context holds a ref to its
+                // device, and the chain of source_frames refs needs to drain
+                // before the underlying D3D11 device's last release.
+                if !self.qsv_hw_frames_ref.is_null() {
+                    let mut ptr = self.qsv_hw_frames_ref as *mut AVBufferRef;
+                    av_buffer_unref(&mut ptr);
+                    self.qsv_hw_frames_ref = std::ptr::null_mut();
+                }
+                if !self.qsv_hw_device_ref.is_null() {
+                    let mut ptr = self.qsv_hw_device_ref as *mut AVBufferRef;
+                    av_buffer_unref(&mut ptr);
+                    self.qsv_hw_device_ref = std::ptr::null_mut();
                 }
             }
         }
