@@ -118,7 +118,14 @@ function PendingTile({
   };
 
   const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!e.dataTransfer.types.includes(REORDER_MIME)) return;
+    // Use React drag state, not dataTransfer.types, to detect "this is
+    // an internal reorder". On Tauri's WebView2 (Windows), custom MIME
+    // types set during dragstart are NOT visible via dataTransfer.types
+    // until the drop event fires — only standard types like text/plain
+    // and Files are exposed during dragover. WebKitGTK (Linux) doesn't
+    // gate this, hence the platform asymmetry. drag.draggingId is set
+    // by our own onDragStart, so it's reliable on every platform.
+    if (!drag.draggingId) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     if (drag.draggingId === a.pendingId) return; // can't drop on self
@@ -131,9 +138,11 @@ function PendingTile({
   };
 
   const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!e.dataTransfer.types.includes(REORDER_MIME)) return;
+    if (!drag.draggingId) return;
     e.preventDefault();
-    const fromId = e.dataTransfer.getData(REORDER_MIME);
+    // Prefer dataTransfer (cross-tab safety), fall back to React state
+    // (WebView2 sometimes returns "" for custom MIME getData in dev mode).
+    const fromId = e.dataTransfer.getData(REORDER_MIME) || drag.draggingId;
     if (fromId && fromId !== a.pendingId) {
       // Compute side directly from the drop event rather than reading
       // it off React state — the state may not have flushed from the
@@ -375,7 +384,10 @@ function EndDropZone({
   const isHover = drag.hoverId === END_ZONE_ID;
 
   const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!e.dataTransfer.types.includes(REORDER_MIME)) return;
+    // See PendingTile.onDragOver for why we use React state instead
+    // of dataTransfer.types (WebView2 hides custom MIME types during
+    // dragover events).
+    if (!drag.draggingId) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     if (drag.hoverId !== END_ZONE_ID) {
@@ -384,9 +396,9 @@ function EndDropZone({
   };
 
   const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!e.dataTransfer.types.includes(REORDER_MIME)) return;
+    if (!drag.draggingId) return;
     e.preventDefault();
-    const fromId = e.dataTransfer.getData(REORDER_MIME);
+    const fromId = e.dataTransfer.getData(REORDER_MIME) || drag.draggingId;
     if (fromId && fromId !== lastItemId) {
       reorder(channelId, fromId, lastItemId, "after");
     }

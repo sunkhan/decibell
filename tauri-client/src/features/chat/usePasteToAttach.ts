@@ -43,24 +43,23 @@ export function usePasteToAttach() {
     const maxBytes = cfg.maxBytes;
 
     const handler = async (e: ClipboardEvent) => {
-      // Collect from both sources. Screenshot tools (especially on Linux
-      // through WebKitGTK) only expose images via `items` with kind:"file";
-      // file-manager copies populate `files`. Some browsers populate both,
-      // so we dedupe on identity.
-      const collected: File[] = [];
-      const seen = new Set<File>();
-      for (const item of Array.from(e.clipboardData?.items ?? [])) {
-        if (item.kind !== "file") continue;
-        const f = item.getAsFile();
-        if (f && !seen.has(f)) {
-          seen.add(f);
-          collected.push(f);
-        }
-      }
-      for (const f of Array.from(e.clipboardData?.files ?? [])) {
-        if (!seen.has(f)) {
-          seen.add(f);
-          collected.push(f);
+      // Prefer `clipboardData.files` when populated (Windows / WebView2,
+      // typical browsers): one canonical source, no duplicates. Fall back
+      // to iterating `items` only when files is empty — that's the path
+      // Linux WebKitGTK takes for screenshot tools, which expose images
+      // via items with kind:"file" but leave files empty.
+      //
+      // The previous "iterate both, dedupe via Set<File>" approach broke
+      // on Chromium-Windows because items[i].getAsFile() and files[i]
+      // return different File object references for the same logical
+      // file — Set identity dedup misses, two uploads run, the user
+      // sees both ~doubled latency and a duplicated attachment.
+      let collected: File[] = Array.from(e.clipboardData?.files ?? []);
+      if (collected.length === 0) {
+        for (const item of Array.from(e.clipboardData?.items ?? [])) {
+          if (item.kind !== "file") continue;
+          const f = item.getAsFile();
+          if (f) collected.push(f);
         }
       }
       if (collected.length === 0) {
