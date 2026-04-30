@@ -441,13 +441,18 @@ pub fn run_video_send_pipeline(
                         description: encoded.avcc_description.clone(),
                     });
                 }
-                // Packetize: split encoded data into UDP_MAX_PAYLOAD-sized chunks
-                let chunks: Vec<&[u8]> = encoded.data.chunks(UDP_MAX_PAYLOAD).collect();
+                // Packetize: split encoded data into UDP_MAX_PAYLOAD-sized chunks.
+                // For HEVC/AV1 keyframes the wire bytes carry a length-prefixed
+                // hvcC / av1C ahead of the bitstream so receivers can configure
+                // their WebCodecs decoder without parsing the bitstream
+                // themselves — encoder::build_wire_data handles the prepend.
+                let wire = super::encoder::build_wire_data(&encoded, encoder.codec);
+                let chunks: Vec<&[u8]> = wire.chunks(UDP_MAX_PAYLOAD).collect();
                 let total = chunks.len() as u16;
 
                 if frame_id % 30 == 0 {
-                    eprintln!("[video-send] Frame {} encoded: {} bytes, {} packets, keyframe={}",
-                        frame_id, encoded.data.len(), total, encoded.is_keyframe);
+                    eprintln!("[video-send] Frame {} encoded: {} bytes ({} on wire), {} packets, keyframe={}",
+                        frame_id, encoded.data.len(), wire.len(), total, encoded.is_keyframe);
                 }
 
                 // FEC accumulator: XOR payload buffer and payload_size for current group
@@ -530,7 +535,8 @@ pub fn run_video_send_pipeline(
 
     // Flush encoder (FEC not critical for final frames)
     for encoded in encoder.flush() {
-        let chunks: Vec<&[u8]> = encoded.data.chunks(UDP_MAX_PAYLOAD).collect();
+        let wire = super::encoder::build_wire_data(&encoded, encoder.codec);
+        let chunks: Vec<&[u8]> = wire.chunks(UDP_MAX_PAYLOAD).collect();
         let total = chunks.len() as u16;
         let codec_byte = encoder.codec as u8;
         for (i, chunk) in chunks.iter().enumerate() {

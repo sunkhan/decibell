@@ -225,6 +225,47 @@ fn build_avcc_record(sps: &[u8], pps: &[u8]) -> Vec<u8> {
     record
 }
 
+/// Magic 4-byte sentinel marking a length-prefixed hvcC/av1C blob ahead
+/// of the bitstream on HEVC/AV1 keyframes. Picked so it can't collide
+/// with a realistic 4-byte HEVC NAL length (would imply a NAL ~3.7 GB)
+/// or an AV1 OBU header byte (forbidden bit forces byte 0 < 0x80; magic
+/// byte 0 = 0xDE = 222). Receivers that find this magic strip the
+/// prefix; receivers that don't pass the data through unchanged so
+/// older clients still talk to newer ones (and vice versa).
+pub const WIRE_DESCRIPTION_MAGIC: [u8; 4] = [0xDE, 0xC1, 0xBE, 0x11];
+
+/// Build the wire bytes for a single encoded frame: for HEVC/AV1 keyframes
+/// that carry a description (hvcC / av1C), prepend
+/// `[MAGIC 4 bytes][u32 BE: desc_len][desc bytes]` so the receiver can
+/// configure its WebCodecs decoder without parsing the bitstream itself.
+/// H.264 keyframes don't use this — receivers parse inline SPS/PPS to
+/// build avcC, which has been the H.264 path since v0.4.x.
+///
+/// For self-preview the streamer's local React event already carries the
+/// description in a separate field and uses `EncodedFrame.data` directly,
+/// so this prepend only applies to the network path.
+pub fn build_wire_data<'a>(
+    encoded: &'a EncodedFrame,
+    codec: crate::media::caps::CodecKind,
+) -> std::borrow::Cow<'a, [u8]> {
+    use crate::media::caps::CodecKind;
+    if encoded.is_keyframe {
+        if let Some(desc) = &encoded.avcc_description {
+            if codec == CodecKind::H265 || codec == CodecKind::Av1 {
+                let mut wire = Vec::with_capacity(
+                    WIRE_DESCRIPTION_MAGIC.len() + 4 + desc.len() + encoded.data.len(),
+                );
+                wire.extend_from_slice(&WIRE_DESCRIPTION_MAGIC);
+                wire.extend_from_slice(&(desc.len() as u32).to_be_bytes());
+                wire.extend_from_slice(desc);
+                wire.extend_from_slice(&encoded.data);
+                return std::borrow::Cow::Owned(wire);
+            }
+        }
+    }
+    std::borrow::Cow::Borrowed(&encoded.data)
+}
+
 /// Extract avcC description from AVCC-formatted data (4-byte length-prefixed NAL units).
 /// Use this on the receiver side to build the description from reassembled keyframe data.
 pub fn extract_avcc_description_from_avcc(avcc_data: &[u8]) -> Option<Vec<u8>> {

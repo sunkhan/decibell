@@ -233,22 +233,24 @@ impl VoiceEngine {
                             }
                             use base64::Engine;
                             let b64_data = base64::engine::general_purpose::STANDARD.encode(&frame.data);
-                            // Description extraction is currently H.264-only — for HEVC/AV1
-                            // the receiver-side bitstream parser doesn't exist yet (Plan C
-                            // will rework description flow to ship in-band from the encoder).
-                            // For non-H.264 streams the viewer will rely on WebCodecs accepting
-                            // the bitstream without an explicit description, which works for
-                            // the common cases (modern Chromium-based webview).
-                            let b64_desc = if frame.is_keyframe && frame.codec <= 2 {
-                                // codec values 1 (H264_HW) and 2 (H264_SW) — both use H.264 bitstream
-                                encoder::extract_avcc_description_from_avcc(&frame.data)
-                                    .map(|d| {
-                                        eprintln!("[video-bridge] avcC description: {} bytes", d.len());
-                                        base64::engine::general_purpose::STANDARD.encode(&d)
-                                    })
-                            } else {
-                                None
-                            };
+                            // HEVC / AV1: receive thread already stripped the
+                            // length-prefixed hvcC / av1C from the keyframe data
+                            // and stashed it in frame.description. Use it as-is.
+                            // H.264: build avcC by parsing the inline SPS/PPS
+                            // NAL units from the keyframe bitstream (existing
+                            // path; kept for back-compat with older clients
+                            // that don't prepend a description on the wire).
+                            let description = frame.description.clone().or_else(|| {
+                                if frame.is_keyframe && frame.codec <= 2 {
+                                    encoder::extract_avcc_description_from_avcc(&frame.data)
+                                } else {
+                                    None
+                                }
+                            });
+                            let b64_desc = description.as_ref().map(|d| {
+                                eprintln!("[video-bridge] description ({} bytes) for codec {}", d.len(), frame.codec);
+                                base64::engine::general_purpose::STANDARD.encode(d)
+                            });
                             let _ = app.emit("stream_frame", serde_json::json!({
                                 "username": frame.streamer_username,
                                 "format": "h264",
@@ -449,7 +451,46 @@ fn run_video_recv_thread(
     // Helper: emit a reassembled video frame.
     // Linux: decode H.264 / HEVC / AV1 → JPEG, emit VideoFrameDecoded.
     // Windows: pass raw bitstream via VideoFrameReady for WebCodecs.
+    //
+    // For HEVC/AV1 keyframes the sender prepends a magic-tagged
+    // length-prefixed hvcC / av1C blob to the bitstream:
+    //   [MAGIC: encoder::WIRE_DESCRIPTION_MAGIC][u32 BE: desc_len][desc][bitstream]
+    // We strip that here so frame.data contains only the actual codec
+    // bitstream and frame.description carries the WebCodecs decoder
+    // configuration record. H.264 keyframes don't use this — the
+    // receiver builds avcC by parsing inline SPS/PPS NALs from the
+    // bitstream (existing path, kept for back-compat).
+    //
+    // The magic prefix lets older senders (which don't prepend) coexist
+    // with newer receivers — keyframes without the magic pass through
+    // unchanged. The magic byte 0 (0xDE) can't collide with an HEVC
+    // NAL length high byte at realistic frame sizes or an AV1 OBU
+    // header byte (forbidden bit forces byte 0 < 0x80).
+    let strip_keyframe_description = |mut frame: video_receiver::ReassembledFrame| -> video_receiver::ReassembledFrame {
+        let magic = &encoder::WIRE_DESCRIPTION_MAGIC;
+        // codec 3 = HEVC, 4 = AV1
+        if frame.is_keyframe
+            && (frame.codec == 3 || frame.codec == 4)
+            && frame.data.len() >= magic.len() + 4
+            && &frame.data[..magic.len()] == magic.as_slice()
+        {
+            let len_off = magic.len();
+            let len = u32::from_be_bytes([
+                frame.data[len_off],
+                frame.data[len_off + 1],
+                frame.data[len_off + 2],
+                frame.data[len_off + 3],
+            ]) as usize;
+            let payload_off = len_off + 4;
+            if len > 0 && len < 1024 && frame.data.len() >= payload_off + len {
+                frame.description = Some(frame.data[payload_off..payload_off + len].to_vec());
+                frame.data.drain(..payload_off + len);
+            }
+        }
+        frame
+    };
     let mut emit_frame = |frame: video_receiver::ReassembledFrame| {
+        let frame = strip_keyframe_description(frame);
         #[cfg(target_os = "linux")]
         {
             // Codec dispatch: convert per-frame codec byte to CodecKind.
@@ -484,14 +525,39 @@ fn run_video_recv_thread(
                 }
             }
             if let Some(ref mut dec) = linux_decoder {
+                // AV1 keyframes need a Sequence Header OBU for ffmpeg to
+                // configure the decoder. The streamer's encoder has
+                // AV_CODEC_FLAG_GLOBAL_HEADER set for AV1 so the SH
+                // lives in extradata, not inline in keyframes — on the
+                // wire we ship it as the av1C in frame.description (its
+                // configOBUs portion, bytes 4..end, IS the SH OBU).
+                // Prepend it to the bitstream on AV1 keyframes so ffmpeg
+                // sees the SH and configures itself. Idempotent across
+                // subsequent keyframes; the decoder accepts redundant SH
+                // OBUs without re-init.
+                let prepended_owned;
+                let bitstream: &[u8] = if frame.is_keyframe
+                    && frame.codec == 4
+                    && frame.description.as_ref().map(|d| d.len() > 4).unwrap_or(false)
+                {
+                    let desc = frame.description.as_ref().unwrap();
+                    let mut combined = Vec::with_capacity((desc.len() - 4) + frame.data.len());
+                    combined.extend_from_slice(&desc[4..]);
+                    combined.extend_from_slice(&frame.data);
+                    prepended_owned = combined;
+                    &prepended_owned
+                } else {
+                    &frame.data
+                };
+
                 // Rate-limit emit: skip JPEG-encoding delta frames if the
                 // last one went out <25ms ago (~40fps cap to the React side).
                 // We still feed every frame into the decoder so references
                 // stay correct.
                 let elapsed = last_decode_time.elapsed();
                 if !frame.is_keyframe && elapsed < Duration::from_millis(25) {
-                    let _ = dec.decode_to_jpeg(&frame.data);
-                } else if let Some(jpeg) = dec.decode_to_jpeg(&frame.data) {
+                    let _ = dec.decode_to_jpeg(bitstream);
+                } else if let Some(jpeg) = dec.decode_to_jpeg(bitstream) {
                     last_decode_time = Instant::now();
                     let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameDecoded(
                         frame.streamer_username,

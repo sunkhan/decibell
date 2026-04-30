@@ -346,7 +346,7 @@ impl GpuStreamingPipeline {
                         });
                     }
                     Self::send_packets(&socket, &sender_id, frame_id,
-                                       &encoded, self.encoder.codec as u8);
+                                       &encoded, self.encoder.codec);
                     frame_id = frame_id.wrapping_add(1);
                     fps_window_count += 1;
                 }
@@ -368,7 +368,7 @@ impl GpuStreamingPipeline {
         // Flush remaining buffered frames (best-effort; FEC dropped on flush).
         for encoded in self.encoder.flush() {
             Self::send_packets(&socket, &sender_id, frame_id,
-                               &encoded, self.encoder.codec as u8);
+                               &encoded, self.encoder.codec);
             frame_id = frame_id.wrapping_add(1);
         }
 
@@ -381,14 +381,22 @@ impl GpuStreamingPipeline {
     /// Packetize + UDP-send + emit FEC for one EncodedFrame. Mirrors the
     /// CPU pipeline's inline send loop in video_pipeline.rs, kept in
     /// sync with the same FEC group size + pacing.
+    ///
+    /// For HEVC/AV1 keyframes the wire bytes are not just `encoded.data`
+    /// — `encoder::build_wire_data` prepends a length-prefixed
+    /// hvcC / av1C blob so the receiver can configure WebCodecs without
+    /// parsing the bitstream itself. H.264 keyframes pass through
+    /// unchanged.
     fn send_packets(
         socket: &UdpSocket,
         sender_id: &str,
         frame_id: u32,
         encoded: &super::encoder::EncodedFrame,
-        codec_byte: u8,
+        codec_kind: CodecKind,
     ) {
-        let chunks: Vec<&[u8]> = encoded.data.chunks(UDP_MAX_PAYLOAD).collect();
+        let codec_byte = codec_kind as u8;
+        let wire = super::encoder::build_wire_data(encoded, codec_kind);
+        let chunks: Vec<&[u8]> = wire.chunks(UDP_MAX_PAYLOAD).collect();
         let total = chunks.len() as u16;
 
         let mut fec_payload = [0u8; UDP_MAX_PAYLOAD];

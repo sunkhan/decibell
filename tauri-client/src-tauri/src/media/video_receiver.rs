@@ -14,6 +14,13 @@ pub struct ReassembledFrame {
     /// (taken from the first packet of the frame). Drives WebCodecs
     /// decoder configuration on the viewer side.
     pub codec: u8,
+    /// Decoder configuration record (avcC / hvcC / av1C). Set on the
+    /// receive thread for HEVC/AV1 keyframes — those carry the
+    /// description in-band as a length-prefixed prefix on the wire and
+    /// are stripped before this struct reaches consumers. None on
+    /// non-keyframes and on H.264, where the receiver builds the
+    /// description by parsing inline SPS/PPS NALs.
+    pub description: Option<Vec<u8>>,
 }
 
 /// Stored FEC group data for recovery.
@@ -180,6 +187,7 @@ impl VideoReceiver {
                 is_keyframe: assembly.is_keyframe,
                 streamer_username: assembly.streamer_username,
                 codec: assembly.codec,
+                description: None,
             });
         }
 
@@ -213,6 +221,7 @@ impl VideoReceiver {
                 is_keyframe: assembly.is_keyframe,
                 streamer_username: assembly.streamer_username,
                 codec: assembly.codec,
+                description: None,
             });
         }
 
