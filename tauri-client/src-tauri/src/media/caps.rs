@@ -112,7 +112,11 @@ fn encoder_candidates() -> Vec<(CodecKind, Vec<&'static str>)> {
 /// Try to construct a tiny FFmpeg encoder context for the given codec name.
 /// Returns true if the encoder opens successfully on this machine. We do not
 /// feed any frames — construction + open is enough to verify usability.
-fn probe_one_encoder(name: &str) -> bool {
+///
+/// `pub(crate)` because `encoder::find_hw_encoder` reuses this to pick the
+/// vendor-correct encoder for the actual hardware (NVENC vs AMF vs QSV)
+/// rather than the first-registered one.
+pub(crate) fn probe_one_encoder(name: &str) -> bool {
     use ffmpeg_next as ffmpeg;
     let codec = match ffmpeg::encoder::find_by_name(name) {
         Some(c) => c,

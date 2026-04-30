@@ -560,8 +560,20 @@ impl H264Encoder {
             CodecKind::Unknown => return Err("Cannot construct encoder for CODEC_UNKNOWN".to_string()),
         };
 
+        // Pick the FIRST candidate whose encoder actually opens on this
+        // machine, not just the first one FFmpeg has registered. Without
+        // this hardware-aware probe we'd pick `h264_nvenc` on every Windows
+        // box where vcpkg's FFmpeg ships NVENC (basically all of them),
+        // even ones with only an AMD GPU — that NVENC then fails at open
+        // time and we lose the chance to fall through to AMF. libx264
+        // doesn't need probing (software, always works), and skipping it
+        // saves a slow open on cold caches.
         for name in &candidates {
-            if let Some(codec) = ffmpeg_next::encoder::find_by_name(name) {
+            let codec = match ffmpeg_next::encoder::find_by_name(name) {
+                Some(c) => c,
+                None => continue,
+            };
+            if *name == "libx264" || crate::media::caps::probe_one_encoder(name) {
                 log::info!("Using {:?} encoder: {}", target_codec, name);
                 return Ok((codec, name.to_string()));
             }
@@ -1048,9 +1060,15 @@ impl H264Encoder {
         ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
 
         let (codec, codec_name) = Self::find_hw_encoder(target_codec)?;
-        if !codec_name.contains("nvenc") {
+        // GPU zero-copy currently supports NVENC (NVIDIA) and AMF (AMD).
+        // QSV (Intel) needs an extra D3D11→QSV hwdevice derivation step
+        // that's a future addition. Other encoders (mf, vaapi, libx264)
+        // route through the CPU pipeline.
+        let is_nvenc = codec_name.contains("nvenc");
+        let is_amf = codec_name.contains("_amf");
+        if !is_nvenc && !is_amf {
             return Err(format!(
-                "new_d3d11 only supports NVENC encoders, got '{}'",
+                "new_d3d11 supports NVENC and AMF only, got '{}'",
                 codec_name
             ));
         }
@@ -1206,16 +1224,27 @@ impl H264Encoder {
         context.set_colorspace(ffmpeg_next::color::Space::BT709);
         context.set_color_range(ffmpeg_next::color::Range::MPEG);
 
-        // Same options dictionary as the existing CPU NVENC path.
+        // Encoder options per vendor — match the CPU path's dictionary so
+        // bitstream characteristics (rate control, latency tuning) stay
+        // consistent between CPU and GPU paths.
         let mut opts = ffmpeg_next::Dictionary::new();
-        opts.set("forced_idr", "1");
-        opts.set("preset", "p5");
-        opts.set("rc", "cbr");
-        if codec_name == "hevc_nvenc" {
-            opts.set("tune", "ll");
-            opts.set("slices", "1");
-        } else {
-            opts.set("tune", "ull");
+        if is_nvenc {
+            opts.set("forced_idr", "1");
+            opts.set("preset", "p5");
+            opts.set("rc", "cbr");
+            if codec_name == "hevc_nvenc" {
+                opts.set("tune", "ll");
+                opts.set("slices", "1");
+            } else {
+                opts.set("tune", "ull");
+            }
+        } else if is_amf {
+            // AMF (AMD): "ultralowlatency" usage minimizes encoder buffering
+            // for screen sharing; "speed" quality preset trades some
+            // compression efficiency for lower CPU/GPU load. Same vocabulary
+            // the CPU AMF path uses.
+            opts.set("usage", "ultralowlatency");
+            opts.set("quality", "speed");
         }
 
         let encoder = context
