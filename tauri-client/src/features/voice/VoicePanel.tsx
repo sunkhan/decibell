@@ -62,10 +62,33 @@ export default function VoicePanel() {
     invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
   };
 
-  const handleWatchStream = (username: string) => {
+  const handleWatchStream = async (username: string) => {
     if (!connectedServerId || !connectedChannelId) return;
     const isSelf = username === ownUsername;
     const isAlreadyWatching = watchingStreams.includes(username);
+
+    // Linux: enforce a single active stream. WebKitGTK can't keep
+    // multiple stream players running cleanly (single-WebGL2-context
+    // shared renderer + IPC pull rate combine to make a second player
+    // stall), so clicking a new stream auto-replaces the old one.
+    // Windows uses WebCodecs and handles N concurrent streams fine.
+    const isLinux = typeof navigator !== "undefined" && /Linux/i.test(navigator.userAgent);
+    if (isLinux && !isAlreadyWatching && watchingStreams.length > 0) {
+      for (const u of watchingStreams) {
+        if (u === username) continue;
+        if (u === ownUsername) {
+          await invoke("watch_self_stream", { enabled: false }).catch(() => {});
+        } else {
+          await invoke("stop_watching", {
+            serverId: connectedServerId,
+            channelId: connectedChannelId,
+            targetUsername: u,
+          }).catch(() => {});
+        }
+        useVoiceStore.getState().removeWatching(u);
+      }
+    }
+
     if (!isAlreadyWatching) {
       if (isSelf) {
         invoke("watch_self_stream", { enabled: true }).catch(() => {});
