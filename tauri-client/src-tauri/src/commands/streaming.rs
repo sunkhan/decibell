@@ -432,6 +432,15 @@ pub async fn watch_stream(
     eprintln!("[stream] watch_stream called: server='{}', channel='{}', target='{}'",
         server_id, channel_id, target_username);
 
+    // Defensive: drop any stale slot for this streamer before we start.
+    // stop_watching already does this on the way out, but a crash, missed
+    // unmount, or codec-renegotiation hiccup can leave a frame parked in
+    // the slot with a high sequence number — the new mount's lastSequence
+    // starts at 0, sees the stale frame as "newer", uploads it, and then
+    // ignores every fresh decode that publishes with seq=1, 2, 3...
+    #[cfg(target_os = "linux")]
+    crate::media::nv12_store::forget(&target_username);
+
     let (write_tx, data) = {
         let s = state.lock().await;
         let client = s.communities.get(&server_id)

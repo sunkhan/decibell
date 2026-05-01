@@ -191,7 +191,7 @@ export default function LinuxStreamVideoPlayer({ streamerUsername, className }: 
     // overflow is ~2.4 million years away.
     let lastSequence = 0;
     let pulling = false; // prevents overlapping pulls if one tick takes >16ms
-    let loggedShape = false; // log the IPC response shape exactly once
+    let loggedFrameShape = false; // log the first *actual frame* response shape
 
     // Kick a keyframe so we don't sit on a black canvas while we wait for
     // the streamer's natural keyframe interval.
@@ -218,27 +218,21 @@ export default function LinuxStreamVideoPlayer({ streamerUsername, className }: 
         // plain number array — accept all three so the renderer doesn't
         // silently die on the first tick.
         let buf: ArrayBuffer;
+        let shapeName: string;
         if (raw instanceof ArrayBuffer) {
           buf = raw;
+          shapeName = "ArrayBuffer";
         } else if (raw instanceof Uint8Array) {
           // Slice into a fresh ArrayBuffer so DataView reads start at byte 0.
           buf = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+          shapeName = "Uint8Array";
         } else if (Array.isArray(raw)) {
           buf = new Uint8Array(raw as number[]).buffer;
+          shapeName = "Array";
         } else {
-          if (!loggedShape) {
-            loggedShape = true;
-            console.error("[LinuxStreamVideoPlayer] unexpected IPC response shape:",
-              typeof raw, raw);
-          }
+          console.error("[LinuxStreamVideoPlayer] unexpected IPC response shape:",
+            typeof raw, raw);
           return;
-        }
-        if (!loggedShape) {
-          loggedShape = true;
-          console.log("[LinuxStreamVideoPlayer] IPC response shape OK:",
-            raw instanceof ArrayBuffer ? "ArrayBuffer" :
-            raw instanceof Uint8Array ? "Uint8Array" : "Array",
-            "bytes=", buf.byteLength);
         }
 
         const view = new DataView(buf);
@@ -246,6 +240,15 @@ export default function LinuxStreamVideoPlayer({ streamerUsername, className }: 
           // No new frame — keep last frame on screen. Skip the redraw too;
           // WebGL preserves the back buffer until the next swap.
           return;
+        }
+        // Log the shape ONCE on the first actual frame (status=1) so the
+        // log includes the real payload size, not the 1-byte "no frame"
+        // poll responses we'd otherwise log first.
+        if (!loggedFrameShape) {
+          loggedFrameShape = true;
+          console.log("[LinuxStreamVideoPlayer] first frame:",
+            shapeName, "bytes=", buf.byteLength,
+            "status=", view.getUint8(0));
         }
 
         const w = view.getUint32(4, true);
@@ -268,9 +271,21 @@ export default function LinuxStreamVideoPlayer({ streamerUsername, className }: 
           // Resolution change (first frame, or streamer renegotiated).
           // Resize the canvas backing store too so CSS object-contain
           // gives us 1:1 pixel mapping at native resolution.
+          //
+          // Setting canvas.width/height has been observed to disturb
+          // WebGL state on WebKitGTK (program/uniforms left correct in
+          // some builds, dropped in others). Re-bind the program and
+          // re-set sampler uniforms defensively so the first draw on a
+          // fresh canvas isn't to a "no program" pipeline that produces
+          // a black frame and then JS thinks the player started fine.
           canvas.width = w;
           canvas.height = h;
           state.gl.viewport(0, 0, w, h);
+          state.gl.useProgram(state.program);
+          state.gl.uniform1i(state.yLoc, 0);
+          state.gl.uniform1i(state.uvLoc, 1);
+          state.gl.clearColor(0, 0, 0, 1);
+          state.gl.clear(state.gl.COLOR_BUFFER_BIT);
           allocTextures(state, w, h);
         }
 
