@@ -37,13 +37,17 @@ function base64ToBytes(b64: string): Uint8Array {
 
 // Check if WebCodecs VideoDecoder is available (Chromium-based webviews only)
 const hasWebCodecs = typeof VideoDecoder !== "undefined";
+// WebKitGTK has been gradually shipping a `VideoDecoder` global (gated
+// behind feature flags in some builds). We can't trust its presence to
+// mean "use WebCodecs path" though — the Linux Rust pipeline only
+// publishes NV12 to nv12_store and emits no `stream_frame` bitstream
+// events, so the WebCodecs decoder gets configured and then sits
+// waiting forever. Always route Linux through the WebGL2 NV12 pull
+// pipeline regardless of what `typeof VideoDecoder` says.
+const isLinux = typeof navigator !== "undefined" && /Linux/i.test(navigator.userAgent);
 
 export default function StreamVideoPlayer({ streamerUsername, className }: Props) {
-  // Linux/WebKitGTK has no WebCodecs — route to the WebGL2 NV12 pull
-  // pipeline that decodes in Rust via NVDEC/VAAPI/SW and renders directly
-  // in WebGL with a YUV→RGB shader. Same vendor coverage as the streamer
-  // path; doesn't depend on system gstreamer plugin availability.
-  if (!hasWebCodecs) {
+  if (isLinux || !hasWebCodecs) {
     return (
       <LinuxStreamVideoPlayer
         streamerUsername={streamerUsername}
