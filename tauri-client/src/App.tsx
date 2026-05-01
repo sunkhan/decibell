@@ -8,6 +8,7 @@ import { useAuthStore } from "./stores/authStore";
 import { useUiStore } from "./stores/uiStore";
 import { useDmStore } from "./stores/dmStore";
 import { useVoiceStore } from "./stores/voiceStore";
+import { useCodecSettingsStore } from "./stores/codecSettingsStore";
 import { useWindowTitle } from "./hooks/useWindowTitle";
 import { useDragDrop } from "./features/chat/useDragDrop";
 import { usePasteToAttach } from "./features/chat/usePasteToAttach";
@@ -158,6 +159,17 @@ export default function App() {
       } catch {
         // No config file or load failed
       }
+      // Probe codec capabilities at startup. The watch button gates on
+      // decodeCaps via canWatchStream; if we don't load the caps eagerly,
+      // a fresh launch shows every stream as unwatchable until the user
+      // opens Settings → Codecs (which is the only other place that
+      // triggers `load`). Run after the config load so we don't compete
+      // for IPC time during the auth path. Doesn't block readiness — if
+      // it fails, codec gating just stays conservative until the user
+      // opens the Codecs tab.
+      useCodecSettingsStore.getState().load().catch((e) =>
+        console.error("[startup] codec caps load failed:", e)
+      );
       setReady(true);
     })();
   }, []);
