@@ -81,7 +81,6 @@ export default function StreamViewPanel() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isFullscreen, exitFullscreen]);
 
-  // Exit fullscreen when the watched stream ends (streamer leaves/stops)
   useEffect(() => {
     if (!isFullscreen || !displayUser) return;
     const streamStillActive = activeStreams.some((s) => s.ownerUsername === displayUser);
@@ -120,7 +119,6 @@ export default function StreamViewPanel() {
   const stream = activeStreams.find((s) => s.ownerUsername === displayUser);
   const isOwnStream = displayUser === currentUsername;
 
-  // Mute stream audio when watching own stream to prevent echo
   useEffect(() => {
     if (isOwnStream) {
       invoke("set_stream_volume", { volume: 0 }).catch(() => {});
@@ -179,38 +177,39 @@ export default function StreamViewPanel() {
   const fpsLabel = stream.fps > 0 ? `${stream.fps}fps` : "";
   const qualityBadge = [resLabel, fpsLabel].filter(Boolean).join(" · ");
 
-  // Single root div: switches between in-flow layout and fixed fullscreen overlay
   return (
     <div
       className={
         isFullscreen
           ? "fixed inset-0 z-50 flex flex-col bg-black"
-          : "flex flex-1 flex-col bg-bg-primary"
+          : "flex flex-1 flex-col bg-bg-dark"
       }
     >
       <div className="flex min-h-0 min-w-0 flex-1">
         <div className={`flex min-h-0 min-w-0 flex-1 flex-col ${isFullscreen ? "" : "p-2"}`}>
-          {/* Header bar — hidden in fullscreen */}
+          {/* Header bar */}
           {!isFullscreen && (
-            <div className="mb-1.5 flex items-center gap-2">
+            <div className="mb-2 flex items-center gap-2.5 px-1">
               <div
-                className="flex h-5 w-5 items-center justify-center rounded-md text-[9px] font-bold text-white"
+                className="flex h-6 w-6 items-center justify-center rounded-md text-[10px] font-semibold text-white"
                 style={{ background: stringToGradient(displayUser) }}
               >
                 {displayUser.charAt(0).toUpperCase()}
               </div>
-              <span className="text-xs font-bold text-text-bright">
+              <span className="text-[13px] font-medium text-text-primary">
                 {displayUser}'s screen
               </span>
               {qualityBadge && (
-                <span className="text-[10px] text-text-muted">{qualityBadge}</span>
+                <span className="text-[11px] text-text-muted">{qualityBadge}</span>
               )}
               <div className="ml-auto flex items-center gap-2">
                 {!isOwnStream && stream?.hasAudio && (
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={toggleMute}
-                      className="flex h-6 w-6 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                      className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
+                        streamVolume === 0 ? "text-error" : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+                      }`}
                       title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
                     >
                       <VolumeIcon muted={streamVolume === 0} />
@@ -221,14 +220,14 @@ export default function StreamViewPanel() {
                       max={100}
                       value={streamVolume}
                       onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                      className="h-1 w-20 cursor-pointer appearance-none rounded-full bg-text-muted/20 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent"
+                      className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-dark [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(56,143,255,0.3)]"
                       title={`Stream volume: ${streamVolume}%`}
                     />
                   </div>
                 )}
                 <button
                   onClick={handleBackToCards}
-                  className="flex h-6 w-6 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                  className="flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
                   title="Back (Esc)"
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -240,12 +239,12 @@ export default function StreamViewPanel() {
             </div>
           )}
 
-          {/* Stream video — THE single player instance, never unmounts */}
+          {/* Stream video */}
           <div
             className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden ${
               isFullscreen
                 ? `${overlayVisible ? "cursor-default" : "cursor-none"}`
-                : "cursor-pointer rounded-lg border border-border bg-bg-tertiary"
+                : "cursor-pointer rounded-xl border border-border bg-bg-darkest"
             }`}
             onClick={handleBackToCards}
             onMouseMove={handleMouseMove}
@@ -253,13 +252,13 @@ export default function StreamViewPanel() {
           >
             <StreamVideoPlayer
               streamerUsername={displayUser}
-              className={`h-full w-full object-contain ${isFullscreen ? "" : "rounded-lg"}`}
+              className={`h-full w-full object-contain ${isFullscreen ? "" : "rounded-xl"}`}
             />
 
-            {/* Non-fullscreen hover controls — bottom right */}
+            {/* Non-fullscreen hover controls */}
             {!isFullscreen && (
               <div
-                className={`absolute bottom-3 right-3 flex items-center gap-2 rounded-lg border border-white/10 bg-[#1e1f22]/90 px-2.5 py-1.5 shadow-xl backdrop-blur-sm transition-opacity duration-200 ${
+                className={`absolute bottom-3 right-3 flex items-center gap-2 rounded-[10px] border border-border bg-bg-light/95 px-2.5 py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.4)] transition-opacity duration-200 ${
                   hoverControlsVisible ? "opacity-100" : "pointer-events-none opacity-0"
                 }`}
                 onClick={(e) => e.stopPropagation()}
@@ -274,8 +273,8 @@ export default function StreamViewPanel() {
                       onClick={toggleMute}
                       className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
                         streamVolume === 0
-                          ? "text-error hover:bg-white/10"
-                          : "text-white/80 hover:bg-white/10 hover:text-white"
+                          ? "text-error hover:bg-white/[0.08]"
+                          : "text-white/80 hover:bg-white/[0.08] hover:text-white"
                       }`}
                       title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
                     >
@@ -287,15 +286,15 @@ export default function StreamViewPanel() {
                       max={100}
                       value={streamVolume}
                       onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                      className="h-1 w-16 cursor-pointer appearance-none rounded-full bg-white/20 accent-accent [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent"
+                      className="h-[4px] w-16 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-darkest [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(56,143,255,0.3)]"
                       title={`Stream volume: ${streamVolume}%`}
                     />
-                    <div className="mx-0.5 h-5 w-px bg-white/15" />
+                    <div className="mx-0.5 h-5 w-px bg-white/10" />
                   </>
                 )}
                 <button
                   onClick={enterFullscreen}
-                  className="flex h-7 w-7 items-center justify-center rounded-md text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white"
                   title="Fullscreen"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -305,7 +304,7 @@ export default function StreamViewPanel() {
               </div>
             )}
 
-            {/* Fullscreen bottom control bar — slides up/down */}
+            {/* Fullscreen bottom control bar */}
             {isFullscreen && (
               <div
                 className={`absolute inset-x-0 bottom-0 flex flex-col items-center transition-transform duration-300 ease-in-out ${
@@ -320,12 +319,12 @@ export default function StreamViewPanel() {
                 {/* Info row */}
                 <div className="mb-2 flex items-center gap-2">
                   <div
-                    className="flex h-[22px] w-[22px] items-center justify-center rounded-md text-[10px] font-bold text-white"
+                    className="flex h-[22px] w-[22px] items-center justify-center rounded-md text-[10px] font-semibold text-white"
                     style={{ background: stringToGradient(displayUser) }}
                   >
                     {displayUser.charAt(0).toUpperCase()}
                   </div>
-                  <span className="text-xs font-semibold text-white">
+                  <span className="text-[12px] font-medium text-white">
                     {displayUser}'s screen
                   </span>
                   {qualityBadge && (
@@ -335,7 +334,7 @@ export default function StreamViewPanel() {
                     {participants.slice(0, 4).map((p) => (
                       <div
                         key={p.username}
-                        className="flex h-6 w-6 items-center justify-center rounded-md border-2 border-black text-[9px] font-bold text-white"
+                        className="flex h-6 w-6 items-center justify-center rounded-md border-2 border-black text-[9px] font-semibold text-white"
                         style={{ background: stringToGradient(p.username) }}
                       >
                         {p.username.charAt(0).toUpperCase()}
@@ -345,14 +344,14 @@ export default function StreamViewPanel() {
                 </div>
 
                 {/* Control bar */}
-                <div className="mb-4 flex items-center gap-2 rounded-xl border border-white/10 bg-[#1e1f22]/95 px-3 py-2 shadow-2xl backdrop-blur-sm">
+                <div className="mb-4 flex items-center gap-2 rounded-xl border border-border bg-bg-light/95 px-3 py-2 shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
                   {/* Mute */}
                   <button
                     onClick={handleMute}
                     className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
                       isMuted
                         ? "bg-white/15 text-error hover:bg-white/20"
-                        : "text-white/80 hover:bg-white/10 hover:text-white"
+                        : "text-white/80 hover:bg-white/[0.08] hover:text-white"
                     }`}
                     title={isMuted ? "Unmute" : "Mute"}
                   >
@@ -382,7 +381,7 @@ export default function StreamViewPanel() {
                     className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
                       isDeafened
                         ? "bg-white/15 text-error hover:bg-white/20"
-                        : "text-white/80 hover:bg-white/10 hover:text-white"
+                        : "text-white/80 hover:bg-white/[0.08] hover:text-white"
                     }`}
                     title={isDeafened ? "Undeafen" : "Deafen"}
                   >
@@ -398,8 +397,7 @@ export default function StreamViewPanel() {
                     </svg>
                   </button>
 
-                  {/* Divider */}
-                  <div className="mx-1 h-6 w-px bg-white/15" />
+                  <div className="mx-1 h-6 w-px bg-white/10" />
 
                   {/* Stream volume */}
                   {!isOwnStream && stream?.hasAudio && (
@@ -409,7 +407,7 @@ export default function StreamViewPanel() {
                         className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
                           streamVolume === 0
                             ? "bg-white/15 text-error hover:bg-white/20"
-                            : "text-white/80 hover:bg-white/10 hover:text-white"
+                            : "text-white/80 hover:bg-white/[0.08] hover:text-white"
                         }`}
                         title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
                       >
@@ -422,17 +420,17 @@ export default function StreamViewPanel() {
                         value={streamVolume}
                         onChange={(e) => handleVolumeChange(Number(e.target.value))}
                         onClick={(e) => e.stopPropagation()}
-                        className="h-1 w-20 cursor-pointer appearance-none rounded-full bg-white/20 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent"
+                        className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-darkest [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(56,143,255,0.3)]"
                         title={`Stream volume: ${streamVolume}%`}
                       />
-                      <div className="mx-1 h-6 w-px bg-white/15" />
+                      <div className="mx-1 h-6 w-px bg-white/10" />
                     </>
                   )}
 
                   {/* Stop watching */}
                   <button
                     onClick={handleStopWatching}
-                    className="flex h-9 items-center gap-1.5 rounded-lg bg-error/80 px-3 text-[12px] font-semibold text-white transition-colors hover:bg-error"
+                    className="flex h-9 items-center gap-1.5 rounded-lg bg-error/[0.15] px-3 text-[12px] font-medium text-error transition-colors hover:bg-error/[0.25]"
                     title="Stop watching"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -448,7 +446,7 @@ export default function StreamViewPanel() {
                   {/* Exit fullscreen */}
                   <button
                     onClick={(e) => { e.stopPropagation(); exitFullscreen(); }}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                    className="flex h-9 w-9 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white"
                     title="Exit fullscreen"
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -461,10 +459,10 @@ export default function StreamViewPanel() {
           </div>
         </div>
 
-        {/* Sidebar — hidden in fullscreen */}
+        {/* Sidebar */}
         {!isFullscreen && (
-          <div className="flex w-[140px] shrink-0 flex-col gap-1 border-l border-border p-2">
-            <h4 className="px-1 text-[9px] font-bold uppercase tracking-wider text-text-muted">
+          <div className="flex w-[160px] shrink-0 flex-col gap-1 border-l border-border-divider bg-bg-dark p-3">
+            <h4 className="mb-1 px-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
               Voice — {participants.length}
             </h4>
 
@@ -474,7 +472,7 @@ export default function StreamViewPanel() {
               return (
                 <div
                   key={p.username}
-                  className="flex cursor-pointer items-center gap-1.5 rounded-md p-1.5 transition-colors hover:bg-surface-hover"
+                  className="flex cursor-pointer items-center gap-2 rounded-[10px] p-2 transition-colors hover:bg-surface-hover"
                   onClick={(e) => {
                     const rect = e.currentTarget.getBoundingClientRect();
                     openProfilePopup(p.username, { x: rect.right + 8, y: rect.top }, connectedServerId);
@@ -485,19 +483,19 @@ export default function StreamViewPanel() {
                   }}
                 >
                   <div
-                    className={`flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-bold text-white ${
-                      isSpeaking ? "ring-2 ring-success ring-offset-1 ring-offset-bg-primary" : ""
+                    className={`flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-semibold text-white ${
+                      isSpeaking ? "shadow-[0_0_0_2px_var(--color-bg-dark),0_0_0_3.5px_var(--color-success)]" : ""
                     }`}
                     style={{ background: stringToGradient(p.username) }}
                   >
                     {p.username.charAt(0).toUpperCase()}
                   </div>
                   <div className="min-w-0">
-                    <div className="truncate text-[11px] font-semibold text-text-secondary">
+                    <div className="truncate text-[11px] font-medium text-text-secondary">
                       {p.username}
                     </div>
                     {isStreaming && (
-                      <div className="text-[9px] text-error">Streaming</div>
+                      <div className="text-[9px] font-medium text-accent">Streaming</div>
                     )}
                   </div>
                 </div>
@@ -505,17 +503,17 @@ export default function StreamViewPanel() {
             })}
 
             {activeStreams.length > 1 && (
-              <div className="mt-auto border-t border-border pt-2">
-                <h4 className="mb-1 px-1 text-[9px] font-bold uppercase tracking-wider text-text-muted">
+              <div className="mt-auto border-t border-border-divider pt-2">
+                <h4 className="mb-1 px-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
                   Streams
                 </h4>
                 {activeStreams.filter((s) => watchingStreams.includes(s.ownerUsername)).map((s) => (
                   <button
                     key={s.ownerUsername}
                     onClick={() => handleSwitchStream(s.ownerUsername)}
-                    className={`w-full rounded-md px-2 py-1.5 text-left text-[10px] font-semibold transition-colors ${
+                    className={`w-full rounded-md px-2 py-1.5 text-left text-[10px] font-medium transition-colors ${
                       s.ownerUsername === displayUser
-                        ? "border-l-2 border-accent bg-accent/10 text-accent"
+                        ? "border-l-2 border-accent bg-accent-soft text-accent-bright"
                         : "text-text-secondary hover:bg-surface-hover"
                     }`}
                   >

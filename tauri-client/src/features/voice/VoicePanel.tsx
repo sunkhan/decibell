@@ -42,7 +42,6 @@ export default function VoicePanel() {
 
   const [showPicker, setShowPicker] = useState(false);
 
-  // Generate thumbnails for active streams
   useStreamThumbnails();
 
   const channelName =
@@ -111,18 +110,22 @@ export default function VoicePanel() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-bg-mid">
-      {/* Header - hidden when stream is in real fullscreen */}
+      {/* Header — h-12 / px-4 / border-border to match the server-name
+          header in ChannelSidebar so the two line up across the divider. */}
       {!isStreamFullscreen && (
-        <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
-          <span className="text-accent">🔊</span>
-          <span className="text-sm font-bold text-text-bright">{channelName}</span>
+        <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border px-4">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-text-muted">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          </svg>
+          <span className="font-display text-[15px] font-semibold text-text-primary">{channelName}</span>
           <span
-            className="ml-auto text-xs text-text-muted"
+            className="ml-auto text-[12px] text-text-muted"
             title={latencyMs != null ? `${latencyMs}ms` : undefined}
           >
             {participants.length} participant{participants.length !== 1 ? "s" : ""}
             {latencyMs != null && (
-              <span className={`ml-2 font-semibold ${
+              <span className={`ml-2 font-medium ${
                 latencyMs <= 70 ? "text-success" : latencyMs < 175 ? "text-warning" : "text-error"
               }`}>{latencyMs}ms</span>
             )}
@@ -130,76 +133,29 @@ export default function VoicePanel() {
         </div>
       )}
 
-      {/* StreamViewPanel - stays mounted while watching to preserve the decoder */}
+      {/* StreamViewPanel */}
       {watchingStreams.length > 0 && (
         <div className={fullscreenStream ? "flex min-h-0 flex-1" : "hidden"}>
           <StreamViewPanel />
         </div>
       )}
 
-      {/* Stream cards - stays mounted (hidden when expanded) to preserve card decoders */}
+      {/* Stream cards */}
       {hasStreams && (
         <div className={fullscreenStream ? "hidden" : "flex flex-1 overflow-hidden"}>
-          {/* NOTE: Participants list disabled — redundant with the channel sidebar.
-             Kept commented out in case we want to bring it back later.
-          <div className="flex flex-col border-r border-border" style={{ width: "240px", minWidth: "240px" }}>
-            <div className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-text-muted">
-              Users — {participants.length}
-            </div>
-            <div className="flex-1 overflow-y-auto px-3 pb-3">
-              {participants.map((p) => {
-                const isSpeaking = speakingUsers.includes(p.username);
-                const isStreaming = activeStreams.some((s) => s.ownerUsername === p.username);
-                return (
-                  <div
-                    key={p.username}
-                    className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-surface-hover transition-colors"
-                  >
-                    <div
-                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white transition-all ${
-                        isSpeaking ? "ring-2 ring-success" : ""
-                      }`}
-                      style={{ background: stringToGradient(p.username) }}
-                    >
-                      {p.username.charAt(0).toUpperCase()}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium text-text-primary">
-                        {p.username}
-                      </div>
-                      {isStreaming && (
-                        <div className="text-[10px] font-medium text-accent">Streaming</div>
-                      )}
-                    </div>
-                    {p.isMuted && (
-                      <svg className="h-3.5 w-3.5 shrink-0 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="1" y1="1" x2="23" y2="23" />
-                        <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                        <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
-                        <line x1="12" y1="19" x2="12" y2="23" />
-                        <line x1="8" y1="23" x2="16" y2="23" />
-                      </svg>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-          */}
-
-          {/* Stream cards */}
           <div className="flex flex-1 flex-col overflow-hidden">
-            <div className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-text-muted">
+            <div className="px-5 py-3 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
               Live — {activeStreams.length}
             </div>
-            <div className="flex-1 overflow-y-auto px-4 pb-4">
+            {/* pt-4 gives the lifted-card hover state (transform + accent glow
+                shadow) headroom so the top edge doesn't clip against the
+                scroll container's overflow boundary. */}
+            <div className="flex-1 overflow-y-auto px-5 pt-4 pb-4">
               <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
                 {activeStreams.map((stream) => {
                   const isWatching = watchingStreams.includes(stream.ownerUsername);
                   const thumbnail = streamThumbnails[stream.ownerUsername];
                   const decodeCaps = useCodecSettingsStore.getState().decodeCaps;
-                  // Plan C: own streams are always "watchable" by self; only
-                  // gate other people's streams against our local decode caps.
                   const isOwnStream = stream.ownerUsername === ownUsername;
                   const { canWatch, reason } = isOwnStream
                     ? { canWatch: true, reason: undefined }
@@ -210,16 +166,15 @@ export default function VoicePanel() {
                       disabled={!canWatch}
                       title={reason}
                       onClick={() => canWatch && handleWatchStream(stream.ownerUsername)}
-                      className={`group relative overflow-hidden rounded-xl border transition-all hover:shadow-lg hover:shadow-accent/5 ${
+                      className={`group relative overflow-hidden rounded-xl border transition-all duration-200 ease-out ${
                         !canWatch
-                          ? "cursor-not-allowed border-border opacity-50"
+                          ? "cursor-not-allowed border-border-divider opacity-50"
                           : isWatching
-                          ? "border-accent/60 ring-1 ring-accent/30"
-                          : "border-border bg-bg-primary hover:border-accent/50"
+                          ? "border-accent/40 shadow-[0_0_12px_var(--color-accent-soft)] hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(0,0,0,0.35),0_0_16px_var(--color-accent-soft)]"
+                          : "border-border bg-bg-light hover:-translate-y-0.5 hover:border-accent/30 hover:shadow-[0_8px_20px_rgba(0,0,0,0.35)]"
                       }`}
                     >
-                      {/* Stream preview: live video if watching, thumbnail otherwise */}
-                      <div className="relative aspect-video w-full bg-bg-secondary">
+                      <div className="relative aspect-video w-full bg-bg-darkest">
                         <CodecBadge
                           codec={stream.currentCodec}
                           width={stream.resolutionWidth}
@@ -242,7 +197,7 @@ export default function VoicePanel() {
                         ) : (
                           <div className="flex h-full w-full items-center justify-center">
                             <div
-                              className="flex h-14 w-14 items-center justify-center rounded-2xl text-2xl font-bold text-white"
+                              className="flex h-14 w-14 items-center justify-center rounded-lg text-2xl font-bold text-white"
                               style={{ background: stringToGradient(stream.ownerUsername) }}
                             >
                               {stream.ownerUsername.charAt(0).toUpperCase()}
@@ -250,42 +205,42 @@ export default function VoicePanel() {
                           </div>
                         )}
                         {/* Live / Watching badge */}
-                        <div className={`absolute left-2 top-2 flex items-center gap-1 rounded px-1.5 py-0.5 ${
+                        <div className={`absolute left-2.5 top-2.5 flex items-center gap-[5px] rounded-md px-2 py-1 ${
                           isWatching ? "bg-accent/90" : "bg-error/90"
                         }`}>
-                          <div className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
-                          <span className="text-[10px] font-bold text-white">
+                          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+                          <span className="text-[10px] font-semibold text-white">
                             {isWatching ? "WATCHING" : "LIVE"}
                           </span>
                         </div>
                         {/* Hover overlay */}
                         <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/40">
-                          <span className="text-sm font-semibold text-white opacity-0 transition-opacity group-hover:opacity-100">
+                          <span className="text-[13px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
                             {isWatching ? "Expand" : "Watch Stream"}
                           </span>
                         </div>
                       </div>
                       {/* Stream info */}
-                      <div className="flex items-center gap-2.5 px-3 py-2.5">
+                      <div className="flex items-center gap-2.5 px-3.5 py-3">
                         <div
-                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[12px] font-semibold text-white"
                           style={{ background: stringToGradient(stream.ownerUsername) }}
                         >
                           {stream.ownerUsername.charAt(0).toUpperCase()}
                         </div>
                         <div className="min-w-0 flex-1 text-left">
                           <div className="flex items-center gap-1.5">
-                            <span className="truncate text-sm font-semibold text-text-bright">
+                            <span className="truncate text-[13px] font-medium text-text-primary">
                               {stream.ownerUsername}
                             </span>
                             {stream.hasAudio && (
-                              <svg className="h-3.5 w-3.5 shrink-0 text-[#00bfff]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                              <svg className="h-3.5 w-3.5 shrink-0 text-accent-bright" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                                 <path d="M11 5L6 9H2v6h4l5 4V5z" />
                                 <path d="M15.54 8.46a5 5 0 010 7.07" />
                               </svg>
                             )}
                           </div>
-                          <div className="text-[10px] text-text-muted">
+                          <div className="text-[11px] text-text-muted">
                             {stream.resolutionWidth > 0
                               ? `${stream.resolutionWidth}x${stream.resolutionHeight}`
                               : ""}
@@ -307,7 +262,7 @@ export default function VoicePanel() {
                               }
                               useVoiceStore.getState().removeWatching(stream.ownerUsername);
                             }}
-                            className="ml-auto flex h-7 items-center gap-1.5 rounded-md bg-error/10 px-2.5 text-[11px] font-semibold text-error transition-colors hover:bg-error/20"
+                            className="ml-auto flex h-7 items-center gap-1.5 rounded-md border border-error/[0.25] bg-error/[0.12] px-2.5 text-[11px] font-medium text-error transition-colors hover:border-error/[0.4] hover:bg-error/[0.18]"
                           >
                             <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <rect x="2" y="3" width="20" height="14" rx="2" />
@@ -337,7 +292,7 @@ export default function VoicePanel() {
             return (
               <div
                 key={p.username}
-                className="flex cursor-pointer flex-col items-center rounded-2xl px-4 py-3 transition-all duration-200 hover:bg-surface-hover hover:shadow-[0_0_12px_rgba(255,255,255,0.04)]"
+                className="flex cursor-pointer flex-col items-center gap-2.5 rounded-xl px-5 py-4 transition-all hover:bg-white/[0.035]"
                 onClick={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect();
                   openProfilePopup(p.username, { x: rect.right + 8, y: rect.top }, connectedServerId);
@@ -347,18 +302,18 @@ export default function VoicePanel() {
                   openContextMenu(p.username, { x: e.clientX, y: e.clientY });
                 }}
               >
-                <div className="relative mb-2">
+                <div className="relative">
                   <div
                     className={`flex h-20 w-20 items-center justify-center rounded-xl text-[28px] font-bold text-white transition-all duration-200 ${
-                      isSpeaking ? "ring-[3px] ring-success" : ""
+                      isSpeaking ? "shadow-[0_0_0_3px_var(--color-bg-mid),0_0_0_5px_var(--color-success)]" : ""
                     }`}
                     style={{ background: stringToGradient(p.username) }}
                   >
                     {p.username.charAt(0).toUpperCase()}
                   </div>
                   {p.isMuted && (
-                    <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-2 border-bg-tertiary bg-error">
-                      <svg className="h-3 w-3 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-[2.5px] border-bg-mid bg-bg-light">
+                      <svg className="h-3 w-3 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                         <line x1="1" y1="1" x2="23" y2="23" />
                         <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
                         <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
@@ -368,7 +323,7 @@ export default function VoicePanel() {
                     </div>
                   )}
                 </div>
-                <div className="max-w-full truncate text-center text-xs font-semibold text-text-primary">
+                <div className="max-w-full truncate text-center text-[13px] font-medium text-text-primary">
                   {p.username}
                 </div>
               </div>
@@ -377,18 +332,18 @@ export default function VoicePanel() {
         </div>
       )}
 
-      {/* Bottom controls - hidden when stream is in real fullscreen */}
+      {/* Bottom controls */}
       {!isStreamFullscreen && (
-        <div className="flex justify-center gap-3 border-t border-border bg-bg-primary px-5 py-3">
+        <div className="flex justify-center gap-2 border-t border-border-divider bg-bg-dark px-5 py-3.5">
           <button
             onClick={handleMute}
-            className={`flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-semibold transition-colors ${
+            className={`flex items-center gap-[7px] rounded-[10px] border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
               isMuted
-                ? "bg-error/20 text-error"
-                : "bg-surface-active text-text-secondary hover:bg-border hover:text-text-primary"
+                ? "border-error/20 bg-error/10 text-error"
+                : "border-border bg-bg-light text-text-secondary hover:bg-bg-lighter hover:text-text-primary"
             }`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               {isMuted ? (
                 <>
                   <line x1="1" y1="1" x2="23" y2="23" />
@@ -410,13 +365,13 @@ export default function VoicePanel() {
           </button>
           <button
             onClick={handleDeafen}
-            className={`flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-semibold transition-colors ${
+            className={`flex items-center gap-[7px] rounded-[10px] border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
               isDeafened
-                ? "bg-error/20 text-error"
-                : "bg-surface-active text-text-secondary hover:bg-border hover:text-text-primary"
+                ? "border-error/20 bg-error/10 text-error"
+                : "border-border bg-bg-light text-text-secondary hover:bg-bg-lighter hover:text-text-primary"
             }`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               {isDeafened ? (
                 <>
                   <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
@@ -430,13 +385,13 @@ export default function VoicePanel() {
           </button>
           <button
             onClick={isStreaming ? handleStopSharing : () => setShowPicker(true)}
-            className={`flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-semibold transition-colors ${
+            className={`flex items-center gap-[7px] rounded-[10px] border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
               isStreaming
-                ? "bg-accent/20 text-accent hover:bg-accent/30"
-                : "bg-surface-active text-text-secondary hover:bg-border hover:text-text-primary"
+                ? "border-accent/25 bg-accent/[0.12] text-accent hover:bg-accent/[0.18]"
+                : "border-accent/20 bg-accent-soft text-accent hover:bg-accent/[0.18] hover:text-accent-bright"
             }`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               {isStreaming ? (
                 <>
                   <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -454,7 +409,7 @@ export default function VoicePanel() {
           </button>
           <button
             onClick={handleDisconnect}
-            className="flex items-center gap-1.5 rounded-lg bg-error px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-error/80"
+            className="flex items-center gap-[7px] rounded-[10px] border border-error/20 bg-error/10 px-[18px] py-[9px] text-[13px] font-medium text-error transition-colors hover:bg-error/[0.18]"
           >
             Disconnect
           </button>

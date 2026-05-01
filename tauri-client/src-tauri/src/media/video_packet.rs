@@ -2,7 +2,12 @@
 /// Must be byte-compatible for UDP relay through the C++ community server.
 
 pub const SENDER_ID_SIZE: usize = 32;
-pub const UDP_MAX_PAYLOAD: usize = 1400;
+/// Max bytes of codec data per UDP video packet. Sized to fit comfortably
+/// within typical PPPoE / VPN / tunnel MTUs (1492 - 28 IP/UDP - 45 packet
+/// header = 1419 max). 1200 mirrors Discord's choice and gives ~200 bytes
+/// of margin against the most aggressive consumer-network MTU shrinkage.
+/// Was 1400 through 0.5.3.
+pub const UDP_MAX_PAYLOAD: usize = 1200;
 pub const NACK_MAX_ENTRIES: usize = 64;
 
 pub const PACKET_TYPE_VIDEO: u8 = 1;
@@ -317,8 +322,12 @@ mod tests {
 
     #[test]
     fn video_packet_size_matches_cpp() {
-        // C++ struct: 1 + 32 + 4 + 2 + 2 + 2 + 1 + 1 + 1400 = 1445 bytes
-        assert_eq!(std::mem::size_of::<UdpVideoPacket>(), 1445);
+        // C++ struct: 1 + 32 + 4 + 2 + 2 + 2 + 1 + 1 + UDP_MAX_PAYLOAD
+        // = 45 + UDP_MAX_PAYLOAD bytes. Server uses bytes_recvd for
+        // relay so the actual wire size (header + payload_size) is what
+        // matters per packet; this test guards against header drift.
+        const VIDEO_HEADER_SIZE: usize = 45;
+        assert_eq!(std::mem::size_of::<UdpVideoPacket>(), VIDEO_HEADER_SIZE + UDP_MAX_PAYLOAD);
     }
 
     #[test]
@@ -346,8 +355,11 @@ mod tests {
 
     #[test]
     fn fec_packet_size_matches_cpp() {
-        // C++ struct: 1 + 32 + 4 + 2 + 2 + 2 + 1400 = 1443 bytes
-        assert_eq!(std::mem::size_of::<UdpFecPacket>(), 1443);
+        // C++ struct: 1 + 32 + 4 + 2 + 2 + 2 + UDP_MAX_PAYLOAD
+        // = 43 + UDP_MAX_PAYLOAD bytes. FEC payload is always full
+        // UDP_MAX_PAYLOAD (XOR of zero-padded packet payloads).
+        const FEC_HEADER_SIZE: usize = 43;
+        assert_eq!(std::mem::size_of::<UdpFecPacket>(), FEC_HEADER_SIZE + UDP_MAX_PAYLOAD);
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
+import { useVoiceStatsStore } from "../../stores/voiceStatsStore";
 import { VideoCodec, type StreamInfo } from "../../types";
 import { playSound } from "../../utils/sounds";
 
@@ -109,6 +110,17 @@ export function useVoiceEvents() {
     promises.push(listen<{ latencyMs: number }>("voice_ping_updated", (event) => {
       setLatency(event.payload.latencyMs);
     }));
+
+    promises.push(listen<{ latencyMs: number | null; packetLossPct: number }>(
+      "voice_connection_stats",
+      (event) => {
+        useVoiceStatsStore.getState().pushSample({
+          ts: Date.now(),
+          pingMs: event.payload.latencyMs,
+          lossPct: event.payload.packetLossPct,
+        });
+      },
+    ));
 
     promises.push(listen<{ message: string }>("voice_error", (event) => {
       setError(event.payload.message);

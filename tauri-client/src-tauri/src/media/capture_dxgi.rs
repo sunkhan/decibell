@@ -918,7 +918,11 @@ impl GpuCaptureSource for DxgiSource {
             let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut desktop_resource: Option<IDXGIResource> = None;
             let hr = self.duplication.AcquireNextFrame(
-                16, // ms timeout — ~one frame at 60fps
+                // 8ms timeout — fits inside the 120fps frame budget so a
+                // static screen doesn't stall the encode loop past one slot.
+                // At 60fps this just returns Ok(None) sooner; the pacer
+                // reuses the deadline math either way.
+                8,
                 &mut frame_info,
                 &mut desktop_resource,
             );

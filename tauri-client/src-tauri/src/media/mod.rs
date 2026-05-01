@@ -226,6 +226,12 @@ impl VoiceEngine {
                                 "latencyMs": ms,
                             }));
                         }
+                        VoiceEvent::ConnectionStats { latency_ms, packet_loss_pct } => {
+                            let _ = app.emit("voice_connection_stats", serde_json::json!({
+                                "latencyMs": latency_ms,
+                                "packetLossPct": packet_loss_pct,
+                            }));
+                        }
                         VoiceEvent::VideoFrameReady(frame) => {
                             if frame.is_keyframe {
                                 eprintln!("[video-bridge] Emitting keyframe: user='{}', {} bytes",

@@ -264,6 +264,7 @@ export default function CaptureSourcePicker({ serverId, channelId, onClose }: Pr
               </label>
               <SegmentedControl
                 options={[
+                  { value: 120 as const, label: "120" },
                   { value: 60 as const, label: "60" },
                   { value: 30 as const, label: "30" },
                   { value: 15 as const, label: "15" },

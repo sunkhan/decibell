@@ -6,6 +6,7 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
 import { stringToGradient } from "../../utils/colors";
 import CaptureSourcePicker from "../voice/CaptureSourcePicker";
+import ConnectionStatsPopover from "../voice/ConnectionStatsPopover";
 import DeviceContextMenu from "../voice/DeviceContextMenu";
 import { playSound } from "../../utils/sounds";
 
@@ -17,7 +18,6 @@ export default function UserPanel() {
   const speakingUsers = useVoiceStore((s) => s.speakingUsers);
   const isSpeaking = username ? speakingUsers.includes(username) : false;
 
-  // Voice state
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const isMuted = useVoiceStore((s) => s.isMuted);
@@ -34,6 +34,7 @@ export default function UserPanel() {
   });
 
   const [showPicker, setShowPicker] = useState(false);
+  const [showStats, setShowStats] = useState(false);
   const [deviceMenu, setDeviceMenu] = useState<{
     type: "input" | "output";
     anchor: { x: number; y: number };
@@ -92,41 +93,55 @@ export default function UserPanel() {
   };
 
   return (
-    <div className="rounded-xl border border-border bg-bg-light px-3 py-2.5 shadow-lg">
-      {/* Voice connection info — only when connected */}
+    <div className="rounded-[14px] border border-border bg-bg-light px-3 py-2.5 shadow-[0_4px_16px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.04)]">
+      {/* Voice connection info */}
       {connectedChannelId && (
         <div className="mb-2 flex items-center gap-1.5 px-0.5">
-          <span className="text-[11px] font-semibold text-success">🔊 {channelName}</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-text-muted">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          </svg>
+          <span className="font-display text-[13px] font-semibold text-text-primary">{channelName}</span>
           {activeStreams.length > 0 && (
-            <span className="rounded-full bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+            <span className="rounded bg-accent/[0.12] px-1.5 py-0.5 text-[10px] font-semibold text-accent">
               {activeStreams.length} stream{activeStreams.length > 1 ? "s" : ""}
             </span>
           )}
-          <span
-            className="ml-auto cursor-default text-[11px] font-semibold text-success"
-            title={latencyMs != null ? `${latencyMs}ms` : "Measuring..."}
-          >
-            {latencyMs != null ? `${latencyMs}ms` : "Connected"}
-          </span>
+          <div className="relative ml-auto">
+            <button
+              onClick={() => setShowStats((v) => !v)}
+              className={`text-[11px] font-medium hover:underline focus:outline-none ${
+                latencyMs != null
+                  ? latencyMs <= 70 ? "text-success" : latencyMs < 175 ? "text-warning" : "text-error"
+                  : "text-success"
+              }`}
+              title="Click for connection stats"
+            >
+              {latencyMs != null ? `${latencyMs}ms` : "Connected"}
+            </button>
+            {showStats && (
+              <ConnectionStatsPopover onClose={() => setShowStats(false)} />
+            )}
+          </div>
         </div>
       )}
       {error && (
         <p className="mb-1.5 px-0.5 text-[10px] text-warning">{error}</p>
       )}
 
-      {/* Voice action row — stream & disconnect (only when connected) */}
+      {/* Voice action row */}
       {connectedChannelId && (
         <div className="mb-2 flex items-center gap-1.5">
           <button
             onClick={isStreaming ? handleStopSharing : () => setShowPicker(true)}
-            className={`flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
+            className={`flex h-8 flex-1 items-center justify-center gap-[6px] rounded-lg border text-[12px] font-medium transition-colors ${
               isStreaming
-                ? "bg-accent/20 text-accent hover:bg-accent/30"
-                : "bg-white/[0.06] text-text-secondary hover:bg-white/[0.1] hover:text-text-primary"
+                ? "border-accent/[0.25] bg-accent/[0.12] text-accent hover:bg-accent/[0.18]"
+                : "border-accent/[0.2] bg-accent/[0.08] text-accent hover:bg-accent/[0.15] hover:text-accent-bright"
             }`}
             title={isStreaming ? "Stop sharing" : "Share screen"}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               {isStreaming ? (
                 <>
                   <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -144,13 +159,9 @@ export default function UserPanel() {
           </button>
           <button
             onClick={handleDisconnect}
-            className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg bg-error/15 text-[11px] font-semibold text-error transition-colors hover:bg-error/25"
+            className="flex h-8 flex-1 items-center justify-center gap-[6px] rounded-lg border border-error/[0.25] bg-error/[0.12] text-[12px] font-medium text-error transition-colors hover:border-error/[0.4] hover:bg-error/[0.18]"
             title="Disconnect"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91" />
-              <line x1="23" y1="1" x2="1" y2="23" />
-            </svg>
             Disconnect
           </button>
         </div>
@@ -161,10 +172,12 @@ export default function UserPanel() {
         {/* Avatar */}
         <div className="relative shrink-0">
           <div
-            className="flex h-[34px] w-[34px] items-center justify-center rounded-lg text-sm font-bold text-white transition-shadow duration-200"
+            className="flex h-[34px] w-[34px] items-center justify-center rounded-lg text-sm font-semibold text-white transition-shadow duration-200"
             style={{
               background: stringToGradient(username),
-              boxShadow: isSpeaking ? "0 0 0 2px #3fb950, 0 0 6px #3fb950" : "none",
+              boxShadow: isSpeaking
+                ? "0 0 0 2px var(--color-bg-light), 0 0 0 4px var(--color-success)"
+                : "none",
             }}
           >
             {username.charAt(0).toUpperCase()}
@@ -174,10 +187,10 @@ export default function UserPanel() {
 
         {/* Username */}
         <div className="min-w-0 flex-1">
-          <div className="truncate font-channel text-[13px] font-medium text-text-primary">
+          <div className="truncate text-[13px] font-medium text-text-primary">
             {username}
           </div>
-          <div className="font-channel text-[11px] font-normal text-success">Online</div>
+          <div className="text-[11px] text-success">Online</div>
         </div>
 
         {/* Action buttons */}
@@ -190,14 +203,14 @@ export default function UserPanel() {
               setDeviceMenu({ type: "input", anchor: { x: e.clientX, y: e.clientY } });
               refreshDevices();
             }}
-            className={`flex h-[34px] w-[34px] items-center justify-center rounded-lg transition-colors ${
+            className={`flex h-[36px] w-[36px] items-center justify-center rounded-lg transition-colors ${
               isMuted
-                ? "bg-error/20 text-error"
-                : "text-text-secondary hover:bg-white/[0.08] hover:text-text-primary"
+                ? "bg-error/[0.15] text-error"
+                : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
             }`}
             title={isMuted ? "Unmute" : "Mute — Right-click to change input device"}
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               {isMuted ? (
                 <>
                   <line x1="1" y1="1" x2="23" y2="23" />
@@ -225,14 +238,14 @@ export default function UserPanel() {
               setDeviceMenu({ type: "output", anchor: { x: e.clientX, y: e.clientY } });
               refreshDevices();
             }}
-            className={`flex h-[34px] w-[34px] items-center justify-center rounded-lg transition-colors ${
+            className={`flex h-[36px] w-[36px] items-center justify-center rounded-lg transition-colors ${
               isDeafened
-                ? "bg-error/20 text-error"
-                : "text-text-secondary hover:bg-white/[0.08] hover:text-text-primary"
+                ? "bg-error/[0.15] text-error"
+                : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
             }`}
             title={isDeafened ? "Undeafen" : "Deafen — Right-click to change output device"}
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               {isDeafened ? (
                 <>
                   <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
@@ -247,10 +260,10 @@ export default function UserPanel() {
           {/* Settings */}
           <button
             onClick={() => openModal("settings")}
-            className="flex h-[34px] w-[34px] items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-white/[0.08] hover:text-text-primary"
+            className="flex h-[36px] w-[36px] items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
             title="Settings"
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>

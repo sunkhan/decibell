@@ -44,6 +44,10 @@ pub struct JitterBuffer {
     // ── Stats (read externally for diagnostics) ──
     pub plc_frames: u64,
     pub dropped_frames: u64,
+    /// Frames dequeued from a real packet (not PLC). Combined with
+    /// plc_frames over a window this gives a true packet-loss rate
+    /// for the user-panel telemetry popover.
+    pub decoded_frames: u64,
 }
 
 impl JitterBuffer {
@@ -59,6 +63,7 @@ impl JitterBuffer {
             target_depth: JITTER_MIN_DEPTH,
             plc_frames: 0,
             dropped_frames: 0,
+            decoded_frames: 0,
         }
     }
 
@@ -153,6 +158,7 @@ impl JitterBuffer {
         let result = self.packets.remove(&seq);
         if result.is_some() {
             self.consecutive_losses = 0;
+            self.decoded_frames += 1;
         } else {
             self.consecutive_losses += 1;
             self.plc_frames += 1;

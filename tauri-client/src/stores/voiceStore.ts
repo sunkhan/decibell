@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { VoiceParticipant, StreamInfo, ClientCapabilities, VideoCodec } from "../types";
+import { useVoiceStatsStore } from "./voiceStatsStore";
 
 interface VoiceState {
   connectedServerId: string | null;
@@ -44,7 +45,7 @@ interface VoiceState {
   isStreaming: boolean;
   streamSettings: {
     resolution: '1080p' | '720p' | 'source';
-    fps: 60 | 30 | 15;
+    fps: 120 | 60 | 30 | 15;
     quality: 'high' | 'medium' | 'low' | 'custom';
     videoBitrateKbps: number;
     shareAudio: boolean;
@@ -200,7 +201,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       }
       return { localMutedUsers: next };
     }),
-  disconnect: () =>
+  disconnect: () => {
+    useVoiceStatsStore.getState().clear();
     set({
       connectedServerId: null,
       connectedChannelId: null,
@@ -214,5 +216,6 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       isStreamFullscreen: false,
       isStreaming: false,
       streamThumbnails: {},
-    }),
+    });
+  },
 }));

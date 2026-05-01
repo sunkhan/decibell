@@ -1,7 +1,3 @@
-// Pill badge rendered in the top-right of a stream tile.
-// Format: "1080p60 · AV1" with a lock icon when the streamer has
-// enforced this codec.
-
 import { VideoCodec } from "../../types";
 import { videoCodecHumanName } from "../../utils/codecMap";
 
@@ -11,15 +7,17 @@ interface Props {
   height: number;
   fps: number;
   enforced: boolean;
-  /// "small" for stream cards, "large" for fullscreen player.
   size?: "small" | "large";
 }
 
+// Per-codec accent. Tokens where the palette has an equivalent; H.264 HW
+// keeps a raw teal because there's no matching design-system color (it
+// sits between accent-bright and success).
 const CODEC_COLOR: Record<number, string> = {
-  [VideoCodec.AV1]:    "#A78BFA", // purple
-  [VideoCodec.H265]:   "#60A5FA", // blue
-  [VideoCodec.H264_HW]: "#22D3EE", // teal
-  [VideoCodec.H264_SW]: "#94A3B8", // gray
+  [VideoCodec.AV1]:     "var(--color-success)",
+  [VideoCodec.H265]:    "var(--color-accent-bright)",
+  [VideoCodec.H264_HW]: "#22D3EE",
+  [VideoCodec.H264_SW]: "var(--color-text-secondary)",
 };
 
 function formatResolution(w: number, h: number): string {
@@ -32,9 +30,9 @@ function formatResolution(w: number, h: number): string {
 
 export function CodecBadge({ codec, width, height, fps, enforced, size = "small" }: Props) {
   if (codec === VideoCodec.UNKNOWN && width === 0 && height === 0 && fps === 0) {
-    return null; // server hasn't broadcast info yet
+    return null;
   }
-  const color = CODEC_COLOR[codec] ?? "#94A3B8";
+  const color = CODEC_COLOR[codec] ?? "var(--color-text-secondary)";
   const label = videoCodecHumanName(codec);
   const fontSize = size === "large" ? 13 : 10.5;
   const padX = size === "large" ? 12 : 8;
@@ -51,23 +49,26 @@ export function CodecBadge({ codec, width, height, fps, enforced, size = "small"
         alignItems: "center",
         gap,
         padding: `${padY}px ${padX}px`,
-        borderRadius: 999,
-        background: "rgba(0,0,0,0.62)",
+        borderRadius: 8,
+        // Slightly more opaque than --color-bg-darkest alone so the badge
+        // stays legible over busy stream content.
+        background: "color-mix(in oklab, var(--color-bg-darkest) 75%, transparent)",
+        border: "1px solid var(--color-border)",
         color: "white",
         fontSize,
         fontWeight: 600,
-        backdropFilter: "blur(6px)",
+        fontFamily: "var(--font-channel)",
         zIndex: 5,
         pointerEvents: "none",
       }}
       title={enforced ? `Stream locked to ${label}` : undefined}
     >
       {(width > 0 && height > 0 && fps > 0) && (
-        <span style={{ color: "#cbd5e1" }}>{formatResolution(width, height)}{fps}</span>
+        <span style={{ color: "var(--color-text-secondary)" }}>{formatResolution(width, height)}{fps}</span>
       )}
       <span style={{ color }}>{label}</span>
       {enforced && (
-        <svg width={fontSize} height={fontSize} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+        <svg width={fontSize} height={fontSize} viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
           <rect x="4" y="11" width="16" height="10" rx="2" />
           <path d="M8 11V7a4 4 0 018 0v4" />
         </svg>

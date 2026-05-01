@@ -51,6 +51,11 @@ pub enum VoiceEvent {
     /// Local microphone input level in dB (emitted ~every 50ms for the UI meter)
     InputLevel(f32),
     PingMeasured(u32),
+    /// Periodic connection health snapshot for the user-panel telemetry
+    /// popover. Emitted every 2s with the latest RTT and the audio packet
+    /// loss percentage over the last sample window. latency_ms is None
+    /// until the first PING reply lands.
+    ConnectionStats { latency_ms: Option<u32>, packet_loss_pct: f32 },
     VideoFrameReady(ReassembledFrame),
     /// Linux only: H.264 frame decoded to JPEG in the video recv thread.
     /// (username, jpeg_bytes, frame_id, is_keyframe)
@@ -232,6 +237,15 @@ pub fn run_audio_pipeline(
 
     let mut last_ping_time = Instant::now();
     let ping_interval = Duration::from_secs(3);
+
+    // Connection-stats emission (powers the user-panel telemetry popover).
+    // Sampled every 2s so the graph has reasonable temporal resolution
+    // without flooding the IPC channel.
+    let mut last_stats_time = Instant::now();
+    let stats_interval = Duration::from_secs(2);
+    let mut last_plc_total: u64 = 0;
+    let mut last_decoded_total: u64 = 0;
+    let mut last_latency_ms: Option<u32> = None;
 
     // AEC render reference: summed across peers per tick so AEC sees what the
     // speaker actually plays. Reset each tick; fed to render_ref_prod at end.
@@ -736,6 +750,7 @@ pub fn run_audio_pipeline(
                                         .unwrap_or_default()
                                         .as_nanos() as u64;
                                     let rtt_ms = (now_ns.saturating_sub(sent_ns) / 1_000_000) as u32;
+                                    last_latency_ms = Some(rtt_ms);
                                     let _ = event_tx.send(VoiceEvent::PingMeasured(rtt_ms));
                                 }
                             } else if username == sender_id {
@@ -982,6 +997,35 @@ pub fn run_audio_pipeline(
         }
         if had_removals {
             refresh_peer_list(&peers, &remote_peers);
+        }
+
+        // 6a. Connection-stats sample for the user-panel telemetry popover.
+        // Aggregated across all remote peers — for the typical 1-2 peer
+        // voice channel this is a faithful "how's my connection" reading.
+        // packet_loss_pct is computed from the delta of plc/decoded counters
+        // so it tracks the actual recent window, not session totals.
+        if last_stats_time.elapsed() >= stats_interval {
+            let mut plc_total: u64 = 0;
+            let mut decoded_total: u64 = 0;
+            for (_, p) in remote_peers.iter() {
+                plc_total = plc_total.saturating_add(p.voice_jitter.plc_frames);
+                decoded_total = decoded_total.saturating_add(p.voice_jitter.decoded_frames);
+            }
+            let plc_delta = plc_total.saturating_sub(last_plc_total);
+            let decoded_delta = decoded_total.saturating_sub(last_decoded_total);
+            let total_delta = plc_delta + decoded_delta;
+            let packet_loss_pct = if total_delta == 0 {
+                0.0
+            } else {
+                (plc_delta as f32 / total_delta as f32) * 100.0
+            };
+            let _ = event_tx.send(VoiceEvent::ConnectionStats {
+                latency_ms: last_latency_ms,
+                packet_loss_pct,
+            });
+            last_plc_total = plc_total;
+            last_decoded_total = decoded_total;
+            last_stats_time = Instant::now();
         }
 
         // 6. Periodic diagnostics (every 5s) ────────────────────────────────

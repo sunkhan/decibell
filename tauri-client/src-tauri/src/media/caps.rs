@@ -83,7 +83,10 @@ fn caps_path(app: &AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     let _ = std::fs::create_dir_all(&dir);
-    Ok(dir.join("encoder_caps.json"))
+    // v2: ceiling table changed in 0.5.4 (60 → 120 fps for HW codecs).
+    // Old v1 file is intentionally orphaned so existing installs re-probe
+    // and pick up the new max_fps without a manual Refresh.
+    Ok(dir.join("encoder_caps_v2.json"))
 }
 
 /// Per-codec encode policy ceilings (spec §3.2). Caps are clamped to these
@@ -91,9 +94,11 @@ fn caps_path(app: &AppHandle) -> Result<PathBuf, String> {
 /// defensible across hardware generations.
 fn encode_ceiling(codec: CodecKind) -> (u32, u32, u32) {
     match codec {
-        CodecKind::Av1 => (3840, 2160, 60),
-        CodecKind::H265 => (3840, 2160, 60),
-        CodecKind::H264Hw => (2560, 1440, 60),
+        CodecKind::Av1 => (3840, 2160, 120),
+        CodecKind::H265 => (3840, 2160, 120),
+        CodecKind::H264Hw => (2560, 1440, 120),
+        // x264 software path is CPU-bound; 1080p60 is the realistic ceiling
+        // before frame budget overruns on a single thread.
         CodecKind::H264Sw => (1920, 1080, 60),
         CodecKind::Unknown => (0, 0, 0),
     }
