@@ -29,6 +29,38 @@ fn avcc_to_annexb(avcc: &[u8]) -> Vec<u8> {
     annexb
 }
 
+/// Parse a hvcC config record (ISO/IEC 14496-15 §8.3.3) and emit its
+/// VPS/SPS/PPS NALs in Annex B form. Used as the HEVC decoder's extradata
+/// because installing the raw hvcC flips ffmpeg into MP4 length-prefix
+/// mode while our bitstream is annex-B — they have to match. Returns
+/// `None` if the record is malformed; the caller falls back to opening
+/// the decoder without extradata (won't decode but won't crash either).
+pub fn hvcc_to_annexb_extradata(hvcc: &[u8]) -> Option<Vec<u8>> {
+    // Fixed-size hvcC header: 22 bytes through `numOfArrays`.
+    if hvcc.len() < 23 || hvcc[0] != 1 { return None; }
+    let mut pos = 22;
+    let num_arrays = hvcc[pos] as usize;
+    pos += 1;
+    let mut out = Vec::with_capacity(hvcc.len());
+    for _ in 0..num_arrays {
+        // Skip array header byte (array_completeness + reserved + NAL_unit_type)
+        if pos + 3 > hvcc.len() { return None; }
+        pos += 1;
+        let num_nalus = u16::from_be_bytes([hvcc[pos], hvcc[pos + 1]]) as usize;
+        pos += 2;
+        for _ in 0..num_nalus {
+            if pos + 2 > hvcc.len() { return None; }
+            let nalu_len = u16::from_be_bytes([hvcc[pos], hvcc[pos + 1]]) as usize;
+            pos += 2;
+            if pos + nalu_len > hvcc.len() { return None; }
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(&hvcc[pos..pos + nalu_len]);
+            pos += nalu_len;
+        }
+    }
+    Some(out)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DecoderBackend {
     Vaapi,
@@ -217,7 +249,20 @@ impl VideoDecoder {
     fn try_cuda(codec: CodecKind, codec_id: ffmpeg_next::codec::Id, extradata: Option<&[u8]>) -> Result<Self, String> {
         use ffmpeg_next::sys::*;
 
-        let ff_codec = ffmpeg_next::decoder::find(codec_id)
+        // For AV1, `decoder::find(Id::AV1)` returns libdav1d on most builds,
+        // which is software-only and silently ignores `hw_device_ctx`. Frames
+        // come back as YUV420P SW frames and `av_hwframe_transfer_data` fails
+        // with EINVAL. Prefer the dedicated CUVID decoder for AV1 (and HEVC,
+        // H.264 for symmetry) so we get genuine NVDEC HW frames.
+        let cuvid_name = match codec {
+            CodecKind::Av1 => Some("av1_cuvid"),
+            CodecKind::H265 => Some("hevc_cuvid"),
+            CodecKind::H264Hw | CodecKind::H264Sw => Some("h264_cuvid"),
+            CodecKind::Unknown => None,
+        };
+        let ff_codec = cuvid_name
+            .and_then(ffmpeg_next::decoder::find_by_name)
+            .or_else(|| ffmpeg_next::decoder::find(codec_id))
             .ok_or_else(|| format!("{} decoder not found", codec_label(codec)))?;
 
         unsafe {
@@ -337,7 +382,16 @@ impl VideoDecoder {
         }
 
         // GPU decode → system memory. CUDA/VAAPI both deliver NV12 here.
-        let cpu_frame = if self.backend != DecoderBackend::Software {
+        // Trust the actual frame format rather than the declared backend:
+        // libdav1d (and other software decoders) silently ignore an attached
+        // `hw_device_ctx` and return SW frames anyway. Routing those through
+        // `av_hwframe_transfer_data` returns EINVAL — fall through to the
+        // SW path instead so the swscale step picks them up.
+        let is_hw_frame = matches!(
+            decoded.format(),
+            ffmpeg_next::format::Pixel::CUDA | ffmpeg_next::format::Pixel::VAAPI,
+        );
+        let cpu_frame = if is_hw_frame {
             let mut sw_frame = ffmpeg_next::frame::Video::empty();
             let rc = unsafe {
                 ffmpeg_next::sys::av_hwframe_transfer_data(

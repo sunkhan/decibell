@@ -530,9 +530,27 @@ fn run_video_recv_thread(
                 // H.264 keeps SPS/PPS inline in keyframes (no GLOBAL_HEADER),
                 // so we build the decoder eagerly with no extradata.
                 let needs_extradata = matches!(frame_codec, caps::CodecKind::H265 | caps::CodecKind::Av1);
+                // HEVC extradata must match the bitstream framing we send
+                // (annex-B). Convert hvcC → annex-B VPS/SPS/PPS NALs here;
+                // installing the raw hvcC would flip ffmpeg into MP4 mode
+                // and it would parse our annex-B start codes as bogus
+                // 4-byte NAL lengths.
+                //
+                // AV1 uses the av1C as-is — av1C isn't a NAL container, the
+                // configOBUs portion is a regular OBU stream that ffmpeg's
+                // AV1 decoder parses natively from extradata.
+                let hevc_annexb_owned: Option<Vec<u8>>;
                 let extradata: Option<&[u8]> = if needs_extradata && frame.is_keyframe {
-                    frame.description.as_deref()
+                    let desc = frame.description.as_deref();
+                    if frame_codec == caps::CodecKind::H265 {
+                        hevc_annexb_owned = desc.and_then(video_decoder::hvcc_to_annexb_extradata);
+                        hevc_annexb_owned.as_deref()
+                    } else {
+                        hevc_annexb_owned = None;
+                        desc
+                    }
                 } else {
+                    hevc_annexb_owned = None;
                     None
                 };
                 if needs_extradata && extradata.is_none() {
