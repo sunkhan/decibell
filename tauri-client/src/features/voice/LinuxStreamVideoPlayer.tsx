@@ -191,6 +191,7 @@ export default function LinuxStreamVideoPlayer({ streamerUsername, className }: 
     // overflow is ~2.4 million years away.
     let lastSequence = 0;
     let pulling = false; // prevents overlapping pulls if one tick takes >16ms
+    let loggedShape = false; // log the IPC response shape exactly once
 
     // Kick a keyframe so we don't sit on a black canvas while we wait for
     // the streamer's natural keyframe interval.
@@ -205,11 +206,40 @@ export default function LinuxStreamVideoPlayer({ streamerUsername, className }: 
       try {
         // Single Tauri IPC per RAF tick. Returns binary ArrayBuffer
         // (no JSON, no base64) — see commands/voice.rs:pull_video_frame_yuv.
-        const buf = await invoke<ArrayBuffer>("pull_video_frame_yuv", {
+        const raw = await invoke("pull_video_frame_yuv", {
           streamerUsername,
           lastSeenSequence: lastSequence,
         });
         if (stopped || !state) return;
+
+        // Normalise across IPC transports. Tauri 2's `Response::new(Vec<u8>)`
+        // returns ArrayBuffer on Webview2/WKWebView. WebKitGTK on Linux has
+        // historically returned the same payload as a Uint8Array or even a
+        // plain number array — accept all three so the renderer doesn't
+        // silently die on the first tick.
+        let buf: ArrayBuffer;
+        if (raw instanceof ArrayBuffer) {
+          buf = raw;
+        } else if (raw instanceof Uint8Array) {
+          // Slice into a fresh ArrayBuffer so DataView reads start at byte 0.
+          buf = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+        } else if (Array.isArray(raw)) {
+          buf = new Uint8Array(raw as number[]).buffer;
+        } else {
+          if (!loggedShape) {
+            loggedShape = true;
+            console.error("[LinuxStreamVideoPlayer] unexpected IPC response shape:",
+              typeof raw, raw);
+          }
+          return;
+        }
+        if (!loggedShape) {
+          loggedShape = true;
+          console.log("[LinuxStreamVideoPlayer] IPC response shape OK:",
+            raw instanceof ArrayBuffer ? "ArrayBuffer" :
+            raw instanceof Uint8Array ? "Uint8Array" : "Array",
+            "bytes=", buf.byteLength);
+        }
 
         const view = new DataView(buf);
         if (view.byteLength === 0 || view.getUint8(0) === 0) {
@@ -250,8 +280,10 @@ export default function LinuxStreamVideoPlayer({ streamerUsername, className }: 
         lastSequence = seq;
         if (!hasFirstFrame) setHasFirstFrame(true);
       } catch (e) {
-        // IPC failure (engine torn down) — stop the loop. Don't spam logs.
-        stopped = true;
+        // Surface the error once so a regression here doesn't silently
+        // freeze the player. Don't kill the loop — the next RAF tick may
+        // recover (e.g. the engine just hadn't published yet).
+        console.error("[LinuxStreamVideoPlayer] pull failed:", e);
       } finally {
         pulling = false;
       }
