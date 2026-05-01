@@ -211,6 +211,11 @@ pub async fn leave_voice_channel(
         let _ = send_raw(&tx, data).await;
     }
 
+    // Free every NV12 slot we were holding (Linux watch path). Without
+    // this we'd leak ~3MB/1080p × N watched streams on every disconnect.
+    #[cfg(target_os = "linux")]
+    crate::media::nv12_store::clear_all();
+
     // Emit the persisted state so the frontend keeps showing muted/deafened
     events::emit_voice_state_changed(&app, is_muted, is_deafened);
     Ok(())
@@ -389,4 +394,63 @@ pub async fn set_voice_deafen(
     }
     events::emit_voice_state_changed(&app, is_muted, is_deafened);
     Ok(())
+}
+
+
+// ── Linux NV12 frame pull (replaces the JPEG-over-base64 bridge) ────────────
+//
+// The renderer (`LinuxStreamVideoPlayer.tsx`) calls this once per
+// `requestAnimationFrame` tick per watched stream. Returning a binary
+// `Response` skips JSON serialization — the bytes go straight across IPC
+// as an ArrayBuffer that JS can DataView and slice into Y / UV upload
+// regions for WebGL.
+//
+// Wire format (little-endian, packed):
+//   [0]      u8   status: 0 = no new frame, 1 = frame follows
+//   [1..4]   pad  (reserved, keeps header alignment for the planes)
+//   [4..8]   u32  width
+//   [8..12]  u32  height
+//   [12..20] u64  sequence
+//   [20..28] i64  timestamp_us
+//   [28..32] u32  y_len
+//   [32..36] u32  uv_len
+//   [36..]        y_plane bytes, then uv_plane bytes
+//
+// The JS side pulls width/height/sequence to detect resolution changes
+// and to skip uploads when sequence hasn't moved. Status=0 returns a
+// 1-byte response so the empty-frame case stays cheap.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn pull_video_frame_yuv(
+    streamer_username: String,
+    last_seen_sequence: u64,
+) -> Result<tauri::ipc::Response, String> {
+    use crate::media::nv12_store;
+    let Some(frame) = nv12_store::pull_if_newer(&streamer_username, last_seen_sequence) else {
+        return Ok(tauri::ipc::Response::new(vec![0u8]));
+    };
+    let header_len = 36;
+    let mut buf = Vec::with_capacity(header_len + frame.y_plane.len() + frame.uv_plane.len());
+    buf.push(1u8);
+    buf.extend_from_slice(&[0u8; 3]);
+    buf.extend_from_slice(&frame.width.to_le_bytes());
+    buf.extend_from_slice(&frame.height.to_le_bytes());
+    buf.extend_from_slice(&frame.sequence.to_le_bytes());
+    buf.extend_from_slice(&frame.timestamp_us.to_le_bytes());
+    buf.extend_from_slice(&(frame.y_plane.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&(frame.uv_plane.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&frame.y_plane);
+    buf.extend_from_slice(&frame.uv_plane);
+    Ok(tauri::ipc::Response::new(buf))
+}
+
+/// Stub on non-Linux so the Tauri handler list stays uniform across
+/// platforms. The renderer never calls this on Windows (WebCodecs path).
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+pub fn pull_video_frame_yuv(
+    _streamer_username: String,
+    _last_seen_sequence: u64,
+) -> Result<tauri::ipc::Response, String> {
+    Ok(tauri::ipc::Response::new(vec![0u8]))
 }

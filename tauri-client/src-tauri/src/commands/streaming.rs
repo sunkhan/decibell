@@ -485,11 +485,19 @@ pub async fn stop_watching(
         (tx, pkt)
     };
 
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+    let send_result = match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(_)) => Err("Connection closed".to_string()),
         Err(_) => Err("Send timed out".to_string()),
-    }
+    };
+
+    // Drop the per-streamer NV12 slot so the buffer (~3MB at 1080p) is
+    // freed immediately instead of waiting for the next decode that
+    // never comes. Linux-only — Windows uses WebCodecs and has no slot.
+    #[cfg(target_os = "linux")]
+    crate::media::nv12_store::forget(&target_username);
+
+    send_result
 }
 
 #[tauri::command]

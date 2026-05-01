@@ -36,6 +36,8 @@ pub mod video_pipeline;
 pub mod video_receiver;
 #[cfg(target_os = "linux")]
 pub mod video_decoder;
+#[cfg(target_os = "linux")]
+pub mod nv12_store;
 
 use std::net::UdpSocket;
 use std::sync::{mpsc, Arc};
@@ -269,18 +271,12 @@ impl VoiceEngine {
                                 "codec": frame.codec,
                             }));
                         }
-                        #[cfg(target_os = "linux")]
-                        VoiceEvent::VideoFrameDecoded(username, jpeg_data, frame_id, is_keyframe) => {
-                            use base64::Engine;
-                            let b64_jpeg = base64::engine::general_purpose::STANDARD.encode(&jpeg_data);
-                            let _ = app.emit("stream_frame", serde_json::json!({
-                                "username": username,
-                                "format": "jpeg",
-                                "data": b64_jpeg,
-                                "timestamp": frame_id as u64 * 33_333,
-                                "keyframe": is_keyframe,
-                            }));
-                        }
+                        // Linux: video frames no longer go through events.
+                        // The decode loop publishes NV12 directly into
+                        // `nv12_store`; the renderer pulls via the
+                        // `pull_video_frame_yuv` Tauri command at RAF rate.
+                        // Removes the per-frame base64 + IPC string cost
+                        // that used to dominate Linux watch CPU.
                         VoiceEvent::KeyframeRequested => {
                             if let Ok(guard) = keyframe_tx_for_bridge.lock() {
                                 if let Some(ref tx) = *guard {
@@ -451,11 +447,10 @@ fn run_video_recv_thread(
     // since each codec needs its own ffmpeg decoder + HW backend.
     #[cfg(target_os = "linux")]
     let mut linux_decoder: Option<video_decoder::VideoDecoder> = None;
-    #[cfg(target_os = "linux")]
-    let mut last_decode_time = Instant::now();
 
     // Helper: emit a reassembled video frame.
-    // Linux: decode H.264 / HEVC / AV1 → JPEG, emit VideoFrameDecoded.
+    // Linux: decode H.264 / HEVC / AV1 → NV12, publish to nv12_store
+    //        for the renderer to pull at requestAnimationFrame rate.
     // Windows: pass raw bitstream via VideoFrameReady for WebCodecs.
     //
     // For HEVC/AV1 keyframes the sender prepends a magic-tagged
@@ -556,21 +551,15 @@ fn run_video_recv_thread(
                     &frame.data
                 };
 
-                // Rate-limit emit: skip JPEG-encoding delta frames if the
-                // last one went out <25ms ago (~40fps cap to the React side).
-                // We still feed every frame into the decoder so references
-                // stay correct.
-                let elapsed = last_decode_time.elapsed();
-                if !frame.is_keyframe && elapsed < Duration::from_millis(25) {
-                    let _ = dec.decode_to_jpeg(bitstream);
-                } else if let Some(jpeg) = dec.decode_to_jpeg(bitstream) {
-                    last_decode_time = Instant::now();
-                    let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameDecoded(
-                        frame.streamer_username,
-                        jpeg,
-                        frame.frame_id,
-                        frame.is_keyframe,
-                    ));
+                // Decode every frame at source rate so P-frame references
+                // stay valid. The renderer pulls latest-only at RAF rate
+                // (60/120Hz, display-bound), so frames the renderer skips
+                // are dropped *after* decode rather than starving the
+                // decoder of references. No 40fps JPEG-encode ceiling
+                // anymore — NV12 publish is essentially free vs the old
+                // libjpeg path.
+                if let Some(nv12) = dec.decode_to_nv12(bitstream) {
+                    nv12_store::publish(&frame.streamer_username, nv12);
                 }
             }
         }

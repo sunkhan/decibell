@@ -57,10 +57,6 @@ pub enum VoiceEvent {
     /// until the first PING reply lands.
     ConnectionStats { latency_ms: Option<u32>, packet_loss_pct: f32 },
     VideoFrameReady(ReassembledFrame),
-    /// Linux only: H.264 frame decoded to JPEG in the video recv thread.
-    /// (username, jpeg_bytes, frame_id, is_keyframe)
-    #[cfg(target_os = "linux")]
-    VideoFrameDecoded(String, Vec<u8>, u32, bool),
     KeyframeRequested,
     Error(String),
 }

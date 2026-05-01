@@ -1,10 +1,12 @@
 //! Codec-aware video decoder for Linux where WebKitGTK lacks WebCodecs.
 //!
-//! Decodes H.264, HEVC, or AV1 frames to JPEG for the React canvas.
-//! Tries GPU-accelerated decode first (NVDEC/CUDA for NVIDIA, VAAPI for
-//! AMD/Intel), falling back to software. The chosen codec is fixed at
-//! construction; if the streamer swaps codec mid-stream (Plan C), the
-//! caller drops this decoder and builds a new one for the new codec.
+//! Decodes H.264, HEVC, or AV1 frames to NV12 planes for upload into a
+//! WebGL R8 (Y) + RG8 (UV) texture pair on the renderer side. Tries
+//! GPU-accelerated decode first (NVDEC/CUDA for NVIDIA, VAAPI for
+//! AMD/Intel), falling back to software (libdav1d for AV1, libavcodec
+//! built-ins for H.264/HEVC). The chosen codec is fixed at construction;
+//! if the streamer swaps codec mid-stream (Plan C), the caller drops
+//! this decoder and builds a new one for the new codec.
 
 use crate::media::caps::CodecKind;
 
@@ -70,11 +72,35 @@ pub struct VideoDecoder {
     decoder: ffmpeg_next::decoder::Video,
     backend: DecoderBackend,
     hw_device_ref: *mut ffmpeg_next::sys::AVBufferRef,
-    jpeg_encoder: Option<ffmpeg_next::encoder::Video>,
-    scaler: Option<ffmpeg_next::software::scaling::Context>,
+    /// Cached swscale context for SW backends that deliver YUV420P (or
+    /// any non-NV12 format). Reused across frames; rebuilt on resolution
+    /// change. CUDA/VAAPI deliver NV12 directly so this stays None for
+    /// the hot HW paths.
+    nv12_scaler: Option<ffmpeg_next::software::scaling::Context>,
     last_width: u32,
     last_height: u32,
     frame_count: u64,
+}
+
+/// One decoded video frame in NV12 layout, planes packed tight (no strides).
+/// Sized for direct upload into a WebGL R8 (Y) + RG8 (UV) texture pair on
+/// the renderer side. The Linux pull-IPC path swaps these in and out at
+/// requestAnimationFrame rate, replacing the old JPEG-over-base64 bridge.
+pub struct Nv12Frame {
+    pub width: u32,
+    pub height: u32,
+    /// Monotonically increasing per decoder instance — lets the renderer
+    /// detect "is this the same frame I already drew?" without a memcmp.
+    pub sequence: u64,
+    /// Encoder-side timestamp (microseconds) propagated from the wire
+    /// frame. Renderer doesn't use it today but exposing it lets the JS
+    /// side do its own clock-sync / drift correction later.
+    pub timestamp_us: i64,
+    /// Y plane: `width * height` bytes, no padding.
+    pub y_plane: Vec<u8>,
+    /// Interleaved UV plane (NV12): `(width / 2) * (height / 2) * 2` bytes.
+    /// Each row is `width` bytes (U,V,U,V,...) at half vertical resolution.
+    pub uv_plane: Vec<u8>,
 }
 
 // Raw pointers are only used from a single thread (video recv thread)
@@ -156,8 +182,7 @@ impl VideoDecoder {
                 decoder,
                 backend: DecoderBackend::Vaapi,
                 hw_device_ref,
-                jpeg_encoder: None,
-                scaler: None,
+                nv12_scaler: None,
                 last_width: 0,
                 last_height: 0,
                 frame_count: 0,
@@ -204,8 +229,7 @@ impl VideoDecoder {
                 decoder,
                 backend: DecoderBackend::Cuda,
                 hw_device_ref,
-                jpeg_encoder: None,
-                scaler: None,
+                nv12_scaler: None,
                 last_width: 0,
                 last_height: 0,
                 frame_count: 0,
@@ -237,8 +261,7 @@ impl VideoDecoder {
             decoder,
             backend: DecoderBackend::Software,
             hw_device_ref: std::ptr::null_mut(),
-            jpeg_encoder: None,
-            scaler: None,
+            nv12_scaler: None,
             last_width: 0,
             last_height: 0,
             frame_count: 0,
@@ -247,73 +270,33 @@ impl VideoDecoder {
 
     pub fn codec(&self) -> CodecKind { self.codec }
 
-    fn ensure_jpeg_encoder(&mut self, w: u32, h: u32) -> bool {
-        if self.jpeg_encoder.is_some() && self.last_width == w && self.last_height == h {
-            return true;
-        }
-
-        let codec = match ffmpeg_next::encoder::find(ffmpeg_next::codec::Id::MJPEG) {
-            Some(c) => c,
-            None => {
-                eprintln!("[video-decoder] MJPEG encoder not found");
-                return false;
-            }
-        };
-
-        let mut ctx = match ffmpeg_next::codec::Context::new_with_codec(codec)
-            .encoder()
-            .video()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[video-decoder] MJPEG encoder context: {}", e);
-                return false;
-            }
-        };
-
-        ctx.set_width(w);
-        ctx.set_height(h);
-        ctx.set_format(ffmpeg_next::format::Pixel::YUV420P);
-        ctx.set_color_range(ffmpeg_next::color::Range::JPEG);
-        ctx.set_time_base(ffmpeg_next::Rational::new(1, 30));
-        // MJPEG qscale: 1 = near-lossless, 31 = worst. 8 produced visible
-        // 8x8 block artifacts on remote streams; 2 is high-quality and modest.
-        ctx.set_quality(2);
-
-        match ctx.open() {
-            Ok(enc) => {
-                self.jpeg_encoder = Some(enc);
-                true
-            }
-            Err(e) => {
-                eprintln!("[video-decoder] MJPEG encoder open: {}", e);
-                false
-            }
-        }
-    }
-
-    /// Decode one frame and return JPEG bytes. The input format depends on
-    /// the codec: H.264 / HEVC arrive AVCC-framed (length-prefixed NALs)
-    /// from the encoder; AV1 arrives raw (OBU-framed). The decoder feeds
-    /// ffmpeg in the format it wants.
-    pub fn decode_to_jpeg(&mut self, frame_data: &[u8]) -> Option<Vec<u8>> {
+    /// Decode one frame and return tightly-packed NV12 planes, ready for
+    /// upload into a WebGL R8 (Y) + RG8 (UV) texture pair.
+    ///
+    /// Hot path for the Linux watch pipeline (replaces the JPEG bridge):
+    ///   bitstream → ffmpeg decode (HW or SW) → CPU NV12 → planes copied
+    ///   tight (no swscale stride padding) → caller publishes to its
+    ///   per-stream latest-frame slot.
+    ///
+    /// CUDA/VAAPI typically deliver NV12 directly via `av_hwframe_transfer_data`
+    /// so the swscale step is bypassed. SW decoders deliver YUV420P (planar)
+    /// and we use `nv12_scaler` to repack the U/V planes into NV12's
+    /// interleaved UV plane — one swscale convert per frame, BT.709 colors
+    /// preserved, no chroma resampling (both formats are 4:2:0).
+    pub fn decode_to_nv12(&mut self, frame_data: &[u8]) -> Option<Nv12Frame> {
         let bitstream: Vec<u8> = match self.codec {
             CodecKind::H264Hw | CodecKind::H264Sw | CodecKind::H265 => {
                 let annexb = avcc_to_annexb(frame_data);
                 if annexb.is_empty() { return None; }
                 annexb
             }
-            CodecKind::Av1 => {
-                // AV1 is OBU-framed at the encoder side too — passthrough.
-                frame_data.to_vec()
-            }
+            CodecKind::Av1 => frame_data.to_vec(),
             CodecKind::Unknown => return None,
         };
 
         let mut packet = ffmpeg_next::Packet::copy(&bitstream);
         packet.set_pts(None);
         packet.set_dts(None);
-
         self.decoder.send_packet(&packet).ok()?;
 
         let mut decoded = ffmpeg_next::frame::Video::empty();
@@ -327,7 +310,7 @@ impl VideoDecoder {
             return None;
         }
 
-        // GPU decode produces frames in GPU memory — transfer to system RAM
+        // GPU decode → system memory. CUDA/VAAPI both deliver NV12 here.
         let cpu_frame = if self.backend != DecoderBackend::Software {
             let mut sw_frame = ffmpeg_next::frame::Video::empty();
             let rc = unsafe {
@@ -350,50 +333,76 @@ impl VideoDecoder {
 
         if self.frame_count == 1 {
             eprintln!(
-                "[video-decoder] First {} frame decoded: {}x{} via {} backend",
-                codec_label(self.codec), w, h, self.backend
+                "[video-decoder] First {} NV12 frame: {}x{} via {} backend (fmt={:?})",
+                codec_label(self.codec), w, h, self.backend, cpu_frame.format()
             );
         }
 
-        // Scale to YUV420P (full range) for MJPEG encoder
-        let src_format = cpu_frame.format();
-        let need_new_scaler = self.scaler.is_none()
-            || self.last_width != w
-            || self.last_height != h;
-
-        if need_new_scaler {
-            self.scaler = ffmpeg_next::software::scaling::Context::get(
-                src_format, w, h,
-                ffmpeg_next::format::Pixel::YUV420P, w, h,
-                ffmpeg_next::software::scaling::Flags::BILINEAR,
-            )
-            .ok();
-        }
-
-        let scaler = self.scaler.as_mut()?;
-        let mut yuv_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::YUV420P, w, h);
-        scaler.run(&cpu_frame, &mut yuv_frame).ok()?;
-        unsafe {
-            (*yuv_frame.as_mut_ptr()).color_range = ffmpeg_next::sys::AVColorRange::AVCOL_RANGE_JPEG;
-        }
+        // Fast path: HW decode landed in NV12 already — just copy planes.
+        // Slow path: convert YUV420P (or whatever SW gave us) → NV12 with
+        // swscale; cached scaler avoids per-frame realloc.
+        let nv12_owned;
+        let nv12_ref: &ffmpeg_next::frame::Video = if cpu_frame.format() == ffmpeg_next::format::Pixel::NV12 {
+            &cpu_frame
+        } else {
+            let need_new_scaler = self.nv12_scaler.is_none()
+                || self.last_width != w
+                || self.last_height != h;
+            if need_new_scaler {
+                self.nv12_scaler = ffmpeg_next::software::scaling::Context::get(
+                    cpu_frame.format(), w, h,
+                    ffmpeg_next::format::Pixel::NV12, w, h,
+                    ffmpeg_next::software::scaling::Flags::BILINEAR,
+                ).ok();
+            }
+            let scaler = self.nv12_scaler.as_mut()?;
+            let mut out = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::NV12, w, h);
+            scaler.run(&cpu_frame, &mut out).ok()?;
+            nv12_owned = out;
+            &nv12_owned
+        };
 
         self.last_width = w;
         self.last_height = h;
 
-        if !self.ensure_jpeg_encoder(w, h) {
+        // Copy planes tight (drop swscale's stride padding). One memcpy per
+        // row — modern memcpy is SIMD'd and this is ~3MB at 1080p, sub-ms.
+        let y_stride = nv12_ref.stride(0);
+        let uv_stride = nv12_ref.stride(1);
+        let y_data = nv12_ref.data(0);
+        let uv_data = nv12_ref.data(1);
+
+        let row_bytes_y = w as usize;
+        let row_bytes_uv = w as usize; // interleaved UV: 2 bytes per chroma pair = `width` bytes/row
+        let h_rows = h as usize;
+        let uv_rows = (h / 2) as usize;
+
+        // Bounds-check up front: ffmpeg occasionally pads strides aggressively
+        // (alignment for SIMD). If the buffer is shorter than expected, bail.
+        if y_data.len() < y_stride * h_rows || uv_data.len() < uv_stride * uv_rows {
             return None;
         }
-        let enc = self.jpeg_encoder.as_mut()?;
 
-        yuv_frame.set_pts(Some(self.frame_count as i64));
-        enc.send_frame(&yuv_frame).ok()?;
-
-        let mut jpeg_pkt = ffmpeg_next::Packet::empty();
-        if enc.receive_packet(&mut jpeg_pkt).is_err() {
-            return None;
+        let mut y_plane = Vec::with_capacity(row_bytes_y * h_rows);
+        for row in 0..h_rows {
+            let start = row * y_stride;
+            y_plane.extend_from_slice(&y_data[start..start + row_bytes_y]);
         }
 
-        Some(jpeg_pkt.data().unwrap_or(&[]).to_vec())
+        let mut uv_plane = Vec::with_capacity(row_bytes_uv * uv_rows);
+        for row in 0..uv_rows {
+            let start = row * uv_stride;
+            uv_plane.extend_from_slice(&uv_data[start..start + row_bytes_uv]);
+        }
+
+        Some(Nv12Frame {
+            width: w,
+            height: h,
+            sequence: self.frame_count,
+            timestamp_us: 0,
+            y_plane,
+            uv_plane,
+        })
     }
 }
 
@@ -421,7 +430,7 @@ pub fn probe_decoders() -> Vec<crate::media::caps::CodecCap> {
 
     // Per-codec ceilings — match the JS probe (decoderProbe.ts) so the
     // LCD picker treats Rust-probed and JS-probed clients comparably.
-    fn ceiling(_codec: CodecKind) -> (u32, u32, u32) { (3840, 2160, 60) }
+    fn ceiling(_codec: CodecKind) -> (u32, u32, u32) { (3840, 2160, 120) }
 
     let mut out = Vec::new();
     for &(codec, codec_id) in candidates {

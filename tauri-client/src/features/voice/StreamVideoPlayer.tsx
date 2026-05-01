@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { VideoCodec } from "../../types";
 import { videoCodecToWebCodecsString } from "../../utils/codecMap";
+import LinuxStreamVideoPlayer from "./LinuxStreamVideoPlayer";
 
 interface Props {
   streamerUsername: string;
@@ -11,7 +12,10 @@ interface Props {
 
 interface StreamFramePayload {
   username: string;
-  format?: "h264" | "jpeg"; // h264 = Windows WebCodecs, jpeg = Linux SW decode
+  // Always "h264" (or other WebCodecs-recognised codec) — the legacy
+  // "jpeg" Linux path was removed in 0.5.5 in favour of the WebGL2 NV12
+  // pull pipeline (see LinuxStreamVideoPlayer).
+  format?: "h264";
   data: string; // base64-encoded frame data
   timestamp: number;
   keyframe: boolean;
@@ -35,6 +39,28 @@ function base64ToBytes(b64: string): Uint8Array {
 const hasWebCodecs = typeof VideoDecoder !== "undefined";
 
 export default function StreamVideoPlayer({ streamerUsername, className }: Props) {
+  // Linux/WebKitGTK has no WebCodecs — route to the WebGL2 NV12 pull
+  // pipeline that decodes in Rust via NVDEC/VAAPI/SW and renders directly
+  // in WebGL with a YUV→RGB shader. Same vendor coverage as the streamer
+  // path; doesn't depend on system gstreamer plugin availability.
+  if (!hasWebCodecs) {
+    return (
+      <LinuxStreamVideoPlayer
+        streamerUsername={streamerUsername}
+        className={className}
+      />
+    );
+  }
+
+  return (
+    <WebCodecsStreamVideoPlayer
+      streamerUsername={streamerUsername}
+      className={className}
+    />
+  );
+}
+
+function WebCodecsStreamVideoPlayer({ streamerUsername, className }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const decoderRef = useRef<VideoDecoder | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -103,10 +129,9 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
 
     let firstFrameSignalled = false;
 
-    // WebCodecs decoder — only created on Windows (or where VideoDecoder exists)
     let decoder: VideoDecoder | null = null;
     let dimsLogged = false;
-    if (hasWebCodecs) {
+    {
       decoder = new VideoDecoder({
         output: (frame: VideoFrame) => {
           const ctx = ctxRef.current;
@@ -168,34 +193,10 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
 
     invoke("request_keyframe", { targetUsername: streamerUsername }).catch(() => {});
 
-    // Reusable Image for JPEG rendering (Linux path)
-    const jpegImg = new Image();
-    jpegImg.onload = () => {
-      const ctx = ctxRef.current;
-      if (ctx && canvas) {
-        if (canvas.width !== jpegImg.naturalWidth || canvas.height !== jpegImg.naturalHeight) {
-          canvas.width = jpegImg.naturalWidth;
-          canvas.height = jpegImg.naturalHeight;
-        }
-        ctx.drawImage(jpegImg, 0, 0);
-      }
-      if (!firstFrameSignalled) {
-        firstFrameSignalled = true;
-        setHasFirstFrame(true);
-      }
-    };
-
     const unlisten = listen<StreamFramePayload>("stream_frame", (event) => {
-      const { username, format, data, timestamp, keyframe, description, codec } = event.payload;
+      const { username, data, timestamp, keyframe, description, codec } = event.payload;
       if (username !== streamerUsername) return;
 
-      // ── JPEG path (Linux: Rust-side decoded) ──────────────────────────
-      if (format === "jpeg") {
-        jpegImg.src = `data:image/jpeg;base64,${data}`;
-        return;
-      }
-
-      // ── WebCodecs path (Windows + any codec) ──────────────────────────
       if (!decoder || decoder.state === "closed") return;
 
       // Track the per-packet codec byte. When codec changes mid-stream

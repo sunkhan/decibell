@@ -2,12 +2,9 @@ import { useEffect, useMemo, useRef } from "react";
 import { useVoiceStatsStore, type ConnectionStatsSample } from "../../stores/voiceStatsStore";
 
 interface Props {
-  /** Click-anywhere-outside handler to close the popover. */
   onClose: () => void;
 }
 
-// Inner chart width is popover width (260) minus container side padding
-// (px-2 = 8px each side), so the SVG drawing area stays inside the bg.
 const WIDTH = 244;
 const HEIGHT = 120;
 const PADDING_X = 8;
@@ -15,8 +12,11 @@ const PADDING_TOP = 12;
 const PADDING_BOTTOM = 16;
 const WINDOW_MS = 5 * 60 * 1000;
 
-const PING_COLOR = "rgb(56, 143, 255)";
-const LOSS_COLOR = "rgb(255, 92, 88)";
+// CSS-var strings rather than raw hex so theme changes propagate
+// without recompiling. SVG `stroke` / `fill` / `stopColor` all accept
+// `var(...)` in WebKit and Chromium webviews.
+const PING_COLOR = "var(--color-accent)";
+const LOSS_COLOR = "var(--color-error)";
 
 function formatPing(p: number | null): string {
   return p == null ? "—" : `${p} ms`;
@@ -25,8 +25,6 @@ function formatLoss(p: number): string {
   return p < 0.1 ? "0%" : p < 10 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`;
 }
 
-/** Build an SVG `M ... L ...` path from the sample series, mapping each
- *  sample to the chart area via the supplied y-extractor + y-scale. */
 function buildPath(
   samples: ConnectionStatsSample[],
   now: number,
@@ -43,7 +41,7 @@ function buildPath(
       pen_up = true;
       continue;
     }
-    const tNorm = 1 - (now - s.ts) / WINDOW_MS;   // 0 at left edge, 1 at right
+    const tNorm = 1 - (now - s.ts) / WINDOW_MS;
     if (tNorm < 0 || tNorm > 1) continue;
     const x = PADDING_X + tNorm * w;
     const yNorm = Math.min(1, Math.max(0, v / yMax));
@@ -56,11 +54,43 @@ function buildPath(
   return d;
 }
 
+/** Build a closed polygon path for the gradient fill under the ping line. */
+function buildFillPath(
+  samples: ConnectionStatsSample[],
+  now: number,
+  extract: (s: ConnectionStatsSample) => number | null,
+  yMax: number,
+): string {
+  const w = WIDTH - PADDING_X * 2;
+  const h = HEIGHT - PADDING_TOP - PADDING_BOTTOM;
+  const bottom = PADDING_TOP + h;
+  const points: { x: number; y: number }[] = [];
+
+  for (const s of samples) {
+    const v = extract(s);
+    if (v == null) continue;
+    const tNorm = 1 - (now - s.ts) / WINDOW_MS;
+    if (tNorm < 0 || tNorm > 1) continue;
+    const x = PADDING_X + tNorm * w;
+    const yNorm = Math.min(1, Math.max(0, v / yMax));
+    const y = PADDING_TOP + (1 - yNorm) * h;
+    points.push({ x, y });
+  }
+
+  if (points.length < 2) return "";
+
+  let d = `M ${points[0].x.toFixed(1)} ${bottom.toFixed(1)}`;
+  for (const p of points) {
+    d += ` L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`;
+  }
+  d += ` L ${points[points.length - 1].x.toFixed(1)} ${bottom.toFixed(1)} Z`;
+  return d;
+}
+
 export default function ConnectionStatsPopover({ onClose }: Props) {
   const samples = useVoiceStatsStore((s) => s.samples);
   const popoverRef = useRef<HTMLDivElement | null>(null);
 
-  // Click-outside / Escape closes the popover.
   useEffect(() => {
     const onMouseDown = (e: MouseEvent) => {
       if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
@@ -78,22 +108,22 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
     };
   }, [onClose]);
 
-  // Pin "now" once per render so both lines + axis labels share a frame.
   const now = useMemo(() => Date.now(), [samples]);
 
-  // Chart y-scale: ping uses an adaptive ceiling so a 30ms session
-  // doesn't render against a 200ms axis. Floor at 100ms so 5/10/20ms
-  // pings still get visible chart real estate. Loss is fixed 0–100%.
   const pingMax = useMemo(() => {
     let max = 100;
     for (const s of samples) {
       if (s.pingMs != null && s.pingMs > max) max = s.pingMs;
     }
-    return Math.ceil(max / 50) * 50; // round up to nearest 50ms tick
+    return Math.ceil(max / 50) * 50;
   }, [samples]);
 
   const pingPath = useMemo(
     () => buildPath(samples, now, (s) => s.pingMs, pingMax),
+    [samples, now, pingMax],
+  );
+  const pingFillPath = useMemo(
+    () => buildFillPath(samples, now, (s) => s.pingMs, pingMax),
     [samples, now, pingMax],
   );
   const lossPath = useMemo(
@@ -105,8 +135,6 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
   const latestPing = latest?.pingMs ?? null;
   const latestLoss = latest?.lossPct ?? 0;
 
-  // Average over the visible window — handy "is my connection bad on
-  // average or just spiking" answer at a glance.
   const avgPing = useMemo(() => {
     let sum = 0, count = 0;
     for (const s of samples) {
@@ -124,135 +152,181 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
   return (
     <div
       ref={popoverRef}
-      // Anchored to the LEFT edge of the ping button (which sits in the
-      // channel sidebar on the left of the client) and extending rightward
-      // into the chat area — the previous right-anchored variant pushed the
-      // popover off the left edge of the screen on narrow sidebars.
-      // bg-bg-lighter + border for opaque elevation over the user panel
-      // (which is bg-bg-darkest); bg-bg-elevated isn't a defined token so it
-      // had been rendering transparent.
-      className="absolute bottom-[calc(100%+6px)] left-0 z-50 w-[260px] rounded-lg border border-border bg-bg-lighter shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
+      className="absolute bottom-[calc(100%+6px)] left-0 z-50 w-[260px] overflow-hidden rounded-xl border border-border bg-bg-light shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,255,255,0.02)]"
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="border-b border-border-divider px-3 py-2.5">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+      {/* Header */}
+      <div className="border-b border-border-divider px-4 py-3">
+        <div className="mb-2.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
           Connection
         </div>
-        <div className="mt-1 flex items-center justify-between text-[12.5px]">
+        <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full" style={{ background: PING_COLOR }} />
-            <span className="text-text-secondary">Ping</span>
-            <span className="font-semibold text-text-primary tabular-nums">
+            <span className="h-[7px] w-[7px] rounded-full" style={{ background: PING_COLOR }} />
+            <span className="text-[12px] text-text-secondary">Ping</span>
+            <span className="whitespace-nowrap text-[12.5px] font-semibold tabular-nums text-text-primary">
               {formatPing(latestPing)}
             </span>
             {avgPing != null && avgPing !== latestPing && (
-              <span className="text-text-muted tabular-nums">
+              <span className="whitespace-nowrap text-[11px] tabular-nums text-text-muted">
                 (avg {avgPing} ms)
               </span>
             )}
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full" style={{ background: LOSS_COLOR }} />
-            <span className="text-text-secondary">Loss</span>
-            <span className="font-semibold text-text-primary tabular-nums">
+            <span className="h-[7px] w-[7px] rounded-full" style={{ background: LOSS_COLOR }} />
+            <span className="text-[12px] text-text-secondary">Loss</span>
+            <span className="whitespace-nowrap text-[12.5px] font-semibold tabular-nums text-text-primary">
               {formatLoss(latestLoss)}
             </span>
           </div>
         </div>
       </div>
 
-      <div className="px-2 pt-2 pb-1">
-        <svg
-          width={WIDTH}
-          height={HEIGHT}
-          viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-          className="block"
-        >
-          {/* Background grid: faint horizontal at 25/50/75% */}
-          {[0.25, 0.5, 0.75].map((frac) => {
-            const y = PADDING_TOP + (HEIGHT - PADDING_TOP - PADDING_BOTTOM) * frac;
-            return (
-              <line
-                key={frac}
-                x1={PADDING_X}
-                x2={WIDTH - PADDING_X}
-                y1={y}
-                y2={y}
-                stroke="rgba(255,255,255,0.05)"
-                strokeWidth={1}
+      {/* Chart */}
+      <div className="px-4 pb-3 pt-2.5">
+        <div className="relative overflow-hidden rounded-[10px] border border-border-divider bg-bg-mid">
+          <svg
+            width={WIDTH}
+            height={HEIGHT}
+            viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+            className="block"
+          >
+            <defs>
+              <linearGradient id="pingGradFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={PING_COLOR} stopOpacity="0.15" />
+                <stop offset="100%" stopColor={PING_COLOR} stopOpacity="0" />
+              </linearGradient>
+            </defs>
+
+            {/* Horizontal grid lines */}
+            {[0, 0.5, 1].map((frac) => {
+              const y = PADDING_TOP + (HEIGHT - PADDING_TOP - PADDING_BOTTOM) * frac;
+              return (
+                <line
+                  key={frac}
+                  x1={PADDING_X}
+                  x2={WIDTH - PADDING_X}
+                  y1={y}
+                  y2={y}
+                  stroke="rgba(255,255,255,0.03)"
+                  strokeWidth={0.5}
+                />
+              );
+            })}
+
+            {/* Y-axis labels */}
+            <text
+              x={PADDING_X + 2}
+              y={PADDING_TOP + 8}
+              fill="var(--color-text-faint)"
+              fontSize="10"
+              fontFamily="inherit"
+            >
+              {pingMax} ms
+            </text>
+            <text
+              x={PADDING_X + 2}
+              y={PADDING_TOP + (HEIGHT - PADDING_TOP - PADDING_BOTTOM) * 0.5 + 3}
+              fill="var(--color-text-faint)"
+              fontSize="10"
+              fontFamily="inherit"
+            >
+              {Math.round(pingMax / 2)} ms
+            </text>
+            <text
+              x={PADDING_X + 2}
+              y={HEIGHT - PADDING_BOTTOM - 2}
+              fill="var(--color-text-faint)"
+              fontSize="10"
+              fontFamily="inherit"
+            >
+              0 ms
+            </text>
+
+            {/* X-axis label */}
+            <text
+              x={WIDTH - PADDING_X - 2}
+              y={HEIGHT - 3}
+              textAnchor="end"
+              fill="var(--color-text-faint)"
+              fontSize="10"
+              fontFamily="inherit"
+            >
+              last 5 min
+            </text>
+
+            {/* Gradient fill under ping line */}
+            {pingFillPath && (
+              <path
+                d={pingFillPath}
+                fill="url(#pingGradFill)"
               />
-            );
-          })}
+            )}
 
-          {/* Y-axis ticks for ping (left) — sparse, just top + middle */}
-          <text
-            x={PADDING_X + 2}
-            y={PADDING_TOP + 8}
-            fill="rgba(255,255,255,0.32)"
-            fontSize="9"
-            fontFamily="inherit"
-          >
-            {pingMax} ms
-          </text>
+            {/* Ping line */}
+            {pingPath && (
+              <path
+                d={pingPath}
+                fill="none"
+                stroke={PING_COLOR}
+                strokeWidth={1.5}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )}
 
-          {/* X-axis label */}
-          <text
-            x={WIDTH / 2}
-            y={HEIGHT - 3}
-            textAnchor="middle"
-            fill="rgba(255,255,255,0.32)"
-            fontSize="9"
-            fontFamily="inherit"
-          >
-            last 5 min
-          </text>
+            {/* Loss line */}
+            {lossPath && (
+              <path
+                d={lossPath}
+                fill="none"
+                stroke={LOSS_COLOR}
+                strokeWidth={1.5}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray="3 3"
+              />
+            )}
 
-          {/* Lines */}
-          {pingPath && (
-            <path
-              d={pingPath}
-              fill="none"
-              stroke={PING_COLOR}
-              strokeWidth={1.6}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          )}
-          {lossPath && (
-            <path
-              d={lossPath}
-              fill="none"
-              stroke={LOSS_COLOR}
-              strokeWidth={1.6}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          )}
-
-          {/* Right edge marker — current value dot for ping */}
-          {latestPing != null && (
-            <circle
-              cx={WIDTH - PADDING_X}
-              cy={
-                PADDING_TOP +
-                (1 - Math.min(1, Math.max(0, latestPing / pingMax))) *
-                  (HEIGHT - PADDING_TOP - PADDING_BOTTOM)
-              }
-              r={2.5}
-              fill={PING_COLOR}
-            />
-          )}
-        </svg>
+            {/* Current value dot for ping */}
+            {latestPing != null && (
+              <>
+                <circle
+                  cx={WIDTH - PADDING_X}
+                  cy={
+                    PADDING_TOP +
+                    (1 - Math.min(1, Math.max(0, latestPing / pingMax))) *
+                      (HEIGHT - PADDING_TOP - PADDING_BOTTOM)
+                  }
+                  r={4}
+                  fill={PING_COLOR}
+                  opacity={0.2}
+                />
+                <circle
+                  cx={WIDTH - PADDING_X}
+                  cy={
+                    PADDING_TOP +
+                    (1 - Math.min(1, Math.max(0, latestPing / pingMax))) *
+                      (HEIGHT - PADDING_TOP - PADDING_BOTTOM)
+                  }
+                  r={2.5}
+                  fill={PING_COLOR}
+                />
+              </>
+            )}
+          </svg>
+        </div>
       </div>
 
       {samples.length === 0 && (
-        <div className="px-3 pb-3 text-center text-[11px] text-text-muted">
+        <div className="px-4 pb-3 text-center text-[11px] text-text-muted">
           Collecting samples…
         </div>
       )}
       {samples.length > 0 && avgLoss > 0.5 && (
-        <div className="px-3 pb-3 text-[11px] text-text-muted">
-          Avg loss {formatLoss(avgLoss)} over window — sustained loss above 1 %
+        <div className="px-4 pb-3 text-[11px] leading-relaxed text-text-muted">
+          Avg loss {formatLoss(avgLoss)} over window — sustained loss above 1%
           can cause stuttering.
         </div>
       )}

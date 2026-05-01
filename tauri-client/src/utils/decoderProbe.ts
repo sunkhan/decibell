@@ -22,10 +22,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { VideoCodec, type CodecCapability } from "../types";
 
 // Decode policy ceilings — spec §3.2.
+// Matches the encoder ceilings (caps.rs:encode_ceiling) so codec selection
+// stops downgrading 120fps streamers when a viewer joins. Linux gets the
+// same headroom as Windows now that the WebGL2 NV12 pipeline replaced
+// the JPEG bridge — no more 40fps re-encode bottleneck.
 const DECODE_CEILING: Record<number, { width: number; height: number; fps: number }> = {
-  [VideoCodec.AV1]:    { width: 3840, height: 2160, fps: 60 },
-  [VideoCodec.H265]:   { width: 3840, height: 2160, fps: 60 },
-  [VideoCodec.H264_HW]: { width: 3840, height: 2160, fps: 60 },
+  [VideoCodec.AV1]:    { width: 3840, height: 2160, fps: 120 },
+  [VideoCodec.H265]:   { width: 3840, height: 2160, fps: 120 },
+  [VideoCodec.H264_HW]: { width: 3840, height: 2160, fps: 120 },
 };
 
 // Conservative "well-known" WebCodecs codec strings used to probe.
@@ -40,7 +44,10 @@ const PROBE_CONFIGS: { codec: VideoCodec; webCodecsString: string }[] = [
   { codec: VideoCodec.H264_HW, webCodecsString: "avc1.64003E" },          // High, level 6.2
 ];
 
-const LOCAL_STORAGE_KEY = "decibell.decoder_caps.v1";
+// v2: ceilings widened to 120fps in 0.5.5 (WebGL2 NV12 pipeline lifted
+// the JPEG-bridge fps cap on Linux). Old v1 cache is intentionally
+// orphaned so existing installs re-probe at next launch.
+const LOCAL_STORAGE_KEY = "decibell.decoder_caps.v2";
 
 export async function probeDecoders(force = false): Promise<CodecCapability[]> {
   if (!force) {
