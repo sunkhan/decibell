@@ -116,25 +116,48 @@ impl Drop for VideoDecoder {
     }
 }
 
+/// Copy a config record (hvcC / av1C / etc.) into FFmpeg-owned extradata
+/// on the codec context. Must be called BEFORE the decoder is opened —
+/// ffmpeg's open path parses extradata once to seed parameter sets and
+/// ignores later changes. The buffer needs `AV_INPUT_BUFFER_PADDING_SIZE`
+/// bytes of trailing zeroes so the bitstream reader can over-read safely.
+unsafe fn install_extradata(raw_ctx: *mut ffmpeg_next::sys::AVCodecContext, blob: &[u8]) {
+    use ffmpeg_next::sys::*;
+    const AV_INPUT_BUFFER_PADDING_SIZE: usize = 64;
+    let total = blob.len() + AV_INPUT_BUFFER_PADDING_SIZE;
+    let buf = av_mallocz(total) as *mut u8;
+    if buf.is_null() { return; }
+    std::ptr::copy_nonoverlapping(blob.as_ptr(), buf, blob.len());
+    (*raw_ctx).extradata = buf;
+    (*raw_ctx).extradata_size = blob.len() as i32;
+}
+
 impl VideoDecoder {
     /// Build a decoder for the given codec. Tries hardware backends in
     /// preference order (CUDA → VAAPI → software). Returns Err if no
     /// backend can open this codec at all.
-    pub fn new(codec: CodecKind) -> Result<Self, String> {
+    ///
+    /// `extradata` carries the codec-config record that the encoder put
+    /// in its `extradata` buffer (because we set GLOBAL_HEADER for
+    /// HEVC/AV1) — i.e. hvcC for HEVC, av1C for AV1. ffmpeg parses these
+    /// natively when it opens the decoder, seeding VPS/SPS/PPS or the
+    /// AV1 sequence header. Pass `None` for H.264 (parameter sets are
+    /// inline in keyframes) and for the probe path.
+    pub fn new(codec: CodecKind, extradata: Option<&[u8]>) -> Result<Self, String> {
         ffmpeg_next::init().map_err(|e| format!("ffmpeg init: {}", e))?;
         let codec_id = codec_to_ffmpeg_id(codec)
             .ok_or_else(|| format!("Unsupported codec: {:?}", codec))?;
 
-        if let Ok(dec) = Self::try_cuda(codec, codec_id) {
+        if let Ok(dec) = Self::try_cuda(codec, codec_id, extradata) {
             return Ok(dec);
         }
-        if let Ok(dec) = Self::try_vaapi(codec, codec_id) {
+        if let Ok(dec) = Self::try_vaapi(codec, codec_id, extradata) {
             return Ok(dec);
         }
-        Self::try_software(codec, codec_id)
+        Self::try_software(codec, codec_id, extradata)
     }
 
-    fn try_vaapi(codec: CodecKind, codec_id: ffmpeg_next::codec::Id) -> Result<Self, String> {
+    fn try_vaapi(codec: CodecKind, codec_id: ffmpeg_next::codec::Id, extradata: Option<&[u8]>) -> Result<Self, String> {
         use ffmpeg_next::sys::*;
 
         let render_node = if std::path::Path::new("/dev/dri/renderD128").exists() {
@@ -165,6 +188,7 @@ impl VideoDecoder {
             let mut ctx = ffmpeg_next::codec::Context::new_with_codec(ff_codec);
             let raw = ctx.as_mut_ptr();
             (*raw).hw_device_ctx = av_buffer_ref(hw_device_ref);
+            if let Some(ed) = extradata { install_extradata(raw, ed); }
 
             let decoder = ctx
                 .decoder()
@@ -174,8 +198,8 @@ impl VideoDecoder {
                     format!("VAAPI {} decoder open: {}", codec_label(codec), e)
                 })?;
 
-            eprintln!("[video-decoder] {} VAAPI GPU decode ready ({})",
-                codec_label(codec), render_node);
+            eprintln!("[video-decoder] {} VAAPI GPU decode ready ({}), extradata={}B",
+                codec_label(codec), render_node, extradata.map(|e| e.len()).unwrap_or(0));
 
             Ok(VideoDecoder {
                 codec,
@@ -190,7 +214,7 @@ impl VideoDecoder {
         }
     }
 
-    fn try_cuda(codec: CodecKind, codec_id: ffmpeg_next::codec::Id) -> Result<Self, String> {
+    fn try_cuda(codec: CodecKind, codec_id: ffmpeg_next::codec::Id, extradata: Option<&[u8]>) -> Result<Self, String> {
         use ffmpeg_next::sys::*;
 
         let ff_codec = ffmpeg_next::decoder::find(codec_id)
@@ -212,6 +236,7 @@ impl VideoDecoder {
             let mut ctx = ffmpeg_next::codec::Context::new_with_codec(ff_codec);
             let raw = ctx.as_mut_ptr();
             (*raw).hw_device_ctx = av_buffer_ref(hw_device_ref);
+            if let Some(ed) = extradata { install_extradata(raw, ed); }
 
             let decoder = ctx
                 .decoder()
@@ -221,8 +246,8 @@ impl VideoDecoder {
                     format!("CUDA {} decoder open: {}", codec_label(codec), e)
                 })?;
 
-            eprintln!("[video-decoder] {} NVDEC/CUDA GPU decode ready",
-                codec_label(codec));
+            eprintln!("[video-decoder] {} NVDEC/CUDA GPU decode ready, extradata={}B",
+                codec_label(codec), extradata.map(|e| e.len()).unwrap_or(0));
 
             Ok(VideoDecoder {
                 codec,
@@ -237,14 +262,15 @@ impl VideoDecoder {
         }
     }
 
-    fn try_software(codec: CodecKind, codec_id: ffmpeg_next::codec::Id) -> Result<Self, String> {
+    fn try_software(codec: CodecKind, codec_id: ffmpeg_next::codec::Id, extradata: Option<&[u8]>) -> Result<Self, String> {
         let ff_codec = ffmpeg_next::decoder::find(codec_id)
-            .ok_or_else(|| format!("{} decoder not found", codec_label(codec)))?;
+            .ok_or_else(|| format!("Software {} decoder not found", codec_label(codec)))?;
 
         let mut ctx = ffmpeg_next::codec::Context::new_with_codec(ff_codec);
         unsafe {
             let raw = ctx.as_mut_ptr();
             (*raw).thread_count = 2;
+            if let Some(ed) = extradata { install_extradata(raw, ed); }
         }
 
         let decoder = ctx
@@ -253,8 +279,8 @@ impl VideoDecoder {
             .map_err(|e| format!("Software {} decoder open: {}",
                 codec_label(codec), e))?;
 
-        eprintln!("[video-decoder] {} software decode (no GPU acceleration available)",
-            codec_label(codec));
+        eprintln!("[video-decoder] {} software decode (no GPU acceleration available), extradata={}B",
+            codec_label(codec), extradata.map(|e| e.len()).unwrap_or(0));
 
         Ok(VideoDecoder {
             codec,
@@ -435,10 +461,11 @@ pub fn probe_decoders() -> Vec<crate::media::caps::CodecCap> {
     let mut out = Vec::new();
     for &(codec, codec_id) in candidates {
         // Try CUDA → VAAPI → software. The first one that opens means we
-        // can decode this codec end-to-end.
-        let cuda_ok = VideoDecoder::try_cuda(codec, codec_id).is_ok();
-        let vaapi_ok = !cuda_ok && VideoDecoder::try_vaapi(codec, codec_id).is_ok();
-        let sw_ok = !cuda_ok && !vaapi_ok && VideoDecoder::try_software(codec, codec_id).is_ok();
+        // can decode this codec end-to-end. Probe never has extradata —
+        // we just want to know the decoder *opens*.
+        let cuda_ok = VideoDecoder::try_cuda(codec, codec_id, None).is_ok();
+        let vaapi_ok = !cuda_ok && VideoDecoder::try_vaapi(codec, codec_id, None).is_ok();
+        let sw_ok = !cuda_ok && !vaapi_ok && VideoDecoder::try_software(codec, codec_id, None).is_ok();
         if cuda_ok || vaapi_ok || sw_ok {
             let (w, h, fps) = ceiling(codec);
             out.push(CodecCap { codec, max_width: w, max_height: h, max_fps: fps });

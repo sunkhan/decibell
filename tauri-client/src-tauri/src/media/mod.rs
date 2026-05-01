@@ -516,8 +516,34 @@ fn run_video_recv_thread(
                 }
             };
             if need_rebuild {
+                // HEVC and AV1 carry their parameter sets out-of-band —
+                // the encoder has GLOBAL_HEADER set, so VPS/SPS/PPS (HEVC)
+                // and the Sequence Header OBU (AV1) live in the encoder's
+                // extradata buffer and ship to us as frame.description on
+                // each keyframe. ffmpeg parses hvcC / av1C natively when
+                // the codec context is opened, so we install the blob as
+                // extradata and let ffmpeg do the work. That requires the
+                // FIRST decoder we build to already have the description
+                // in hand — defer construction until a keyframe with
+                // description arrives.
+                //
+                // H.264 keeps SPS/PPS inline in keyframes (no GLOBAL_HEADER),
+                // so we build the decoder eagerly with no extradata.
+                let needs_extradata = matches!(frame_codec, caps::CodecKind::H265 | caps::CodecKind::Av1);
+                let extradata: Option<&[u8]> = if needs_extradata && frame.is_keyframe {
+                    frame.description.as_deref()
+                } else {
+                    None
+                };
+                if needs_extradata && extradata.is_none() {
+                    // Drop frames silently until we see the first keyframe
+                    // with description. NACK / FEC will still deliver the
+                    // actual keyframe shortly; until then there's nothing
+                    // useful to do with delta frames anyway.
+                    return;
+                }
                 linux_decoder = None;
-                match video_decoder::VideoDecoder::new(frame_codec) {
+                match video_decoder::VideoDecoder::new(frame_codec, extradata) {
                     Ok(dec) => {
                         eprintln!("[video-recv] decoder built for {:?}", frame_codec);
                         linux_decoder = Some(dec);
@@ -526,31 +552,6 @@ fn run_video_recv_thread(
                 }
             }
             if let Some(ref mut dec) = linux_decoder {
-                // AV1 keyframes need a Sequence Header OBU for ffmpeg to
-                // configure the decoder. The streamer's encoder has
-                // AV_CODEC_FLAG_GLOBAL_HEADER set for AV1 so the SH
-                // lives in extradata, not inline in keyframes — on the
-                // wire we ship it as the av1C in frame.description (its
-                // configOBUs portion, bytes 4..end, IS the SH OBU).
-                // Prepend it to the bitstream on AV1 keyframes so ffmpeg
-                // sees the SH and configures itself. Idempotent across
-                // subsequent keyframes; the decoder accepts redundant SH
-                // OBUs without re-init.
-                let prepended_owned;
-                let bitstream: &[u8] = if frame.is_keyframe
-                    && frame.codec == 4
-                    && frame.description.as_ref().map(|d| d.len() > 4).unwrap_or(false)
-                {
-                    let desc = frame.description.as_ref().unwrap();
-                    let mut combined = Vec::with_capacity((desc.len() - 4) + frame.data.len());
-                    combined.extend_from_slice(&desc[4..]);
-                    combined.extend_from_slice(&frame.data);
-                    prepended_owned = combined;
-                    &prepended_owned
-                } else {
-                    &frame.data
-                };
-
                 // Decode every frame at source rate so P-frame references
                 // stay valid. The renderer pulls latest-only at RAF rate
                 // (60/120Hz, display-bound), so frames the renderer skips
@@ -558,7 +559,7 @@ fn run_video_recv_thread(
                 // decoder of references. No 40fps JPEG-encode ceiling
                 // anymore — NV12 publish is essentially free vs the old
                 // libjpeg path.
-                if let Some(nv12) = dec.decode_to_nv12(bitstream) {
+                if let Some(nv12) = dec.decode_to_nv12(&frame.data) {
                     nv12_store::publish(&frame.streamer_username, nv12);
                 }
             }
