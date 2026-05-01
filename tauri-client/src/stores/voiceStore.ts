@@ -181,10 +181,15 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   setFullscreenStream: (username) => set({ fullscreenStream: username }),
   setStreamFullscreen: (fs) => set({ isStreamFullscreen: fs }),
   setIsStreaming: (streaming) => set({ isStreaming: streaming }),
-  setStreamSettings: (settings) =>
+  setStreamSettings: (settings) => {
     set((state) => ({
       streamSettings: { ...state.streamSettings, ...settings },
-    })),
+    }));
+    // Persist on every change so the latest-used values survive
+    // restarts. Dynamic import avoids the saveSettings → voiceStore →
+    // saveSettings circular import (saveSettings reads from this store).
+    import("../features/settings/saveSettings").then(({ saveSettings }) => saveSettings());
+  },
   userVolumes: {},
   setUserVolume: (username, db) =>
     set((state) => ({

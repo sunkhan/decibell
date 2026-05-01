@@ -75,6 +75,20 @@ pub struct AppSettings {
     pub use_av1: bool,
     #[serde(default = "default_true")]
     pub use_h265: bool,
+
+    /// Last-used screen-share / streaming settings. Each field is
+    /// Option-wrapped so missing entries fall back to client defaults
+    /// rather than overwriting them with zeros on first load.
+    pub stream_resolution: Option<String>,
+    pub stream_fps: Option<u32>,
+    pub stream_quality: Option<String>,
+    pub stream_video_bitrate_kbps: Option<u32>,
+    pub stream_share_audio: Option<bool>,
+    pub stream_audio_bitrate_kbps: Option<u32>,
+    /// VideoCodec enum byte (0=UNKNOWN/Auto, 1=H264_HW, 2=H264_SW,
+    /// 3=H265, 4=AV1). Restored on load; downgraded to 0 by the client
+    /// at runtime if the saved codec isn't in the user's encodeCaps.
+    pub stream_enforced_codec: Option<u8>,
 }
 
 fn default_true() -> bool { true }

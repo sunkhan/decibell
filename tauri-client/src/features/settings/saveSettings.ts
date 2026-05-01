@@ -6,7 +6,7 @@ import { useVoiceStore } from "../../stores/voiceStore";
 export function saveSettings() {
   const { voiceThresholdDb, streamStereo, inputDevice, outputDevice, separateStreamOutput, streamOutputDevice, aecEnabled, noiseSuppressionLevel, agcEnabled, uploadLimitBps, downloadLimitBps, channelCacheSize, mediaAudioVolume, mediaAudioMuted, mediaVideoVolume, mediaVideoMuted } = useUiStore.getState();
   const { friendsOnlyDms } = useDmStore.getState();
-  const { userVolumes, localMutedUsers } = useVoiceStore.getState();
+  const { userVolumes, localMutedUsers, streamSettings } = useVoiceStore.getState();
   invoke("save_settings", {
     settings: {
       friends_only_dms: friendsOnlyDms,
@@ -28,6 +28,13 @@ export function saveSettings() {
       media_audio_muted: mediaAudioMuted,
       media_video_volume: mediaVideoVolume,
       media_video_muted: mediaVideoMuted,
+      stream_resolution: streamSettings.resolution,
+      stream_fps: streamSettings.fps,
+      stream_quality: streamSettings.quality,
+      stream_video_bitrate_kbps: streamSettings.videoBitrateKbps,
+      stream_share_audio: streamSettings.shareAudio,
+      stream_audio_bitrate_kbps: streamSettings.audioBitrateKbps,
+      stream_enforced_codec: streamSettings.enforcedCodec,
     },
   }).catch(console.error);
 }
