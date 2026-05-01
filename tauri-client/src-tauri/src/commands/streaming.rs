@@ -478,7 +478,9 @@ pub async fn stop_watching(
             packet::Type::StopWatchingReq,
             packet::Payload::StopWatchingReq(StopWatchingRequest {
                 channel_id: channel_id.into(),
-                target_username: target_username.into(),
+                // Clone — we still need `target_username` below for the
+                // Linux NV12-slot drop after the send completes.
+                target_username: target_username.clone().into(),
             }),
             Some(&client.jwt),
         );

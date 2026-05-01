@@ -54,9 +54,12 @@ pub fn publish(streamer_username: &str, frame: Nv12Frame) {
                 .clone()
         }
     };
+    // Trailing `;` matters: without it, the if-let's `Result` temporary
+    // (which holds a borrow of `slot` via PoisonError<RwLockWriteGuard>)
+    // outlives `slot` and the borrow checker rejects the function.
     if let Ok(mut w) = slot.write() {
         *w = Some(frame);
-    }
+    };
 }
 
 /// Snapshot the latest frame for a streamer. Returns `None` when there's
