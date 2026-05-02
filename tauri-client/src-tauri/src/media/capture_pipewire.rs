@@ -350,9 +350,16 @@ fn build_format_pod(
     use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags};
 
     let size_pref = spa::utils::Rectangle {
-        // "Source" quality passes 0x0 — use max so PipeWire picks native resolution.
-        width: if target_width > 0 { target_width } else { 7680 },
-        height: if target_height > 0 { target_height } else { 4320 },
+        // "Source" quality passes 0x0. We used to set the preferred size
+        // to the 8K range max (7680x4320), reasoning that PipeWire would
+        // walk down to the actual monitor size — but mutter on NVIDIA
+        // Wayland rejects format negotiation outright when the preferred
+        // is wildly larger than what it can satisfy. 1920x1080 is a much
+        // more common landing zone; the size range stays 1x1..7680x4320
+        // so larger monitors can still be picked, just without that being
+        // the preference.
+        width: if target_width > 0 { target_width } else { 1920 },
+        height: if target_height > 0 { target_height } else { 1080 },
     };
 
     let mut obj = spa::pod::object!(
@@ -400,23 +407,28 @@ fn build_format_pod(
     );
 
     if with_modifier {
-        // LINEAR-only (DRM_FORMAT_MOD_LINEAR = 0). We offer DMA-BUF as a
-        // fallback for compositors (mutter on GNOME, mainly) that simply
-        // can't produce SHM frames — their pipeline is GPU-native and they
-        // refuse our SHM-only offers with "no more input formats". LINEAR
-        // is the only modifier we can mmap and read on the CPU; tiled
-        // layouts (MOD_INVALID and vendor-specific tilings) come back as
-        // garbage when read through MAP_BUFFERS' mmap shim, and the
-        // EGL/CUDA-import path that was supposed to handle them is broken
-        // on NVIDIA + Wayland (see capture connect site for the full story).
+        // Default LINEAR (mmap-readable, what we want), MOD_INVALID as
+        // alternative so mutter on NVIDIA Wayland — which can't allocate
+        // LINEAR but can allocate "whatever native tiled layout" via
+        // MOD_INVALID — has something it can satisfy and won't reject the
+        // whole format with "no more input formats".
+        //
+        // process() checks the producer-fixated modifier on each frame:
+        // LINEAR goes through the mmap path normally, MOD_INVALID gets
+        // dropped with a clear "incompatible setup" log rather than
+        // encoded as garbage. Better to surface a real error than to
+        // silently stream a black feed.
         obj.properties.push(Property {
             key: spa::param::format::FormatProperties::VideoModifier.as_raw(),
             flags: PropertyFlags::MANDATORY,
             value: Value::Choice(ChoiceValue::Long(Choice::<i64>(
                 ChoiceFlags::empty(),
                 ChoiceEnum::<i64>::Enum {
-                    default: 0_i64, // DRM_FORMAT_MOD_LINEAR
-                    alternatives: vec![0_i64],
+                    default: 0_i64, // DRM_FORMAT_MOD_LINEAR — preferred
+                    alternatives: vec![
+                        0_i64,
+                        super::gpu_interop::DRM_FORMAT_MOD_INVALID as i64,
+                    ],
                 },
             ))),
         });
@@ -933,6 +945,33 @@ fn pipewire_capture_loop(
                     eprintln!("[capture] Unsupported format {:?}, skipping", fmt);
                 }
                 return;
+            }
+
+            // Reject tiled DMA-BUFs (anything that isn't LINEAR). We only
+            // advertise LINEAR + MOD_INVALID and read everything via the
+            // mmap shim — tiled bytes through mmap are garbage. If the
+            // producer fixated MOD_INVALID, the modifier flag is set but
+            // the actual modifier is whatever the producer chose internally
+            // (usually a vendor-specific tile layout). Surface a clear
+            // error rather than silently encoding a black stream.
+            if buf_type == DataType::DmaBuf {
+                const SPA_VIDEO_FLAG_MODIFIER: u32 = 1 << 2;
+                let has_modifier = (data.format.flags().bits() & SPA_VIDEO_FLAG_MODIFIER) != 0;
+                let modifier = if has_modifier { data.format.modifier() } else { 0 };
+                if modifier != 0 {
+                    if data.frame_count == 1 {
+                        eprintln!(
+                            "[capture] FATAL: producer chose tiled DMA-BUF (modifier=0x{:x}). \
+                             Cannot read tiled buffers via mmap. This is the NVIDIA + Wayland + \
+                             gnome-portal limitation — mutter on NVIDIA can't allocate LINEAR \
+                             DMA-BUF for screencopy. Workarounds: (a) run an X11 session, \
+                             (b) switch to a different compositor (Niri+wlr-portal works \
+                             differently — try `xdg-desktop-portal-wlr`).",
+                            modifier
+                        );
+                    }
+                    return;
+                }
             }
 
             // Unified read path for SHM and LINEAR DMA-BUF.
