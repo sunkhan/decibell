@@ -400,22 +400,23 @@ fn build_format_pod(
     );
 
     if with_modifier {
-        // Offer both MOD_INVALID (accept any layout) and MOD_LINEAR. Niri's
-        // portal only advertises MOD_INVALID — it refuses LINEAR-only offers
-        // with "no more input formats". The tiled buffers we get can't be
-        // CPU-mmap'd, so the downstream CUDA-via-EGL path has to import them
-        // via EGL with the NVIDIA platform device explicitly selected.
+        // LINEAR-only (DRM_FORMAT_MOD_LINEAR = 0). We offer DMA-BUF as a
+        // fallback for compositors (mutter on GNOME, mainly) that simply
+        // can't produce SHM frames — their pipeline is GPU-native and they
+        // refuse our SHM-only offers with "no more input formats". LINEAR
+        // is the only modifier we can mmap and read on the CPU; tiled
+        // layouts (MOD_INVALID and vendor-specific tilings) come back as
+        // garbage when read through MAP_BUFFERS' mmap shim, and the
+        // EGL/CUDA-import path that was supposed to handle them is broken
+        // on NVIDIA + Wayland (see capture connect site for the full story).
         obj.properties.push(Property {
             key: spa::param::format::FormatProperties::VideoModifier.as_raw(),
             flags: PropertyFlags::MANDATORY,
             value: Value::Choice(ChoiceValue::Long(Choice::<i64>(
                 ChoiceFlags::empty(),
                 ChoiceEnum::<i64>::Enum {
-                    default: super::gpu_interop::DRM_FORMAT_MOD_INVALID as i64,
-                    alternatives: vec![
-                        super::gpu_interop::DRM_FORMAT_MOD_INVALID as i64,
-                        0_i64, // DRM_FORMAT_MOD_LINEAR
-                    ],
+                    default: 0_i64, // DRM_FORMAT_MOD_LINEAR
+                    alternatives: vec![0_i64],
                 },
             ))),
         });
@@ -934,123 +935,84 @@ fn pipewire_capture_loop(
                 return;
             }
 
-            if data.frame_count == 1 && buf_type != DataType::DmaBuf {
-                eprintln!(
-                    "[capture] WARNING: PipeWire is providing {:?} buffers, not DMA-BUF. \
-                     GPU zero-copy capture is NOT active. CPU frame copies will occur. \
-                     (This is normal on NVIDIA proprietary drivers.)",
-                    buf_type
-                );
-            }
-
-            if buf_type == DataType::DmaBuf {
-                let raw_fd = d.fd();
-
-                // Use the producer-fixated modifier when it set SPA_VIDEO_FLAG_MODIFIER;
-                // otherwise fall back to MOD_INVALID (legacy DMA-BUF, no modifier attrs).
-                const SPA_VIDEO_FLAG_MODIFIER: u32 = 1 << 2;
-                let modifier = if (data.format.flags().bits() & SPA_VIDEO_FLAG_MODIFIER) != 0 {
-                    data.format.modifier()
-                } else {
-                    super::gpu_interop::DRM_FORMAT_MOD_INVALID
-                };
-
-                // Hand the fd to the GPU channel so the EGL/GL/CUDA path can
-                // zero-copy import it. Niri fixates DMA-BUF with MOD_INVALID
-                // (native tiled layout) which is unreadable via mmap — the
-                // CPU-readback fallback previously here produced zero pages
-                // and a black preview. The downstream CUDA backend now uses
-                // an EGL display explicitly bound to the NVIDIA device, so
-                // cuGraphicsGLRegisterImage can consume the tiled DMA-BUF.
-                let dup_fd = unsafe { libc::dup(raw_fd) };
-                if dup_fd < 0 {
-                    eprintln!("[capture] dup(dmabuf fd={}) failed", raw_fd);
-                    return;
-                }
-                let owned_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(dup_fd) };
-
-                let drm_format = super::gpu_interop::spa_format_to_drm_fourcc(fmt);
-                if drm_format == 0 {
-                    eprintln!("[capture] No DRM fourcc for {:?}", fmt);
-                    return;
-                }
-
-                if data.frame_count <= 3 {
-                    eprintln!("[capture] DMA-BUF frame: fd={}, {}x{}, stride={}, drm_fmt=0x{:08x}, modifier=0x{:x}",
-                        dup_fd, src_w, src_h, stride, drm_format, modifier);
-                }
-
-                let frame = DmaBufFrame {
-                    fd: owned_fd,
-                    width: src_w,
-                    height: src_h,
-                    stride: stride as u32,
-                    drm_format,
-                    modifier,
-                    timestamp_us: now_us,
-                };
-
-                match data.gpu_tx.try_send(frame) {
-                    Ok(()) => { data.last_capture_us = now_us; }
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                        eprintln!("[capture] GPU frame channel closed, stopping");
-                        if let Some(ml) = data.quit_mainloop.upgrade() { ml.quit(); }
-                    }
-                }
+            // Unified read path for SHM and LINEAR DMA-BUF.
+            //
+            // PipeWire's MAP_BUFFERS stream flag mmap's incoming DMA-BUFs for
+            // us, so `d.data()` returns valid CPU-readable bytes regardless
+            // of the underlying buffer type — provided the modifier is one we
+            // can actually read (LINEAR). We only ever advertise SHM and
+            // LINEAR DMA-BUF, so anything that lands here is safe to mmap.
+            //
+            // chunk.size is the authoritative payload size for SHM. For
+            // DMA-BUF, producers commonly leave it at 0 since the size is
+            // implied by stride * height — fall back to that.
+            let chunk_offset = d.chunk().offset() as usize;
+            let Some(raw_data) = d.data() else { return };
+            let bytes_per_frame = if chunk_size > 0 {
+                chunk_size
             } else {
-                // ── SHM path: copy data to Vec (existing behavior) ──
-                let chunk_offset = d.chunk().offset() as usize;
-                let Some(raw_data) = d.data() else { return };
-                let raw_data = &raw_data[chunk_offset..][..chunk_size];
+                stride * (src_h as usize)
+            };
+            if raw_data.len() < chunk_offset + bytes_per_frame {
+                if data.frame_count <= 3 {
+                    eprintln!(
+                        "[capture] mmap'd buffer too small: have={}, need={} (offset={}, bytes={})",
+                        raw_data.len(), chunk_offset + bytes_per_frame, chunk_offset, bytes_per_frame
+                    );
+                }
+                return;
+            }
+            let raw_data = &raw_data[chunk_offset..][..bytes_per_frame];
 
-                let pixel_format = if is_bgra {
-                    super::capture::PixelFormat::BGRA
-                } else {
-                    super::capture::PixelFormat::RGBA
-                };
+            let pixel_format = if is_bgra {
+                super::capture::PixelFormat::BGRA
+            } else {
+                super::capture::PixelFormat::RGBA
+            };
 
-                let frame = RawFrame {
-                    data: raw_data.to_vec(),
-                    width: src_w,
-                    height: src_h,
-                    stride,
-                    pixel_format,
-                    timestamp_us: now_us,
-                };
+            let frame = RawFrame {
+                data: raw_data.to_vec(),
+                width: src_w,
+                height: src_h,
+                stride,
+                pixel_format,
+                timestamp_us: now_us,
+            };
 
-                match data.tx.try_send(frame) {
-                    Ok(()) => { data.last_capture_us = now_us; }
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                        eprintln!("[capture] Frame channel closed, stopping");
-                        if let Some(ml) = data.quit_mainloop.upgrade() { ml.quit(); }
-                    }
+            match data.tx.try_send(frame) {
+                Ok(()) => { data.last_capture_us = now_us; }
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    eprintln!("[capture] Frame channel closed, stopping");
+                    if let Some(ml) = data.quit_mainloop.upgrade() { ml.quit(); }
                 }
             }
         })
         .register()
         .map_err(|e| format!("PW listener: {:?}", e))?;
 
-    // SHM only — no DMA-BUF advertisement.
+    // SHM preferred; LINEAR-DMA-BUF as fallback for compositors that can't
+    // produce SHM at all.
     //
-    // The DMA-BUF capture path is supposed to be the zero-copy hotline:
-    // PipeWire hands us a GPU-resident fd, we import it via EGL, NVENC reads
-    // it directly. On NVIDIA + Wayland it doesn't deliver. xdg-desktop-portal-
-    // gnome (mutter) gives us mesa-allocated tiled DMA-BUFs whose contents
-    // come back as zero pages on the NVIDIA proprietary driver's EGL/CUDA
-    // bridge — every encoded frame is black. xdg-desktop-portal-wlr on Niri
-    // negotiates a LINEAR DMA-BUF cleanly but its screencopy backend never
-    // allocates buffers for our PipeWire client, so frames don't flow at all.
+    // The "real" zero-copy DMA-BUF path (DMA-BUF fd → EGLImage → CUDA array
+    // → NVENC) was supposed to be the fast lane on NVIDIA. It's unsalvageable
+    // on Linux today: xdg-desktop-portal-gnome hands NVIDIA mesa-allocated
+    // tiled DMA-BUFs that import as zero pages (every frame black), and
+    // xdg-desktop-portal-wlr on Niri negotiates LINEAR cleanly but its
+    // screencopy backend never allocates buffers for our PipeWire client.
     //
-    // Both failures are environmental and not in our power to fix from the
-    // client side. SHM works on every compositor + driver combo we've tested,
-    // and the cost is minimal because NVENC accepts BGRA input directly —
-    // the GPU does its own BGRA→NV12 conversion at encode time, so our only
-    // CPU work per frame is one PipeWire-buffer→Vec memcpy (a few ms).
+    // The compromise: take whatever the compositor will give us, but only in
+    // a CPU-readable layout. SHM goes straight to a Vec. LINEAR DMA-BUF is
+    // mmap'd by PipeWire (MAP_BUFFERS flag) and we read the same way. We
+    // never advertise tiled modifiers, so we can't get a buffer that needs
+    // EGL to read. NVENC consumes BGRA and converts to NV12 internally on
+    // the GPU, so per-frame CPU cost is one memcpy out of the PipeWire
+    // buffer — a few ms at 1080p.
     let shm_bytes = build_format_pod(target_width, target_height, config.target_fps, false);
+    let dmabuf_bytes = build_format_pod(target_width, target_height, config.target_fps, true);
     let mut params = [
         Pod::from_bytes(&shm_bytes).unwrap(),
+        Pod::from_bytes(&dmabuf_bytes).unwrap(),
     ];
 
     stream.connect(
