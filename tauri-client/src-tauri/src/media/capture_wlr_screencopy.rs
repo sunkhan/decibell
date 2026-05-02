@@ -505,6 +505,18 @@ fn capture_loop(
     let start = Instant::now();
     let mut consecutive_failures = 0u32;
 
+    // Rolling per-stage timing accumulators. Reset every TIMING_REPORT_EVERY
+    // frames so the printout reflects current behavior, not lifetime average.
+    const TIMING_REPORT_EVERY: u64 = 60;
+    let mut sum_buffer_us: u64 = 0;
+    let mut sum_copy_to_ready_us: u64 = 0;
+    let mut sum_process_us: u64 = 0;
+    let mut sum_pace_sleep_us: u64 = 0;
+    let mut sum_cycle_us: u64 = 0;
+    let mut max_cycle_us: u64 = 0;
+    let mut sample_count: u64 = 0;
+    let mut last_cycle_end = Instant::now();
+
     eprintln!("[wlr-screencopy] capture loop started, target {}fps", config.target_fps);
 
     loop {
@@ -518,6 +530,7 @@ fn capture_loop(
             in_flight = Some((f, next_buf_idx));
             next_buf_idx ^= 1;
         }
+        let cycle_start = Instant::now();
 
         // Reset per-frame state. The events below all belong to
         // `in_flight`; the next-frame's events arrive in a later loop
@@ -530,10 +543,12 @@ fn capture_loop(
 
         // Wait for the Buffer event (so we know the spec). blocking_dispatch
         // delivers a batch per call, so we may need a few iterations.
+        let buffer_wait_start = Instant::now();
         loop {
             event_queue.blocking_dispatch(&mut state).map_err(|e| format!("wl dispatch: {}", e))?;
             if state.pending_spec.is_some() || state.frame_failed { break; }
         }
+        let buffer_wait_us = buffer_wait_start.elapsed().as_micros() as u64;
         if state.frame_failed {
             consecutive_failures += 1;
             if consecutive_failures > 30 {
@@ -560,6 +575,7 @@ fn capture_loop(
         }
 
         // Bind the buffer to this frame (compositor begins readback).
+        let copy_to_ready_start = Instant::now();
         frame.copy(&buffers[cur_idx].as_ref().unwrap().buffer);
 
         // Wait for Ready (compositor finished writing into our buffer).
@@ -567,6 +583,7 @@ fn capture_loop(
             event_queue.blocking_dispatch(&mut state).map_err(|e| format!("wl dispatch: {}", e))?;
             if state.frame_ready || state.frame_failed { break; }
         }
+        let copy_to_ready_us = copy_to_ready_start.elapsed().as_micros() as u64;
         if state.frame_failed {
             consecutive_failures += 1;
             if consecutive_failures > 30 {
@@ -584,15 +601,18 @@ fn capture_loop(
         // doing GPU readback for the next frame. That overlap is the
         // whole reason we keep two buffers — it's the difference between
         // 45fps and 60fps at 1440p.
-        let elapsed = Instant::now().duration_since(last_emit);
+        let pace_sleep_start = Instant::now();
+        let elapsed = pace_sleep_start.duration_since(last_emit);
         if elapsed < frame_interval {
             std::thread::sleep(frame_interval - elapsed);
         }
+        let pace_sleep_us = pace_sleep_start.elapsed().as_micros() as u64;
         let next_frame = mgr.capture_output(0, &output, &qh, ());
         in_flight = Some((next_frame, next_buf_idx));
         next_buf_idx ^= 1;
 
         // ── Process current frame's bytes (in parallel with next readback)
+        let process_start = Instant::now();
         let buffer = buffers[cur_idx].as_ref().unwrap();
         let mut data = buffer.bytes().to_vec();
         if state.y_invert {
@@ -622,17 +642,12 @@ fn capture_loop(
             timestamp_us: state.timestamp_us,
         };
 
+        let process_us = process_start.elapsed().as_micros() as u64;
+
         match tx.try_send(raw) {
             Ok(()) => {
                 frames_emitted += 1;
                 last_emit = Instant::now();
-                if frames_emitted == 1 || frames_emitted % 120 == 0 {
-                    eprintln!(
-                        "[wlr-screencopy] frame {} ({}x{}, stride={}, {:.1}s)",
-                        frames_emitted, buffer.spec.width, buffer.spec.height,
-                        buffer.spec.stride, start.elapsed().as_secs_f64()
-                    );
-                }
             }
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
                 // Encoder is keeping up — drop the frame, advance the pace
@@ -644,6 +659,45 @@ fn capture_loop(
                 frame.destroy();
                 return Ok(());
             }
+        }
+
+        // Cycle bookkeeping — measured emit-to-emit so it includes
+        // dispatch overhead between iterations and reflects what the
+        // downstream encoder actually sees.
+        let cycle_us = cycle_start.duration_since(last_cycle_end).as_micros() as u64
+            + cycle_start.elapsed().as_micros() as u64;
+        last_cycle_end = Instant::now();
+        sum_buffer_us += buffer_wait_us;
+        sum_copy_to_ready_us += copy_to_ready_us;
+        sum_process_us += process_us;
+        sum_pace_sleep_us += pace_sleep_us;
+        sum_cycle_us += cycle_us;
+        if cycle_us > max_cycle_us { max_cycle_us = cycle_us; }
+        sample_count += 1;
+
+        if frames_emitted % TIMING_REPORT_EVERY == 0 && sample_count > 0 {
+            let n = sample_count as f64;
+            let avg_buffer = (sum_buffer_us as f64 / n) / 1000.0;
+            let avg_copy = (sum_copy_to_ready_us as f64 / n) / 1000.0;
+            let avg_process = (sum_process_us as f64 / n) / 1000.0;
+            let avg_pace = (sum_pace_sleep_us as f64 / n) / 1000.0;
+            let avg_cycle = (sum_cycle_us as f64 / n) / 1000.0;
+            let max_cycle = (max_cycle_us as f64) / 1000.0;
+            let actual_fps = if avg_cycle > 0.0 { 1000.0 / avg_cycle } else { 0.0 };
+            eprintln!(
+                "[wlr-screencopy] timing avg over {} frames: \
+                 buffer={:.2}ms copy→ready={:.2}ms process={:.2}ms \
+                 pace_sleep={:.2}ms cycle={:.2}ms (max={:.2}ms) → {:.1}fps actual",
+                sample_count, avg_buffer, avg_copy, avg_process,
+                avg_pace, avg_cycle, max_cycle, actual_fps,
+            );
+            sum_buffer_us = 0;
+            sum_copy_to_ready_us = 0;
+            sum_process_us = 0;
+            sum_pace_sleep_us = 0;
+            sum_cycle_us = 0;
+            max_cycle_us = 0;
+            sample_count = 0;
         }
 
         frame.destroy();
