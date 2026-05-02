@@ -997,6 +997,17 @@ fn spawn_video_event_bridge(
     self_username: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
+        // Linux self-preview decoder. The streamer's own viewer on Linux
+        // pulls NV12 from nv12_store (LinuxStreamVideoPlayer can't consume
+        // the WebCodecs `stream_frame` events that the WebCodecs path on
+        // Windows uses), so we round-trip our own encoded H.264/HEVC/AV1
+        // bitstream back through the receiver-side decoder and publish
+        // NV12 to nv12_store under the streamer's username. Decoder is
+        // built lazily on the first frame and rebuilt on codec change.
+        // Cost is one decode per encoded frame on the streamer's box —
+        // tiny on RTX 4080 / VAAPI hardware.
+        #[cfg(target_os = "linux")]
+        let mut self_preview_decoder: Option<video_decoder::VideoDecoder> = None;
         loop {
             match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 Ok(video_pipeline::VideoPipelineEvent::CaptureEnded) => {
@@ -1044,6 +1055,58 @@ fn spawn_video_event_bridge(
                         "description": b64_desc,
                         "codec": codec,
                     }));
+
+                    // Linux: also feed the encoded frame to a local decoder
+                    // and publish NV12 to nv12_store so the streamer's own
+                    // LinuxStreamVideoPlayer can render the preview through
+                    // the same path as remote streams. Without this, Linux
+                    // self-preview shows the loading spinner forever
+                    // because LinuxStreamVideoPlayer only reads NV12 — the
+                    // stream_frame event above is consumed by the WebCodecs
+                    // path on Windows, not on Linux.
+                    #[cfg(target_os = "linux")]
+                    {
+                        let frame_codec = match codec {
+                            1 => caps::CodecKind::H264Hw,
+                            2 => caps::CodecKind::H264Sw,
+                            3 => caps::CodecKind::H265,
+                            4 => caps::CodecKind::Av1,
+                            _ => caps::CodecKind::H264Hw,
+                        };
+                        let need_rebuild = match &self_preview_decoder {
+                            None => true,
+                            Some(d) => {
+                                let cur = d.codec();
+                                let cur_h264 = matches!(cur, caps::CodecKind::H264Hw | caps::CodecKind::H264Sw);
+                                let new_h264 = matches!(frame_codec, caps::CodecKind::H264Hw | caps::CodecKind::H264Sw);
+                                !((cur_h264 && new_h264) || cur == frame_codec)
+                            }
+                        };
+                        let needs_extradata = matches!(frame_codec, caps::CodecKind::H265 | caps::CodecKind::Av1);
+                        if need_rebuild {
+                            // HEVC/AV1 need the hvcC/av1C config record on
+                            // the keyframe; H.264 carries SPS/PPS inline.
+                            let extradata_owned: Option<Vec<u8>> = if needs_extradata {
+                                if is_keyframe {
+                                    if frame_codec == caps::CodecKind::H265 {
+                                        description.as_deref().and_then(video_decoder::hvcc_to_annexb_extradata)
+                                    } else {
+                                        description.clone()
+                                    }
+                                } else { None }
+                            } else { None };
+                            if !needs_extradata || extradata_owned.is_some() {
+                                self_preview_decoder = video_decoder::VideoDecoder::new(
+                                    frame_codec, extradata_owned.as_deref(),
+                                ).ok();
+                            }
+                        }
+                        if let Some(ref mut dec) = self_preview_decoder {
+                            if let Some(nv12) = dec.decode_to_nv12(&data) {
+                                nv12_store::publish(&self_username, nv12);
+                            }
+                        }
+                    }
                 }
                 Ok(_) => {}
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
