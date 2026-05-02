@@ -471,10 +471,10 @@ fn capture_loop(
         .ok_or("zwlr_screencopy_manager_v1 not advertised")?;
     let shm = state.shm.clone().ok_or("wl_shm not advertised")?;
 
-    // Pacing: don't request a new frame until both the previous one
-    // delivered AND the FPS interval elapsed. At 30fps that means we
-    // request half as many frames as at 60fps and the compositor's
-    // GPU readback work is correspondingly halved.
+    // Pacing: target frame interval. Sleeps before each capture request
+    // when the budget allows. At high target_fps (60+) on 1440p the budget
+    // is usually consumed by compositor readback + our memcpy, so the
+    // sleep effectively becomes zero and we run at the natural cycle rate.
     let frame_interval = if config.target_fps > 0 {
         Duration::from_micros(1_000_000 / config.target_fps as u64)
     } else {
@@ -482,10 +482,25 @@ fn capture_loop(
     };
     let mut last_emit = Instant::now() - frame_interval;
 
-    // Recyclable SHM buffer. Allocated lazily from the first frame's
-    // `buffer` event so we know the exact stride/format the compositor
-    // wants. Reallocated only on resolution change (rare in practice).
-    let mut shm_buffer: Option<ShmBuffer> = None;
+    // Double-buffered SHM pool. Two buffers let the compositor's readback
+    // for frame N+1 overlap with our processing of frame N — without this
+    // overlap, every cycle is (compositor readback ~15ms at 1440p) +
+    // (our memcpy ~3ms) + (dispatch overhead) ≈ 22ms, capping us at ~45fps
+    // even when the user picks 60. With overlap, the cycle becomes
+    // max(readback, processing) ≈ readback ≈ 15ms, which lands on 60fps.
+    //
+    // Allocated lazily from the first frame's Buffer event so we know the
+    // exact stride/format the compositor wants. Reallocated only on
+    // resolution change.
+    let mut buffers: [Option<ShmBuffer>; 2] = [None, None];
+    let mut next_buf_idx: usize = 0;
+
+    // The frame we have queued with the compositor but haven't fully
+    // consumed yet. After Ready we read the buffer it filled, then queue
+    // the *next* frame before processing — that's where the pipelining
+    // happens. None on the first iteration only.
+    let mut in_flight: Option<(wlr_frame::ZwlrScreencopyFrameV1, usize)> = None;
+
     let mut frames_emitted: u64 = 0;
     let start = Instant::now();
     let mut consecutive_failures = 0u32;
@@ -493,25 +508,28 @@ fn capture_loop(
     eprintln!("[wlr-screencopy] capture loop started, target {}fps", config.target_fps);
 
     loop {
-        // Sleep until at least frame_interval has passed since last emit.
-        let now = Instant::now();
-        let elapsed = now.duration_since(last_emit);
-        if elapsed < frame_interval {
-            std::thread::sleep(frame_interval - elapsed);
+        // First-iteration bootstrap: queue the very first capture.
+        if in_flight.is_none() {
+            let elapsed = Instant::now().duration_since(last_emit);
+            if elapsed < frame_interval {
+                std::thread::sleep(frame_interval - elapsed);
+            }
+            let f = mgr.capture_output(0, &output, &qh, ());
+            in_flight = Some((f, next_buf_idx));
+            next_buf_idx ^= 1;
         }
 
-        // Reset per-frame state (keep buffer and metadata alive across iters).
+        // Reset per-frame state. The events below all belong to
+        // `in_flight`; the next-frame's events arrive in a later loop
+        // iteration after we've reset state again.
         state.pending_spec = None;
         state.frame_ready = false;
         state.frame_failed = false;
         state.y_invert = false;
         state.timestamp_us = 0;
 
-        let frame = mgr.capture_output(0, &output, &qh, ());
-
-        // Pump events until we either get a `buffer` event (so we know what
-        // to allocate) or `failed`. blocking_dispatch yields after every
-        // delivery, so we may need a few iterations.
+        // Wait for the Buffer event (so we know the spec). blocking_dispatch
+        // delivers a batch per call, so we may need a few iterations.
         loop {
             event_queue.blocking_dispatch(&mut state).map_err(|e| format!("wl dispatch: {}", e))?;
             if state.pending_spec.is_some() || state.frame_failed { break; }
@@ -521,14 +539,16 @@ fn capture_loop(
             if consecutive_failures > 30 {
                 return Err("too many consecutive screencopy failures".to_string());
             }
+            let (frame, _) = in_flight.take().unwrap();
             frame.destroy();
             continue;
         }
 
         let spec = state.pending_spec.unwrap();
+        let (frame, cur_idx) = in_flight.take().unwrap();
 
-        // Reuse buffer if shape unchanged; otherwise reallocate.
-        let need_alloc = match &shm_buffer {
+        // Allocate or reuse the buffer for this slot.
+        let need_alloc = match &buffers[cur_idx] {
             Some(b) => b.spec.width != spec.width
                 || b.spec.height != spec.height
                 || b.spec.stride != spec.stride
@@ -536,18 +556,17 @@ fn capture_loop(
             None => true,
         };
         if need_alloc {
-            shm_buffer = Some(ShmBuffer::new(&shm, &qh, spec)?);
+            buffers[cur_idx] = Some(ShmBuffer::new(&shm, &qh, spec)?);
         }
-        let buffer = shm_buffer.as_ref().unwrap();
 
-        frame.copy(&buffer.buffer);
+        // Bind the buffer to this frame (compositor begins readback).
+        frame.copy(&buffers[cur_idx].as_ref().unwrap().buffer);
 
-        // Pump until `ready` or `failed`.
+        // Wait for Ready (compositor finished writing into our buffer).
         loop {
             event_queue.blocking_dispatch(&mut state).map_err(|e| format!("wl dispatch: {}", e))?;
             if state.frame_ready || state.frame_failed { break; }
         }
-
         if state.frame_failed {
             consecutive_failures += 1;
             if consecutive_failures > 30 {
@@ -558,14 +577,24 @@ fn capture_loop(
         }
         consecutive_failures = 0;
 
-        // Copy bytes out of the SHM mapping into a Vec so the compositor
-        // can reuse the SHM buffer for the next frame as soon as we destroy
-        // the screencopy frame. This is the one memcpy in the path; at
-        // 1080p BGRA it's ~8MB and a few hundred microseconds.
-        let bytes = buffer.bytes();
-        let mut data = bytes.to_vec();
-        // Y-invert support: wlr-screencopy can deliver bottom-up frames on
-        // some compositors. Flip in-place.
+        // ── Pipeline kickoff ────────────────────────────────────────────
+        // Queue the NEXT capture into the OTHER buffer NOW, before we do
+        // any of the per-frame processing below. While we're memcpy'ing
+        // and shipping this frame to the encoder, the compositor will be
+        // doing GPU readback for the next frame. That overlap is the
+        // whole reason we keep two buffers — it's the difference between
+        // 45fps and 60fps at 1440p.
+        let elapsed = Instant::now().duration_since(last_emit);
+        if elapsed < frame_interval {
+            std::thread::sleep(frame_interval - elapsed);
+        }
+        let next_frame = mgr.capture_output(0, &output, &qh, ());
+        in_flight = Some((next_frame, next_buf_idx));
+        next_buf_idx ^= 1;
+
+        // ── Process current frame's bytes (in parallel with next readback)
+        let buffer = buffers[cur_idx].as_ref().unwrap();
+        let mut data = buffer.bytes().to_vec();
         if state.y_invert {
             let stride = buffer.spec.stride as usize;
             let height = buffer.spec.height as usize;
@@ -581,7 +610,7 @@ fn capture_loop(
             // Format::Argb8888 = 0, Format::Xrgb8888 = 1 — both "BGRA"
             // in memory byte order (wl_shm names are little-endian).
             0 | 1 => PixelFormat::BGRA,
-            _ => PixelFormat::BGRA, // best-effort; encoder swizzles BGRA either way
+            _ => PixelFormat::BGRA,
         };
 
         let raw = RawFrame {
