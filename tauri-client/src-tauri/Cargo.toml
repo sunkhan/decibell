@@ -68,6 +68,14 @@ libloading = "0.8"
 # file picker — the dark/floating one Firefox/Vesktop use — instead of
 # rfd's GTK file chooser fallback.
 ashpd = { version = "0.10", default-features = false, features = ["tokio"] }
+# Direct Wayland + wlr-screencopy client. Lets us bypass xdg-desktop-portal
+# on wlroots compositors (Niri, Sway, Hyprland, river) where the portal
+# path runs into NVIDIA-Wayland buffer-allocation pitfalls. Stays unused on
+# GNOME/KDE — the runtime detection in capture.rs falls back to portal
+# when zwlr_screencopy_manager_v1 isn't advertised in the Wayland registry.
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+memfd = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-core = "0.61"

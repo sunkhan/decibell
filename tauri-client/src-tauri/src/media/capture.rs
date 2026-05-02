@@ -89,6 +89,15 @@ pub struct CaptureOutput {
 pub async fn list_sources() -> Result<Vec<CaptureSource>, String> {
     #[cfg(target_os = "linux")]
     {
+        // On wlroots compositors (Niri, Sway, Hyprland, river) we go
+        // straight to wlr-screencopy and list each wl_output as a source.
+        // Avoids xdg-desktop-portal entirely — no NVIDIA-Wayland buffer
+        // allocation drama, no portal proxy in the middle. Mutter (GNOME)
+        // and KWin (KDE Plasma) don't advertise wlr-screencopy, so they
+        // fall through to the existing portal path.
+        if super::capture_wlr_screencopy::is_available() {
+            return super::capture_wlr_screencopy::list_sources().await;
+        }
         super::capture_pipewire::list_sources().await
     }
     #[cfg(target_os = "windows")]
@@ -116,6 +125,12 @@ pub async fn start_capture(
 ) -> Result<CaptureOutput, String> {
     #[cfg(target_os = "linux")]
     {
+        // wlr-screencopy source ids are prefixed with "wlr:" — the wlroots
+        // backend listed them. Anything else (notably "portal") goes
+        // through the PipeWire-portal backend.
+        if super::capture_wlr_screencopy::owns_source(source_id) {
+            return super::capture_wlr_screencopy::start_capture(source_id, config).await;
+        }
         super::capture_pipewire::start_capture(source_id, config).await
     }
     #[cfg(target_os = "windows")]

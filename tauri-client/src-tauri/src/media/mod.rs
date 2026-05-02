@@ -9,6 +9,8 @@ pub mod capture_audio_pipewire;
 #[cfg(target_os = "linux")]
 pub mod capture_pipewire;
 #[cfg(target_os = "linux")]
+pub mod capture_wlr_screencopy;
+#[cfg(target_os = "linux")]
 pub mod gpu_interop;
 #[cfg(target_os = "windows")]
 pub mod capture_audio_wasapi;
