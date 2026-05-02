@@ -38,8 +38,15 @@ pub async fn start_capture(
         // Step 2: Start PipeWire capture on a dedicated thread
         // The D-Bus connection is moved into the thread to keep the portal
         // session alive for the duration of the capture.
-        let (tx, rx) = std::sync::mpsc::sync_channel::<RawFrame>(4);
-        let (gpu_tx, gpu_rx) = std::sync::mpsc::sync_channel::<DmaBufFrame>(4);
+        // Queue depth 2: one frame in flight in the encoder, one ready to
+        // hand off, drop newer SHM frames if the encoder lags. At 1080p
+        // BGRA that's ~16MB cap; at 1440p ~22MB. The send is try_send so
+        // the capture thread never blocks on a slow consumer.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<RawFrame>(2);
+        // gpu_tx is preserved for symmetry with the existing pipeline
+        // wiring but stays empty on Linux now that we don't advertise
+        // DMA-BUF — depth=1 is plenty for an unused channel.
+        let (gpu_tx, gpu_rx) = std::sync::mpsc::sync_channel::<DmaBufFrame>(1);
 
         // When target is 0x0 ("source" quality), the actual dimensions aren't
         // known until PipeWire negotiates. Use a oneshot to communicate them back.
@@ -1025,18 +1032,25 @@ fn pipewire_capture_loop(
         .register()
         .map_err(|e| format!("PW listener: {:?}", e))?;
 
-    // Offer SHM first, then DMA-BUF-with-LINEAR. Producers typically pick the
-    // first alternative they can satisfy, so we steer toward SHM — CPU-readable
-    // host memory that needs no GPU interop at all. If the producer can't do
-    // SHM (some GNOME/mutter configs refuse it outright), it falls through to
-    // the LINEAR DMA-BUF alternative. LINEAR DMA-BUF is also CPU-readable via
-    // mmap; only MOD_INVALID / tiled layouts would give us zero pages, and
-    // we no longer advertise those.
+    // SHM only — no DMA-BUF advertisement.
+    //
+    // The DMA-BUF capture path is supposed to be the zero-copy hotline:
+    // PipeWire hands us a GPU-resident fd, we import it via EGL, NVENC reads
+    // it directly. On NVIDIA + Wayland it doesn't deliver. xdg-desktop-portal-
+    // gnome (mutter) gives us mesa-allocated tiled DMA-BUFs whose contents
+    // come back as zero pages on the NVIDIA proprietary driver's EGL/CUDA
+    // bridge — every encoded frame is black. xdg-desktop-portal-wlr on Niri
+    // negotiates a LINEAR DMA-BUF cleanly but its screencopy backend never
+    // allocates buffers for our PipeWire client, so frames don't flow at all.
+    //
+    // Both failures are environmental and not in our power to fix from the
+    // client side. SHM works on every compositor + driver combo we've tested,
+    // and the cost is minimal because NVENC accepts BGRA input directly —
+    // the GPU does its own BGRA→NV12 conversion at encode time, so our only
+    // CPU work per frame is one PipeWire-buffer→Vec memcpy (a few ms).
     let shm_bytes = build_format_pod(target_width, target_height, config.target_fps, false);
-    let dmabuf_bytes = build_format_pod(target_width, target_height, config.target_fps, true);
     let mut params = [
         Pod::from_bytes(&shm_bytes).unwrap(),
-        Pod::from_bytes(&dmabuf_bytes).unwrap(),
     ];
 
     stream.connect(
