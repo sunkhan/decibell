@@ -26,6 +26,17 @@ use std::time::Instant;
 use crate::media::caps::CodecKind;
 
 const TIMESCALE: u32 = 90_000;
+/// Lower bound on a sample's duration in TIMESCALE ticks. ~1ms.
+/// Browsers reject zero-duration samples and can stall on sub-ms ones.
+const MIN_SAMPLE_DURATION: u32 = 90;
+/// Upper bound on a sample's duration. ~1 second. A real gap longer than
+/// this means the source has stopped producing — better to clamp than to
+/// hold a single frame for minutes if the network drops out.
+const MAX_SAMPLE_DURATION: u32 = 90_000;
+/// Placeholder used for the very first sample (no prior frame to delta
+/// against). 1/60 s is benign for any source rate — the browser only
+/// uses it for one frame before subsequent samples report real cadence.
+const FIRST_SAMPLE_DURATION: u32 = TIMESCALE / 60;
 
 pub struct Fmp4Muxer {
     codec: CodecKind,
@@ -33,22 +44,19 @@ pub struct Fmp4Muxer {
     height: u32,
     /// `mfhd` sequence number, 1-based, monotonic.
     moof_sequence: u32,
-    /// Wall-clock instant when the muxer was created. We compute each
-    /// sample's `decode_time` (tfdt) from elapsed wall time so the
-    /// video timeline matches real time regardless of the source's
-    /// frame rate. Without this, hardcoding sample_duration to a
-    /// guessed FPS (e.g. 60) made non-60fps streams play in slow
-    /// motion or fast forward, which manifested as severe stuttering
-    /// once the player tried to chase the live edge.
-    start: Instant,
-    /// `tfdt` of the previous emitted sample, in TIMESCALE ticks.
-    /// Used to derive sample_duration as a delta.
-    last_decode_time: u64,
-    /// Default sample_duration to use for the first sample (no prior
-    /// frame to delta against). 1/60 sec is a safe placeholder; the
-    /// browser uses it for one frame and then learns real cadence
-    /// from subsequent samples.
-    default_first_duration: u32,
+    /// `tfdt` to use for the next emitted sample. Strictly equal to
+    /// the previous sample's `decode_time + sample_duration` — i.e. the
+    /// timeline is GAP-FREE by construction. This is the difference
+    /// between this muxer working and the previous wall-clock-tagged
+    /// version: the video element can't auto-skip MSE buffered-range
+    /// gaps, so any timestamp discontinuity caused a permanent freeze
+    /// the moment the playhead reached it.
+    next_decode_time: u64,
+    /// Wall-clock instant of the last emitted sample. Used to derive
+    /// the *next* sample's `sample_duration` from wall-time delta —
+    /// so long-term timeline pacing tracks real time even though the
+    /// per-sample timestamps are continuous (no gaps).
+    last_emit_wallclock: Option<Instant>,
 }
 
 impl Fmp4Muxer {
@@ -58,9 +66,8 @@ impl Fmp4Muxer {
             width,
             height,
             moof_sequence: 1,
-            start: Instant::now(),
-            last_decode_time: 0,
-            default_first_duration: TIMESCALE / 60,
+            next_decode_time: 0,
+            last_emit_wallclock: None,
         }
     }
 
@@ -81,19 +88,22 @@ impl Fmp4Muxer {
     /// `sample_bytes` is in the codec's storage format (AVCC NALs for
     /// H.264/HEVC, raw OBU stream for AV1).
     pub fn media_segment(&mut self, sample_bytes: &[u8], is_keyframe: bool) -> Vec<u8> {
-        // Compute decode_time and sample_duration from wall time so the
-        // browser's playback timeline matches real time regardless of
-        // the source's actual FPS.
-        let elapsed_us = self.start.elapsed().as_micros() as u64;
-        let decode_time = elapsed_us.saturating_mul(TIMESCALE as u64) / 1_000_000;
-        let sample_duration = if self.moof_sequence == 1 {
-            self.default_first_duration
-        } else {
-            let delta = decode_time.saturating_sub(self.last_decode_time);
-            // Clamp to reasonable bounds (1ms..1s) so a stalled stream
-            // can't blow up the trun box with an absurd duration.
-            (delta.clamp(90, 90_000)) as u32
+        let now = Instant::now();
+        // Sample duration tracks wall-clock pacing (so long-term
+        // timeline matches real time) but is clamped to sane bounds.
+        let sample_duration: u32 = match self.last_emit_wallclock {
+            None => FIRST_SAMPLE_DURATION,
+            Some(last) => {
+                let wall_us = now.duration_since(last).as_micros() as u64;
+                let wall_ticks = wall_us.saturating_mul(TIMESCALE as u64) / 1_000_000;
+                wall_ticks.clamp(MIN_SAMPLE_DURATION as u64, MAX_SAMPLE_DURATION as u64) as u32
+            }
         };
+        // decode_time is GAP-FREE by construction: it's exactly the end
+        // of the previous sample. The video element can't seek across
+        // MSE buffered-range gaps, so a single discontinuity here meant
+        // a permanent freeze the moment the playhead reached it.
+        let decode_time = self.next_decode_time;
 
         // moof comes first; trun.data_offset points into the *following*
         // mdat. Build moof with a placeholder offset, then patch once we
@@ -121,7 +131,8 @@ impl Fmp4Muxer {
         write_mdat(&mut out, sample_bytes);
 
         self.moof_sequence += 1;
-        self.last_decode_time = decode_time;
+        self.next_decode_time = decode_time + sample_duration as u64;
+        self.last_emit_wallclock = Some(now);
 
         out
     }
