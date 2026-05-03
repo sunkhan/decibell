@@ -36,19 +36,32 @@ export default function LinuxStreamVideoPlayer({ streamerUsername, className }: 
     let pulling = false;
     let loggedFrameShape = false;
 
+    // Per-RAF timing: we want to know whether the bottleneck is the
+    // Tauri IPC pull, the WebGL upload, the drawImage, or just RAF
+    // throttling on WebKitGTK. Logged every 60 successful renders.
+    let timingSamples = 0;
+    let sumPullMs = 0;
+    let sumGlMs = 0;
+    let sumDrawMs = 0;
+    let sumRafGapMs = 0;
+    let lastRenderEnd = 0;
+
     invoke("request_keyframe", { targetUsername: streamerUsername }).catch(() => {});
 
     const loop = async () => {
       if (stopped) return;
+      const rafStart = performance.now();
       rafHandle = requestAnimationFrame(loop);
 
       if (pulling) return;
       pulling = true;
       try {
+        const pullStart = performance.now();
         const raw = await invoke("pull_video_frame_yuv", {
           streamerUsername,
           lastSeenSequence: lastSequence,
         });
+        const pullMs = performance.now() - pullStart;
         if (stopped) return;
 
         let buf: ArrayBuffer;
@@ -94,6 +107,7 @@ export default function LinuxStreamVideoPlayer({ streamerUsername, className }: 
         // our visible 2D canvas. The drawImage is synchronous and
         // GPU-accelerated (most browsers); WebGL state stays in the
         // shared context so other streams aren't disturbed.
+        const glStart = performance.now();
         if (!uploadStreamFrame(streamerUsername, w, h, yPlane, uvPlane)) {
           // shared GL unavailable — give up on this player
           setError("Shared WebGL2 renderer unavailable");
@@ -102,15 +116,48 @@ export default function LinuxStreamVideoPlayer({ streamerUsername, className }: 
         }
         const sharedCanvas = renderStream(streamerUsername);
         if (!sharedCanvas) return;
+        const glMs = performance.now() - glStart;
 
+        const drawStart = performance.now();
         if (canvas.width !== w || canvas.height !== h) {
           canvas.width = w;
           canvas.height = h;
         }
         ctx.drawImage(sharedCanvas, 0, 0, w, h, 0, 0, w, h);
+        const drawMs = performance.now() - drawStart;
 
         lastSequence = seq;
         if (!hasFirstFrame) setHasFirstFrame(true);
+
+        // Timing aggregation. raf_gap is render-end-to-next-RAF-start;
+        // approximates effective frame rate as seen by the user.
+        const rafGapMs = lastRenderEnd > 0 ? rafStart - lastRenderEnd : 0;
+        lastRenderEnd = performance.now();
+        sumPullMs += pullMs;
+        sumGlMs += glMs;
+        sumDrawMs += drawMs;
+        sumRafGapMs += rafGapMs;
+        timingSamples++;
+        if (timingSamples >= 60) {
+          const n = timingSamples;
+          const avgPull = sumPullMs / n;
+          const avgGl = sumGlMs / n;
+          const avgDraw = sumDrawMs / n;
+          const avgRafGap = sumRafGapMs / n;
+          const cycleMs = avgPull + avgGl + avgDraw + avgRafGap;
+          const fps = cycleMs > 0 ? 1000 / cycleMs : 0;
+          console.log(
+            `[LinuxStreamVideoPlayer] timing avg over ${n} renders: ` +
+            `pull=${avgPull.toFixed(2)}ms gl=${avgGl.toFixed(2)}ms ` +
+            `draw=${avgDraw.toFixed(2)}ms raf_gap=${avgRafGap.toFixed(2)}ms ` +
+            `cycle=${cycleMs.toFixed(2)}ms → ${fps.toFixed(1)}fps`
+          );
+          timingSamples = 0;
+          sumPullMs = 0;
+          sumGlMs = 0;
+          sumDrawMs = 0;
+          sumRafGapMs = 0;
+        }
       } catch (e) {
         console.error("[LinuxStreamVideoPlayer] pull failed:", e);
       } finally {
