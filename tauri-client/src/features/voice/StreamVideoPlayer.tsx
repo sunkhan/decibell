@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { VideoCodec } from "../../types";
 import { videoCodecToWebCodecsString } from "../../utils/codecMap";
 import LinuxStreamVideoPlayer from "./LinuxStreamVideoPlayer";
+import MseStreamVideoPlayer from "./MseStreamVideoPlayer";
 
 interface Props {
   streamerUsername: string;
@@ -37,17 +38,26 @@ function base64ToBytes(b64: string): Uint8Array {
 
 // Check if WebCodecs VideoDecoder is available (Chromium-based webviews only)
 const hasWebCodecs = typeof VideoDecoder !== "undefined";
-// WebKitGTK has been gradually shipping a `VideoDecoder` global (gated
-// behind feature flags in some builds). We can't trust its presence to
-// mean "use WebCodecs path" though — the Linux Rust pipeline only
-// publishes NV12 to nv12_store and emits no `stream_frame` bitstream
-// events, so the WebCodecs decoder gets configured and then sits
-// waiting forever. Always route Linux through the WebGL2 NV12 pull
-// pipeline regardless of what `typeof VideoDecoder` says.
 const isLinux = typeof navigator !== "undefined" && /Linux/i.test(navigator.userAgent);
 
 export default function StreamVideoPlayer({ streamerUsername, className }: Props) {
-  if (isLinux || !hasWebCodecs) {
+  // Linux: MSE-backed `<video>` is the right pipeline. Encoded frames
+  // travel as small fMP4 segments (KBs, not MBs), the browser decodes
+  // them via WebKitGTK's GStreamer backend (hardware-accelerated where
+  // available), and the compositor renders directly. Saves us the
+  // huge NV12 IPC transfer + Rust decode + WebGL upload of the old
+  // LinuxStreamVideoPlayer path.
+  if (isLinux) {
+    return (
+      <MseStreamVideoPlayer
+        streamerUsername={streamerUsername}
+        className={className}
+      />
+    );
+  }
+  if (!hasWebCodecs) {
+    // Some non-Linux webview without WebCodecs — fall back to the
+    // WebGL2 NV12 path (kept around for this case).
     return (
       <LinuxStreamVideoPlayer
         streamerUsername={streamerUsername}

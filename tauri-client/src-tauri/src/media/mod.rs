@@ -11,6 +11,8 @@ pub mod capture_pipewire;
 #[cfg(target_os = "linux")]
 pub mod capture_wlr_screencopy;
 #[cfg(target_os = "linux")]
+pub mod fmp4_muxer;
+#[cfg(target_os = "linux")]
 pub mod gpu_interop;
 #[cfg(target_os = "windows")]
 pub mod capture_audio_wasapi;
@@ -204,6 +206,15 @@ impl VoiceEngine {
         // consumes a worker thread. Previous `tokio::spawn` + `block_in_place`
         // permanently stole a Tokio worker, starving the runtime over time.
         let event_bridge = tokio::task::spawn_blocking(move || {
+            // Linux: per-streamer fMP4 muxer state. Re-created on codec
+            // change. Each stream has its own MSE SourceBuffer on the JS
+            // side, so muxers are keyed by streamer username.
+            #[cfg(target_os = "linux")]
+            let mut linux_muxers: std::collections::HashMap<String, fmp4_muxer::Fmp4Muxer> =
+                std::collections::HashMap::new();
+            #[cfg(target_os = "linux")]
+            let mut linux_muxer_codecs: std::collections::HashMap<String, u8> =
+                std::collections::HashMap::new();
             loop {
                 match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                     Ok(event) => match event {
@@ -237,48 +248,44 @@ impl VoiceEngine {
                             }));
                         }
                         VoiceEvent::VideoFrameReady(frame) => {
-                            if frame.is_keyframe {
-                                eprintln!("[video-bridge] Emitting keyframe: user='{}', {} bytes",
-                                    frame.streamer_username, frame.data.len());
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                use base64::Engine;
+                                let b64_data = base64::engine::general_purpose::STANDARD.encode(&frame.data);
+                                let description = frame.description.clone().or_else(|| {
+                                    if frame.is_keyframe && frame.codec <= 2 {
+                                        encoder::extract_avcc_description_from_avcc(&frame.data)
+                                    } else {
+                                        None
+                                    }
+                                });
+                                let b64_desc = description.as_ref().map(|d|
+                                    base64::engine::general_purpose::STANDARD.encode(d)
+                                );
+                                let _ = app.emit("stream_frame", serde_json::json!({
+                                    "username": frame.streamer_username,
+                                    "format": "h264",
+                                    "data": b64_data,
+                                    "timestamp": frame.frame_id as u64 * 33_333,
+                                    "keyframe": frame.is_keyframe,
+                                    "description": b64_desc,
+                                    "codec": frame.codec,
+                                }));
                             }
-                            use base64::Engine;
-                            let b64_data = base64::engine::general_purpose::STANDARD.encode(&frame.data);
-                            // HEVC / AV1: receive thread already stripped the
-                            // length-prefixed hvcC / av1C from the keyframe data
-                            // and stashed it in frame.description. Use it as-is.
-                            // H.264: build avcC by parsing the inline SPS/PPS
-                            // NAL units from the keyframe bitstream (existing
-                            // path; kept for back-compat with older clients
-                            // that don't prepend a description on the wire).
-                            let description = frame.description.clone().or_else(|| {
-                                if frame.is_keyframe && frame.codec <= 2 {
-                                    encoder::extract_avcc_description_from_avcc(&frame.data)
-                                } else {
-                                    None
-                                }
-                            });
-                            let b64_desc = description.as_ref().map(|d| {
-                                eprintln!("[video-bridge] description ({} bytes) for codec {}", d.len(), frame.codec);
-                                base64::engine::general_purpose::STANDARD.encode(d)
-                            });
-                            let _ = app.emit("stream_frame", serde_json::json!({
-                                "username": frame.streamer_username,
-                                "format": "h264",
-                                "data": b64_data,
-                                "timestamp": frame.frame_id as u64 * 33_333,
-                                "keyframe": frame.is_keyframe,
-                                "description": b64_desc,
-                                // Plan B: codec byte from the per-packet header. React reads
-                                // this to pick the WebCodecs codec string (avc1/hev1/av01).
-                                "codec": frame.codec,
-                            }));
+                            #[cfg(target_os = "linux")]
+                            {
+                                emit_linux_mse_for_frame(
+                                    &app,
+                                    &mut linux_muxers,
+                                    &mut linux_muxer_codecs,
+                                    &frame.streamer_username,
+                                    frame.codec,
+                                    frame.is_keyframe,
+                                    &frame.data,
+                                    frame.description.as_deref(),
+                                );
+                            }
                         }
-                        // Linux: video frames no longer go through events.
-                        // The decode loop publishes NV12 directly into
-                        // `nv12_store`; the renderer pulls via the
-                        // `pull_video_frame_yuv` Tauri command at RAF rate.
-                        // Removes the per-frame base64 + IPC string cost
-                        // that used to dominate Linux watch CPU.
                         VoiceEvent::KeyframeRequested => {
                             if let Ok(guard) = keyframe_tx_for_bridge.lock() {
                                 if let Some(ref tx) = *guard {
@@ -418,6 +425,94 @@ impl Drop for VoiceEngine {
     }
 }
 
+/// Linux-only: mux a frame into fMP4 and emit init / media segment events
+/// for the JS-side `<video>` MSE pipeline. Maintains per-streamer muxer
+/// state — one muxer per source, rebuilt on codec change. Each rebuild
+/// also triggers a fresh init segment so the JS side knows to reset the
+/// SourceBuffer (or open a new MediaSource).
+#[cfg(target_os = "linux")]
+fn emit_linux_mse_for_frame(
+    app: &AppHandle,
+    muxers: &mut std::collections::HashMap<String, fmp4_muxer::Fmp4Muxer>,
+    muxer_codecs: &mut std::collections::HashMap<String, u8>,
+    username: &str,
+    codec_byte: u8,
+    is_keyframe: bool,
+    data: &[u8],
+    description: Option<&[u8]>,
+) {
+    use base64::Engine;
+
+    let codec_kind = match codec_byte {
+        1 => caps::CodecKind::H264Hw,
+        2 => caps::CodecKind::H264Sw,
+        3 => caps::CodecKind::H265,
+        4 => caps::CodecKind::Av1,
+        _ => caps::CodecKind::H264Hw,
+    };
+
+    // Codec change or first frame for this streamer → need a fresh
+    // muxer + init segment. The JS side teardowns its SourceBuffer
+    // and re-`addSourceBuffer`s on receiving a new init.
+    let prev_codec = muxer_codecs.get(username).copied();
+    let codec_changed = prev_codec.map(|c| c != codec_byte).unwrap_or(true);
+
+    if codec_changed {
+        if !is_keyframe {
+            // Need a keyframe to bootstrap — codec config comes either
+            // inline (H.264 SPS/PPS) or via description (HEVC/AV1).
+            return;
+        }
+        // Build codec config record.
+        let codec_config: Option<Vec<u8>> = match codec_kind {
+            caps::CodecKind::H264Hw | caps::CodecKind::H264Sw => {
+                fmp4_muxer::build_avcc_from_keyframe(data)
+                    .or_else(|| description.map(|d| d.to_vec()))
+            }
+            caps::CodecKind::H265 | caps::CodecKind::Av1 => {
+                description.map(|d| d.to_vec())
+            }
+            caps::CodecKind::Unknown => None,
+        };
+        let Some(codec_config) = codec_config else {
+            // Can't init yet — drop the frame, wait for one with the
+            // necessary config bytes.
+            return;
+        };
+
+        // We don't know the exact dimensions from the bitstream without
+        // parsing SPS/seq_header — fall back to a generous default.
+        // The browser pulls actual dimensions from the codec config
+        // record itself; the values in tkhd/visual sample entry are
+        // only used as a hint for layout. 1920×1080 is a safe default
+        // that the SourceBuffer accepts for any sub-1080p source too.
+        let mut muxer = fmp4_muxer::Fmp4Muxer::new(codec_kind, 1920, 1080, 60);
+        let init = muxer.init_segment(&codec_config);
+        let init_b64 = base64::engine::general_purpose::STANDARD.encode(&init);
+        eprintln!(
+            "[mse-bridge] init segment for user='{}' codec={} ({} bytes init, mime={})",
+            username, codec_byte, init.len(), muxer.mime_type()
+        );
+        let _ = app.emit("stream_mse_init", serde_json::json!({
+            "username": username,
+            "mime": muxer.mime_type(),
+            "data": init_b64,
+        }));
+        muxers.insert(username.to_string(), muxer);
+        muxer_codecs.insert(username.to_string(), codec_byte);
+    }
+
+    // Mux the media segment.
+    let Some(muxer) = muxers.get_mut(username) else { return };
+    let segment = muxer.media_segment(data, is_keyframe);
+    let seg_b64 = base64::engine::general_purpose::STANDARD.encode(&segment);
+    let _ = app.emit("stream_mse_segment", serde_json::json!({
+        "username": username,
+        "data": seg_b64,
+        "keyframe": is_keyframe,
+    }));
+}
+
 /// Dedicated thread for video packet reassembly, NACK/PLI.
 /// Reads directly from the media UDP socket (VIDEO, FEC, KEYFRAME_REQUEST, NACK).
 fn run_video_recv_thread(
@@ -444,11 +539,9 @@ fn run_video_recv_thread(
     let mut last_media_ping = Instant::now() - Duration::from_secs(10);
     let media_ping_interval = Duration::from_secs(3);
 
-    // Linux: codec-aware decoder for frames (WebKitGTK lacks WebCodecs).
-    // Rebuilt when the per-frame codec byte changes (Plan C swap mid-stream)
-    // since each codec needs its own ffmpeg decoder + HW backend.
-    #[cfg(target_os = "linux")]
-    let mut linux_decoder: Option<video_decoder::VideoDecoder> = None;
+    // No per-platform decoder here anymore: we forward encoded frames to
+    // the event bridge for both Linux (fMP4 mux for MSE playback) and
+    // Windows (base64 + stream_frame events for WebCodecs).
 
     // Helper: emit a reassembled video frame.
     // Linux: decode H.264 / HEVC / AV1 → NV12, publish to nv12_store
@@ -492,102 +585,12 @@ fn run_video_recv_thread(
         }
         frame
     };
-    let mut emit_frame = |frame: video_receiver::ReassembledFrame| {
+    let emit_frame = |frame: video_receiver::ReassembledFrame| {
         let frame = strip_keyframe_description(frame);
-        #[cfg(target_os = "linux")]
-        {
-            // Codec dispatch: convert per-frame codec byte to CodecKind.
-            // If our active decoder doesn't match (first frame, or Plan C
-            // mid-stream swap), drop and rebuild for the new codec.
-            let frame_codec = match frame.codec {
-                1 => caps::CodecKind::H264Hw,
-                2 => caps::CodecKind::H264Sw,
-                3 => caps::CodecKind::H265,
-                4 => caps::CodecKind::Av1,
-                _ => caps::CodecKind::H264Hw, // legacy frames pre-Plan-B default
-            };
-            let need_rebuild = match &linux_decoder {
-                None => true,
-                // H264Hw and H264Sw share the same ffmpeg decoder, so don't
-                // rebuild between them (just a wire-codec metadata swap).
-                Some(dec) => {
-                    let active = dec.codec();
-                    let cur_h264 = matches!(active, caps::CodecKind::H264Hw | caps::CodecKind::H264Sw);
-                    let new_h264 = matches!(frame_codec, caps::CodecKind::H264Hw | caps::CodecKind::H264Sw);
-                    !((cur_h264 && new_h264) || active == frame_codec)
-                }
-            };
-            if need_rebuild {
-                // HEVC and AV1 carry their parameter sets out-of-band —
-                // the encoder has GLOBAL_HEADER set, so VPS/SPS/PPS (HEVC)
-                // and the Sequence Header OBU (AV1) live in the encoder's
-                // extradata buffer and ship to us as frame.description on
-                // each keyframe. ffmpeg parses hvcC / av1C natively when
-                // the codec context is opened, so we install the blob as
-                // extradata and let ffmpeg do the work. That requires the
-                // FIRST decoder we build to already have the description
-                // in hand — defer construction until a keyframe with
-                // description arrives.
-                //
-                // H.264 keeps SPS/PPS inline in keyframes (no GLOBAL_HEADER),
-                // so we build the decoder eagerly with no extradata.
-                let needs_extradata = matches!(frame_codec, caps::CodecKind::H265 | caps::CodecKind::Av1);
-                // HEVC extradata must match the bitstream framing we send
-                // (annex-B). Convert hvcC → annex-B VPS/SPS/PPS NALs here;
-                // installing the raw hvcC would flip ffmpeg into MP4 mode
-                // and it would parse our annex-B start codes as bogus
-                // 4-byte NAL lengths.
-                //
-                // AV1 uses the av1C as-is — av1C isn't a NAL container, the
-                // configOBUs portion is a regular OBU stream that ffmpeg's
-                // AV1 decoder parses natively from extradata.
-                let hevc_annexb_owned: Option<Vec<u8>>;
-                let extradata: Option<&[u8]> = if needs_extradata && frame.is_keyframe {
-                    let desc = frame.description.as_deref();
-                    if frame_codec == caps::CodecKind::H265 {
-                        hevc_annexb_owned = desc.and_then(video_decoder::hvcc_to_annexb_extradata);
-                        hevc_annexb_owned.as_deref()
-                    } else {
-                        hevc_annexb_owned = None;
-                        desc
-                    }
-                } else {
-                    hevc_annexb_owned = None;
-                    None
-                };
-                if needs_extradata && extradata.is_none() {
-                    // Drop frames silently until we see the first keyframe
-                    // with description. NACK / FEC will still deliver the
-                    // actual keyframe shortly; until then there's nothing
-                    // useful to do with delta frames anyway.
-                    return;
-                }
-                linux_decoder = None;
-                match video_decoder::VideoDecoder::new(frame_codec, extradata) {
-                    Ok(dec) => {
-                        eprintln!("[video-recv] decoder built for {:?}", frame_codec);
-                        linux_decoder = Some(dec);
-                    }
-                    Err(e) => eprintln!("[video-recv] failed to build {:?} decoder: {}", frame_codec, e),
-                }
-            }
-            if let Some(ref mut dec) = linux_decoder {
-                // Decode every frame at source rate so P-frame references
-                // stay valid. The renderer pulls latest-only at RAF rate
-                // (60/120Hz, display-bound), so frames the renderer skips
-                // are dropped *after* decode rather than starving the
-                // decoder of references. No 40fps JPEG-encode ceiling
-                // anymore — NV12 publish is essentially free vs the old
-                // libjpeg path.
-                if let Some(nv12) = dec.decode_to_nv12(&frame.data) {
-                    nv12_store::publish(&frame.streamer_username, nv12);
-                }
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
-        }
+        // Both Linux and Windows route through VideoFrameReady now; the
+        // event bridge picks the appropriate output path per platform
+        // (Linux mux to fMP4 for MSE, Windows base64 for WebCodecs).
+        let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
     };
 
     // Read directly from the media socket with a short timeout for periodic maintenance
@@ -997,27 +1000,19 @@ fn spawn_video_event_bridge(
     self_username: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
-        // Linux self-preview decoder. The streamer's own viewer on Linux
-        // pulls NV12 from nv12_store (LinuxStreamVideoPlayer can't consume
-        // the WebCodecs `stream_frame` events that the WebCodecs path on
-        // Windows uses), so we round-trip our own encoded H.264/HEVC/AV1
-        // bitstream back through the receiver-side decoder and publish
-        // NV12 to nv12_store under the streamer's username. Decoder is
-        // built lazily on the first frame and rebuilt on codec change.
-        // Cost is one decode per encoded frame on the streamer's box —
-        // tiny on RTX 4080 / VAAPI hardware.
+        // Linux self-preview path: mux the locally encoded frames into
+        // fMP4 and emit the same `stream_mse_init` / `stream_mse_segment`
+        // events the receiver bridge uses for remote streams. The JS
+        // MseStreamVideoPlayer doesn't care whether the source is local
+        // or remote — it just consumes the events and feeds the
+        // SourceBuffer. No decode round-trip in Rust, no nv12_store, no
+        // IPC payload bigger than the encoded bytes themselves.
         #[cfg(target_os = "linux")]
-        let mut self_preview_decoder: Option<video_decoder::VideoDecoder> = None;
+        let mut sp_muxers: std::collections::HashMap<String, fmp4_muxer::Fmp4Muxer> =
+            std::collections::HashMap::new();
         #[cfg(target_os = "linux")]
-        let mut sp_sample_count: u64 = 0;
-        #[cfg(target_os = "linux")]
-        let mut sp_decode_us_sum: u64 = 0;
-        #[cfg(target_os = "linux")]
-        let mut sp_publish_us_sum: u64 = 0;
-        #[cfg(target_os = "linux")]
-        let mut sp_total_us_sum: u64 = 0;
-        #[cfg(target_os = "linux")]
-        let mut sp_max_total_us: u64 = 0;
+        let mut sp_muxer_codecs: std::collections::HashMap<String, u8> =
+            std::collections::HashMap::new();
         loop {
             match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 Ok(video_pipeline::VideoPipelineEvent::CaptureEnded) => {
@@ -1088,99 +1083,16 @@ fn spawn_video_event_bridge(
                     // path on Windows, not on Linux.
                     #[cfg(target_os = "linux")]
                     {
-                        let total_start = std::time::Instant::now();
-                        let frame_codec = match codec {
-                            1 => caps::CodecKind::H264Hw,
-                            2 => caps::CodecKind::H264Sw,
-                            3 => caps::CodecKind::H265,
-                            4 => caps::CodecKind::Av1,
-                            _ => caps::CodecKind::H264Hw,
-                        };
-                        let need_rebuild = match &self_preview_decoder {
-                            None => true,
-                            Some(d) => {
-                                let cur = d.codec();
-                                let cur_h264 = matches!(cur, caps::CodecKind::H264Hw | caps::CodecKind::H264Sw);
-                                let new_h264 = matches!(frame_codec, caps::CodecKind::H264Hw | caps::CodecKind::H264Sw);
-                                !((cur_h264 && new_h264) || cur == frame_codec)
-                            }
-                        };
-                        let needs_extradata = matches!(frame_codec, caps::CodecKind::H265 | caps::CodecKind::Av1);
-                        if need_rebuild {
-                            // HEVC/AV1 need the hvcC/av1C config record on
-                            // the keyframe; H.264 carries SPS/PPS inline.
-                            let extradata_owned: Option<Vec<u8>> = if needs_extradata {
-                                if is_keyframe {
-                                    if frame_codec == caps::CodecKind::H265 {
-                                        description.as_deref().and_then(video_decoder::hvcc_to_annexb_extradata)
-                                    } else {
-                                        description.clone()
-                                    }
-                                } else { None }
-                            } else { None };
-                            if !needs_extradata || extradata_owned.is_some() {
-                                self_preview_decoder = video_decoder::VideoDecoder::new(
-                                    frame_codec, extradata_owned.as_deref(),
-                                ).ok();
-                            }
-                        }
-                        if let Some(ref mut dec) = self_preview_decoder {
-                            let decode_start = std::time::Instant::now();
-                            let nv12 = dec.decode_to_nv12(&data);
-                            let decode_us = decode_start.elapsed().as_micros() as u64;
-                            let publish_us = if let Some(nv12) = nv12 {
-                                // Cap the published preview at ≤540p so
-                                // the JS render loop's IPC pull stays
-                                // safely under the 16.67ms RAF budget.
-                                // Empirically WebKitGTK's Tauri IPC runs
-                                // ~70–80 MB/s steady state — a 720p NV12
-                                // (1.4MB) lands right at the 60fps
-                                // ceiling and goes over it on jitter.
-                                // 540p (≤780KB) gives consistent
-                                // headroom for 60fps and works for
-                                // 120fps too. Self-preview is just a
-                                // monitor; viewers still get the full
-                                // resolution over the network.
-                                //
-                                // 2×2 area averaging per halve, exact-2×
-                                // ratios for typical sources:
-                                //   4K   → 1080p → 540p
-                                //   1440p→ 720p  → 360p
-                                //   1080p→ 540p
-                                //   720p → 360p
-                                let mut nv12 = nv12;
-                                while nv12.width > 960 || nv12.height > 540 {
-                                    nv12 = video_decoder::halve_nv12(&nv12);
-                                }
-                                let publish_start = std::time::Instant::now();
-                                nv12_store::publish(&self_username, nv12);
-                                publish_start.elapsed().as_micros() as u64
-                            } else { 0 };
-                            let total_us = total_start.elapsed().as_micros() as u64;
-                            sp_decode_us_sum += decode_us;
-                            sp_publish_us_sum += publish_us;
-                            sp_total_us_sum += total_us;
-                            if total_us > sp_max_total_us { sp_max_total_us = total_us; }
-                            sp_sample_count += 1;
-                            if sp_sample_count >= 60 {
-                                let n = sp_sample_count as f64;
-                                let avg_decode = (sp_decode_us_sum as f64 / n) / 1000.0;
-                                let avg_publish = (sp_publish_us_sum as f64 / n) / 1000.0;
-                                let avg_total = (sp_total_us_sum as f64 / n) / 1000.0;
-                                let max_total = (sp_max_total_us as f64) / 1000.0;
-                                let max_fps = if avg_total > 0.0 { 1000.0 / avg_total } else { 0.0 };
-                                eprintln!(
-                                    "[self-preview-bridge] timing avg over {} frames: \
-                                     decode={:.2}ms publish={:.2}ms total={:.2}ms (max={:.2}ms) → ≤{:.1}fps",
-                                    sp_sample_count, avg_decode, avg_publish, avg_total, max_total, max_fps,
-                                );
-                                sp_sample_count = 0;
-                                sp_decode_us_sum = 0;
-                                sp_publish_us_sum = 0;
-                                sp_total_us_sum = 0;
-                                sp_max_total_us = 0;
-                            }
-                        }
+                        emit_linux_mse_for_frame(
+                            &app,
+                            &mut sp_muxers,
+                            &mut sp_muxer_codecs,
+                            &self_username,
+                            codec,
+                            is_keyframe,
+                            &data,
+                            description.as_deref(),
+                        );
                     }
                 }
                 Ok(_) => {}
