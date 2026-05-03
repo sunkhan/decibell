@@ -63,6 +63,19 @@ pub fn run() {
             use tauri_plugin_deep_link::DeepLinkExt;
             let handle = app.handle().clone();
 
+            // Linux: probe GStreamer's plugin registry once at startup so the
+            // first decoder availability log lands before any stream is
+            // received. Surfaces missing hardware-decode plugins as a clear
+            // warning the user can act on (install gst-plugins-bad with
+            // nvcodec / va backend, etc.). The probe runs gst-inspect-1.0
+            // a handful of times — milliseconds, fire-and-forget.
+            #[cfg(target_os = "linux")]
+            {
+                std::thread::spawn(|| {
+                    let _ = media::gst_decoder_probe::report();
+                });
+            }
+
             // Initialize the persistent media cache directory
             // (`~/.cache/com.decibell.app/` on Linux, equivalent
             // platform-specific paths elsewhere). Anywhere we write

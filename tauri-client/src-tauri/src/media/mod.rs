@@ -13,6 +13,8 @@ pub mod capture_wlr_screencopy;
 #[cfg(target_os = "linux")]
 pub mod fmp4_muxer;
 #[cfg(target_os = "linux")]
+pub mod gst_decoder_probe;
+#[cfg(target_os = "linux")]
 pub mod gpu_interop;
 #[cfg(target_os = "windows")]
 pub mod capture_audio_wasapi;
@@ -517,14 +519,30 @@ fn emit_linux_mse_for_frame(
         let mut muxer = fmp4_muxer::Fmp4Muxer::new(codec_kind, 1920, 1080);
         let init = muxer.init_segment(&codec_config);
         let init_b64 = base64::engine::general_purpose::STANDARD.encode(&init);
+        let hw_source = gst_decoder_probe::source_for_codec_byte(codec_byte);
+        let hw_source_str = match hw_source {
+            gst_decoder_probe::HwDecoderSource::Nvidia => "nvidia",
+            gst_decoder_probe::HwDecoderSource::VaapiNew => "vaapi",
+            gst_decoder_probe::HwDecoderSource::VaapiLegacy => "vaapi-legacy",
+            gst_decoder_probe::HwDecoderSource::None => "software",
+        };
         eprintln!(
-            "[mse-bridge] init segment for user='{}' codec={} ({} bytes init, mime={})",
-            username, codec_byte, init.len(), muxer.mime_type()
+            "[mse-bridge] init segment for user='{}' codec={} ({} bytes init, mime={}, decoder={})",
+            username, codec_byte, init.len(), muxer.mime_type(), hw_source_str
         );
+        if hw_source == gst_decoder_probe::HwDecoderSource::None {
+            eprintln!(
+                "[mse-bridge] NOTE: codec={} will use software decode on this machine. \
+                 Stream will play but uses more CPU. Install gst-plugins-bad with the \
+                 right backend for your GPU to enable hardware decode.",
+                codec_byte
+            );
+        }
         let _ = app.emit("stream_mse_init", serde_json::json!({
             "username": username,
             "mime": muxer.mime_type(),
             "data": init_b64,
+            "decoder": hw_source_str,
         }));
         muxers.insert(username.to_string(), muxer);
         muxer_codecs.insert(username.to_string(), codec_byte);
