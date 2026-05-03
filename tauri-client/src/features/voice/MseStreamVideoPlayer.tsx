@@ -60,37 +60,58 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
     let unlistenInit: (() => void) | undefined;
     let unlistenSegment: (() => void) | undefined;
 
-    // Live-edge chasing: HTML5 `<video>` defaults to playing from
-    // currentTime=0 at 1.0x. With a live MSE source we want the
-    // playhead near the latest buffered timestamp instead. Without
-    // chasing, every frame we append into the future grows the gap
-    // between playhead and live edge → lag accumulates linearly.
+    // Live-edge management.
     //
-    // Strategy: after every successful append, if the playhead is
-    // more than TARGET_LATENCY_S behind the latest buffered range,
-    // snap it to (liveEdge - TARGET_LATENCY_S). Small overshoot keeps
-    // a tiny jitter cushion; aggressive enough to feel real-time but
-    // not so aggressive that single-packet jitter causes stalls.
+    // The previous implementation seeked to (liveEdge - 0.15s) on every
+    // updateend whenever lag > 0.4s. Each seek forces WebKit to flush
+    // its decoder and re-decode from the previous keyframe, which is
+    // what was causing the "3 seconds of video, 5 seconds of freeze"
+    // pattern: the chase fired, decoder flushed, video stalled while
+    // re-decoding, played for a bit, chase fired again, etc.
+    //
+    // New strategy:
+    //   * For moderate lag (0.3s..2s): nudge playbackRate up to 1.05
+    //     so the playhead catches up smoothly. Decoder doesn't flush.
+    //   * For severe lag (>2s — happens on initial buffering or
+    //     after a long stall): hard seek as a last resort.
+    //   * For low lag (<0.15s): playbackRate back to 1.0.
+    //
+    // Eviction is throttled to once per second so SourceBuffer.remove
+    // doesn't fire on every append (each remove blocks subsequent
+    // appends until updateend fires, contributing to backpressure).
     const TARGET_LATENCY_S = 0.15;
-    const SEEK_THRESHOLD_S = 0.4;
-    // Buffer eviction: drop everything before (currentTime - RETENTION).
-    // Without this, an hour-long stream accumulates ~hours of frames in
-    // browser memory (~hundreds of MB at 1080p H.264).
+    const CATCHUP_LAG_S = 0.30;
+    const SEEK_LAG_S = 2.0;
     const RETENTION_S = 4;
+    const EVICT_INTERVAL_MS = 1000;
+    let lastEvictMs = 0;
 
     function chaseLiveEdge() {
-      if (!sourceBuffer || sourceBuffer.updating) return;
-      if (video!.buffered.length === 0) return;
+      if (!sourceBuffer || video!.buffered.length === 0) return;
       const liveEdge = video!.buffered.end(video!.buffered.length - 1);
       const lag = liveEdge - video!.currentTime;
-      if (lag > SEEK_THRESHOLD_S) {
+      if (lag > SEEK_LAG_S) {
         video!.currentTime = Math.max(0, liveEdge - TARGET_LATENCY_S);
+        video!.playbackRate = 1.0;
+      } else if (lag > CATCHUP_LAG_S) {
+        if (video!.playbackRate !== 1.05) video!.playbackRate = 1.05;
+      } else if (lag < TARGET_LATENCY_S) {
+        if (video!.playbackRate !== 1.0) video!.playbackRate = 1.0;
       }
-      // Evict stale buffer ranges so memory doesn't grow without bound.
-      const bufStart = video!.buffered.start(0);
-      const evictTo = video!.currentTime - RETENTION_S;
-      if (evictTo > bufStart + 0.5) {
-        try { sourceBuffer.remove(bufStart, evictTo); } catch {}
+
+      // Throttled eviction. Skip when the SourceBuffer is busy — calling
+      // remove() while updating throws, and removes themselves are slow
+      // enough to matter at 60fps.
+      const nowMs = performance.now();
+      if (nowMs - lastEvictMs >= EVICT_INTERVAL_MS && !sourceBuffer.updating) {
+        const bufStart = video!.buffered.start(0);
+        const evictTo = video!.currentTime - RETENTION_S;
+        if (evictTo > bufStart + 0.5) {
+          try {
+            sourceBuffer.remove(bufStart, evictTo);
+            lastEvictMs = nowMs;
+          } catch {}
+        }
       }
     }
 
@@ -103,6 +124,23 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
       } catch (e) {
         console.error("[MseStreamVideoPlayer] appendBuffer threw:", e);
       }
+    }
+
+    // Recreate the SourceBuffer (and MediaSource if needed) after a
+    // fatal error. Without this, a single transient SourceBuffer error
+    // bricked the player until the next mount; now we tear down and
+    // rebuild on the next init segment.
+    let pendingRebuildMime: string | null = null;
+    function recoverFromError(reason: string) {
+      console.warn(`[MseStreamVideoPlayer] recovering from: ${reason}`);
+      if (sourceBuffer) {
+        try { mediaSource?.removeSourceBuffer(sourceBuffer); } catch {}
+        sourceBuffer = null;
+      }
+      // Drop queued segments — they're tied to the dead SourceBuffer's
+      // timeline. Wait for the next init segment to rebuild.
+      queue.length = 0;
+      pendingRebuildMime = null;
     }
 
     function setupSourceBuffer(mime: string) {
@@ -118,8 +156,8 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
           pump();
           chaseLiveEdge();
         });
-        sb.addEventListener("error", (e) => {
-          console.error("[MseStreamVideoPlayer] SourceBuffer error:", e);
+        sb.addEventListener("error", (_e) => {
+          recoverFromError("SourceBuffer error event");
         });
         sourceBuffer = sb;
         pump();
@@ -132,17 +170,40 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
       const ms = new MediaSource();
       video!.src = URL.createObjectURL(ms);
       ms.addEventListener("sourceopen", () => {
-        // Nothing to do here — setupSourceBuffer happens whenever a
-        // pending mime arrives. If we got an init before sourceopen
-        // fired (race), apply it now.
+        // Tell the browser this is a live stream — without
+        // duration=Infinity, the video element treats it as a
+        // finite-duration clip and changes its scheduling/preload
+        // behaviour in ways that cause periodic stalls.
+        try { ms.duration = Number.POSITIVE_INFINITY; } catch {}
         if (pendingMime) {
           const mime = pendingMime;
           pendingMime = null;
           setupSourceBuffer(mime);
+        } else if (pendingRebuildMime) {
+          const mime = pendingRebuildMime;
+          pendingRebuildMime = null;
+          setupSourceBuffer(mime);
         }
+      });
+      ms.addEventListener("sourceended", () => {
+        console.warn("[MseStreamVideoPlayer] MediaSource ended unexpectedly");
       });
       return ms;
     }
+
+    // Diagnostic: video element stall events. WebKit fires `waiting` when
+    // the playhead has nothing to play; `stalled` when no progress for a
+    // while. Logging these lets us tell whether a freeze is "no data
+    // available" (network/bridge issue) or "decoder backed up" (player
+    // issue).
+    video.addEventListener("waiting", () => {
+      const buf = video.buffered;
+      const bufEnd = buf.length > 0 ? buf.end(buf.length - 1) : 0;
+      console.warn(`[MseStreamVideoPlayer] waiting at currentTime=${video.currentTime.toFixed(3)}s, bufferedEnd=${bufEnd.toFixed(3)}s, lag=${(bufEnd - video.currentTime).toFixed(3)}s`);
+    });
+    video.addEventListener("stalled", () => {
+      console.warn(`[MseStreamVideoPlayer] stalled at currentTime=${video.currentTime.toFixed(3)}s`);
+    });
 
     mediaSource = attachMediaSource();
 
