@@ -35,6 +35,77 @@ fn avcc_to_annexb(avcc: &[u8]) -> Vec<u8> {
 /// mode while our bitstream is annex-B — they have to match. Returns
 /// `None` if the record is malformed; the caller falls back to opening
 /// the decoder without extradata (won't decode but won't crash either).
+/// Halve an NV12 frame's dimensions with 2×2 area averaging. Used by the
+/// Linux self-preview bridge to keep the IPC payload small — at 1440p
+/// each NV12 frame is 5.5MB, and Tauri IPC on WebKitGTK runs at ~150–200
+/// MB/s, so the JS render loop pinned at ~25fps just shipping bytes.
+/// Halving once cuts the payload 4× (one less pixel per side, half the
+/// rows) and lets the JS side hit 60fps. The bridge calls this in a
+/// loop until the frame fits in a sensible preview ceiling (720p).
+///
+/// Source dimensions must be even (NV12 chroma subsampling guarantees
+/// it for valid frames; we trim odd remainders).
+pub fn halve_nv12(src: &Nv12Frame) -> Nv12Frame {
+    let src_w = (src.width as usize) & !1;
+    let src_h = (src.height as usize) & !1;
+    let dst_w = src_w / 2;
+    let dst_h = src_h / 2;
+
+    // Y plane: 2×2 area average. Cheaper than swscale, no ffmpeg-frame
+    // wrapping overhead, plenty good for a preview (no aliasing on text
+    // or sharp edges the way pure decimation would).
+    let mut y_plane = vec![0u8; dst_w * dst_h];
+    for y in 0..dst_h {
+        let src_y0 = y * 2 * src_w;
+        let src_y1 = src_y0 + src_w;
+        let dst_off = y * dst_w;
+        for x in 0..dst_w {
+            let sx = x * 2;
+            let sum = src.y_plane[src_y0 + sx] as u16
+                    + src.y_plane[src_y0 + sx + 1] as u16
+                    + src.y_plane[src_y1 + sx] as u16
+                    + src.y_plane[src_y1 + sx + 1] as u16;
+            y_plane[dst_off + x] = (sum / 4) as u8;
+        }
+    }
+
+    // UV plane: same idea but the source is already at half resolution
+    // (NV12 chroma subsampling), so "halve" means 2×2-average across
+    // the UV plane's own grid. Bytes are interleaved U,V,U,V,... per row.
+    let src_uv_h = src_h / 2;
+    let dst_uv_w = dst_w; // dst has dst_w/2 UV pairs × 2 bytes/pair = dst_w bytes/row
+    let dst_uv_h = dst_h / 2;
+    let mut uv_plane = vec![0u8; dst_uv_w * dst_uv_h];
+    for y in 0..dst_uv_h {
+        let src_y0 = y * 2 * src_w; // src UV row width = src_w bytes (src_w/2 pairs)
+        let src_y1 = src_y0 + src_w;
+        let dst_off = y * dst_uv_w;
+        for x in 0..(dst_uv_w / 2) {
+            let sx = x * 4; // skip 2 source UV pairs (4 bytes)
+            let u = (src.uv_plane[src_y0 + sx] as u16
+                  + src.uv_plane[src_y0 + sx + 2] as u16
+                  + src.uv_plane[src_y1 + sx] as u16
+                  + src.uv_plane[src_y1 + sx + 2] as u16) / 4;
+            let v = (src.uv_plane[src_y0 + sx + 1] as u16
+                  + src.uv_plane[src_y0 + sx + 3] as u16
+                  + src.uv_plane[src_y1 + sx + 1] as u16
+                  + src.uv_plane[src_y1 + sx + 3] as u16) / 4;
+            uv_plane[dst_off + x * 2] = u as u8;
+            uv_plane[dst_off + x * 2 + 1] = v as u8;
+        }
+    }
+    let _ = src_uv_h; // used for arithmetic intuition above
+
+    Nv12Frame {
+        width: dst_w as u32,
+        height: dst_h as u32,
+        sequence: src.sequence,
+        timestamp_us: src.timestamp_us,
+        y_plane,
+        uv_plane,
+    }
+}
+
 pub fn hvcc_to_annexb_extradata(hvcc: &[u8]) -> Option<Vec<u8>> {
     // Fixed-size hvcC header: 22 bytes through `numOfArrays`.
     if hvcc.len() < 23 || hvcc[0] != 1 { return None; }
