@@ -62,40 +62,49 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
 
     // Live-edge management.
     //
-    // The previous implementation seeked to (liveEdge - 0.15s) on every
-    // updateend whenever lag > 0.4s. Each seek forces WebKit to flush
-    // its decoder and re-decode from the previous keyframe, which is
-    // what was causing the "3 seconds of video, 5 seconds of freeze"
-    // pattern: the chase fired, decoder flushed, video stalled while
-    // re-decoding, played for a bit, chase fired again, etc.
+    // Target latency = how much buffer cushion sits between the playhead
+    // and the live edge in steady state. Smaller = more "live" feel,
+    // larger = more jitter tolerance. WebKitGTK's `<video>` element fires
+    // a `waiting` event the instant currentTime catches up to bufferedEnd
+    // — it needs at least one frame ahead to keep decoding. Combined
+    // with our wall-clock muxer (which inherits whatever frame-arrival
+    // jitter the source has from network + encoder pacing), an aggressive
+    // ~0.15s target meant single-packet jitter routinely starved the
+    // decoder and triggered a freeze-on-resume cycle.
     //
-    // New strategy:
-    //   * For moderate lag (0.3s..2s): nudge playbackRate up to 1.05
-    //     so the playhead catches up smoothly. Decoder doesn't flush.
-    //   * For severe lag (>2s — happens on initial buffering or
-    //     after a long stall): hard seek as a last resort.
-    //   * For low lag (<0.15s): playbackRate back to 1.0.
-    //
-    // Eviction is throttled to once per second so SourceBuffer.remove
-    // doesn't fire on every append (each remove blocks subsequent
-    // appends until updateend fires, contributing to backpressure).
-    const TARGET_LATENCY_S = 0.15;
-    const CATCHUP_LAG_S = 0.30;
-    const SEEK_LAG_S = 2.0;
-    const RETENTION_S = 4;
+    // 0.5s is the sweet spot reported across MSE live-streaming impls
+    // (DASH-IF reference player, hls.js low-latency mode, Twitch's
+    // low-latency target). Trades ~half a second of glass-to-glass
+    // delay for stable playback across realistic jitter.
+    const TARGET_LATENCY_S = 0.5;
+    const CATCHUP_LAG_S = 1.0;
+    const SEEK_LAG_S = 3.0;
+    const RETENTION_S = 5;
     const EVICT_INTERVAL_MS = 1000;
     let lastEvictMs = 0;
+    let initialSeekDone = false;
 
     function chaseLiveEdge() {
       if (!sourceBuffer || video!.buffered.length === 0) return;
       const liveEdge = video!.buffered.end(video!.buffered.length - 1);
       const lag = liveEdge - video!.currentTime;
+
+      // Initial seek: HTML5 video starts at currentTime=0; without an
+      // initial seek to (liveEdge - target), we'd play from the very
+      // first buffered frame and stay full-buffer behind forever.
+      if (!initialSeekDone && liveEdge >= TARGET_LATENCY_S) {
+        video!.currentTime = liveEdge - TARGET_LATENCY_S;
+        video!.playbackRate = 1.0;
+        initialSeekDone = true;
+        return;
+      }
+
       if (lag > SEEK_LAG_S) {
         video!.currentTime = Math.max(0, liveEdge - TARGET_LATENCY_S);
         video!.playbackRate = 1.0;
       } else if (lag > CATCHUP_LAG_S) {
-        if (video!.playbackRate !== 1.05) video!.playbackRate = 1.05;
-      } else if (lag < TARGET_LATENCY_S) {
+        if (video!.playbackRate !== 1.10) video!.playbackRate = 1.10;
+      } else if (lag < TARGET_LATENCY_S * 0.8) {
         if (video!.playbackRate !== 1.0) video!.playbackRate = 1.0;
       }
 
