@@ -3,7 +3,6 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { VideoCodec } from "../../types";
 import { videoCodecToWebCodecsString } from "../../utils/codecMap";
-import LinuxStreamVideoPlayer from "./LinuxStreamVideoPlayer";
 import MseStreamVideoPlayer from "./MseStreamVideoPlayer";
 
 interface Props {
@@ -13,9 +12,6 @@ interface Props {
 
 interface StreamFramePayload {
   username: string;
-  // Always "h264" (or other WebCodecs-recognised codec) — the legacy
-  // "jpeg" Linux path was removed in 0.5.5 in favour of the WebGL2 NV12
-  // pull pipeline (see LinuxStreamVideoPlayer).
   format?: "h264";
   data: string; // base64-encoded frame data
   timestamp: number;
@@ -36,17 +32,14 @@ function base64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
-// Check if WebCodecs VideoDecoder is available (Chromium-based webviews only)
-const hasWebCodecs = typeof VideoDecoder !== "undefined";
 const isLinux = typeof navigator !== "undefined" && /Linux/i.test(navigator.userAgent);
 
 export default function StreamVideoPlayer({ streamerUsername, className }: Props) {
-  // Linux: MSE-backed `<video>` is the right pipeline. Encoded frames
-  // travel as small fMP4 segments (KBs, not MBs), the browser decodes
-  // them via WebKitGTK's GStreamer backend (hardware-accelerated where
-  // available), and the compositor renders directly. Saves us the
-  // huge NV12 IPC transfer + Rust decode + WebGL upload of the old
-  // LinuxStreamVideoPlayer path.
+  // Linux: MSE-backed `<video>` (encoded fMP4 → WebKitGTK GStreamer
+  // hardware decode → compositor). Windows/macOS: WebCodecs (decode
+  // bitstream in JS, draw to canvas). Both paths just consume the same
+  // `stream_*` Tauri events; the bridge in mod.rs emits whichever the
+  // platform needs.
   if (isLinux) {
     return (
       <MseStreamVideoPlayer
@@ -55,17 +48,6 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       />
     );
   }
-  if (!hasWebCodecs) {
-    // Some non-Linux webview without WebCodecs — fall back to the
-    // WebGL2 NV12 path (kept around for this case).
-    return (
-      <LinuxStreamVideoPlayer
-        streamerUsername={streamerUsername}
-        className={className}
-      />
-    );
-  }
-
   return (
     <WebCodecsStreamVideoPlayer
       streamerUsername={streamerUsername}

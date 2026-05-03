@@ -40,10 +40,6 @@ pub mod speaking;
 pub mod video_packet;
 pub mod video_pipeline;
 pub mod video_receiver;
-#[cfg(target_os = "linux")]
-pub mod video_decoder;
-#[cfg(target_os = "linux")]
-pub mod nv12_store;
 
 use std::net::UdpSocket;
 use std::sync::{mpsc, Arc};
@@ -638,10 +634,10 @@ fn run_video_recv_thread(
     // the event bridge for both Linux (fMP4 mux for MSE playback) and
     // Windows (base64 + stream_frame events for WebCodecs).
 
-    // Helper: emit a reassembled video frame.
-    // Linux: decode H.264 / HEVC / AV1 → NV12, publish to nv12_store
-    //        for the renderer to pull at requestAnimationFrame rate.
-    // Windows: pass raw bitstream via VideoFrameReady for WebCodecs.
+    // Helper: emit a reassembled video frame as a VideoFrameReady
+    // event. The bridge picks the platform-appropriate output path —
+    // fMP4 mux for the Linux MSE pipeline, or base64 stream_frame for
+    // the Windows WebCodecs path.
     //
     // For HEVC/AV1 keyframes the sender prepends a magic-tagged
     // length-prefixed hvcC / av1C blob to the bitstream:
@@ -1100,8 +1096,8 @@ fn spawn_video_event_bridge(
         // events the receiver bridge uses for remote streams. The JS
         // MseStreamVideoPlayer doesn't care whether the source is local
         // or remote — it just consumes the events and feeds the
-        // SourceBuffer. No decode round-trip in Rust, no nv12_store, no
-        // IPC payload bigger than the encoded bytes themselves.
+        // SourceBuffer. No decode round-trip in Rust, no IPC payload
+        // bigger than the encoded bytes themselves.
         #[cfg(target_os = "linux")]
         let mut sp_muxers: std::collections::HashMap<String, fmp4_muxer::Fmp4Muxer> =
             std::collections::HashMap::new();
@@ -1138,15 +1134,10 @@ fn spawn_video_event_bridge(
                     }
                 }
                 Ok(video_pipeline::VideoPipelineEvent::EncodedFrame { data, is_keyframe, frame_id, codec, description }) => {
-                    // Linux self-preview goes straight through nv12_store +
-                    // LinuxStreamVideoPlayer (the Linux JS path doesn't
-                    // listen to stream_frame events). Skip the WebCodecs
-                    // emit entirely on Linux — base64-encoding ~50KB per
-                    // frame and pushing it through the GTK IPC + JSCore
-                    // event bus 60 times a second was eating enough CPU
-                    // to stall the bridge thread on its decode work and
-                    // cap perceived self-preview at ~30fps. No consumer
-                    // on Linux means it's pure overhead to skip.
+                    // Linux self-preview goes through the MSE bridge
+                    // below (encoded → fMP4 → <video>). The WebCodecs
+                    // stream_frame emit only fires on non-Linux, where
+                    // the JS side decodes the bitstream itself.
                     #[cfg(not(target_os = "linux"))]
                     {
                         use base64::Engine;
@@ -1170,14 +1161,9 @@ fn spawn_video_event_bridge(
                         }));
                     }
 
-                    // Linux: also feed the encoded frame to a local decoder
-                    // and publish NV12 to nv12_store so the streamer's own
-                    // LinuxStreamVideoPlayer can render the preview through
-                    // the same path as remote streams. Without this, Linux
-                    // self-preview shows the loading spinner forever
-                    // because LinuxStreamVideoPlayer only reads NV12 — the
-                    // stream_frame event above is consumed by the WebCodecs
-                    // path on Windows, not on Linux.
+                    // Linux: mux the encoded frame into fMP4 and emit
+                    // MSE init / segment events for the JS <video>
+                    // element to consume.
                     #[cfg(target_os = "linux")]
                     {
                         emit_linux_mse_for_frame(

@@ -442,16 +442,27 @@ pub async fn set_decoder_caps(
     Ok(())
 }
 
-/// Linux-only: probe what the Rust ffmpeg decoder can actually open on
-/// this machine. JS calls this when WebCodecs is unavailable (WebKitGTK)
-/// instead of returning an empty/H.264-only cap set, so the LCD picker
-/// can converge on AV1 / HEVC when the Linux watcher's GPU supports them.
-/// On non-Linux this returns an empty Vec — JS shouldn't call it there.
+/// Linux-only: report what codecs we can decode for the LCD picker.
+/// MSE playback goes through WebKitGTK's GStreamer pipeline, which has
+/// software fallback for H.264, HEVC, and AV1 universally, so we always
+/// advertise all three. If the user's machine has hardware decoders
+/// (probed at startup in `gst_decoder_probe`), playback is GPU-accelerated;
+/// if not, libavcodec / dav1ddec handle it on CPU. Either way we can
+/// decode the codec, so the cap is the same.
 #[tauri::command]
 pub async fn probe_decoders_native() -> Result<Vec<CodecCap>, String> {
     #[cfg(target_os = "linux")]
     {
-        Ok(crate::media::video_decoder::probe_decoders())
+        use crate::media::caps::CodecKind;
+        // GStreamer + libavcodec ship software decoders for all three
+        // codecs at any sensible resolution. Ceilings match the JS
+        // probe (decoderProbe.ts) so the LCD picker compares like-for-like.
+        let caps = vec![
+            CodecCap { codec: CodecKind::Av1,    max_width: 3840, max_height: 2160, max_fps: 120 },
+            CodecCap { codec: CodecKind::H265,   max_width: 3840, max_height: 2160, max_fps: 120 },
+            CodecCap { codec: CodecKind::H264Hw, max_width: 3840, max_height: 2160, max_fps: 120 },
+        ];
+        Ok(caps)
     }
     #[cfg(not(target_os = "linux"))]
     {
