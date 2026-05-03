@@ -60,6 +60,40 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
     let unlistenInit: (() => void) | undefined;
     let unlistenSegment: (() => void) | undefined;
 
+    // Live-edge chasing: HTML5 `<video>` defaults to playing from
+    // currentTime=0 at 1.0x. With a live MSE source we want the
+    // playhead near the latest buffered timestamp instead. Without
+    // chasing, every frame we append into the future grows the gap
+    // between playhead and live edge → lag accumulates linearly.
+    //
+    // Strategy: after every successful append, if the playhead is
+    // more than TARGET_LATENCY_S behind the latest buffered range,
+    // snap it to (liveEdge - TARGET_LATENCY_S). Small overshoot keeps
+    // a tiny jitter cushion; aggressive enough to feel real-time but
+    // not so aggressive that single-packet jitter causes stalls.
+    const TARGET_LATENCY_S = 0.15;
+    const SEEK_THRESHOLD_S = 0.4;
+    // Buffer eviction: drop everything before (currentTime - RETENTION).
+    // Without this, an hour-long stream accumulates ~hours of frames in
+    // browser memory (~hundreds of MB at 1080p H.264).
+    const RETENTION_S = 4;
+
+    function chaseLiveEdge() {
+      if (!sourceBuffer || sourceBuffer.updating) return;
+      if (video!.buffered.length === 0) return;
+      const liveEdge = video!.buffered.end(video!.buffered.length - 1);
+      const lag = liveEdge - video!.currentTime;
+      if (lag > SEEK_THRESHOLD_S) {
+        video!.currentTime = Math.max(0, liveEdge - TARGET_LATENCY_S);
+      }
+      // Evict stale buffer ranges so memory doesn't grow without bound.
+      const bufStart = video!.buffered.start(0);
+      const evictTo = video!.currentTime - RETENTION_S;
+      if (evictTo > bufStart + 0.5) {
+        try { sourceBuffer.remove(bufStart, evictTo); } catch {}
+      }
+    }
+
     function pump() {
       if (!sourceBuffer || sourceBuffer.updating) return;
       const next = queue.shift();
@@ -80,7 +114,10 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
       try {
         const sb = mediaSource.addSourceBuffer(mime);
         sb.mode = "segments"; // explicit-timestamp segments, low latency
-        sb.addEventListener("updateend", pump);
+        sb.addEventListener("updateend", () => {
+          pump();
+          chaseLiveEdge();
+        });
         sb.addEventListener("error", (e) => {
           console.error("[MseStreamVideoPlayer] SourceBuffer error:", e);
         });
