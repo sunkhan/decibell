@@ -486,7 +486,7 @@ fn emit_linux_mse_for_frame(
         // record itself; the values in tkhd/visual sample entry are
         // only used as a hint for layout. 1920×1080 is a safe default
         // that the SourceBuffer accepts for any sub-1080p source too.
-        let mut muxer = fmp4_muxer::Fmp4Muxer::new(codec_kind, 1920, 1080, 60);
+        let mut muxer = fmp4_muxer::Fmp4Muxer::new(codec_kind, 1920, 1080);
         let init = muxer.init_segment(&codec_config);
         let init_b64 = base64::engine::general_purpose::STANDARD.encode(&init);
         eprintln!(

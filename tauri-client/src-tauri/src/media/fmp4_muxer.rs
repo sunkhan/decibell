@@ -22,6 +22,7 @@
 //!   already produces this format, so we copy through.
 //! - AV1: raw OBU stream (low-overhead bitstream format), ditto.
 
+use std::time::Instant;
 use crate::media::caps::CodecKind;
 
 const TIMESCALE: u32 = 90_000;
@@ -30,26 +31,36 @@ pub struct Fmp4Muxer {
     codec: CodecKind,
     width: u32,
     height: u32,
-    /// Sample duration in `TIMESCALE` ticks. Set from target FPS at
-    /// muxer construction; kept as a default since we tag each sample
-    /// with its actual decode time too via `tfdt`.
-    sample_duration: u32,
     /// `mfhd` sequence number, 1-based, monotonic.
     moof_sequence: u32,
-    /// `tfdt` baseMediaDecodeTime, accumulates per emitted frame.
-    decode_time: u64,
+    /// Wall-clock instant when the muxer was created. We compute each
+    /// sample's `decode_time` (tfdt) from elapsed wall time so the
+    /// video timeline matches real time regardless of the source's
+    /// frame rate. Without this, hardcoding sample_duration to a
+    /// guessed FPS (e.g. 60) made non-60fps streams play in slow
+    /// motion or fast forward, which manifested as severe stuttering
+    /// once the player tried to chase the live edge.
+    start: Instant,
+    /// `tfdt` of the previous emitted sample, in TIMESCALE ticks.
+    /// Used to derive sample_duration as a delta.
+    last_decode_time: u64,
+    /// Default sample_duration to use for the first sample (no prior
+    /// frame to delta against). 1/60 sec is a safe placeholder; the
+    /// browser uses it for one frame and then learns real cadence
+    /// from subsequent samples.
+    default_first_duration: u32,
 }
 
 impl Fmp4Muxer {
-    pub fn new(codec: CodecKind, width: u32, height: u32, fps: u32) -> Self {
-        let fps = if fps > 0 { fps } else { 60 };
+    pub fn new(codec: CodecKind, width: u32, height: u32) -> Self {
         Self {
             codec,
             width,
             height,
-            sample_duration: TIMESCALE / fps,
             moof_sequence: 1,
-            decode_time: 0,
+            start: Instant::now(),
+            last_decode_time: 0,
+            default_first_duration: TIMESCALE / 60,
         }
     }
 
@@ -70,6 +81,20 @@ impl Fmp4Muxer {
     /// `sample_bytes` is in the codec's storage format (AVCC NALs for
     /// H.264/HEVC, raw OBU stream for AV1).
     pub fn media_segment(&mut self, sample_bytes: &[u8], is_keyframe: bool) -> Vec<u8> {
+        // Compute decode_time and sample_duration from wall time so the
+        // browser's playback timeline matches real time regardless of
+        // the source's actual FPS.
+        let elapsed_us = self.start.elapsed().as_micros() as u64;
+        let decode_time = elapsed_us.saturating_mul(TIMESCALE as u64) / 1_000_000;
+        let sample_duration = if self.moof_sequence == 1 {
+            self.default_first_duration
+        } else {
+            let delta = decode_time.saturating_sub(self.last_decode_time);
+            // Clamp to reasonable bounds (1ms..1s) so a stalled stream
+            // can't blow up the trun box with an absurd duration.
+            (delta.clamp(90, 90_000)) as u32
+        };
+
         // moof comes first; trun.data_offset points into the *following*
         // mdat. Build moof with a placeholder offset, then patch once we
         // know the moof size.
@@ -80,8 +105,8 @@ impl Fmp4Muxer {
         let trun_data_offset_pos = write_moof(
             &mut out,
             self.moof_sequence,
-            self.decode_time,
-            self.sample_duration,
+            decode_time,
+            sample_duration,
             sample_bytes.len() as u32,
             is_keyframe,
         );
@@ -96,7 +121,7 @@ impl Fmp4Muxer {
         write_mdat(&mut out, sample_bytes);
 
         self.moof_sequence += 1;
-        self.decode_time += self.sample_duration as u64;
+        self.last_decode_time = decode_time;
 
         out
     }
