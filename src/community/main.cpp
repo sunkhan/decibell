@@ -98,6 +98,7 @@ public:
     void handle_stream_codec_changed(const chatproj::Packet& packet,
                                      const std::string& sender_username);
     void broadcast_to_watchers(const char* data, size_t length, const std::string& channel_id, const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket);
+    void broadcast_to_watchers_voice(const char* data, size_t length, const std::string& channel_id, const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket);
     void set_udp_socket(boost::asio::ip::udp::socket* sock) { udp_socket_ptr_ = sock; }
     void set_media_udp_socket(boost::asio::ip::udp::socket* sock) { media_udp_socket_ptr_ = sock; }
     void register_udp_key(const std::string& udp_key, std::shared_ptr<Session> session);
@@ -1713,6 +1714,38 @@ void SessionManager::broadcast_to_watchers(const char* data, size_t length, cons
     }
 }
 
+void SessionManager::broadcast_to_watchers_voice(const char* data, size_t length, const std::string& channel_id,
+                                                 const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket) {
+    // Same as broadcast_to_watchers, but routes to each watcher's *voice*
+    // UDP endpoint instead of their media endpoint. Used for STREAM_AUDIO
+    // which travels on the voice socket end-to-end (small Opus packets,
+    // sits next to the regular AUDIO traffic). Routing it to the media
+    // endpoint instead would land it on the receiver's media socket recv
+    // loop — which only knows VIDEO / FEC and silently drops everything
+    // else, the bug that left watchers hearing nothing despite the
+    // streamer's encode loop chugging along.
+    auto buffer = std::make_shared<std::vector<char>>(data, data + length);
+    std::vector<boost::asio::ip::udp::endpoint> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto ch_it = stream_watchers_.find(channel_id);
+        if (ch_it == stream_watchers_.end()) return;
+        auto st_it = ch_it->second.find(streamer_username);
+        if (st_it == ch_it->second.end()) return;
+        targets.reserve(st_it->second.size());
+        for (auto& watcher : st_it->second) {
+            if (watcher->get_udp_endpoint().port() != 0) {
+                targets.push_back(watcher->get_udp_endpoint());
+            }
+        }
+    }
+    for (auto& ep : targets) {
+        udp_socket.async_send_to(
+            boost::asio::buffer(*buffer), ep,
+            [buffer](boost::system::error_code, std::size_t) {});
+    }
+}
+
 void SessionManager::relay_keyframe_request_internal(const std::string& target_username) {
     if (!media_udp_socket_ptr_) return;
     relay_keyframe_request(target_username, *media_udp_socket_ptr_);
@@ -2071,8 +2104,11 @@ private:
                                         manager_.broadcast_to_voice_channel(
                                             udp_buffer_, bytes_recvd, channel, session, udp_socket_);
                                     } else if (packet_type == chatproj::UdpPacketType::STREAM_AUDIO) {
-                                        // Stream audio stays on voice path (small, latency-sensitive)
-                                        manager_.broadcast_to_watchers(
+                                        // Stream audio stays on voice path (small, latency-sensitive).
+                                        // Send to each watcher's *voice* endpoint so it lands on
+                                        // their voice recv loop alongside regular AUDIO — the media
+                                        // recv loop only handles VIDEO / FEC.
+                                        manager_.broadcast_to_watchers_voice(
                                             udp_buffer_, bytes_recvd, channel, uname, udp_socket_);
                                     }
                                 }
