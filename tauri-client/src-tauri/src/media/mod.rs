@@ -1129,17 +1129,27 @@ fn spawn_video_event_bridge(
                             let nv12 = dec.decode_to_nv12(&data);
                             let decode_us = decode_start.elapsed().as_micros() as u64;
                             let publish_us = if let Some(nv12) = nv12 {
-                                // Cap the published preview at ≤720p so the
-                                // JS render loop's IPC pull stays cheap.
-                                // 1440p NV12 = 5.5MB and the Tauri IPC at
-                                // that size dominated the cycle. Halving
-                                // until we fit yields exact 2× ratios for
-                                // typical sources (1440p→720p, 4K→1080p
-                                // →540p, 1080p→540p) — no bilinear, just
-                                // 2×2 area averaging which is cheap and
-                                // looks good enough for a self-preview.
+                                // Cap the published preview at ≤540p so
+                                // the JS render loop's IPC pull stays
+                                // safely under the 16.67ms RAF budget.
+                                // Empirically WebKitGTK's Tauri IPC runs
+                                // ~70–80 MB/s steady state — a 720p NV12
+                                // (1.4MB) lands right at the 60fps
+                                // ceiling and goes over it on jitter.
+                                // 540p (≤780KB) gives consistent
+                                // headroom for 60fps and works for
+                                // 120fps too. Self-preview is just a
+                                // monitor; viewers still get the full
+                                // resolution over the network.
+                                //
+                                // 2×2 area averaging per halve, exact-2×
+                                // ratios for typical sources:
+                                //   4K   → 1080p → 540p
+                                //   1440p→ 720p  → 360p
+                                //   1080p→ 540p
+                                //   720p → 360p
                                 let mut nv12 = nv12;
-                                while nv12.width > 1280 || nv12.height > 720 {
+                                while nv12.width > 960 || nv12.height > 540 {
                                     nv12 = video_decoder::halve_nv12(&nv12);
                                 }
                                 let publish_start = std::time::Instant::now();
