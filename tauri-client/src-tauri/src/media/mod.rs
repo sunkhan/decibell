@@ -1008,6 +1008,16 @@ fn spawn_video_event_bridge(
         // tiny on RTX 4080 / VAAPI hardware.
         #[cfg(target_os = "linux")]
         let mut self_preview_decoder: Option<video_decoder::VideoDecoder> = None;
+        #[cfg(target_os = "linux")]
+        let mut sp_sample_count: u64 = 0;
+        #[cfg(target_os = "linux")]
+        let mut sp_decode_us_sum: u64 = 0;
+        #[cfg(target_os = "linux")]
+        let mut sp_publish_us_sum: u64 = 0;
+        #[cfg(target_os = "linux")]
+        let mut sp_total_us_sum: u64 = 0;
+        #[cfg(target_os = "linux")]
+        let mut sp_max_total_us: u64 = 0;
         loop {
             match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 Ok(video_pipeline::VideoPipelineEvent::CaptureEnded) => {
@@ -1036,25 +1046,37 @@ fn spawn_video_event_bridge(
                     }
                 }
                 Ok(video_pipeline::VideoPipelineEvent::EncodedFrame { data, is_keyframe, frame_id, codec, description }) => {
-                    use base64::Engine;
-                    let b64_data = base64::engine::general_purpose::STANDARD.encode(&data);
-                    let b64_desc = description.as_ref().map(|d|
-                        base64::engine::general_purpose::STANDARD.encode(d)
-                    );
-                    if frame_id % 60 == 0 || is_keyframe {
-                        eprintln!("[self-preview-bridge] emit stream_frame user='{}' frame={} bytes={} keyframe={} codec={} desc={}",
-                            self_username, frame_id, data.len(), is_keyframe, codec,
-                            b64_desc.as_ref().map(|d| d.len()).unwrap_or(0));
+                    // Linux self-preview goes straight through nv12_store +
+                    // LinuxStreamVideoPlayer (the Linux JS path doesn't
+                    // listen to stream_frame events). Skip the WebCodecs
+                    // emit entirely on Linux — base64-encoding ~50KB per
+                    // frame and pushing it through the GTK IPC + JSCore
+                    // event bus 60 times a second was eating enough CPU
+                    // to stall the bridge thread on its decode work and
+                    // cap perceived self-preview at ~30fps. No consumer
+                    // on Linux means it's pure overhead to skip.
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        use base64::Engine;
+                        let b64_data = base64::engine::general_purpose::STANDARD.encode(&data);
+                        let b64_desc = description.as_ref().map(|d|
+                            base64::engine::general_purpose::STANDARD.encode(d)
+                        );
+                        if frame_id % 60 == 0 || is_keyframe {
+                            eprintln!("[self-preview-bridge] emit stream_frame user='{}' frame={} bytes={} keyframe={} codec={} desc={}",
+                                self_username, frame_id, data.len(), is_keyframe, codec,
+                                b64_desc.as_ref().map(|d| d.len()).unwrap_or(0));
+                        }
+                        let _ = app.emit("stream_frame", serde_json::json!({
+                            "username": self_username,
+                            "format": "h264",
+                            "data": b64_data,
+                            "timestamp": frame_id as u64 * 33_333,
+                            "keyframe": is_keyframe,
+                            "description": b64_desc,
+                            "codec": codec,
+                        }));
                     }
-                    let _ = app.emit("stream_frame", serde_json::json!({
-                        "username": self_username,
-                        "format": "h264",
-                        "data": b64_data,
-                        "timestamp": frame_id as u64 * 33_333,
-                        "keyframe": is_keyframe,
-                        "description": b64_desc,
-                        "codec": codec,
-                    }));
 
                     // Linux: also feed the encoded frame to a local decoder
                     // and publish NV12 to nv12_store so the streamer's own
@@ -1066,6 +1088,7 @@ fn spawn_video_event_bridge(
                     // path on Windows, not on Linux.
                     #[cfg(target_os = "linux")]
                     {
+                        let total_start = std::time::Instant::now();
                         let frame_codec = match codec {
                             1 => caps::CodecKind::H264Hw,
                             2 => caps::CodecKind::H264Sw,
@@ -1102,8 +1125,37 @@ fn spawn_video_event_bridge(
                             }
                         }
                         if let Some(ref mut dec) = self_preview_decoder {
-                            if let Some(nv12) = dec.decode_to_nv12(&data) {
+                            let decode_start = std::time::Instant::now();
+                            let nv12 = dec.decode_to_nv12(&data);
+                            let decode_us = decode_start.elapsed().as_micros() as u64;
+                            let publish_us = if let Some(nv12) = nv12 {
+                                let publish_start = std::time::Instant::now();
                                 nv12_store::publish(&self_username, nv12);
+                                publish_start.elapsed().as_micros() as u64
+                            } else { 0 };
+                            let total_us = total_start.elapsed().as_micros() as u64;
+                            sp_decode_us_sum += decode_us;
+                            sp_publish_us_sum += publish_us;
+                            sp_total_us_sum += total_us;
+                            if total_us > sp_max_total_us { sp_max_total_us = total_us; }
+                            sp_sample_count += 1;
+                            if sp_sample_count >= 60 {
+                                let n = sp_sample_count as f64;
+                                let avg_decode = (sp_decode_us_sum as f64 / n) / 1000.0;
+                                let avg_publish = (sp_publish_us_sum as f64 / n) / 1000.0;
+                                let avg_total = (sp_total_us_sum as f64 / n) / 1000.0;
+                                let max_total = (sp_max_total_us as f64) / 1000.0;
+                                let max_fps = if avg_total > 0.0 { 1000.0 / avg_total } else { 0.0 };
+                                eprintln!(
+                                    "[self-preview-bridge] timing avg over {} frames: \
+                                     decode={:.2}ms publish={:.2}ms total={:.2}ms (max={:.2}ms) → ≤{:.1}fps",
+                                    sp_sample_count, avg_decode, avg_publish, avg_total, max_total, max_fps,
+                                );
+                                sp_sample_count = 0;
+                                sp_decode_us_sum = 0;
+                                sp_publish_us_sum = 0;
+                                sp_total_us_sum = 0;
+                                sp_max_total_us = 0;
                             }
                         }
                     }
