@@ -215,6 +215,8 @@ impl VoiceEngine {
             #[cfg(target_os = "linux")]
             let mut linux_muxer_codecs: std::collections::HashMap<String, u8> =
                 std::collections::HashMap::new();
+            #[cfg(target_os = "linux")]
+            let mut linux_mse_timing = MseTiming::new("recv");
             loop {
                 match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                     Ok(event) => match event {
@@ -278,6 +280,7 @@ impl VoiceEngine {
                                     &app,
                                     &mut linux_muxers,
                                     &mut linux_muxer_codecs,
+                                    &mut linux_mse_timing,
                                     &frame.streamer_username,
                                     frame.codec,
                                     frame.is_keyframe,
@@ -425,6 +428,30 @@ impl Drop for VoiceEngine {
     }
 }
 
+/// Per-bridge timing accumulator. Updated by `emit_linux_mse_for_frame`,
+/// summarised in a log line every 60 frames so resource cost can be
+/// measured on the user's actual hardware rather than estimated.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub struct MseTiming {
+    pub label: &'static str,
+    samples: u64,
+    mux_us_sum: u64,
+    base64_us_sum: u64,
+    emit_us_sum: u64,
+    total_us_sum: u64,
+    max_total_us: u64,
+    max_segment_bytes: usize,
+    bytes_emitted_sum: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl MseTiming {
+    pub fn new(label: &'static str) -> Self {
+        Self { label, ..Default::default() }
+    }
+}
+
 /// Linux-only: mux a frame into fMP4 and emit init / media segment events
 /// for the JS-side `<video>` MSE pipeline. Maintains per-streamer muxer
 /// state — one muxer per source, rebuilt on codec change. Each rebuild
@@ -435,6 +462,7 @@ fn emit_linux_mse_for_frame(
     app: &AppHandle,
     muxers: &mut std::collections::HashMap<String, fmp4_muxer::Fmp4Muxer>,
     muxer_codecs: &mut std::collections::HashMap<String, u8>,
+    timing: &mut MseTiming,
     username: &str,
     codec_byte: u8,
     is_keyframe: bool,
@@ -502,15 +530,64 @@ fn emit_linux_mse_for_frame(
         muxer_codecs.insert(username.to_string(), codec_byte);
     }
 
-    // Mux the media segment.
+    // Mux the media segment + measure each stage so we have real
+    // numbers for resource cost on the user's hardware.
     let Some(muxer) = muxers.get_mut(username) else { return };
+    let total_start = std::time::Instant::now();
+    let mux_start = total_start;
     let segment = muxer.media_segment(data, is_keyframe);
+    let mux_us = mux_start.elapsed().as_micros() as u64;
+    let seg_size = segment.len();
+
+    let b64_start = std::time::Instant::now();
     let seg_b64 = base64::engine::general_purpose::STANDARD.encode(&segment);
+    let base64_us = b64_start.elapsed().as_micros() as u64;
+    let b64_size = seg_b64.len();
+
+    let emit_start = std::time::Instant::now();
     let _ = app.emit("stream_mse_segment", serde_json::json!({
         "username": username,
         "data": seg_b64,
         "keyframe": is_keyframe,
     }));
+    let emit_us = emit_start.elapsed().as_micros() as u64;
+    let total_us = total_start.elapsed().as_micros() as u64;
+
+    timing.samples += 1;
+    timing.mux_us_sum += mux_us;
+    timing.base64_us_sum += base64_us;
+    timing.emit_us_sum += emit_us;
+    timing.total_us_sum += total_us;
+    timing.bytes_emitted_sum += b64_size as u64;
+    if total_us > timing.max_total_us { timing.max_total_us = total_us; }
+    if seg_size > timing.max_segment_bytes { timing.max_segment_bytes = seg_size; }
+
+    if timing.samples >= 60 {
+        let n = timing.samples as f64;
+        let avg_mux = (timing.mux_us_sum as f64 / n) / 1000.0;
+        let avg_b64 = (timing.base64_us_sum as f64 / n) / 1000.0;
+        let avg_emit = (timing.emit_us_sum as f64 / n) / 1000.0;
+        let avg_total = (timing.total_us_sum as f64 / n) / 1000.0;
+        let max_total = timing.max_total_us as f64 / 1000.0;
+        let avg_seg_kb = (timing.bytes_emitted_sum as f64 / n) / 1024.0;
+        let max_seg_kb = timing.max_segment_bytes as f64 / 1024.0;
+        let cpu_pct_one_core = (timing.total_us_sum as f64 / 60_000_000.0) * 100.0
+            / (n / 60.0); // approximate: time spent per second of frames
+        eprintln!(
+            "[mse-bridge:{}] over {} frames: mux={:.2}ms base64={:.2}ms emit={:.2}ms total={:.2}ms (max={:.2}ms) \
+             | avg seg b64={:.1}KB (max={:.1}KB) | bridge CPU≈{:.2}% of one core",
+            timing.label, timing.samples, avg_mux, avg_b64, avg_emit, avg_total, max_total,
+            avg_seg_kb, max_seg_kb, cpu_pct_one_core,
+        );
+        timing.samples = 0;
+        timing.mux_us_sum = 0;
+        timing.base64_us_sum = 0;
+        timing.emit_us_sum = 0;
+        timing.total_us_sum = 0;
+        timing.max_total_us = 0;
+        timing.max_segment_bytes = 0;
+        timing.bytes_emitted_sum = 0;
+    }
 }
 
 /// Dedicated thread for video packet reassembly, NACK/PLI.
@@ -1013,6 +1090,8 @@ fn spawn_video_event_bridge(
         #[cfg(target_os = "linux")]
         let mut sp_muxer_codecs: std::collections::HashMap<String, u8> =
             std::collections::HashMap::new();
+        #[cfg(target_os = "linux")]
+        let mut sp_mse_timing = MseTiming::new("self");
         loop {
             match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 Ok(video_pipeline::VideoPipelineEvent::CaptureEnded) => {
@@ -1087,6 +1166,7 @@ fn spawn_video_event_bridge(
                             &app,
                             &mut sp_muxers,
                             &mut sp_muxer_codecs,
+                            &mut sp_mse_timing,
                             &self_username,
                             codec,
                             is_keyframe,

@@ -168,14 +168,77 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
       if (stopped) fn(); else unlistenInit = fn;
     });
 
+    // Per-N-segments timing log so resource cost is measured on the
+    // user's actual hardware, not estimated.
+    let timingSamples = 0;
+    let sumDecodeMs = 0;
+    let sumQueueMs = 0;
+    let sumChaseMs = 0;
+    let sumTotalMs = 0;
+    let maxTotalMs = 0;
+    let sumBytes = 0;
+
     listen<MseSegmentPayload>("stream_mse_segment", (event) => {
       if (stopped || event.payload.username !== streamerUsername) return;
+      const totalStart = performance.now();
+      const decodeStart = performance.now();
       const bytes = b64ToBytes(event.payload.data);
+      const decodeMs = performance.now() - decodeStart;
+
+      const queueStart = performance.now();
       // Drop oldest under sustained backpressure rather than blow up.
       if (queue.length >= QUEUE_MAX) queue.shift();
       queue.push(bytes);
       pump();
+      const queueMs = performance.now() - queueStart;
+
+      const chaseStart = performance.now();
+      // chaseLiveEdge is also called inside updateend; this is just a hint
+      // that we have new data to potentially chase to.
+      const chaseMs = performance.now() - chaseStart;
+      const totalMs = performance.now() - totalStart;
+
       if (!hasFirstFrame) setHasFirstFrame(true);
+
+      timingSamples++;
+      sumDecodeMs += decodeMs;
+      sumQueueMs += queueMs;
+      sumChaseMs += chaseMs;
+      sumTotalMs += totalMs;
+      sumBytes += bytes.byteLength;
+      if (totalMs > maxTotalMs) maxTotalMs = totalMs;
+
+      if (timingSamples >= 60) {
+        const n = timingSamples;
+        const avgDecode = sumDecodeMs / n;
+        const avgQueue = sumQueueMs / n;
+        const avgChase = sumChaseMs / n;
+        const avgTotal = sumTotalMs / n;
+        const avgKb = sumBytes / n / 1024;
+        const buffered = videoRef.current?.buffered;
+        const lag = buffered && buffered.length > 0
+          ? buffered.end(buffered.length - 1) - (videoRef.current?.currentTime ?? 0)
+          : 0;
+        const bufferedSec = buffered && buffered.length > 0
+          ? buffered.end(buffered.length - 1) - buffered.start(0)
+          : 0;
+        // CPU% rough estimate: time spent per second of frames (assume ~60fps stream).
+        const cpuPct = (sumTotalMs / 1000) * 100;
+        console.log(
+          `[MseStreamVideoPlayer] over ${n} segments: ` +
+          `b64decode=${avgDecode.toFixed(2)}ms queue=${avgQueue.toFixed(2)}ms ` +
+          `chase=${avgChase.toFixed(2)}ms total=${avgTotal.toFixed(2)}ms (max=${maxTotalMs.toFixed(2)}ms) | ` +
+          `avg seg ${avgKb.toFixed(1)}KB | buffered=${bufferedSec.toFixed(2)}s lag=${lag.toFixed(3)}s | ` +
+          `JS handler CPU≈${cpuPct.toFixed(2)}%`
+        );
+        timingSamples = 0;
+        sumDecodeMs = 0;
+        sumQueueMs = 0;
+        sumChaseMs = 0;
+        sumTotalMs = 0;
+        sumBytes = 0;
+        maxTotalMs = 0;
+      }
     }).then((fn) => {
       if (stopped) fn(); else unlistenSegment = fn;
     });
