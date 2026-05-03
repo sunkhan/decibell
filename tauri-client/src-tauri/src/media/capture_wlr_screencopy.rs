@@ -471,16 +471,20 @@ fn capture_loop(
         .ok_or("zwlr_screencopy_manager_v1 not advertised")?;
     let shm = state.shm.clone().ok_or("wl_shm not advertised")?;
 
-    // Pacing: target frame interval. Sleeps before each capture request
-    // when the budget allows. At high target_fps (60+) on 1440p the budget
-    // is usually consumed by compositor readback + our memcpy, so the
-    // sleep effectively becomes zero and we run at the natural cycle rate.
+    // Pacing: target frame interval. We keep an *absolute* next-emit
+    // deadline that advances by exactly frame_interval per cycle, instead
+    // of computing each sleep relative to `last_emit`. The relative
+    // approach loses ~0.5–1ms per cycle to `std::thread::sleep` over-
+    // sleeping (kernel scheduler quanta), which compounded to a ~5%
+    // shortfall — 60fps target landing on 56fps, 120fps on ~112fps.
+    // Tracking the absolute deadline lets short-cycle catch-ups cancel
+    // out long-cycle over-sleeps so the average rate hits target exactly.
     let frame_interval = if config.target_fps > 0 {
         Duration::from_micros(1_000_000 / config.target_fps as u64)
     } else {
         Duration::from_millis(16)
     };
-    let mut last_emit = Instant::now() - frame_interval;
+    let mut next_emit_target = Instant::now() + frame_interval;
 
     // Double-buffered SHM pool. Two buffers let the compositor's readback
     // for frame N+1 overlap with our processing of frame N — without this
@@ -522,10 +526,6 @@ fn capture_loop(
     loop {
         // First-iteration bootstrap: queue the very first capture.
         if in_flight.is_none() {
-            let elapsed = Instant::now().duration_since(last_emit);
-            if elapsed < frame_interval {
-                std::thread::sleep(frame_interval - elapsed);
-            }
             let f = mgr.capture_output(0, &output, &qh, ());
             in_flight = Some((f, next_buf_idx));
             next_buf_idx ^= 1;
@@ -601,12 +601,22 @@ fn capture_loop(
         // doing GPU readback for the next frame. That overlap is the
         // whole reason we keep two buffers — it's the difference between
         // 45fps and 60fps at 1440p.
+        //
+        // Sleep until the absolute next-emit deadline. If a previous
+        // cycle over-slept, we sleep less here to compensate; if it
+        // under-slept, we sleep more. Long-term average lands exactly
+        // on target. Drift larger than 100ms (sustained pause / debugger
+        // break) resets the deadline so we don't burst.
         let pace_sleep_start = Instant::now();
-        let elapsed = pace_sleep_start.duration_since(last_emit);
-        if elapsed < frame_interval {
-            std::thread::sleep(frame_interval - elapsed);
+        if pace_sleep_start < next_emit_target {
+            std::thread::sleep(next_emit_target - pace_sleep_start);
         }
         let pace_sleep_us = pace_sleep_start.elapsed().as_micros() as u64;
+        let now = Instant::now();
+        next_emit_target += frame_interval;
+        if now > next_emit_target + Duration::from_millis(100) {
+            next_emit_target = now + frame_interval;
+        }
         let next_frame = mgr.capture_output(0, &output, &qh, ());
         in_flight = Some((next_frame, next_buf_idx));
         next_buf_idx ^= 1;
@@ -647,12 +657,10 @@ fn capture_loop(
         match tx.try_send(raw) {
             Ok(()) => {
                 frames_emitted += 1;
-                last_emit = Instant::now();
             }
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                // Encoder is keeping up — drop the frame, advance the pace
-                // counter so we don't busy-loop.
-                last_emit = Instant::now();
+                // Encoder is keeping up — drop the frame silently. The
+                // absolute pace target keeps cadence intact.
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                 eprintln!("[wlr-screencopy] consumer disconnected, exiting");
