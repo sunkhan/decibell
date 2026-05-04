@@ -506,3 +506,32 @@ pub async fn request_keyframe(
         Err("No active video engine".to_string())
     }
 }
+
+/// Linux MSE bridge: drop the receiver-side fMP4 muxer state for a
+/// streamer so the next received frame rebuilds it from scratch and
+/// emits a fresh init segment. Called from `MseStreamVideoPlayer` on
+/// mount — without this, a stop+rewatch cycle produces no playback
+/// because the persisted muxer thinks the codec hasn't changed and
+/// never re-emits init.
+///
+/// No-op (and Ok) on non-Linux: the WebCodecs path doesn't keep this
+/// kind of state on the Rust side.
+#[tauri::command]
+pub async fn reset_mse_state(
+    state: State<'_, SharedState>,
+    target_username: String,
+) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let s = state.lock().await;
+        if let Some(ref engine) = s.voice_engine {
+            engine.reset_mse_for_user(&target_username);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = state;
+        let _ = target_username;
+    }
+    Ok(())
+}

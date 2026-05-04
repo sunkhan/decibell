@@ -167,6 +167,7 @@ pub fn run() {
             commands::streaming::watch_self_stream,
             commands::streaming::stop_watching,
             commands::streaming::request_keyframe,
+            commands::streaming::reset_mse_state,
             commands::voice::set_stream_volume,
             commands::voice::set_stream_stereo,
             commands::voice::set_user_volume,

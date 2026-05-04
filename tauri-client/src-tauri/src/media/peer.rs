@@ -12,10 +12,28 @@ use std::time::Instant;
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
 use rubato::{Resampler, SincFixedOut};
 
+#[cfg(target_os = "linux")]
+use std::collections::VecDeque;
+
 use super::audio_device::make_sinc_resampler;
 use super::codec::{OpusDecoder, StereoOpusDecoder, FRAME_SIZE, SAMPLE_RATE};
 use super::jitter::JitterBuffer;
 use super::speaking::SpeakingDetector;
+
+/// Linux-only: extra hold time applied to STREAM_AUDIO packets before they
+/// enter the regular jitter buffer. The Linux receive path renders video
+/// through a `<video>` + MSE pipeline that needs a ~1s buffer cushion to
+/// stay above WebKit's HAVE_ENOUGH_DATA cliff (see
+/// `MseStreamVideoPlayer.tsx::TARGET_LATENCY_S`). Stream audio plays out
+/// of CPAL/cubeb with near-zero latency, so without this hold the audio
+/// arrives ~1s before the video — the user hears the friend talking before
+/// they see them. Matching the hold to TARGET_LATENCY_S keeps both paths
+/// at the same end-to-end latency.
+///
+/// Non-Linux receive paths use WebCodecs (decode-immediately, render to
+/// canvas) and have no comparable buffer, so no delay is applied there.
+#[cfg(target_os = "linux")]
+pub const STREAM_AUDIO_DELAY_MS: u64 = 1000;
 
 /// ~1s of headroom at 48kHz. Generous — the callback drains continuously.
 pub const PEER_RING_CAP: usize = FRAME_SIZE * 48;
@@ -44,6 +62,13 @@ pub struct PeerAudio {
     pub stream_audio_decoder: Option<StereoOpusDecoder>,
     pub stream_jitter: JitterBuffer,
     pub stream_drain_time: Instant,
+
+    /// Linux-only A/V sync hold queue: STREAM_AUDIO packets land here on
+    /// arrival and are released into `stream_jitter` only after sitting
+    /// for `STREAM_AUDIO_DELAY_MS`. See `STREAM_AUDIO_DELAY_MS` for the
+    /// rationale (matches MSE video latency).
+    #[cfg(target_os = "linux")]
+    pub stream_delay_queue: VecDeque<(Instant, u16, Vec<u8>)>,
 
     /// Producer into this peer's voice ring. Consumed by output callback.
     prod: HeapProd<i16>,
@@ -75,6 +100,8 @@ impl PeerAudio {
             stream_audio_decoder: None,
             stream_jitter: JitterBuffer::new(),
             stream_drain_time: now,
+            #[cfg(target_os = "linux")]
+            stream_delay_queue: VecDeque::new(),
             prod,
             cons,
             resampler,

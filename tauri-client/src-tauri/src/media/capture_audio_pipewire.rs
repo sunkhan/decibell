@@ -1,4 +1,7 @@
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, Mutex};
 
 use super::capture::AudioFrame;
 
@@ -22,42 +25,97 @@ struct AudioCaptureData {
 ///
 /// Strategy:
 /// 1. Find the default audio sink's monitor node via PipeWire registry
-/// 2. Find Decibell's own playback node (by our PID) and redirect it to a
-///    null-sink so our output doesn't appear in the loopback capture
-/// 3. Capture the default sink's monitor as stereo f32 48kHz
-/// 4. Cleanup: restore Decibell's playback routing
+/// 2. Find ALL of Decibell's own playback nodes (by our PID) and redirect
+///    each to a null-sink so our output doesn't appear in the loopback
+///    capture. Decibell creates one CPAL output for voice and (when the
+///    user picks a separate stream-output device) a second CPAL output
+///    for stream audio — finding only the first leaks the other into
+///    the capture.
+/// 3. Spawn a small poller that catches nodes created *after* this point
+///    (e.g. user changes output device mid-stream → CPAL builds a new
+///    PipeWire node) and redirects them too.
+/// 4. Capture the default sink's monitor as stereo f32 48kHz
+/// 5. Cleanup: stop the poller and restore routing for every node we
+///    ever redirected.
 pub fn start_system_audio_capture() -> Result<(std::sync::mpsc::Receiver<AudioFrame>, Box<dyn FnOnce() + Send>), String> {
     let (tx, rx) = std::sync::mpsc::sync_channel::<AudioFrame>(16);
 
-    // We use pipewire-rs to set up the capture stream. The capture targets
-    // the default sink's monitor, which gives us a loopback of all audio
-    // going to the speakers.
-    //
-    // To exclude Decibell's own audio, we use pw-link/pw-cli to redirect
-    // our CPAL output to a null-sink before starting the capture, and
-    // restore it on cleanup. We find our node by matching PID.
-
     let our_pid = std::process::id();
 
-    // Step 1: Find the default sink name and (optionally) our playback node
-    let (default_sink_name, our_node_id) = find_default_sink_and_our_node(our_pid)?;
+    // Step 1: Find the default sink name and all current playback nodes
+    let (default_sink_name, initial_node_ids) = find_default_sink_and_our_nodes(our_pid)?;
 
-    // Step 2: If our playback node exists, create a null-sink and redirect it
-    // so our own audio doesn't appear in the loopback capture.
-    // If the node doesn't exist (CPAL hasn't started playback), skip this —
-    // there's nothing to exclude.
-    let null_module_id = if our_node_id.is_some() {
-        let module_id = create_null_sink()?;
-        redirect_node_to_sink(our_node_id.unwrap(), "decibell_private")?;
-        Some(module_id)
-    } else {
-        None
+    // Step 2: Always create the null-sink even if no nodes exist yet —
+    // the poller spawned below may discover one later (e.g. CPAL hasn't
+    // built its output stream by the time we get here).
+    let null_module_id = create_null_sink()?;
+
+    // Track every node we've ever redirected so cleanup restores them all.
+    let redirected: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
+    {
+        let mut set = redirected.lock().unwrap();
+        for id in &initial_node_ids {
+            if let Err(e) = redirect_node_to_sink(*id, "decibell_private") {
+                eprintln!("[audio-capture] Failed to redirect node {}: {}", id, e);
+            } else {
+                set.insert(*id);
+            }
+        }
+    }
+
+    // Step 3: Poller for late-arriving Decibell playback nodes. Polls
+    // every 2s. Cheap (one pw-dump invocation) and idempotent — only
+    // redirects nodes we haven't already redirected.
+    let poller_stop = Arc::new(AtomicBool::new(false));
+    let poller_handle = {
+        let stop = poller_stop.clone();
+        let redirected = redirected.clone();
+        std::thread::Builder::new()
+            .name("decibell-self-exclude-poller".to_string())
+            .spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    if stop.load(Ordering::Relaxed) { break; }
+                    let nodes = match find_our_playback_nodes(our_pid) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            eprintln!("[audio-capture] Poller scan failed: {}", e);
+                            continue;
+                        }
+                    };
+                    let mut set = redirected.lock().unwrap();
+                    for id in nodes {
+                        if set.contains(&id) { continue; }
+                        match redirect_node_to_sink(id, "decibell_private") {
+                            Ok(()) => {
+                                eprintln!("[audio-capture] Poller redirected late node {}", id);
+                                set.insert(id);
+                            }
+                            Err(e) => {
+                                eprintln!("[audio-capture] Poller redirect of {} failed: {}", id, e);
+                            }
+                        }
+                    }
+                }
+            })
+            .map_err(|e| format!("Spawn self-exclude poller: {}", e))?
     };
 
-    // Step 3: Find the default sink's monitor node ID for capture
-    let monitor_target = find_sink_monitor_target(&default_sink_name)?;
+    // Step 4: Find the default sink's monitor node ID for capture
+    let monitor_target = match find_sink_monitor_target(&default_sink_name) {
+        Ok(t) => t,
+        Err(e) => {
+            poller_stop.store(true, Ordering::Relaxed);
+            let _ = poller_handle.join();
+            for id in redirected.lock().unwrap().iter() {
+                let _ = restore_node_routing(*id);
+            }
+            let _ = remove_null_sink(null_module_id);
+            return Err(e);
+        }
+    };
 
-    // Step 4: Start PipeWire capture stream targeting the monitor
+    // Step 5: Start PipeWire capture stream targeting the monitor
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
 
     std::thread::Builder::new()
@@ -74,46 +132,48 @@ pub fn start_system_audio_capture() -> Result<(std::sync::mpsc::Receiver<AudioFr
         .map_err(|e| format!("Spawn audio capture thread: {}", e))?;
 
     // Wait for the capture to be ready (or fail)
+    let do_cleanup_on_err = |poller_stop: &Arc<AtomicBool>,
+                             redirected: &Arc<Mutex<HashSet<u32>>>,
+                             null_module_id: u32| {
+        poller_stop.store(true, Ordering::Relaxed);
+        for id in redirected.lock().unwrap().iter() {
+            let _ = restore_node_routing(*id);
+        }
+        let _ = remove_null_sink(null_module_id);
+    };
     match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
-            if let Some(node_id) = our_node_id {
-                let _ = restore_node_routing(node_id);
-            }
-            if let Some(module_id) = null_module_id {
-                let _ = remove_null_sink(module_id);
-            }
+            do_cleanup_on_err(&poller_stop, &redirected, null_module_id);
             return Err(e);
         }
         Err(_) => {
-            if let Some(node_id) = our_node_id {
-                let _ = restore_node_routing(node_id);
-            }
-            if let Some(module_id) = null_module_id {
-                let _ = remove_null_sink(module_id);
-            }
+            do_cleanup_on_err(&poller_stop, &redirected, null_module_id);
             return Err("Timeout waiting for audio capture to start".to_string());
         }
     }
 
     // Build cleanup closure
+    let cleanup_redirected = redirected.clone();
+    let cleanup_poller_stop = poller_stop.clone();
     let cleanup = Box::new(move || {
         eprintln!("[audio-capture] Cleanup: restoring audio routing");
-        if let Some(node_id) = our_node_id {
-            let _ = restore_node_routing(node_id);
+        cleanup_poller_stop.store(true, Ordering::Relaxed);
+        for id in cleanup_redirected.lock().unwrap().iter() {
+            let _ = restore_node_routing(*id);
         }
-        if let Some(module_id) = null_module_id {
-            let _ = remove_null_sink(module_id);
-        }
+        let _ = remove_null_sink(null_module_id);
     }) as Box<dyn FnOnce() + Send>;
 
     Ok((rx, cleanup))
 }
 
-/// Find the default audio sink name and (optionally) our CPAL playback node ID.
-/// The node may not exist yet if CPAL hasn't started playback.
-fn find_default_sink_and_our_node(our_pid: u32) -> Result<(String, Option<u32>), String> {
-    // Use wpctl to get the default sink name
+/// Find the default audio sink name and every Decibell-PID playback node
+/// currently registered in PipeWire. Decibell may have multiple Stream/
+/// Output/Audio nodes (voice + separate stream-output device, plus any
+/// nodes from a previous CPAL stream that hasn't been GC'd yet) — the
+/// caller must redirect all of them, not just the first.
+fn find_default_sink_and_our_nodes(our_pid: u32) -> Result<(String, Vec<u32>), String> {
     let output = std::process::Command::new("wpctl")
         .args(["inspect", "@DEFAULT_AUDIO_SINK@"])
         .output()
@@ -147,24 +207,37 @@ fn find_default_sink_and_our_node(our_pid: u32) -> Result<(String, Option<u32>),
 
     eprintln!("[audio-capture] Default sink: {}", default_sink_name);
 
-    // Find our CPAL playback node by PID using pw-dump.
-    // This may not exist yet — CPAL creates the PipeWire node lazily when
-    // audio actually plays. If not found, we skip the redirect (brief self-audio
-    // leakage is acceptable since we may not be playing anything yet).
+    let nodes = find_our_playback_nodes(our_pid).unwrap_or_else(|e| {
+        eprintln!("[audio-capture] Initial node scan failed (poller will retry): {}", e);
+        Vec::new()
+    });
+    if nodes.is_empty() {
+        eprintln!("[audio-capture] No Decibell playback nodes found yet — poller will pick them up when they appear.");
+    } else {
+        eprintln!("[audio-capture] Found {} Decibell playback node(s): {:?}", nodes.len(), nodes);
+    }
+
+    Ok((default_sink_name, nodes))
+}
+
+/// Scan PipeWire for all Stream/Output/Audio nodes belonging to our PID.
+/// Used both at startup and by the poller that catches nodes created
+/// after capture begins (CPAL output device swap, audio stream restart,
+/// etc.). Returns an empty vec if pw-dump fails — the caller should
+/// retry on the next tick rather than abort.
+fn find_our_playback_nodes(our_pid: u32) -> Result<Vec<u32>, String> {
     let pw_dump = std::process::Command::new("pw-dump")
         .output()
         .map_err(|e| format!("pw-dump: {}", e))?;
-
     if !pw_dump.status.success() {
         return Err("pw-dump failed".to_string());
     }
-
     let dump_str = String::from_utf8_lossy(&pw_dump.stdout);
-    let dump: serde_json::Value =
-        serde_json::from_str(&dump_str).map_err(|e| format!("Parse pw-dump: {}", e))?;
+    let dump: serde_json::Value = serde_json::from_str(&dump_str)
+        .map_err(|e| format!("Parse pw-dump: {}", e))?;
 
     let our_pid_str = our_pid.to_string();
-    let mut our_node_id: Option<u32> = None;
+    let mut ids = Vec::new();
 
     if let Some(arr) = dump.as_array() {
         for obj in arr {
@@ -184,22 +257,14 @@ fn find_default_sink_and_our_node(our_pid: u32) -> Result<(String, Option<u32>),
                 .get("media.class")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-
             if pid == our_pid_str && media_class == "Stream/Output/Audio" {
                 if let Some(id) = obj.get("id").and_then(|v| v.as_u64()) {
-                    our_node_id = Some(id as u32);
-                    eprintln!("[audio-capture] Found our playback node: id={}", id);
-                    break;
+                    ids.push(id as u32);
                 }
             }
         }
     }
-
-    if our_node_id.is_none() {
-        eprintln!("[audio-capture] Our playback node not found in PipeWire (CPAL may not have started yet). Skipping self-exclusion.");
-    }
-
-    Ok((default_sink_name, our_node_id))
+    Ok(ids)
 }
 
 /// Create a null-sink named "decibell_private" using pw-loopback or pactl.

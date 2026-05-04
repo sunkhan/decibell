@@ -22,21 +22,31 @@
 //!   already produces this format, so we copy through.
 //! - AV1: raw OBU stream (low-overhead bitstream format), ditto.
 
+use std::collections::VecDeque;
 use std::time::Instant;
 use crate::media::caps::CodecKind;
 
 const TIMESCALE: u32 = 90_000;
-/// Lower bound on a sample's duration in TIMESCALE ticks. ~1ms.
-/// Browsers reject zero-duration samples and can stall on sub-ms ones.
-const MIN_SAMPLE_DURATION: u32 = 90;
-/// Upper bound on a sample's duration. ~1 second. A real gap longer than
-/// this means the source has stopped producing — better to clamp than to
-/// hold a single frame for minutes if the network drops out.
-const MAX_SAMPLE_DURATION: u32 = 90_000;
-/// Placeholder used for the very first sample (no prior frame to delta
-/// against). 1/60 s is benign for any source rate — the browser only
-/// uses it for one frame before subsequent samples report real cadence.
-const FIRST_SAMPLE_DURATION: u32 = TIMESCALE / 60;
+/// Final clamp on the per-frame period derived from the arrival
+/// window. 4_166µs ≈ 240fps, 200_000µs = 5fps. Catches degenerate
+/// histories before they hit the timeline.
+const MIN_PERIOD_US: u64 = 4_166;
+const MAX_PERIOD_US: u64 = 200_000;
+/// Default period before the arrival window has enough samples to
+/// derive one (i.e. the very first frame). 60fps — benign for any
+/// source; the window-mean replaces it within a few frames.
+const SEED_PERIOD_US: u64 = 16_667;
+/// Wall-clock window over which the muxer averages inter-arrival
+/// times to compute each sample's display duration. 3s is long
+/// enough that a one-off burst of ~10 frames shifts the period by
+/// only a few percent (so motion smoothness stays at the source's
+/// fps), short enough that an actual fps change settles within a
+/// few seconds.
+const WINDOW_SECS: f64 = 3.0;
+/// Cap on the arrival-history length, in case a malformed source
+/// fires frames at impossible rates and we'd otherwise allocate
+/// without bound.
+const HISTORY_MAX: usize = 1024;
 
 pub struct Fmp4Muxer {
     codec: CodecKind,
@@ -46,17 +56,28 @@ pub struct Fmp4Muxer {
     moof_sequence: u32,
     /// `tfdt` to use for the next emitted sample. Strictly equal to
     /// the previous sample's `decode_time + sample_duration` — i.e. the
-    /// timeline is GAP-FREE by construction. This is the difference
-    /// between this muxer working and the previous wall-clock-tagged
-    /// version: the video element can't auto-skip MSE buffered-range
-    /// gaps, so any timestamp discontinuity caused a permanent freeze
-    /// the moment the playhead reached it.
+    /// timeline is GAP-FREE by construction. The video element can't
+    /// auto-skip MSE buffered-range gaps, so any timestamp discontinuity
+    /// caused a permanent freeze the moment the playhead reached it.
     next_decode_time: u64,
-    /// Wall-clock instant of the last emitted sample. Used to derive
-    /// the *next* sample's `sample_duration` from wall-time delta —
-    /// so long-term timeline pacing tracks real time even though the
-    /// per-sample timestamps are continuous (no gaps).
-    last_emit_wallclock: Option<Instant>,
+    /// Sliding window of recent arrival instants. Each sample's
+    /// duration is `window_span / (window_count - 1)` — a true
+    /// inter-arrival average over the last WINDOW_SECS of wall clock.
+    /// Far more burst-resistant than EWMA: a 10-frame burst at 1ms
+    /// inter-arrival shifts the per-frame period by only ~5% (vs ~70%
+    /// for EWMA at α=0.07), which keeps the player's display rate
+    /// close to source fps and stops the visible motion judder that
+    /// short EWMA-derived durations cause.
+    arrival_history: VecDeque<Instant>,
+    /// Sub-tick remainder carried between frames. Per-frame integer
+    /// division (`period_us · 90000 / 1_000_000`) truncates ~10µs
+    /// every time, so over a few seconds the cumulative tfdt drifts
+    /// far enough that WebKit's `MediaSourcePrivate::hasFutureTime` —
+    /// which uses an 83.4ms `timeFudgeFactor` to decide whether the
+    /// playhead is "inside" a buffered range — flips to false and
+    /// fires `waiting` even when there's data ahead. Carrying the
+    /// remainder keeps tfdt rationally exact and stops the drift.
+    duration_remainder: u64,
 }
 
 impl Fmp4Muxer {
@@ -67,7 +88,8 @@ impl Fmp4Muxer {
             height,
             moof_sequence: 1,
             next_decode_time: 0,
-            last_emit_wallclock: None,
+            arrival_history: VecDeque::with_capacity(HISTORY_MAX),
+            duration_remainder: 0,
         }
     }
 
@@ -89,16 +111,39 @@ impl Fmp4Muxer {
     /// H.264/HEVC, raw OBU stream for AV1).
     pub fn media_segment(&mut self, sample_bytes: &[u8], is_keyframe: bool) -> Vec<u8> {
         let now = Instant::now();
-        // Sample duration tracks wall-clock pacing (so long-term
-        // timeline matches real time) but is clamped to sane bounds.
-        let sample_duration: u32 = match self.last_emit_wallclock {
-            None => FIRST_SAMPLE_DURATION,
-            Some(last) => {
-                let wall_us = now.duration_since(last).as_micros() as u64;
-                let wall_ticks = wall_us.saturating_mul(TIMESCALE as u64) / 1_000_000;
-                wall_ticks.clamp(MIN_SAMPLE_DURATION as u64, MAX_SAMPLE_DURATION as u64) as u32
+        // Maintain the sliding arrival window: drop entries older
+        // than WINDOW_SECS, then append `now`.
+        let cutoff = now - std::time::Duration::from_secs_f64(WINDOW_SECS);
+        while let Some(&front) = self.arrival_history.front() {
+            if front < cutoff || self.arrival_history.len() >= HISTORY_MAX {
+                self.arrival_history.pop_front();
+            } else {
+                break;
             }
+        }
+        self.arrival_history.push_back(now);
+
+        // Per-sample period = window-mean of inter-arrival deltas.
+        // Window holds N timestamps → N−1 deltas → period = span/(N−1).
+        // Far more stable across bursts than a per-frame delta or a
+        // short-memory EWMA — keeps the timeline growing at the
+        // long-term source cadence so the player's display rate
+        // stays at source fps.
+        let period_us = if self.arrival_history.len() < 2 {
+            SEED_PERIOD_US
+        } else {
+            let span_us = now
+                .duration_since(*self.arrival_history.front().unwrap())
+                .as_micros() as u64;
+            let deltas = (self.arrival_history.len() - 1) as u64;
+            (span_us / deltas).clamp(MIN_PERIOD_US, MAX_PERIOD_US)
         };
+        // Carry the µs remainder so tfdt stays rationally exact —
+        // see the field's doc-comment for the WebKit fudge-factor
+        // interaction this prevents.
+        let scaled = period_us * TIMESCALE as u64 + self.duration_remainder;
+        let sample_duration = (scaled / 1_000_000) as u32;
+        self.duration_remainder = scaled % 1_000_000;
         // decode_time is GAP-FREE by construction: it's exactly the end
         // of the previous sample. The video element can't seek across
         // MSE buffered-range gaps, so a single discontinuity here meant
@@ -132,7 +177,6 @@ impl Fmp4Muxer {
 
         self.moof_sequence += 1;
         self.next_decode_time = decode_time + sample_duration as u64;
-        self.last_emit_wallclock = Some(now);
 
         out
     }

@@ -63,6 +63,15 @@ pub struct VoiceEngine {
     /// Set when VideoEngine starts so the voice event bridge can forward
     /// keyframe requests without locking AppState.
     keyframe_tx: Arc<std::sync::Mutex<Option<mpsc::Sender<video_pipeline::VideoPipelineControl>>>>,
+    /// Linux-only: usernames whose MSE muxer state the receiver bridge
+    /// should drop on the next frame. Populated by `reset_mse_for_user`
+    /// when a JS-side `MseStreamVideoPlayer` mounts. Without this, the
+    /// muxer state persists across watch sessions: rewatching the same
+    /// streamer never emits a fresh init segment (codec hasn't
+    /// changed), so the JS side never adds a SourceBuffer and gets no
+    /// playback. The set is cleared as the bridge consumes entries.
+    #[cfg(target_os = "linux")]
+    mse_resets: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl VoiceEngine {
@@ -200,6 +209,12 @@ impl VoiceEngine {
             Arc::new(std::sync::Mutex::new(None));
         let keyframe_tx_for_bridge = keyframe_tx.clone();
 
+        #[cfg(target_os = "linux")]
+        let mse_resets: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        #[cfg(target_os = "linux")]
+        let mse_resets_for_bridge = mse_resets.clone();
+
         // Voice event bridge: runs on Tokio's blocking thread pool so it never
         // consumes a worker thread. Previous `tokio::spawn` + `block_in_place`
         // permanently stole a Tokio worker, starving the runtime over time.
@@ -248,6 +263,23 @@ impl VoiceEngine {
                             }));
                         }
                         VoiceEvent::VideoFrameReady(frame) => {
+                            // Drop the muxer state for any usernames the JS
+                            // side asked us to reset. The next frame for
+                            // each will rebuild the muxer from scratch and
+                            // emit a fresh init segment, which is exactly
+                            // what a freshly-mounted MseStreamVideoPlayer
+                            // needs to bootstrap its SourceBuffer.
+                            #[cfg(target_os = "linux")]
+                            {
+                                if let Ok(mut to_reset) = mse_resets_for_bridge.lock() {
+                                    if !to_reset.is_empty() {
+                                        for name in to_reset.drain() {
+                                            linux_muxers.remove(&name);
+                                            linux_muxer_codecs.remove(&name);
+                                        }
+                                    }
+                                }
+                            }
                             #[cfg(not(target_os = "linux"))]
                             {
                                 use base64::Engine;
@@ -319,7 +351,31 @@ impl VoiceEngine {
             is_deafened: false,
             was_muted_before_deafen: false,
             keyframe_tx,
+            #[cfg(target_os = "linux")]
+            mse_resets,
         })
+    }
+
+    /// Linux-only: queue a username for MSE muxer-state reset. The
+    /// receiver bridge picks it up on the next frame and drops the
+    /// streamer's muxer + codec entry, forcing the following frame to
+    /// rebuild the muxer and emit a fresh init segment. The JS-side
+    /// `MseStreamVideoPlayer` calls this on mount so a stop+rewatch
+    /// cycle bootstraps cleanly, and on its own `recoverFromError`
+    /// path so a fatal SourceBuffer/decoder error rebuilds against a
+    /// fresh init instead of waiting for one that never comes.
+    ///
+    /// Also fires a PLI to the streamer so the next frame is a
+    /// keyframe — without this the bridge would drop everything until
+    /// the natural keyframe interval (~5s), since it can't bootstrap
+    /// the muxer from a delta frame.
+    #[cfg(target_os = "linux")]
+    pub fn reset_mse_for_user(&self, username: &str) {
+        if let Ok(mut set) = self.mse_resets.lock() {
+            set.insert(username.to_string());
+        }
+        let pli = video_packet::UdpKeyframeRequest::new(&self.sender_id, username);
+        let _ = self.media_socket.send(&pli.to_bytes());
     }
 
     pub fn stop(&mut self) {

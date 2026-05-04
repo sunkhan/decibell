@@ -410,36 +410,39 @@ function CodecPicker() {
   const { encodeCaps, load, loaded } = useCodecSettingsStore();
   useEffect(() => { if (!loaded) load().catch(() => {}); }, [loaded, load]);
 
-  const codecLabel = (c: VideoCodec): string => {
+  const segmentLabel = (c: VideoCodec): string => {
     switch (c) {
-      case VideoCodec.AV1: return "Force AV1";
-      case VideoCodec.H265: return "Force H.265";
-      case VideoCodec.H264_HW: return "Force H.264";
-      case VideoCodec.H264_SW: return "Force H.264 (software)";
-      default: return "Auto (recommended)";
+      case VideoCodec.AV1: return "AV1";
+      case VideoCodec.H265: return "H.265";
+      case VideoCodec.H264_HW: return "H.264";
+      case VideoCodec.H264_SW: return "H.264 SW";
+      default: return "Auto";
     }
   };
 
+  // Auto first, then one segment per encodable codec the local machine
+  // probed at boot (filtered by user toggles).
+  const options: { value: VideoCodec; label: string }[] = [
+    { value: VideoCodec.UNKNOWN, label: segmentLabel(VideoCodec.UNKNOWN) },
+    ...encodeCaps.map((c) => ({
+      value: c.codec as VideoCodec,
+      label: segmentLabel(c.codec as VideoCodec),
+    })),
+  ];
+
   return (
     <div>
-      <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+      <label
+        className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted"
+        title="Forcing a codec prevents viewers without that decoder from watching this stream."
+      >
         Codec
       </label>
-      <select
+      <SegmentedControl
+        options={options}
         value={streamSettings.enforcedCodec}
-        onChange={(e) =>
-          setStreamSettings({ enforcedCodec: Number(e.target.value) as VideoCodec })
-        }
-        title="Forcing a codec prevents viewers without that decoder from watching this stream."
-        className="w-full rounded-[8px] border border-border-divider bg-bg-darkest px-3 py-2 text-[13px] text-text-primary focus:outline-none focus:border-accent"
-      >
-        <option value={VideoCodec.UNKNOWN}>{codecLabel(VideoCodec.UNKNOWN)}</option>
-        {encodeCaps.map((c) => (
-          <option key={c.codec} value={c.codec}>
-            {codecLabel(c.codec)}
-          </option>
-        ))}
-      </select>
+        onChange={(v) => setStreamSettings({ enforcedCodec: v })}
+      />
       {streamSettings.enforcedCodec !== VideoCodec.UNKNOWN && (
         <p className="mt-1 text-[11px] text-text-muted">
           Viewers without this decoder won't be able to watch.

@@ -793,7 +793,21 @@ pub fn run_audio_pipeline(
                                         peer.stream_audio_decoder = super::codec::StereoOpusDecoder::new().ok();
                                     }
 
-                                    peer.stream_jitter.push(pkt.sequence, pkt.payload_data().to_vec());
+                                    // Linux: hold the packet in the A/V-sync delay
+                                    // queue first; the drain loop moves it into
+                                    // stream_jitter once it's old enough. Other
+                                    // platforms render video with near-zero buffer
+                                    // and don't need the hold.
+                                    #[cfg(target_os = "linux")]
+                                    {
+                                        peer.stream_delay_queue.push_back((
+                                            now, pkt.sequence, pkt.payload_data().to_vec(),
+                                        ));
+                                    }
+                                    #[cfg(not(target_os = "linux"))]
+                                    {
+                                        peer.stream_jitter.push(pkt.sequence, pkt.payload_data().to_vec());
+                                    }
                                 }
                             }
                         }
@@ -878,6 +892,25 @@ pub fn run_audio_pipeline(
                             }
                         }
                         peer.push_voice_frame(&f32_frame);
+                    }
+                }
+            }
+
+            // ── Stream audio A/V-sync release (Linux only) ──
+            // Move packets from the delay queue to the jitter buffer once
+            // they've sat for STREAM_AUDIO_DELAY_MS — see the constant's
+            // doc-comment in peer.rs for the matching MSE-video rationale.
+            #[cfg(target_os = "linux")]
+            {
+                let release_after = std::time::Duration::from_millis(
+                    super::peer::STREAM_AUDIO_DELAY_MS,
+                );
+                while let Some(&(arrived, _seq, _)) = peer.stream_delay_queue.front() {
+                    if drain_now.duration_since(arrived) >= release_after {
+                        let (_, seq, data) = peer.stream_delay_queue.pop_front().unwrap();
+                        peer.stream_jitter.push(seq, data);
+                    } else {
+                        break;
                     }
                 }
             }

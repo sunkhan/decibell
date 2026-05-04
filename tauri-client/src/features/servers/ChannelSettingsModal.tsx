@@ -261,35 +261,32 @@ export default function ChannelSettingsModal() {
           <div className="flex flex-col gap-2">
             <RetentionRow
               label="Text messages"
+              hint="Removes the message and any attachments still on it"
               value={draft.retentionDaysText}
               onChange={(v) => setField("retentionDaysText", v)}
             />
             <RetentionRow
               label="Image attachments"
-              hint="Applies once attachments ship"
+              hint="Photos and other still images"
               value={draft.retentionDaysImage}
-              disabled
               onChange={(v) => setField("retentionDaysImage", v)}
             />
             <RetentionRow
               label="Video attachments"
-              hint="Applies once attachments ship"
+              hint="Recorded clips and screen captures"
               value={draft.retentionDaysVideo}
-              disabled
               onChange={(v) => setField("retentionDaysVideo", v)}
             />
             <RetentionRow
               label="Document attachments"
-              hint="Applies once attachments ship"
+              hint="PDFs, archives, and other files"
               value={draft.retentionDaysDocument}
-              disabled
               onChange={(v) => setField("retentionDaysDocument", v)}
             />
             <RetentionRow
               label="Audio attachments"
-              hint="Applies once attachments ship"
+              hint="Voice notes and other audio files"
               value={draft.retentionDaysAudio}
-              disabled
               onChange={(v) => setField("retentionDaysAudio", v)}
             />
           </div>
