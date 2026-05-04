@@ -108,6 +108,9 @@ bool CommunityDb::open(const std::string& path,
 
     init_schema_();
     seed_if_empty_(owner_username, server_name, server_description);
+    // Always run after seed: catches existing DBs that pre-date any new
+    // default channels added to the canonical seed set.
+    ensure_default_channels_();
     return true;
 }
 
@@ -468,7 +471,16 @@ void CommunityDb::seed_if_empty_(const std::string& owner,
         }
     }
 
-    // Seed the three default channels matching the prior hardcoded layout.
+    ensure_default_channels_();
+
+    std::cout << "[DB] Seeded community DB. Owner: " << owner << "\n";
+}
+
+void CommunityDb::ensure_default_channels_() {
+    // Canonical default channel set. INSERT OR IGNORE on `id` makes this
+    // safe to call on every startup — adding a new default here lights
+    // it up on existing server DBs without touching anything the
+    // operator already configured.
     struct Seed {
         const char* id;
         const char* name;
@@ -480,6 +492,7 @@ void CommunityDb::seed_if_empty_(const std::string& owner,
         { "general",       "general",       0, 0, 0  },
         { "announcements", "announcements", 0, 1, 0  },
         { "voice-lounge",  "Voice Lounge",  1, 2, 64 },
+        { "voice-lounge-2","Voice Lounge 2",1, 3, 64 },
     };
     for (const auto& seed : seeds) {
         Stmt ins(db_,
@@ -493,8 +506,6 @@ void CommunityDb::seed_if_empty_(const std::string& owner,
         ins.bind_int(5, seed.bitrate);
         ins.step();
     }
-
-    std::cout << "[DB] Seeded community DB. Owner: " << owner << "\n";
 }
 
 std::string CommunityDb::get_meta_(const std::string& key) const {

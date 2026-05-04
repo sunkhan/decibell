@@ -292,6 +292,11 @@ private:
     void seed_if_empty_(const std::string& owner,
                         const std::string& name,
                         const std::string& desc);
+    // INSERT OR IGNOREs the canonical default channel set on every
+    // startup. New defaults added to the table show up on existing
+    // server DBs without touching any channels the operator already
+    // renamed/repositioned (the IGNORE clause skips collisions on `id`).
+    void ensure_default_channels_();
     std::string get_meta_(const std::string& key) const;
     void set_meta_(const std::string& key, const std::string& value);
 
