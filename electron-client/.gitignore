@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+release/
+
+# napi-rs build artifacts
+native/target/
+native/*.node
+native/npm/
+
+# Electron
+.vite/

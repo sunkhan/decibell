@@ -22,5 +22,14 @@ vcpkg/
 tauri-client/node_modules/
 tauri-client/src-tauri/target/
 tauri-client/dist/
+
+# Electron Client Build Artifacts
+electron-client/node_modules/
+electron-client/native/node_modules/
+electron-client/native/target/
+electron-client/native/*.node
+electron-client/dist/
+electron-client/release/
+
 .superpowers/
 .worktrees/

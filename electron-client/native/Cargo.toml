@@ -1,0 +1,75 @@
+[package]
+name = "decibell-native"
+version = "0.0.1"
+edition = "2021"
+license = "Proprietary"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2", default-features = false, features = ["napi9", "tokio_rt", "serde-json", "async"] }
+napi-derive = { version = "2", features = ["type-def"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls-pki-types = "1"
+prost = "0.13"
+bytes = "1"
+tokio-util = { version = "0.7", features = ["codec"] }
+futures-util = { version = "0.3", features = ["sink"] }
+log = "0.4"
+env_logger = "0.11"
+aes-gcm = "0.10"
+base64 = "0.22"
+sha2 = "0.10"
+hostname = "0.4"
+cpal = "0.15"
+audiopus = "0.3.0-rc.0"
+rubato = "0.16"
+ringbuf = "0.4"
+aec3 = "0.1"
+nnnoiseless = { version = "0.5.2", default-features = false }
+arc-swap = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+pipewire = "0.9"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "tokio"] }
+# wlroots compositors (Niri, Sway, Hyprland, river) — capture goes
+# straight through wlr-screencopy + a self-allocated SHM buffer,
+# bypassing xdg-desktop-portal entirely. Mutter/KWin fall through to
+# the portal path in capture_pipewire.rs.
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+memfd = "0.6"
+# EGL + GL bindings for the GPU zero-copy path (DMA-BUF import on
+# Intel/AMD VAAPI, CUDA registration on NVIDIA). Loaded dynamically
+# via libloading so missing system libs degrade to CPU readback at
+# runtime instead of failing at link.
+khronos-egl = { version = "6", features = ["dynamic"] }
+gl = "0.14"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Networking_WinSock",
+    "Win32_Foundation",
+    # WASAPI for stream-audio loopback capture
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_Devices_FunctionDiscovery",
+] }
+
+[build-dependencies]
+napi-build = "2"
+prost-build = "0.13"
+
+[profile.release]
+lto = true
+strip = "symbols"
+codegen-units = 1

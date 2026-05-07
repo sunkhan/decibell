@@ -1,0 +1,50 @@
+{
+  "name": "decibell-electron-client",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Decibell — Electron + Rust (napi-rs) client",
+  "main": "dist/electron/main/index.js",
+  "scripts": {
+    "dev": "npm run build:native:debug && concurrently -k -n tsc,vite,electron -c green,cyan,magenta \"npm:dev:tsc\" \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:tsc": "tsc -p tsconfig.node.json --watch --preserveWatchOutput",
+    "dev:renderer": "vite",
+    "dev:electron": "wait-on http://localhost:5173 dist/electron/main/index.js && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+    "dev:native:watch": "cargo watch -w native/src -w ../proto -s \"npm run build:native:debug\"",
+    "build:tsc": "tsc -p tsconfig.node.json",
+    "build:renderer": "vite build",
+    "build:native": "cd native && npm run build",
+    "build:native:debug": "cd native && npm run build:debug",
+    "build": "npm run build:native && npm run build:renderer && npm run build:tsc",
+    "package": "npm run build && electron-builder",
+    "typecheck": "tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.node.json --noEmit"
+  },
+  "dependencies": {
+    "@emoji-mart/data": "^1.2.1",
+    "@fontsource-variable/dm-sans": "^5.2.8",
+    "@fontsource-variable/inter": "^5.2.8",
+    "@fontsource-variable/outfit": "^5.2.8",
+    "emoji-mart": "^5.6.0",
+    "emoji-regex": "^10.6.0",
+    "lucide-react": "^1.8.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.13.1",
+    "react-virtuoso": "^4.18.6",
+    "zustand": "^5.0.11"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.1",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "github:castlabs/electron-releases#v33.4.11+wvcus",
+    "electron-builder": "^25.1.8",
+    "tailwindcss": "^4.2.1",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3",
+    "wait-on": "^8.0.1"
+  }
+}

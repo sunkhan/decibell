@@ -1,0 +1,200 @@
+@import "tailwindcss";
+
+@theme {
+  /* Surface scale — darkest → lightest */
+  --color-bg-darkest: #0a0c10;
+  --color-bg-dark: #0f1218;
+  --color-bg-mid: #141820;
+  --color-bg-light: #1a1f2b;
+  --color-bg-lighter: #212836;
+  --color-bg-surface: #283040;
+
+  --color-bg-titlebar: #0a0b10;
+  --color-bg-primary: #0e0f16;
+  --color-bg-secondary: #14151e;
+  --color-bg-tertiary: #191a25;
+  --color-bg-input: #14151e;
+  --color-bg-dmbar: #101119;
+  --color-border: rgba(255, 255, 255, 0.06);
+  --color-border-divider: rgba(255, 255, 255, 0.035);
+
+  --color-accent: #388fff;
+  --color-accent-bright: #5ea8ff;
+  --color-accent-hover: #2d7ae6;
+  --color-accent-pressed: #1a5fc9;
+  --color-accent-soft: rgba(56, 143, 255, 0.10);
+  --color-accent-mid: rgba(56, 143, 255, 0.16);
+
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-error: #f85149;
+  --color-danger: #f85149;
+
+  --color-text-primary: #dce4f0;
+  --color-text-bright: #f0f3f6;
+  --color-text-secondary: #7e8da6;
+  --color-text-muted: #4d5b72;
+  --color-text-faint: #3a4556;
+
+  --color-surface-hover: rgba(255, 255, 255, 0.04);
+  --color-surface-active: rgba(255, 255, 255, 0.07);
+
+  --font-sans: "Inter Variable", "Inter", "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-bg-primary text-text-primary font-sans antialiased;
+    margin: 0;
+    overflow: hidden;
+    letter-spacing: -0.01em;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    letter-spacing: -0.02em;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.14);
+  }
+}
+
+/* Disable text selection globally, allow only in inputs and select-text containers. */
+*, *::before, *::after {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
+input, textarea, [contenteditable], .select-text, .select-text * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+/* Snappy hover transitions globally */
+button, a, [class*="transition"] {
+  transition-duration: 75ms !important;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+/* ─── Animations (parity with tauri-client) ─────────────────────── */
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
+@keyframes waveBar {
+  0%, 100% { transform: scaleY(0.286); }
+  50%      { transform: scaleY(1); }
+}
+
+/* Drop-target "available" state — slow accent glow on every droppable
+ * surface while a file drag is in flight. Animates only box-shadow so
+ * it's GPU-composited (no layout/paint hit). */
+@keyframes dropPulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(56, 143, 255, 0.32),
+      0 0 14px 0 rgba(56, 143, 255, 0.10);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1.5px rgba(56, 143, 255, 0.60),
+      0 0 22px 4px rgba(56, 143, 255, 0.22);
+  }
+}
+
+/* Drop-target "hovered" — quick swell when the cursor lands. */
+@keyframes dropTargetIn {
+  from { transform: scale(0.97); }
+  to   { transform: scale(1); }
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pickerIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes tooltipIn {
+  from { opacity: 0; transform: translateX(-4px) scale(0.97); }
+  to   { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+/* Rich contentEditable input — matches textarea visuals, inlines Twemoji */
+.rich-input {
+  min-height: 1.4em;
+  line-height: 1.4;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  cursor: text;
+}
+
+.rich-input[data-empty="true"]::before {
+  content: attr(data-placeholder);
+  color: var(--color-text-faint);
+  font-size: 14px;
+  font-weight: 400;
+  pointer-events: none;
+}
+
+.rich-input .rich-emoji {
+  display: inline-block;
+  width: 1.375em;
+  height: 1.375em;
+  vertical-align: -0.3em;
+  margin: 0 1px;
+}
+
+/* Tauri-compatible drag region. Frameless Electron windows make any
+ * surface with this attribute draggable; interactive children need to
+ * opt out so clicks reach React. The selector list mirrors what Tauri
+ * does internally — anything you'd reasonably click stays clickable. */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] a,
+[data-tauri-drag-region] input,
+[data-tauri-drag-region] textarea,
+[data-tauri-drag-region] select,
+[data-tauri-drag-region] [role="button"],
+[data-tauri-drag-region] [role="link"],
+[data-tauri-drag-region] [role="textbox"],
+[data-tauri-drag-region] .no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}

@@ -1,0 +1,33 @@
+appId: com.decibell.app
+productName: Decibell
+copyright: Copyright © 2026 Decibell
+directories:
+  output: release
+  buildResources: resources
+
+files:
+  - dist/**/*
+  - native/index.js
+  - native/index.d.ts
+  - native/decibell.*.node
+  - package.json
+
+asarUnpack:
+  - native/**/*.node
+  - native/index.js
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Network
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+win:
+  target: nsis
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+mac:
+  target:
+    - dmg
+  artifactName: ${productName}-${version}-${arch}.${ext}
