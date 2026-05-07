@@ -175,6 +175,21 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
       }
     }
 
+    // Aggressive trim used when appendBuffer hits a coded-frame buffer
+    // quota — drops everything from the start of the buffered range up
+    // to a tight 2s behind the playhead so the next append has room.
+    // Larger than EVICT_HIGH_WATER_S's typical eviction since we're
+    // already in the failure path; the alternative is permanent stall.
+    function forceEvict() {
+      if (!sourceBuffer || sourceBuffer.updating) return;
+      if (!video || video.buffered.length === 0) return;
+      const bufStart = video.buffered.start(0);
+      const evictTo = video.currentTime - 2.0;
+      if (evictTo > bufStart + 0.1) {
+        try { sourceBuffer.remove(bufStart, evictTo); } catch {}
+      }
+    }
+
     function pump() {
       if (!sourceBuffer || sourceBuffer.updating) return;
       const next = queue.shift();
@@ -182,6 +197,17 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
       try {
         sourceBuffer.appendBuffer(next);
       } catch (e) {
+        // QuotaExceededError on appendBuffer = the SourceBuffer's
+        // coded-frame buffer is full. WebKit's eviction heuristic
+        // didn't free enough on its own (often the case for AV1 at
+        // high resolutions where decoded frames are large). Force-
+        // evict and put the segment back at the front of the queue
+        // so it retries on the next updateend.
+        if (e instanceof DOMException && e.name === "QuotaExceededError") {
+          queue.unshift(next);
+          forceEvict();
+          return;
+        }
         console.error("[MseStreamVideoPlayer] appendBuffer threw:", e);
       }
     }
@@ -243,6 +269,12 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
         video!.removeAttribute("src");
         video!.load();
       } catch {}
+      // Revoke previously-issued blob URLs so WebKit's MediaSource
+      // registry actually frees the detached entries instead of
+      // pinning them for the WebProcess lifetime.
+      while (objectUrls.length > 0) {
+        try { URL.revokeObjectURL(objectUrls.shift()!); } catch {}
+      }
       queue.length = 0;
       pendingMime = null;
       pendingRebuildMime = null;
@@ -279,13 +311,35 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
         sourceBuffer = sb;
         pump();
       } catch (e) {
+        // QuotaExceededError from addSourceBuffer means WebKit's
+        // MediaSource hit its SourceBuffer-count quota — usually
+        // because the previous SourceBuffer's removal hadn't fully
+        // settled when we tried to add the new one (codec change /
+        // mid-stream init segment / WebKitGTK pipeline lag). Route
+        // through recoverFromError so the whole MediaSource gets
+        // rebuilt instead of dead-ending in setError, which left the
+        // player permanently stuck with the prior AV1 freeze.
+        if (e instanceof DOMException && e.name === "QuotaExceededError") {
+          recoverFromError(`addSourceBuffer quota exceeded for ${mime}`);
+          return;
+        }
         setError(`SourceBuffer not supported for ${mime}: ${e}`);
       }
     }
 
+    // Track every blob URL we hand to <video> so we can revoke them on
+    // teardown / rebuild. Without this, WebKit's MediaSource registry
+    // keeps the previous MediaSource pinned for the lifetime of the
+    // WebProcess — over a session of channel hops + recoverFromError
+    // rebuilds, the pinned-but-detached entries can push WebKit's
+    // SourceBuffer quota over even on what looks like a fresh first
+    // mount.
+    const objectUrls: string[] = [];
     function attachMediaSource(): MediaSource {
       const ms = new MediaSource();
-      video!.src = URL.createObjectURL(ms);
+      const url = URL.createObjectURL(ms);
+      objectUrls.push(url);
+      video!.src = url;
       ms.addEventListener("sourceopen", () => {
         // Tell the browser this is a live stream — without
         // duration=Infinity, the video element treats it as a
@@ -564,6 +618,9 @@ export default function MseStreamVideoPlayer({ streamerUsername, className }: Pr
       } catch {}
       video.removeAttribute("src");
       video.load();
+      while (objectUrls.length > 0) {
+        try { URL.revokeObjectURL(objectUrls.shift()!); } catch {}
+      }
     };
   }, [streamerUsername]);
 
