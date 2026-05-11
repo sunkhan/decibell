@@ -69,6 +69,18 @@ export interface StreamCaptureOptions {
   /// off the track. When false, width/height are passed through as
   /// hard constraints and Chromium scales the surface to match.
   useNativeSize?: boolean;
+  /// Pre-picked capture source id from desktopCapturer.getSources (set
+  /// by the renderer's custom picker on platforms without a native
+  /// Chromium screen-share dialog — Windows in Electron 33). When set,
+  /// we bypass `getDisplayMedia` and go through `getUserMedia` with
+  /// `chromeMediaSource: 'desktop'` + `chromeMediaSourceId`, which
+  /// captures the user's chosen surface deterministically without
+  /// triggering setDisplayMediaRequestHandler at all.
+  ///
+  /// On Linux (no sourceId) we keep the `getDisplayMedia` path so
+  /// xdg-desktop-portal handles the picker. On macOS (no sourceId)
+  /// the main-process `useSystemPicker: true` hook draws the OS picker.
+  sourceId?: string;
   /// Called when the user stops the OS-side capture (closing the
   /// share dialog, ending the browser-share UI, etc.). The picker
   /// uses this to update voiceStore.isStreaming.
@@ -115,6 +127,16 @@ export class StreamCapture {
   /// can announce them to the server with truthful values (the
   /// pre-capture dims passed via opts are best-guess).
   async start(): Promise<{ width: number; height: number }> {
+    // Pre-stash the chosen source id so the main-process
+    // setDisplayMediaRequestHandler picks it out of desktopCapturer
+    // instead of auto-picking sources[0]. Chrome 108+ restricted the
+    // legacy `chromeMediaSource: 'desktop'` getUserMedia path; the
+    // supported route is getDisplayMedia + handler. The pre-stash is
+    // cleared either by a successful handler pick or by our finally
+    // below if getDisplayMedia rejects (cancel / NotAllowedError).
+    if (this.opts.sourceId) {
+      await window.decibell.capture.setNextSource(this.opts.sourceId);
+    }
     const videoConstraints: MediaTrackConstraints = {
       frameRate: this.opts.fps,
     };
@@ -122,10 +144,17 @@ export class StreamCapture {
       videoConstraints.width = this.opts.width;
       videoConstraints.height = this.opts.height;
     }
-    this.stream = await navigator.mediaDevices.getDisplayMedia({
-      video: videoConstraints,
-      audio: this.opts.shareAudio,
-    });
+    try {
+      this.stream = await navigator.mediaDevices.getDisplayMedia({
+        video: videoConstraints,
+        audio: this.opts.shareAudio,
+      });
+    } catch (e) {
+      if (this.opts.sourceId) {
+        await window.decibell.capture.setNextSource(null).catch(() => {});
+      }
+      throw e;
+    }
 
     const track = this.stream.getVideoTracks()[0];
     if (!track) {
@@ -209,21 +238,11 @@ export class StreamCapture {
         this.codec === VideoCodec.H264_SW ? "prefer-software" : "prefer-hardware",
     };
 
-    // Pre-flight: even with castlabs Chromium, a config that survived
-    // the boot-time encoderProbe (run at 1280×720@30) can still be
-    // rejected at the actual stream resolution / bitrate / codec
-    // level. Failing fast here yields a meaningful error instead of an
-    // async OperationError that strands the watcher on a spinner.
-    //
-    // Critically: we strip `latencyMode` and `hardwareAcceleration`
-    // from the pre-flight config. Chromium treats those as hard
-    // constraints in `isConfigSupported` (e.g., `prefer-hardware` for
-    // H.264 on Linux+NVIDIA returns `supported: false` because there's
-    // no VAAPI driver) but as soft *hints* during the actual
-    // `configure()` call, where it falls back to software. We want the
-    // pre-flight to mirror that softer semantic — confirm the codec
-    // family + level + bitrate are accepted, then let configure()
-    // decide hardware vs software.
+    // Soft pre-flight: confirm the codec family + level + bitrate are
+    // even accepted at this resolution. Strips `latencyMode` and
+    // `hardwareAcceleration` because Chromium treats those as hard
+    // constraints in `isConfigSupported`; we want this check to mirror
+    // the *configure()* semantic (hint, not constraint).
     const preflight = await VideoEncoder.isConfigSupported({
       codec: encoderConfig.codec,
       width: encoderConfig.width,
@@ -236,6 +255,98 @@ export class StreamCapture {
       throw new Error(
         `Encoder config not supported: codec=${codecString} ${captureWidth}x${captureHeight}@${this.opts.fps} ${this.opts.bitrateKbps}kbps`,
       );
+    }
+
+    // Strict HW pre-flight along two axes:
+    //
+    //   1. Codec-string ladder. NVENC / Intel QSV / AMD AMF report
+    //      only a subset of the silicon's actual H.264/HEVC levels
+    //      through their Media Foundation wrappers; walking up to a
+    //      higher level the MFT does advertise unblocks the path
+    //      without changing the encoded bitstream.
+    //
+    //   2. latencyMode. WebCodecs spec says it's a hint, but
+    //      Chromium's MFT NVENC binding on Windows enforces it as
+    //      a hard constraint at 60fps and refuses every codec/level
+    //      combination when latencyMode=realtime is set. Dropping
+    //      the hint lets NVENC pick its default rate-control mode
+    //      and accept the config. HW H.264 with a slightly larger
+    //      encoder buffer beats SW H.264 with realtime mode for
+    //      screen-share CPU usage — gaming streamers care about the
+    //      CPU floor more than the last 10ms of buffer latency.
+    //
+    // HW is only accepted when both `supported: true` AND the
+    // negotiated `hardwareAcceleration` returned by isConfigSupported
+    // is 'prefer-hardware' — Chromium silently downgrades the hint
+    // while still answering supported: true, so the negotiated field
+    // is the truthful signal.
+    if (encoderConfig.hardwareAcceleration === "prefer-hardware") {
+      const codecLadder = codecLevelLadder(codecString);
+      // Preferred order: realtime → default. The default ("quality")
+      // mode adds a few frames of encoder buffer — fine for screen
+      // share. Only used as a fallback when realtime + HW refused.
+      const latencyOptions: (VideoEncoderConfig["latencyMode"] | undefined)[] =
+        encoderConfig.latencyMode === "realtime"
+          ? ["realtime", undefined]
+          : [encoderConfig.latencyMode];
+      let chosen: {
+        codec: string;
+        latencyMode: VideoEncoderConfig["latencyMode"] | undefined;
+      } | null = null;
+      outer: for (const latency of latencyOptions) {
+        for (const candidate of codecLadder) {
+          const probeConfig: VideoEncoderConfig = {
+            codec: candidate,
+            width: encoderConfig.width,
+            height: encoderConfig.height,
+            framerate: encoderConfig.framerate,
+            bitrate: encoderConfig.bitrate,
+            hardwareAcceleration: "prefer-hardware",
+          };
+          if (latency) probeConfig.latencyMode = latency;
+          const probe = await VideoEncoder.isConfigSupported(probeConfig);
+          const negotiated = probe.config?.hardwareAcceleration;
+          const ok = probe.supported && negotiated === "prefer-hardware";
+          console.log(
+            `[StreamCapture] HW pre-flight: codec=${candidate} ` +
+              `${captureWidth}x${captureHeight}@${this.opts.fps} ` +
+              `${this.opts.bitrateKbps}kbps latency=${latency ?? "default"} → ` +
+              `supported=${probe.supported}, negotiated=${negotiated}` +
+              (ok ? " ✓ HW viable" : ""),
+          );
+          if (ok) {
+            chosen = { codec: candidate, latencyMode: latency };
+            break outer;
+          }
+        }
+      }
+      if (chosen) {
+        if (chosen.codec !== codecString) {
+          console.log(
+            `[StreamCapture] codec swap: ${codecString} → ${chosen.codec} ` +
+              `for MFT compatibility.`,
+          );
+        }
+        if (chosen.latencyMode !== encoderConfig.latencyMode) {
+          console.log(
+            `[StreamCapture] latencyMode swap: ${encoderConfig.latencyMode} → ` +
+              `${chosen.latencyMode ?? "default"} so NVENC will accept the config.`,
+          );
+        }
+        encoderConfig.codec = chosen.codec;
+        if (chosen.latencyMode) {
+          encoderConfig.latencyMode = chosen.latencyMode;
+        } else {
+          delete encoderConfig.latencyMode;
+        }
+      } else {
+        console.warn(
+          `[StreamCapture] no HW path for ${codecString} at ` +
+            `${captureWidth}x${captureHeight}@${this.opts.fps} ${this.opts.bitrateKbps}kbps ` +
+            `across the codec ladder × latencyMode axes; using prefer-software.`,
+        );
+        encoderConfig.hardwareAcceleration = "prefer-software";
+      }
     }
 
     const buildEncoder = (): VideoEncoder =>
@@ -581,6 +692,48 @@ export async function stopActiveStream(): Promise<void> {
 
 export function activeStreamCapture(): StreamCapture | null {
   return active;
+}
+
+/// Codec-string fallback ladder for the HW pre-flight. Given the
+/// spec-correct codec string we want to use, returns it plus any
+/// higher-level alternatives that should still produce the same
+/// bitstream from the codec's silicon. The MFT wrappers in Chromium
+/// on Windows (NVENC/QSV/AMF for H.264 and HEVC) sometimes enumerate
+/// only a subset of the silicon's actual level support — picking a
+/// higher level the MFT does advertise unlocks the HW path without
+/// changing what the wire bitstream looks like.
+///
+/// AV1 already uses a single Level (av01.0.08M.08 ≈ Level 4.0) that
+/// covers everything we offer up through 4K60 — no ladder needed.
+function codecLevelLadder(base: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (s: string): void => {
+    if (!seen.has(s)) {
+      seen.add(s);
+      out.push(s);
+    }
+  };
+  add(base);
+  // H.264 High Profile — strings of the form `avc1.6400XX` where XX
+  // is the level_idc in hex. Ladder: spec-correct → 5.0 → 5.1 → 5.2.
+  // Stays inside Level 5.x so we don't claim Level 6.0+ which much
+  // pre-Ampere NVENC silicon doesn't advertise.
+  if (base.startsWith("avc1.6400")) {
+    add("avc1.640032"); // 5.0
+    add("avc1.640033"); // 5.1
+    add("avc1.640034"); // 5.2
+  }
+  // HEVC Main Profile — strings of the form `hvc1.1.6.LXXX.B0` where
+  // XXX is level*30. Ladder: spec-correct → L120 (4.0) → L150 (5.0) →
+  // L153 (5.1) → L156 (5.2).
+  if (base.startsWith("hvc1.1.6.L")) {
+    add("hvc1.1.6.L120.B0"); // 4.0
+    add("hvc1.1.6.L150.B0"); // 5.0
+    add("hvc1.1.6.L153.B0"); // 5.1
+    add("hvc1.1.6.L156.B0"); // 5.2
+  }
+  return out;
 }
 
 function webCodecsStringForCodec(

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, session } from "electron";
+import { app, BrowserWindow, desktopCapturer, ipcMain, session } from "electron";
 import * as path from "path";
 import * as fs from "node:fs";
 import { registerInvokeHandler } from "./ipc";
@@ -97,69 +97,91 @@ if (
   }
 }
 
-// Chromium feature flags:
-//
-// - `WebRTCPipeWireCapturer` enables `getDisplayMedia` on Linux/Wayland
-//   by routing the screen-share request through xdg-desktop-portal +
-//   PipeWire. Without it `getDisplayMedia` rejects with NotSupportedError
-//   on Wayland.
-//
-// - `PlatformHEVCEncoderSupport` / `PlatformHEVCDecoderSupport` light up
-//   HEVC hardware encode/decode where Chromium has the code path
-//   compiled in.
-//
-// - `VaapiVideoDecoder` / `VaapiVideoEncoder` enable Chromium's VA-API
-//   integration in the GPU process so WebCodecs encode/decode go through
-//   VA-API on Linux. Without these, hardware paths are off entirely on
-//   Linux even when the system has VA-API drivers installed.
-//
-// - `VaapiIgnoreDriverChecks` skips Chromium's allowlist validation of
-//   the VA-API driver string. Required for `nvidia-vaapi-driver` (and
-//   any other community VA-API backend), which doesn't appear on the
-//   stock allowlist.
-//
-// Plus `--ignore-gpu-blocklist` so Chromium accepts the NVIDIA-on-Linux
-// GPU even though it's blocklisted by default for stability reasons.
-app.commandLine.appendSwitch(
-  "enable-features",
-  [
+// Chromium feature flags. Each feature is tagged by the platform(s)
+// where it matters; flags Chromium doesn't recognise on a given
+// platform are silently ignored, but splitting per-platform keeps the
+// "why is this here" easy to answer years later.
+const enableFeatures: string[] = [
+  // HEVC encode/decode. Both Linux (VA-API) and Windows (MF) need
+  // these to surface HEVC profiles in WebCodecs. Castlabs builds ship
+  // the platform HEVC encoder/decoder; without these flags Chromium
+  // gates it off as proprietary.
+  "PlatformHEVCEncoderSupport",
+  "PlatformHEVCDecoderSupport",
+];
+
+if (process.platform === "linux") {
+  enableFeatures.push(
+    // `getDisplayMedia` on Wayland — without this it rejects with
+    // NotSupportedError because there's no native Chromium picker.
     "WebRTCPipeWireCapturer",
-    "PlatformHEVCEncoderSupport",
-    "PlatformHEVCDecoderSupport",
+    // VA-API integration in the GPU process. Without these Linux WebCodecs
+    // has no hardware path even when libva drivers are installed.
     "VaapiVideoDecoder",
     "VaapiVideoEncoder",
+    // Skips Chromium's VA-API driver allowlist — required for
+    // community backends like nvidia-vaapi-driver that aren't on it.
     "VaapiIgnoreDriverChecks",
-    // Newer Chromium gating for the Linux GL-backed VAAPI decode
-    // pipeline. Required on top of VaapiVideoDecoder for the GPU
-    // process to wire WebCodecs through VA-API on Linux desktop
+    // Required on top of VaapiVideoDecoder for the GPU process to
+    // actually wire WebCodecs through VA-API on Linux desktop
     // (NVIDIA + nvidia-vaapi-driver in particular).
     "AcceleratedVideoDecodeLinuxGL",
     "AcceleratedVideoDecodeLinuxZeroCopyGL",
-    // Linux: route Chromium through the Ozone abstraction so it picks
-    // up Wayland properly when the session is Wayland. Without these
-    // flags Chromium often runs through XWayland with a degraded GPU
-    // path that disables hardware video acceleration entirely on
-    // NVIDIA proprietary.
+    // Route through the Ozone abstraction so Chromium picks up
+    // Wayland when the session is Wayland. Without these Chromium
+    // often runs through XWayland with a degraded GPU path that
+    // disables hardware video acceleration entirely on NVIDIA.
     "UseOzonePlatform",
     "WaylandWindowDecorations",
-  ].join(","),
-);
-// Some Linux Chromium builds default to a ChromeOS-style direct video
-// decoder that bypasses the VAAPI integration entirely. Disable it so
-// VAAPI gets a chance to claim the codec.
-app.commandLine.appendSwitch(
-  "disable-features",
-  "UseChromeOSDirectVideoDecoder",
-);
+  );
+}
+
+if (process.platform === "win32") {
+  enableFeatures.push(
+    // D3D11VA-backed hardware video decoder. Default-on in modern
+    // Chromium but the Castlabs codec-restoration patches leave some
+    // gates flipped — being explicit makes the activation deterministic
+    // and survives upstream changes.
+    "D3D11VideoDecoder",
+    // Use shared D3D11 textures between the decoder and the renderer
+    // so decoded frames stay GPU-side end-to-end (no readback to
+    // system memory). Mirrors the zero-copy path we relied on in the
+    // Tauri client.
+    "D3D11VideoDecoderUseSharedHandle",
+    // Wraps Media Foundation Transforms into the same encoding path
+    // WebCodecs uses on Windows. Required for the WebCodecs encode
+    // pipeline to discover MFT-backed NVENC / Intel QSV / AMD AMF
+    // encoders — without it WebCodecs only sees OpenH264 software.
+    "MediaFoundationClearPlayback",
+    // Use GPU memory buffers (D3D11 textures) for WebCodecs encoder
+    // input frames. Encoders that consume D3D11 textures directly
+    // (NVENC via MFT) require this; without it the encoder asks for
+    // system memory frames and Chromium gives up routing to MFT.
+    "UseGpuMemoryBufferVideoFrames",
+  );
+}
+
+app.commandLine.appendSwitch("enable-features", enableFeatures.join(","));
 app.commandLine.appendSwitch("ignore-gpu-blocklist");
-// Let Chromium auto-detect Wayland vs X11 from the running session.
-app.commandLine.appendSwitch("ozone-platform-hint", "auto");
-// Force ANGLE to use the native OpenGL backend (libGL.so / NVIDIA's
-// proprietary GL). nvidia-vaapi-driver exposes its codec profiles via
-// EGL extensions on this backend; the default ANGLE backend doesn't
-// surface those extensions, which is why videoDecodeAcceleratorSupportedProfile
-// comes back empty even with the GPU process working otherwise.
+// Older Chromium switch — still respected on Windows and forces the
+// D3D11VA hardware decoder on instead of relying on feature-flag gating.
+// Cheap insurance.
+app.commandLine.appendSwitch("enable-accelerated-video-decode");
 if (process.platform === "linux") {
+  // Some Linux Chromium builds default to a ChromeOS-style direct video
+  // decoder that bypasses the VAAPI integration entirely. Disable it so
+  // VAAPI gets a chance to claim the codec.
+  app.commandLine.appendSwitch(
+    "disable-features",
+    "UseChromeOSDirectVideoDecoder",
+  );
+  // Let Chromium auto-detect Wayland vs X11 from the running session.
+  app.commandLine.appendSwitch("ozone-platform-hint", "auto");
+  // Force ANGLE to use the native OpenGL backend (libGL.so / NVIDIA's
+  // proprietary GL). nvidia-vaapi-driver exposes its codec profiles via
+  // EGL extensions on this backend; the default ANGLE backend doesn't
+  // surface those extensions, which is why videoDecodeAcceleratorSupportedProfile
+  // comes back empty even with the GPU process working otherwise.
   app.commandLine.appendSwitch("use-angle", "gl");
 }
 
@@ -295,27 +317,85 @@ app.on("second-instance", (_event, argv) => {
           ? (auxAttrs.glExtensions as string).length
           : 0,
       });
-      // The list Chromium itself considers hardware-accelerated. If
-      // empty, no codec is HW-decodable from the GPU process's view —
-      // WebCodecs has nothing to bind to. If populated, we can compare
-      // the profile names against what the renderer's WebCodecs probe
-      // claims to find the exact mismatch.
+      // The HW codec profile arrays (`videoDecodeAcceleratorSupportedProfiles`
+      // etc.) used to live on Chromium's GPUInfo struct and surface on
+      // Electron's getGPUInfo("complete") output. Electron 33 dropped
+      // them from the JS-side serialisation — only `gpuDevice` /
+      // `auxAttributes` / `featureStatus` survive. So the authoritative
+      // signal on Electron 33+ is `featureStatus.video_decode` and
+      // `featureStatus.video_encode`, plus the WebCodecs probe
+      // (encoderProbe.ts / decoderProbe.ts) which speaks to the actual
+      // encoder/decoder factory the renderer will use.
+      const decodeProfiles =
+        info.videoDecodeAcceleratorSupportedProfile ??
+        info.videoDecodeAcceleratorSupportedProfiles;
+      const encodeProfiles =
+        info.videoEncodeAcceleratorSupportedProfile ??
+        info.videoEncodeAcceleratorSupportedProfiles;
       console.log(
         "[boot] HW decode profiles:",
-        info.videoDecodeAcceleratorSupportedProfile ??
-          info.videoDecodeAcceleratorSupportedProfiles ??
-          "(none reported)",
+        decodeProfiles ?? "(not exposed by Electron 33 — see featureStatus)",
       );
       console.log(
         "[boot] HW encode profiles:",
-        info.videoEncodeAcceleratorSupportedProfile ??
-          info.videoEncodeAcceleratorSupportedProfiles ??
-          "(none reported)",
+        encodeProfiles ?? "(not exposed by Electron 33 — see featureStatus)",
       );
     } catch (e) {
       console.warn("[boot] GPU info dump failed:", e);
     }
   };
+
+// Source id pre-stashed by the renderer right before its getDisplayMedia
+// call when the user picked from our custom Screens/Windows grid
+// (Windows path). The next setDisplayMediaRequestHandler invocation
+// consumes this and clears it; if not set, the handler falls back to
+// auto-picking sources[0] — that's the Linux xdg-desktop-portal path,
+// where the portal narrows getSources to the user's choice already.
+let pendingCaptureSourceId: string | null = null;
+
+ipcMain.handle(
+  "decibell:capture:setNextSource",
+  (_e, id: string | null) => {
+    pendingCaptureSourceId = id;
+  },
+);
+
+// Enumerate desktop capture sources for the renderer's custom screen-share
+// picker (Windows; macOS uses useSystemPicker; Linux uses xdg-desktop-portal).
+// Chromium does the capture + thumbnail rendering inside desktopCapturer —
+// we just serialise its output for the renderer. Thumbnails are returned
+// as PNG data URLs (cheap to ship over the IPC; Chromium decodes them
+// straight to a paintable bitmap on assignment to <img>).
+ipcMain.handle(
+  "decibell:capture:listSources",
+  async (
+    _e,
+    opts: { thumbnailWidth?: number; thumbnailHeight?: number } | undefined,
+  ) => {
+    const w = opts?.thumbnailWidth ?? 320;
+    const h = opts?.thumbnailHeight ?? 180;
+    const sources = await desktopCapturer.getSources({
+      types: ["screen", "window"],
+      thumbnailSize: { width: w, height: h },
+      fetchWindowIcons: true,
+    });
+    return sources.map((s) => ({
+      id: s.id,
+      name: s.name,
+      // `display_id` is set on screens (matches Electron's `screen.getAllDisplays()`
+      // ids) and empty on windows. Useful for ordering screens by the user's
+      // primary-monitor preference if we ever want it.
+      displayId: s.display_id ?? "",
+      // Windows-only: app icon as PNG data URL. Empty string when no icon
+      // is available (screens never have one) so the renderer can fall
+      // back to a generic glyph without a null check.
+      appIcon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : "",
+      thumbnail: s.thumbnail.toDataURL(),
+      // Discriminator for UI tabs — id prefix is stable across Chromium versions.
+      kind: s.id.startsWith("screen:") ? "screen" : "window",
+    }));
+  },
+);
 
 app.whenReady().then(async () => {
   registerProtocol();
@@ -351,7 +431,19 @@ app.whenReady().then(async () => {
             callback({});
             return;
           }
-          callback({ video: sources[0] });
+          // If the renderer pre-stashed a specific source id (Windows
+          // custom picker), honour it. Clear the pending id so a later
+          // stray getDisplayMedia request doesn't accidentally reuse
+          // the previous choice. Falls back to sources[0] when nothing
+          // was pre-picked — that's the Linux portal path where the
+          // OS already narrowed the list to the user's selection.
+          let chosen = sources[0];
+          if (pendingCaptureSourceId) {
+            const found = sources.find((s) => s.id === pendingCaptureSourceId);
+            if (found) chosen = found;
+            pendingCaptureSourceId = null;
+          }
+          callback({ video: chosen });
         })
         .catch(() => callback({}));
     },

@@ -49,11 +49,12 @@ const PROBE_CONFIGS: { codec: VideoCodec; webCodecsString: string }[] = [
   { codec: VideoCodec.H264_SW, webCodecsString: "avc1.64001F" },
 ];
 
-// Bumped v4 → v5 alongside the --use-angle=gl + NVD_BACKEND=direct
-// boot tweaks. v4 caches were probed before those flags were in
-// place and recorded hardware:false; v5 forces the probe to re-run
-// against the now-hopefully-working VAAPI integration.
-const LOCAL_STORAGE_KEY = "decibell.encoder_caps.v5";
+// v5 → v6: probe now also requires the response's
+// `config.hardwareAcceleration` to be 'prefer-hardware' before
+// claiming the codec is HW-accelerated. Pre-v6 caches over-reported
+// HW on Windows when Chromium silently downgraded the hint while
+// still answering `supported: true`.
+const LOCAL_STORAGE_KEY = "decibell.encoder_caps.v6";
 
 export async function probeEncoders(force = false): Promise<CodecCapability[]> {
   let caps: CodecCapability[] | null = null;
@@ -94,12 +95,22 @@ export async function probeEncoders(force = false): Promise<CodecCapability[]> {
         });
         if (support.supported) {
           // Second probe: same config plus hardwareAcceleration:
-          // prefer-hardware. Per gotcha 5.2 this returns supported:
-          // false when no hardware encoder is available, which is
-          // exactly the signal we want — yes/no on HW. For H264_SW
-          // we always claim hardware: false since the user picked
-          // software explicitly.
+          // prefer-hardware. Two signals together tell us whether HW
+          // is actually viable:
+          //
+          //   - `supported: true/false` (per gotcha 5.2 isConfigSupported
+          //     treats the hint as a hard constraint — but only on some
+          //     platforms; Chromium on Windows is known to soft-drop)
+          //   - `response.config.hardwareAcceleration` — the
+          //     hint Chromium actually committed to. If we asked for
+          //     prefer-hardware and got back 'no-preference' or
+          //     'prefer-software', the hint was silently downgraded
+          //     and HW is NOT actually available.
+          //
+          // For H264_SW we always claim hardware: false since the user
+          // picked software explicitly.
           let hardware = false;
+          let negotiated: string | undefined;
           if (cfg.codec !== 2 /* H264_SW */) {
             try {
               const hwSupport = await VideoEncoder.isConfigSupported({
@@ -110,7 +121,9 @@ export async function probeEncoders(force = false): Promise<CodecCapability[]> {
                 bitrate: 1_000_000,
                 hardwareAcceleration: "prefer-hardware",
               });
-              hardware = !!hwSupport.supported;
+              negotiated = hwSupport.config?.hardwareAcceleration;
+              hardware =
+                !!hwSupport.supported && negotiated === "prefer-hardware";
             } catch {
               hardware = false;
             }
@@ -118,7 +131,9 @@ export async function probeEncoders(force = false): Promise<CodecCapability[]> {
           console.log(
             `[encoderProbe] codec=${cfg.codec} via ` +
               `${support.config?.codec ?? cfg.webCodecsString} ` +
-              `(${hardware ? "HW" : "SW"})`,
+              `(${hardware ? "HW" : "SW"}` +
+              (negotiated ? `, negotiated=${negotiated}` : "") +
+              `)`,
           );
           caps.push({
             codec: cfg.codec,

@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "../../lib/ipc";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
-import { VideoCodec } from "../../types";
+import { VideoCodec, type CaptureSource } from "../../types";
 import { playSound } from "../../utils/sounds";
 import { startActiveStream, stopActiveStream } from "./streaming/StreamCapture";
 
@@ -12,6 +12,13 @@ interface Props {
   channelId: string;
   onClose: () => void;
 }
+
+/// Platforms where we render our own tabbed source picker. Linux is
+/// excluded — getDisplayMedia goes through xdg-desktop-portal there
+/// and the portal dialog is the picker. macOS uses Electron's
+/// `useSystemPicker: true` to get the native ScreenCaptureKit dialog.
+const NEEDS_CUSTOM_PICKER =
+  typeof window !== "undefined" && window.decibell?.platform === "win32";
 
 /** A segmented control — row of buttons where exactly one is selected. */
 function SegmentedControl<T extends string | number>({
@@ -51,6 +58,7 @@ export default function CaptureSourcePicker({
   const [starting, setStarting] = useState(false);
   const [visible, setVisible] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [pickedSourceId, setPickedSourceId] = useState<string | null>(null);
 
   const streamSettings = useVoiceStore((s) => s.streamSettings);
   const setStreamSettings = useVoiceStore((s) => s.setStreamSettings);
@@ -92,6 +100,10 @@ export default function CaptureSourcePicker({
   };
 
   const handleGoLive = async () => {
+    if (NEEDS_CUSTOM_PICKER && !pickedSourceId) {
+      setError("Pick a screen or window to share first.");
+      return;
+    }
     setStarting(true);
     setError(null);
     try {
@@ -118,6 +130,7 @@ export default function CaptureSourcePicker({
         serverId,
         channelId,
         useNativeSize: streamSettings.resolution === "source",
+        sourceId: pickedSourceId ?? undefined,
         onCaptureEnded: () => {
           useVoiceStore.getState().setIsStreaming(false);
           invoke("stop_screen_share", { serverId, channelId }).catch(() => {});
@@ -181,31 +194,38 @@ export default function CaptureSourcePicker({
           transform: visible ? "scale(1)" : "scale(0.95)",
         }}
       >
-        <div className="px-6 py-8 text-center">
-          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-accent-soft">
-            <svg
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="text-accent-bright"
-            >
-              <rect x="2" y="3" width="20" height="14" rx="2" />
-              <line x1="8" y1="21" x2="16" y2="21" />
-              <line x1="12" y1="17" x2="12" y2="21" />
-            </svg>
+        {NEEDS_CUSTOM_PICKER ? (
+          <SourceGrid
+            pickedSourceId={pickedSourceId}
+            onPick={setPickedSourceId}
+          />
+        ) : (
+          <div className="px-6 py-8 text-center">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-accent-soft">
+              <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="text-accent-bright"
+              >
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <line x1="8" y1="21" x2="16" y2="21" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
+            </div>
+            <p className="font-display text-[15px] font-semibold text-text-primary">
+              Screen or window selection
+            </p>
+            <p className="mt-1.5 text-[13px] leading-relaxed text-text-muted">
+              A system dialog will appear after you click Go Live to choose what to share.
+            </p>
           </div>
-          <p className="font-display text-[15px] font-semibold text-text-primary">
-            Screen or window selection
-          </p>
-          <p className="mt-1.5 text-[13px] leading-relaxed text-text-muted">
-            A system dialog will appear after you click Go Live to choose what to share.
-          </p>
-        </div>
+        )}
 
         <div className="mx-5 mb-1 space-y-3 rounded-[10px] border border-border-divider bg-bg-light p-4">
           <div className="flex gap-3">
@@ -383,7 +403,7 @@ export default function CaptureSourcePicker({
           </label>
           <button
             onClick={handleGoLive}
-            disabled={starting}
+            disabled={starting || (NEEDS_CUSTOM_PICKER && !pickedSourceId)}
             className="rounded-[10px] bg-accent px-7 py-2.5 text-[13px] font-semibold text-white shadow-[0_2px_12px_rgba(56,143,255,0.22)] transition-all hover:bg-accent-hover hover:shadow-[0_4px_20px_rgba(56,143,255,0.3)] active:scale-[0.98] disabled:opacity-50 disabled:shadow-none"
           >
             {starting ? "Starting..." : "Go Live"}
@@ -394,6 +414,140 @@ export default function CaptureSourcePicker({
       </div>
     </div>,
     document.body,
+  );
+}
+
+/// Tabbed grid of screens + windows, populated from Chromium's
+/// desktopCapturer via the preload bridge. Thumbnails are PNG data URLs
+/// (Chromium decodes them on assignment to <img>; no extra trip through
+/// canvas). Re-polled at REFRESH_MS so the previews don't go stale while
+/// the modal is open — Chromium re-snapshots the surfaces server-side,
+/// which is the same path the in-browser screen-share dialog uses.
+function SourceGrid({
+  pickedSourceId,
+  onPick,
+}: {
+  pickedSourceId: string | null;
+  onPick: (id: string) => void;
+}) {
+  const REFRESH_MS = 2000;
+  const [tab, setTab] = useState<"screen" | "window">("screen");
+  const [sources, setSources] = useState<CaptureSource[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Held across re-renders so the polling interval doesn't keep
+  // reading stale `tab` state and so unmount cancels in-flight calls.
+  const aliveRef = useRef(true);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    const fetchOnce = async (): Promise<void> => {
+      try {
+        const list = await window.decibell.capture.listSources({
+          thumbnailWidth: 320,
+          thumbnailHeight: 180,
+        });
+        if (aliveRef.current) {
+          setSources(list);
+          setLoadError(null);
+        }
+      } catch (e) {
+        if (aliveRef.current) setLoadError(String(e));
+      }
+    };
+    void fetchOnce();
+    const id = window.setInterval(fetchOnce, REFRESH_MS);
+    return () => {
+      aliveRef.current = false;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  const screens = sources.filter((s) => s.kind === "screen");
+  const windows = sources.filter((s) => s.kind === "window");
+  const visible = tab === "screen" ? screens : windows;
+
+  return (
+    <div className="px-5 py-5">
+      <p className="mb-3 font-display text-[14px] font-semibold text-text-primary">
+        Choose what to share
+      </p>
+      <div className="mb-3 flex rounded-[8px] bg-bg-darkest p-[3px]">
+        {([
+          { value: "screen" as const, label: `Screens (${screens.length})` },
+          { value: "window" as const, label: `Windows (${windows.length})` },
+        ]).map((t) => (
+          <button
+            key={t.value}
+            onClick={() => setTab(t.value)}
+            className={`flex-1 rounded-[6px] px-3 py-[7px] text-[11px] font-semibold transition-all ${
+              tab === t.value
+                ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(56,143,255,0.1)]"
+                : "text-text-muted hover:text-text-secondary"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {loadError ? (
+        <p className="py-6 text-center text-[12px] text-error">{loadError}</p>
+      ) : sources.length === 0 ? (
+        <p className="py-6 text-center text-[12px] text-text-muted">
+          Loading sources…
+        </p>
+      ) : visible.length === 0 ? (
+        <p className="py-6 text-center text-[12px] text-text-muted">
+          No {tab === "screen" ? "screens" : "windows"} available.
+        </p>
+      ) : (
+        <div className="grid max-h-[260px] grid-cols-2 gap-2.5 overflow-y-auto pr-1">
+          {visible.map((s) => {
+            const picked = pickedSourceId === s.id;
+            return (
+              <button
+                key={s.id}
+                onClick={() => onPick(s.id)}
+                className={`group flex flex-col overflow-hidden rounded-[8px] border bg-bg-darkest transition-all ${
+                  picked
+                    ? "border-accent shadow-[0_0_0_1px_rgba(56,143,255,0.4)]"
+                    : "border-border hover:border-border-hover"
+                }`}
+              >
+                <div className="relative aspect-video w-full bg-black">
+                  {/* draggable=false stops Chromium from initiating an HTML5
+                      drag on the thumbnail when the user click-and-holds —
+                      the picker should feel like buttons, not images. */}
+                  <img
+                    src={s.thumbnail}
+                    alt={s.name}
+                    draggable={false}
+                    className="h-full w-full object-contain"
+                  />
+                </div>
+                <div className="flex items-center gap-2 px-2.5 py-2">
+                  {s.appIcon && (
+                    <img
+                      src={s.appIcon}
+                      alt=""
+                      draggable={false}
+                      className="h-4 w-4 shrink-0"
+                    />
+                  )}
+                  <span
+                    className={`truncate text-[11.5px] font-medium ${
+                      picked ? "text-accent-bright" : "text-text-secondary"
+                    }`}
+                    title={s.name}
+                  >
+                    {s.name}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

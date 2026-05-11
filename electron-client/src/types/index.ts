@@ -141,16 +141,19 @@ export interface StreamCodecChangedNotify {
   reason: StreamCodecChangeReason;
 }
 
-/// Returned by `list_capture_sources` napi command. The `sourceType`
-/// is a string ("screen" | "window") to keep the JS surface a plain
-/// JSON object — no enum gymnastics needed in the renderer.
-export interface RawCaptureSource {
+/// One screen or window enumerated by Chromium's desktopCapturer
+/// (bridged via `window.decibell.capture.listSources`). Thumbnail and
+/// appIcon are PNG data URLs ready to assign to <img> — Chromium
+/// decodes them on assignment, no canvas round-trip needed. Used by
+/// the custom screen-share picker on platforms without a native
+/// Chromium picker (Windows in Electron 33).
+export interface CaptureSource {
   id: string;
   name: string;
-  sourceType: "screen" | "window";
-  width: number;
-  height: number;
-  thumbnail: string | null;
+  displayId: string;
+  appIcon: string;
+  thumbnail: string;
+  kind: "screen" | "window";
 }
 
 /// Returned by `get_caps` and `refresh_caps`. Encode = the FFmpeg-probed

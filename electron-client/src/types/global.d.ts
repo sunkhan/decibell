@@ -1,8 +1,10 @@
 import type { Event, UnlistenFn } from "../lib/ipc";
+import type { CaptureSource } from "./index";
 
 declare global {
   interface Window {
     decibell: {
+      platform: NodeJS.Platform;
       invoke: (method: string, args: unknown) => Promise<unknown>;
       listen: (
         name: string,
@@ -88,6 +90,13 @@ declare global {
         subscribe: (
           cb: (thumb: { ownerUsername: string; data: Uint8Array }) => void,
         ) => () => void;
+      };
+      capture: {
+        listSources: (opts?: {
+          thumbnailWidth?: number;
+          thumbnailHeight?: number;
+        }) => Promise<CaptureSource[]>;
+        setNextSource: (id: string | null) => Promise<void>;
       };
     };
   }

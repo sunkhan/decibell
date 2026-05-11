@@ -57,7 +57,22 @@ ipcRenderer.on("decibell:stream_thumbnail", (_e, thumb: StreamThumbnail) => {
   for (const cb of streamThumbnailSubs) cb(thumb);
 });
 
+type CaptureSource = {
+  id: string;
+  name: string;
+  displayId: string;
+  appIcon: string;
+  thumbnail: string;
+  kind: "screen" | "window";
+};
+
 contextBridge.exposeInMainWorld("decibell", {
+  /// Platform identifier copied from Node's process.platform so the
+  /// renderer can branch UI without lying via navigator.userAgent. The
+  /// screen-share picker uses this to render its own tabbed source list
+  /// on Windows (no native Chromium picker until Electron 35) vs. let
+  /// `getDisplayMedia` go through xdg-desktop-portal on Linux.
+  platform: process.platform as NodeJS.Platform,
   invoke: (method: string, args: unknown): Promise<unknown> =>
     ipcRenderer.invoke("decibell:invoke", method, args),
   listen: async (name: string, cb: Handler): Promise<() => void> => {
@@ -211,5 +226,22 @@ contextBridge.exposeInMainWorld("decibell", {
         streamThumbnailSubs.delete(cb);
       };
     },
+  },
+  capture: {
+    /// Enumerate screens + windows for the screen-share picker. Thumbnails
+    /// arrive as PNG data URLs ready to assign to <img>. Chromium's
+    /// desktopCapturer does the actual capture; this just serialises it.
+    listSources: (opts?: {
+      thumbnailWidth?: number;
+      thumbnailHeight?: number;
+    }): Promise<CaptureSource[]> =>
+      ipcRenderer.invoke("decibell:capture:listSources", opts ?? {}) as Promise<
+        CaptureSource[]
+      >,
+    /// Pre-stash the source id the next setDisplayMediaRequestHandler
+    /// callback should pick. Call before navigator.mediaDevices.getDisplayMedia.
+    /// Pass null to clear (e.g., after a cancelled getDisplayMedia call).
+    setNextSource: (id: string | null): Promise<void> =>
+      ipcRenderer.invoke("decibell:capture:setNextSource", id) as Promise<void>,
   },
 });
