@@ -35,6 +35,8 @@ pub mod jitter;
 pub mod packet;
 pub mod peer;
 pub mod source_id;
+#[cfg(target_os = "windows")]
+pub mod encoder_probe;
 pub mod pipeline;
 pub mod speaking;
 pub mod video_packet;
