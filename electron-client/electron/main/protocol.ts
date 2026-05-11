@@ -3,9 +3,11 @@ import * as path from "path";
 import * as fs from "fs";
 import { app } from "electron";
 import { getAttachmentTarget } from "./attachmentRegistry";
+import { lookupFile } from "./fileRegistry";
 
 const SCHEME = "decibell-asset";
 const ATTACHMENT_SCHEME = "decibell-attachment";
+const FILE_SCHEME = "decibell-file";
 
 // Replaces tauri-client's local_media_server.rs — instead of running an
 // HTTP server on a random localhost port, register a custom protocol
@@ -65,6 +67,20 @@ protocol.registerSchemesAsPrivileged([
       bypassCSP: false,
     },
   },
+  {
+    scheme: FILE_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      bypassCSP: false,
+      // No `corsEnabled` — leaving it off matches the other schemes
+      // and means renderer fetch() doesn't get a CORS preflight that
+      // would fail without an explicit Access-Control-Allow-Origin
+      // response. The privileged scheme is already trusted.
+    },
+  },
 ]);
 
 /// Authenticated proxy to community-server attachment GETs. Renderer
@@ -108,6 +124,58 @@ export function registerAttachmentProtocol(): void {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error(`[attachment] error: ${(e as Error).message}`);
+      return new Response(`error: ${(e as Error).message}`, { status: 500 });
+    }
+  });
+}
+
+/// Streaming protocol for files the user has just picked / dropped.
+/// URL shape: `decibell-file://file/<token>` where the token is what
+/// `register_file` returned for an absolute path. We delegate the
+/// actual streaming to `net.fetch('file://abs')` — Electron's net
+/// stack handles Range requests, content-length, and chunked streaming
+/// natively, which is exactly what the renderer's `<video>` seek and
+/// the upload loop's `fetch(..., {Range: ...})` rely on. So a 500MB
+/// file never lands in renderer RAM as a single buffer; it flows
+/// chunk-by-chunk via Chromium's net loader straight from disk.
+export function registerFileProtocol(): void {
+  protocol.handle(FILE_SCHEME, async (req) => {
+    try {
+      const url = new URL(req.url);
+      // URL shape: decibell-file://file/<token>
+      // "file" is a fixed pseudo-host (same trick the attachment
+      // protocol uses) so Chromium doesn't try to interpret the token
+      // as a hostname.
+      const parts = url.pathname.split("/").filter((p) => p.length > 0);
+      if (parts.length !== 1) {
+        return new Response("bad request", { status: 400 });
+      }
+      const token = decodeURIComponent(parts[0]);
+      const entry = lookupFile(token);
+      if (!entry) {
+        return new Response("not found", { status: 404 });
+      }
+      // Forward Range / If-* headers transparently so video seeking
+      // works (`fetch('decibell-file://...').body` becomes a streaming
+      // ReadableStream; <video src=> issues range requests on seek).
+      const headers: Record<string, string> = {};
+      const range = req.headers.get("range");
+      if (range) headers["Range"] = range;
+      const resp = await net.fetch(`file://${entry.path}`, {
+        method: req.method,
+        headers,
+      });
+      // Patch the Content-Type with the mime we recorded at register
+      // time. net.fetch on file:// derives a generic application/octet-
+      // stream which trips up the <video> / <audio> probe element.
+      const out = new Response(resp.body, {
+        status: resp.status,
+        statusText: resp.statusText,
+        headers: resp.headers,
+      });
+      out.headers.set("Content-Type", entry.mime);
+      return out;
+    } catch (e) {
       return new Response(`error: ${(e as Error).message}`, { status: 500 });
     }
   });

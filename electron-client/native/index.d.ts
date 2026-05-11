@@ -91,6 +91,23 @@ export interface LeaveServerArgs {
   serverId: string
 }
 export declare function leaveServer(args: LeaveServerArgs): Promise<void>
+export interface CreateInviteArgs {
+  serverId: string
+  /** Unix epoch seconds. 0 means "never expires". */
+  expiresAt: number
+  /** 0 means "unlimited uses". */
+  maxUses: number
+}
+export declare function createInvite(args: CreateInviteArgs): Promise<void>
+export interface ListInvitesArgs {
+  serverId: string
+}
+export declare function listInvites(args: ListInvitesArgs): Promise<void>
+export interface RevokeInviteArgs {
+  serverId: string
+  code: string
+}
+export declare function revokeInvite(args: RevokeInviteArgs): Promise<void>
 export declare function requestFriendList(): Promise<void>
 export interface SendFriendActionArgs {
   /**
@@ -101,6 +118,11 @@ export interface SendFriendActionArgs {
   targetUsername: string
 }
 export declare function sendFriendAction(args: SendFriendActionArgs): Promise<void>
+export interface SendPrivateMessageArgs {
+  recipient: string
+  message: string
+}
+export declare function sendPrivateMessage(args: SendPrivateMessageArgs): Promise<void>
 /**
  * Ask the central server for the user's server list. The response
  * arrives asynchronously as a `server_list_received` event.
@@ -176,6 +198,48 @@ export interface AttachmentTarget {
  * connection reuse + Chromium's TLS stack.
  */
 export declare function getAttachmentTarget(args: GetAttachmentTargetArgs): Promise<AttachmentTarget | null>
+/**
+ * Read the persisted config blob from disk. Returns
+ * `{ credentials, settings }` as a JSON value so the renderer can
+ * hydrate its zustand stores without us having to re-declare the
+ * whole AppSettings shape as a #[napi(object)] mirror (it has a
+ * HashMap field which napi(object) doesn't support natively).
+ */
+export declare function loadConfig(): Promise<any>
+/**
+ * Persist a complete AppSettings blob to disk, preserving any
+ * existing credentials. Renderer is the source of truth for the
+ * settings shape; native just deserializes via serde and writes.
+ * Mirrors tauri-client's save_settings: settings come from the
+ * renderer as an object, we round-trip through serde_json::Value
+ * into AppSettings.
+ */
+export declare function saveSettings(settings: any): Promise<void>
+export interface SetDmPrivacyArgs {
+  friendsOnly: boolean
+}
+/**
+ * Tell the central server whether to deliver DMs from non-friends.
+ * Mirrors the tauri command of the same name (defined there in
+ * commands/messaging.rs). Lives in settings.rs here because the DM
+ * command surface hasn't ported yet — when it does, this can move.
+ */
+export declare function setDmPrivacy(args: SetDmPrivacyArgs): Promise<void>
+export interface SetTransferLimitsArgs {
+  uploadBps: number
+  downloadBps: number
+}
+/**
+ * Persist the user's per-file upload/download caps. PR8 attachment
+ * transfers happen renderer-side via Electron main's netFetch, so the
+ * caps would have to be enforced there to actually rate-limit — for
+ * now this command just writes them to AppSettings so they survive
+ * across restarts. Live enforcement is a follow-up; the renderer's
+ * saveSettings() will already include these fields, but exposing the
+ * command keeps the call shape compatible with tauri-client's
+ * NetworkTab.
+ */
+export declare function setTransferLimits(args: SetTransferLimitsArgs): Promise<void>
 export interface AudioDevice {
   name: string
   label: string
@@ -185,17 +249,6 @@ export interface AudioDeviceList {
   outputs: Array<AudioDevice>
 }
 export declare function listAudioDevices(): Promise<AudioDeviceList>
-/**
- * Every command takes a single `#[napi(object)]` struct argument so
- * the JS side can call `invoke('play_sound', { name: 'connect' })`
- * — matching how every existing tauri-client callsite is written.
- * Tauri's macro auto-destructured the function args; napi-rs has no
- * equivalent, so we make the struct explicit.
- */
-export interface PlaySoundArgs {
-  name: string
-}
-export declare function playSound(args: PlaySoundArgs): void
 export interface StartScreenShareArgs {
   serverId: string
   channelId: string
@@ -245,7 +298,7 @@ export interface SendVideoFrameArgs {
    */
   description?: Buffer
 }
-export declare function sendVideoFrame(args: SendVideoFrameArgs): Promise<void>
+export declare function sendVideoFrame(args: SendVideoFrameArgs): void
 export interface WatchStreamArgs {
   serverId: string
   channelId: string
@@ -293,7 +346,13 @@ export declare function setCodecSettings(args: CodecSettingsValue): Promise<void
 export interface SendStreamThumbnailArgs {
   serverId: string
   channelId: string
-  jpegData: Array<number>
+  /**
+   * JPEG bytes. Typed as `Buffer` (not `Vec<u8>`) so napi-rs
+   * accepts a JS `Uint8Array` directly without forcing the
+   * renderer to materialise a plain Array — `Vec<u8>` would
+   * reject the typed-array shape with "not an array".
+   */
+  jpegData: Buffer
 }
 export declare function sendStreamThumbnail(args: SendStreamThumbnailArgs): Promise<void>
 export interface JoinVoiceChannelArgs {
@@ -383,7 +442,7 @@ export interface InitOptions {
  * Sync, not async — the JsFunction handle has to be turned into a
  * ThreadsafeFunction before any await point.
  */
-export declare function init(opts: InitOptions, bus: (...args: any[]) => any, streamBus: (...args: any[]) => any): void
+export declare function init(opts: InitOptions, bus: (...args: any[]) => any, streamBus: (...args: any[]) => any, streamThumbnailBus: (...args: any[]) => any): void
 /**
  * Called from Electron main on `before-quit`. Drops engines, joins
  * long-lived threads, releases the EventBus TSFN. PR2 has nothing to

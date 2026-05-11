@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
+import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 
 /// Fullscreen lightbox for image attachments. CSS transforms drive
 /// pinch-zoom + click-drag pan; Chromium handles the rendering. Esc
@@ -88,6 +89,20 @@ export default function ImageViewer() {
         alt={current.filename}
         draggable={false}
         onClick={(e) => e.stopPropagation()}
+        onContextMenu={(e) => {
+          if (current.serverId == null || current.attachmentId == null) return;
+          e.preventDefault();
+          e.stopPropagation();
+          useImageContextMenuStore.getState().show({
+            x: e.clientX,
+            y: e.clientY,
+            serverId: current.serverId,
+            attachmentId: current.attachmentId,
+            filename: current.filename,
+            mime: current.mime,
+            kind: "image",
+          });
+        }}
         style={{
           transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
           cursor: zoom > 1 ? "grab" : "zoom-in",

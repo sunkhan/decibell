@@ -25,6 +25,17 @@ declare global {
           isFile: boolean;
           isDirectory: boolean;
         }>;
+        writeFile: (path: string, data: Uint8Array) => Promise<void>;
+      };
+      file: {
+        register: (absolutePath: string) => Promise<{
+          url: string;
+          size: number;
+          mime: string;
+          name: string;
+        }>;
+        unregister: (url: string) => Promise<void>;
+        pathOf: (file: File) => string;
       };
       attachmentRegistry: {
         set: (
@@ -62,6 +73,7 @@ declare global {
       };
       streamFrames: {
         subscribe: (
+          username: string,
           cb: (frame: {
             username: string;
             codec: number;
@@ -70,6 +82,11 @@ declare global {
             data: Uint8Array;
             description: Uint8Array | null;
           }) => void,
+        ) => () => void;
+      };
+      streamThumbnails: {
+        subscribe: (
+          cb: (thumb: { ownerUsername: string; data: Uint8Array }) => void,
         ) => () => void;
       };
     };

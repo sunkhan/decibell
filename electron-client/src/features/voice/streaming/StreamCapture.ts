@@ -14,6 +14,36 @@
 
 import { invoke } from "../../../lib/ipc";
 import { VideoCodec } from "../../../types";
+import { toast } from "../../../stores/toastStore";
+import { videoCodecHumanName } from "../../../utils/codecMap";
+
+/// Frame shape emitted to local self-preview subscribers. Matches the
+/// wire `StreamFrame` shape minus `username` — local frames have only
+/// one possible source so subscribers don't need to filter.
+export interface LocalEncodedFrame {
+  codec: VideoCodec;
+  keyframe: boolean;
+  timestamp: number;
+  data: Uint8Array;
+  description: Uint8Array | null;
+}
+
+type LocalFrameCallback = (frame: LocalEncodedFrame) => void;
+const localFrameSubs = new Set<LocalFrameCallback>();
+
+/// Subscribe to encoded frames from the local streamer's encoder
+/// directly, without round-tripping through native + UDP + server.
+/// Used by StreamVideoPlayer when the user watches their own stream:
+/// the frames arrive in the same shape they would via the wire, so the
+/// same WebCodecs decoder pipeline drives the canvas. Returns an
+/// unsubscribe fn. Safe to call before streaming starts; the subscriber
+/// just sits idle until the encoder is producing.
+export function subscribeLocalFrames(cb: LocalFrameCallback): () => void {
+  localFrameSubs.add(cb);
+  return () => {
+    localFrameSubs.delete(cb);
+  };
+}
 
 export interface StreamCaptureOptions {
   /// VideoCodec enum value (1=H264_HW, 2=H264_SW, 3=H265, 4=AV1).
@@ -25,6 +55,20 @@ export interface StreamCaptureOptions {
   fps: number;
   bitrateKbps: number;
   shareAudio: boolean;
+  /// Routing for the periodic JPEG thumbnail the streamer broadcasts
+  /// to non-watching voice-channel participants (so they see a poster
+  /// image on the participant tile instead of a black square). The
+  /// pump loop draws every Nth frame to an OffscreenCanvas, encodes
+  /// it as JPEG, and ships it via `send_stream_thumbnail`.
+  serverId: string;
+  channelId: string;
+  /// When true, getDisplayMedia is requested without width/height
+  /// constraints so Chromium delivers the captured surface at its
+  /// native resolution (e.g. 2560×1440 on a 1440p monitor). The
+  /// encoder is then configured with the negotiated dimensions read
+  /// off the track. When false, width/height are passed through as
+  /// hard constraints and Chromium scales the surface to match.
+  useNativeSize?: boolean;
   /// Called when the user stops the OS-side capture (closing the
   /// share dialog, ending the browser-share UI, etc.). The picker
   /// uses this to update voiceStore.isStreaming.
@@ -36,6 +80,7 @@ export class StreamCapture {
   private stream: MediaStream | null = null;
   private reader: ReadableStreamDefaultReader<VideoFrame> | null = null;
   private description: Uint8Array | null = null;
+  private descriptionLogged = false;
   private codec: VideoCodec;
   private opts: StreamCaptureOptions;
   private wantKeyframe = true;
@@ -44,6 +89,20 @@ export class StreamCapture {
   private encoderConfig: VideoEncoderConfig | null = null;
   private buildEncoder: (() => VideoEncoder) | null = null;
   private preferHardwareTried = false;
+  // Periodic thumbnail capture state. The streamer-side draws every
+  // Nth VideoFrame to an OffscreenCanvas, JPEG-encodes it, and ships
+  // it to native via send_stream_thumbnail. Other voice-channel
+  // participants who aren't watching the live stream see this as a
+  // poster image. The native side used to do this on the FFmpeg path;
+  // PR8's Chromium-encoder path moved capture to the renderer too.
+  private thumbnailCanvas: OffscreenCanvas | null = null;
+  private lastThumbnailAt = 0;
+  /// Only allow one in-flight thumbnail JPEG encode + IPC at a time.
+  /// convertToBlob is async; without this guard a slow main process
+  /// would queue thumbnails forever.
+  private thumbnailInFlight = false;
+  private static readonly THUMBNAIL_INTERVAL_MS = 3000;
+  private static readonly THUMBNAIL_MAX_EDGE = 320;
 
   constructor(opts: StreamCaptureOptions) {
     this.opts = opts;
@@ -51,14 +110,20 @@ export class StreamCapture {
   }
 
   /// Prompt the user via Chromium's native screen-share dialog, set up
-  /// the encoder, and start pumping encoded chunks to native.
-  async start(): Promise<void> {
+  /// the encoder, and start pumping encoded chunks to native. Returns
+  /// the actual capture dimensions Chromium negotiated, so the caller
+  /// can announce them to the server with truthful values (the
+  /// pre-capture dims passed via opts are best-guess).
+  async start(): Promise<{ width: number; height: number }> {
+    const videoConstraints: MediaTrackConstraints = {
+      frameRate: this.opts.fps,
+    };
+    if (!this.opts.useNativeSize) {
+      videoConstraints.width = this.opts.width;
+      videoConstraints.height = this.opts.height;
+    }
     this.stream = await navigator.mediaDevices.getDisplayMedia({
-      video: {
-        width: this.opts.width,
-        height: this.opts.height,
-        frameRate: this.opts.fps,
-      },
+      video: videoConstraints,
       audio: this.opts.shareAudio,
     });
 
@@ -66,21 +131,77 @@ export class StreamCapture {
     if (!track) {
       throw new Error("No video track in display media");
     }
+    const settings = track.getSettings();
+    console.log("[StreamCapture] track ready:", {
+      width: settings.width,
+      height: settings.height,
+      frameRate: settings.frameRate,
+      muted: track.muted,
+      readyState: track.readyState,
+      label: track.label,
+      useNativeSize: this.opts.useNativeSize ?? false,
+    });
     track.addEventListener("ended", () => {
+      console.log("[StreamCapture] track ended event fired");
       this.opts.onCaptureEnded?.();
       this.stop().catch(() => {});
     });
+    track.addEventListener("mute", () => {
+      console.warn("[StreamCapture] track muted");
+    });
+    track.addEventListener("unmute", () => {
+      console.log("[StreamCapture] track unmuted");
+    });
+
+    // Set up the frame reader BEFORE configuring the encoder so we can
+    // peek the first VideoFrame and use its actual dimensions. We
+    // can't trust track.getSettings() on Wayland: Chromium's PipeWire
+    // integration reports the compositor's canvas size (e.g., 2560×1440
+    // when the primary monitor is 1440p) even when the picked source
+    // is a 1080p surface that produces 1920×1080 frames. Configuring
+    // the encoder off getSettings then producing a stream with 1080p
+    // content padded to 1440p with black borders is exactly what
+    // happens. The first VideoFrame's codedWidth/codedHeight is the
+    // source of truth.
+    type ProcessorCtor = new (init: { track: MediaStreamTrack }) => {
+      readable: ReadableStream<VideoFrame>;
+    };
+    const Processor = (window as unknown as { MediaStreamTrackProcessor?: ProcessorCtor })
+      .MediaStreamTrackProcessor;
+    if (!Processor) {
+      throw new Error("MediaStreamTrackProcessor not available");
+    }
+    const processor = new Processor({ track });
+    this.reader = processor.readable.getReader();
+
+    const firstRead = await this.reader.read();
+    if (firstRead.done || !firstRead.value) {
+      throw new Error("Capture track produced no frames");
+    }
+    const firstFrame = firstRead.value;
+    const captureWidth = firstFrame.codedWidth;
+    const captureHeight = firstFrame.codedHeight;
+    if (
+      settings.width !== captureWidth ||
+      settings.height !== captureHeight
+    ) {
+      console.log(
+        `[StreamCapture] track.getSettings() reported ` +
+          `${settings.width}x${settings.height}, but first frame is ` +
+          `${captureWidth}x${captureHeight} — using first-frame dims for encoder.`,
+      );
+    }
 
     const codecString = webCodecsStringForCodec(
       this.codec,
-      this.opts.width,
-      this.opts.height,
+      captureWidth,
+      captureHeight,
       this.opts.fps,
     );
     const encoderConfig: VideoEncoderConfig = {
       codec: codecString,
-      width: this.opts.width,
-      height: this.opts.height,
+      width: captureWidth,
+      height: captureHeight,
       framerate: this.opts.fps,
       bitrate: this.opts.bitrateKbps * 1000,
       latencyMode: "realtime",
@@ -111,8 +232,9 @@ export class StreamCapture {
       bitrate: encoderConfig.bitrate,
     });
     if (!preflight.supported) {
+      firstFrame.close();
       throw new Error(
-        `Encoder config not supported: codec=${codecString} ${this.opts.width}x${this.opts.height}@${this.opts.fps} ${this.opts.bitrateKbps}kbps`,
+        `Encoder config not supported: codec=${codecString} ${captureWidth}x${captureHeight}@${this.opts.fps} ${this.opts.bitrateKbps}kbps`,
       );
     }
 
@@ -124,15 +246,47 @@ export class StreamCapture {
             const desc = metadata.decoderConfig.description as
               | ArrayBuffer
               | ArrayBufferView;
+            // For an ArrayBufferView (Chromium hands AV1 / HEVC
+            // descriptions back this way) we MUST honour byteOffset +
+            // byteLength — `desc.buffer.slice(0)` would clone the
+            // entire underlying buffer, including bytes outside the
+            // view's window, and the decoder would receive garbage.
             this.description =
               desc instanceof ArrayBuffer
-                ? new Uint8Array(desc)
-                : new Uint8Array(desc.buffer.slice(0));
+                ? new Uint8Array(desc.slice(0))
+                : new Uint8Array(
+                    desc.buffer.slice(
+                      desc.byteOffset,
+                      desc.byteOffset + desc.byteLength,
+                    ),
+                  );
+            if (!this.descriptionLogged) {
+              console.log(
+                `[StreamCapture] decoder description captured ` +
+                  `(codec=${this.codec}, size=${this.description.byteLength})`,
+              );
+              this.descriptionLogged = true;
+            }
           }
 
           const data = new Uint8Array(chunk.byteLength);
           chunk.copyTo(data);
           const isKey = chunk.type === "key";
+
+          // Self-preview fan-out: ship a copy of the encoded chunk to
+          // any local subscribers (StreamVideoPlayer when the user is
+          // watching their own stream). Skips the wire so frames are
+          // visible on a single machine even with no other watchers.
+          if (localFrameSubs.size > 0) {
+            const localFrame: LocalEncodedFrame = {
+              codec: this.codec,
+              keyframe: isKey,
+              timestamp: chunk.timestamp,
+              data,
+              description: isKey && this.description ? this.description : null,
+            };
+            for (const sub of localFrameSubs) sub(localFrame);
+          }
 
           // Fire-and-forget; awaiting per-frame would back-pressure the
           // encoder output queue. Native invoke is non-blocking.
@@ -172,54 +326,142 @@ export class StreamCapture {
     this.buildEncoder = buildEncoder;
     this.encoder.configure(encoderConfig);
 
-    // Pump frames from the capture track through the encoder. Uses
-    // MediaStreamTrackProcessor where available (Chromium ≥ 94 with
-    // the Insertable Streams API). The processor returns VideoFrames
-    // that may be GPU-backed; passing them straight to encoder.encode
-    // lets Chromium keep the path zero-copy on hardware paths.
-    type ProcessorCtor = new (init: { track: MediaStreamTrack }) => {
-      readable: ReadableStream<VideoFrame>;
-    };
-    const Processor = (window as unknown as { MediaStreamTrackProcessor?: ProcessorCtor })
-      .MediaStreamTrackProcessor;
-    if (!Processor) {
-      throw new Error("MediaStreamTrackProcessor not available");
+    // Encode the peeked first frame as a keyframe, then hand off to
+    // the pump for the rest. The reader is already attached above.
+    try {
+      this.encoder.encode(firstFrame, { keyFrame: true });
+      this.wantKeyframe = false;
+    } finally {
+      firstFrame.close();
     }
-    const processor = new Processor({ track });
-    this.reader = processor.readable.getReader();
+    this.frameCounter += 1;
 
     void this.pumpLoop();
+
+    return { width: captureWidth, height: captureHeight };
   }
 
   private async pumpLoop(): Promise<void> {
     if (!this.reader || !this.encoder) return;
+    let firstFrameLogged = false;
+    let framesSinceLastReport = 0;
+    let lastReportAt = Date.now();
     try {
       while (!this.stopping) {
         const { value: frame, done } = await this.reader.read();
-        if (done) break;
+        if (done) {
+          console.log("[StreamCapture] reader signalled done — track ended");
+          break;
+        }
         if (!frame) continue;
+        if (!firstFrameLogged) {
+          console.log(
+            `[StreamCapture] first frame from track ` +
+              `(${frame.codedWidth}x${frame.codedHeight})`,
+          );
+          firstFrameLogged = true;
+        }
+        framesSinceLastReport += 1;
         try {
-          // Encoder backpressure protection: drop frames if the
-          // queue is too deep. WebCodecs's queueing is bounded but
-          // dropping non-keyframes preemptively keeps latency low.
-          const encodeOpts: VideoEncoderEncodeOptions = {};
-          if (this.wantKeyframe) {
-            encodeOpts.keyFrame = true;
-            this.wantKeyframe = false;
-          }
+          // Encoder backpressure protection: drop frames if the queue
+          // is too deep. The queue check has to gate `wantKeyframe`
+          // consumption too — otherwise a requested keyframe can be
+          // silently swallowed during a spike and watchers stay stuck
+          // on the previous GOP until the next natural IDR.
           if (this.encoder.encodeQueueSize < 4) {
+            const encodeOpts: VideoEncoderEncodeOptions = {};
+            if (this.wantKeyframe) {
+              encodeOpts.keyFrame = true;
+              this.wantKeyframe = false;
+            }
             this.encoder.encode(frame, encodeOpts);
           }
+          // Periodic thumbnail. drawImage on a VideoFrame is sync,
+          // so the bitmap is baked into the canvas before frame.close()
+          // in the finally below races ahead. The async convertToBlob
+          // works on the canvas alone — it doesn't need the frame.
+          this.maybeCaptureThumbnail(frame);
         } finally {
           frame.close();
         }
         this.frameCounter += 1;
+        const now = Date.now();
+        if (now - lastReportAt > 5000) {
+          console.log(
+            `[StreamCapture] last 5s: ${framesSinceLastReport} frames captured ` +
+              `(queueSize=${this.encoder.encodeQueueSize})`,
+          );
+          framesSinceLastReport = 0;
+          lastReportAt = now;
+        }
       }
     } catch (e) {
       if (!this.stopping) {
         console.error("[StreamCapture] pump loop error:", e);
       }
     }
+  }
+
+  /// Throttled JPEG thumbnail capture. Call ONCE PER pump-loop iteration
+  /// — the rate limit is enforced internally so callers don't have to
+  /// time anything. Synchronous draw to OffscreenCanvas (so the caller
+  /// can frame.close() right after) followed by an async JPEG encode
+  /// + IPC send. The in-flight guard prevents pile-up if convertToBlob
+  /// or the IPC ever stalls.
+  private maybeCaptureThumbnail(frame: VideoFrame): void {
+    const now = performance.now();
+    if (now - this.lastThumbnailAt < StreamCapture.THUMBNAIL_INTERVAL_MS) return;
+    if (this.thumbnailInFlight) return;
+    if (!frame.codedWidth || !frame.codedHeight) return;
+    this.lastThumbnailAt = now;
+
+    // Compute target dims: longest edge clamped to THUMBNAIL_MAX_EDGE.
+    // OffscreenCanvas is reused across calls; only re-allocated when
+    // the source aspect ratio changes (resolution adjustments mid-
+    // stream from the LCD codec picker, etc.).
+    const srcW = frame.codedWidth;
+    const srcH = frame.codedHeight;
+    let targetW: number, targetH: number;
+    if (srcW >= srcH) {
+      targetW = Math.min(srcW, StreamCapture.THUMBNAIL_MAX_EDGE);
+      targetH = Math.max(1, Math.round((targetW * srcH) / srcW));
+    } else {
+      targetH = Math.min(srcH, StreamCapture.THUMBNAIL_MAX_EDGE);
+      targetW = Math.max(1, Math.round((targetH * srcW) / srcH));
+    }
+    if (
+      !this.thumbnailCanvas ||
+      this.thumbnailCanvas.width !== targetW ||
+      this.thumbnailCanvas.height !== targetH
+    ) {
+      this.thumbnailCanvas = new OffscreenCanvas(targetW, targetH);
+    }
+    const ctx = this.thumbnailCanvas.getContext("2d");
+    if (!ctx) return;
+    try {
+      ctx.drawImage(frame, 0, 0, targetW, targetH);
+    } catch (e) {
+      console.warn("[StreamCapture] thumbnail draw failed:", e);
+      return;
+    }
+
+    this.thumbnailInFlight = true;
+    void this.thumbnailCanvas
+      .convertToBlob({ type: "image/jpeg", quality: 0.7 })
+      .then(async (blob) => {
+        const buf = await blob.arrayBuffer();
+        await invoke("send_stream_thumbnail", {
+          serverId: this.opts.serverId,
+          channelId: this.opts.channelId,
+          jpegData: new Uint8Array(buf),
+        }).catch(() => {});
+      })
+      .catch((e) => {
+        console.warn("[StreamCapture] thumbnail encode failed:", e);
+      })
+      .finally(() => {
+        this.thumbnailInFlight = false;
+      });
   }
 
   private handleEncoderError(e: unknown, codecString: string): void {
@@ -257,6 +499,11 @@ export class StreamCapture {
         this.encoder = this.buildEncoder();
         this.encoder.configure(retryConfig);
         this.wantKeyframe = true;
+        const human = videoCodecHumanName(this.codec);
+        toast.warning(
+          `GPU ${human} encoder unavailable`,
+          `Streaming with software ${human}. Expect higher CPU usage.`,
+        );
         return;
       } catch (retryErr) {
         console.error(
@@ -269,6 +516,10 @@ export class StreamCapture {
     console.error(
       `[StreamCapture] encoder error (codec=${codecString} ${this.opts.width}x${this.opts.height}@${this.opts.fps}):`,
       e,
+    );
+    toast.error(
+      "Stream stopped",
+      `${videoCodecHumanName(this.codec)} encoder failed and could not be recovered.`,
     );
     this.stopping = true;
     this.opts.onCaptureEnded?.();
@@ -339,15 +590,27 @@ function webCodecsStringForCodec(
   fps: number = 30,
 ): string {
   switch (codec) {
-    case VideoCodec.AV1:
-      // AV1 Main profile. Level chosen by frame size: 4.0 = 1080p,
-      // 5.0 = 1440p, 5.1 = 4K30, 5.2 = 4K60. The trailing `.08` is bit
-      // depth (8-bit). All resolutions Decibell offers fit ≤ 5.2.
-      if (width * height > 3840 * 2160) return "av01.0.10M.08"; // 6.0
-      if (width * height >= 3840 * 2160 && fps > 30) return "av01.0.09M.08"; // 5.2
-      if (width * height >= 3840 * 2160) return "av01.0.08M.08"; // 5.1
-      if (width * height >= 2560 * 1440) return "av01.0.06M.08"; // 5.0
-      return "av01.0.04M.08"; // 4.0 — 1080p
+    case VideoCodec.AV1: {
+      // Suppress unused-arg warnings for the resolution-aware branch
+      // we used to take here. AV1 codec-string format is
+      // `av01.<profile>.<seq_level_idx><tier>.<bit_depth>`. The level
+      // field is the *index* (0-31), not the human level number — so
+      // idx 4 is Level 3.0 (1.5 M pixel cap, doesn't even fit 1080p),
+      // not Level 4.0. The previous per-resolution table picked
+      // indices 4-10 thinking they meant L4.0-L6.0, which produced
+      // codec strings claiming a level the bitstream didn't fit; the
+      // encoder either failed outright or produced a non-conformant
+      // stream the decoder rejected.
+      //
+      // Level 4.0 (idx 8, Main tier, 8-bit) covers everything we
+      // offer up through 4K60: max display rate 1.23 G samples/s,
+      // max picture size 8.9 M pixels, max h_size 4096, max v_size
+      // 2304 (per AV1 spec Annex A.3). Always use it.
+      void width;
+      void height;
+      void fps;
+      return "av01.0.08M.08";
+    }
     case VideoCodec.H265:
       // HEVC Main profile. Level encoded as `L{level*30}`: L93=3.1,
       // L120=4.0, L150=5.0, L153=5.1, L156=5.2.
@@ -376,7 +639,7 @@ function webCodecsStringForCodec(
       if (width * height >= 2560 * 1440) return "avc1.640032"; // 5.0
       if (width * height >= 1920 * 1080 && fps > 30) return "avc1.64002A"; // 4.2
       if (width * height >= 1920 * 1080) return "avc1.640028"; // 4.0
-      if (width * height >= 1280 * 720 && fps > 30) return "avc1.640021"; // 3.2
+      if (width * height >= 1280 * 720 && fps > 30) return "avc1.640020"; // 3.2 (was 0x21 — invalid level_idc)
       return "avc1.64001F"; // 3.1 — 720p
     }
   }

@@ -1,0 +1,127 @@
+name: Electron Release
+
+# Tag-driven cross-platform packaging for the electron-client.
+# Trigger:    git tag v0.x.y && git push --tags
+# Artifacts:  AppImage + .deb (Linux), .exe (Windows NSIS),
+#             .dmg (macOS) — all attached to a GitHub Release named
+#             after the tag. Native binaries are built per-platform
+#             on the corresponding runner so the napi-rs `.node` is
+#             always native (no cross-compilation, no Wine).
+
+on:
+  push:
+    tags:
+      - "ev*"  # decoupled from tauri-client's `v*` tag namespace
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target_label: linux
+          - os: windows-latest
+            target_label: windows
+          - os: macos-14
+            target_label: macos
+
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: electron-client
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: electron-client/native
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: electron-client/package-lock.json
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+
+      - name: Install Linux system deps
+        if: matrix.target_label == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libdbus-1-dev \
+            libwayland-dev \
+            libegl-dev \
+            libgl-dev \
+            libasound2-dev \
+            libopus-dev \
+            libclang-dev \
+            pkg-config \
+            fakeroot
+        working-directory: .
+
+      # Windows runners have MSVC, CMake, and the SDK pre-installed.
+      # audiopus vendors libopus, cpal uses WASAPI from the windows
+      # crate — no extra system deps needed.
+
+      - name: Install root npm deps
+        run: npm ci
+
+      - name: Build native addon
+        run: npm run build:native
+
+      - name: Build renderer + main
+        run: |
+          npm run build:renderer
+          npm run build:tsc
+
+      - name: Package
+        env:
+          # Skip electron-builder's auto-publish; we attach via the
+          # release step below for explicit control.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --publish=never
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: decibell-${{ matrix.target_label }}
+          path: |
+            electron-client/release/*.AppImage
+            electron-client/release/*.deb
+            electron-client/release/*.pacman
+            electron-client/release/*.exe
+            electron-client/release/*.dmg
+          if-no-files-found: ignore
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Decibell ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: artifacts/**/*

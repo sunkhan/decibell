@@ -146,22 +146,36 @@ pub struct SendVideoFrameArgs {
 }
 
 #[napi]
-pub async fn send_video_frame(args: SendVideoFrameArgs) -> napi::Result<()> {
+pub fn send_video_frame(args: SendVideoFrameArgs) -> napi::Result<()> {
     use crate::media::video_packet::WIRE_DESCRIPTION_MAGIC;
+    use crate::media::video_pipeline;
 
-    let state_arc = state::shared();
-    let s = state_arc.lock().await;
-    let engine = s.video_engine.as_ref().ok_or_else(|| {
-        napi::Error::from_reason("Not currently streaming")
-    })?;
+    // Hot path: read the active sender from the dedicated frame-sink
+    // slot. No `state_arc.lock()` here — that mutex is contended with
+    // every other tokio task that touches AppState and was a real
+    // serialisation point at 60–120 fps. The slot's mutex is held for
+    // ~tens of nanoseconds (clone an Arc) and only contended on
+    // start/stop transitions.
+    //
+    // Also dropped the `async` qualifier — there's no .await anywhere
+    // in the body anymore, so napi-rs doesn't need to spawn a task per
+    // frame. Pure sync hop from JS to UDP send.
+    let sender = video_pipeline::current_frame_sink()
+        .ok_or_else(|| napi::Error::from_reason("Not currently streaming"))?;
 
     let data: &[u8] = args.data.as_ref();
 
     // For HEVC/AV1 keyframes with a description, prepend the magic-tag
-    // length-prefix so receivers strip it back out and surface
+    // length-prefix so receivers strip it back out and surface the
     // description as a separate field. H.264 keyframes carry SPS/PPS
     // inline in Annex B and don't need this.
-    let payload: Vec<u8> = if args.keyframe && (args.codec == 3 || args.codec == 4) {
+    //
+    // For every other frame (non-key, or H.264 key) we used to do an
+    // unconditional `data.to_vec()` purely to call `send_frame(&payload)`.
+    // That allocated + copied the entire frame's bytes for no reason —
+    // `send_frame` takes a `&[u8]` and never holds it past return. Pass
+    // the borrowed slice straight through.
+    if args.keyframe && (args.codec == 3 || args.codec == 4) {
         if let Some(desc) = args.description.as_ref() {
             let desc_bytes: &[u8] = desc.as_ref();
             let mut wire = Vec::with_capacity(
@@ -171,15 +185,11 @@ pub async fn send_video_frame(args: SendVideoFrameArgs) -> napi::Result<()> {
             wire.extend_from_slice(&(desc_bytes.len() as u32).to_be_bytes());
             wire.extend_from_slice(desc_bytes);
             wire.extend_from_slice(data);
-            wire
-        } else {
-            data.to_vec()
+            sender.send_frame(args.codec, args.keyframe, &wire);
+            return Ok(());
         }
-    } else {
-        data.to_vec()
-    };
-
-    engine.send_encoded_frame(args.codec, args.keyframe, &payload);
+    }
+    sender.send_frame(args.codec, args.keyframe, data);
     Ok(())
 }
 
@@ -370,7 +380,11 @@ pub async fn set_codec_settings(args: CodecSettingsValue) -> napi::Result<()> {
 pub struct SendStreamThumbnailArgs {
     pub server_id: String,
     pub channel_id: String,
-    pub jpeg_data: Vec<u8>,
+    /// JPEG bytes. Typed as `Buffer` (not `Vec<u8>`) so napi-rs
+    /// accepts a JS `Uint8Array` directly without forcing the
+    /// renderer to materialise a plain Array — `Vec<u8>` would
+    /// reject the typed-array shape with "not an array".
+    pub jpeg_data: napi::bindgen_prelude::Buffer,
 }
 
 #[napi]
@@ -384,7 +398,7 @@ pub async fn send_stream_thumbnail(args: SendStreamThumbnailArgs) -> napi::Resul
         ))
     })?;
     client
-        .send_stream_thumbnail(&args.channel_id, &args.jpeg_data)
+        .send_stream_thumbnail(&args.channel_id, args.jpeg_data.as_ref())
         .await
         .map_err(napi::Error::from_reason)
 }

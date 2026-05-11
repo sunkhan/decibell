@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -40,59 +41,158 @@ function DeafenIcon() {
   );
 }
 
-export default function VoiceParticipantList({ usernames, channelId }: Props) {
-  const participants = useVoiceStore((s) => s.participants);
-  const speakingUsers = useVoiceStore((s) => s.speakingUsers);
-  const activeStreams = useVoiceStore((s) => s.activeStreams);
-  const isMuted = useVoiceStore((s) => s.isMuted);
-  const isDeafened = useVoiceStore((s) => s.isDeafened);
-  const channelUserStates = useVoiceStore((s) => s.channelUserStates);
-  const localMutedUsers = useVoiceStore((s) => s.localMutedUsers);
-  const connectedServerId = useVoiceStore((s) => s.connectedServerId);
-  const localUsername = useAuthStore((s) => s.username);
+function LiveBadge() {
+  return (
+    <div className="flex items-center gap-1 rounded bg-error/20 px-1.5 py-0.5">
+      <div className="h-1.5 w-1.5 rounded-full bg-error" />
+      <span className="text-[9px] font-bold text-error">LIVE</span>
+    </div>
+  );
+}
+
+// Each row subscribes only to the slices it actually displays so a
+// speaking-event for one user doesn't re-render every other row.
+// Memo'd so identical (props, derived) skip the function call entirely.
+
+interface PresenceRowProps {
+  username: string;
+  channelId?: string;
+  connectedServerId: string | null;
+}
+
+const PresenceRow = memo(function PresenceRow({
+  username,
+  channelId,
+  connectedServerId,
+}: PresenceRowProps) {
+  const isStreaming = useVoiceStore((s) =>
+    s.activeStreams.some((st) => st.ownerUsername === username),
+  );
+  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
+  const userState = useVoiceStore((s) => {
+    if (!channelId) return undefined;
+    return s.channelUserStates[channelId]?.[username];
+  });
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
 
+  return (
+    <div
+      className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-hover"
+      onClick={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        openProfilePopup(
+          username,
+          { x: rect.right + 8, y: rect.top },
+          connectedServerId,
+        );
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        openContextMenu(username, { x: e.clientX, y: e.clientY });
+      }}
+    >
+      <div
+        className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-[10px] font-bold text-white"
+        style={{ background: stringToGradient(username) }}
+      >
+        {username.charAt(0).toUpperCase()}
+      </div>
+      <span className="min-w-0 truncate">{username}</span>
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        {isStreaming && <LiveBadge />}
+        {isLocallyMuted && <LocalMuteIcon />}
+        {userState?.isDeafened ? <DeafenIcon /> : userState?.isMuted ? <MuteIcon /> : null}
+      </div>
+    </div>
+  );
+});
+
+interface ActiveRowProps {
+  username: string;
+  isLocal: boolean;
+  /// Snapshot props from the parent list (only change on roster updates,
+  /// which already re-render the parent). Live state — speaking, stream,
+  /// local-mute, our own mute/deafen — is fetched per-row below.
+  rosterMuted: boolean;
+  rosterDeafened: boolean;
+  connectedServerId: string | null;
+}
+
+const ActiveRow = memo(function ActiveRow({
+  username,
+  isLocal,
+  rosterMuted,
+  rosterDeafened,
+  connectedServerId,
+}: ActiveRowProps) {
+  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
+  const isStreaming = useVoiceStore((s) =>
+    s.activeStreams.some((st) => st.ownerUsername === username),
+  );
+  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
+  // Local user's mute/deafen comes from the top-level toggle, not the
+  // roster — subscribe directly so our own indicator updates instantly.
+  const selfMuted = useVoiceStore((s) => s.isMuted);
+  const selfDeafened = useVoiceStore((s) => s.isDeafened);
+  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
+  const openContextMenu = useUiStore((s) => s.openContextMenu);
+
+  const userMuted = isLocal ? selfMuted : rosterMuted;
+  const userDeafened = isLocal ? selfDeafened : rosterDeafened;
+
+  return (
+    <div
+      className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-hover"
+      onClick={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        openProfilePopup(
+          username,
+          { x: rect.right + 8, y: rect.top },
+          connectedServerId,
+        );
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        openContextMenu(username, { x: e.clientX, y: e.clientY });
+      }}
+    >
+      <div
+        className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-[10px] font-bold text-white transition-shadow duration-200"
+        style={{
+          background: stringToGradient(username),
+          boxShadow: isSpeaking ? "0 0 0 2px #3fb950, 0 0 6px #3fb950" : "none",
+        }}
+      >
+        {username.charAt(0).toUpperCase()}
+      </div>
+      <span className="min-w-0 truncate">{username}</span>
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        {isStreaming && <LiveBadge />}
+        {isLocallyMuted && <LocalMuteIcon />}
+        {userDeafened ? <DeafenIcon /> : userMuted ? <MuteIcon /> : null}
+      </div>
+    </div>
+  );
+});
+
+export default function VoiceParticipantList({ usernames, channelId }: Props) {
+  const participants = useVoiceStore((s) => s.participants);
+  const connectedServerId = useVoiceStore((s) => s.connectedServerId);
+  const localUsername = useAuthStore((s) => s.username);
+
   if (usernames) {
     if (usernames.length === 0) return null;
-    const states = channelId ? channelUserStates[channelId] ?? {} : {};
     return (
       <div className="space-y-0.5 pb-1 pl-5">
-        {usernames.map((u) => {
-          const userState = states[u];
-          return (
-            <div
-              key={u}
-              className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-hover"
-              onClick={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                openProfilePopup(u, { x: rect.right + 8, y: rect.top }, connectedServerId);
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                openContextMenu(u, { x: e.clientX, y: e.clientY });
-              }}
-            >
-              <div
-                className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-[10px] font-bold text-white"
-                style={{ background: stringToGradient(u) }}
-              >
-                {u.charAt(0).toUpperCase()}
-              </div>
-              <span className="min-w-0 truncate">{u}</span>
-              <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                {activeStreams.some((s) => s.ownerUsername === u) && (
-                  <div className="flex items-center gap-1 rounded bg-error/20 px-1.5 py-0.5">
-                    <div className="h-1.5 w-1.5 rounded-full bg-error" />
-                    <span className="text-[9px] font-bold text-error">LIVE</span>
-                  </div>
-                )}
-                {localMutedUsers.has(u) && <LocalMuteIcon />}
-                {userState?.isDeafened ? <DeafenIcon /> : userState?.isMuted ? <MuteIcon /> : null}
-              </div>
-            </div>
-          );
-        })}
+        {usernames.map((u) => (
+          <PresenceRow
+            key={u}
+            username={u}
+            channelId={channelId}
+            connectedServerId={connectedServerId}
+          />
+        ))}
       </div>
     );
   }
@@ -101,47 +201,16 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
 
   return (
     <div className="space-y-0.5 pb-1 pl-5">
-      {participants.map((p) => {
-        const isSpeaking = speakingUsers.includes(p.username);
-        const isLocal = p.username === localUsername;
-        const userMuted = isLocal ? isMuted : p.isMuted;
-        const userDeafened = isLocal ? isDeafened : p.isDeafened;
-        return (
-          <div
-            key={p.username}
-            className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-hover"
-            onClick={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              openProfilePopup(p.username, { x: rect.right + 8, y: rect.top }, connectedServerId);
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              openContextMenu(p.username, { x: e.clientX, y: e.clientY });
-            }}
-          >
-            <div
-              className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-[10px] font-bold text-white transition-shadow duration-200"
-              style={{
-                background: stringToGradient(p.username),
-                boxShadow: isSpeaking ? "0 0 0 2px #3fb950, 0 0 6px #3fb950" : "none",
-              }}
-            >
-              {p.username.charAt(0).toUpperCase()}
-            </div>
-            <span className="min-w-0 truncate">{p.username}</span>
-            <div className="ml-auto flex shrink-0 items-center gap-1.5">
-              {activeStreams.some((s) => s.ownerUsername === p.username) && (
-                <div className="flex items-center gap-1 rounded bg-error/20 px-1.5 py-0.5">
-                  <div className="h-1.5 w-1.5 rounded-full bg-error" />
-                  <span className="text-[9px] font-bold text-error">LIVE</span>
-                </div>
-              )}
-              {localMutedUsers.has(p.username) && <LocalMuteIcon />}
-              {userDeafened ? <DeafenIcon /> : userMuted ? <MuteIcon /> : null}
-            </div>
-          </div>
-        );
-      })}
+      {participants.map((p) => (
+        <ActiveRow
+          key={p.username}
+          username={p.username}
+          isLocal={p.username === localUsername}
+          rosterMuted={p.isMuted}
+          rosterDeafened={p.isDeafened}
+          connectedServerId={connectedServerId}
+        />
+      ))}
     </div>
   );
 }

@@ -10,7 +10,7 @@
 //! incoming path (see `video_receiver.rs`).
 
 use std::net::UdpSocket;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::video_packet::{UdpVideoPacket, UDP_MAX_PAYLOAD};
@@ -63,4 +63,41 @@ impl VideoSender {
         }
         (ok, err)
     }
+}
+
+/// Hot-path frame sink. The renderer's WebCodecs.VideoEncoder pumps
+/// encoded chunks at 60–120 fps via the `send_video_frame` napi
+/// command; that command used to grab the global AppState mutex on
+/// every frame just to look up `s.video_engine`, which serialised the
+/// encoder hot path against every other tokio task touching state.
+///
+/// Instead we cache an `Arc<VideoSender>` in this static slot at
+/// `start_screen_share` time; `send_video_frame` reads it via a
+/// dedicated short-held `Mutex` (uncontended in practice — only the
+/// start/stop commands ever write) and skips AppState entirely.
+fn frame_sink_slot() -> &'static Mutex<Option<Arc<VideoSender>>> {
+    static SLOT: OnceLock<Mutex<Option<Arc<VideoSender>>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// Install the active sender into the slot. Called from
+/// `start_screen_share` after constructing the engine.
+pub fn set_frame_sink(sender: Arc<VideoSender>) {
+    *frame_sink_slot().lock().expect("frame sink mutex poisoned") = Some(sender);
+}
+
+/// Clear the slot. Called from `stop_screen_share` and on engine
+/// teardown so a stray frame post-stop is dropped instead of sent.
+pub fn clear_frame_sink() {
+    *frame_sink_slot().lock().expect("frame sink mutex poisoned") = None;
+}
+
+/// Read the active sender (Arc clone is ~atomic refcount bump). The
+/// caller releases the slot mutex immediately and does the send work
+/// without any lock held.
+pub fn current_frame_sink() -> Option<Arc<VideoSender>> {
+    frame_sink_slot()
+        .lock()
+        .expect("frame sink mutex poisoned")
+        .clone()
 }

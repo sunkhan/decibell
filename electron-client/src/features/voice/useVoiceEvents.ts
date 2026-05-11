@@ -12,6 +12,8 @@ import {
 import { playSound } from "../../utils/sounds";
 import { buildCodecToast } from "../../utils/codecToasts";
 import { getCurrentWindow } from "../../lib/window";
+import { activeStreamCapture } from "./streaming/StreamCapture";
+import { toast } from "../../stores/toastStore";
 
 /// dB → linear gain. -40 dB floor maps to 0 (effectively muted).
 function dbToGain(db: number): number {
@@ -31,17 +33,18 @@ function dbToGain(db: number): number {
 /// stream_capture_ended, stream_gpu_fallback. Thumbnail events live in
 /// useStreamThumbnails so the listener can subscribe/unsubscribe per
 /// active-stream count without churning this hook.
+///
+/// Effect runs ONCE on mount (`[]` deps). Handlers read store actions
+/// and the local username via `getState()` instead of capturing them
+/// in closure, which means:
+///   - No re-subscription churn on auth re-renders or any other parent
+///     state change. Re-subscribing introduced a microtask gap where
+///     events could be dropped.
+///   - `prevParticipants` / `prevStreamOwners` closures stay alive for
+///     the component's lifetime. Otherwise every re-subscribe wiped the
+///     remembered roster, suppressing the join/leave sound effects on
+///     the very next presence update.
 export function useVoiceEvents() {
-  const setSpeaking = useVoiceStore((s) => s.setSpeaking);
-  const setMuted = useVoiceStore((s) => s.setMuted);
-  const setDeafened = useVoiceStore((s) => s.setDeafened);
-  const setLatency = useVoiceStore((s) => s.setLatency);
-  const setError = useVoiceStore((s) => s.setError);
-  const setParticipants = useVoiceStore((s) => s.setParticipants);
-  const setChannelPresence = useVoiceStore((s) => s.setChannelPresence);
-  const setUserState = useVoiceStore((s) => s.setUserState);
-  const username = useAuthStore((s) => s.username);
-
   useEffect(() => {
     const promises: Promise<() => void>[] = [];
     let prevParticipants: Set<string> | null = null;
@@ -55,9 +58,11 @@ export function useVoiceEvents() {
         userCapabilities?: ClientCapabilities[];
       }>("voice_presence_updated", (event) => {
         const { channelId, participants, userStates, userCapabilities } = event.payload;
-        setChannelPresence(channelId, participants, userStates, userCapabilities);
+        const store = useVoiceStore.getState();
+        const username = useAuthStore.getState().username;
+        store.setChannelPresence(channelId, participants, userStates, userCapabilities);
 
-        const connectedId = useVoiceStore.getState().connectedChannelId;
+        const connectedId = store.connectedChannelId;
         if (channelId === connectedId && prevParticipants) {
           const current = new Set(participants);
           for (const u of participants) {
@@ -73,12 +78,12 @@ export function useVoiceEvents() {
 
         if (channelId === connectedId) {
           const stateMap = new Map(userStates?.map((s) => [s.username, s]) ?? []);
-          setParticipants(
+          store.setParticipants(
             participants.map((u) => ({
               username: u,
               isMuted: stateMap.get(u)?.isMuted ?? false,
               isDeafened: stateMap.get(u)?.isDeafened ?? false,
-              isSpeaking: useVoiceStore.getState().speakingUsers.includes(u),
+              isSpeaking: store.speakingUsers.has(u),
               audioLevel: 0,
             })),
           );
@@ -86,7 +91,7 @@ export function useVoiceEvents() {
           // Re-apply saved per-user volume / local-mute on every roster
           // change so peers picked up after the user's muted them stay
           // muted, and so volume tweaks survive churn.
-          const { userVolumes, localMutedUsers } = useVoiceStore.getState();
+          const { userVolumes, localMutedUsers } = store;
           for (const user of participants) {
             const hasCustomVolume = user in userVolumes;
             const isMuted = localMutedUsers.has(user);
@@ -102,18 +107,20 @@ export function useVoiceEvents() {
 
     promises.push(
       listen<{ username: string; speaking: boolean }>("voice_user_speaking", (event) => {
+        const username = useAuthStore.getState().username;
         const speakingUsername =
           event.payload.username === "__local__" ? username ?? "" : event.payload.username;
         if (speakingUsername) {
-          setSpeaking(speakingUsername, event.payload.speaking);
+          useVoiceStore.getState().setSpeaking(speakingUsername, event.payload.speaking);
         }
       }),
     );
 
     promises.push(
       listen<{ isMuted: boolean; isDeafened: boolean }>("voice_state_changed", (event) => {
-        setMuted(event.payload.isMuted);
-        setDeafened(event.payload.isDeafened);
+        const store = useVoiceStore.getState();
+        store.setMuted(event.payload.isMuted);
+        store.setDeafened(event.payload.isDeafened);
       }),
     );
 
@@ -121,14 +128,16 @@ export function useVoiceEvents() {
       listen<{ username: string; isMuted: boolean; isDeafened: boolean }>(
         "voice_user_state_changed",
         (event) => {
-          setUserState(event.payload.username, event.payload.isMuted, event.payload.isDeafened);
+          useVoiceStore
+            .getState()
+            .setUserState(event.payload.username, event.payload.isMuted, event.payload.isDeafened);
         },
       ),
     );
 
     promises.push(
       listen<{ latencyMs: number }>("voice_ping_updated", (event) => {
-        setLatency(event.payload.latencyMs);
+        useVoiceStore.getState().setLatency(event.payload.latencyMs);
       }),
     );
 
@@ -147,7 +156,7 @@ export function useVoiceEvents() {
 
     promises.push(
       listen<{ message: string }>("voice_error", (event) => {
-        setError(event.payload.message);
+        useVoiceStore.getState().setError(event.payload.message);
       }),
     );
 
@@ -156,6 +165,7 @@ export function useVoiceEvents() {
     // Capture source ended (window closed, monitor disconnected) → auto-stop.
     promises.push(
       listen("stream_capture_ended", () => {
+        const username = useAuthStore.getState().username;
         const {
           connectedServerId,
           connectedChannelId,
@@ -194,6 +204,7 @@ export function useVoiceEvents() {
           enforcedCodec?: number;
         }[];
       }>("stream_presence_updated", (event) => {
+        const username = useAuthStore.getState().username;
         const mapped: StreamInfo[] = event.payload.streams.map((s) => ({
           streamId: s.streamId,
           ownerUsername: s.ownerUsername,
@@ -249,8 +260,9 @@ export function useVoiceEvents() {
         newFps: number;
         reason: number;
       }>("stream_codec_changed", (event) => {
+        const username = useAuthStore.getState().username;
         const isLocalUserStreamer = event.payload.streamerUsername === username;
-        const toast = buildCodecToast(
+        const built = buildCodecToast(
           {
             channelId: event.payload.channelId,
             streamerUsername: event.payload.streamerUsername,
@@ -262,19 +274,30 @@ export function useVoiceEvents() {
           },
           isLocalUserStreamer,
         );
-        // ToastStore lands with the toasts PR; until then surface in console.
-        if (toast) {
-          console.log("[stream-codec-changed]", toast.text);
-        }
+        if (built) toast.info("Codec changed", built.text);
       }),
     );
 
     promises.push(
       listen<{ error: string }>("stream_gpu_fallback", (event) => {
-        console.warn(
-          "[stream-gpu-fallback] Streaming via CPU path — higher CPU usage:",
-          event.payload.error,
-        );
+        // Native-emitted GPU fallback notice — historically fired by the
+        // Tauri-era native encoder. PR8's encoder lives in the renderer
+        // and surfaces its own toast directly from StreamCapture, so
+        // this listener is dormant for now. Kept as a fallback in case
+        // any native code path still emits it.
+        toast.warning("GPU encoder unavailable", event.payload.error);
+      }),
+    );
+
+    // PLI bridge: native's video_recv_thread emits this whenever a
+    // watcher's UDP keyframe-request packet arrives. Forward to the
+    // active WebCodecs encoder so the next encoded frame is a fresh
+    // IDR — without this, watchers joining mid-stream stay black until
+    // the encoder's natural GOP boundary, and recovery from packet
+    // loss never converges. No-op for clients that aren't streaming.
+    promises.push(
+      listen("keyframe_requested", () => {
+        activeStreamCapture()?.forceKeyframe();
       }),
     );
 
@@ -283,15 +306,6 @@ export function useVoiceEvents() {
         p.then((fn) => fn());
       }
     };
-  }, [
-    username,
-    setSpeaking,
-    setMuted,
-    setDeafened,
-    setLatency,
-    setError,
-    setParticipants,
-    setChannelPresence,
-    setUserState,
-  ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 }

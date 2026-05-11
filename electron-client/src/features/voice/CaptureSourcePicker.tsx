@@ -72,15 +72,20 @@ export default function CaptureSourcePicker({
   // PR8: Chromium's `getDisplayMedia` triggers the OS-native screen-share
   // dialog when StreamCapture.start() runs, so the picker no longer needs
   // its own source list. Settings + Go Live only.
+  //
+  // For "source", the actual dimensions are read off the negotiated
+  // track inside StreamCapture (useNativeSize flag below). The numbers
+  // returned here are only used for the StartStreamReq packet to the
+  // server, the bitrate-preset table, and the encoder's pre-flight
+  // bitrate check. Use a generous 1440p stand-in so the bitrate ceiling
+  // covers most native-resolution sources without bottlenecking; the
+  // encoder reconfigures with the real numbers once Chromium negotiates.
   const resolveDimensions = (): { width: number; height: number } => {
     switch (streamSettings.resolution) {
       case "720p":
         return { width: 1280, height: 720 };
       case "source":
-        // 'source' lets Chromium pick the native size of the chosen
-        // surface. We pass 1920x1080 as a maximum hint and Chromium
-        // adapts down if the source is smaller.
-        return { width: 1920, height: 1080 };
+        return { width: 2560, height: 1440 };
       default:
         return { width: 1920, height: 1080 };
     }
@@ -96,25 +101,13 @@ export default function CaptureSourcePicker({
           ? VideoCodec.H264_HW
           : streamSettings.enforcedCodec;
 
-      // Native side: register the stream + record VideoEngine state
-      // before frames start flowing.
-      await invoke("start_screen_share", {
-        serverId,
-        channelId,
-        fps: streamSettings.fps,
-        width: dims.width,
-        height: dims.height,
-        videoBitrateKbps: streamSettings.videoBitrateKbps,
-        shareAudio: streamSettings.shareAudio,
-        audioBitrateKbps: streamSettings.audioBitrateKbps,
-        initialCodec: codec,
-        enforcedCodec: streamSettings.enforcedCodec || 0,
-      });
-
-      // Renderer side: prompt for capture source via Chromium, then
-      // start encoding. If the user cancels the OS dialog,
-      // getDisplayMedia rejects — surface as an error and tell native
-      // we're not actually streaming.
+      // Renderer side first: prompt for capture source, peek the
+      // first frame, configure the encoder. start() returns the
+      // *actual* dimensions Chromium negotiated — those are what we
+      // announce to the server, so the resolution badge and presence
+      // payload reflect reality even when the user picked "Source"
+      // and we couldn't predict it. If the user cancels the OS
+      // dialog, getDisplayMedia rejects and we never bother native.
       const stream = startActiveStream({
         codec,
         width: dims.width,
@@ -122,17 +115,44 @@ export default function CaptureSourcePicker({
         fps: streamSettings.fps,
         bitrateKbps: streamSettings.videoBitrateKbps,
         shareAudio: streamSettings.shareAudio,
+        serverId,
+        channelId,
+        useNativeSize: streamSettings.resolution === "source",
         onCaptureEnded: () => {
           useVoiceStore.getState().setIsStreaming(false);
           invoke("stop_screen_share", { serverId, channelId }).catch(() => {});
           playSound("stream_stop");
         },
       });
+      let actualDims: { width: number; height: number };
       try {
-        await stream.start();
+        actualDims = await stream.start();
       } catch (e) {
         await stopActiveStream();
-        await invoke("stop_screen_share", { serverId, channelId }).catch(() => {});
+        throw e;
+      }
+
+      // Native side: register the stream with the truthful dimensions.
+      // The encoder.output's first chunk has already fired by now and
+      // its send_video_frame call failed silently (no VideoEngine yet)
+      // — that's one frame lost on the wire. Self-preview gets it via
+      // the local fan-out, and remote watchers will request a fresh
+      // keyframe via PLI on subscribe.
+      try {
+        await invoke("start_screen_share", {
+          serverId,
+          channelId,
+          fps: streamSettings.fps,
+          width: actualDims.width,
+          height: actualDims.height,
+          videoBitrateKbps: streamSettings.videoBitrateKbps,
+          shareAudio: streamSettings.shareAudio,
+          audioBitrateKbps: streamSettings.audioBitrateKbps,
+          initialCodec: codec,
+          enforcedCodec: streamSettings.enforcedCodec || 0,
+        });
+      } catch (e) {
+        await stopActiveStream();
         throw e;
       }
 
@@ -388,7 +408,7 @@ function CodecPicker() {
     if (!loaded) load().catch(() => {});
   }, [loaded, load]);
 
-  const segmentLabel = (c: VideoCodec): string => {
+  const baseLabel = (c: VideoCodec): string => {
     switch (c) {
       case VideoCodec.AV1:
         return "AV1";
@@ -404,11 +424,21 @@ function CodecPicker() {
   };
 
   const options: { value: VideoCodec; label: string }[] = [
-    { value: VideoCodec.UNKNOWN, label: segmentLabel(VideoCodec.UNKNOWN) },
-    ...encodeCaps.map((c) => ({
-      value: c.codec as VideoCodec,
-      label: segmentLabel(c.codec as VideoCodec),
-    })),
+    { value: VideoCodec.UNKNOWN, label: baseLabel(VideoCodec.UNKNOWN) },
+    ...encodeCaps.map((c) => {
+      const codec = c.codec as VideoCodec;
+      const base = baseLabel(codec);
+      // Only annotate the codec slots where the HW/SW distinction is
+      // meaningful: AV1, H.265, and H264_HW. H264_SW is already labelled
+      // "H.264 SW" by definition and the Auto entry has no probe data.
+      const tag =
+        codec !== VideoCodec.H264_SW && c.hardware !== undefined
+          ? c.hardware
+            ? " (HW)"
+            : " (SW)"
+          : "";
+      return { value: codec, label: `${base}${tag}` };
+    }),
   ];
 
   return (

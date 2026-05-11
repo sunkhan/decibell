@@ -1,8 +1,13 @@
 {
   "name": "decibell-electron-client",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.6.0",
   "description": "Decibell — Electron + Rust (napi-rs) client",
+  "homepage": "https://github.com/decibell/decibell",
+  "author": {
+    "name": "Decibell",
+    "email": "noreply@decibell.app"
+  },
   "main": "dist/electron/main/index.js",
   "scripts": {
     "dev": "npm run build:native:debug && concurrently -k -n tsc,vite,electron -c green,cyan,magenta \"npm:dev:tsc\" \"npm:dev:renderer\" \"npm:dev:electron\"",

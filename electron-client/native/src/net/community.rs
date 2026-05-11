@@ -480,6 +480,50 @@ impl CommunityClient {
                         wiped_by: msg.wiped_by,
                     });
                 }
+                Some(packet::Payload::InviteCreateRes(resp)) => {
+                    let invite = resp.invite.map(|i| events::InviteInfoPayload {
+                        code: i.code,
+                        created_by: i.created_by,
+                        created_at: i.created_at,
+                        expires_at: i.expires_at,
+                        max_uses: i.max_uses,
+                        uses: i.uses,
+                    });
+                    events::emit_invite_create_responded(events::InviteCreateRespondedPayload {
+                        server_id: server_id.clone(),
+                        success: resp.success,
+                        message: resp.message,
+                        invite,
+                    });
+                }
+                Some(packet::Payload::InviteListRes(resp)) => {
+                    let invites: Vec<events::InviteInfoPayload> = resp
+                        .invites
+                        .into_iter()
+                        .map(|i| events::InviteInfoPayload {
+                            code: i.code,
+                            created_by: i.created_by,
+                            created_at: i.created_at,
+                            expires_at: i.expires_at,
+                            max_uses: i.max_uses,
+                            uses: i.uses,
+                        })
+                        .collect();
+                    events::emit_invite_list_received(events::InviteListReceivedPayload {
+                        server_id: server_id.clone(),
+                        success: resp.success,
+                        message: resp.message,
+                        invites,
+                    });
+                }
+                Some(packet::Payload::InviteRevokeRes(resp)) => {
+                    events::emit_invite_revoke_responded(events::InviteRevokeRespondedPayload {
+                        server_id: server_id.clone(),
+                        success: resp.success,
+                        message: resp.message,
+                        code: resp.code,
+                    });
+                }
                 Some(packet::Payload::MemberListRes(resp)) => {
                     let members: Vec<events::MemberInfoPayload> = resp
                         .members

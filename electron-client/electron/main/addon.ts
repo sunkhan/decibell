@@ -11,6 +11,10 @@ type StreamFrame = {
   data: Uint8Array;
   description: Uint8Array | null;
 };
+type StreamThumbnail = {
+  ownerUsername: string;
+  data: Uint8Array;
+};
 type InitOptions = {
   userDataDir: string;
   cacheDir: string;
@@ -20,6 +24,7 @@ type AddonInit = (
   opts: InitOptions,
   bus: (env: EventEnvelope) => void,
   streamBus: (frame: StreamFrame) => void,
+  streamThumbnailBus: (thumb: StreamThumbnail) => void,
 ) => void;
 type AddonShutdown = () => Promise<void>;
 
@@ -109,6 +114,13 @@ export function initAddon(): void {
       // side). No JSON, no base64.
       for (const w of BrowserWindow.getAllWindows()) {
         w.webContents.send("decibell:stream_frame", frame);
+      }
+    },
+    (thumb) => {
+      // Per-stream JPEG thumbnails — same binary path as encoded
+      // frames, raw bytes through. Renderer wraps in a blob: URL.
+      for (const w of BrowserWindow.getAllWindows()) {
+        w.webContents.send("decibell:stream_thumbnail", thumb);
       }
     },
   );

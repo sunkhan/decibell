@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import { invoke } from "../../lib/ipc";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
@@ -20,7 +20,9 @@ export default function VoicePanel() {
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
   const participants = useVoiceStore((s) => s.participants);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
-  const speakingUsers = useVoiceStore((s) => s.speakingUsers);
+  // Note: no top-level speakingUsers subscription — the per-card
+  // ParticipantCard below subscribes to its own slice so a speaking
+  // event for one user doesn't re-render the whole panel.
   const streamThumbnails = useVoiceStore((s) => s.streamThumbnails);
   const isMuted = useVoiceStore((s) => s.isMuted);
   const isDeafened = useVoiceStore((s) => s.isDeafened);
@@ -31,8 +33,6 @@ export default function VoicePanel() {
   const isStreaming = useVoiceStore((s) => s.isStreaming);
   const disconnect = useVoiceStore((s) => s.disconnect);
   const setActiveView = useUiStore((s) => s.setActiveView);
-  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
-  const openContextMenu = useUiStore((s) => s.openContextMenu);
   const channels = useChatStore((s) => {
     const serverId = s.activeServerId;
     return serverId
@@ -70,9 +70,10 @@ export default function VoicePanel() {
     const isAlreadyWatching = watchingStreams.includes(username);
 
     if (!isAlreadyWatching) {
-      if (isSelf) {
-        invoke("set_self_preview", { enabled: true }).catch(() => {});
-      } else {
+      // Self-preview is renderer-internal: StreamVideoPlayer subscribes
+      // to the local encoder's output via subscribeLocalFrames when
+      // streamerUsername === ownUsername, no native side involvement.
+      if (!isSelf) {
         invoke("watch_stream", {
           serverId: connectedServerId,
           channelId: connectedChannelId,
@@ -95,9 +96,7 @@ export default function VoicePanel() {
   const handleDisconnect = async () => {
     if (connectedServerId && connectedChannelId) {
       for (const username of watchingStreams) {
-        if (username === ownUsername) {
-          await invoke("set_self_preview", { enabled: false }).catch(() => {});
-        } else {
+        if (username !== ownUsername) {
           await invoke("stop_watching", {
             serverId: connectedServerId,
             channelId: connectedChannelId,
@@ -289,11 +288,7 @@ export default function VoicePanel() {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (stream.ownerUsername === ownUsername) {
-                                invoke("set_self_preview", {
-                                  enabled: false,
-                                }).catch(() => {});
-                              } else {
+                              if (stream.ownerUsername !== ownUsername) {
                                 invoke("stop_watching", {
                                   serverId: connectedServerId,
                                   channelId: connectedChannelId,
@@ -336,62 +331,14 @@ export default function VoicePanel() {
 
       {!fullscreenStream && !hasStreams && (
         <div className="flex flex-1 flex-wrap items-center justify-center gap-5 p-6">
-          {participants.map((p) => {
-            const isSpeaking = speakingUsers.includes(p.username);
-            return (
-              <div
-                key={p.username}
-                className="flex cursor-pointer flex-col items-center gap-2.5 rounded-xl px-5 py-4 transition-all hover:bg-white/[0.035]"
-                onClick={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  openProfilePopup(
-                    p.username,
-                    { x: rect.right + 8, y: rect.top },
-                    connectedServerId,
-                  );
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  openContextMenu(p.username, { x: e.clientX, y: e.clientY });
-                }}
-              >
-                <div className="relative">
-                  <div
-                    className={`flex h-20 w-20 items-center justify-center rounded-xl text-[28px] font-bold text-white transition-all duration-200 ${
-                      isSpeaking
-                        ? "shadow-[0_0_0_3px_var(--color-bg-mid),0_0_0_5px_var(--color-success)]"
-                        : ""
-                    }`}
-                    style={{ background: stringToGradient(p.username) }}
-                  >
-                    {p.username.charAt(0).toUpperCase()}
-                  </div>
-                  {p.isMuted && (
-                    <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-[2.5px] border-bg-mid bg-bg-light">
-                      <svg
-                        className="h-3 w-3 text-error"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <line x1="1" y1="1" x2="23" y2="23" />
-                        <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                        <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
-                        <line x1="12" y1="19" x2="12" y2="23" />
-                        <line x1="8" y1="23" x2="16" y2="23" />
-                      </svg>
-                    </div>
-                  )}
-                </div>
-                <div className="max-w-full truncate text-center text-[13px] font-medium text-text-primary">
-                  {p.username}
-                </div>
-              </div>
-            );
-          })}
+          {participants.map((p) => (
+            <ParticipantCard
+              key={p.username}
+              username={p.username}
+              isMuted={p.isMuted}
+              connectedServerId={connectedServerId}
+            />
+          ))}
         </div>
       )}
 
@@ -522,3 +469,75 @@ export default function VoicePanel() {
     </div>
   );
 }
+
+// Avatar card for one participant. Subscribes to its OWN slice of
+// speakingUsers so a speaking event for any other user is a no-op
+// here. Memo'd so unchanged props skip the function call entirely.
+interface ParticipantCardProps {
+  username: string;
+  isMuted: boolean;
+  connectedServerId: string | null;
+}
+
+const ParticipantCard = memo(function ParticipantCard({
+  username,
+  isMuted,
+  connectedServerId,
+}: ParticipantCardProps) {
+  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
+  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
+  const openContextMenu = useUiStore((s) => s.openContextMenu);
+
+  return (
+    <div
+      className="flex cursor-pointer flex-col items-center gap-2.5 rounded-xl px-5 py-4 transition-all hover:bg-white/[0.035]"
+      onClick={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        openProfilePopup(
+          username,
+          { x: rect.right + 8, y: rect.top },
+          connectedServerId,
+        );
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        openContextMenu(username, { x: e.clientX, y: e.clientY });
+      }}
+    >
+      <div className="relative">
+        <div
+          className={`flex h-20 w-20 items-center justify-center rounded-xl text-[28px] font-bold text-white transition-all duration-200 ${
+            isSpeaking
+              ? "shadow-[0_0_0_3px_var(--color-bg-mid),0_0_0_5px_var(--color-success)]"
+              : ""
+          }`}
+          style={{ background: stringToGradient(username) }}
+        >
+          {username.charAt(0).toUpperCase()}
+        </div>
+        {isMuted && (
+          <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-[2.5px] border-bg-mid bg-bg-light">
+            <svg
+              className="h-3 w-3 text-error"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <line x1="1" y1="1" x2="23" y2="23" />
+              <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+              <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+          </div>
+        )}
+      </div>
+      <div className="max-w-full truncate text-center text-[13px] font-medium text-text-primary">
+        {username}
+      </div>
+    </div>
+  );
+});

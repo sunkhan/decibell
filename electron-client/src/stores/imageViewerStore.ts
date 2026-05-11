@@ -5,6 +5,13 @@ export interface ViewerImage {
   filename: string;
   width: number;
   height: number;
+  /// serverId + attachmentId carried so the fullscreen viewer can
+  /// surface the right-click menu (Copy / Save as) just like the
+  /// inline thumbnail does. Optional for back-compat with any callers
+  /// that haven't been updated.
+  serverId?: string;
+  attachmentId?: number;
+  mime?: string;
 }
 
 interface ImageViewerState {

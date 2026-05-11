@@ -29,7 +29,11 @@ const PROBE_CONFIGS: { codec: VideoCodec; webCodecsString: string }[] = [
   { codec: VideoCodec.H264_HW, webCodecsString: "avc1.64003E" },
 ];
 
-const LOCAL_STORAGE_KEY = "decibell.decoder_caps.v2";
+// Bumped v5 → v6 alongside the --use-angle=gl + NVD_BACKEND=direct
+// boot tweaks. v5 caches were probed before those flags were in
+// place and recorded hardware:false; v6 forces the probe to re-run
+// against the now-hopefully-working VAAPI integration.
+const LOCAL_STORAGE_KEY = "decibell.decoder_caps.v6";
 
 export async function probeDecoders(force = false): Promise<CodecCapability[]> {
   if (!force) {
@@ -37,7 +41,10 @@ export async function probeDecoders(force = false): Promise<CodecCapability[]> {
     if (cached) {
       try {
         const parsed: CodecCapability[] = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          console.log(`[decoderProbe] using cached caps (${parsed.length} codecs)`);
+          return parsed;
+        }
       } catch {
         /* fall through to fresh probe */
       }
@@ -50,34 +57,57 @@ export async function probeDecoders(force = false): Promise<CodecCapability[]> {
     for (const { codec, webCodecsString } of PROBE_CONFIGS) {
       let supported = false;
       try {
+        // Don't pass hardwareAcceleration here — Chromium treats it as
+        // a hard constraint in isConfigSupported (returns supported:
+        // false on platforms without hardware decode, even when
+        // software decode works fine). Same gotcha as encoderProbe.
         const res = await VideoDecoder.isConfigSupported({
           codec: webCodecsString,
-          hardwareAcceleration: "prefer-hardware",
         });
         supported = !!res.supported;
       } catch {
         supported = false;
       }
       if (supported) {
+        // Second probe: same config plus prefer-hardware. Returns
+        // supported: false when no hardware decoder is available, so
+        // a true return is the clean signal that HW decode exists.
+        let hardware = false;
+        try {
+          const hwRes = await VideoDecoder.isConfigSupported({
+            codec: webCodecsString,
+            hardwareAcceleration: "prefer-hardware",
+          });
+          hardware = !!hwRes.supported;
+        } catch {
+          hardware = false;
+        }
         const ceiling = DECODE_CEILING[codec];
+        console.log(
+          `[decoderProbe] codec=${codec} via ${webCodecsString} ` +
+            `(${hardware ? "HW" : "SW"})`,
+        );
         out.push({
           codec,
           maxWidth: ceiling.width,
           maxHeight: ceiling.height,
           maxFps: ceiling.fps,
+          hardware,
         });
       }
     }
   }
 
   // §3.3 fallback: H.264 decode is always advertised so the LCD picker
-  // always has a converging codec.
+  // always has a converging codec. Marked as software since we couldn't
+  // confirm hardware via the probe.
   if (!out.some((c) => c.codec === VideoCodec.H264_HW)) {
     out.push({
       codec: VideoCodec.H264_HW,
       maxWidth: DECODE_CEILING[VideoCodec.H264_HW].width,
       maxHeight: DECODE_CEILING[VideoCodec.H264_HW].height,
       maxFps: DECODE_CEILING[VideoCodec.H264_HW].fps,
+      hardware: false,
     });
   }
 

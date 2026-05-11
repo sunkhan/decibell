@@ -11,8 +11,22 @@ import VoicePanel from "../features/voice/VoicePanel";
 import UserPanel from "../features/channels/UserPanel";
 import UserContextMenu from "../features/voice/UserContextMenu";
 import ImageViewer from "../features/chat/ImageViewer";
+import SettingsModal from "../features/settings/SettingsModal";
+import ImageContextMenu from "../components/ImageContextMenu";
+import MembershipRevokedToast from "../features/servers/MembershipRevokedToast";
+import MembersAdminPanel from "../features/servers/MembersAdminPanel";
+import ChannelSettingsModal from "../features/servers/ChannelSettingsModal";
+import InviteModal from "../features/servers/InviteModal";
+import DeepLinkJoinModal from "../features/servers/DeepLinkJoinModal";
+import PersistentAudioLayer from "../features/chat/PersistentAudioLayer";
+import PersistentVideoLayer from "../features/chat/PersistentVideoLayer";
+import DmChatPanel from "../features/dm/DmChatPanel";
+import UserProfilePopup from "../features/dm/UserProfilePopup";
+import { useDmEvents } from "../features/dm/useDmEvents";
 import { useDragDrop } from "../features/chat/useDragDrop";
 import { usePasteToAttach } from "../features/chat/usePasteToAttach";
+import { useCentralConnectionStatus } from "../hooks/useCentralConnectionStatus";
+import { useWindowTitle } from "../hooks/useWindowTitle";
 import { useUiStore } from "../stores/uiStore";
 
 // Mirrors tauri-client/src/layouts/MainLayout.tsx structurally:
@@ -40,6 +54,14 @@ export default function MainLayout() {
   // the window so the user can drop files anywhere over the app.
   useDragDrop();
   usePasteToAttach();
+  // DMs flow through the same `message_received` bus event the chat
+  // hook reads — useDmEvents filters to context === "dm" and routes
+  // into useDmStore.
+  useDmEvents();
+  // Cross-cutting concerns: the central-server reconnecting banner
+  // and the OS window title.
+  useCentralConnectionStatus();
+  useWindowTitle();
 
   useEffect(() => {
     invoke("request_friend_list").catch(console.error);
@@ -79,9 +101,7 @@ export default function MainLayout() {
               <VoicePanel />
             ) : activeView === "dm" ? (
               <>
-                <div className="flex flex-1 items-center justify-center bg-bg-mid text-sm text-text-muted">
-                  Direct messages port with the DMs PR.
-                </div>
+                <DmChatPanel />
                 {dmFriendsPanelVisible && <FriendsList />}
               </>
             ) : activeView === "home" ? (
@@ -102,7 +122,17 @@ export default function MainLayout() {
       </div>
 
       <UserContextMenu />
+      <UserProfilePopup />
       <ImageViewer />
+      <SettingsModal />
+      <ImageContextMenu />
+      <MembershipRevokedToast />
+      <MembersAdminPanel />
+      <ChannelSettingsModal />
+      <InviteModal />
+      <DeepLinkJoinModal />
+      <PersistentAudioLayer />
+      <PersistentVideoLayer />
     </div>
   );
 }

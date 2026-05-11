@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, memo } from "react";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -47,13 +47,13 @@ function VolumeIcon({ muted }: { muted: boolean }) {
 export default function StreamViewPanel() {
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
+  // No top-level speakingUsers subscription — SidebarParticipantRow
+  // below subscribes per-row, so a speaking event for one user no
+  // longer re-renders this entire 600+-line panel.
   const participants = useVoiceStore((s) => s.participants);
-  const speakingUsers = useVoiceStore((s) => s.speakingUsers);
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
-  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
-  const openContextMenu = useUiStore((s) => s.openContextMenu);
 
   const currentUsername = useAuthStore((s) => s.username);
   const isFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
@@ -177,16 +177,16 @@ export default function StreamViewPanel() {
 
   const handleStopWatching = async () => {
     if (!displayUser || !connectedServerId || !connectedChannelId) return;
-    if (displayUser === currentUsername) {
-      // Self-preview: turn off the encoded-frame emit on the local pipeline.
-      await invoke("set_self_preview", { enabled: false }).catch(() => {});
-    } else {
+    if (displayUser !== currentUsername) {
       await invoke("stop_watching", {
         serverId: connectedServerId,
         channelId: connectedChannelId,
         targetUsername: displayUser,
       }).catch(() => {});
     }
+    // Self-preview unmount is renderer-internal: StreamVideoPlayer's
+    // useEffect cleanup unsubscribes from subscribeLocalFrames when it
+    // unmounts. No native side coordination needed.
     useVoiceStore.getState().removeWatching(displayUser);
     if (isFullscreen) exitFullscreen();
   };
@@ -546,49 +546,13 @@ export default function StreamViewPanel() {
               Voice — {participants.length}
             </h4>
 
-            {participants.map((p) => {
-              const isStreaming = activeStreams.some(
-                (s) => s.ownerUsername === p.username,
-              );
-              const isSpeaking = speakingUsers.includes(p.username);
-              return (
-                <div
-                  key={p.username}
-                  className="flex cursor-pointer items-center gap-2 rounded-[10px] p-2 transition-colors hover:bg-surface-hover"
-                  onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    openProfilePopup(
-                      p.username,
-                      { x: rect.right + 8, y: rect.top },
-                      connectedServerId,
-                    );
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    openContextMenu(p.username, { x: e.clientX, y: e.clientY });
-                  }}
-                >
-                  <div
-                    className={`flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-semibold text-white ${
-                      isSpeaking
-                        ? "shadow-[0_0_0_2px_var(--color-bg-dark),0_0_0_3.5px_var(--color-success)]"
-                        : ""
-                    }`}
-                    style={{ background: stringToGradient(p.username) }}
-                  >
-                    {p.username.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="truncate text-[11px] font-medium text-text-secondary">
-                      {p.username}
-                    </div>
-                    {isStreaming && (
-                      <div className="text-[9px] font-medium text-accent">Streaming</div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+            {participants.map((p) => (
+              <SidebarParticipantRow
+                key={p.username}
+                username={p.username}
+                connectedServerId={connectedServerId}
+              />
+            ))}
 
             {activeStreams.length > 1 && (
               <div className="mt-auto border-t border-border-divider pt-2">
@@ -618,3 +582,60 @@ export default function StreamViewPanel() {
     </div>
   );
 }
+
+// Sidebar participant row inside the streaming view. Subscribes to its
+// own slice of speakingUsers + activeStreams so a speaking event for
+// one user no longer re-renders this entire 600+-line panel.
+interface SidebarParticipantRowProps {
+  username: string;
+  connectedServerId: string | null;
+}
+
+const SidebarParticipantRow = memo(function SidebarParticipantRow({
+  username,
+  connectedServerId,
+}: SidebarParticipantRowProps) {
+  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
+  const isStreaming = useVoiceStore((s) =>
+    s.activeStreams.some((st) => st.ownerUsername === username),
+  );
+  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
+  const openContextMenu = useUiStore((s) => s.openContextMenu);
+
+  return (
+    <div
+      className="flex cursor-pointer items-center gap-2 rounded-[10px] p-2 transition-colors hover:bg-surface-hover"
+      onClick={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        openProfilePopup(
+          username,
+          { x: rect.right + 8, y: rect.top },
+          connectedServerId,
+        );
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        openContextMenu(username, { x: e.clientX, y: e.clientY });
+      }}
+    >
+      <div
+        className={`flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-semibold text-white ${
+          isSpeaking
+            ? "shadow-[0_0_0_2px_var(--color-bg-dark),0_0_0_3.5px_var(--color-success)]"
+            : ""
+        }`}
+        style={{ background: stringToGradient(username) }}
+      >
+        {username.charAt(0).toUpperCase()}
+      </div>
+      <div className="min-w-0">
+        <div className="truncate text-[11px] font-medium text-text-secondary">
+          {username}
+        </div>
+        {isStreaming && (
+          <div className="text-[9px] font-medium text-accent">Streaming</div>
+        )}
+      </div>
+    </div>
+  );
+});

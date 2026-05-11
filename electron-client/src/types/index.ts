@@ -49,6 +49,24 @@ export interface ServerMember {
   isOnline: boolean;
 }
 
+export interface ServerInvite {
+  code: string;
+  createdBy: string;
+  createdAt: number;
+  expiresAt: number; // 0 = never
+  maxUses: number; // 0 = unlimited
+  uses: number;
+}
+
+/// A `decibell://invite/<host>:<port>/<code>` URL parsed from a
+/// command-line argument or open-url event. Stashed on the chat
+/// store; DeepLinkJoinModal consumes it on next render.
+export interface PendingInvite {
+  host: string;
+  port: number;
+  code: string;
+}
+
 // ── Voice + streaming types ──────────────────────────────────────
 
 export interface VoiceParticipant {
@@ -76,6 +94,12 @@ export interface CodecCapability {
   maxWidth: number;
   maxHeight: number;
   maxFps: number;
+  /// Whether `hardwareAcceleration: "prefer-hardware"` is reported as
+  /// supported by Chromium's WebCodecs probe. Renderer-only metadata —
+  /// the codec dropdown surfaces this as a (HW)/(SW) tag so the user
+  /// knows whether picking the codec will get GPU encode/decode. Not
+  /// shipped to the C++ server; other clients see only codec/dims/fps.
+  hardware?: boolean;
 }
 
 export interface ClientCapabilities {

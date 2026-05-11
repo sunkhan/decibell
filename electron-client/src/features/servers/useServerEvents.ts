@@ -148,6 +148,65 @@ export function useServerEvents() {
       },
     );
 
+    const unlistenInviteList = listen<{
+      serverId: string;
+      success: boolean;
+      message: string;
+      invites: import("../../types").ServerInvite[];
+    }>("invite_list_received", (event) => {
+      const { serverId, success, invites } = event.payload;
+      if (success) {
+        useChatStore.getState().setInvitesForServer(serverId, invites);
+      }
+    });
+
+    const unlistenInviteCreated = listen<{
+      serverId: string;
+      success: boolean;
+      message: string;
+      invite: import("../../types").ServerInvite | null;
+    }>("invite_create_responded", (event) => {
+      const { serverId, success, invite } = event.payload;
+      if (success && invite) {
+        useChatStore.getState().upsertInvite(serverId, invite);
+      }
+    });
+
+    const unlistenInviteRevoked = listen<{
+      serverId: string;
+      success: boolean;
+      message: string;
+      code: string;
+    }>("invite_revoke_responded", (event) => {
+      const { serverId, success, code } = event.payload;
+      if (success) {
+        useChatStore.getState().removeInvite(serverId, code);
+      }
+    });
+
+    // Deep-link `decibell://invite/<host>:<port>/<code>` URLs forwarded
+    // from main. Parse renderer-side — the format is fixed and JS's
+    // built-in URL parser doesn't help here (the hostname is the literal
+    // string "invite" and the actual host:port lives in the path),
+    // so a regex is simpler than fighting the URL constructor.
+    const unlistenDeepLink = listen<{ url: string }>(
+      "deep_link_received",
+      (event) => {
+        const m = event.payload.url.match(
+          /^decibell:\/\/invite\/([^:/]+):(\d+)\/([A-Za-z0-9]+)$/i,
+        );
+        if (!m) {
+          console.warn("[deep-link] could not parse:", event.payload.url);
+          return;
+        }
+        useChatStore.getState().setPendingInvite({
+          host: m[1],
+          port: parseInt(m[2], 10),
+          code: m[3],
+        });
+      },
+    );
+
     const unlistenLost = listen<ConnectionEventPayload>(
       "connection_lost",
       (event) => {
@@ -189,6 +248,10 @@ export function useServerEvents() {
       unlistenMembers.then((fn) => fn());
       unlistenMod.then((fn) => fn());
       unlistenRevoked.then((fn) => fn());
+      unlistenInviteList.then((fn) => fn());
+      unlistenInviteCreated.then((fn) => fn());
+      unlistenInviteRevoked.then((fn) => fn());
+      unlistenDeepLink.then((fn) => fn());
     };
   }, []);
 }

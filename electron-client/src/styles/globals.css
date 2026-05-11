@@ -1,3 +1,25 @@
+/* ═══════════════════════════════════════
+   LOCAL FONTS — parity with tauri-client
+   ═══════════════════════════════════════ */
+
+@import "@fontsource-variable/inter/index.css";
+@import "@fontsource-variable/dm-sans/index.css";
+@import "@fontsource-variable/outfit/index.css";
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+}
+
 @import "tailwindcss";
 
 @theme {
@@ -41,6 +63,8 @@
 
   --font-sans: "Inter Variable", "Inter", "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-channel: "DM Sans Variable", "DM Sans", "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit Variable", "Outfit", "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
 @layer base {
@@ -49,6 +73,10 @@
     margin: 0;
     overflow: hidden;
     letter-spacing: -0.01em;
+    /* Inter typographic alternates: cv11 (single-storey a), ss01
+       (open digits), ss03 (alt curly braces). Matches tauri-client
+       so identical text renders identically across both apps. */
+    font-feature-settings: "cv11", "ss01", "ss03";
   }
 
   h1, h2, h3, h4, h5, h6 {
@@ -89,6 +117,34 @@ input, textarea, [contenteditable], .select-text, .select-text * {
   user-select: text !important;
 }
 
+/* Style browser-native password field indicators to match accent color. */
+input[type="password"]::-ms-reveal {
+  filter: invert(48%) sepia(79%) saturate(2476%) hue-rotate(203deg) brightness(100%) contrast(98%);
+}
+input[type="password"]::-webkit-caps-lock-indicator {
+  filter: invert(48%) sepia(79%) saturate(2476%) hue-rotate(203deg) brightness(100%) contrast(98%);
+}
+
+/* Custom range slider — accent-coloured thumb on a flat track. */
+.custom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #388bfd;
+  border: 2px solid #0e0f16;
+  cursor: pointer;
+}
+.custom-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #388bfd;
+  border: 2px solid #0e0f16;
+  cursor: pointer;
+}
+
 /* Snappy hover transitions globally */
 button, a, [class*="transition"] {
   transition-duration: 75ms !important;
@@ -103,6 +159,16 @@ html, body, #root {
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes dropIn {
+  from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes cardIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
 @keyframes pulse-dot {
@@ -164,6 +230,7 @@ html, body, #root {
 .rich-input[data-empty="true"]::before {
   content: attr(data-placeholder);
   color: var(--color-text-faint);
+  font-family: var(--font-channel);
   font-size: 14px;
   font-weight: 400;
   pointer-events: none;

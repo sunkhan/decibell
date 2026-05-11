@@ -106,6 +106,44 @@ pub fn send_stream_frame(frame: StreamFrame) {
     bus.call(frame, ThreadsafeFunctionCallMode::NonBlocking);
 }
 
+// ── Stream thumbnail bus ──────────────────────────────────────────
+// Per-stream JPEG thumbnails (one every few seconds per active stream
+// the user isn't watching) used to ride the JSON bus base64-encoded as
+// a `data:image/jpeg;base64,…` URL. That cost ~33% inflation on every
+// payload and forced two encode/decode passes per thumbnail (Rust
+// base64 encode + Chromium image decode). This dedicated TSFN ships
+// the raw bytes as a Node Buffer so the renderer can wrap them in a
+// blob: URL with no transcoding.
+
+pub struct StreamThumbnail {
+    pub owner_username: String,
+    pub data: Vec<u8>,
+}
+
+type StreamThumbnailBus = ThreadsafeFunction<StreamThumbnail, ErrorStrategy::Fatal>;
+static STREAM_THUMBNAIL_BUS: OnceLock<StreamThumbnailBus> = OnceLock::new();
+
+pub fn install_stream_thumbnail_bus(callback: JsFunction) -> Result<()> {
+    let tsfn: StreamThumbnailBus = callback.create_threadsafe_function(
+        0,
+        |ctx: ThreadSafeCallContext<StreamThumbnail>| -> Result<Vec<JsUnknown>> {
+            let env = &ctx.env;
+            let mut obj = env.create_object()?;
+            obj.set_named_property(
+                "ownerUsername",
+                env.create_string(&ctx.value.owner_username)?,
+            )?;
+            // Buffer::with_data hands V8 the Vec's backing allocation
+            // directly — no copy on the way out.
+            let data_buf = env.create_buffer_with_data(ctx.value.data)?;
+            obj.set_named_property("data", data_buf.into_raw())?;
+            Ok(vec![obj.into_unknown()])
+        },
+    )?;
+    let _ = STREAM_THUMBNAIL_BUS.set(tsfn);
+    Ok(())
+}
+
 /// Send an event. Safe to call from any thread (including std::thread
 /// workers — capture, encode, network receivers). NonBlocking: if the
 /// renderer-side queue saturates the call is dropped silently. For the
@@ -148,6 +186,9 @@ pub const FRIEND_ACTION_RESPONDED: &str = "friend_action_responded";
 pub const MEMBER_LIST_RECEIVED: &str = "member_list_received";
 pub const MOD_ACTION_RESPONDED: &str = "mod_action_responded";
 pub const MEMBERSHIP_REVOKED: &str = "membership_revoked";
+pub const INVITE_LIST_RECEIVED: &str = "invite_list_received";
+pub const INVITE_CREATE_RESPONDED: &str = "invite_create_responded";
+pub const INVITE_REVOKE_RESPONDED: &str = "invite_revoke_responded";
 pub const VOICE_PRESENCE_UPDATED: &str = "voice_presence_updated";
 pub const VOICE_STATE_CHANGED: &str = "voice_state_changed";
 pub const VOICE_USER_SPEAKING: &str = "voice_user_speaking";
@@ -157,11 +198,13 @@ pub const VOICE_PING_UPDATED: &str = "voice_ping_updated";
 pub const VOICE_CONNECTION_STATS: &str = "voice_connection_stats";
 pub const VOICE_ERROR: &str = "voice_error";
 pub const STREAM_PRESENCE_UPDATED: &str = "stream_presence_updated";
-pub const STREAM_THUMBNAIL_UPDATED: &str = "stream_thumbnail_updated";
+// stream_thumbnail_updated removed — thumbnails ride the dedicated
+// binary STREAM_THUMBNAIL_BUS now (see install_stream_thumbnail_bus).
 pub const STREAM_CODEC_CHANGED: &str = "stream_codec_changed";
 pub const STREAM_GPU_FALLBACK: &str = "stream_gpu_fallback";
 pub const STREAM_CAPTURE_ENDED: &str = "stream_capture_ended";
-pub const STREAM_FRAME: &str = "stream_frame";
+// stream_frame removed — encoded frames ride the binary STREAM_BUS
+// TSFN now (see install_stream_bus / send_stream_frame).
 pub const CAPS_REFRESHED: &str = "caps_refreshed";
 
 // ── Payload structs ───────────────────────────────────────────────
@@ -508,6 +551,60 @@ pub fn emit_membership_revoked(payload: MembershipRevokedPayload) {
     send(MEMBERSHIP_REVOKED, payload);
 }
 
+// ── Invites ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteInfoPayload {
+    pub code: String,
+    pub created_by: String,
+    pub created_at: i64,
+    /// Unix epoch seconds. 0 = never expires.
+    pub expires_at: i64,
+    /// 0 = unlimited uses.
+    pub max_uses: i32,
+    pub uses: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteListReceivedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub invites: Vec<InviteInfoPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteCreateRespondedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub invite: Option<InviteInfoPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteRevokeRespondedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub code: String,
+}
+
+pub fn emit_invite_list_received(payload: InviteListReceivedPayload) {
+    send(INVITE_LIST_RECEIVED, payload);
+}
+
+pub fn emit_invite_create_responded(payload: InviteCreateRespondedPayload) {
+    send(INVITE_CREATE_RESPONDED, payload);
+}
+
+pub fn emit_invite_revoke_responded(payload: InviteRevokeRespondedPayload) {
+    send(INVITE_REVOKE_RESPONDED, payload);
+}
+
 // ── Voice ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -676,14 +773,6 @@ pub struct StreamPresenceUpdatedPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StreamThumbnailUpdatedPayload {
-    pub owner_username: String,
-    /// Already-prefixed `data:image/jpeg;base64,…` URL ready for `<img src>`.
-    pub thumbnail_base64: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct StreamCodecChangedPayload {
     pub channel_id: String,
     pub streamer_username: String,
@@ -700,30 +789,12 @@ pub struct StreamGpuFallbackPayload {
     pub error: String,
 }
 
-/// Pushed for every reassembled remote video frame and every locally
-/// encoded self-preview frame. Renderer's StreamVideoPlayer filters by
-/// `username`, base64-decodes `data` + `description`, and feeds them
-/// into a WebCodecs VideoDecoder. PR7c will replace this with a
-/// dedicated per-stream Buffer TSFN to avoid base64 + JSON cost.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamFramePayload {
-    pub username: String,
-    /// Always "h264" historically — the actual codec is in `codec`.
-    /// Kept for back-compat with the tauri-client renderer.
-    pub format: String,
-    /// Base64-encoded encoded bitstream bytes.
-    pub data: String,
-    /// Synthetic timestamp = frame_id * 33_333 µs (good enough for
-    /// WebCodecs's monotonic timestamp requirement).
-    pub timestamp: u64,
-    pub keyframe: bool,
-    /// Base64-encoded avcC/hvcC/av1C decoder configuration record.
-    /// Present on keyframes only.
-    pub description: Option<String>,
-    /// CodecKind as u8 (1=H264Hw, 2=H264Sw, 3=H265, 4=AV1).
-    pub codec: u8,
-}
+// StreamFramePayload + emit_stream_frame removed — PR7c's promise
+// landed: encoded video frames now ride the dedicated binary
+// STREAM_BUS TSFN above (see install_stream_bus / send_stream_frame),
+// which carries raw Buffer payloads with no base64 wrapping and no
+// JSON serialise. The legacy String-shaped payload here had no
+// remaining callers.
 
 pub fn emit_stream_presence_updated(
     server_id: String,
@@ -740,16 +811,19 @@ pub fn emit_stream_presence_updated(
     );
 }
 
+/// Push a JPEG thumbnail to JS. Bytes ride the dedicated binary TSFN —
+/// no base64 encode, no JSON serialise, no data: URL wrapping. The
+/// renderer turns them into a blob: URL via `URL.createObjectURL`.
 pub fn emit_stream_thumbnail_updated(owner_username: String, thumbnail_data: Vec<u8>) {
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&thumbnail_data);
-    let data_url = format!("data:image/jpeg;base64,{}", b64);
-    send(
-        STREAM_THUMBNAIL_UPDATED,
-        StreamThumbnailUpdatedPayload {
+    let Some(bus) = STREAM_THUMBNAIL_BUS.get() else {
+        return;
+    };
+    bus.call(
+        StreamThumbnail {
             owner_username,
-            thumbnail_base64: data_url,
+            data: thumbnail_data,
         },
+        ThreadsafeFunctionCallMode::NonBlocking,
     );
 }
 
@@ -763,10 +837,6 @@ pub fn emit_stream_gpu_fallback(error: String) {
 
 pub fn emit_stream_capture_ended() {
     send(STREAM_CAPTURE_ENDED, serde_json::Value::Null);
-}
-
-pub fn emit_stream_frame(payload: StreamFramePayload) {
-    send(STREAM_FRAME, payload);
 }
 
 pub fn emit_caps_refreshed() {

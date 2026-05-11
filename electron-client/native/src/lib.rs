@@ -44,12 +44,17 @@ pub fn init(
     opts: InitOptions,
     bus: JsFunction,
     stream_bus: JsFunction,
+    stream_thumbnail_bus: JsFunction,
 ) -> napi::Result<()> {
     events::install(bus)?;
     // PR7c: dedicated TSFN for encoded video frames. Carries Buffer
     // payloads (zero-copy view over Vec<u8>) instead of base64+JSON
     // through the main bus. ~3 MB/s saved per stream at 60fps.
     events::install_stream_bus(stream_bus)?;
+    // Same idea for per-stream JPEG thumbnails — raw Buffer instead of
+    // a base64-encoded `data:image/jpeg;base64,…` string riding the
+    // JSON bus. Renderer wraps the bytes in a blob: URL.
+    events::install_stream_thumbnail_bus(stream_thumbnail_bus)?;
     state::set_boot(state::BootConfig {
         user_data_dir: opts.user_data_dir.into(),
         cache_dir: opts.cache_dir.into(),

@@ -16,7 +16,11 @@ interface VoiceState {
   activeStreams: StreamInfo[];
   isMuted: boolean;
   isDeafened: boolean;
-  speakingUsers: string[];
+  /// Set instead of array so per-row subscribers can do O(1)
+  /// `s.speakingUsers.has(name)` and so the slice equality is a
+  /// simple ref check (we replace the Set wholesale on every change,
+  /// not mutate in place).
+  speakingUsers: Set<string>;
   latencyMs: number | null;
   error: string | null;
   channelPresence: Record<string, string[]>;
@@ -81,7 +85,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   activeStreams: [],
   isMuted: false,
   isDeafened: false,
-  speakingUsers: [],
+  speakingUsers: new Set(),
   latencyMs: null,
   error: null,
   channelPresence: {},
@@ -102,13 +106,17 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   setDeafened: (deafened) =>
     set(deafened ? { isDeafened: true, isMuted: true } : { isDeafened: false }),
   setSpeaking: (username, speaking) =>
-    set((state) => ({
-      speakingUsers: speaking
-        ? state.speakingUsers.includes(username)
-          ? state.speakingUsers
-          : [...state.speakingUsers, username]
-        : state.speakingUsers.filter((u) => u !== username),
-    })),
+    set((state) => {
+      const has = state.speakingUsers.has(username);
+      // Bail early if the requested state matches what we have — keeps
+      // the Set ref stable so per-row subscribers don't churn on a
+      // no-op event (the wire fires speaking-stop/start frequently).
+      if (has === speaking) return {};
+      const next = new Set(state.speakingUsers);
+      if (speaking) next.add(username);
+      else next.delete(username);
+      return { speakingUsers: next };
+    }),
   setLatency: (ms) => set({ latencyMs: ms }),
   setError: (error) => set({ error }),
   setChannelPresence: (channelId, users, userStates, userCapabilities) =>
@@ -145,10 +153,20 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       ),
     })),
   streamThumbnails: {},
-  setStreamThumbnail: (username, dataUrl) =>
-    set((state) => ({
-      streamThumbnails: { ...state.streamThumbnails, [username]: dataUrl },
-    })),
+  setStreamThumbnail: (username, url) =>
+    set((state) => {
+      // Thumbnails are blob: URLs created from raw JPEG bytes pushed
+      // by main. Revoke the previous URL before replacing so we don't
+      // leak Chromium-side blob storage as fresh thumbnails arrive
+      // every few seconds per active stream.
+      const prev = state.streamThumbnails[username];
+      if (prev && prev.startsWith("blob:")) {
+        try { URL.revokeObjectURL(prev); } catch { /* already revoked */ }
+      }
+      return {
+        streamThumbnails: { ...state.streamThumbnails, [username]: url },
+      };
+    }),
   watching: null,
   watchingStreams: [],
   fullscreenStream: null,
@@ -183,9 +201,14 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     set((state) => ({
       streamSettings: { ...state.streamSettings, ...settings },
     }));
-    // Settings persistence (saveSettings round-trip) ports with the
-    // settings-modal PR — see commands/settings.rs comment. Until
-    // then stream-settings live in-memory only.
+    // Persist on every change so picker selections survive restarts.
+    // Dynamic import avoids the saveSettings → voiceStore →
+    // saveSettings circular dependency (saveSettings reads from this
+    // store at call time, not module load time, so the runtime cycle
+    // is harmless — but the static-analysis cycle is messy).
+    import("../features/settings/saveSettings").then(({ saveSettings }) =>
+      saveSettings(),
+    );
   },
   userVolumes: {},
   setUserVolume: (username, db) =>
@@ -205,11 +228,18 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     }),
   disconnect: () => {
     useVoiceStatsStore.getState().clear();
+    // Revoke any in-flight thumbnail blob URLs before dropping them.
+    const prevThumbs = get().streamThumbnails;
+    for (const url of Object.values(prevThumbs)) {
+      if (url && url.startsWith("blob:")) {
+        try { URL.revokeObjectURL(url); } catch { /* already revoked */ }
+      }
+    }
     set({
       connectedServerId: null,
       connectedChannelId: null,
       participants: [],
-      speakingUsers: [],
+      speakingUsers: new Set(),
       latencyMs: null,
       error: null,
       watching: null,

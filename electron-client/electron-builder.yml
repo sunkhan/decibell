@@ -5,23 +5,69 @@ directories:
   output: release
   buildResources: resources
 
+# We use the Castlabs Widevine-enabled Electron fork
+# (github:castlabs/electron-releases#v33.4.11+wvcus in package.json),
+# which publishes its release zips to github.com/castlabs/electron-
+# releases — not the upstream github.com/electron/electron.
+# Without this mirror override, electron-builder constructs the
+# default upstream URL and 404s on the Castlabs version tag.
+electronDownload:
+  mirror: https://github.com/castlabs/electron-releases/releases/download/v
+
 files:
   - dist/**/*
   - native/index.js
   - native/index.d.ts
-  - native/decibell.*.node
+  # napi-rs writes the binary as `index.{platform}-{arch}-{libc}.node`
+  # (Linux: index.linux-x64-gnu.node, Windows: index.win32-x64-msvc.node,
+  # macOS: index.darwin-x64.node, etc.). The earlier glob
+  # `native/decibell.*.node` matched nothing — the package shipped
+  # without the addon and crashed on first launch.
+  - native/index.*.node
   - package.json
 
 asarUnpack:
   - native/**/*.node
   - native/index.js
 
+# Ship the app icon as a runtime resource (loaded by BrowserWindow's
+# `icon:` option for the OS taskbar / Alt-Tab icon). buildResources/
+# is for installer chrome only; runtime needs the file under
+# process.resourcesPath.
+extraResources:
+  - from: resources/icon.png
+    to: icon.png
+
 linux:
+  # Without this, electron-builder names the binary after package.json's
+  # `name` field — `decibell-electron-client` — and bakes that path
+  # into /opt/Decibell/<bin> *and* the generated .desktop's Exec line.
+  # Pin the on-disk name to the user-facing one.
+  executableName: decibell
   target:
     - AppImage
     - deb
+    - pacman
   category: Network
   artifactName: ${productName}-${version}-${arch}.${ext}
+
+# electron-builder's pacman target (built via fpm) inherits the deb
+# dependency list by default, which contains Debian package names like
+# `http-parser`, `re2`, `snappy` that don't exist in Arch's repos and
+# would block `pacman -U` of the bare .pacman. Override with the real
+# Arch package set so a direct install (no AUR helper) also works.
+# (The AUR PKGBUILD sets its own depends and ignores this — but users
+# who download the .pacman from Releases get a working install too.)
+pacman:
+  depends:
+    - gtk3
+    - nss
+    - alsa-lib
+    - libxss
+    - libnotify
+    - libsecret
+    - pipewire
+    - libpipewire
 
 win:
   target: nsis

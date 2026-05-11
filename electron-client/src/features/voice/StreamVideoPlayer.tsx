@@ -1,7 +1,11 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { invoke } from "../../lib/ipc";
 import { VideoCodec } from "../../types";
 import { videoCodecToWebCodecsString } from "../../utils/codecMap";
+import { useAuthStore } from "../../stores/authStore";
+import {
+  subscribeLocalFrames,
+  activeStreamCapture,
+} from "./streaming/StreamCapture";
 
 interface Props {
   streamerUsername: string;
@@ -25,6 +29,8 @@ interface StreamFrame {
 /// MSE) is gone for good — Chromium WebCodecs handles every codec we
 /// care about with consistent per-frame semantics.
 export default function StreamVideoPlayer({ streamerUsername, className }: Props) {
+  const ownUsername = useAuthStore((s) => s.username);
+  const isOwnStream = ownUsername !== null && streamerUsername === ownUsername;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const decoderRef = useRef<VideoDecoder | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -38,9 +44,15 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
 
   const configureDecoder = useCallback(
     (decoder: VideoDecoder, description?: ArrayBuffer) => {
+      // Don't pass hardwareAcceleration here. In isConfigSupported it's
+      // a hard constraint (returns supported:false on platforms without
+      // hardware decode, even when software decode works fine — same
+      // gotcha as the encoder side). In configure() prefer-hardware can
+      // also fail outright on Linux + NVIDIA without nvidia-vaapi-driver
+      // because Chromium can't allocate any decoder. Letting Chromium
+      // pick lets it transparently fall back to software.
       const config: VideoDecoderConfig = {
         codec: videoCodecToWebCodecsString(activeCodecRef.current),
-        hardwareAcceleration: "prefer-hardware",
       };
       if (description) {
         config.description = description;
@@ -74,10 +86,11 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     (e: DOMException) => {
       console.error("[StreamVideoPlayer] Decoder error:", e);
       needsKeyframeRef.current = true;
-      // viewer-side: no-op; the natural PLI from video_recv_thread will
-      // ask the streamer for a keyframe shortly. For self-preview this
-      // forces an immediate IDR.
-      invoke("force_keyframe").catch(() => {});
+      // No need to ask for a keyframe here: video_recv_thread sends a
+      // PLI on the media socket whenever it can't reassemble cleanly,
+      // and the streamer's renderer turns that into VideoEncoder.encode
+      // with keyFrame: true via the keyframe_requested listener in
+      // useVoiceEvents. Just reconfigure the decoder and wait.
       if (decoderRef.current && decoderRef.current.state !== "closed") {
         decoderRef.current.reset();
         configureDecoder(
@@ -180,16 +193,17 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       needsKeyframeRef.current = true;
     }
 
-    invoke("force_keyframe").catch(() => {});
-
-    // PR7c: subscribe to the binary stream bus (Uint8Array payloads,
-    // no JSON parse, no base64 decode). The preload broadcaster fires
-    // for every active watcher; we filter on `frame.username` to pick
-    // out our target.
-    const unsubscribe = window.decibell.streamFrames.subscribe((frame: StreamFrame) => {
-      const { username, data, timestamp, keyframe, description, codec } = frame;
-      if (username !== streamerUsername) return;
-
+    // Per-frame handler shared between the wire and self-preview paths.
+    // `data` and `description` are read but never mutated — the wire
+    // path's structured-clone copy and the local path's shared
+    // reference are both safe.
+    const handleFrame = (
+      data: Uint8Array,
+      timestamp: number,
+      keyframe: boolean,
+      description: Uint8Array | null,
+      codec: number,
+    ) => {
       if (!decoder || decoder.state === "closed") return;
 
       const incomingCodec = (codec ?? VideoCodec.H264_HW) as VideoCodec;
@@ -203,7 +217,18 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         activeCodecRef.current = incomingCodec;
         descriptionRef.current = null;
         needsKeyframeRef.current = true;
-        invoke("force_keyframe").catch(() => {});
+        // Reconfigure the decoder with the new codec_string immediately.
+        // For codecs whose Chromium WebCodecs encoder emits frames in a
+        // self-contained format (AV1's sequence header inline in the
+        // bitstream, H.264 in Annex B), no description ever arrives —
+        // waiting for the description-bearing branch below would leave
+        // the decoder stuck on the previous codec_string. For codecs
+        // that DO emit a description (HEVC, AV1 in some builds), the
+        // description branch below will reconfigure a second time.
+        decoder.reset();
+        configureDecoder(decoder);
+        firstRemoteTs = -1;
+        firstLocalTs = -1;
       }
 
       if (keyframe && description && !descriptionRef.current) {
@@ -259,7 +284,54 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       } catch (e) {
         console.error("[StreamVideoPlayer] Decode error:", e);
       }
-    });
+    };
+
+    // For our own stream, subscribe directly to the local encoder's
+    // output — no wire round-trip. For everyone else, subscribe to the
+    // binary stream bus and filter by username (the broadcaster fans
+    // out every active watcher's frames; multiple players coexist by
+    // each filtering independently).
+    let unsubscribe: () => void;
+    if (isOwnStream) {
+      unsubscribe = subscribeLocalFrames((frame) => {
+        handleFrame(
+          frame.data,
+          frame.timestamp,
+          frame.keyframe,
+          frame.description,
+          frame.codec,
+        );
+      });
+      // Mid-stream join: ask the local encoder to emit an immediate
+      // IDR so the decoder doesn't have to sit on a black canvas
+      // until the encoder's next natural GOP boundary (which can be
+      // several seconds away with OpenH264's default cadence).
+      activeStreamCapture()?.forceKeyframe();
+    } else {
+      // Per-username subscribe: only frames for *this* streamer wake
+      // the callback. The preload bridge handles the dispatch via Map
+      // lookup so other streamers' frames don't run through this
+      // closure at all.
+      unsubscribe = window.decibell.streamFrames.subscribe(
+        streamerUsername,
+        (frame: StreamFrame) => {
+          handleFrame(
+            frame.data,
+            frame.timestamp,
+            frame.keyframe,
+            frame.description,
+            frame.codec,
+          );
+        },
+      );
+      // Wire-side mid-stream join also wants a keyframe, but that's a
+      // separate UDP roundtrip to the streamer (no renderer command
+      // for it yet — video_recv_thread's natural PLI mechanism only
+      // fires once it detects gaps). When the second-machine E2E test
+      // confirms watcher behaviour, we'll either expose a
+      // request_keyframe command on native or let the natural PLI
+      // delay stand.
+    }
 
     return () => {
       unsubscribe();
@@ -270,7 +342,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       descriptionRef.current = null;
       setHasFirstFrame(false);
     };
-  }, [streamerUsername, handleDecoderError, configureDecoder]);
+  }, [streamerUsername, isOwnStream, handleDecoderError, configureDecoder]);
 
   return (
     <div className="relative h-full w-full">

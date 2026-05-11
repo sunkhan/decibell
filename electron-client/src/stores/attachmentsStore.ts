@@ -1,12 +1,20 @@
 import { create } from "zustand";
 import type { AttachmentKind } from "../types";
+import type { ChunkSource } from "../features/chat/chunkSource";
 
 // Per-attachment lifecycle for the composer:
 //
-//   pending  — file selected, not yet uploaded
-//   uploading — chunked PATCH in flight; `transferred` advances
-//   ready    — server returned the attachment id; safe to send
-//   failed   — gave up after retries / cancel / network error
+//   queued    — file selected + metadata probed; bytes NOT yet sent.
+//               The attachment sits here until the user clicks send,
+//               matching tauri-client behaviour: nothing leaves the
+//               machine until the user commits to the message.
+//   uploading — chunked PATCH in flight; `transferredBytes` advances.
+//   ready     — server returned the attachment id; safe to send.
+//   failed    — gave up after retries / cancel / network error.
+//
+// Legacy "pending" is retained as an alias for "queued" so the
+// existing addPending callers don't break — internally we treat them
+// identically.
 //
 // The store keys by client-generated `pendingId` (a UUID), which is
 // also stamped onto the optimistic message bubble. Once the server
@@ -14,7 +22,7 @@ import type { AttachmentKind } from "../types";
 // stops referencing pendings and reads the canonical Attachment[]
 // from the chatStore message.
 
-export type PendingStatus = "pending" | "uploading" | "ready" | "failed";
+export type PendingStatus = "queued" | "pending" | "uploading" | "ready" | "failed";
 
 export interface PendingAttachment {
   pendingId: string;
@@ -43,6 +51,12 @@ export interface PendingAttachment {
   height: number;
   /// Audio + video duration in ms; 0 unknown.
   durationMs: number;
+  /// The streaming source the upload loop reads from. Held on the
+  /// pending entry so handleSend can call startQueuedUpload without
+  /// the caller (file picker / drag-drop / paste) having to keep its
+  /// own reference. cleanup() runs once the upload terminates so the
+  /// decibell-file:// whitelist entry / Blob URL is released.
+  source: ChunkSource;
 }
 
 interface AttachmentsState {
@@ -74,7 +88,7 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
         ...state.pendings,
         [p.pendingId]: {
           ...p,
-          status: "pending",
+          status: "queued",
           transferredBytes: 0,
           attachmentId: null,
           errorMessage: null,

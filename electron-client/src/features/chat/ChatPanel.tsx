@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
@@ -10,7 +10,9 @@ import PendingAttachmentsRow from "./PendingAttachmentsRow";
 import EmojiPicker from "./EmojiPicker";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 import { pickFiles, ATTACHMENT_FILTERS } from "./filePicker";
-import { enqueueUpload } from "./uploadAttachment";
+import { queueUpload, startQueuedUpload } from "./uploadAttachment";
+import { chunkSourceFromPath } from "./chunkSource";
+import WelcomeState from "./WelcomeState";
 
 function generateNonce(): string {
   return `n-${Date.now()}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
@@ -20,42 +22,11 @@ function generatePendingId(): string {
   return `att-${Date.now()}-${Math.floor(Math.random() * 1e9).toString(36)}`;
 }
 
-/// Read picked file paths into File objects via the preload-exposed
-/// fs bridge (Node fs in main). `fetch('file://')` from the renderer
-/// is blocked by Chromium's same-origin enforcement even with
-/// webSecurity: false in some scenarios, so we route through main
-/// for reliability.
-async function pathsToFiles(paths: string[]): Promise<File[]> {
-  const out: File[] = [];
-  for (const p of paths) {
-    try {
-      const bytes = await window.decibell.fs.readFile(p);
-      const filename = p.split(/[/\\]/).pop() ?? "file";
-      // Guess MIME from extension. Browsers do better than this
-      // server-side, but for "did the user pick an image" the
-      // extension is enough. The actual server will sniff bytes.
-      const mime = guessMime(filename);
-      out.push(new File([bytes], filename, { type: mime }));
-    } catch (e) {
-      console.error("readFile:", p, e);
-    }
-  }
-  return out;
-}
-
-function guessMime(filename: string): string {
-  const ext = filename.toLowerCase().split(".").pop() ?? "";
-  const map: Record<string, string> = {
-    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
-    webp: "image/webp", bmp: "image/bmp", tiff: "image/tiff", avif: "image/avif",
-    mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime",
-    mkv: "video/x-matroska", avi: "video/x-msvideo",
-    mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg",
-    m4a: "audio/mp4", flac: "audio/flac", opus: "audio/opus",
-    pdf: "application/pdf", txt: "text/plain", json: "application/json",
-  };
-  return map[ext] ?? "application/octet-stream";
-}
+// pathsToFiles used to fs.readFile each picked path, materialising the
+// whole file in renderer memory. Replaced by per-path ChunkSource
+// registration: we hand main the absolute path, get back a
+// `decibell-file://<token>` URL + metadata, and stream chunks lazily
+// during upload. Bytes never cross IPC as a single buffer.
 
 export default function ChatPanel() {
   const username = useAuthStore((s) => s.username);
@@ -72,6 +43,32 @@ export default function ChatPanel() {
   const editorRef = useRef<RichInputHandle>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
+  const chatViewRef = useRef<HTMLDivElement>(null);
+
+  // Track the chat viewport size and publish it to the store so
+  // AttachmentList can scale image/video previews proportionally to
+  // the available space (sqrt-based, see attachmentSizing.ts). On
+  // unmount we clear the size so the helpers fall back to fixed
+  // defaults instead of using a stale dimension.
+  useEffect(() => {
+    const el = chatViewRef.current;
+    if (!el) return;
+    const setSize = useChatStore.getState().setChatViewSize;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (!rect) return;
+      setSize({ width: rect.width, height: rect.height });
+    });
+    observer.observe(el);
+    // Seed an initial value before the first observer fire — useful
+    // for the synchronous first render of attachments below.
+    const rect = el.getBoundingClientRect();
+    setSize({ width: rect.width, height: rect.height });
+    return () => {
+      observer.disconnect();
+      setSize(null);
+    };
+  }, []);
 
   const channels = activeServerId ? channelsByServer[activeServerId] ?? [] : [];
   const channel = channels.find((c) => c.id === activeChannelId) ?? null;
@@ -80,40 +77,126 @@ export default function ChatPanel() {
   const loading = activeChannelId ? historyLoading[activeChannelId] === true : false;
   const dropHoveredHere = dragHoveredKey === "active-input";
 
+  // Live "are there any non-failed pendings for this channel" — drives
+  // the send button's enabled state. Subscribing via a derived boolean
+  // (rather than reading getState() at render time) means the button
+  // re-evaluates the moment a queued upload is added or the moment
+  // the last pending is removed, no other render trigger required.
+  const hasLivePendings = useAttachmentsStore((s) => {
+    if (!activeServerId || !activeChannelId) return false;
+    for (const p of Object.values(s.pendings)) {
+      if (
+        p.serverId === activeServerId &&
+        p.channelId === activeChannelId &&
+        p.status !== "failed"
+      ) {
+        return true;
+      }
+    }
+    return false;
+  });
+
+  // Live scroll-tracking refs — written by Virtuoso's rangeChanged /
+  // atBottomStateChange callbacks below, read by the cleanup of the
+  // channel-switch effect to persist the OUTGOING channel's position
+  // before activeChannelId flips.
+  const topIndexRef = useRef(0);
+  const atBottomRef = useRef(true);
+
+  // Compute Virtuoso's initialTopMostItemIndex from the channel's
+  // saved scroll position. This is the *only* mechanism we use to
+  // restore — combined with the `key={activeChannelId}` below, every
+  // channel switch unmounts the previous Virtuoso and mounts a fresh
+  // one with the right starting position. That sidesteps the racey
+  // post-mount `scrollToIndex` we tried first, which Virtuoso would
+  // sometimes silently swallow because its own initial render had
+  // already moved past it.
+  const initialIndex = (() => {
+    if (messages.length === 0) return 0;
+    const last = messages.length - 1;
+    if (!activeChannelId) return last;
+    const saved =
+      useChatStore.getState().scrollPositionsByChannel[activeChannelId];
+    // atBottom: user was caught up — land them at LAST so any messages
+    // arrived during the absence are visible.
+    if (!saved || saved.atBottom) return last;
+    // Defensive clamp against eviction / cache shrink.
+    if (saved.topIndex < 0 || saved.topIndex > last) return last;
+    return saved.topIndex;
+  })();
+
+  // Persist the outgoing channel's scroll state at the moment we leave
+  // it. Cleanup runs BEFORE the next setup with the new activeChannelId,
+  // so the closure-captured channelId is the one we're leaving. Also
+  // fires on full unmount (e.g. switching to DM view) so the position
+  // survives view switches and we can restore on return.
   useEffect(() => {
-    if (!activeChannelId) return;
-    const id = setTimeout(() => {
-      virtuosoRef.current?.scrollToIndex({
-        index: "LAST",
-        behavior: "auto",
-        align: "end",
-      });
-    }, 0);
-    return () => clearTimeout(id);
-  }, [activeChannelId, messages.length]);
+    const channelId = activeChannelId;
+    return () => {
+      if (channelId) {
+        useChatStore
+          .getState()
+          .setScrollPosition(channelId, topIndexRef.current, atBottomRef.current);
+      }
+    };
+  }, [activeChannelId]);
+
+  // Fetch channel history the first time we land on a channel — covers
+  // every entry path (sidebar click, server-tab auto-select, browse-view
+  // join, deep link). The previous codepath only fetched on explicit
+  // sidebar click, so landing on the auto-selected first text channel
+  // when entering a server left the chat empty until the user clicked
+  // away and back. Read state via getState() to avoid pulling
+  // historyFetched/historyLoading into the subscription set — they
+  // change on every history page response and we only need them at
+  // effect-fire time.
+  useEffect(() => {
+    if (!activeServerId || !activeChannelId) return;
+    const chat = useChatStore.getState();
+    if (chat.historyFetched[activeChannelId] || chat.historyLoading[activeChannelId]) {
+      return;
+    }
+    chat.setHistoryLoading(activeChannelId, true);
+    invoke("request_channel_history", {
+      serverId: activeServerId,
+      channelId: activeChannelId,
+      beforeId: 0,
+      limit: 50,
+    }).catch((err) => {
+      console.error("request_channel_history:", err);
+      useChatStore.getState().setHistoryLoading(activeChannelId, false);
+    });
+  }, [activeServerId, activeChannelId]);
 
 
-  const bubbles = useMemo(() => {
-    return messages.map((m, i) => ({
-      message: m,
-      grouped: shouldGroup(messages[i - 1], m),
-      isLast: i === messages.length - 1,
-    }));
-  }, [messages]);
+  // No more pre-computed `bubbles` array. The old code rebuilt it on
+  // every messages-reference change — for a 5000-message channel,
+  // that's 5000 wrapper-object allocations on every wire message
+  // arrival just to surface `grouped`/`isLast` to MessageBubble. The
+  // new path passes `messages` directly to Virtuoso and computes
+  // grouped/isLast inside itemContent, which Virtuoso only invokes
+  // for visible rows (~30 at a time). Saves ~99% of the per-arrival
+  // allocation work on long channels without changing visible output.
 
   const handlePickFiles = async () => {
     if (!activeServerId || !activeChannelId) return;
     const paths = await pickFiles({ multiple: true, filters: ATTACHMENT_FILTERS });
     if (!paths) return;
-    const files = await pathsToFiles(paths);
-    for (const file of files) {
-      const pendingId = generatePendingId();
-      enqueueUpload({
-        pendingId,
-        serverId: activeServerId,
-        channelId: activeChannelId,
-        file,
-      }).catch(() => {});
+    for (const p of paths) {
+      try {
+        const source = await chunkSourceFromPath(p);
+        const pendingId = generatePendingId();
+        // queueUpload registers the attachment as `queued` only —
+        // the actual byte transfer kicks off in handleSend below.
+        queueUpload({
+          pendingId,
+          serverId: activeServerId,
+          channelId: activeChannelId,
+          source,
+        }).catch(() => {});
+      } catch (e) {
+        console.error("file register:", p, e);
+      }
     }
   };
 
@@ -142,6 +225,23 @@ export default function ChatPanel() {
     });
     editorRef.current?.clear();
     setDraft("");
+
+    // Kick off the actual byte transfer for every queued attachment.
+    // queueUpload registered them with status "queued" at file-pick /
+    // drop / paste time but didn't send any bytes — we wait for
+    // explicit user intent (this send) before touching the network.
+    // Failed uploads are skipped (their pendingId stayed in the
+    // optimistic bubble's pendingAttachmentIds list, so the bubble
+    // shows them as failed via BubbleInflightAttachments).
+    for (const id of pendingIds) {
+      const p = useAttachmentsStore.getState().pendings[id];
+      if (p && p.status === "queued") {
+        startQueuedUpload(id).catch(() => {
+          // Errors are surfaced via the store's markFailed → the
+          // BubbleInflightAttachments row picks it up.
+        });
+      }
+    }
 
     const waitForUploads = async (): Promise<number[]> => {
       const ids: number[] = [];
@@ -213,27 +313,41 @@ export default function ChatPanel() {
         {channelName}
       </div>
 
-      <div className="flex flex-1 flex-col">
+      <div ref={chatViewRef} className="flex flex-1 flex-col">
         {loading && messages.length === 0 ? (
           <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
             Loading history…
           </div>
         ) : messages.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
-            No messages yet — say hello.
+          <div className="flex flex-1 items-center justify-center">
+            <WelcomeState channelName={channelName ?? "channel"} />
           </div>
         ) : (
           <Virtuoso
+            // Re-mount Virtuoso whenever the active channel changes
+            // so initialTopMostItemIndex applies fresh — without the
+            // key, Virtuoso reuses its instance across data swaps and
+            // ignores any change to the initial-position prop.
+            key={activeChannelId ?? "none"}
             ref={virtuosoRef}
-            data={bubbles}
-            initialTopMostItemIndex={Math.max(0, bubbles.length - 1)}
+            data={messages}
+            initialTopMostItemIndex={initialIndex}
             followOutput="smooth"
-            itemContent={(_index, item) => (
+            rangeChanged={(range) => {
+              topIndexRef.current = range.startIndex;
+            }}
+            atBottomStateChange={(atBottom) => {
+              atBottomRef.current = atBottom;
+            }}
+            itemContent={(index, message) => (
               <MessageBubble
-                message={item.message}
-                grouped={item.grouped}
+                message={message}
+                grouped={shouldGroup(
+                  index > 0 ? messages[index - 1] : undefined,
+                  message,
+                )}
                 serverId={activeServerId}
-                isLast={item.isLast}
+                isLast={index === messages.length - 1}
               />
             )}
             className="flex-1"
@@ -327,10 +441,7 @@ export default function ChatPanel() {
               </div>
               <button
                 onClick={handleSend}
-                disabled={!draft.trim() && useAttachmentsStore
-                  .getState()
-                  .selectForChannel(activeServerId, activeChannelId)
-                  .filter((p) => p.status !== "failed").length === 0}
+                disabled={!draft.trim() && !hasLivePendings}
                 className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                 title="Send"
               >

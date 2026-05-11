@@ -1,7 +1,12 @@
 import { app, BrowserWindow, desktopCapturer, session } from "electron";
 import * as path from "path";
+import * as fs from "node:fs";
 import { registerInvokeHandler } from "./ipc";
-import { registerProtocol, registerAttachmentProtocol } from "./protocol";
+import {
+  registerProtocol,
+  registerAttachmentProtocol,
+  registerFileProtocol,
+} from "./protocol";
 import { initAddon, shutdownAddon } from "./addon";
 import { registerWindowHandlers, attachWindowEvents } from "./window";
 import { registerDialogHandlers } from "./dialog";
@@ -9,42 +14,192 @@ import { registerFsHandlers } from "./fs";
 import { registerNetHandlers } from "./netFetch";
 
 // Single-instance lock — second launches focus the existing window.
-// Required for deep-link handling on Windows/Linux (PR2+).
+// Required for deep-link handling on Windows/Linux (so a second
+// `decibell://invite/...` invocation forwards the URL to the running
+// app rather than spawning a fresh one).
 if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
 }
 
-// Two Chromium feature flags we need:
+// Register `decibell://` as a default protocol handler. On macOS the
+// system delivers the URL via the `open-url` event; on Windows/Linux
+// it's appended to the launching process's argv.
+if (process.defaultApp) {
+  // dev: pass the script path explicitly so the OS knows which entry
+  // point to invoke when handling the protocol.
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient("decibell", process.execPath, [
+      path.resolve(process.argv[1]),
+    ]);
+  }
+} else {
+  app.setAsDefaultProtocolClient("decibell");
+}
+
+// Buffer deep-link URLs received before the renderer is ready and
+// drain them once it finishes loading. Handles both first-launch
+// (URL in argv) and macOS open-url-after-launch.
+const pendingDeepLinks: string[] = [];
+const findDeepLinkInArgv = (argv: string[]): string | undefined =>
+  argv.find((a) => typeof a === "string" && a.startsWith("decibell://"));
+
+const forwardDeepLink = (url: string): void => {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (win && !win.webContents.isLoading()) {
+    win.webContents.send("decibell:event", {
+      name: "deep_link_received",
+      payload: { url },
+    });
+  } else {
+    pendingDeepLinks.push(url);
+  }
+};
+
+// Capture an invite URL passed on first launch (Linux/Windows).
+const launchUrl = findDeepLinkInArgv(process.argv);
+if (launchUrl) pendingDeepLinks.push(launchUrl);
+
+// macOS: deep links arrive as an event after launch.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  forwardDeepLink(url);
+});
+
+// Linux + NVIDIA: nudge libva to load the community
+// nvidia-vaapi-driver if the user has it installed but hasn't set the
+// env var. Without LIBVA_DRIVER_NAME=nvidia, libva tries the default
+// (modesetting / iHD / radeonsi) and gets nothing useful on NVIDIA.
+// /dev/nvidia0 only exists when the proprietary nvidia kernel module
+// is loaded, so the check is a safe proxy for "this user has an NVIDIA
+// GPU active". Must run before any GPU-process child is forked, so we
+// set it before app.commandLine switches.
+if (
+  process.platform === "linux" &&
+  fs.existsSync("/dev/nvidia0")
+) {
+  if (!process.env.LIBVA_DRIVER_NAME) {
+    process.env.LIBVA_DRIVER_NAME = "nvidia";
+    console.log(
+      "[boot] auto-set LIBVA_DRIVER_NAME=nvidia (Linux + NVIDIA GPU detected)",
+    );
+  }
+  // nvidia-vaapi-driver supports two backends:
+  //   - "direct" (default since libva 1.18): hooks DRM directly,
+  //     better performance, required for Wayland.
+  //   - "egl" (legacy): goes through EGL imports, slower.
+  // Setting NVD_BACKEND=direct in the GPU process's env avoids the
+  // chance Chromium's stripped-down env causes the driver to fall
+  // back to the slower path.
+  if (!process.env.NVD_BACKEND) {
+    process.env.NVD_BACKEND = "direct";
+    console.log("[boot] auto-set NVD_BACKEND=direct (nvidia-vaapi-driver)");
+  }
+}
+
+// Chromium feature flags:
 //
 // - `WebRTCPipeWireCapturer` enables `getDisplayMedia` on Linux/Wayland
 //   by routing the screen-share request through xdg-desktop-portal +
 //   PipeWire. Without it `getDisplayMedia` rejects with NotSupportedError
-//   on Wayland (Chromium falls back to legacy X11 capture which is gone
-//   on pure-Wayland sessions).
+//   on Wayland.
 //
-// - `PlatformHEVCEncoderSupport` / `PlatformHEVCDecoderSupport` try to
-//   light up HEVC hardware encode/decode where Chromium has the code
-//   path compiled in. The bundled Electron Chromium build often leaves
-//   HEVC encode off due to MPEG-LA royalty concerns; if that's the
-//   case here, `VideoEncoder.isConfigSupported` for hev1/hvc1 still
-//   returns false at runtime and encoderProbe hides HEVC. H.264 + AV1
-//   hardware encode work unconditionally where the GPU supports them.
+// - `PlatformHEVCEncoderSupport` / `PlatformHEVCDecoderSupport` light up
+//   HEVC hardware encode/decode where Chromium has the code path
+//   compiled in.
+//
+// - `VaapiVideoDecoder` / `VaapiVideoEncoder` enable Chromium's VA-API
+//   integration in the GPU process so WebCodecs encode/decode go through
+//   VA-API on Linux. Without these, hardware paths are off entirely on
+//   Linux even when the system has VA-API drivers installed.
+//
+// - `VaapiIgnoreDriverChecks` skips Chromium's allowlist validation of
+//   the VA-API driver string. Required for `nvidia-vaapi-driver` (and
+//   any other community VA-API backend), which doesn't appear on the
+//   stock allowlist.
+//
+// Plus `--ignore-gpu-blocklist` so Chromium accepts the NVIDIA-on-Linux
+// GPU even though it's blocklisted by default for stability reasons.
 app.commandLine.appendSwitch(
   "enable-features",
-  "WebRTCPipeWireCapturer,PlatformHEVCEncoderSupport,PlatformHEVCDecoderSupport",
+  [
+    "WebRTCPipeWireCapturer",
+    "PlatformHEVCEncoderSupport",
+    "PlatformHEVCDecoderSupport",
+    "VaapiVideoDecoder",
+    "VaapiVideoEncoder",
+    "VaapiIgnoreDriverChecks",
+    // Newer Chromium gating for the Linux GL-backed VAAPI decode
+    // pipeline. Required on top of VaapiVideoDecoder for the GPU
+    // process to wire WebCodecs through VA-API on Linux desktop
+    // (NVIDIA + nvidia-vaapi-driver in particular).
+    "AcceleratedVideoDecodeLinuxGL",
+    "AcceleratedVideoDecodeLinuxZeroCopyGL",
+    // Linux: route Chromium through the Ozone abstraction so it picks
+    // up Wayland properly when the session is Wayland. Without these
+    // flags Chromium often runs through XWayland with a degraded GPU
+    // path that disables hardware video acceleration entirely on
+    // NVIDIA proprietary.
+    "UseOzonePlatform",
+    "WaylandWindowDecorations",
+  ].join(","),
 );
+// Some Linux Chromium builds default to a ChromeOS-style direct video
+// decoder that bypasses the VAAPI integration entirely. Disable it so
+// VAAPI gets a chance to claim the codec.
+app.commandLine.appendSwitch(
+  "disable-features",
+  "UseChromeOSDirectVideoDecoder",
+);
+app.commandLine.appendSwitch("ignore-gpu-blocklist");
+// Let Chromium auto-detect Wayland vs X11 from the running session.
+app.commandLine.appendSwitch("ozone-platform-hint", "auto");
+// Force ANGLE to use the native OpenGL backend (libGL.so / NVIDIA's
+// proprietary GL). nvidia-vaapi-driver exposes its codec profiles via
+// EGL extensions on this backend; the default ANGLE backend doesn't
+// surface those extensions, which is why videoDecodeAcceleratorSupportedProfile
+// comes back empty even with the GPU process working otherwise.
+if (process.platform === "linux") {
+  app.commandLine.appendSwitch("use-angle", "gl");
+}
+
+// TEMPORARY DIAGNOSTIC: drop the GPU sandbox so VAAPI can probe the
+// nvidia-vaapi-driver freely. Chromium's seccomp policy for the GPU
+// process can block the syscalls or device opens the driver needs to
+// enumerate codec profiles; running unsandboxed isolates that as the
+// cause vs. a deeper integration mismatch. NEVER ship this — the GPU
+// process is a privileged target and disabling its sandbox is a real
+// security regression. Once the test answers our question we revert.
+if (process.platform === "linux" && process.env.DECIBELL_GPU_SANDBOX_OFF === "1") {
+  app.commandLine.appendSwitch("disable-gpu-sandbox");
+  console.warn(
+    "[boot] GPU sandbox DISABLED via DECIBELL_GPU_SANDBOX_OFF=1 (diagnostic)",
+  );
+}
+// Surface Chromium's stderr to our terminal so GPU-init failures are
+// visible. Default verbosity (just warnings + errors); add `--v=1` to
+// the chain if we need deeper traces later.
+app.commandLine.appendSwitch("enable-logging", "stderr");
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 let mainWindow: BrowserWindow | null = null;
 
 function createWindow(): void {
+  // App icon: in dev we live under <repo>/electron-client and the
+  // icon sits at resources/icon.png; in a packaged build, electron-
+  // builder copies the buildResources/ contents into the app's
+  // Resources directory at the root of resourcesPath.
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, "icon.png")
+    : path.join(__dirname, "..", "..", "..", "resources", "icon.png");
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 800,
     minHeight: 600,
     backgroundColor: "#0e0f16",
+    icon: iconPath,
     show: false,
     // Frameless so the renderer's custom Titlebar (h-8, min/max/close
     // SVG buttons, drag region) replaces the OS chrome. Matches the
@@ -67,6 +222,22 @@ function createWindow(): void {
   });
 
   mainWindow.once("ready-to-show", () => mainWindow?.show());
+  // Dump GPU info once the GPU process has done real work (after the
+  // first paint). Calling earlier yields a half-populated snapshot.
+  // Also drain any deep-link URLs that arrived before the renderer
+  // was ready (first-launch invite, macOS open-url before window).
+  mainWindow.webContents.once("did-finish-load", () => {
+    void dumpGpuInfo();
+    if (pendingDeepLinks.length > 0 && mainWindow) {
+      for (const url of pendingDeepLinks) {
+        mainWindow.webContents.send("decibell:event", {
+          name: "deep_link_received",
+          payload: { url },
+        });
+      }
+      pendingDeepLinks.length = 0;
+    }
+  });
   attachWindowEvents(mainWindow);
 
   if (devServerUrl) {
@@ -82,16 +253,74 @@ function createWindow(): void {
   });
 }
 
-app.on("second-instance", () => {
+app.on("second-instance", (_event, argv) => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
   }
+  // The second invocation may carry a `decibell://invite/...` URL that
+  // the OS handed off via the protocol-client registration. Forward it
+  // to the renderer so DeepLinkJoinModal can act on it.
+  const url = findDeepLinkInArgv(argv);
+  if (url) forwardDeepLink(url);
 });
 
-app.whenReady().then(() => {
+  // GPU info dump is deferred to after the first window's
+  // did-finish-load — `getGPUInfo("basic")` returns immediately with
+  // partial data (often everything `undefined` if the GPU process
+  // hasn't initialized yet), and `"complete"` blocks waiting for the
+  // GPU process to actually report. We schedule it inside
+  // createWindow so it runs after the renderer has painted at least
+  // once, by which point the GPU process has done real work.
+  const dumpGpuInfo = async (): Promise<void> => {
+    try {
+      const features = app.getGPUFeatureStatus();
+      const info = (await app.getGPUInfo("complete")) as Record<string, unknown>;
+      const auxAttrs = (info.auxAttributes ?? {}) as Record<string, unknown>;
+      const gpuDevice = (info.gpuDevice as Array<Record<string, unknown>> | undefined)?.[0] ?? {};
+      console.log("[boot] GPU feature status:", features);
+      console.log("[boot] GPU device:", {
+        vendorId: gpuDevice.vendorId,
+        deviceId: gpuDevice.deviceId,
+        vendorString: gpuDevice.vendorString,
+        deviceString: gpuDevice.deviceString,
+        driverVendor: gpuDevice.driverVendor,
+        driverVersion: gpuDevice.driverVersion,
+      });
+      console.log("[boot] GPU GL:", {
+        glRenderer: auxAttrs.glRenderer,
+        glVendor: auxAttrs.glVendor,
+        glVersion: auxAttrs.glVersion,
+        glExtensionsLength: typeof auxAttrs.glExtensions === "string"
+          ? (auxAttrs.glExtensions as string).length
+          : 0,
+      });
+      // The list Chromium itself considers hardware-accelerated. If
+      // empty, no codec is HW-decodable from the GPU process's view —
+      // WebCodecs has nothing to bind to. If populated, we can compare
+      // the profile names against what the renderer's WebCodecs probe
+      // claims to find the exact mismatch.
+      console.log(
+        "[boot] HW decode profiles:",
+        info.videoDecodeAcceleratorSupportedProfile ??
+          info.videoDecodeAcceleratorSupportedProfiles ??
+          "(none reported)",
+      );
+      console.log(
+        "[boot] HW encode profiles:",
+        info.videoEncodeAcceleratorSupportedProfile ??
+          info.videoEncodeAcceleratorSupportedProfiles ??
+          "(none reported)",
+      );
+    } catch (e) {
+      console.warn("[boot] GPU info dump failed:", e);
+    }
+  };
+
+app.whenReady().then(async () => {
   registerProtocol();
   registerAttachmentProtocol();
+  registerFileProtocol();
   registerInvokeHandler();
   registerWindowHandlers();
   registerDialogHandlers();

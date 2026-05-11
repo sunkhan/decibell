@@ -2,7 +2,8 @@ import { useEffect } from "react";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
-import { enqueueUpload } from "./uploadAttachment";
+import { queueUpload } from "./uploadAttachment";
+import { chunkSourceFromFile } from "./chunkSource";
 
 function generatePendingId(): string {
   return `att-${Date.now()}-${Math.floor(Math.random() * 1e9).toString(36)}`;
@@ -22,46 +23,79 @@ export function useDragDrop() {
   const setDragHoveredKey = useUiStore((s) => s.setDragHoveredKey);
 
   useEffect(() => {
-    let dragDepth = 0;
+    // Drag tracking model:
+    //
+    //   dragenter — set dragActive=true when files first enter the
+    //               window. Re-firing while moving across child
+    //               elements is harmless (we guard with the equality
+    //               check).
+    //   dragover  — refresh the per-channel hovered key based on the
+    //               closest data-drop-target ancestor. Equality-
+    //               guarded so 60Hz dragover doesn't thrash the store.
+    //   dragleave — fires for *every* child element the cursor
+    //               crosses, NOT just when leaving the window. The
+    //               canonical fix is to read `e.relatedTarget`: when
+    //               the cursor moves between elements inside the
+    //               window, relatedTarget is the new element (non-
+    //               null). When the cursor actually leaves the
+    //               window, relatedTarget is null. So we only clear
+    //               state when relatedTarget is null.
+    //   drop      — clears state immediately and dispatches uploads.
+    //
+    // The earlier dragenter/dragleave + counter approach was buggy
+    // (the file-only guard on enter combined with unconditional
+    // decrement on leave drove the counter negative, killing the
+    // highlight mid-drag). The dragover-only + setTimeout reset
+    // approach was even worse — it kept the entire app under
+    // continuous re-render at 60Hz and froze the renderer. This
+    // relatedTarget pattern is the standard browser idiom.
 
     const onDragEnter = (e: DragEvent) => {
       if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes("Files")) {
         return;
       }
-      dragDepth += 1;
-      setDragActive(true);
+      const ui = useUiStore.getState();
+      if (!ui.dragActive) ui.setDragActive(true);
     };
     const onDragOver = (e: DragEvent) => {
       if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes("Files")) {
         return;
       }
+      // preventDefault here is what tells the browser "drop allowed
+      // here" — without it the drop event never fires.
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
-      // Read the closest data-drop-target element so the sidebar can
-      // highlight a specific channel as the active target.
+
       const target = (e.target as HTMLElement | null)?.closest?.(
         "[data-drop-target]",
       ) as HTMLElement | null;
       const dropKey = target?.getAttribute("data-drop-target") ?? null;
-      setDragHoveredKey(dropKey);
+      // Skip the store write when the value hasn't changed — zustand
+      // notifies subscribers on every set() regardless of equality,
+      // and dragover at 60Hz over the same target would otherwise
+      // trigger a re-render storm of every channel row.
+      const ui = useUiStore.getState();
+      if (ui.dragHoveredKey !== dropKey) ui.setDragHoveredKey(dropKey);
     };
-    const onDragLeave = () => {
-      dragDepth = Math.max(0, dragDepth - 1);
-      if (dragDepth === 0) {
-        setDragActive(false);
-        setDragHoveredKey(null);
-      }
+    const onDragLeave = (e: DragEvent) => {
+      // relatedTarget is null only when the cursor leaves the window
+      // entirely. Moving between elements inside the window keeps
+      // relatedTarget non-null, which is exactly what we want — those
+      // mid-drag transitions shouldn't clear the state.
+      if (e.relatedTarget !== null) return;
+      setDragActive(false);
+      setDragHoveredKey(null);
     };
     const onDrop = async (e: DragEvent) => {
       e.preventDefault();
-      dragDepth = 0;
-      setDragActive(false);
       const dropKey = useUiStore.getState().dragHoveredKey;
+      setDragActive(false);
       setDragHoveredKey(null);
 
-      const files: File[] = [];
       const dt = e.dataTransfer;
       if (!dt) return;
+
+      const files: File[] = [];
       for (let i = 0; i < dt.files.length; i++) {
         const f = dt.files.item(i);
         if (f) files.push(f);
@@ -73,11 +107,13 @@ export function useDragDrop() {
       // channel if no element announced one.
       let serverId: string | null = null;
       let channelId: string | null = null;
+      let droppedOnSidebarTarget = false;
       if (dropKey?.startsWith("channel:")) {
         const parts = dropKey.split(":");
         if (parts.length >= 3) {
           serverId = parts[1];
           channelId = parts.slice(2).join(":");
+          droppedOnSidebarTarget = true;
         }
       }
       if (!serverId || !channelId) {
@@ -87,10 +123,40 @@ export function useDragDrop() {
       }
       if (!serverId || !channelId) return;
 
+      // Drop landed on a sidebar channel target — navigate to that
+      // channel so the user can see the upload progress (and the
+      // resulting message they're about to send) without an extra
+      // click. Only switch when something actually differs to avoid
+      // store churn that re-renders the world.
+      if (droppedOnSidebarTarget) {
+        const chat = useChatStore.getState();
+        const ui = useUiStore.getState();
+        if (chat.activeServerId !== serverId) chat.setActiveServer(serverId);
+        if (chat.activeChannelId !== channelId) chat.setActiveChannel(channelId);
+        if (ui.activeView !== "server") ui.setActiveView("server");
+      }
+
       for (const file of files) {
-        const pendingId = generatePendingId();
-        // Fire-and-forget. Errors land in attachmentsStore.
-        enqueueUpload({ pendingId, serverId, channelId, file }).catch(() => {});
+        // Fire-and-forget. queueUpload registers as `queued` only —
+        // bytes don't leave the renderer until the user clicks send
+        // (handleSend kicks off startQueuedUpload then). The
+        // ChunkSource takes the streaming `decibell-file://` route
+        // when the dropped file has a backing disk path (typical for
+        // OS-dragged files); falls back to a Blob URL otherwise.
+        void (async () => {
+          try {
+            const source = await chunkSourceFromFile(file);
+            const pendingId = generatePendingId();
+            queueUpload({
+              pendingId,
+              serverId: serverId!,
+              channelId: channelId!,
+              source,
+            }).catch(() => {});
+          } catch (e) {
+            console.error("drop register:", file.name, e);
+          }
+        })();
       }
       void useAttachmentsStore;
     };

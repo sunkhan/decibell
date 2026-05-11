@@ -534,6 +534,10 @@ impl VideoEngine {
         self_username: String,
     ) -> Self {
         let sender = Arc::new(video_pipeline::VideoSender::new(socket, sender_id));
+        // Publish the sender to the hot-path slot so `send_video_frame`
+        // can reach it without taking the AppState mutex on every
+        // encoded chunk. Cleared on stop/drop below.
+        video_pipeline::set_frame_sink(sender.clone());
         VideoEngine {
             sender,
             self_username,
@@ -562,7 +566,11 @@ impl VideoEngine {
         // Nothing to tear down — there are no native threads, no
         // encoder context, no capture loop. The renderer's
         // StreamCapture stops the WebCodecs encoder and getDisplayMedia
-        // tracks on its side.
+        // tracks on its side. We DO need to clear the hot-path frame
+        // sink so a stray post-stop frame from the renderer (rare but
+        // possible during shutdown ordering) drops on the floor
+        // instead of being packetised onto a dead socket.
+        video_pipeline::clear_frame_sink();
     }
 }
 

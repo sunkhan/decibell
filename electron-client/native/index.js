@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { login, register, logout, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, listMembers, kickMember, banMember, leaveServer, requestFriendList, sendFriendAction, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, listAudioDevices, playSound, startScreenShare, stopScreenShare, sendVideoFrame, watchStream, stopWatching, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, init, shutdown, ping, pingAsync } = nativeBinding
+const { login, register, logout, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, listMembers, kickMember, banMember, leaveServer, createInvite, listInvites, revokeInvite, requestFriendList, sendFriendAction, sendPrivateMessage, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, loadConfig, saveSettings, setDmPrivacy, setTransferLimits, listAudioDevices, startScreenShare, stopScreenShare, sendVideoFrame, watchStream, stopWatching, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, init, shutdown, ping, pingAsync } = nativeBinding
 
 module.exports.login = login
 module.exports.register = register
@@ -323,8 +323,12 @@ module.exports.listMembers = listMembers
 module.exports.kickMember = kickMember
 module.exports.banMember = banMember
 module.exports.leaveServer = leaveServer
+module.exports.createInvite = createInvite
+module.exports.listInvites = listInvites
+module.exports.revokeInvite = revokeInvite
 module.exports.requestFriendList = requestFriendList
 module.exports.sendFriendAction = sendFriendAction
+module.exports.sendPrivateMessage = sendPrivateMessage
 module.exports.requestServerList = requestServerList
 module.exports.connectToCommunity = connectToCommunity
 module.exports.redeemInvite = redeemInvite
@@ -332,8 +336,11 @@ module.exports.disconnectFromCommunity = disconnectFromCommunity
 module.exports.parseInviteLink = parseInviteLink
 module.exports.resolveInviteCode = resolveInviteCode
 module.exports.getAttachmentTarget = getAttachmentTarget
+module.exports.loadConfig = loadConfig
+module.exports.saveSettings = saveSettings
+module.exports.setDmPrivacy = setDmPrivacy
+module.exports.setTransferLimits = setTransferLimits
 module.exports.listAudioDevices = listAudioDevices
-module.exports.playSound = playSound
 module.exports.startScreenShare = startScreenShare
 module.exports.stopScreenShare = stopScreenShare
 module.exports.sendVideoFrame = sendVideoFrame

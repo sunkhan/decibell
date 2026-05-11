@@ -34,7 +34,12 @@ const ENCODE_CEILING: Record<number, { width: number; height: number; fps: numbe
 // where Chromium will then fall back to software if hardware isn't
 // available.
 const PROBE_CONFIGS: { codec: VideoCodec; webCodecsString: string }[] = [
-  { codec: VideoCodec.AV1, webCodecsString: "av01.0.04M.08" },
+  // AV1 Level 4.0 (seq_level_idx_0=8) — matches the codec string the
+  // streaming path uses for all our resolutions. Probing the same
+  // string we'll actually configure with avoids "probe says yes but
+  // configure fails because the actual level_idx is too low for the
+  // bitstream" surprises.
+  { codec: VideoCodec.AV1, webCodecsString: "av01.0.08M.08" },
   { codec: VideoCodec.H265, webCodecsString: "hvc1.1.6.L93.B0" },
   // High Profile Level 3.1 — covers up to 720p30. Either H.264 entry
   // resolves to the same underlying Chromium encoder family; the HW vs
@@ -44,10 +49,11 @@ const PROBE_CONFIGS: { codec: VideoCodec; webCodecsString: string }[] = [
   { codec: VideoCodec.H264_SW, webCodecsString: "avc1.64001F" },
 ];
 
-// Bumped from v1 → v2 when the probe stopped sending latencyMode +
-// hardwareAcceleration; v1 caches contain false-negative results that
-// would still hide H.264 from the codec picker.
-const LOCAL_STORAGE_KEY = "decibell.encoder_caps.v2";
+// Bumped v4 → v5 alongside the --use-angle=gl + NVD_BACKEND=direct
+// boot tweaks. v4 caches were probed before those flags were in
+// place and recorded hardware:false; v5 forces the probe to re-run
+// against the now-hopefully-working VAAPI integration.
+const LOCAL_STORAGE_KEY = "decibell.encoder_caps.v5";
 
 export async function probeEncoders(force = false): Promise<CodecCapability[]> {
   let caps: CodecCapability[] | null = null;
@@ -87,12 +93,39 @@ export async function probeEncoders(force = false): Promise<CodecCapability[]> {
           bitrate: 1_000_000,
         });
         if (support.supported) {
-          console.log(`[encoderProbe] codec=${cfg.codec} via ${support.config?.codec ?? cfg.webCodecsString}`);
+          // Second probe: same config plus hardwareAcceleration:
+          // prefer-hardware. Per gotcha 5.2 this returns supported:
+          // false when no hardware encoder is available, which is
+          // exactly the signal we want — yes/no on HW. For H264_SW
+          // we always claim hardware: false since the user picked
+          // software explicitly.
+          let hardware = false;
+          if (cfg.codec !== 2 /* H264_SW */) {
+            try {
+              const hwSupport = await VideoEncoder.isConfigSupported({
+                codec: cfg.webCodecsString,
+                width: 1280,
+                height: 720,
+                framerate: 30,
+                bitrate: 1_000_000,
+                hardwareAcceleration: "prefer-hardware",
+              });
+              hardware = !!hwSupport.supported;
+            } catch {
+              hardware = false;
+            }
+          }
+          console.log(
+            `[encoderProbe] codec=${cfg.codec} via ` +
+              `${support.config?.codec ?? cfg.webCodecsString} ` +
+              `(${hardware ? "HW" : "SW"})`,
+          );
           caps.push({
             codec: cfg.codec,
             maxWidth: ceiling.width,
             maxHeight: ceiling.height,
             maxFps: ceiling.fps,
+            hardware,
           });
         } else {
           console.log(`[encoderProbe] codec=${cfg.codec}: not supported`);

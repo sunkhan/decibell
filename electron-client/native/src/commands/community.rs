@@ -108,3 +108,56 @@ pub async fn leave_server(args: LeaveServerArgs) -> napi::Result<()> {
     )
     .await
 }
+
+#[napi(object)]
+pub struct CreateInviteArgs {
+    pub server_id: String,
+    /// Unix epoch seconds. 0 means "never expires".
+    pub expires_at: i64,
+    /// 0 means "unlimited uses".
+    pub max_uses: i32,
+}
+
+#[napi]
+pub async fn create_invite(args: CreateInviteArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::InviteCreateReq,
+        packet::Payload::InviteCreateReq(InviteCreateRequest {
+            expires_at: args.expires_at,
+            max_uses: args.max_uses,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct ListInvitesArgs {
+    pub server_id: String,
+}
+
+#[napi]
+pub async fn list_invites(args: ListInvitesArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::InviteListReq,
+        packet::Payload::InviteListReq(InviteListRequest {}),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct RevokeInviteArgs {
+    pub server_id: String,
+    pub code: String,
+}
+
+#[napi]
+pub async fn revoke_invite(args: RevokeInviteArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::InviteRevokeReq,
+        packet::Payload::InviteRevokeReq(InviteRevokeRequest { code: args.code }),
+    )
+    .await
+}

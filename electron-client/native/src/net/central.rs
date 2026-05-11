@@ -112,6 +112,36 @@ impl CentralClient {
         self.send(data).await
     }
 
+    /// Send a DirectMessage to another user via the central server.
+    /// The reply path is asynchronous: peer-side delivery (or an
+    /// "offline / friends-only" reject) arrives back as a DirectMsg
+    /// to *us* with the sender swapped to ourselves and the canonical
+    /// error string in `content` — see route_packets.
+    pub async fn send_private_message(
+        &self,
+        sender: &str,
+        recipient: &str,
+        content: &str,
+        token: Option<&str>,
+    ) -> Result<(), String> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let data = build_packet(
+            packet::Type::DirectMsg,
+            packet::Payload::DirectMsg(DirectMessage {
+                sender: sender.into(),
+                recipient: recipient.into(),
+                content: content.into(),
+                timestamp,
+            }),
+            token,
+        );
+        self.send(data).await
+    }
+
     /// Disconnect from the central server. Stops reconnection and keepalive.
     pub fn disconnect(&mut self) {
         if let Some(task) = self.ping_task.take() {
@@ -259,6 +289,22 @@ impl CentralClient {
                         })
                         .collect();
                     events::emit_server_list_received(servers);
+                }
+                Some(packet::Payload::DirectMsg(msg)) => {
+                    events::emit_message_received(events::MessageReceivedPayload {
+                        context: "dm".to_string(),
+                        sender: msg.sender,
+                        recipient: msg.recipient,
+                        content: msg.content,
+                        timestamp: msg.timestamp.to_string(),
+                        // DMs aren't persisted server-side and don't carry
+                        // attachments or a nonce — keep them zero/empty so
+                        // the renderer's MessageReceivedPayload type stays
+                        // uniform with the channel-message path.
+                        id: 0,
+                        attachments: Vec::new(),
+                        nonce: String::new(),
+                    });
                 }
                 Some(packet::Payload::PresenceUpdate(update)) => {
                     events::emit_user_list_updated(update.online_users);

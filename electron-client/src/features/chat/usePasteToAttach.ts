@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useChatStore } from "../../stores/chatStore";
-import { enqueueUpload } from "./uploadAttachment";
+import { queueUpload } from "./uploadAttachment";
+import { chunkSourceFromFile } from "./chunkSource";
 
 function generatePendingId(): string {
   return `att-${Date.now()}-${Math.floor(Math.random() * 1e9).toString(36)}`;
@@ -40,13 +41,24 @@ export function usePasteToAttach() {
       for (let i = 0; i < dt.files.length; i++) {
         const file = dt.files.item(i);
         if (!file) continue;
-        const pendingId = generatePendingId();
-        enqueueUpload({
-          pendingId,
-          serverId: chat.activeServerId,
-          channelId: chat.activeChannelId,
-          file,
-        }).catch(() => {});
+        // Pasted files (clipboard images / screenshots) have no
+        // backing disk path, so chunkSourceFromFile falls back to a
+        // Blob URL. The bytes already live in Chromium's clipboard
+        // store; no second copy.
+        void (async () => {
+          try {
+            const source = await chunkSourceFromFile(file);
+            const pendingId = generatePendingId();
+            queueUpload({
+              pendingId,
+              serverId: chat.activeServerId!,
+              channelId: chat.activeChannelId!,
+              source,
+            }).catch(() => {});
+          } catch (e) {
+            console.error("paste register:", file.name, e);
+          }
+        })();
       }
     };
 

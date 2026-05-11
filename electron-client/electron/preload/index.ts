@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 // Tauri-compatible event envelope so the IPC shim in src/lib/ipc.ts can
 // match @tauri-apps/api/event signatures one-for-one.
@@ -25,10 +25,12 @@ ipcRenderer.on("decibell:window:resized", () => {
 });
 
 // PR7c: stream frame fan-out. Encoded video bytes arrive as Uint8Array
-// (no JSON, no base64). Each subscriber gets every frame; the
-// StreamVideoPlayer filters on `frame.username` to match its watch
-// target. Multiple StreamVideoPlayers (fullscreen + tile) coexist by
-// each filtering independently.
+// (no JSON, no base64). Subscribers register for one specific
+// streamer's frames, keyed by username — the dispatch below does an
+// O(1) Map lookup instead of fanning every frame to every subscribed
+// player. With M players watching N streamers, the old global Set
+// path was O(N·M) closure invocations per second; this is O(1) per
+// frame regardless of how many players are mounted.
 type StreamFrame = {
   username: string;
   codec: number;
@@ -38,9 +40,21 @@ type StreamFrame = {
   description: Uint8Array | null;
 };
 type StreamFrameHandler = (frame: StreamFrame) => void;
-const streamFrameSubs = new Set<StreamFrameHandler>();
+const streamFrameSubsByUser = new Map<string, Set<StreamFrameHandler>>();
 ipcRenderer.on("decibell:stream_frame", (_e, frame: StreamFrame) => {
-  for (const cb of streamFrameSubs) cb(frame);
+  const subs = streamFrameSubsByUser.get(frame.username);
+  if (!subs) return;
+  for (const cb of subs) cb(frame);
+});
+
+type StreamThumbnail = {
+  ownerUsername: string;
+  data: Uint8Array;
+};
+type StreamThumbnailHandler = (thumb: StreamThumbnail) => void;
+const streamThumbnailSubs = new Set<StreamThumbnailHandler>();
+ipcRenderer.on("decibell:stream_thumbnail", (_e, thumb: StreamThumbnail) => {
+  for (const cb of streamThumbnailSubs) cb(thumb);
 });
 
 contextBridge.exposeInMainWorld("decibell", {
@@ -76,6 +90,40 @@ contextBridge.exposeInMainWorld("decibell", {
         isFile: boolean;
         isDirectory: boolean;
       }>,
+    writeFile: (path: string, data: Uint8Array): Promise<void> =>
+      ipcRenderer.invoke("decibell:fs:writeFile", path, data) as Promise<void>,
+  },
+  file: {
+    /// Register an absolute path with the file whitelist. Returns a
+    /// `decibell-file://` URL the renderer can `fetch()` (with Range)
+    /// or assign to `<video src=>`/`<img src=>` — Chromium streams it
+    /// from disk via the protocol handler in main, so the bytes never
+    /// land in renderer memory as a single buffer.
+    register: (
+      absolutePath: string,
+    ): Promise<{ url: string; size: number; mime: string; name: string }> =>
+      ipcRenderer.invoke("decibell:file:register", absolutePath) as Promise<{
+        url: string;
+        size: number;
+        mime: string;
+        name: string;
+      }>,
+    /// Drop the whitelist entry once the upload completes / aborts.
+    /// Always call this — leaving entries around lets the renderer
+    /// re-fetch the file later.
+    unregister: (url: string): Promise<void> =>
+      ipcRenderer.invoke("decibell:file:unregister", url) as Promise<void>,
+    /// Resolve a File (typically from drag-drop) to the absolute disk
+    /// path the OS handed Chromium. Returns "" if the File has no
+    /// backing path (e.g. clipboard paste). Replaces the deprecated
+    /// `file.path` property removed in newer Electron.
+    pathOf: (file: File): string => {
+      try {
+        return webUtils.getPathForFile(file);
+      } catch {
+        return "";
+      }
+    },
   },
   attachmentRegistry: {
     set: (
@@ -133,13 +181,34 @@ contextBridge.exposeInMainWorld("decibell", {
     },
   },
   streamFrames: {
-    /// Subscribe to every encoded video frame. Caller filters on
-    /// `frame.username` to match its watch target. Returns an
-    /// unsubscribe fn.
-    subscribe: (cb: StreamFrameHandler): (() => void) => {
-      streamFrameSubs.add(cb);
+    /// Subscribe to encoded frames for ONE streamer (by username).
+    /// Pass the streamer's username so the preload bridge can dispatch
+    /// directly via Map lookup instead of fanning every frame to every
+    /// player and making the player check `frame.username` itself.
+    /// Returns an unsubscribe fn.
+    subscribe: (username: string, cb: StreamFrameHandler): (() => void) => {
+      let subs = streamFrameSubsByUser.get(username);
+      if (!subs) {
+        subs = new Set();
+        streamFrameSubsByUser.set(username, subs);
+      }
+      subs.add(cb);
       return () => {
-        streamFrameSubs.delete(cb);
+        const cur = streamFrameSubsByUser.get(username);
+        if (!cur) return;
+        cur.delete(cb);
+        if (cur.size === 0) streamFrameSubsByUser.delete(username);
+      };
+    },
+  },
+  streamThumbnails: {
+    /// Subscribe to per-stream JPEG thumbnails. Caller wraps the raw
+    /// bytes in a blob: URL via URL.createObjectURL — main never
+    /// base64-encodes them. Returns an unsubscribe fn.
+    subscribe: (cb: StreamThumbnailHandler): (() => void) => {
+      streamThumbnailSubs.add(cb);
+      return () => {
+        streamThumbnailSubs.delete(cb);
       };
     },
   },

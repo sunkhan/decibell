@@ -1,10 +1,12 @@
 import { Outlet } from "react-router-dom";
 import Titlebar from "./Titlebar";
+import ToastStack from "../components/ToastStack";
 
 // Always-on chrome wrapper. Both /login and / sit inside this layout
 // so the custom Titlebar (with min/max/close) stays present from the
 // moment the window opens. The outlet renders the active route's
-// content beneath the titlebar.
+// content beneath the titlebar. ToastStack is also mounted here so
+// notifications appear on /login as well as /.
 //
 // UpdateChecker (electron-updater) and ResizeHandles (edge-pull
 // resize affordances on frameless windows) port with their own PRs.
@@ -15,6 +17,7 @@ export default function AppLayout() {
       <div className="flex min-h-0 flex-1">
         <Outlet />
       </div>
+      <ToastStack />
     </div>
   );
 }
