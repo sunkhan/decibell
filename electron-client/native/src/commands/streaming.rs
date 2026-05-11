@@ -402,3 +402,102 @@ pub async fn send_stream_thumbnail(args: SendStreamThumbnailArgs) -> napi::Resul
         .await
         .map_err(napi::Error::from_reason)
 }
+
+// ─── Windows native FFmpeg encoder commands (PR after PR8) ─────────
+//
+// Replaces Chromium's WebCodecs path on Windows because Chromium's
+// MFT encoder factory caps at 30 fps. See the design spec at
+// docs/superpowers/specs/2026-05-12-windows-native-ffmpeg-encoder-design.md
+// for the full motivation. Linux/macOS continue to use the WebCodecs
+// path and these commands are stubbed out (or absent) there.
+
+/// Native encoder capability returned by `probe_native_encoders`.
+/// Same shape the renderer's WebCodecs probe used to populate.
+#[cfg(target_os = "windows")]
+#[napi(object)]
+pub struct NativeEncoderCap {
+    /// VideoCodec wire id (1=H264_HW, 3=H265, 4=AV1).
+    pub codec: i32,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub max_fps: u32,
+    pub hardware: bool,
+    /// FFmpeg encoder name that actually opens (e.g. "h264_nvenc").
+    pub encoder_name: String,
+}
+
+/// Runs the native FFmpeg encoder probe. Windows-only. Returns the
+/// list of (codec, vendor) tuples that successfully opened.
+#[cfg(target_os = "windows")]
+#[napi]
+pub fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
+    let vendor_id = read_primary_gpu_vendor_id();
+    let caps = crate::media::encoder_probe::run(vendor_id);
+    Ok(caps
+        .into_iter()
+        .map(|c| NativeEncoderCap {
+            codec: c.codec,
+            max_width: c.max_width,
+            max_height: c.max_height,
+            max_fps: c.max_fps,
+            hardware: c.hardware,
+            encoder_name: c.encoder_name,
+        })
+        .collect())
+}
+
+/// Force the next encoded frame on the active stream (if any) to be a
+/// keyframe. Wired from the renderer's `keyframe_requested` event in
+/// Task 14. Currently a no-op stub on both Windows and other
+/// platforms — flipped to a real AtomicBool poke once the encoder
+/// thread lands in Task 11.
+#[napi]
+pub fn force_keyframe() -> napi::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        // TODO(Task 11): poke video_engine.force_keyframe_handle().
+        // For now this returns Ok(()) without effect so the renderer
+        // can already wire its keyframe_requested listener to the
+        // command without errors.
+    }
+    Ok(())
+}
+
+/// Enumerate DXGI adapters and return the first non-software adapter's
+/// PCI vendor id. Used by `probe_native_encoders` to pick the right
+/// encoder vendor priority (NVIDIA → NVENC first, etc.).
+#[cfg(target_os = "windows")]
+fn read_primary_gpu_vendor_id() -> u32 {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1,
+        DXGI_ADAPTER_FLAG_SOFTWARE,
+    };
+    unsafe {
+        let factory: IDXGIFactory1 = match CreateDXGIFactory1() {
+            Ok(f) => f,
+            Err(_) => return 0,
+        };
+        let mut i = 0u32;
+        loop {
+            let adapter: IDXGIAdapter1 = match factory.EnumAdapters1(i) {
+                Ok(a) => a,
+                Err(_) => return 0,
+            };
+            // windows-rs 0.61 returns the desc by value.
+            let desc = match adapter.GetDesc1() {
+                Ok(d) => d,
+                Err(_) => {
+                    i += 1;
+                    continue;
+                }
+            };
+            // Bit-mask check — DXGI_ADAPTER_FLAG_SOFTWARE is 2.
+            // desc.Flags is u32 in windows-rs 0.61; FLAG_SOFTWARE
+            // inner value is i32, so cast before AND.
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) == 0 {
+                return desc.VendorId;
+            }
+            i += 1;
+        }
+    }
+}

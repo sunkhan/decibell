@@ -28,10 +28,13 @@ pub struct EncoderCap {
     pub encoder_name: String,
 }
 
-const PROBE_W: u32 = 64;
-const PROBE_H: u32 = 64;
+// NVENC's H.264 minimum dimensions are ~145×96 and AV1 wants 128×128+.
+// Using 1280×720 keeps the probe well above every vendor's floor without
+// noticeably slowing init (no frame is actually encoded — we open + close).
+const PROBE_W: u32 = 1280;
+const PROBE_H: u32 = 720;
 const PROBE_FPS: u32 = 30;
-const PROBE_BR: i64 = 500_000;
+const PROBE_BR: i64 = 2_000_000;
 
 /// (codec_id, encoder_name) tuples in vendor priority order.
 fn candidates_for(codec_id: i32, vendor_id: u32) -> Vec<&'static str> {
