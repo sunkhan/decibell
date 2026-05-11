@@ -56,6 +56,10 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           version: "27.x"
+          # Without a token the action queries the GitHub releases API
+          # unauthenticated and gets rate-limited (most often on macOS
+          # runners where the IP pool churns more).
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Linux system deps
         if: matrix.target_label == 'linux'
@@ -107,10 +111,12 @@ jobs:
           npm run build:tsc
 
       - name: Package
-        env:
-          # Skip electron-builder's auto-publish; we attach via the
-          # release step below for explicit control.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Don't expose GH_TOKEN here. electron-builder treats its
+        # presence as "implicit GitHub publish provider", then tries
+        # to generate auto-update metadata (latest-*.yml) and crashes
+        # on a null `channel` because we have no `repository` field
+        # set. We don't need its publishing — the release job below
+        # uploads via softprops/action-gh-release directly.
         run: npx electron-builder --publish=never
 
       - name: Upload artifacts

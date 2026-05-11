@@ -54,6 +54,12 @@ khronos-egl = { version = "6", features = ["dynamic"] }
 gl = "0.14"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# windows-core must be a direct dep so the `#[implement]` macro's
+# generated `::windows_core::IUnknownImpl` paths resolve at our crate
+# root. As a transitive dep through `windows`, Rust 2018+ won't expose
+# it to user code or proc-macro output. Pinned to match the windows
+# crate's own windows-core dep version.
+windows-core = "0.61"
 windows = { version = "0.61", features = [
     "Win32_Networking_WinSock",
     "Win32_Foundation",
