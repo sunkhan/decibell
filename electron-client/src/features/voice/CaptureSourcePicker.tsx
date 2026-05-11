@@ -145,28 +145,34 @@ export default function CaptureSourcePicker({
         throw e;
       }
 
-      // Native side: register the stream with the truthful dimensions.
-      // The encoder.output's first chunk has already fired by now and
-      // its send_video_frame call failed silently (no VideoEngine yet)
-      // — that's one frame lost on the wire. Self-preview gets it via
-      // the local fan-out, and remote watchers will request a fresh
-      // keyframe via PLI on subscribe.
-      try {
-        await invoke("start_screen_share", {
-          serverId,
-          channelId,
-          fps: streamSettings.fps,
-          width: actualDims.width,
-          height: actualDims.height,
-          videoBitrateKbps: streamSettings.videoBitrateKbps,
-          shareAudio: streamSettings.shareAudio,
-          audioBitrateKbps: streamSettings.audioBitrateKbps,
-          initialCodec: codec,
-          enforcedCodec: streamSettings.enforcedCodec || 0,
-        });
-      } catch (e) {
-        await stopActiveStream();
-        throw e;
+      // Native signaling: register the stream with the truthful
+      // dimensions. On Linux/macOS this is where StartStreamReq
+      // goes out + VideoEngine is created (the renderer's WebCodecs
+      // encoder, already running via stream.start() above, will start
+      // pumping send_video_frame in a few ms).
+      //
+      // On Windows we skip this — stream.start() already invoked
+      // start_screen_share to spin up the native capture + encoder
+      // pipeline AND send the StartStreamReq. Calling it again would
+      // bounce off the "Already sharing screen" guard in native.
+      if (window.decibell.platform !== "win32") {
+        try {
+          await invoke("start_screen_share", {
+            serverId,
+            channelId,
+            fps: streamSettings.fps,
+            width: actualDims.width,
+            height: actualDims.height,
+            videoBitrateKbps: streamSettings.videoBitrateKbps,
+            shareAudio: streamSettings.shareAudio,
+            audioBitrateKbps: streamSettings.audioBitrateKbps,
+            initialCodec: codec,
+            enforcedCodec: streamSettings.enforcedCodec || 0,
+          });
+        } catch (e) {
+          await stopActiveStream();
+          throw e;
+        }
       }
 
       useVoiceStore.getState().setIsStreaming(true);
