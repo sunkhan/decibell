@@ -122,11 +122,17 @@ impl Connection {
             let idle: libc::c_int = 15;     // first probe after 15s idle
             let interval: libc::c_int = 5;  // probe every 5s
             let count: libc::c_int = 3;     // give up after 3 failures
+            // macOS spells the "idle before first probe" option
+            // TCP_KEEPALIVE; every other unix uses TCP_KEEPIDLE.
+            #[cfg(target_os = "macos")]
+            let tcp_keepidle = libc::TCP_KEEPALIVE;
+            #[cfg(not(target_os = "macos"))]
+            let tcp_keepidle = libc::TCP_KEEPIDLE;
             unsafe {
                 libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE,
                     &enable as *const _ as *const libc::c_void,
                     std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-                libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_KEEPIDLE,
+                libc::setsockopt(fd, libc::IPPROTO_TCP, tcp_keepidle,
                     &idle as *const _ as *const libc::c_void,
                     std::mem::size_of::<libc::c_int>() as libc::socklen_t);
                 libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_KEEPINTVL,
