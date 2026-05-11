@@ -34,6 +34,7 @@ pub mod codec_selection;
 pub mod jitter;
 pub mod packet;
 pub mod peer;
+pub mod source_id;
 pub mod pipeline;
 pub mod speaking;
 pub mod video_packet;

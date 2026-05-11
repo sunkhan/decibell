@@ -100,6 +100,12 @@ windows = { version = "0.61", features = [
 # THIRD_PARTY_LICENSES.md (added in a later task) for compliance details.
 ffmpeg-next = "8"
 
+[dev-dependencies]
+# tokio test-util adds tokio::time::advance and Builder::start_paused
+# which the codec_selection unit tests use to fake the wall clock.
+# Not pulled in by `features = ["full"]`; opt-in only.
+tokio = { version = "1", features = ["full", "test-util"] }
+
 [build-dependencies]
 napi-build = "2"
 prost-build = "0.13"
