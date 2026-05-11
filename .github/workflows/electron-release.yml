@@ -72,7 +72,8 @@ jobs:
             libopus-dev \
             libclang-dev \
             pkg-config \
-            fakeroot
+            fakeroot \
+            libarchive-tools
         working-directory: .
 
       # Windows runners have MSVC, CMake, and the SDK pre-installed.
@@ -91,6 +92,13 @@ jobs:
         working-directory: electron-client/native
 
       - name: Build native addon
+        env:
+          # audiopus_sys vendors a libopus copy whose CMakeLists has
+          # cmake_minimum_required(VERSION 3.1) — CMake 4.x (default
+          # on macos-14 and recent ubuntu runners) refuses to honor
+          # policy versions older than 3.5. This shim re-enables the
+          # legacy minimum globally.
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: npm run build:native
 
       - name: Build renderer + main

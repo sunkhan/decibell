@@ -61,8 +61,15 @@ windows = { version = "0.61", features = [
     "Win32_Media_Audio",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    # PROPVARIANT / VT_BLOB live under Variant in 0.61+; without this
+    # feature even Win32_Media_Audio fails to compile internally.
+    "Win32_System_Variant",
     "Win32_System_Threading",
     "Win32_Devices_FunctionDiscovery",
+    # Required for the `#[implement]` macro on
+    # IActivateAudioInterfaceCompletionHandler — supplies the
+    # IUnknownImpl trait the generated COM glue depends on.
+    "implement",
 ] }
 
 [build-dependencies]
