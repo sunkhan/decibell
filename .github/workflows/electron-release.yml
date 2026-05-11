@@ -82,6 +82,14 @@ jobs:
       - name: Install root npm deps
         run: npm ci
 
+      # native/ has its own package.json (just @napi-rs/cli as a devDep)
+      # and is not a workspace of the root, so the root `npm ci` doesn't
+      # touch it. Without this, `napi build` is not on PATH and the next
+      # step fails on every runner.
+      - name: Install native npm deps
+        run: npm ci
+        working-directory: electron-client/native
+
       - name: Build native addon
         run: npm run build:native
 
