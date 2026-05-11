@@ -57,6 +57,15 @@ const PROBE_CONFIGS: { codec: VideoCodec; webCodecsString: string }[] = [
 const LOCAL_STORAGE_KEY = "decibell.encoder_caps.v6";
 
 export async function probeEncoders(force = false): Promise<CodecCapability[]> {
+  // On Windows we use the native FFmpeg probe instead of the WebCodecs
+  // probe — Chromium's WebCodecs encoder factory caps at 30 fps in this
+  // Castlabs build, so its `isConfigSupported` results are misleading
+  // (it claims HW support at 720p30 but won't allocate at 1080p60).
+  // Native FFmpeg talks directly to NVENC/AMF/QSV and reports the truth.
+  if (typeof window !== "undefined" && window.decibell?.platform === "win32") {
+    return await probeWindowsNativeEncoders(force);
+  }
+
   let caps: CodecCapability[] | null = null;
 
   if (!force) {
@@ -163,4 +172,61 @@ export async function probeEncoders(force = false): Promise<CodecCapability[]> {
   );
 
   return caps;
+}
+
+/// Windows-only path: native FFmpeg probe via the napi addon. Native
+/// is the source of truth on Windows — Chromium's WebCodecs encoder
+/// factory caps at 30 fps and lies about supported configurations.
+/// The cache key is scoped separately so a Linux→Windows dual-boot
+/// dev environment doesn't accidentally show stale WebCodecs caps.
+async function probeWindowsNativeEncoders(
+  force: boolean,
+): Promise<CodecCapability[]> {
+  const NATIVE_KEY = "decibell.native_encoder_caps.v1";
+  if (!force) {
+    const cached = localStorage.getItem(NATIVE_KEY);
+    if (cached) {
+      try {
+        const parsed: CodecCapability[] = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          console.log(
+            `[encoderProbe/native] using cached caps (${parsed.length} codecs)`,
+          );
+          return parsed;
+        }
+      } catch {
+        /* fall through and re-probe */
+      }
+    }
+  }
+  try {
+    type NativeCap = {
+      codec: number;
+      maxWidth: number;
+      maxHeight: number;
+      maxFps: number;
+      hardware: boolean;
+      encoderName: string;
+    };
+    const raw = (await invoke("probe_native_encoders", {})) as NativeCap[];
+    const caps: CodecCapability[] = raw.map((c) => ({
+      codec: c.codec as VideoCodec,
+      maxWidth: c.maxWidth,
+      maxHeight: c.maxHeight,
+      maxFps: c.maxFps,
+      hardware: c.hardware,
+    }));
+    for (const c of raw) {
+      console.log(
+        `[encoderProbe/native] codec=${c.codec} via ${c.encoderName} (${
+          c.hardware ? "HW" : "SW"
+        })`,
+      );
+    }
+    localStorage.setItem(NATIVE_KEY, JSON.stringify(caps));
+    return caps;
+  } catch (e) {
+    console.error("[encoderProbe/native] probe failed:", e);
+    return [];
+  }
 }
