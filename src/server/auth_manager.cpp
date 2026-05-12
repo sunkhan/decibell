@@ -15,6 +15,16 @@ void AuthManager::initializeDatabase() {
             "  password_hash VARCHAR(128) NOT NULL"
             ")"
         );
+        // Avatar columns added 2026-05-12 (see docs/superpowers/specs/
+        // 2026-05-12-custom-profile-pictures-design.md §5). ADD COLUMN
+        // IF NOT EXISTS makes this idempotent on already-deployed servers.
+        txn.exec(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar BYTEA"
+        );
+        txn.exec(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+            "avatar_version VARCHAR(64) NOT NULL DEFAULT ''"
+        );
         txn.exec(
             "CREATE TABLE IF NOT EXISTS friends ("
             "  user1 VARCHAR(32) NOT NULL,"
