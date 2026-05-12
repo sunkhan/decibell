@@ -69,6 +69,11 @@ public:
     }
 
     std::string username() const { return username_; }
+    /// The user's current avatar_version, loaded at login and
+    /// refreshed inline on UPDATE_AVATAR_REQ. broadcast_presence
+    /// reads this so each UserPresence entry carries the version
+    /// without an extra DB query per broadcast.
+    const std::string& avatar_version() const { return avatar_version_; }
     bool dm_friends_only() const { return dm_friends_only_; }
 
     SessionManager& manager_;
@@ -181,6 +186,12 @@ private:
             if (token_opt.has_value()) {
                 authenticated_ = true;
                 username_ = req.username();
+                // Prime avatar_version_ so broadcast_presence below
+                // includes the right version on the user's
+                // UserPresence entry. Pulled from the users table
+                // once at login; later UPDATE_AVATAR_REQ handlers
+                // refresh it inline before broadcasting.
+                avatar_version_ = auth_manager_.getAvatarVersion(username_);
                 send_response(chatproj::Packet::LOGIN_RES, true, "Login successful!", token_opt.value());
                 manager_.broadcast_presence();
             } else {
@@ -393,6 +404,11 @@ private:
                 return;
             }
 
+            // Refresh our cached version so subsequent
+            // broadcast_presence calls (e.g. on a new client joining)
+            // see this session's new avatar_version.
+            avatar_version_ = version;
+
             res->set_success(true);
             res->set_version(version);
             std::string s;
@@ -528,6 +544,9 @@ private:
     
     bool authenticated_ = false;
     std::string username_;
+    /// Cached on login from users.avatar_version; updated inline on
+    /// UPDATE_AVATAR_REQ. Read by broadcast_presence.
+    std::string avatar_version_;
     bool dm_friends_only_ = false;
     AuthManager& auth_manager_;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
@@ -571,22 +590,27 @@ void SessionManager::broadcast_presence() {
     chatproj::Packet packet;
     packet.set_type(chatproj::Packet::PRESENCE_UPDATE);
     auto* presence = packet.mutable_presence_update();
-    
-    std::vector<std::string> active_users;
+
+    // Collect (username, avatar_version) for each session. Read each
+    // session's cached avatar_version (updated at login + on every
+    // UPDATE_AVATAR_REQ) rather than hitting the DB per broadcast.
+    std::vector<std::pair<std::string, std::string>> active_users;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const auto& session : sessions_) {
             std::string uname = session->username();
             if (!uname.empty()) {
-                active_users.push_back(uname);
+                active_users.emplace_back(uname, session->avatar_version());
             }
         }
     }
-    
-    for (const auto& u : active_users) {
-        presence->add_online_users(u);
+
+    for (const auto& [uname, ver] : active_users) {
+        auto* entry = presence->add_users();
+        entry->set_username(uname);
+        entry->set_avatar_version(ver);
     }
-    
+
     broadcast(packet);
 }
 

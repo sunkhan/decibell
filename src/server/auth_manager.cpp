@@ -334,22 +334,32 @@ std::vector<chatproj::FriendInfo> AuthManager::getFriends(const std::string& use
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         
+        // JOIN users on the friend (the row's other-side username) so
+        // each FriendInfo carries that user's avatar_version. Clients
+        // use it to invalidate their per-user avatar cache without
+        // an extra fetch per friend.
         pqxx::result res = txn.exec_params(
-            "SELECT user1, user2, status, action_user FROM friends WHERE user1 = $1 OR user2 = $1", 
+            "SELECT f.user1, f.user2, f.status, f.action_user, u.avatar_version "
+            "FROM friends f "
+            "JOIN users u ON u.username = "
+            "  CASE WHEN f.user1 = $1 THEN f.user2 ELSE f.user1 END "
+            "WHERE f.user1 = $1 OR f.user2 = $1",
             username
         );
-        
+
         for (auto row : res) {
             std::string u1 = row[0].as<std::string>();
             std::string u2 = row[1].as<std::string>();
             std::string status = row[2].as<std::string>();
             std::string action_user = row[3].as<std::string>();
-            
+            std::string avatar_version = row[4].as<std::string>("");
+
             std::string friend_name = (u1 == username) ? u2 : u1;
-            
+
             chatproj::FriendInfo info;
             info.set_username(friend_name);
-            
+            info.set_avatar_version(avatar_version);
+
             if (status == "ACCEPTED") {
                 info.set_status(chatproj::FriendInfo::OFFLINE); // Default
             } else if (status == "PENDING") {
