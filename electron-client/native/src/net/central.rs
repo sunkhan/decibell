@@ -307,16 +307,15 @@ impl CentralClient {
                     });
                 }
                 Some(packet::Payload::PresenceUpdate(update)) => {
-                    // PresenceUpdate wire shape changed in feat/custom-profile-
-                    // pictures: repeated string online_users → repeated
-                    // UserPresence users (username + avatar_version). Existing
-                    // user-list consumers want just the usernames; the version-
-                    // forwarding path lands fully in a follow-up edit in this
-                    // same branch (Task 13) that also fires avatarStore.setVersion
-                    // for each entry.
-                    let usernames: Vec<String> =
-                        update.users.iter().map(|u| u.username.clone()).collect();
-                    events::emit_user_list_updated(usernames);
+                    let users: Vec<events::UserPresencePayload> = update
+                        .users
+                        .into_iter()
+                        .map(|u| events::UserPresencePayload {
+                            username: u.username,
+                            avatar_version: u.avatar_version,
+                        })
+                        .collect();
+                    events::emit_user_list_updated(users);
                 }
                 Some(packet::Payload::FriendListRes(resp)) => {
                     let friends: Vec<events::FriendInfoPayload> = resp
@@ -333,6 +332,7 @@ impl CentralClient {
                                 Err(_) => "unknown",
                             }
                             .to_string(),
+                            avatar_version: f.avatar_version,
                         })
                         .collect();
                     events::emit_friend_list_received(friends);
