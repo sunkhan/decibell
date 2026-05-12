@@ -70,6 +70,23 @@ function platformBinaryName(): string {
 // see project_electron_migration.md for the dual-libffmpeg analysis.
 const addonModule: { exports: Record<string, unknown> } = { exports: {} };
 const binaryPath = path.join(addonDir(), platformBinaryName());
+
+// Windows: the addon dynamic-links against FFmpeg DLLs bundled in the
+// same directory (avcodec / avutil / avformat / swresample / swscale).
+// Windows' DLL loader searches the EXECUTABLE's directory by default,
+// not the .node module's directory, so these would be invisible to
+// secondary LoadLibrary calls inside FFmpeg (e.g. NVENC's MFT loading
+// nvcuda.dll, h264_nvenc opening its codec). Prepending addonDir() to
+// PATH lights them up for both the initial process.dlopen below AND
+// any later LoadLibrary FFmpeg makes from inside its own code.
+//
+// In dev this is harmless — the developer typically has VCPKG bin on
+// PATH already, and prepending the dev native/ dir (which also has
+// the DLLs after `copy-dlls.cjs`) is redundant but cheap.
+if (process.platform === "win32") {
+  process.env.PATH = `${addonDir()};${process.env.PATH ?? ""}`;
+}
+
 process.dlopen(
   addonModule as unknown as NodeJS.Module,
   binaryPath,
