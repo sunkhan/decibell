@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { login, register, logout, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, listMembers, kickMember, banMember, leaveServer, createInvite, listInvites, revokeInvite, requestFriendList, sendFriendAction, sendPrivateMessage, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, loadConfig, saveSettings, setDmPrivacy, setTransferLimits, listAudioDevices, startScreenShare, stopScreenShare, sendVideoFrame, watchStream, stopWatching, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, init, shutdown, ping, pingAsync } = nativeBinding
+const { login, register, logout, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, listMembers, kickMember, banMember, leaveServer, createInvite, listInvites, revokeInvite, requestFriendList, sendFriendAction, sendPrivateMessage, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, loadConfig, saveSettings, setDmPrivacy, setTransferLimits, listAudioDevices, startScreenShare, stopScreenShare, sendVideoFrame, watchStream, stopWatching, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, probeNativeEncoders, forceKeyframe, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, init, shutdown, ping, pingAsync } = nativeBinding
 
 module.exports.login = login
 module.exports.register = register
@@ -352,6 +352,8 @@ module.exports.setDecoderCaps = setDecoderCaps
 module.exports.getCodecSettings = getCodecSettings
 module.exports.setCodecSettings = setCodecSettings
 module.exports.sendStreamThumbnail = sendStreamThumbnail
+module.exports.probeNativeEncoders = probeNativeEncoders
+module.exports.forceKeyframe = forceKeyframe
 module.exports.joinVoiceChannel = joinVoiceChannel
 module.exports.leaveVoiceChannel = leaveVoiceChannel
 module.exports.setVoiceMute = setVoiceMute

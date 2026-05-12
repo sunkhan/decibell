@@ -265,6 +265,13 @@ export interface StartScreenShareArgs {
   initialCodec: number
   /** 0 = no enforcement, otherwise locks the stream to this codec. */
   enforcedCodec: number
+  /**
+   * Chromium desktopCapturer source id ("screen:N:0" or "window:HWND:0").
+   * Required on Windows where native opens the source via WGC.
+   * Optional on Linux/macOS where the renderer's getDisplayMedia
+   * handles the picker via xdg-desktop-portal / ScreenCaptureKit.
+   */
+  sourceId?: string
 }
 export declare function startScreenShare(args: StartScreenShareArgs): Promise<void>
 export interface StopScreenShareArgs {
@@ -355,6 +362,33 @@ export interface SendStreamThumbnailArgs {
   jpegData: Buffer
 }
 export declare function sendStreamThumbnail(args: SendStreamThumbnailArgs): Promise<void>
+/**
+ * Native encoder capability returned by `probe_native_encoders`.
+ * Same shape the renderer's WebCodecs probe used to populate.
+ */
+export interface NativeEncoderCap {
+  /** VideoCodec wire id (1=H264_HW, 3=H265, 4=AV1). */
+  codec: number
+  maxWidth: number
+  maxHeight: number
+  maxFps: number
+  hardware: boolean
+  /** FFmpeg encoder name that actually opens (e.g. "h264_nvenc"). */
+  encoderName: string
+}
+/**
+ * Runs the native FFmpeg encoder probe. Windows-only. Returns the
+ * list of (codec, vendor) tuples that successfully opened.
+ */
+export declare function probeNativeEncoders(): Array<NativeEncoderCap>
+/**
+ * Force the next encoded frame on the active stream (if any) to be a
+ * keyframe. Wired from the renderer's `keyframe_requested` event.
+ * On Linux/macOS this is a no-op stub — the renderer's WebCodecs
+ * encoder handles keyframe forcing in JS via VideoEncoder.encode's
+ * `keyFrame: true` option.
+ */
+export declare function forceKeyframe(): Promise<void>
 export interface JoinVoiceChannelArgs {
   serverId: string
   channelId: string
@@ -445,8 +479,23 @@ export interface InitOptions {
 export declare function init(opts: InitOptions, bus: (...args: any[]) => any, streamBus: (...args: any[]) => any, streamThumbnailBus: (...args: any[]) => any): void
 /**
  * Called from Electron main on `before-quit`. Drops engines, joins
- * long-lived threads, releases the EventBus TSFN. PR2 has nothing to
- * tear down yet — bodies grow as engines port.
+ * long-lived threads, releases TLS connections so the process can
+ * exit cleanly.
+ *
+ * Without this, closing the BrowserWindow leaves the main process
+ * hanging — the native tokio runtime holds a never-ending thumbnail
+ * task, the capture + encoder std::threads sit in their poll loops,
+ * and napi-rs's tokio runtime won't drop until those exit. The user
+ * then has to kill `decibell.exe` from Task Manager.
+ *
+ * Resetting AppState to default explicitly drops each engine; their
+ * `Drop` impls handle the actual teardown:
+ *   - VideoEngine::stop_windows() joins capture + encoder threads
+ *     and aborts the thumbnail tokio task
+ *   - AudioStreamEngine::stop() joins the share-audio thread
+ *   - VoiceEngine::stop() joins audio + video-recv threads and
+ *     aborts the event bridge
+ *   - CommunityClient / CentralClient drops close their TLS sockets
  */
 export declare function shutdown(): Promise<void>
 export declare function ping(): string
