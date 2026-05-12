@@ -1,4 +1,5 @@
 #include "auth_manager.hpp"
+#include "auth_utils.hpp"
 #include "bcrypt.h"
 #include <chrono>
 #include <iostream>
@@ -370,4 +371,68 @@ std::vector<chatproj::FriendInfo> AuthManager::getFriends(const std::string& use
         std::cerr << "[DB Error] getFriends: " << e.what() << "\n";
     }
     return friends;
+}
+
+// ─── Avatar storage ──────────────────────────────────────────────────────
+
+std::string AuthManager::setAvatar(const std::string& username,
+                                    const std::string& data) {
+    pqxx::connection conn(db_conn_str_);
+    pqxx::work txn(conn);
+    if (data.empty()) {
+        // Remove: NULL the bytes, clear the version.
+        txn.exec_params(
+            "UPDATE users SET avatar = NULL, avatar_version = '' "
+            "WHERE username = $1",
+            username);
+        txn.commit();
+        return std::string();
+    }
+    const std::string version = chatproj::sha256(data);
+    txn.exec_params(
+        "UPDATE users SET avatar = $1, avatar_version = $2 "
+        "WHERE username = $3",
+        pqxx::binarystring(data.data(), data.size()),
+        version, username);
+    txn.commit();
+    return version;
+}
+
+std::pair<std::string, std::string> AuthManager::getAvatar(
+    const std::string& username) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "SELECT avatar, avatar_version FROM users WHERE username = $1",
+            username);
+        txn.commit();
+        if (rs.empty()) return {std::string(), std::string()};
+        std::string version = rs[0]["avatar_version"].as<std::string>("");
+        std::string data;
+        if (!rs[0]["avatar"].is_null()) {
+            pqxx::binarystring blob(rs[0]["avatar"]);
+            data.assign(blob.data(), blob.size());
+        }
+        return {version, data};
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getAvatar: " << e.what() << "\n";
+        return {std::string(), std::string()};
+    }
+}
+
+std::string AuthManager::getAvatarVersion(const std::string& username) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "SELECT avatar_version FROM users WHERE username = $1",
+            username);
+        txn.commit();
+        if (rs.empty()) return std::string();
+        return rs[0][0].as<std::string>("");
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getAvatarVersion: " << e.what() << "\n";
+        return std::string();
+    }
 }

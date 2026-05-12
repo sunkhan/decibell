@@ -37,6 +37,25 @@ public:
     std::string handleFriendAction(const std::string& requester, chatproj::FriendActionType action, const std::string& target);
     std::vector<chatproj::FriendInfo> getFriends(const std::string& username);
 
+    // Avatar storage (see docs/superpowers/specs/
+    // 2026-05-12-custom-profile-pictures-design.md §5).
+    //
+    // setAvatar: write/remove the user's avatar. `data` empty means
+    // remove (clears avatar + version). Returns the new sha256-hex
+    // version on success ('' on removal). Throws on DB error.
+    std::string setAvatar(const std::string& username, const std::string& data);
+
+    // getAvatar: returns (version, bytes). Version is '' when the
+    // user has no avatar; data is empty in that case. Returns
+    // ('', '') for unknown users (callers can't distinguish — same
+    // privacy model as letter avatars).
+    std::pair<std::string, std::string> getAvatar(const std::string& username);
+
+    // Lookup just the version (no bytes). Used by broadcast_presence
+    // to populate UserPresence.avatar_version cheaply without
+    // reading the BYTEA payload.
+    std::string getAvatarVersion(const std::string& username);
+
 private:
     std::string secret_key_;
     std::string db_conn_str_; // Add this member variable

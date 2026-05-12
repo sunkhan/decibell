@@ -321,7 +321,7 @@ private:
             if (!authenticated_) return;
 
             auto friends = auth_manager_.getFriends(username_);
-            
+
             chatproj::Packet res_packet;
             res_packet.set_type(chatproj::Packet::FRIEND_LIST_RES);
             auto* res = res_packet.mutable_friend_list_res();
@@ -340,6 +340,92 @@ private:
             res_packet.SerializeToString(&serialized);
             auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
             deliver(framed);
+        }
+
+        // --- AVATAR UPLOAD ---
+        // Empty bytes = remove. Otherwise validate JPEG magic + 200 KB cap,
+        // store via AuthManager, broadcast AvatarChanged to every online
+        // session. See docs/superpowers/specs/2026-05-12-custom-profile-
+        // pictures-design.md §5.
+        else if (packet.type() == chatproj::Packet::UPDATE_AVATAR_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.update_avatar_req();
+            const std::string& data = req.data();
+
+            chatproj::Packet response;
+            response.set_type(chatproj::Packet::UPDATE_AVATAR_RES);
+            auto* res = response.mutable_update_avatar_res();
+
+            if (!data.empty()) {
+                if (data.size() < 2 ||
+                    static_cast<unsigned char>(data[0]) != 0xFF ||
+                    static_cast<unsigned char>(data[1]) != 0xD8) {
+                    res->set_success(false);
+                    res->set_message("Not a JPEG");
+                    std::string s;
+                    response.SerializeToString(&s);
+                    deliver(std::make_shared<std::vector<uint8_t>>(
+                        chatproj::create_framed_packet(s)));
+                    return;
+                }
+                if (data.size() > 200 * 1024) {
+                    res->set_success(false);
+                    res->set_message("Avatar too large");
+                    std::string s;
+                    response.SerializeToString(&s);
+                    deliver(std::make_shared<std::vector<uint8_t>>(
+                        chatproj::create_framed_packet(s)));
+                    return;
+                }
+            }
+
+            std::string version;
+            try {
+                version = auth_manager_.setAvatar(username_, data);
+            } catch (const std::exception& e) {
+                std::cerr << "[Server] setAvatar failed: " << e.what() << "\n";
+                res->set_success(false);
+                res->set_message("Storage error");
+                std::string s;
+                response.SerializeToString(&s);
+                deliver(std::make_shared<std::vector<uint8_t>>(
+                    chatproj::create_framed_packet(s)));
+                return;
+            }
+
+            res->set_success(true);
+            res->set_version(version);
+            std::string s;
+            response.SerializeToString(&s);
+            deliver(std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(s)));
+
+            manager_.broadcast_avatar_changed(username_, version);
+        }
+
+        // --- AVATAR FETCH ---
+        // Authenticated callers can fetch anyone's avatar. Missing users
+        // or missing avatars both surface as empty version + empty data.
+        else if (packet.type() == chatproj::Packet::FETCH_AVATAR_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.fetch_avatar_req();
+            const std::string& target = req.username();
+
+            auto [version, data] = auth_manager_.getAvatar(target);
+
+            chatproj::Packet response;
+            response.set_type(chatproj::Packet::FETCH_AVATAR_RES);
+            auto* res = response.mutable_fetch_avatar_res();
+            res->set_username(target);
+            res->set_version(version);
+            if (!data.empty()) {
+                res->set_data(data);
+            }
+
+            std::string s;
+            response.SerializeToString(&s);
+            deliver(std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(s)));
         }
 
         // --- DM PRIVACY SETTING ---
