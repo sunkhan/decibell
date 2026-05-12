@@ -354,6 +354,47 @@ impl CentralClient {
                         log::debug!("Orphan InviteResolveRes for code {}", resp.code);
                     }
                 }
+                Some(packet::Payload::UpdateAvatarRes(resp)) => {
+                    // Fulfil the upload_avatar waiter. Single-slot
+                    // (only one upload in flight per session).
+                    let waiter = {
+                        let mut s = state.lock().await;
+                        s.pending_avatar_update.take()
+                    };
+                    if let Some(tx) = waiter {
+                        let _ = tx.send(resp);
+                    } else {
+                        log::debug!("Orphan UpdateAvatarRes");
+                    }
+                }
+                Some(packet::Payload::FetchAvatarRes(resp)) => {
+                    // Fulfil the fetch_avatar waiter keyed by the
+                    // echoed username.
+                    let waiter = {
+                        let mut s = state.lock().await;
+                        s.pending_avatar_fetches.remove(&resp.username)
+                    };
+                    if let Some(tx) = waiter {
+                        let _ = tx.send(resp);
+                    } else {
+                        log::debug!(
+                            "Orphan FetchAvatarRes for {}",
+                            resp.username
+                        );
+                    }
+                }
+                Some(packet::Payload::AvatarChanged(resp)) => {
+                    // Server-pushed cache-invalidation notice. Forwarded
+                    // to the renderer; avatarStore's listener invalidates
+                    // and refetches lazily on next display.
+                    events::send(
+                        "avatar_changed",
+                        serde_json::json!({
+                            "username": resp.username,
+                            "version": resp.version,
+                        }),
+                    );
+                }
                 _ => {
                     log::debug!("Unhandled central packet type: {}", packet.r#type);
                 }
