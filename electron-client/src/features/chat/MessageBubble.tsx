@@ -1,7 +1,8 @@
 import { memo } from "react";
 import type { Message } from "../../types";
-import { stringToColor, stringToGradient } from "../../utils/colors";
+import { stringToColor } from "../../utils/colors";
 import { useUiStore } from "../../stores/uiStore";
+import { UserAvatar } from "../../components/UserAvatar";
 import MessageText from "./MessageText";
 import AttachmentList from "./AttachmentList";
 import BubbleInflightAttachments from "./BubbleInflightAttachments";
@@ -77,12 +78,7 @@ function MessageBubble({ message, grouped, serverId, isLast }: Props) {
         isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""
       }`}
     >
-      <div
-        className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-lg text-[15px] font-bold text-white"
-        style={{ background: stringToGradient(message.sender) }}
-      >
-        {message.sender.charAt(0).toUpperCase()}
-      </div>
+      <UserAvatar username={message.sender} size={38} />
 
       <div className="select-text min-w-0 flex-1">
         <div className="flex items-baseline gap-2">

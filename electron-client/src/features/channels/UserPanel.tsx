@@ -4,7 +4,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
-import { stringToGradient } from "../../utils/colors";
+import { UserAvatar } from "../../components/UserAvatar";
 import { playSound } from "../../utils/sounds";
 import DeviceContextMenu from "../voice/DeviceContextMenu";
 import ConnectionStatsPopover from "../voice/ConnectionStatsPopover";
@@ -179,16 +179,13 @@ export default function UserPanel() {
       )}
 
       <div className="flex items-center gap-2">
-        <div className="relative shrink-0">
-          <div
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-[13px] font-bold text-white transition-shadow"
-            style={{
-              background: stringToGradient(username),
-              boxShadow: isSpeaking ? "0 0 0 2px #3fb950" : "none",
-            }}
-          >
-            {username.charAt(0).toUpperCase()}
-          </div>
+        <div
+          className="relative shrink-0 rounded-lg transition-shadow"
+          style={{
+            boxShadow: isSpeaking ? "0 0 0 2px #3fb950" : "none",
+          }}
+        >
+          <UserAvatar username={username} size={36} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate font-channel text-[13px] font-semibold text-text-bright">

@@ -4,7 +4,7 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
-import { stringToGradient } from "../../utils/colors";
+import { UserAvatar } from "../../components/UserAvatar";
 import StreamViewPanel from "./StreamViewPanel";
 import StreamVideoPlayer from "./StreamVideoPlayer";
 import CaptureSourcePicker from "./CaptureSourcePicker";
@@ -220,16 +220,10 @@ export default function VoicePanel() {
                           />
                         ) : (
                           <div className="flex h-full w-full items-center justify-center">
-                            <div
-                              className="flex h-14 w-14 items-center justify-center rounded-lg text-2xl font-bold text-white"
-                              style={{
-                                background: stringToGradient(
-                                  stream.ownerUsername,
-                                ),
-                              }}
-                            >
-                              {stream.ownerUsername.charAt(0).toUpperCase()}
-                            </div>
+                            <UserAvatar
+                              username={stream.ownerUsername}
+                              size={56}
+                            />
                           </div>
                         )}
                         <div
@@ -249,14 +243,10 @@ export default function VoicePanel() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2.5 px-3.5 py-3">
-                        <div
-                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[12px] font-semibold text-white"
-                          style={{
-                            background: stringToGradient(stream.ownerUsername),
-                          }}
-                        >
-                          {stream.ownerUsername.charAt(0).toUpperCase()}
-                        </div>
+                        <UserAvatar
+                          username={stream.ownerUsername}
+                          size={32}
+                        />
                         <div className="min-w-0 flex-1 text-left">
                           <div className="flex items-center gap-1.5">
                             <span className="truncate text-[13px] font-medium text-text-primary">
@@ -506,14 +496,13 @@ const ParticipantCard = memo(function ParticipantCard({
     >
       <div className="relative">
         <div
-          className={`flex h-20 w-20 items-center justify-center rounded-xl text-[28px] font-bold text-white transition-all duration-200 ${
+          className={`rounded-xl transition-all duration-200 ${
             isSpeaking
               ? "shadow-[0_0_0_3px_var(--color-bg-mid),0_0_0_5px_var(--color-success)]"
               : ""
           }`}
-          style={{ background: stringToGradient(username) }}
         >
-          {username.charAt(0).toUpperCase()}
+          <UserAvatar username={username} size={80} className="!rounded-xl" />
         </div>
         {isMuted && (
           <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-[2.5px] border-bg-mid bg-bg-light">

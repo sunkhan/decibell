@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
-import { stringToGradient } from "../../utils/colors";
+import { UserAvatar } from "../../components/UserAvatar";
 
 export default function MembersList() {
   const activeServerId = useChatStore((s) => s.activeServerId);
@@ -33,15 +33,8 @@ export default function MembersList() {
         openContextMenu(username, { x: e.clientX, y: e.clientY });
       }}
     >
-      <div className="relative shrink-0">
-        <div
-          className={`flex h-[34px] w-[34px] items-center justify-center rounded-lg text-[13px] font-bold text-white ${
-            isOnline ? "" : "opacity-50"
-          }`}
-          style={{ background: stringToGradient(username) }}
-        >
-          {username.charAt(0).toUpperCase()}
-        </div>
+      <div className={`relative shrink-0 ${isOnline ? "" : "opacity-50"}`}>
+        <UserAvatar username={username} size={34} />
         <div
           className={`absolute -bottom-px -right-px h-[11px] w-[11px] rounded-full border-[2.5px] border-bg-tertiary ${
             isOnline ? "bg-success" : "bg-text-muted"
