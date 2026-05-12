@@ -28,6 +28,10 @@ electron-client/node_modules/
 electron-client/native/node_modules/
 electron-client/native/target/
 electron-client/native/*.node
+# Bundled FFmpeg DLLs (Windows) — placed by copy-dlls.cjs from vcpkg.
+# Build artefact, not tracked source. electron-builder picks them up
+# from this directory at package time.
+electron-client/native/*.dll
 electron-client/dist/
 electron-client/release/
 

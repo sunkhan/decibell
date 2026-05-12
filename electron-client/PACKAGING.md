@@ -41,7 +41,40 @@ sudo apt-get install -y \
 
 MSVC + Windows SDK (Visual Studio 2022 "Desktop dev with C++"
 workload). `audiopus` vendors libopus; cpal uses the bundled
-`windows` crate; no extra installs needed beyond Rust + Node.
+`windows` crate.
+
+**FFmpeg via vcpkg** is also required: the native addon links
+dynamically against `avcodec` / `avutil` / `avformat` / `swscale` /
+`swresample` for the Windows HW encoder pipeline (NVENC / AMF /
+QSV). On a fresh dev machine:
+
+```powershell
+git clone https://github.com/microsoft/vcpkg C:\dev\vcpkg
+C:\dev\vcpkg\bootstrap-vcpkg.bat
+C:\dev\vcpkg\vcpkg.exe install "ffmpeg[nvcodec,amf,qsv]:x64-windows"
+$env:VCPKG_ROOT = "C:\dev\vcpkg"
+```
+
+Then in any dev shell:
+
+```powershell
+$env:VCPKG_ROOT = "C:\dev\vcpkg"
+$env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"  # audiopus_sys CMake-4 shim
+npm run dev
+```
+
+The `build:native` post-step (`copy-dlls.cjs`) copies the FFmpeg
+DLLs out of `$env:VCPKG_ROOT\installed\x64-windows\bin\` into
+`electron-client/native/`, where both `npm run dev` and the
+packaged build pick them up. `electron-builder.yml` ships them
+into the installer via `files: native/*.dll` + `asarUnpack`.
+
+Why dynamic + LGPL: shipping FFmpeg statically forces the binary's
+license to GPL because libx264/libx265 (the software fallbacks
+inside FFmpeg's GPL build) are GPLv2. We deliberately install
+FFmpeg with only the hardware encoders (`nvcodec,amf,qsv`),
+keeping the binary LGPL-clean. `THIRD_PARTY_LICENSES.md` carries
+the LGPL text + redistribution acknowledgement.
 
 ### macOS system deps
 

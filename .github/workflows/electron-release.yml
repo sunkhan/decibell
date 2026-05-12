@@ -84,6 +84,25 @@ jobs:
       # audiopus vendors libopus, cpal uses WASAPI from the windows
       # crate — no extra system deps needed.
 
+      # FFmpeg comes from vcpkg on Windows (ffmpeg-next dynamic-linked,
+      # see docs/superpowers/specs/2026-05-12-windows-native-ffmpeg-
+      # encoder-design.md). vcpkg is pre-installed on the windows-latest
+      # runner image; we just trigger the port build for our required
+      # feature set and surface VCPKG_ROOT to the cargo build step.
+      - name: Install FFmpeg via vcpkg (Windows)
+        if: matrix.target_label == 'windows'
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "ffmpeg[nvcodec,amf,qsv]:x64-windows"
+        working-directory: .
+
+      - name: Export VCPKG_ROOT (Windows)
+        if: matrix.target_label == 'windows'
+        shell: pwsh
+        run: |
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+        working-directory: .
+
       - name: Install root npm deps
         run: npm ci
 
