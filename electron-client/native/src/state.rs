@@ -19,7 +19,9 @@ use crate::media::caps::{CodecCap, PeerCaps};
 use crate::media::{AudioStreamEngine, VideoEngine, VoiceEngine};
 use crate::net::central::CentralClient;
 use crate::net::community::CommunityClient;
-use crate::net::proto::InviteResolveResponse;
+use crate::net::proto::{
+    FetchAvatarRes, InviteResolveResponse, UpdateAvatarRes,
+};
 
 /// Plan C: server-pushed event when a watcher starts or stops watching the
 /// LOCAL user's stream. Distributed to the active video pipeline via a tokio
@@ -91,6 +93,17 @@ pub struct AppState {
     /// startup, drops the AppState lock, and processes events without
     /// touching AppState again.
     pub watcher_event_tx: broadcast::Sender<WatcherEvent>,
+    /// In-flight UPDATE_AVATAR_REQ — at most one upload at a time per
+    /// session (the AccountTab disables its buttons during the round-
+    /// trip). Replaced if a new upload starts; the previous oneshot
+    /// resolves to nothing and the renderer-side .await times out
+    /// at 5s.
+    pub pending_avatar_update: Option<oneshot::Sender<UpdateAvatarRes>>,
+    /// In-flight FETCH_AVATAR_REQ calls keyed by target username. The
+    /// central router resolves each waiter when the matching
+    /// FETCH_AVATAR_RES arrives; the caller drops its half after a 5s
+    /// timeout.
+    pub pending_avatar_fetches: HashMap<String, oneshot::Sender<FetchAvatarRes>>,
 }
 
 impl Default for AppState {
@@ -116,6 +129,8 @@ impl Default for AppState {
             encoder_caps: Vec::new(),
             voice_caps_cache: Arc::new(RwLock::new(HashMap::new())),
             watcher_event_tx,
+            pending_avatar_update: None,
+            pending_avatar_fetches: HashMap::new(),
         }
     }
 }
