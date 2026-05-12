@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::UdpSocket;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use ringbuf::{HeapRb, traits::{Consumer, Producer, Split, Observer}};
@@ -297,15 +298,29 @@ pub fn run_audio_pipeline(
     // Reads voice packets (AUDIO, STREAM_AUDIO, PING) from the voice socket
     // and forwards them to the audio processing thread. Video packets arrive
     // on a separate media socket handled by the video recv thread in mod.rs.
+    //
+    // The thread is joined on `'main loop` exit (Shutdown) below — we
+    // signal it via voice_recv_stop, drop our channel-receiver end so
+    // its next try_send sees Disconnected, and then join. Without the
+    // stop flag the thread can sit indefinitely in socket.recv() when
+    // no packets are flowing (silent channel, no peers).
     let (audio_pkt_tx, audio_pkt_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
     let recv_drops = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let voice_recv_stop = Arc::new(AtomicBool::new(false));
     let recv_socket = Arc::clone(&socket);
     let recv_event_tx = event_tx.clone();
     let recv_drops_clone = Arc::clone(&recv_drops);
-    std::thread::Builder::new()
+    let voice_recv_stop_thread = Arc::clone(&voice_recv_stop);
+    let voice_recv_handle = std::thread::Builder::new()
         .name("decibell-voice-recv".to_string())
         .spawn(move || {
-            voice_recv_thread(recv_socket, audio_pkt_tx, recv_event_tx, recv_drops_clone);
+            voice_recv_thread(
+                recv_socket,
+                audio_pkt_tx,
+                recv_event_tx,
+                recv_drops_clone,
+                voice_recv_stop_thread,
+            );
         })
         .expect("spawn voice recv thread");
 
@@ -1081,8 +1096,16 @@ pub fn run_audio_pipeline(
     }
 
     // Streams are dropped here, which stops CPAL.
-    // Dropping audio_pkt_rx disconnects the channel, causing the recv thread to exit.
+    // Signal the voice recv thread to exit and join it before letting
+    // the audio thread return. Without an explicit stop flag the recv
+    // loop could sit in socket.recv() for many seconds waiting for the
+    // mpsc try_send Disconnected to surface (only happens on the NEXT
+    // packet — silent channels never get one), and `.join()` upstream
+    // would block the whole shutdown. Now bounded by the 1ms socket
+    // read timeout — exits within one poll iteration.
+    voice_recv_stop.store(true, Ordering::Relaxed);
     drop(audio_pkt_rx);
+    let _ = voice_recv_handle.join();
     drop(stream_output);    // Option<cpal::Stream> — separate stream output
     drop(output_stream);    // Option<cpal::Stream>
     drop(input_stream_opt); // Option<cpal::Stream>
@@ -1099,6 +1122,7 @@ fn voice_recv_thread(
     audio_tx: std::sync::mpsc::SyncSender<Vec<u8>>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
     drops: Arc<std::sync::atomic::AtomicU64>,
+    stop: Arc<AtomicBool>,
 ) {
     const RECV_BUF_SIZE: usize = PACKET_TOTAL_SIZE;
 
@@ -1112,6 +1136,9 @@ fn voice_recv_thread(
     let mut recv_log_time = Instant::now();
 
     loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
         match socket.recv(&mut buf) {
             Ok(n) if n >= 1 => {
                 recv_count += 1;

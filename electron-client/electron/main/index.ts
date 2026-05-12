@@ -495,9 +495,17 @@ app.whenReady().then(async () => {
 app.on("before-quit", async (e) => {
   // Give Rust a chance to drop engines + TSFNs cleanly. Tauri papered
   // over this via its async_runtime; here we have to do it ourselves.
+  //
+  // 3-second timeout is a backstop: even if shutdownAddon hangs for
+  // some unforeseen reason (a deadlocked Mutex, a thread that can't
+  // see its stop flag, etc.) we still force-exit the process. Without
+  // this fallback, an unresponsive shutdown would leave decibell.exe
+  // running and the user would have to kill it via Task Manager —
+  // exactly the bug we're fixing here.
   e.preventDefault();
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 3000));
   try {
-    await shutdownAddon();
+    await Promise.race([shutdownAddon(), timeout]);
   } finally {
     app.exit(0);
   }

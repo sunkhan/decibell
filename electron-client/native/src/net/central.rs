@@ -359,3 +359,23 @@ impl CentralClient {
         }
     }
 }
+
+/// Abort every spawned tokio task when the client drops. Without this,
+/// dropping CentralClient (e.g. during app shutdown via `state.central
+/// = None`) leaks the router / ping / reconnect tasks — they keep
+/// looping forever, the tokio runtime can't terminate, and Electron's
+/// main process hangs in the background after the user closes the
+/// window. (Connection's own Drop handles the read/write tasks.)
+impl Drop for CentralClient {
+    fn drop(&mut self) {
+        if let Some(t) = self.router_task.take() {
+            t.abort();
+        }
+        if let Some(t) = self.reconnect_task.take() {
+            t.abort();
+        }
+        if let Some(t) = self.ping_task.take() {
+            t.abort();
+        }
+    }
+}

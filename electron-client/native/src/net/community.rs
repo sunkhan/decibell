@@ -747,3 +747,23 @@ impl CommunityClient {
         Self::start_reconnect(server_id, host, port, jwt, state);
     }
 }
+
+/// Abort every spawned tokio task when the client drops. Same reason
+/// as CentralClient: without this, dropping a CommunityClient leaks
+/// the router / ping / reconnect tasks and the tokio runtime can't
+/// terminate, so closing the Electron window leaves decibell.exe
+/// hanging in the background. (Connection's own Drop handles the
+/// read/write tasks underneath.)
+impl Drop for CommunityClient {
+    fn drop(&mut self) {
+        if let Some(t) = self.router_task.take() {
+            t.abort();
+        }
+        if let Some(t) = self.reconnect_task.take() {
+            t.abort();
+        }
+        if let Some(t) = self.ping_task.take() {
+            t.abort();
+        }
+    }
+}

@@ -198,6 +198,19 @@ impl Connection {
     }
 }
 
+/// Abort the read + write tokio tasks when the Connection is dropped.
+/// Without this, dropping a Connection (e.g. during app shutdown via
+/// `state.central = None` / `state.communities.clear()`) leaks the
+/// tasks — they keep awaiting on the TLS socket forever, the tokio
+/// runtime can't terminate, and Electron's main process hangs in
+/// the background after the user closes the window.
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.read_task.abort();
+        self.write_task.abort();
+    }
+}
+
 /// Build a serialized Packet ready to send over the wire.
 pub fn build_packet(
     msg_type: super::proto::packet::Type,

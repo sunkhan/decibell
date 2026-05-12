@@ -58,6 +58,7 @@ pub mod video_pipeline;
 pub mod video_receiver;
 
 use std::net::UdpSocket;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 
@@ -76,6 +77,13 @@ pub struct VoiceEngine {
     video_recv_thread: Option<JoinHandle<()>>,
     event_bridge: Option<tokio::task::JoinHandle<()>>,
     control_tx: mpsc::Sender<ControlMessage>,
+    /// Stop flag for the video receive thread. The audio thread is
+    /// driven by mpsc ControlMessage::Shutdown (already in place), but
+    /// the video recv loop reads from a UDP socket with a 5ms timeout
+    /// and has no exit condition — it would loop forever and `.join()`
+    /// on stop would block indefinitely, leaving Electron's process
+    /// hanging in the background after window close.
+    video_recv_stop: Arc<AtomicBool>,
     voice_socket: Arc<UdpSocket>,
     media_socket: Arc<UdpSocket>,
     sender_id: String,
@@ -142,6 +150,8 @@ impl VoiceEngine {
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
 
+        let video_recv_stop = Arc::new(AtomicBool::new(false));
+        let video_recv_stop_thread = video_recv_stop.clone();
         let media_socket_for_video_recv = media_socket.clone();
         let sender_id_for_video = sender_id.clone();
         let video_recv_thread = thread::Builder::new()
@@ -151,6 +161,7 @@ impl VoiceEngine {
                     media_socket_for_video_recv,
                     sender_id_for_video,
                     event_tx_video,
+                    video_recv_stop_thread,
                 );
             })
             .map_err(|e| format!("Failed to spawn video recv thread: {}", e))?;
@@ -220,6 +231,7 @@ impl VoiceEngine {
             video_recv_thread: Some(video_recv_thread),
             event_bridge: Some(event_bridge),
             control_tx,
+            video_recv_stop,
             voice_socket,
             media_socket,
             sender_id,
@@ -234,8 +246,11 @@ impl VoiceEngine {
         if let Some(handle) = self.audio_thread.take() {
             let _ = handle.join();
         }
-        // Video recv thread exits when its socket read errors out after
-        // the underlying socket is dropped.
+        // Signal the video recv thread to exit its UDP poll loop.
+        // Without this the join below would block indefinitely — the
+        // thread's only "exit" path is a non-recoverable socket error,
+        // which doesn't happen during a normal stop.
+        self.video_recv_stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.video_recv_thread.take() {
             let _ = handle.join();
         }
@@ -350,6 +365,7 @@ fn run_video_recv_thread(
     socket: Arc<UdpSocket>,
     sender_id: String,
     event_tx: mpsc::Sender<pipeline::VoiceEvent>,
+    stop: Arc<AtomicBool>,
 ) {
     use std::time::{Duration, Instant};
     use video_packet::{UdpKeyframeRequest, UdpNackPacket, UdpVideoPacket};
@@ -409,6 +425,9 @@ fn run_video_recv_thread(
     let mut recv_buf = [0u8; std::mem::size_of::<UdpVideoPacket>()];
 
     loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
         match socket.recv(&mut recv_buf) {
             Ok(n) if n >= 1 => {
                 let packet_type = recv_buf[0];

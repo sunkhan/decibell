@@ -85,10 +85,39 @@ pub fn init(
 }
 
 /// Called from Electron main on `before-quit`. Drops engines, joins
-/// long-lived threads, releases the EventBus TSFN. PR2 has nothing to
-/// tear down yet — bodies grow as engines port.
+/// long-lived threads, releases TLS connections so the process can
+/// exit cleanly.
+///
+/// Without this, closing the BrowserWindow leaves the main process
+/// hanging — the native tokio runtime holds a never-ending thumbnail
+/// task, the capture + encoder std::threads sit in their poll loops,
+/// and napi-rs's tokio runtime won't drop until those exit. The user
+/// then has to kill `decibell.exe` from Task Manager.
+///
+/// Resetting AppState to default explicitly drops each engine; their
+/// `Drop` impls handle the actual teardown:
+///   - VideoEngine::stop_windows() joins capture + encoder threads
+///     and aborts the thumbnail tokio task
+///   - AudioStreamEngine::stop() joins the share-audio thread
+///   - VoiceEngine::stop() joins audio + video-recv threads and
+///     aborts the event bridge
+///   - CommunityClient / CentralClient drops close their TLS sockets
 #[napi]
 pub async fn shutdown() -> napi::Result<()> {
+    let state_arc = state::shared();
+    let mut s = state_arc.lock().await;
+
+    // Drop in reverse start-up order: media engines first (they may
+    // still be pushing packets through the voice socket), then voice
+    // (owns the sockets), then network connections.
+    s.video_engine = None;
+    s.audio_stream_engine = None;
+    s.voice_engine = None;
+    s.communities.clear();
+    s.central = None;
+    s.credentials = None;
+    s.pending_invite_resolves.clear();
+
     Ok(())
 }
 
