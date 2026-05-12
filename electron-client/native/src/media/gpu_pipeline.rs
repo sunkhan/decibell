@@ -17,6 +17,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_SDK_VERSION,
 };
 
+#[derive(Clone)]
 pub struct GpuDevice {
     pub device: ID3D11Device,
     pub context: ID3D11DeviceContext,

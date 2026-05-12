@@ -25,8 +25,11 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
 use super::encoder::Encoder;
 use super::gpu_pipeline::GpuDevice;
+use super::thumbnail::ThumbnailGenerator;
 use super::video_pipeline::VideoSender;
 use crate::events;
+
+const THUMBNAIL_INTERVAL: Duration = Duration::from_secs(3);
 
 pub struct EncoderThread {
     stop: Arc<AtomicBool>,
@@ -45,6 +48,13 @@ pub struct EncoderThreadConfig {
     pub bitrate_kbps: u32,
     pub local_username: String,
     pub video_sender: Arc<VideoSender>,
+    /// Sender for thumbnail JPEG bytes. The encoder thread captures a
+    /// thumbnail every THUMBNAIL_INTERVAL and pushes through this; a
+    /// tokio task (set up in `VideoEngine::start_windows`) drains it
+    /// and ships the bytes to the community server. Bounded depth=1
+    /// drop-newest (via try_send) so a slow server doesn't back up
+    /// the encoder thread.
+    pub thumbnail_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
 }
 
 impl EncoderThread {
@@ -65,12 +75,16 @@ impl EncoderThread {
         )?;
         let force_keyframe = encoder.force_keyframe_handle();
 
+        // The thumbnail generator owns its own staging texture; keeps
+        // the encoder loop free of D3D11 readback bookkeeping.
+        let mut thumb = ThumbnailGenerator::new(gpu);
+
         let stop = Arc::new(AtomicBool::new(false));
         let stop_t = stop.clone();
         let thread = std::thread::Builder::new()
             .name("decibell-encoder".to_string())
             .spawn(move || {
-                run_encode_loop(&mut encoder, rx, &cfg, &stop_t);
+                run_encode_loop(&mut encoder, &mut thumb, rx, &cfg, &stop_t);
                 // Drain remaining packets on stop.
                 let _ = encoder.drain();
                 let _ = encoder.for_each_packet(|data, is_key, _pts| {
@@ -100,12 +114,15 @@ impl EncoderThread {
 
 fn run_encode_loop(
     encoder: &mut Encoder,
+    thumb: &mut ThumbnailGenerator,
     rx: mpsc::Receiver<ID3D11Texture2D>,
     cfg: &EncoderThreadConfig,
     stop: &AtomicBool,
 ) {
     let mut last_telemetry = Instant::now();
+    let mut last_thumbnail = Instant::now() - THUMBNAIL_INTERVAL; // capture immediately on first frame
     let mut frames_sent = 0u32;
+    let mut thumbnails_sent = 0u32;
     // Wall-clock anchor for pts. The encoder time_base is 1/fps, so
     // each frame's pts = elapsed_us * fps / 1_000_000. This makes
     // timestamps track real time instead of encoded-frame count —
@@ -125,6 +142,27 @@ fn run_encode_loop(
 
         let elapsed_us = stream_start.elapsed().as_micros() as i64;
         let pts = elapsed_us.saturating_mul(cfg.fps as i64) / 1_000_000;
+
+        // Thumbnail capture happens BEFORE send_bgra (encode) so we
+        // can read the BGRA texture while it's still GPU-resident.
+        // After send_bgra runs the texture's used by VideoProcessor's
+        // blit-into; the COM ref is still alive but reading back
+        // before encode pipelines the GPU work better.
+        if last_thumbnail.elapsed() >= THUMBNAIL_INTERVAL {
+            match thumb.capture(&bgra) {
+                Ok(jpeg) => {
+                    // try_send drops the JPEG on the floor if the
+                    // tokio sender task hasn't drained the previous
+                    // one yet (depth=1 channel). That's fine — we'd
+                    // rather drop a thumbnail than back up the
+                    // encoder thread waiting for the network.
+                    let _ = cfg.thumbnail_tx.try_send(jpeg);
+                    thumbnails_sent += 1;
+                }
+                Err(e) => log::warn!("[encoder/thumb] capture failed: {e}"),
+            }
+            last_thumbnail = Instant::now();
+        }
 
         if let Err(e) = encoder.send_bgra(&bgra, pts) {
             log::error!("[encoder] send_bgra: {e}");
@@ -152,15 +190,17 @@ fn run_encode_loop(
 
         if last_telemetry.elapsed() >= Duration::from_secs(1) {
             log::info!(
-                "[encoder] codec={} {}x{}@{} target={}kbps frames_sent={}",
+                "[encoder] codec={} {}x{}@{} target={}kbps frames_sent={} thumbs_sent={}",
                 cfg.encoder_name,
                 cfg.width,
                 cfg.height,
                 cfg.fps,
                 cfg.bitrate_kbps,
                 frames_sent,
+                thumbnails_sent,
             );
             frames_sent = 0;
+            thumbnails_sent = 0;
             last_telemetry = Instant::now();
             // TODO(follow-up): plumb VideoSender NACK ratio readback so
             // we can pass the real value here. 0.0 = no adjustment.

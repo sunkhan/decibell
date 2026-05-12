@@ -99,6 +99,10 @@ windows = { version = "0.61", features = [
 # Dynamic-linked FFmpeg via vcpkg-built DLLs. LGPL — see
 # THIRD_PARTY_LICENSES.md (added in a later task) for compliance details.
 ffmpeg-next = "8"
+# Pure-Rust JPEG encoder for stream thumbnails. The renderer-encoded
+# path on Linux/macOS uses canvas.convertToBlob; on Windows we
+# read back BGRA from the encoder thread and JPEG-encode here.
+jpeg-encoder = "0.6"
 
 [dev-dependencies]
 # tokio test-util adds tokio::time::advance and Builder::start_paused

@@ -49,6 +49,8 @@ pub mod encoder;
 pub mod capture_wgc;
 #[cfg(target_os = "windows")]
 pub mod encoder_thread;
+#[cfg(target_os = "windows")]
+pub mod thumbnail;
 pub mod pipeline;
 pub mod speaking;
 pub mod video_packet;
@@ -545,6 +547,10 @@ pub struct VideoEngine {
     win_encoder_thread: Option<encoder_thread::EncoderThread>,
     #[cfg(target_os = "windows")]
     win_force_keyframe: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Tokio task that drains thumbnail JPEGs from the encoder thread
+    /// and ships them to the community server. Aborted on stop_windows.
+    #[cfg(target_os = "windows")]
+    win_thumbnail_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl VideoEngine {
@@ -572,6 +578,8 @@ impl VideoEngine {
             win_encoder_thread: None,
             #[cfg(target_os = "windows")]
             win_force_keyframe: None,
+            #[cfg(target_os = "windows")]
+            win_thumbnail_task: None,
         }
     }
 
@@ -590,6 +598,8 @@ impl VideoEngine {
         height: u32,
         fps: u32,
         bitrate_kbps: u32,
+        server_id: String,
+        channel_id: String,
     ) -> Result<(u32, u32), String> {
         let target = source_id::parse(source_id)
             .map_err(|e| format!("source id '{}': {:?}", source_id, e))?;
@@ -597,6 +607,29 @@ impl VideoEngine {
         let (tx, rx) = std::sync::mpsc::sync_channel::<
             windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
         >(2);
+
+        // Thumbnail channel: encoder thread try_sends JPEGs here every
+        // 3s; tokio task below drains and ships them to the community
+        // server. Depth=1 + try_send means a slow server drops the new
+        // thumb instead of back-pressuring the encoder.
+        let (thumb_tx, mut thumb_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let thumb_server_id = server_id.clone();
+        let thumb_channel_id = channel_id.clone();
+        let thumb_task = tokio::spawn(async move {
+            while let Some(jpeg) = thumb_rx.recv().await {
+                let state_arc = crate::state::shared();
+                let s = state_arc.lock().await;
+                let Some(client) = s.communities.get(&thumb_server_id) else {
+                    continue;
+                };
+                if let Err(e) =
+                    client.send_stream_thumbnail(&thumb_channel_id, &jpeg).await
+                {
+                    log::warn!("[encoder/thumb] server send failed: {e}");
+                }
+            }
+        });
+
         let capture = capture_wgc::Capture::start(&gpu, target, tx)?;
         let encoder_thread = encoder_thread::EncoderThread::start(
             gpu,
@@ -609,12 +642,17 @@ impl VideoEngine {
                 bitrate_kbps,
                 local_username: self.self_username.clone(),
                 video_sender: self.sender.clone(),
+                thumbnail_tx: thumb_tx,
             },
             rx,
         )?;
         self.win_force_keyframe = Some(encoder_thread.force_keyframe_handle());
         self.win_capture = Some(capture);
         self.win_encoder_thread = Some(encoder_thread);
+        self.win_thumbnail_task = Some(thumb_task);
+        // server_id + channel_id were consumed into the tokio task above;
+        // silence unused warnings if the task is the only consumer.
+        let _ = (server_id, channel_id);
         Ok((width, height))
     }
 
@@ -626,6 +664,13 @@ impl VideoEngine {
         }
         if let Some(e) = self.win_encoder_thread.take() {
             e.stop();
+        }
+        // Encoder thread drop releases the thumbnail Sender, which
+        // makes thumb_rx.recv() return None and the tokio task exits
+        // naturally. abort() is belt-and-suspenders in case the task
+        // is stuck inside an in-flight server send when stop fires.
+        if let Some(h) = self.win_thumbnail_task.take() {
+            h.abort();
         }
         self.win_force_keyframe = None;
     }

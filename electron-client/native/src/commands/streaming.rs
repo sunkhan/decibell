@@ -126,6 +126,8 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                     args.height,
                     args.fps,
                     args.video_bitrate_kbps,
+                    args.server_id.clone(),
+                    args.channel_id.clone(),
                 )
                 .map_err(napi::Error::from_reason)?;
         }
