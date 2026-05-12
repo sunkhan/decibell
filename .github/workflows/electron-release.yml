@@ -87,12 +87,24 @@ jobs:
       # FFmpeg comes from vcpkg on Windows (ffmpeg-next dynamic-linked,
       # see docs/superpowers/specs/2026-05-12-windows-native-ffmpeg-
       # encoder-design.md). vcpkg is pre-installed on the windows-latest
-      # runner image; we just trigger the port build for our required
-      # feature set and surface VCPKG_ROOT to the cargo build step.
+      # runner image; we pin it to the same commit the Tauri-era
+      # release.yml pinned (b44ac73 / 0.4.9), then run install for our
+      # feature set.
+      #
+      # Why pin: newer vcpkg FFmpeg 8 ports ship a d3d11va_frames_init
+      # that fails to allocate the NV12 texture array. Symptom is
+      # av_hwframe_ctx_init returning AVERROR_UNKNOWN (-1313558101) for
+      # every BindFlags combo at stream start. The pinned commit
+      # (e5a1490e1409d175932ef6014519e9ae149ddb7c) matches a known-good
+      # FFmpeg port build that works end-to-end with NVENC. Re-pin only
+      # when the local + CI FFmpeg state has been re-validated together.
       - name: Install FFmpeg via vcpkg (Windows)
         if: matrix.target_label == 'windows'
         shell: pwsh
         run: |
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --quiet origin
+          git -C "$env:VCPKG_INSTALLATION_ROOT" checkout e5a1490e1409d175932ef6014519e9ae149ddb7c
+          & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "ffmpeg[nvcodec,amf,qsv]:x64-windows"
         working-directory: .
 
