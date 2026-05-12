@@ -40,7 +40,6 @@ pub struct Encoder {
     /// D3D11VA hwframes_ctx buffer ref. Released on drop.
     hw_frames_ref: *mut AVBufferRef,
     video_processor: VideoProcessor,
-    pts: i64,
 }
 
 // Encoder is owned by the encoder thread which never shares it.
@@ -73,21 +72,35 @@ impl Encoder {
         let codec_id = codec.id();
 
         // ── D3D11VA hwdevice_ctx wrapping the shared device ────────────
+        //
+        // FFmpeg's AVHWDeviceContext free callback calls
+        // ID3D11Device::Release on the stored device pointer, so it
+        // assumes it owns one COM ref. The convention is "you AddRef
+        // before assigning". We clone the device wrapper (which calls
+        // AddRef internally) and wrap it in ManuallyDrop so its Drop
+        // doesn't Release the ref — FFmpeg now owns that ref and will
+        // Release on hwdevice_ctx free. Without this we'd over-Release
+        // during teardown and crash with 0xC0000005 from a dangling
+        // pointer inside VideoProcessor / video_context drops.
         let hw_device_ref = unsafe {
             let r = av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
             if r.is_null() {
                 return Err("av_hwdevice_ctx_alloc(D3D11VA) failed".into());
             }
-            // AVD3D11VADeviceContext.device is the first pointer field;
-            // poke our ID3D11Device into it. ffmpeg-sys-next doesn't
-            // generate Rust bindings for the Windows-only hwctx struct,
-            // so we do raw memory writes by offset (offset 0 here).
             let hw_dev_ctx = (*r).data as *mut AVHWDeviceContext;
             let d3d_ctx = (*hw_dev_ctx).hwctx as *mut std::ffi::c_void;
-            *(d3d_ctx as *mut *mut std::ffi::c_void) = gpu.device.as_raw();
+            // AddRef via clone, then ManuallyDrop so the ref transfers
+            // to FFmpeg ownership cleanly. AVD3D11VADeviceContext.device
+            // is the first field — the cast lands on it.
+            let device_for_ffmpeg = std::mem::ManuallyDrop::new(gpu.device.clone());
+            *(d3d_ctx as *mut *mut std::ffi::c_void) = device_for_ffmpeg.as_raw();
 
             let rc = av_hwdevice_ctx_init(r);
             if rc < 0 {
+                // av_hwdevice_ctx_init never succeeded so the free
+                // callback won't run. Release the ref we just AddRef'd
+                // by extracting from ManuallyDrop and letting it drop.
+                let _ = std::mem::ManuallyDrop::into_inner(device_for_ffmpeg);
                 let mut rr = r;
                 av_buffer_unref(&mut rr);
                 return Err(format!("av_hwdevice_ctx_init(D3D11VA) failed: {}", rc));
@@ -235,7 +248,6 @@ impl Encoder {
             hw_device_ref,
             hw_frames_ref,
             video_processor,
-            pts: 0,
         })
     }
 
@@ -243,10 +255,17 @@ impl Encoder {
         self.force_keyframe.clone()
     }
 
-    /// Encode one BGRA source texture. The encoder thread feeds these in
-    /// roughly at the configured framerate; output packets are drained
-    /// via for_each_packet immediately after this returns Ok.
-    pub fn send_bgra(&mut self, bgra: &ID3D11Texture2D) -> Result<(), String> {
+    /// Encode one BGRA source texture. `pts` is in the encoder's
+    /// time_base (1/fps seconds) — caller computes it from wall-clock
+    /// so frame timestamps track real time rather than encoded-frame
+    /// count. (A monotonic frame-count pts breaks the receiver's
+    /// wall-clock lag check whenever capture stalls — see comment in
+    /// encoder_thread.rs.)
+    pub fn send_bgra(
+        &mut self,
+        bgra: &ID3D11Texture2D,
+        pts: i64,
+    ) -> Result<(), String> {
         // 1. Allocate an NV12 frame from the encoder's D3D11 pool.
         let mut frame = ff::frame::Video::empty();
         let rc = unsafe {
@@ -272,8 +291,7 @@ impl Encoder {
         self.video_processor.blit_into(bgra, &nv12_texture)?;
 
         // 3. Set pts, optional keyframe flag, and submit.
-        frame.set_pts(Some(self.pts));
-        self.pts += 1;
+        frame.set_pts(Some(pts));
         if self.force_keyframe.swap(false, Ordering::Relaxed) {
             unsafe {
                 (*frame.as_mut_ptr()).pict_type = AVPictureType::AV_PICTURE_TYPE_I;
