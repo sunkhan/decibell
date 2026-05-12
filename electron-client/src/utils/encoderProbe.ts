@@ -179,10 +179,18 @@ export async function probeEncoders(force = false): Promise<CodecCapability[]> {
 /// factory caps at 30 fps and lies about supported configurations.
 /// The cache key is scoped separately so a Linux→Windows dual-boot
 /// dev environment doesn't accidentally show stale WebCodecs caps.
+///
+/// Caps are also shipped to native's AppState.encoder_caps via
+/// set_encoder_caps so subsequent get_caps reads (e.g. when the
+/// Settings → Codecs page mounts and the store calls load()) return
+/// the populated list. Without this, opening Settings while a stream
+/// is running would overwrite the in-memory caps with an empty list
+/// and the codec picker would collapse back to "Auto" only.
 async function probeWindowsNativeEncoders(
   force: boolean,
 ): Promise<CodecCapability[]> {
   const NATIVE_KEY = "decibell.native_encoder_caps.v1";
+  let caps: CodecCapability[] | null = null;
   if (!force) {
     const cached = localStorage.getItem(NATIVE_KEY);
     if (cached) {
@@ -192,41 +200,50 @@ async function probeWindowsNativeEncoders(
           console.log(
             `[encoderProbe/native] using cached caps (${parsed.length} codecs)`,
           );
-          return parsed;
+          caps = parsed;
         }
       } catch {
         /* fall through and re-probe */
       }
     }
   }
-  try {
-    type NativeCap = {
-      codec: number;
-      maxWidth: number;
-      maxHeight: number;
-      maxFps: number;
-      hardware: boolean;
-      encoderName: string;
-    };
-    const raw = (await invoke("probe_native_encoders", {})) as NativeCap[];
-    const caps: CodecCapability[] = raw.map((c) => ({
-      codec: c.codec as VideoCodec,
-      maxWidth: c.maxWidth,
-      maxHeight: c.maxHeight,
-      maxFps: c.maxFps,
-      hardware: c.hardware,
-    }));
-    for (const c of raw) {
-      console.log(
-        `[encoderProbe/native] codec=${c.codec} via ${c.encoderName} (${
-          c.hardware ? "HW" : "SW"
-        })`,
-      );
+  if (caps === null) {
+    try {
+      type NativeCap = {
+        codec: number;
+        maxWidth: number;
+        maxHeight: number;
+        maxFps: number;
+        hardware: boolean;
+        encoderName: string;
+      };
+      const raw = (await invoke("probe_native_encoders", {})) as NativeCap[];
+      caps = raw.map((c) => ({
+        codec: c.codec as VideoCodec,
+        maxWidth: c.maxWidth,
+        maxHeight: c.maxHeight,
+        maxFps: c.maxFps,
+        hardware: c.hardware,
+      }));
+      for (const c of raw) {
+        console.log(
+          `[encoderProbe/native] codec=${c.codec} via ${c.encoderName} (${
+            c.hardware ? "HW" : "SW"
+          })`,
+        );
+      }
+      localStorage.setItem(NATIVE_KEY, JSON.stringify(caps));
+    } catch (e) {
+      console.error("[encoderProbe/native] probe failed:", e);
+      return [];
     }
-    localStorage.setItem(NATIVE_KEY, JSON.stringify(caps));
-    return caps;
-  } catch (e) {
-    console.error("[encoderProbe/native] probe failed:", e);
-    return [];
   }
+  // Ship to native's encoder_caps slot every boot — both fresh probes
+  // and cache-hit code paths. AppState.encoder_caps is in-memory and
+  // resets on app launch; we re-populate it from cache so the codec
+  // dropdown survives a Settings → load() roundtrip without re-probing.
+  invoke("set_encoder_caps", { encoderCaps: caps }).catch((e) =>
+    console.warn("[encoderProbe/native] set_encoder_caps failed:", e),
+  );
+  return caps;
 }
