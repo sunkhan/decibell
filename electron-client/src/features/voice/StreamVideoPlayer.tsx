@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from "react";
+import { invoke } from "../../lib/ipc";
 import { VideoCodec } from "../../types";
 import { videoCodecToWebCodecsString } from "../../utils/codecMap";
 import { useAuthStore } from "../../stores/authStore";
@@ -291,8 +292,15 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     // binary stream bus and filter by username (the broadcaster fans
     // out every active watcher's frames; multiple players coexist by
     // each filtering independently).
+    //
+    // Windows native pipeline is the exception: there is no
+    // renderer-side encoder, so subscribeLocalFrames is silent there.
+    // The native encoder thread fans into the same stream_frame TSFN
+    // remote streams use (keyed by our local username), so we
+    // subscribe through that path for own-stream too.
+    const isWindowsNative = window.decibell.platform === "win32";
     let unsubscribe: () => void;
-    if (isOwnStream) {
+    if (isOwnStream && !isWindowsNative) {
       unsubscribe = subscribeLocalFrames((frame) => {
         handleFrame(
           frame.data,
@@ -331,6 +339,15 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       // confirms watcher behaviour, we'll either expose a
       // request_keyframe command on native or let the natural PLI
       // delay stand.
+      //
+      // Windows native self-preview takes the wire-shaped path too
+      // (handled above by isOwnStream && isWindowsNative falling into
+      // this branch). For that case we DO have a way to force a
+      // keyframe — invoke the force_keyframe IPC which signals the
+      // native encoder thread's AtomicBool.
+      if (isOwnStream && isWindowsNative) {
+        invoke("force_keyframe", {}).catch(() => {});
+      }
     }
 
     return () => {

@@ -32,6 +32,11 @@ pub struct StartScreenShareArgs {
     pub initial_codec: u8,
     /// 0 = no enforcement, otherwise locks the stream to this codec.
     pub enforced_codec: u8,
+    /// Chromium desktopCapturer source id ("screen:N:0" or "window:HWND:0").
+    /// Required on Windows where native opens the source via WGC.
+    /// Optional on Linux/macOS where the renderer's getDisplayMedia
+    /// handles the picker via xdg-desktop-portal / ScreenCaptureKit.
+    pub source_id: Option<String>,
 }
 
 #[napi]
@@ -76,7 +81,62 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
             Some(&client.jwt),
         );
 
-        s.video_engine = Some(VideoEngine::start(media_socket, sender_id, self_username));
+        let mut engine = VideoEngine::start(media_socket, sender_id, self_username);
+
+        // Windows: spin up the native capture + encoder pipeline. The
+        // renderer never calls send_video_frame on Windows — capture
+        // and encode happen here. On Linux/macOS the renderer keeps
+        // owning capture (getDisplayMedia) and encode (WebCodecs) and
+        // pumps frames via send_video_frame; nothing native-side to do
+        // beyond constructing VideoEngine.
+        #[cfg(target_os = "windows")]
+        {
+            let source_id = args.source_id.as_deref().ok_or_else(|| {
+                napi::Error::from_reason("source_id required on Windows")
+            })?;
+            // Resolve the requested codec to a working FFmpeg encoder
+            // name via the native probe. initial_codec=0 means "auto" —
+            // pick the first HW encoder available (whatever NVENC/AMF
+            // gave us). Otherwise honour the user's pick; error if the
+            // probe didn't see that codec as available.
+            let caps = crate::media::encoder_probe::run(read_primary_gpu_vendor_id());
+            if caps.is_empty() {
+                return Err(napi::Error::from_reason(
+                    "No hardware encoder available — install your GPU's video drivers",
+                ));
+            }
+            let pick = if args.initial_codec == 0 {
+                &caps[0]
+            } else {
+                caps.iter().find(|c| c.codec as u8 == args.initial_codec).ok_or_else(
+                    || {
+                        napi::Error::from_reason(format!(
+                            "Codec {} not available on this hardware",
+                            args.initial_codec
+                        ))
+                    },
+                )?
+            };
+            engine
+                .start_windows(
+                    source_id,
+                    &pick.encoder_name,
+                    pick.codec as u8,
+                    args.width,
+                    args.height,
+                    args.fps,
+                    args.video_bitrate_kbps,
+                )
+                .map_err(napi::Error::from_reason)?;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // source_id is ignored on Linux/macOS; renderer's
+            // getDisplayMedia handles the picker there.
+            let _ = args.source_id;
+        }
+
+        s.video_engine = Some(engine);
         (tx, pkt)
     };
 
@@ -147,50 +207,56 @@ pub struct SendVideoFrameArgs {
 
 #[napi]
 pub fn send_video_frame(args: SendVideoFrameArgs) -> napi::Result<()> {
-    use crate::media::video_packet::WIRE_DESCRIPTION_MAGIC;
-    use crate::media::video_pipeline;
-
-    // Hot path: read the active sender from the dedicated frame-sink
-    // slot. No `state_arc.lock()` here — that mutex is contended with
-    // every other tokio task that touches AppState and was a real
-    // serialisation point at 60–120 fps. The slot's mutex is held for
-    // ~tens of nanoseconds (clone an Arc) and only contended on
-    // start/stop transitions.
-    //
-    // Also dropped the `async` qualifier — there's no .await anywhere
-    // in the body anymore, so napi-rs doesn't need to spawn a task per
-    // frame. Pure sync hop from JS to UDP send.
-    let sender = video_pipeline::current_frame_sink()
-        .ok_or_else(|| napi::Error::from_reason("Not currently streaming"))?;
-
-    let data: &[u8] = args.data.as_ref();
-
-    // For HEVC/AV1 keyframes with a description, prepend the magic-tag
-    // length-prefix so receivers strip it back out and surface the
-    // description as a separate field. H.264 keyframes carry SPS/PPS
-    // inline in Annex B and don't need this.
-    //
-    // For every other frame (non-key, or H.264 key) we used to do an
-    // unconditional `data.to_vec()` purely to call `send_frame(&payload)`.
-    // That allocated + copied the entire frame's bytes for no reason —
-    // `send_frame` takes a `&[u8]` and never holds it past return. Pass
-    // the borrowed slice straight through.
-    if args.keyframe && (args.codec == 3 || args.codec == 4) {
-        if let Some(desc) = args.description.as_ref() {
-            let desc_bytes: &[u8] = desc.as_ref();
-            let mut wire = Vec::with_capacity(
-                WIRE_DESCRIPTION_MAGIC.len() + 4 + desc_bytes.len() + data.len(),
-            );
-            wire.extend_from_slice(&WIRE_DESCRIPTION_MAGIC);
-            wire.extend_from_slice(&(desc_bytes.len() as u32).to_be_bytes());
-            wire.extend_from_slice(desc_bytes);
-            wire.extend_from_slice(data);
-            sender.send_frame(args.codec, args.keyframe, &wire);
-            return Ok(());
-        }
+    // Windows native pipeline owns encode end-to-end; the renderer
+    // never pumps frames here on that platform. Kept as a no-op stub
+    // so the existing renderer code can ship without `cfg(platform)`
+    // guards on its call site.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = args;
+        Ok(())
     }
-    sender.send_frame(args.codec, args.keyframe, data);
-    Ok(())
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use crate::media::video_packet::WIRE_DESCRIPTION_MAGIC;
+        use crate::media::video_pipeline;
+
+        // Hot path: read the active sender from the dedicated frame-
+        // sink slot. No `state_arc.lock()` here — that mutex is
+        // contended with every other tokio task that touches AppState
+        // and was a real serialisation point at 60–120 fps. The slot's
+        // mutex is held for ~tens of nanoseconds (clone an Arc) and
+        // only contended on start/stop transitions.
+        //
+        // Sync rather than async — no .await anywhere in the body,
+        // so napi-rs doesn't spawn a task per frame.
+        let sender = video_pipeline::current_frame_sink()
+            .ok_or_else(|| napi::Error::from_reason("Not currently streaming"))?;
+
+        let data: &[u8] = args.data.as_ref();
+
+        // For HEVC/AV1 keyframes with a description, prepend the
+        // magic-tag length-prefix so receivers strip it back out and
+        // surface the description as a separate field. H.264 keyframes
+        // carry SPS/PPS inline in Annex B and don't need this.
+        if args.keyframe && (args.codec == 3 || args.codec == 4) {
+            if let Some(desc) = args.description.as_ref() {
+                let desc_bytes: &[u8] = desc.as_ref();
+                let mut wire = Vec::with_capacity(
+                    WIRE_DESCRIPTION_MAGIC.len() + 4 + desc_bytes.len() + data.len(),
+                );
+                wire.extend_from_slice(&WIRE_DESCRIPTION_MAGIC);
+                wire.extend_from_slice(&(desc_bytes.len() as u32).to_be_bytes());
+                wire.extend_from_slice(desc_bytes);
+                wire.extend_from_slice(data);
+                sender.send_frame(args.codec, args.keyframe, &wire);
+                return Ok(());
+            }
+        }
+        sender.send_frame(args.codec, args.keyframe, data);
+        Ok(())
+    }
 }
 
 #[napi(object)]
@@ -401,4 +467,104 @@ pub async fn send_stream_thumbnail(args: SendStreamThumbnailArgs) -> napi::Resul
         .send_stream_thumbnail(&args.channel_id, args.jpeg_data.as_ref())
         .await
         .map_err(napi::Error::from_reason)
+}
+
+// ─── Windows native FFmpeg encoder commands (PR after PR8) ─────────
+//
+// Replaces Chromium's WebCodecs path on Windows because Chromium's
+// MFT encoder factory caps at 30 fps. See the design spec at
+// docs/superpowers/specs/2026-05-12-windows-native-ffmpeg-encoder-design.md
+// for the full motivation. Linux/macOS continue to use the WebCodecs
+// path and these commands are stubbed out (or absent) there.
+
+/// Native encoder capability returned by `probe_native_encoders`.
+/// Same shape the renderer's WebCodecs probe used to populate.
+#[cfg(target_os = "windows")]
+#[napi(object)]
+pub struct NativeEncoderCap {
+    /// VideoCodec wire id (1=H264_HW, 3=H265, 4=AV1).
+    pub codec: i32,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub max_fps: u32,
+    pub hardware: bool,
+    /// FFmpeg encoder name that actually opens (e.g. "h264_nvenc").
+    pub encoder_name: String,
+}
+
+/// Runs the native FFmpeg encoder probe. Windows-only. Returns the
+/// list of (codec, vendor) tuples that successfully opened.
+#[cfg(target_os = "windows")]
+#[napi]
+pub fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
+    let vendor_id = read_primary_gpu_vendor_id();
+    let caps = crate::media::encoder_probe::run(vendor_id);
+    Ok(caps
+        .into_iter()
+        .map(|c| NativeEncoderCap {
+            codec: c.codec,
+            max_width: c.max_width,
+            max_height: c.max_height,
+            max_fps: c.max_fps,
+            hardware: c.hardware,
+            encoder_name: c.encoder_name,
+        })
+        .collect())
+}
+
+/// Force the next encoded frame on the active stream (if any) to be a
+/// keyframe. Wired from the renderer's `keyframe_requested` event.
+/// On Linux/macOS this is a no-op stub — the renderer's WebCodecs
+/// encoder handles keyframe forcing in JS via VideoEncoder.encode's
+/// `keyFrame: true` option.
+#[napi]
+pub async fn force_keyframe() -> napi::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let state_arc = state::shared();
+        let guard = state_arc.lock().await;
+        if let Some(engine) = &guard.video_engine {
+            engine.request_keyframe();
+        }
+    }
+    Ok(())
+}
+
+/// Enumerate DXGI adapters and return the first non-software adapter's
+/// PCI vendor id. Used by `probe_native_encoders` to pick the right
+/// encoder vendor priority (NVIDIA → NVENC first, etc.).
+#[cfg(target_os = "windows")]
+fn read_primary_gpu_vendor_id() -> u32 {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1,
+        DXGI_ADAPTER_FLAG_SOFTWARE,
+    };
+    unsafe {
+        let factory: IDXGIFactory1 = match CreateDXGIFactory1() {
+            Ok(f) => f,
+            Err(_) => return 0,
+        };
+        let mut i = 0u32;
+        loop {
+            let adapter: IDXGIAdapter1 = match factory.EnumAdapters1(i) {
+                Ok(a) => a,
+                Err(_) => return 0,
+            };
+            // windows-rs 0.61 returns the desc by value.
+            let desc = match adapter.GetDesc1() {
+                Ok(d) => d,
+                Err(_) => {
+                    i += 1;
+                    continue;
+                }
+            };
+            // Bit-mask check — DXGI_ADAPTER_FLAG_SOFTWARE is 2.
+            // desc.Flags is u32 in windows-rs 0.61; FLAG_SOFTWARE
+            // inner value is i32, so cast before AND.
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) == 0 {
+                return desc.VendorId;
+            }
+            i += 1;
+        }
+    }
 }

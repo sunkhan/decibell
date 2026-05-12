@@ -24,11 +24,20 @@ files:
   # `native/decibell.*.node` matched nothing — the package shipped
   # without the addon and crashed on first launch.
   - native/index.*.node
+  # Windows: FFmpeg DLLs that the native addon dynamic-links against
+  # (avcodec / avutil / avformat / swresample / swscale). copy-dlls.cjs
+  # places them in native/ during the build; this glob ships them in
+  # the same dir as the .node file so Windows' DLL search order finds
+  # them automatically with no PATH manipulation at runtime.
+  - native/*.dll
   - package.json
 
 asarUnpack:
   - native/**/*.node
   - native/index.js
+  # DLLs must live outside the asar archive so Windows' loader can
+  # mmap them — DLLs inside an asar are inaccessible to LoadLibrary.
+  - native/*.dll
 
 # Ship the app icon as a runtime resource (loaded by BrowserWindow's
 # `icon:` option for the OS taskbar / Alt-Tab icon). buildResources/

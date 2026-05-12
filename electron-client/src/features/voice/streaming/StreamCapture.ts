@@ -127,6 +127,36 @@ export class StreamCapture {
   /// can announce them to the server with truthful values (the
   /// pre-capture dims passed via opts are best-guess).
   async start(): Promise<{ width: number; height: number }> {
+    // Windows: skip the renderer-encoded path entirely. Native owns
+    // capture (WGC) + color convert (D3D11VP) + encode (FFmpeg
+    // NVENC/AMF) + UDP + self-preview fan-out. We just kick off
+    // `start_screen_share` with the picked source id and let native
+    // run until `stop()` is called. Frames flow back to the renderer
+    // for self-preview through the same per-stream Buffer TSFN used
+    // for remote streams (StreamVideoPlayer subscribes by username).
+    if (window.decibell.platform === "win32") {
+      if (!this.opts.sourceId) {
+        throw new Error("sourceId required on Windows");
+      }
+      await invoke("start_screen_share", {
+        serverId: this.opts.serverId,
+        channelId: this.opts.channelId,
+        sourceId: this.opts.sourceId,
+        fps: this.opts.fps,
+        width: this.opts.width,
+        height: this.opts.height,
+        videoBitrateKbps: this.opts.bitrateKbps,
+        shareAudio: this.opts.shareAudio,
+        audioBitrateKbps: 128,
+        initialCodec: this.codec,
+        enforcedCodec: this.codec,
+      });
+      console.log(
+        `[StreamCapture/win] native pipeline started at ${this.opts.width}x${this.opts.height}@${this.opts.fps} (codec=${this.codec})`,
+      );
+      return { width: this.opts.width, height: this.opts.height };
+    }
+
     // Pre-stash the chosen source id so the main-process
     // setDisplayMediaRequestHandler picks it out of desktopCapturer
     // instead of auto-picking sources[0]. Chrome 108+ restricted the
@@ -647,6 +677,14 @@ export class StreamCapture {
   async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
+    // Windows native pipeline: nothing renderer-side to tear down —
+    // never set up `reader`/`encoder`/`stream`. Caller (UserPanel /
+    // CaptureSourcePicker / onCaptureEnded) already invokes
+    // stop_screen_share, which calls VideoEngine::stop() → joins
+    // the WGC capture + encoder threads in native.
+    if (window.decibell.platform === "win32") {
+      return;
+    }
     try {
       this.reader?.cancel().catch(() => {});
     } catch {

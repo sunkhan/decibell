@@ -81,7 +81,30 @@ windows = { version = "0.61", features = [
     # IPropertyStore — return type of IMMDevice::OpenPropertyStore.
     # Without this feature the method itself isn't exposed.
     "Win32_UI_Shell_PropertiesSystem",
+    # Windows Graphics Capture + D3D11 surfaces for the native HW
+    # encoder pipeline (see docs/superpowers/specs/2026-05-12-windows-
+    # native-ffmpeg-encoder-design.md §5-§6).
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
 ] }
+# Dynamic-linked FFmpeg via vcpkg-built DLLs. LGPL — see
+# THIRD_PARTY_LICENSES.md (added in a later task) for compliance details.
+ffmpeg-next = "8"
+
+[dev-dependencies]
+# tokio test-util adds tokio::time::advance and Builder::start_paused
+# which the codec_selection unit tests use to fake the wall clock.
+# Not pulled in by `features = ["full"]`; opt-in only.
+tokio = { version = "1", features = ["full", "test-util"] }
 
 [build-dependencies]
 napi-build = "2"

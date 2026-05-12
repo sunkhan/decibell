@@ -34,6 +34,21 @@ pub mod codec_selection;
 pub mod jitter;
 pub mod packet;
 pub mod peer;
+pub mod source_id;
+#[cfg(target_os = "windows")]
+pub mod encoder_probe;
+#[cfg(target_os = "windows")]
+pub mod gpu_pipeline;
+#[cfg(target_os = "windows")]
+pub mod video_processor;
+#[cfg(target_os = "windows")]
+pub mod bitrate_preset;
+#[cfg(target_os = "windows")]
+pub mod encoder;
+#[cfg(target_os = "windows")]
+pub mod capture_wgc;
+#[cfg(target_os = "windows")]
+pub mod encoder_thread;
 pub mod pipeline;
 pub mod speaking;
 pub mod video_packet;
@@ -521,6 +536,15 @@ pub struct VideoEngine {
     /// to a canvas in the StreamCapture component, so the receive-side
     /// stream_frame fanout only carries remote streams now.
     _phantom: std::marker::PhantomData<()>,
+    /// Windows-only: native capture loop, encoder thread, and a handle
+    /// to the encoder's force-keyframe AtomicBool. None on Linux/macOS
+    /// (those platforms keep the renderer-encoded path).
+    #[cfg(target_os = "windows")]
+    win_capture: Option<capture_wgc::Capture>,
+    #[cfg(target_os = "windows")]
+    win_encoder_thread: Option<encoder_thread::EncoderThread>,
+    #[cfg(target_os = "windows")]
+    win_force_keyframe: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl VideoEngine {
@@ -542,6 +566,76 @@ impl VideoEngine {
             sender,
             self_username,
             _phantom: std::marker::PhantomData,
+            #[cfg(target_os = "windows")]
+            win_capture: None,
+            #[cfg(target_os = "windows")]
+            win_encoder_thread: None,
+            #[cfg(target_os = "windows")]
+            win_force_keyframe: None,
+        }
+    }
+
+    /// Windows-only: spin up the native capture + encoder pipeline.
+    /// Source id is the Chromium desktopCapturer id ("screen:N:0" or
+    /// "window:HWND:0"). Encoder name comes from probe_native_encoders.
+    /// Returns (width, height) — same shape the renderer-encoded path
+    /// returned, so JS can keep its existing announcement to the server.
+    #[cfg(target_os = "windows")]
+    pub fn start_windows(
+        &mut self,
+        source_id: &str,
+        encoder_name: &str,
+        codec_wire_byte: u8,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate_kbps: u32,
+    ) -> Result<(u32, u32), String> {
+        let target = source_id::parse(source_id)
+            .map_err(|e| format!("source id '{}': {:?}", source_id, e))?;
+        let gpu = gpu_pipeline::GpuDevice::create()?;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<
+            windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
+        >(2);
+        let capture = capture_wgc::Capture::start(&gpu, target, tx)?;
+        let encoder_thread = encoder_thread::EncoderThread::start(
+            gpu,
+            encoder_thread::EncoderThreadConfig {
+                encoder_name: encoder_name.to_string(),
+                codec_wire_byte,
+                width,
+                height,
+                fps,
+                bitrate_kbps,
+                local_username: self.self_username.clone(),
+                video_sender: self.sender.clone(),
+            },
+            rx,
+        )?;
+        self.win_force_keyframe = Some(encoder_thread.force_keyframe_handle());
+        self.win_capture = Some(capture);
+        self.win_encoder_thread = Some(encoder_thread);
+        Ok((width, height))
+    }
+
+    /// Windows-only: stop the native pipeline. Joins both threads.
+    #[cfg(target_os = "windows")]
+    pub fn stop_windows(&mut self) {
+        if let Some(c) = self.win_capture.take() {
+            c.stop();
+        }
+        if let Some(e) = self.win_encoder_thread.take() {
+            e.stop();
+        }
+        self.win_force_keyframe = None;
+    }
+
+    /// Windows-only: nudge the encoder thread to emit a keyframe on the
+    /// next frame. Wired from force_keyframe napi command.
+    #[cfg(target_os = "windows")]
+    pub fn request_keyframe(&self) {
+        if let Some(flag) = &self.win_force_keyframe {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -563,13 +657,15 @@ impl VideoEngine {
     }
 
     pub fn stop(&mut self) {
-        // Nothing to tear down — there are no native threads, no
-        // encoder context, no capture loop. The renderer's
-        // StreamCapture stops the WebCodecs encoder and getDisplayMedia
-        // tracks on its side. We DO need to clear the hot-path frame
-        // sink so a stray post-stop frame from the renderer (rare but
-        // possible during shutdown ordering) drops on the floor
-        // instead of being packetised onto a dead socket.
+        // Windows native pipeline: stop capture + encoder threads.
+        // Linux/macOS keep the renderer-encoded path; nothing to tear
+        // down there (StreamCapture handles it renderer-side). We DO
+        // need to clear the hot-path frame sink so a stray post-stop
+        // frame from the renderer (rare but possible during shutdown
+        // ordering) drops on the floor instead of being packetised
+        // onto a dead socket.
+        #[cfg(target_os = "windows")]
+        self.stop_windows();
         video_pipeline::clear_frame_sink();
     }
 }

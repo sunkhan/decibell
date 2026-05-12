@@ -297,7 +297,16 @@ export function useVoiceEvents() {
     // loss never converges. No-op for clients that aren't streaming.
     promises.push(
       listen("keyframe_requested", () => {
-        activeStreamCapture()?.forceKeyframe();
+        if (window.decibell.platform === "win32") {
+          // Windows: native encoder thread owns the encoder; signal it
+          // via the AtomicBool flip that force_keyframe maps to.
+          invoke("force_keyframe", {}).catch((e) =>
+            console.error("[voice] force_keyframe failed:", e),
+          );
+        } else {
+          // Linux/macOS: WebCodecs encoder lives in the renderer.
+          activeStreamCapture()?.forceKeyframe();
+        }
       }),
     );
 
