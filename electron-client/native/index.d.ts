@@ -15,6 +15,29 @@ export interface RegisterArgs {
 }
 export declare function register(args: RegisterArgs): Promise<void>
 export declare function logout(): Promise<void>
+export interface UploadAvatarResult {
+  success: boolean
+  message: string
+  /** sha256-hex of the uploaded bytes; '' on removal. */
+  version: string
+}
+/**
+ * Upload or remove the authenticated user's avatar. Empty `jpeg`
+ * argument = remove. Returns the server-computed sha256-hex version
+ * on success.
+ */
+export declare function uploadAvatar(jpeg: Buffer): Promise<UploadAvatarResult>
+export interface FetchAvatarResult {
+  version: string
+  /** Empty Buffer when version == '' (no avatar). */
+  data: Buffer
+}
+/**
+ * Fetch a specific user's avatar bytes + current version. Empty
+ * version + empty data means the user has no avatar (or doesn't
+ * exist — same response shape).
+ */
+export declare function fetchAvatar(username: string): Promise<FetchAvatarResult>
 export interface RequestChannelHistoryArgs {
   serverId: string
   channelId: string

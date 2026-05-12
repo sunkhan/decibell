@@ -14,8 +14,9 @@ use crate::config;
 use crate::events;
 use crate::net::central::CentralClient;
 use crate::net::connection::build_packet;
-use crate::net::proto::{packet, RegisterRequest};
+use crate::net::proto::{packet, FetchAvatarReq, RegisterRequest, UpdateAvatarReq};
 use crate::state;
+use tokio::sync::oneshot;
 
 #[napi(object)]
 pub struct LoginArgs {
@@ -148,4 +149,140 @@ pub async fn logout() -> napi::Result<()> {
     let _ = config::clear_credentials();
 
     Ok(())
+}
+
+// ─── Avatar upload / fetch ───────────────────────────────────────────
+// In-band protobuf round-trips against the central server (see docs/
+// superpowers/specs/2026-05-12-custom-profile-pictures-design.md §6).
+// The central router (net/central.rs route_packets) resolves the
+// oneshot Sender we stash on AppState when the matching response
+// arrives.
+
+#[napi(object)]
+pub struct UploadAvatarResult {
+    pub success: bool,
+    pub message: String,
+    /// sha256-hex of the uploaded bytes; '' on removal.
+    pub version: String,
+}
+
+/// Upload or remove the authenticated user's avatar. Empty `jpeg`
+/// argument = remove. Returns the server-computed sha256-hex version
+/// on success.
+#[napi]
+pub async fn upload_avatar(
+    jpeg: napi::bindgen_prelude::Buffer,
+) -> napi::Result<UploadAvatarResult> {
+    let state_arc = state::shared();
+
+    let (write_tx, data, rx) = {
+        let mut s = state_arc.lock().await;
+        let central = s.central.as_ref().ok_or_else(|| {
+            napi::Error::from_reason("Not connected to central server")
+        })?;
+        let tx = central.connection_write_tx().ok_or_else(|| {
+            napi::Error::from_reason("Central connection lost")
+        })?;
+        let token = s.token.clone();
+        let pkt = build_packet(
+            packet::Type::UpdateAvatarReq,
+            packet::Payload::UpdateAvatarReq(UpdateAvatarReq {
+                data: jpeg.as_ref().to_vec(),
+            }),
+            token.as_deref(),
+        );
+        let (otx, orx) = oneshot::channel();
+        // Single-slot — replace any earlier in-flight upload's
+        // waiter (the previous .await will time out).
+        s.pending_avatar_update = Some(otx);
+        (tx, pkt, orx)
+    };
+
+    if tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data))
+        .await
+        .is_err()
+    {
+        state_arc.lock().await.pending_avatar_update = None;
+        return Err(napi::Error::from_reason("Failed to send avatar"));
+    }
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(resp)) => Ok(UploadAvatarResult {
+            success: resp.success,
+            message: resp.message,
+            version: resp.version,
+        }),
+        Ok(Err(_)) => Err(napi::Error::from_reason(
+            "Central connection closed before response",
+        )),
+        Err(_) => {
+            state_arc.lock().await.pending_avatar_update = None;
+            Err(napi::Error::from_reason("Upload timed out"))
+        }
+    }
+}
+
+#[napi(object)]
+pub struct FetchAvatarResult {
+    pub version: String,
+    /// Empty Buffer when version == '' (no avatar).
+    pub data: napi::bindgen_prelude::Buffer,
+}
+
+/// Fetch a specific user's avatar bytes + current version. Empty
+/// version + empty data means the user has no avatar (or doesn't
+/// exist — same response shape).
+#[napi]
+pub async fn fetch_avatar(username: String) -> napi::Result<FetchAvatarResult> {
+    let state_arc = state::shared();
+
+    let (write_tx, data, rx) = {
+        let mut s = state_arc.lock().await;
+        let central = s.central.as_ref().ok_or_else(|| {
+            napi::Error::from_reason("Not connected to central server")
+        })?;
+        let tx = central.connection_write_tx().ok_or_else(|| {
+            napi::Error::from_reason("Central connection lost")
+        })?;
+        let token = s.token.clone();
+        let pkt = build_packet(
+            packet::Type::FetchAvatarReq,
+            packet::Payload::FetchAvatarReq(FetchAvatarReq {
+                username: username.clone(),
+            }),
+            token.as_deref(),
+        );
+        let (otx, orx) = oneshot::channel();
+        // Last-request-wins per username — a previous in-flight
+        // fetch for the same user gets its oneshot replaced; the
+        // earlier .await times out, no harm.
+        s.pending_avatar_fetches.insert(username.clone(), otx);
+        (tx, pkt, orx)
+    };
+
+    if tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data))
+        .await
+        .is_err()
+    {
+        state_arc.lock().await.pending_avatar_fetches.remove(&username);
+        return Err(napi::Error::from_reason("Failed to send fetch request"));
+    }
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(resp)) => Ok(FetchAvatarResult {
+            version: resp.version,
+            data: resp.data.into(),
+        }),
+        Ok(Err(_)) => Err(napi::Error::from_reason(
+            "Central connection closed before response",
+        )),
+        Err(_) => {
+            state_arc
+                .lock()
+                .await
+                .pending_avatar_fetches
+                .remove(&username);
+            Err(napi::Error::from_reason("Fetch timed out"))
+        }
+    }
 }
