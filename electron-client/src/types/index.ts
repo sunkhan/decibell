@@ -33,6 +33,19 @@ export type ServerInfo = ServerInfoPayload;
 export interface FriendInfo {
   username: string;
   status: "online" | "offline" | "pending_incoming" | "pending_outgoing" | "blocked";
+  /// sha256-hex of this friend's current avatar bytes. '' when no
+  /// avatar set. avatarStore consumes this for cache invalidation
+  /// when FRIEND_LIST_RES arrives. (See spec
+  /// docs/superpowers/specs/2026-05-12-custom-profile-pictures-design.md §7.)
+  avatarVersion: string;
+}
+
+/// One online user's snapshot in PresenceUpdate. Mirrors the native
+/// UserPresencePayload shape: username + avatar_version. avatarStore
+/// uses this to invalidate its cache for non-friend peers too.
+export interface UserPresence {
+  username: string;
+  avatarVersion: string;
 }
 
 export interface DmMessage {

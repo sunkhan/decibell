@@ -465,6 +465,7 @@ pub struct UserListUpdatedPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UserPresencePayload {
     pub username: String,
     /// sha256-hex of the user's current avatar bytes; '' when no
@@ -474,6 +475,7 @@ pub struct UserPresencePayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FriendInfoPayload {
     pub username: String,
     /// "online" | "offline" | "pending_incoming" | "pending_outgoing" | "blocked"
