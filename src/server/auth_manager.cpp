@@ -399,10 +399,14 @@ std::string AuthManager::setAvatar(const std::string& username,
         return std::string();
     }
     const std::string version = chatproj::sha256(data);
+    // pqxx::binarystring expects `const unsigned char*` in pqxx 7+;
+    // std::string::data() is `const char*`. The cast is byte-identical.
     txn.exec_params(
         "UPDATE users SET avatar = $1, avatar_version = $2 "
         "WHERE username = $3",
-        pqxx::binarystring(data.data(), data.size()),
+        pqxx::binarystring(
+            reinterpret_cast<const unsigned char*>(data.data()),
+            data.size()),
         version, username);
     txn.commit();
     return version;
@@ -422,7 +426,12 @@ std::pair<std::string, std::string> AuthManager::getAvatar(
         std::string data;
         if (!rs[0]["avatar"].is_null()) {
             pqxx::binarystring blob(rs[0]["avatar"]);
-            data.assign(blob.data(), blob.size());
+            // blob.data() is `const unsigned char*` in pqxx 7+;
+            // std::string::assign needs `const char*`. Byte-identical
+            // cast — same regression in setAvatar above.
+            data.assign(
+                reinterpret_cast<const char*>(blob.data()),
+                blob.size());
         }
         return {version, data};
     } catch (const std::exception& e) {
