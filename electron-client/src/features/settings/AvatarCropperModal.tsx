@@ -36,14 +36,21 @@ export function AvatarCropperModal({ file, onSave, onCancel }: Props) {
 
   // Load the picked file as an HTMLImageElement; centre + fit-to-cover
   // it inside the viewport on first paint.
+  //
+  // Revoke is deferred to onload/onerror (not the effect cleanup) so
+  // React 18 StrictMode's double-invoke can't kill the blob URL
+  // mid-load. The `cancelled` flag guards against state updates after
+  // unmount.
   useEffect(() => {
+    let cancelled = false;
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
+      if (cancelled) {
+        URL.revokeObjectURL(url);
+        return;
+      }
       imgRef.current = img;
-      // Cover: scale so the shorter edge exactly fills the viewport;
-      // the longer edge overflows and the user can pan to choose
-      // which region to keep.
       const initial = Math.max(
         VIEWPORT / img.width,
         VIEWPORT / img.height,
@@ -54,10 +61,16 @@ export function AvatarCropperModal({ file, onSave, onCancel }: Props) {
         y: (VIEWPORT - img.height * initial) / 2,
       });
       setImgLoaded(true);
+      URL.revokeObjectURL(url);
     };
-    img.onerror = () => setError("Couldn't load that file as an image.");
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      if (!cancelled) setError("Couldn't load that file as an image.");
+    };
     img.src = url;
-    return () => URL.revokeObjectURL(url);
+    return () => {
+      cancelled = true;
+    };
   }, [file]);
 
   // Repaint preview canvas on every state change.
@@ -76,11 +89,20 @@ export function AvatarCropperModal({ file, onSave, onCancel }: Props) {
     );
   }, [imgLoaded, pos, scale]);
 
-  const onWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-    setScale((s) => Math.max(0.1, Math.min(10, s * factor)));
-  };
+  // React attaches wheel listeners as passive by default, which makes
+  // preventDefault a silent no-op (and lets the modal's wheel events
+  // scroll the page underneath). Bind manually with passive:false.
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      setScale((s) => Math.max(0.1, Math.min(10, s * factor)));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
   const onMouseDown = (e: React.MouseEvent) => {
     setDragging(true);
     dragStart.current = { x: e.clientX - pos.x, y: e.clientY - pos.y };
@@ -151,7 +173,6 @@ export function AvatarCropperModal({ file, onSave, onCancel }: Props) {
           ref={canvasRef}
           width={VIEWPORT}
           height={VIEWPORT}
-          onWheel={onWheel}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}

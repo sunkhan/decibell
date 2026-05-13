@@ -166,13 +166,17 @@ pub struct UploadAvatarResult {
     pub version: String,
 }
 
+#[napi(object)]
+pub struct UploadAvatarArgs {
+    pub jpeg: napi::bindgen_prelude::Buffer,
+}
+
 /// Upload or remove the authenticated user's avatar. Empty `jpeg`
 /// argument = remove. Returns the server-computed sha256-hex version
 /// on success.
 #[napi]
-pub async fn upload_avatar(
-    jpeg: napi::bindgen_prelude::Buffer,
-) -> napi::Result<UploadAvatarResult> {
+pub async fn upload_avatar(args: UploadAvatarArgs) -> napi::Result<UploadAvatarResult> {
+    let UploadAvatarArgs { jpeg } = args;
     let state_arc = state::shared();
 
     let (write_tx, data, rx) = {
@@ -229,11 +233,17 @@ pub struct FetchAvatarResult {
     pub data: napi::bindgen_prelude::Buffer,
 }
 
+#[napi(object)]
+pub struct FetchAvatarArgs {
+    pub username: String,
+}
+
 /// Fetch a specific user's avatar bytes + current version. Empty
 /// version + empty data means the user has no avatar (or doesn't
 /// exist — same response shape).
 #[napi]
-pub async fn fetch_avatar(username: String) -> napi::Result<FetchAvatarResult> {
+pub async fn fetch_avatar(args: FetchAvatarArgs) -> napi::Result<FetchAvatarResult> {
+    let FetchAvatarArgs { username } = args;
     let state_arc = state::shared();
 
     let (write_tx, data, rx) = {
