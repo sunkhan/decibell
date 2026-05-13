@@ -183,19 +183,28 @@ export default function VoicePanel() {
                     ? { canWatch: true, reason: undefined }
                     : canWatchStream(stream, decodeCaps);
                   return (
-                    <button
+                    <div
                       key={stream.streamId}
-                      disabled={!canWatch}
+                      role="button"
+                      tabIndex={canWatch ? 0 : -1}
+                      aria-disabled={!canWatch}
                       title={reason}
                       onClick={() =>
                         canWatch && handleWatchStream(stream.ownerUsername)
                       }
+                      onKeyDown={(e) => {
+                        if (!canWatch) return;
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          handleWatchStream(stream.ownerUsername);
+                        }
+                      }}
                       className={`group relative overflow-hidden rounded-xl border transition-all duration-200 ease-out ${
                         !canWatch
                           ? "cursor-not-allowed border-border-divider opacity-50"
                           : isWatching
-                            ? "border-accent/40 shadow-[0_0_12px_var(--color-accent-soft)] hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(0,0,0,0.35),0_0_16px_var(--color-accent-soft)]"
-                            : "border-border bg-bg-light hover:-translate-y-0.5 hover:border-accent/30 hover:shadow-[0_8px_20px_rgba(0,0,0,0.35)]"
+                            ? "cursor-pointer border-accent/40 shadow-[0_0_12px_var(--color-accent-soft)] hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(0,0,0,0.35),0_0_16px_var(--color-accent-soft)]"
+                            : "cursor-pointer border-border bg-bg-light hover:-translate-y-0.5 hover:border-accent/30 hover:shadow-[0_8px_20px_rgba(0,0,0,0.35)]"
                       }`}
                     >
                       <div className="relative aspect-video w-full bg-bg-darkest">
@@ -310,7 +319,7 @@ export default function VoicePanel() {
                           </button>
                         )}
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
