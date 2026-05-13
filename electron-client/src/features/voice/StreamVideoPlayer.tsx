@@ -30,6 +30,22 @@ interface StreamFrame {
 /// MSE) is gone for good — Chromium WebCodecs handles every codec we
 /// care about with consistent per-frame semantics.
 export default function StreamVideoPlayer({ streamerUsername, className }: Props) {
+  // Defensive: on some Castlabs Electron 33 / Windows configurations
+  // the `VideoDecoder` global isn't exposed (Media Foundation init
+  // fails partway and Chromium drops the WebCodecs API surface).
+  // Without this guard the bare `new VideoDecoder(...)` reference
+  // below throws a ReferenceError that unwinds the React tree and
+  // blanks the whole app. Render a small fallback instead so the rest
+  // of the UI survives.
+  if (typeof VideoDecoder === "undefined") {
+    return (
+      <div
+        className={`flex h-full w-full items-center justify-center bg-bg-darkest text-center text-[12px] text-text-muted ${className ?? ""}`}
+      >
+        Stream preview unavailable on this system
+      </div>
+    );
+  }
   const ownUsername = useAuthStore((s) => s.username);
   const isOwnStream = ownUsername !== null && streamerUsername === ownUsername;
   const canvasRef = useRef<HTMLCanvasElement>(null);

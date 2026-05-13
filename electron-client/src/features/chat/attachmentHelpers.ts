@@ -1,11 +1,24 @@
 import type { Attachment } from "../../types";
 import { useChatStore } from "../../stores/chatStore";
 
-/// Build a `decibell-attachment://` URL for an attachment. The custom
-/// protocol is registered in main; it injects the Authorization
-/// header from the registered attachment target and proxies via
-/// `net.fetch`, so plain `<img src=…>` / `<video src=…>` work without
-/// any renderer-side fetch + Blob URL juggling.
+/// Build a URL the renderer can drop into `<img src>` / `<video src>` /
+/// `<audio src>` to fetch an attachment from a community server.
+///
+/// Two transports, chosen per attachment kind:
+///   - **Images + any thumbnail variant**: `decibell-attachment://` —
+///     a custom protocol registered in main (see protocol.ts) that
+///     injects the Authorization header and proxies the response.
+///   - **Audio + video full-content**: `http://127.0.0.1:PORT/...`
+///     served by the loopback media server (see mediaServer.ts). The
+///     custom protocol would work fine on Linux/Mac, but on Windows
+///     Chromium routes `<video>` / `<audio>` through Media Foundation
+///     when `MediaFoundationClearPlayback` is enabled (it's required
+///     for the WebCodecs API surface used by stream preview), and
+///     MF's renderer service can't handle custom URL schemes —
+///     playback hangs with `PIPELINE_ERROR_INITIALIZATION_FAILED:
+///     MediaFoundationRendererClient disconnected`. A real HTTP URL
+///     to a loopback proxy sidesteps that. Same proxying logic
+///     either way — just a different transport.
 ///
 /// Returns null when the attachment has been purged or the server
 /// didn't advertise an HTTP endpoint at community-auth time.
@@ -19,6 +32,19 @@ export function buildAttachmentUrl(
   const chat = useChatStore.getState();
   const config = chat.serverAttachmentConfig?.[serverId];
   if (!config || config.port === 0) return null;
+
+  // Route audio + video full-content through the loopback media
+  // server when one is available. Thumbnails always go through the
+  // custom protocol — they render in `<img>` tags (no MF involved)
+  // and the custom protocol's caching/auth shape is fine for that.
+  const isMedia =
+    !variant &&
+    (attachment.kind === "audio" || attachment.kind === "video");
+  const mediaPort = isMedia ? window.decibell?.mediaServerPort ?? 0 : 0;
+  if (isMedia && mediaPort > 0) {
+    return `http://127.0.0.1:${mediaPort}/attachments/${encodeURIComponent(serverId)}/${attachment.id}`;
+  }
+
   // URL shape mirrors what the protocol handler in main expects:
   //   decibell-attachment://attach/<serverId>/<attachmentId>?…
   // The pseudo-host "attach" sidesteps Chromium parsing numeric

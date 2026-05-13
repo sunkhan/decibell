@@ -274,6 +274,10 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     // a load() / resume cycle picks up from the right spot.
     const onError = () => {
       if (!v.error) return;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[video] media error code=${v.error.code} message=${v.error.message} src=${v.currentSrc}`,
+      );
       // Snapshot the live position before load() resets it. If the
       // error fires while we were still mid-initial-load (currentTime
       // still 0), fall back to the original resume target instead.

@@ -12,6 +12,7 @@ import { registerWindowHandlers, attachWindowEvents } from "./window";
 import { registerDialogHandlers } from "./dialog";
 import { registerFsHandlers } from "./fs";
 import { registerNetHandlers } from "./netFetch";
+import { startMediaServer, stopMediaServer, getMediaServerPort } from "./mediaServer";
 
 // Single-instance lock — second launches focus the existing window.
 // Required for deep-link handling on Windows/Linux (so a second
@@ -148,15 +149,18 @@ if (process.platform === "win32") {
     // system memory). Mirrors the zero-copy path we relied on in the
     // Tauri client.
     "D3D11VideoDecoderUseSharedHandle",
-    // Wraps Media Foundation Transforms into the same encoding path
-    // WebCodecs uses on Windows. Required for the WebCodecs encode
-    // pipeline to discover MFT-backed NVENC / Intel QSV / AMD AMF
-    // encoders — without it WebCodecs only sees OpenH264 software.
+    // Required on Castlabs Electron 33 for the WebCodecs API
+    // surface (`VideoDecoder` global) to be exposed — without it,
+    // StreamVideoPlayer can't construct a decoder for received
+    // stream frames. This flag also routes `<video>` / `<audio>`
+    // playback through MF's renderer service, which is fine as
+    // long as the sandbox can spawn the helper process (see
+    // sandbox handling further down).
     "MediaFoundationClearPlayback",
     // Use GPU memory buffers (D3D11 textures) for WebCodecs encoder
     // input frames. Encoders that consume D3D11 textures directly
-    // (NVENC via MFT) require this; without it the encoder asks for
-    // system memory frames and Chromium gives up routing to MFT.
+    // (NVENC via MFT) require this; without it the encoder asks
+    // for system memory frames and Chromium gives up routing to MFT.
     "UseGpuMemoryBufferVideoFrames",
   );
 }
@@ -167,14 +171,43 @@ app.commandLine.appendSwitch("ignore-gpu-blocklist");
 // D3D11VA hardware decoder on instead of relying on feature-flag gating.
 // Cheap insurance.
 app.commandLine.appendSwitch("enable-accelerated-video-decode");
+
+// Disable the out-of-process audio sandbox. Castlabs Electron's audio
+// service can't spawn its sandboxed child on Windows ("sandbox_win.cc
+// Sandbox cannot access executable. Access is denied.") in some
+// environments, and a broken AudioService doesn't just kill audio
+// playback — Chromium waits on it for any media element, so <video>
+// also hangs silently on the first frame. We use both the feature
+// flag (older Chromium path) and the explicit switch
+// `audio-service-sandbox-type=none` (current Chromium path) because
+// Castlabs Electron 33 doesn't always honor the feature flag.
+const disableFeatures: string[] = ["AudioServiceSandbox"];
 if (process.platform === "linux") {
   // Some Linux Chromium builds default to a ChromeOS-style direct video
   // decoder that bypasses the VAAPI integration entirely. Disable it so
   // VAAPI gets a chance to claim the codec.
-  app.commandLine.appendSwitch(
-    "disable-features",
-    "UseChromeOSDirectVideoDecoder",
-  );
+  disableFeatures.push("UseChromeOSDirectVideoDecoder");
+}
+app.commandLine.appendSwitch("disable-features", disableFeatures.join(","));
+if (process.platform === "win32") {
+  app.commandLine.appendSwitch("audio-service-sandbox-type", "none");
+  // Dev-only: drop the Chromium child-process sandbox so Media
+  // Foundation's helper service can spawn. In dev, electron.exe
+  // lives in node_modules under the user's profile directory, and
+  // the sandbox's restricted token can be denied access to it on
+  // fresh Windows installs with Defender Controlled Folder Access
+  // — manifests as `sandbox_win.cc(850) Sandbox cannot access
+  // executable. Access is denied.` which cascades to
+  // `MediaFoundationRendererClient disconnected` and breaks all
+  // `<video>` / `<audio>` attachment playback. Production builds
+  // install the exe under %LOCALAPPDATA%/Programs/ with ACLs the
+  // sandbox token can read, so they keep full sandboxing.
+  if (!app.isPackaged) {
+    app.commandLine.appendSwitch("no-sandbox");
+  }
+}
+
+if (process.platform === "linux") {
   // Let Chromium auto-detect Wayland vs X11 from the running session.
   app.commandLine.appendSwitch("ozone-platform-hint", "auto");
   // Force ANGLE to use the native OpenGL backend (libGL.so / NVIDIA's
@@ -240,6 +273,13 @@ function createWindow(): void {
       // the renderer's only loaded code is our own app bundle, so
       // the cross-origin restriction adds no real defence here.
       webSecurity: false,
+      // Smuggle the loopback media-server port to the renderer so
+      // buildAttachmentUrl can construct http://127.0.0.1:PORT/...
+      // URLs for `<video>` / `<audio>` elements. Synchronous
+      // hand-off at window creation — no IPC round-trip needed.
+      additionalArguments: [
+        `--decibell-media-server-port=${getMediaServerPort()}`,
+      ],
     },
   });
 
@@ -407,6 +447,11 @@ app.whenReady().then(async () => {
   registerFsHandlers();
   registerNetHandlers();
 
+  // Loopback HTTP proxy for `<video>` / `<audio>` element sources. See
+  // mediaServer.ts header for the why; the port the OS picks is passed
+  // into the renderer through BrowserWindow additionalArguments below.
+  await startMediaServer();
+
   // PR8: getDisplayMedia handler.
   //
   // Electron rejects renderer-initiated `getDisplayMedia` with
@@ -507,6 +552,7 @@ app.on("before-quit", async (e) => {
   try {
     await Promise.race([shutdownAddon(), timeout]);
   } finally {
+    stopMediaServer();
     app.exit(0);
   }
 });

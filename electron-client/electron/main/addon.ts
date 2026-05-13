@@ -75,23 +75,41 @@ const binaryPath = path.join(addonDir(), platformBinaryName());
 // same directory (avcodec / avutil / avformat / swresample / swscale).
 // Windows' DLL loader searches the EXECUTABLE's directory by default,
 // not the .node module's directory, so these would be invisible to
-// secondary LoadLibrary calls inside FFmpeg (e.g. NVENC's MFT loading
-// nvcuda.dll, h264_nvenc opening its codec). Prepending addonDir() to
-// PATH lights them up for both the initial process.dlopen below AND
-// any later LoadLibrary FFmpeg makes from inside its own code.
+// process.dlopen unless we widen the search path. We prepend
+// addonDir() to PATH *only for the dlopen call*, then revert.
 //
-// In dev this is harmless — the developer typically has VCPKG bin on
-// PATH already, and prepending the dev native/ dir (which also has
-// the DLLs after `copy-dlls.cjs`) is redundant but cheap.
+// Why scope it: leaving addonDir() in PATH for the whole process means
+// every child Chromium spawns (audio service, GPU process, renderer)
+// inherits it. Those child processes do their own LoadLibrary lookups
+// for media codecs, and having our vcpkg FFmpeg DLLs at the front of
+// PATH was breaking video/audio attachment playback — Chromium's
+// pipeline ends up resolving its codec dependencies in our addon dir
+// instead of its own bundle. Once process.dlopen returns, the .node's
+// direct DLL imports are pinned and PATH no longer matters for them.
+//
+// Trade-off: FFmpeg runtime lazy-loads (NVENC asking the kernel for
+// nvcuda.dll, etc.) won't see addonDir() either. In practice those
+// libs all live in System32, which the Windows loader searches by
+// default regardless of PATH, so this isn't a real regression for
+// streaming. If a future config needs an addonDir() lib at runtime,
+// the right place to re-prepend is the encoder init path, not the
+// global app boot.
+const originalPath = process.env.PATH ?? "";
 if (process.platform === "win32") {
-  process.env.PATH = `${addonDir()};${process.env.PATH ?? ""}`;
+  process.env.PATH = `${addonDir()};${originalPath}`;
 }
 
-process.dlopen(
-  addonModule as unknown as NodeJS.Module,
-  binaryPath,
-  os.constants.dlopen.RTLD_NOW,
-);
+try {
+  process.dlopen(
+    addonModule as unknown as NodeJS.Module,
+    binaryPath,
+    os.constants.dlopen.RTLD_NOW,
+  );
+} finally {
+  if (process.platform === "win32") {
+    process.env.PATH = originalPath;
+  }
+}
 export const addon: Record<string, unknown> = addonModule.exports;
 // eslint-disable-next-line no-console
 console.log("[decibell] addon loaded, exports:", Object.keys(addon));

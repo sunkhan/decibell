@@ -112,11 +112,30 @@ export function registerAttachmentProtocol(): void {
         return new Response("not connected", { status: 404 });
       }
       const upstream = `https://${target.host}:${target.port}/attachments/${attachmentId}${url.search}`;
+      // Forward the byte-range probe that Chromium's <video>/<audio>
+      // media pipeline relies on. Without this, every probe (moov-atom
+      // discovery, scrub seeks, resume from cache) hits upstream as a
+      // full GET and the server replies 200 OK with the whole file —
+      // which Chromium can't use to seek, so playback hangs on the
+      // first frame. The community server already speaks 206 Partial
+      // Content (attachment_http.cpp:684); we just need to deliver the
+      // header to it. If-Range / If-None-Match come along for the
+      // ride so conditional revalidation also works.
+      const upstreamHeaders: Record<string, string> = {
+        Authorization: `Bearer ${target.jwt}`,
+      };
+      const passthrough = ["range", "if-range", "if-none-match", "if-modified-since"];
+      for (const name of passthrough) {
+        const v = req.headers.get(name);
+        if (v) upstreamHeaders[name] = v;
+      }
       // eslint-disable-next-line no-console
-      console.log(`[attachment] GET ${upstream}`);
+      console.log(
+        `[attachment] GET ${upstream}${upstreamHeaders.range ? ` ${upstreamHeaders.range}` : ""}`,
+      );
       const resp = await net.fetch(upstream, {
         method: "GET",
-        headers: { Authorization: `Bearer ${target.jwt}` },
+        headers: upstreamHeaders,
       });
       // eslint-disable-next-line no-console
       console.log(`[attachment] → ${resp.status} ${resp.statusText}`);

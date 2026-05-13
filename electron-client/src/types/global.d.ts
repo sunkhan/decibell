@@ -5,6 +5,7 @@ declare global {
   interface Window {
     decibell: {
       platform: NodeJS.Platform;
+      mediaServerPort: number;
       invoke: (method: string, args: unknown) => Promise<unknown>;
       listen: (
         name: string,

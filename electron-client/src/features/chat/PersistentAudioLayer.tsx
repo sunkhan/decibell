@@ -83,6 +83,13 @@ export default function PersistentAudioLayer() {
       onDurationChange={(e) =>
         setPlaybackState({ duration: e.currentTarget.duration || 0 })
       }
+      onError={(e) => {
+        const el = e.currentTarget;
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[audio] media error code=${el.error?.code} message=${el.error?.message} src=${el.currentSrc}`,
+        );
+      }}
       onVolumeChange={(e) => {
         // Mirror element → uiStore so any chat-side slider re-renders
         // with the live value, and persist so the level survives
