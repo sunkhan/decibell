@@ -71,26 +71,27 @@ export default function ServerBar() {
       {/* Server tabs */}
       <div className="flex flex-1 items-center gap-2 px-2">
         {connected.map((server) => (
-          <button
-            key={server.id}
-            onClick={() => handleServerClick(server.id)}
-            className={`group relative flex h-[38px] shrink-0 items-center gap-2 rounded-lg px-3.5 text-[13px] font-semibold transition-all duration-200 ${
-              activeServerId === server.id
-                ? "bg-accent-mid text-accent-bright shadow-[0_2px_12px_rgba(56,143,255,0.10)]"
-                : "text-text-secondary hover:bg-surface-hover hover:text-text-primary hover:-translate-y-px"
-            }`}
-          >
-            {activeServerId === server.id && (
-              <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
-            )}
-
-            <div
-              className="flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
-              style={{ background: stringToGradient(server.name) }}
+          <div key={server.id} className="group relative">
+            <button
+              onClick={() => handleServerClick(server.id)}
+              className={`relative flex h-[38px] shrink-0 items-center gap-2 rounded-lg px-3.5 text-[13px] font-semibold transition-all duration-200 ${
+                activeServerId === server.id
+                  ? "bg-accent-mid text-accent-bright shadow-[0_2px_12px_rgba(56,143,255,0.10)]"
+                  : "text-text-secondary hover:bg-surface-hover hover:text-text-primary hover:-translate-y-px"
+              }`}
             >
-              {server.name.charAt(0).toUpperCase()}
-            </div>
-            <span className="max-w-[100px] truncate">{server.name}</span>
+              {activeServerId === server.id && (
+                <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
+              )}
+
+              <div
+                className="flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
+                style={{ background: stringToGradient(server.name) }}
+              >
+                {server.name.charAt(0).toUpperCase()}
+              </div>
+              <span className="max-w-[100px] truncate">{server.name}</span>
+            </button>
 
             <button
               onClick={(e) => handleDisconnect(e, server.id)}
@@ -99,7 +100,7 @@ export default function ServerBar() {
             >
               ×
             </button>
-          </button>
+          </div>
         ))}
 
         {connected.length > 0 && (
