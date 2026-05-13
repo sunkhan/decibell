@@ -43,7 +43,7 @@ export default function LoginPage() {
 
   return (
     <div className="relative flex h-screen w-screen items-center justify-center bg-bg-primary">
-      <p className="absolute bottom-3 right-4 text-[11px] text-text-muted">Decibell 0.6.2</p>
+      <p className="absolute bottom-3 right-4 text-[11px] text-text-muted">Decibell 0.6.3</p>
       <form
         onSubmit={handleSubmit}
         className="w-full max-w-[400px] rounded-2xl border border-border bg-bg-secondary p-8 shadow-2xl"
