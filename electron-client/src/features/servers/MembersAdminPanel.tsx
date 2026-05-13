@@ -3,7 +3,7 @@ import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
-import { stringToGradient } from "../../utils/colors";
+import { UserAvatar } from "../../components/UserAvatar";
 
 type Tab = "members" | "bans";
 
@@ -166,12 +166,7 @@ export default function MembersAdminPanel() {
                     >
                       {/* Avatar */}
                       <div className="relative shrink-0">
-                        <div
-                          className="flex h-9 w-9 items-center justify-center rounded-lg text-[14px] font-semibold text-white"
-                          style={{ background: stringToGradient(m.username) }}
-                        >
-                          {m.username.charAt(0).toUpperCase()}
-                        </div>
+                        <UserAvatar username={m.username} size={36} />
                         <div
                           className={`absolute -bottom-px -right-px h-[11px] w-[11px] rounded-full border-[2.5px] border-bg-dark ${
                             m.isOnline ? "bg-success" : "bg-text-muted"
@@ -246,11 +241,8 @@ export default function MembersAdminPanel() {
                   key={username}
                   className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 transition-colors hover:bg-surface-hover"
                 >
-                  <div
-                    className="flex h-9 w-9 items-center justify-center rounded-lg text-[14px] font-semibold text-white opacity-50"
-                    style={{ background: stringToGradient(username) }}
-                  >
-                    {username.charAt(0).toUpperCase()}
+                  <div className="opacity-50">
+                    <UserAvatar username={username} size={36} />
                   </div>
                   <span className="flex-1 truncate text-[13px] font-medium text-text-secondary">
                     {username}

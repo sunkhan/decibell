@@ -7,6 +7,7 @@ import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
 import { useChatStore } from "../../stores/chatStore";
 import { stringToGradient } from "../../utils/colors";
+import { UserAvatar } from "../../components/UserAvatar";
 
 // Anchored profile popup. Triggered from anywhere a username is shown
 // (members list, message bubble click, etc.) by calling
@@ -116,7 +117,6 @@ export default function UserProfilePopup() {
   };
 
   const gradient = stringToGradient(username);
-  const initial = username.charAt(0).toUpperCase();
 
   return createPortal(
     <div className="fixed inset-0 z-[9999] isolate">
@@ -143,11 +143,8 @@ export default function UserProfilePopup() {
         <div className="h-[60px]" style={{ background: gradient }} />
 
         <div className="relative h-7 mx-4">
-          <div
-            className="absolute -top-9 left-0 flex h-16 w-16 items-center justify-center rounded-2xl border-[4px] border-bg-light text-[22px] font-bold text-white"
-            style={{ background: gradient }}
-          >
-            {initial}
+          <div className="absolute -top-9 left-0 rounded-2xl border-[4px] border-bg-light">
+            <UserAvatar username={username} size={64} className="!rounded-[10px]" />
             <div
               className={`absolute -bottom-px -right-px h-[14px] w-[14px] rounded-full border-[3px] border-bg-light ${
                 isOnline ? "bg-success" : "bg-text-muted"

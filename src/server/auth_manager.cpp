@@ -1,4 +1,5 @@
 #include "auth_manager.hpp"
+#include "auth_utils.hpp"
 #include "bcrypt.h"
 #include <chrono>
 #include <iostream>
@@ -14,6 +15,16 @@ void AuthManager::initializeDatabase() {
             "  email VARCHAR(128) UNIQUE NOT NULL,"
             "  password_hash VARCHAR(128) NOT NULL"
             ")"
+        );
+        // Avatar columns added 2026-05-12 (see docs/superpowers/specs/
+        // 2026-05-12-custom-profile-pictures-design.md §5). ADD COLUMN
+        // IF NOT EXISTS makes this idempotent on already-deployed servers.
+        txn.exec(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar BYTEA"
+        );
+        txn.exec(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+            "avatar_version VARCHAR(64) NOT NULL DEFAULT ''"
         );
         txn.exec(
             "CREATE TABLE IF NOT EXISTS friends ("
@@ -323,22 +334,32 @@ std::vector<chatproj::FriendInfo> AuthManager::getFriends(const std::string& use
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         
+        // JOIN users on the friend (the row's other-side username) so
+        // each FriendInfo carries that user's avatar_version. Clients
+        // use it to invalidate their per-user avatar cache without
+        // an extra fetch per friend.
         pqxx::result res = txn.exec_params(
-            "SELECT user1, user2, status, action_user FROM friends WHERE user1 = $1 OR user2 = $1", 
+            "SELECT f.user1, f.user2, f.status, f.action_user, u.avatar_version "
+            "FROM friends f "
+            "JOIN users u ON u.username = "
+            "  CASE WHEN f.user1 = $1 THEN f.user2 ELSE f.user1 END "
+            "WHERE f.user1 = $1 OR f.user2 = $1",
             username
         );
-        
+
         for (auto row : res) {
             std::string u1 = row[0].as<std::string>();
             std::string u2 = row[1].as<std::string>();
             std::string status = row[2].as<std::string>();
             std::string action_user = row[3].as<std::string>();
-            
+            std::string avatar_version = row[4].as<std::string>("");
+
             std::string friend_name = (u1 == username) ? u2 : u1;
-            
+
             chatproj::FriendInfo info;
             info.set_username(friend_name);
-            
+            info.set_avatar_version(avatar_version);
+
             if (status == "ACCEPTED") {
                 info.set_status(chatproj::FriendInfo::OFFLINE); // Default
             } else if (status == "PENDING") {
@@ -360,4 +381,68 @@ std::vector<chatproj::FriendInfo> AuthManager::getFriends(const std::string& use
         std::cerr << "[DB Error] getFriends: " << e.what() << "\n";
     }
     return friends;
+}
+
+// ─── Avatar storage ──────────────────────────────────────────────────────
+
+std::string AuthManager::setAvatar(const std::string& username,
+                                    const std::string& data) {
+    pqxx::connection conn(db_conn_str_);
+    pqxx::work txn(conn);
+    if (data.empty()) {
+        // Remove: NULL the bytes, clear the version.
+        txn.exec_params(
+            "UPDATE users SET avatar = NULL, avatar_version = '' "
+            "WHERE username = $1",
+            username);
+        txn.commit();
+        return std::string();
+    }
+    const std::string version = chatproj::sha256(data);
+    txn.exec_params(
+        "UPDATE users SET avatar = $1, avatar_version = $2 "
+        "WHERE username = $3",
+        pqxx::binarystring(data.data(), data.size()),
+        version, username);
+    txn.commit();
+    return version;
+}
+
+std::pair<std::string, std::string> AuthManager::getAvatar(
+    const std::string& username) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "SELECT avatar, avatar_version FROM users WHERE username = $1",
+            username);
+        txn.commit();
+        if (rs.empty()) return {std::string(), std::string()};
+        std::string version = rs[0]["avatar_version"].as<std::string>("");
+        std::string data;
+        if (!rs[0]["avatar"].is_null()) {
+            pqxx::binarystring blob(rs[0]["avatar"]);
+            data.assign(blob.data(), blob.size());
+        }
+        return {version, data};
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getAvatar: " << e.what() << "\n";
+        return {std::string(), std::string()};
+    }
+}
+
+std::string AuthManager::getAvatarVersion(const std::string& username) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "SELECT avatar_version FROM users WHERE username = $1",
+            username);
+        txn.commit();
+        if (rs.empty()) return std::string();
+        return rs[0][0].as<std::string>("");
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getAvatarVersion: " << e.what() << "\n";
+        return std::string();
+    }
 }

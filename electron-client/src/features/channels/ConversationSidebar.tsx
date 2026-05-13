@@ -3,7 +3,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
 import { useChatStore } from "../../stores/chatStore";
-import { stringToGradient } from "../../utils/colors";
+import { UserAvatar } from "../../components/UserAvatar";
 import { useSidebarResize } from "./useSidebarResize";
 
 function formatRelativeTime(epochMs: number): string {
@@ -85,12 +85,7 @@ export default function ConversationSidebar() {
                 }`}
               >
                 <div className="relative shrink-0">
-                  <div
-                    className="flex h-[34px] w-[34px] items-center justify-center rounded-lg text-sm font-bold text-white"
-                    style={{ background: stringToGradient(conv.username) }}
-                  >
-                    {conv.username.charAt(0).toUpperCase()}
-                  </div>
+                  <UserAvatar username={conv.username} size={34} />
                   <div
                     className={`absolute -bottom-px -right-px h-2.5 w-2.5 rounded-full border-2 border-bg-dmbar ${
                       isOnline ? "bg-success" : "bg-text-muted"

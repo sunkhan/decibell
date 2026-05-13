@@ -461,14 +461,27 @@ pub fn emit_channel_wiped(payload: ChannelWipedPayload) {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserListUpdatedPayload {
-    pub online_users: Vec<String>,
+    pub users: Vec<UserPresencePayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserPresencePayload {
+    pub username: String,
+    /// sha256-hex of the user's current avatar bytes; '' when no
+    /// avatar set. avatarStore consumes this for cache invalidation
+    /// (see docs/superpowers/specs/2026-05-12-custom-profile-pictures-design.md §7).
+    pub avatar_version: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FriendInfoPayload {
     pub username: String,
     /// "online" | "offline" | "pending_incoming" | "pending_outgoing" | "blocked"
     pub status: String,
+    /// sha256-hex of the friend's current avatar bytes; '' when none.
+    pub avatar_version: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -482,8 +495,8 @@ pub struct FriendActionRespondedPayload {
     pub message: String,
 }
 
-pub fn emit_user_list_updated(online_users: Vec<String>) {
-    send(USER_LIST_UPDATED, UserListUpdatedPayload { online_users });
+pub fn emit_user_list_updated(users: Vec<UserPresencePayload>) {
+    send(USER_LIST_UPDATED, UserListUpdatedPayload { users });
 }
 
 pub fn emit_friend_list_received(friends: Vec<FriendInfoPayload>) {

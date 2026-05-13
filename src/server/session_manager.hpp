@@ -45,6 +45,21 @@ public:
 
     void broadcast_presence();
 
+    /// Push AvatarChanged to every active authenticated session.
+    /// Fires on every UPDATE_AVATAR_REQ that mutates a user's avatar
+    /// (including removal — version is '' in that case). Delegates
+    /// to broadcast() which handles serialization + framing + the
+    /// session-iteration mutex.
+    void broadcast_avatar_changed(const std::string& username,
+                                  const std::string& version) {
+        chatproj::Packet packet;
+        packet.set_type(chatproj::Packet::AVATAR_CHANGED);
+        auto* payload = packet.mutable_avatar_changed();
+        payload->set_username(username);
+        payload->set_version(version);
+        broadcast(packet);
+    }
+
     void kick_user(const std::string& username);
 
     void sweep_stale(std::chrono::seconds timeout);

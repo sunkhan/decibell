@@ -307,7 +307,15 @@ impl CentralClient {
                     });
                 }
                 Some(packet::Payload::PresenceUpdate(update)) => {
-                    events::emit_user_list_updated(update.online_users);
+                    let users: Vec<events::UserPresencePayload> = update
+                        .users
+                        .into_iter()
+                        .map(|u| events::UserPresencePayload {
+                            username: u.username,
+                            avatar_version: u.avatar_version,
+                        })
+                        .collect();
+                    events::emit_user_list_updated(users);
                 }
                 Some(packet::Payload::FriendListRes(resp)) => {
                     let friends: Vec<events::FriendInfoPayload> = resp
@@ -324,6 +332,7 @@ impl CentralClient {
                                 Err(_) => "unknown",
                             }
                             .to_string(),
+                            avatar_version: f.avatar_version,
                         })
                         .collect();
                     events::emit_friend_list_received(friends);
@@ -344,6 +353,47 @@ impl CentralClient {
                     } else {
                         log::debug!("Orphan InviteResolveRes for code {}", resp.code);
                     }
+                }
+                Some(packet::Payload::UpdateAvatarRes(resp)) => {
+                    // Fulfil the upload_avatar waiter. Single-slot
+                    // (only one upload in flight per session).
+                    let waiter = {
+                        let mut s = state.lock().await;
+                        s.pending_avatar_update.take()
+                    };
+                    if let Some(tx) = waiter {
+                        let _ = tx.send(resp);
+                    } else {
+                        log::debug!("Orphan UpdateAvatarRes");
+                    }
+                }
+                Some(packet::Payload::FetchAvatarRes(resp)) => {
+                    // Fulfil the fetch_avatar waiter keyed by the
+                    // echoed username.
+                    let waiter = {
+                        let mut s = state.lock().await;
+                        s.pending_avatar_fetches.remove(&resp.username)
+                    };
+                    if let Some(tx) = waiter {
+                        let _ = tx.send(resp);
+                    } else {
+                        log::debug!(
+                            "Orphan FetchAvatarRes for {}",
+                            resp.username
+                        );
+                    }
+                }
+                Some(packet::Payload::AvatarChanged(resp)) => {
+                    // Server-pushed cache-invalidation notice. Forwarded
+                    // to the renderer; avatarStore's listener invalidates
+                    // and refetches lazily on next display.
+                    events::send(
+                        "avatar_changed",
+                        serde_json::json!({
+                            "username": resp.username,
+                            "version": resp.version,
+                        }),
+                    );
                 }
                 _ => {
                     log::debug!("Unhandled central packet type: {}", packet.r#type);

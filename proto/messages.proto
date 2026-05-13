@@ -106,6 +106,13 @@ message Packet {
     STREAM_CODEC_CHANGED_NOTIFY = 58;  // streamer→server→all in channel
     UPDATE_CAPABILITIES_REQ = 59;      // client→community when caps refreshed mid-session
     STREAM_WATCHER_NOTIFY = 60;        // server→streamer on watch/unwatch (Plan C)
+
+    // Avatar bytes + cache-invalidation broadcast.
+    UPDATE_AVATAR_REQ = 61;            // client→central
+    UPDATE_AVATAR_RES = 62;            // central→client
+    FETCH_AVATAR_REQ = 63;             // client→central
+    FETCH_AVATAR_RES = 64;             // central→client
+    AVATAR_CHANGED = 65;               // central→all online sessions
   }
 
   Type type = 1;
@@ -184,6 +191,14 @@ message Packet {
     StreamCodecChangedNotify stream_codec_changed_notify = 60;
     UpdateCapabilitiesRequest update_capabilities_req = 61;
     StreamWatcherNotify stream_watcher_notify = 62;
+
+    // --- Avatar messages (see docs/superpowers/specs/
+    //     2026-05-12-custom-profile-pictures-design.md §4) ---
+    UpdateAvatarReq update_avatar_req = 63;
+    UpdateAvatarRes update_avatar_res = 64;
+    FetchAvatarReq fetch_avatar_req = 65;
+    FetchAvatarRes fetch_avatar_res = 66;
+    AvatarChanged avatar_changed = 67;
   }
 }
 
@@ -221,8 +236,16 @@ message DirectMessage {
   int64 timestamp = 4;
 }
 
+message UserPresence {
+  string username = 1;
+  string avatar_version = 2;   // '' when no avatar set
+}
+
+// Wire-breaking change from `repeated string online_users = 1;` —
+// each online user now carries their current avatar_version so
+// clients can detect cache misses without an explicit poll.
 message PresenceUpdate {
-  repeated string online_users = 1;
+  repeated UserPresence users = 1;
 }
 
 message ServerListRequest {
@@ -271,6 +294,7 @@ message FriendInfo {
     BLOCKED = 4;
   }
   Status status = 2;
+  string avatar_version = 3;       // '' when no avatar set
 }
 
 message FriendListReq {
@@ -729,4 +753,36 @@ message StreamWatcherNotify {
     LEFT = 2;
   }
   Action action = 4;
+}
+
+// --- Avatar Messages ---
+// Per-user profile pictures stored on central. Bytes are validated as
+// JPEG (magic 0xFF 0xD8) and capped at 200 KB on the server. Version
+// is sha256-hex of the bytes (empty string when no avatar). Clients
+// cache by (username, version); AvatarChanged broadcasts invalidate.
+// See docs/superpowers/specs/2026-05-12-custom-profile-pictures-design.md.
+
+message UpdateAvatarReq {
+  bytes data = 1;       // empty = remove; otherwise JPEG bytes, max 200 KB
+}
+
+message UpdateAvatarRes {
+  bool success = 1;
+  string message = 2;
+  string version = 3;   // sha256-hex; '' on removal
+}
+
+message FetchAvatarReq {
+  string username = 1;
+}
+
+message FetchAvatarRes {
+  string username = 1;
+  string version = 2;   // '' when user has no avatar
+  bytes data = 3;       // empty when version == ''
+}
+
+message AvatarChanged {
+  string username = 1;
+  string version = 2;   // '' on removal
 }

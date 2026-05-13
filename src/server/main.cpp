@@ -69,6 +69,11 @@ public:
     }
 
     std::string username() const { return username_; }
+    /// The user's current avatar_version, loaded at login and
+    /// refreshed inline on UPDATE_AVATAR_REQ. broadcast_presence
+    /// reads this so each UserPresence entry carries the version
+    /// without an extra DB query per broadcast.
+    const std::string& avatar_version() const { return avatar_version_; }
     bool dm_friends_only() const { return dm_friends_only_; }
 
     SessionManager& manager_;
@@ -181,6 +186,12 @@ private:
             if (token_opt.has_value()) {
                 authenticated_ = true;
                 username_ = req.username();
+                // Prime avatar_version_ so broadcast_presence below
+                // includes the right version on the user's
+                // UserPresence entry. Pulled from the users table
+                // once at login; later UPDATE_AVATAR_REQ handlers
+                // refresh it inline before broadcasting.
+                avatar_version_ = auth_manager_.getAvatarVersion(username_);
                 send_response(chatproj::Packet::LOGIN_RES, true, "Login successful!", token_opt.value());
                 manager_.broadcast_presence();
             } else {
@@ -321,7 +332,7 @@ private:
             if (!authenticated_) return;
 
             auto friends = auth_manager_.getFriends(username_);
-            
+
             chatproj::Packet res_packet;
             res_packet.set_type(chatproj::Packet::FRIEND_LIST_RES);
             auto* res = res_packet.mutable_friend_list_res();
@@ -340,6 +351,97 @@ private:
             res_packet.SerializeToString(&serialized);
             auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
             deliver(framed);
+        }
+
+        // --- AVATAR UPLOAD ---
+        // Empty bytes = remove. Otherwise validate JPEG magic + 200 KB cap,
+        // store via AuthManager, broadcast AvatarChanged to every online
+        // session. See docs/superpowers/specs/2026-05-12-custom-profile-
+        // pictures-design.md §5.
+        else if (packet.type() == chatproj::Packet::UPDATE_AVATAR_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.update_avatar_req();
+            const std::string& data = req.data();
+
+            chatproj::Packet response;
+            response.set_type(chatproj::Packet::UPDATE_AVATAR_RES);
+            auto* res = response.mutable_update_avatar_res();
+
+            if (!data.empty()) {
+                if (data.size() < 2 ||
+                    static_cast<unsigned char>(data[0]) != 0xFF ||
+                    static_cast<unsigned char>(data[1]) != 0xD8) {
+                    res->set_success(false);
+                    res->set_message("Not a JPEG");
+                    std::string s;
+                    response.SerializeToString(&s);
+                    deliver(std::make_shared<std::vector<uint8_t>>(
+                        chatproj::create_framed_packet(s)));
+                    return;
+                }
+                if (data.size() > 200 * 1024) {
+                    res->set_success(false);
+                    res->set_message("Avatar too large");
+                    std::string s;
+                    response.SerializeToString(&s);
+                    deliver(std::make_shared<std::vector<uint8_t>>(
+                        chatproj::create_framed_packet(s)));
+                    return;
+                }
+            }
+
+            std::string version;
+            try {
+                version = auth_manager_.setAvatar(username_, data);
+            } catch (const std::exception& e) {
+                std::cerr << "[Server] setAvatar failed: " << e.what() << "\n";
+                res->set_success(false);
+                res->set_message("Storage error");
+                std::string s;
+                response.SerializeToString(&s);
+                deliver(std::make_shared<std::vector<uint8_t>>(
+                    chatproj::create_framed_packet(s)));
+                return;
+            }
+
+            // Refresh our cached version so subsequent
+            // broadcast_presence calls (e.g. on a new client joining)
+            // see this session's new avatar_version.
+            avatar_version_ = version;
+
+            res->set_success(true);
+            res->set_version(version);
+            std::string s;
+            response.SerializeToString(&s);
+            deliver(std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(s)));
+
+            manager_.broadcast_avatar_changed(username_, version);
+        }
+
+        // --- AVATAR FETCH ---
+        // Authenticated callers can fetch anyone's avatar. Missing users
+        // or missing avatars both surface as empty version + empty data.
+        else if (packet.type() == chatproj::Packet::FETCH_AVATAR_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.fetch_avatar_req();
+            const std::string& target = req.username();
+
+            auto [version, data] = auth_manager_.getAvatar(target);
+
+            chatproj::Packet response;
+            response.set_type(chatproj::Packet::FETCH_AVATAR_RES);
+            auto* res = response.mutable_fetch_avatar_res();
+            res->set_username(target);
+            res->set_version(version);
+            if (!data.empty()) {
+                res->set_data(data);
+            }
+
+            std::string s;
+            response.SerializeToString(&s);
+            deliver(std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(s)));
         }
 
         // --- DM PRIVACY SETTING ---
@@ -442,6 +544,9 @@ private:
     
     bool authenticated_ = false;
     std::string username_;
+    /// Cached on login from users.avatar_version; updated inline on
+    /// UPDATE_AVATAR_REQ. Read by broadcast_presence.
+    std::string avatar_version_;
     bool dm_friends_only_ = false;
     AuthManager& auth_manager_;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
@@ -485,22 +590,27 @@ void SessionManager::broadcast_presence() {
     chatproj::Packet packet;
     packet.set_type(chatproj::Packet::PRESENCE_UPDATE);
     auto* presence = packet.mutable_presence_update();
-    
-    std::vector<std::string> active_users;
+
+    // Collect (username, avatar_version) for each session. Read each
+    // session's cached avatar_version (updated at login + on every
+    // UPDATE_AVATAR_REQ) rather than hitting the DB per broadcast.
+    std::vector<std::pair<std::string, std::string>> active_users;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const auto& session : sessions_) {
             std::string uname = session->username();
             if (!uname.empty()) {
-                active_users.push_back(uname);
+                active_users.emplace_back(uname, session->avatar_version());
             }
         }
     }
-    
-    for (const auto& u : active_users) {
-        presence->add_online_users(u);
+
+    for (const auto& [uname, ver] : active_users) {
+        auto* entry = presence->add_users();
+        entry->set_username(uname);
+        entry->set_avatar_version(ver);
     }
-    
+
     broadcast(packet);
 }
 

@@ -66,6 +66,18 @@ type CaptureSource = {
   kind: "screen" | "window";
 };
 
+// Loopback media-server port — passed in via BrowserWindow
+// additionalArguments at window-create time so it's available
+// synchronously here (no IPC round-trip). Falls back to 0 if absent,
+// which makes buildAttachmentUrl skip the http:// rewrite and the
+// custom protocol still handles non-media attachments fine.
+const mediaPortArg = process.argv.find((a) =>
+  a.startsWith("--decibell-media-server-port="),
+);
+const mediaServerPort = mediaPortArg
+  ? parseInt(mediaPortArg.split("=")[1], 10) || 0
+  : 0;
+
 contextBridge.exposeInMainWorld("decibell", {
   /// Platform identifier copied from Node's process.platform so the
   /// renderer can branch UI without lying via navigator.userAgent. The
@@ -73,6 +85,10 @@ contextBridge.exposeInMainWorld("decibell", {
   /// on Windows (no native Chromium picker until Electron 35) vs. let
   /// `getDisplayMedia` go through xdg-desktop-portal on Linux.
   platform: process.platform as NodeJS.Platform,
+  /// Port the main process's loopback media server is listening on.
+  /// Renderer constructs `http://127.0.0.1:${port}/attachments/<sid>/<aid>`
+  /// for `<video>` / `<audio>` element sources. See electron/main/mediaServer.ts.
+  mediaServerPort,
   invoke: (method: string, args: unknown): Promise<unknown> =>
     ipcRenderer.invoke("decibell:invoke", method, args),
   listen: async (name: string, cb: Handler): Promise<() => void> => {

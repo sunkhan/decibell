@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke, listen } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
+import { useAvatarStore } from "../../stores/avatarStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import type { ServerInfoPayload } from "../../types";
@@ -59,8 +60,22 @@ export function useAuthEvents() {
       useAuthStore.getState().logout();
       useChatStore.getState().resetForLogout();
       useUiStore.getState().setActiveView("home");
+      useAvatarStore.getState().clearAll();
       navigate("/login");
     });
+
+    // AvatarChanged broadcast: server tells us a user just updated
+    // their picture. setVersion invalidates the cache when the new
+    // version differs from the cached one; the next UserAvatar render
+    // for that user will re-fetch.
+    const unlistenAvatar = listen<{ username: string; version: string }>(
+      "avatar_changed",
+      (event) => {
+        useAvatarStore
+          .getState()
+          .setVersion(event.payload.username, event.payload.version);
+      },
+    );
 
     return () => {
       unlistenSuccess.then((fn) => fn());
@@ -68,6 +83,7 @@ export function useAuthEvents() {
       unlistenRegister.then((fn) => fn());
       unlistenServerList.then((fn) => fn());
       unlistenLoggedOut.then((fn) => fn());
+      unlistenAvatar.then((fn) => fn());
     };
   }, [navigate]);
 }
