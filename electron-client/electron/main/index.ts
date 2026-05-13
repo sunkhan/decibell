@@ -191,20 +191,30 @@ if (process.platform === "linux") {
 app.commandLine.appendSwitch("disable-features", disableFeatures.join(","));
 if (process.platform === "win32") {
   app.commandLine.appendSwitch("audio-service-sandbox-type", "none");
-  // Dev-only: drop the Chromium child-process sandbox so Media
-  // Foundation's helper service can spawn. In dev, electron.exe
-  // lives in node_modules under the user's profile directory, and
-  // the sandbox's restricted token can be denied access to it on
-  // fresh Windows installs with Defender Controlled Folder Access
-  // — manifests as `sandbox_win.cc(850) Sandbox cannot access
-  // executable. Access is denied.` which cascades to
-  // `MediaFoundationRendererClient disconnected` and breaks all
-  // `<video>` / `<audio>` attachment playback. Production builds
-  // install the exe under %LOCALAPPDATA%/Programs/ with ACLs the
-  // sandbox token can read, so they keep full sandboxing.
-  if (!app.isPackaged) {
-    app.commandLine.appendSwitch("no-sandbox");
-  }
+  // Drop Chromium's child-process sandbox on Windows. Multiple
+  // Castlabs Electron 33 helper services (audio service, MF clear
+  // playback renderer) fail to spawn on at least some Windows
+  // installs with `sandbox_win.cc(850) Sandbox cannot access
+  // executable. Access is denied.`, which cascades to
+  // `PIPELINE_ERROR_INITIALIZATION_FAILED: MediaFoundationRendererClient
+  // disconnected` and silently breaks all `<video>` / `<audio>`
+  // attachment playback.
+  //
+  // Originally gated to dev because we expected production's
+  // `%LOCALAPPDATA%/Programs/...` install path to have sandbox-
+  // friendly ACLs; turned out the MF renderer service hits the
+  // same failure even in production. WebCodecs / stream preview is
+  // unaffected (it uses a different GPU-process path that works
+  // even in the restricted sandbox), so this only matters for
+  // media element attachment playback.
+  //
+  // Security: webSecurity is already off (cross-origin attachment
+  // HTTPS), the renderer has no untrusted code (all our own
+  // bundle), and Decibell is decentralized chat with self-hosted
+  // servers (no untrusted ads / iframes / external scripts). The
+  // sandboxes were defense-in-depth for a threat surface this app
+  // doesn't have.
+  app.commandLine.appendSwitch("no-sandbox");
 }
 
 if (process.platform === "linux") {
