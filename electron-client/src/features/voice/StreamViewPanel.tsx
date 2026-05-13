@@ -2,9 +2,9 @@ import { useState, useRef, useCallback, useEffect, memo } from "react";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
-import { stringToGradient } from "../../utils/colors";
 import { invoke } from "../../lib/ipc";
 import { getCurrentWindow } from "../../lib/window";
+import { UserAvatar } from "../../components/UserAvatar";
 import StreamVideoPlayer from "./StreamVideoPlayer";
 
 function VolumeIcon({ muted }: { muted: boolean }) {
@@ -216,12 +216,7 @@ export default function StreamViewPanel() {
         >
           {!isFullscreen && (
             <div className="mb-2 flex items-center gap-2.5 px-1">
-              <div
-                className="flex h-6 w-6 items-center justify-center rounded-md text-[10px] font-semibold text-white"
-                style={{ background: stringToGradient(displayUser) }}
-              >
-                {displayUser.charAt(0).toUpperCase()}
-              </div>
+              <UserAvatar username={displayUser} size={24} />
               <span className="text-[13px] font-medium text-text-primary">
                 {displayUser}'s screen
               </span>
@@ -364,12 +359,7 @@ export default function StreamViewPanel() {
                 }}
               >
                 <div className="mb-2 flex items-center gap-2">
-                  <div
-                    className="flex h-[22px] w-[22px] items-center justify-center rounded-md text-[10px] font-semibold text-white"
-                    style={{ background: stringToGradient(displayUser) }}
-                  >
-                    {displayUser.charAt(0).toUpperCase()}
-                  </div>
+                  <UserAvatar username={displayUser} size={22} />
                   <span className="text-[12px] font-medium text-white">
                     {displayUser}'s screen
                   </span>
@@ -380,10 +370,9 @@ export default function StreamViewPanel() {
                     {participants.slice(0, 4).map((p) => (
                       <div
                         key={p.username}
-                        className="flex h-6 w-6 items-center justify-center rounded-md border-2 border-black text-[9px] font-semibold text-white"
-                        style={{ background: stringToGradient(p.username) }}
+                        className="rounded-md border-2 border-black"
                       >
-                        {p.username.charAt(0).toUpperCase()}
+                        <UserAvatar username={p.username} size={20} />
                       </div>
                     ))}
                   </div>
@@ -619,14 +608,13 @@ const SidebarParticipantRow = memo(function SidebarParticipantRow({
       }}
     >
       <div
-        className={`flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-semibold text-white ${
+        className={`rounded-md ${
           isSpeaking
             ? "shadow-[0_0_0_2px_var(--color-bg-dark),0_0_0_3.5px_var(--color-success)]"
             : ""
         }`}
-        style={{ background: stringToGradient(username) }}
       >
-        {username.charAt(0).toUpperCase()}
+        <UserAvatar username={username} size={28} />
       </div>
       <div className="min-w-0">
         <div className="truncate text-[11px] font-medium text-text-secondary">

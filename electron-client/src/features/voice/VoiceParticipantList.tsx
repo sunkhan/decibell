@@ -2,7 +2,7 @@ import { memo } from "react";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
-import { stringToGradient } from "../../utils/colors";
+import { UserAvatar } from "../../components/UserAvatar";
 
 interface Props {
   usernames?: string[];
@@ -92,12 +92,7 @@ const PresenceRow = memo(function PresenceRow({
         openContextMenu(username, { x: e.clientX, y: e.clientY });
       }}
     >
-      <div
-        className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-[10px] font-bold text-white"
-        style={{ background: stringToGradient(username) }}
-      >
-        {username.charAt(0).toUpperCase()}
-      </div>
+      <UserAvatar username={username} size={22} />
       <span className="min-w-0 truncate">{username}</span>
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         {isStreaming && <LiveBadge />}
@@ -158,13 +153,12 @@ const ActiveRow = memo(function ActiveRow({
       }}
     >
       <div
-        className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-[10px] font-bold text-white transition-shadow duration-200"
+        className="shrink-0 rounded-md transition-shadow duration-200"
         style={{
-          background: stringToGradient(username),
           boxShadow: isSpeaking ? "0 0 0 2px #3fb950, 0 0 6px #3fb950" : "none",
         }}
       >
-        {username.charAt(0).toUpperCase()}
+        <UserAvatar username={username} size={22} />
       </div>
       <span className="min-w-0 truncate">{username}</span>
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
