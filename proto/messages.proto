@@ -113,6 +113,10 @@ message Packet {
     FETCH_AVATAR_REQ = 63;             // client→central
     FETCH_AVATAR_RES = 64;             // central→client
     AVATAR_CHANGED = 65;               // central→all online sessions
+
+    // Live-stream popup: on-demand thumbnail fetch (community server).
+    FETCH_STREAM_THUMBNAIL_REQ = 66;
+    FETCH_STREAM_THUMBNAIL_RES = 67;
   }
 
   Type type = 1;
@@ -199,6 +203,11 @@ message Packet {
     FetchAvatarReq fetch_avatar_req = 65;
     FetchAvatarRes fetch_avatar_res = 66;
     AvatarChanged avatar_changed = 67;
+
+    // --- Live-stream popup thumbnails (see docs/superpowers/specs/
+    //     2026-05-14-live-stream-indicators-design.md §2) ---
+    FetchStreamThumbnailReq fetch_stream_thumbnail_req = 68;
+    FetchStreamThumbnailRes fetch_stream_thumbnail_res = 69;
   }
 }
 
@@ -785,4 +794,18 @@ message FetchAvatarRes {
 message AvatarChanged {
   string username = 1;
   string version = 2;   // '' on removal
+}
+
+// On-demand fetch of the latest thumbnail for a currently-streaming user.
+// Sent by the client when a UserProfilePopup opens for a user who's known
+// to be streaming. The community server keeps the most recent thumbnail
+// in `latest_thumbnails_` and replies with the JPEG bytes (or empty if
+// no frame has arrived yet).
+message FetchStreamThumbnailReq {
+  string owner_username = 1;
+}
+
+message FetchStreamThumbnailRes {
+  string owner_username = 1;
+  bytes thumbnail_data = 2;  // empty when no thumbnail cached yet
 }
