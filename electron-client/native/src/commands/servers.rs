@@ -8,7 +8,9 @@ use tokio::sync::oneshot;
 
 use crate::net::community::CommunityClient;
 use crate::net::connection::build_packet;
-use crate::net::proto::{packet, InviteResolveRequest, InviteResolveResponse, ServerListRequest};
+use crate::net::proto::{
+    packet, InviteResolveRequest, InviteResolveResponse, MembershipRevokeReq, ServerListRequest,
+};
 use crate::state;
 
 /// Ask the central server for the user's server list. The response
@@ -355,4 +357,51 @@ pub(crate) async fn connect_with_invite(
     s.communities.insert(server_id, client);
 
     Ok(())
+}
+
+#[napi(object)]
+pub struct DropMembershipArgs {
+    pub server_id: String,
+}
+
+/// Auto-rejoin stale-membership cleanup: tells central to drop the
+/// user's user_communities row for this server. Used when an
+/// auto-rejoin auth comes back with success=false (kicked/banned while
+/// offline). Authenticated via the user's JWT on the central session
+/// — central's MEMBERSHIP_REVOKE_REQ handler enforces self-revoke when
+/// the auth_token doesn't match the shared secret, ignoring the
+/// username field on the packet.
+#[napi]
+pub async fn request_drop_membership(args: DropMembershipArgs) -> napi::Result<()> {
+    let server_id: i64 = args.server_id.parse().map_err(|_| {
+        napi::Error::from_reason(format!("Invalid server_id: {}", args.server_id))
+    })?;
+
+    let state_arc = state::shared();
+    let (write_tx, data) = {
+        let s = state_arc.lock().await;
+        let token = s.token.clone();
+        let central = s
+            .central
+            .as_ref()
+            .ok_or_else(|| napi::Error::from_reason("Not connected to central server"))?;
+        let tx = central
+            .connection_write_tx()
+            .ok_or_else(|| napi::Error::from_reason("Central connection lost"))?;
+        let pkt = build_packet(
+            packet::Type::MembershipRevokeReq,
+            packet::Payload::MembershipRevokeReq(MembershipRevokeReq {
+                username: String::new(),
+                server_id,
+            }),
+            token.as_deref(),
+        );
+        (tx, pkt)
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
+        Err(_) => Err(napi::Error::from_reason("Send timed out")),
+    }
 }

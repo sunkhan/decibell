@@ -239,6 +239,19 @@ export interface AttachmentTarget {
  * connection reuse + Chromium's TLS stack.
  */
 export declare function getAttachmentTarget(args: GetAttachmentTargetArgs): Promise<AttachmentTarget | null>
+export interface DropMembershipArgs {
+  serverId: string
+}
+/**
+ * Auto-rejoin stale-membership cleanup: tells central to drop the
+ * user's user_communities row for this server. Used when an
+ * auto-rejoin auth comes back with success=false (kicked/banned while
+ * offline). Authenticated via the user's JWT on the central session
+ * — central's MEMBERSHIP_REVOKE_REQ handler enforces self-revoke when
+ * the auth_token doesn't match the shared secret, ignoring the
+ * username field on the packet.
+ */
+export declare function requestDropMembership(args: DropMembershipArgs): Promise<void>
 /**
  * Read the persisted config blob from disk. Returns
  * `{ credentials, settings }` as a JSON value so the renderer can
