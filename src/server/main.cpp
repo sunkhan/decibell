@@ -279,6 +279,82 @@ private:
             deliver(framed);
         }
 
+        // --- DM CONVERSATIONS REQ ---
+        // One-shot pull of all conversation previews + unread counts
+        // for the local user. Fired on login from the renderer to
+        // populate the DmSidebar cards.
+        else if (packet.type() == chatproj::Packet::DM_CONVERSATIONS_REQ) {
+            if (!authenticated_) return;
+
+            auto convs = auth_manager_.fetchDmConversations(username_);
+
+            chatproj::Packet response;
+            response.set_type(chatproj::Packet::DM_CONVERSATIONS_RES);
+            auto* res = response.mutable_dm_conversations_res();
+            for (const auto& c : convs) {
+                auto* preview = res->add_conversations();
+                preview->set_peer(c.peer);
+                preview->set_last_message_content(c.last_message_content);
+                preview->set_last_message_sender(c.last_message_sender);
+                preview->set_last_message_id(c.last_message_id);
+                preview->set_last_timestamp(c.last_timestamp);
+                preview->set_unread_count(c.unread_count);
+            }
+
+            std::string s;
+            response.SerializeToString(&s);
+            deliver(std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(s)));
+        }
+
+        // --- DM HISTORY REQ ---
+        // Paginated fetch of messages between the local user and
+        // `peer`. before_id=0 returns the latest page; client
+        // paginates upward by passing the oldest seen id.
+        else if (packet.type() == chatproj::Packet::DM_HISTORY_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.dm_history_req();
+            const std::string& peer = req.peer();
+            if (peer.empty()) return;
+
+            int32_t limit = req.limit();
+            if (limit <= 0) limit = 50;
+            if (limit > 200) limit = 200;
+
+            bool has_more = false;
+            auto rows = auth_manager_.fetchDmHistory(
+                username_, peer, req.before_id(), limit, has_more);
+
+            chatproj::Packet response;
+            response.set_type(chatproj::Packet::DM_HISTORY_RES);
+            auto* res = response.mutable_dm_history_res();
+            res->set_peer(peer);
+            res->set_has_more(has_more);
+            for (const auto& r : rows) {
+                auto* msg = res->add_messages();
+                msg->set_id(r.id);
+                msg->set_sender(r.sender);
+                msg->set_content(r.content);
+                msg->set_timestamp(r.timestamp);
+            }
+
+            std::string s;
+            response.SerializeToString(&s);
+            deliver(std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(s)));
+        }
+
+        // --- DM MARK READ REQ ---
+        // Fire-and-forget: update dm_read_state.last_read_id so the
+        // next DM_CONVERSATIONS_REQ surfaces the correct unread
+        // count. No response — TCP delivery is the implicit ack.
+        else if (packet.type() == chatproj::Packet::DM_MARK_READ_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.dm_mark_read_req();
+            if (req.peer().empty()) return;
+            auth_manager_.markDmRead(username_, req.peer(), req.up_to_id());
+        }
+
         // --- SERVER LIST DIRECTORY ---
         else if (packet.type() == chatproj::Packet::SERVER_LIST_REQ) {
             if (!authenticated_) {
