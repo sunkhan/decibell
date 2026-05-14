@@ -147,6 +147,15 @@ public:
     void sync_invite_register(const std::string& code, int64_t expires_at);
     void sync_invite_unregister(const std::string& code);
 
+    // --- Auto-rejoin: server_id learned from SERVER_HEARTBEAT_RES ---
+    // (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)
+    int64_t server_id() const { return server_id_.load(); }
+    void set_server_id(int64_t id) { server_id_.store(id); }
+    // Idempotent membership sync (fire-and-forget over a one-shot
+    // TLS connection to central). Silently skips if server_id_ is 0.
+    void sync_membership_register(const std::string& username);
+    void sync_membership_revoke(const std::string& username);
+
     // Attachment config — reported to clients on CommunityAuthResponse so
     // they know where to upload and what size cap to pre-validate against.
     void set_attachment_config(int port, int64_t max_bytes) {
@@ -204,6 +213,12 @@ private:
 
     int attachment_port_ = 0;
     int64_t max_attachment_bytes_ = 0;
+
+    // Auto-rejoin: central-assigned community_servers.id. 0 means
+    // "not yet learned" — sync_membership_register/revoke silently
+    // skip when 0. Loaded from CommunityDb at startup; refreshed by
+    // every SERVER_HEARTBEAT_RES.
+    std::atomic<int64_t> server_id_{0};
 
     std::mutex mutex_;
 };
@@ -2009,8 +2024,14 @@ void SessionManager::set_central_sync(const std::string& central_host, int centr
 namespace {
 // One-shot TLS send of a framed packet to central. Blocks briefly; call from
 // a detached thread so packet-handler coroutines never stall.
-void send_to_central_blocking(const std::string& host, int port,
-                              const std::vector<uint8_t>& framed) {
+//
+// If `read_response` is true and `out_response` is non-null, reads one framed
+// response packet from central with a short deadline before closing. Returns
+// true on success (or when no response was requested).
+bool send_to_central_blocking(const std::string& host, int port,
+                              const std::vector<uint8_t>& framed,
+                              bool read_response = false,
+                              chatproj::Packet* out_response = nullptr) {
     try {
         boost::asio::io_context io;
         ssl::context ctx(ssl::context::tlsv12_client);
@@ -2026,9 +2047,46 @@ void send_to_central_blocking(const std::string& host, int port,
         ssl_socket.handshake(ssl::stream_base::client);
 
         boost::asio::write(ssl_socket, boost::asio::buffer(framed));
+
+        if (!read_response || !out_response) {
+            ssl_socket.lowest_layer().close();
+            return true;
+        }
+
+        // Read one framed response with a 2-second deadline. Used by
+        // the heartbeat path to receive SERVER_HEARTBEAT_RES (the
+        // assigned community_servers.id).
+        boost::asio::steady_timer deadline(io);
+        deadline.expires_after(std::chrono::seconds(2));
+        bool timed_out = false;
+        deadline.async_wait([&](const boost::system::error_code& ec) {
+            if (!ec) {
+                timed_out = true;
+                boost::system::error_code ignore;
+                ssl_socket.lowest_layer().cancel(ignore);
+            }
+        });
+
+        uint32_t len_be = 0;
+        boost::asio::read(ssl_socket, boost::asio::buffer(&len_be, 4));
+        deadline.cancel();
+        if (timed_out) {
+            ssl_socket.lowest_layer().close();
+            return false;
+        }
+        uint32_t len = ntohl(len_be);
+        if (len == 0 || len > (1u << 20)) {
+            ssl_socket.lowest_layer().close();
+            return false;
+        }
+
+        std::vector<uint8_t> body(len);
+        boost::asio::read(ssl_socket, boost::asio::buffer(body));
         ssl_socket.lowest_layer().close();
+        return out_response->ParseFromArray(body.data(), static_cast<int>(body.size()));
     } catch (const std::exception& e) {
-        std::cerr << "[InviteSync] Failed: " << e.what() << "\n";
+        std::cerr << "[CentralSync] Failed: " << e.what() << "\n";
+        return false;
     }
 }
 } // namespace
@@ -2421,6 +2479,15 @@ int main() {
         boost::asio::io_context io_context;
         SessionManager manager;
         manager.set_db(&db);
+        // Auto-rejoin: hydrate the cached central server_id (learned
+        // via SERVER_HEARTBEAT_RES on a previous run) so membership-
+        // sync packets work as soon as the first user auths after
+        // restart, even before the first heartbeat lands.
+        if (int64_t cached = db.central_server_id(); cached > 0) {
+            manager.set_server_id(cached);
+            std::cout << "[Community] Loaded cached central server_id = "
+                      << cached << "\n";
+        }
         manager.set_central_sync(central_host, 8080, jwt_secret, public_ip, 8082);
         // Attachment HTTP/TLS listener. port+3 (= 8085 by default).
         const int attachment_port = 8082 + 3;

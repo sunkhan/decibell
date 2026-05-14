@@ -531,6 +531,22 @@ std::string CommunityDb::owner() const {
     return get_meta_("owner");
 }
 
+int64_t CommunityDb::central_server_id() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto s = get_meta_("central_server_id");
+    if (s.empty()) return 0;
+    try {
+        return std::stoll(s);
+    } catch (...) {
+        return 0;
+    }
+}
+
+void CommunityDb::set_central_server_id(int64_t id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    set_meta_("central_server_id", std::to_string(id));
+}
+
 std::string CommunityDb::server_name() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return get_meta_("server_name");

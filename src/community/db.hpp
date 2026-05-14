@@ -133,6 +133,13 @@ public:
     std::string server_name() const;
     std::string server_description() const;
 
+    // --- auto-rejoin: cached central-assigned server_id ---
+    // Survives community restarts so we don't depend on a fresh
+    // heartbeat landing before the first user authenticates after
+    // restart. Returns 0 if not yet learned.
+    int64_t central_server_id() const;
+    void set_central_server_id(int64_t id);
+
     // --- membership ---
     bool is_member(const std::string& username) const;
     bool add_member(const std::string& username);
