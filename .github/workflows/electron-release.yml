@@ -136,7 +136,21 @@ jobs:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: npm run build:native
 
+      # Pre-renders @twemoji/svg into src/components/emoji/twemoji-data.json,
+      # which is gitignored but imported by RichInput. Without this the
+      # vite build fails with "Could not resolve ../emoji/twemoji-data.json".
+      # The bundled `npm run build` script chains it with the others, but
+      # we invoke each step separately here to share the rust cache and
+      # parallelize, so it has to run on its own.
+      - name: Generate twemoji map
+        run: npm run build:twemoji
+
       - name: Build renderer + main
+        # Force bash on Windows too. PowerShell (the default on
+        # windows-latest) doesn't fail-fast on multi-line scripts, so a
+        # vite error here would silently fall through to `tsc` and the
+        # step would exit 0 with a missing dist/ — masking a real break.
+        shell: bash
         run: |
           npm run build:renderer
           npm run build:tsc
