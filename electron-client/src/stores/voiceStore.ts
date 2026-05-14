@@ -2,6 +2,16 @@ import { create } from "zustand";
 import type { VoiceParticipant, StreamInfo, ClientCapabilities, VideoCodec } from "../types";
 import { useVoiceStatsStore } from "./voiceStatsStore";
 
+/// Per-username view of all active streams across every connected
+/// community server. Used by UserPopup to look up "is this user live?"
+/// in O(1) without scanning all of activeStreams (which only tracks
+/// the local user's currently connected channel).
+export interface StreamLocation {
+  serverId: string;
+  channelId: string;
+  streamInfo: StreamInfo;
+}
+
 // Full voice store — the streaming-related slices (active streams,
 // watching, stream settings, isStreaming) live alongside voice state
 // because they share the same connection lifecycle and presence
@@ -14,6 +24,10 @@ interface VoiceState {
   connectedChannelId: string | null;
   participants: VoiceParticipant[];
   activeStreams: StreamInfo[];
+  /// Source-of-truth map of streaming users across every connected
+  /// community server. Driven by the `stream_presence_updated`
+  /// listener; UserPopup reads it by `username` lookup.
+  streamsByUser: Map<string, StreamLocation>;
   isMuted: boolean;
   isDeafened: boolean;
   /// Set instead of array so per-row subscribers can do O(1)
@@ -31,6 +45,7 @@ interface VoiceState {
   setConnectedChannel: (serverId: string | null, channelId: string | null) => void;
   setParticipants: (participants: VoiceParticipant[]) => void;
   setActiveStreams: (streams: StreamInfo[]) => void;
+  setStreamsByUser: (m: Map<string, StreamLocation>) => void;
   setMuted: (muted: boolean) => void;
   setDeafened: (deafened: boolean) => void;
   setSpeaking: (username: string, speaking: boolean) => void;
@@ -83,6 +98,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   connectedChannelId: null,
   participants: [],
   activeStreams: [],
+  streamsByUser: new Map(),
   isMuted: false,
   isDeafened: false,
   speakingUsers: new Set(),
@@ -102,6 +118,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       }),
     })),
   setActiveStreams: (streams) => set({ activeStreams: streams }),
+  setStreamsByUser: (m) => set({ streamsByUser: m }),
   setMuted: (muted) => set({ isMuted: muted }),
   setDeafened: (deafened) =>
     set(deafened ? { isDeafened: true, isMuted: true } : { isDeafened: false }),
@@ -248,6 +265,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       isStreamFullscreen: false,
       isStreaming: false,
       streamThumbnails: {},
+      streamsByUser: new Map(),
     });
   },
 }));
