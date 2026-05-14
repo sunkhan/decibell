@@ -128,10 +128,30 @@ export const useDmStore = create<DmState>((set) => ({
       const next = { ...state.conversations };
       for (const p of previews) {
         const existing = next[p.peer];
+        // Server's last_timestamp is Unix seconds; the sidebar's
+        // formatRelativeTime + the rest of the store work in ms.
+        const lastMessageTimeMs = p.lastTimestamp * 1000;
+        // Synthesize a single placeholder message from the preview
+        // so the sidebar can render last-message content + timestamp
+        // immediately, before the user clicks into the conversation
+        // and triggers request_dm_history. When the full history
+        // page arrives, appendHistory's id-based dedup removes this
+        // entry (the server's message with the same id replaces it).
+        // Skip synthesis if the conversation already has messages
+        // in-memory from this session.
+        const previewMessage: DmMessage = {
+          id: p.lastMessageId,
+          sender: p.lastMessageSender,
+          content: p.lastMessageContent,
+          timestamp: String(p.lastTimestamp),
+        };
+        const hasInMemoryMessages = (existing?.messages.length ?? 0) > 0;
         next[p.peer] = {
           username: p.peer,
-          messages: existing?.messages ?? [],
-          lastMessageTime: p.lastTimestamp,
+          messages: hasInMemoryMessages
+            ? existing!.messages
+            : [previewMessage],
+          lastMessageTime: lastMessageTimeMs,
           unreadCount: p.unreadCount,
           lastReadId: existing?.lastReadId ?? 0,
           // Server has at least the preview message; assume there
