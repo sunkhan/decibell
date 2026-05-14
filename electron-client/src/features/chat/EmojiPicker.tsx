@@ -375,7 +375,12 @@ function Section({
       data-category-id={id}
       className="mb-1"
     >
-      <div className="sticky top-0 z-10 bg-bg-light px-1.5 py-[6px] text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+      {/* `-top-px` plus a 1-px-thicker top padding pulls the sticky
+          header up by 1 pixel so its background extends under the
+          search-bar's bottom edge. Without this, fast scrolling
+          occasionally leaves a sub-pixel gap where emojis from the
+          scroll body show through behind the stuck header. */}
+      <div className="sticky -top-px z-10 bg-bg-light px-1.5 pb-[6px] pt-[7px] text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
         {label}
       </div>
       {hydrated ? (
