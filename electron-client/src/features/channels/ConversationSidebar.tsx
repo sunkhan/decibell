@@ -4,6 +4,7 @@ import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
 import { useChatStore } from "../../stores/chatStore";
 import { UserAvatar } from "../../components/UserAvatar";
+import MessageText from "../chat/MessageText";
 import { useSidebarResize } from "./useSidebarResize";
 
 function formatRelativeTime(epochMs: number): string {
@@ -78,7 +79,7 @@ export default function ConversationSidebar() {
               <button
                 key={conv.username}
                 onClick={() => handleClick(conv.username)}
-                className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors ${
+                className={`flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors ${
                   isActive
                     ? "bg-accent-soft text-text-bright"
                     : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
@@ -98,7 +99,11 @@ export default function ConversationSidebar() {
                   </div>
                   {lastMsg && (
                     <div className="truncate font-channel text-[11px] font-normal text-text-muted">
-                      {lastMsg.content}
+                      <MessageText
+                        content={lastMsg.content}
+                        emojiSize={13}
+                        preview
+                      />
                     </div>
                   )}
                 </div>

@@ -53,7 +53,7 @@ export default function ServerBar() {
       <div className="flex w-[68px] shrink-0 items-center justify-center">
         <button
           onClick={() => { setActiveServer(null); setActiveChannel(null); setActiveView("home"); }}
-          className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-xl transition-all duration-200 ${
+          className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-md transition-all duration-200 ${
             activeView === "home"
               ? "bg-accent text-white shadow-[0_0_0_2px_var(--color-accent)]"
               : "bg-surface-active text-text-secondary hover:bg-accent hover:text-white hover:-translate-y-0.5"

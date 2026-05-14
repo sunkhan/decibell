@@ -4,7 +4,7 @@ import { useFriendsStore } from "../../stores/friendsStore";
 import { useUiStore } from "../../stores/uiStore";
 import FriendActionButton from "./FriendActionButton";
 import type { FriendInfo } from "../../types";
-import { stringToGradient } from "../../utils/colors";
+import { UserAvatar } from "../../components/UserAvatar";
 
 function FriendRow({ friend }: { friend: FriendInfo }) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
@@ -26,12 +26,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
       }}
     >
       <div className="relative shrink-0">
-        <div
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-[13px] font-bold text-white"
-          style={{ background: stringToGradient(friend.username) }}
-        >
-          {friend.username.charAt(0).toUpperCase()}
-        </div>
+        <UserAvatar username={friend.username} size={32} />
         {(friend.status === "online" || friend.status === "offline") && (
           <div
             className={`absolute -bottom-px -right-px h-[10px] w-[10px] rounded-full border-[2.5px] border-bg-secondary ${

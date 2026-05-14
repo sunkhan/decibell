@@ -348,6 +348,10 @@ export default function ChatPanel() {
                 )}
                 serverId={activeServerId}
                 isLast={index === messages.length - 1}
+                // Align avatar's left edge with the input bar card's
+                // left edge: outer wrapper `px-3` = 12px from chat
+                // panel's left. The card's rounded border starts there.
+                paddingLeft={12}
               />
             )}
             className="flex-1"

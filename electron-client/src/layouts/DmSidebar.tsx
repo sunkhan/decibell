@@ -41,7 +41,7 @@ export default function DmSidebar() {
             <button
               key={conv.username}
               onClick={() => handleDmClick(conv.username)}
-              className={`relative shrink-0 rounded-md transition-all duration-200 hover:-translate-y-0.5 ${
+              className={`relative shrink-0 cursor-pointer rounded-md transition-all duration-200 hover:-translate-y-0.5 ${
                 isActive ? "shadow-[0_0_0_2px_var(--color-accent)]" : ""
               }`}
               title={conv.username}
@@ -54,7 +54,7 @@ export default function DmSidebar() {
               />
               {conv.unreadCount > 0 && (
                 <div
-                  className="absolute -top-px -right-px flex h-[16px] min-w-[16px] items-center justify-center rounded-full border-[2px] border-bg-darkest bg-error px-1 text-[9px] font-bold text-white"
+                  className="absolute -top-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full border-[2px] border-bg-darkest bg-error text-[9px] font-bold leading-none text-white"
                   title={`${conv.unreadCount} unread`}
                 >
                   {conv.unreadCount > 99 ? "99+" : conv.unreadCount}

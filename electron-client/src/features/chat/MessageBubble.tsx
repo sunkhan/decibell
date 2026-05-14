@@ -40,15 +40,39 @@ interface Props {
   grouped: boolean;
   serverId?: string | null;
   isLast?: boolean;
+  /// Override the bubble's left padding so the avatar aligns with the
+  /// text-input field below. ChatPanel passes a value accounting for
+  /// its attach button; DmChatPanel passes a smaller value matching
+  /// its input-bar inner padding.
+  paddingLeft?: number;
 }
 
-function MessageBubble({ message, grouped, serverId, isLast }: Props) {
+function MessageBubble({ message, grouped, serverId, isLast, paddingLeft = 8 }: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
 
+  // Shared sender-popup handlers used by both the avatar and the
+  // username — clicking either opens the profile popup at the
+  // element's right edge; right-click opens the context menu.
+  const handleSenderClick = (e: React.MouseEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    openProfilePopup(
+      message.sender,
+      { x: rect.right + 8, y: rect.top },
+      serverId,
+    );
+  };
+  const handleSenderContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    openContextMenu(message.sender, { x: e.clientX, y: e.clientY });
+  };
+
   if (grouped) {
     return (
-      <div className="group flex gap-3 rounded-xl px-2 py-px hover:bg-white/[0.015]">
+      <div
+        className="group flex gap-3 rounded-xl py-px pr-2 hover:bg-white/[0.015]"
+        style={{ paddingLeft }}
+      >
         <div className="flex w-[38px] shrink-0 items-baseline justify-end">
           <span className="text-[10px] font-medium leading-none text-text-muted opacity-0 group-hover:opacity-100">
             {parseTimestamp(message.timestamp).toLocaleTimeString([], {
@@ -74,29 +98,26 @@ function MessageBubble({ message, grouped, serverId, isLast }: Props) {
 
   return (
     <div
-      className={`group flex gap-3 rounded-xl px-2 pt-2.5 pb-0.5 hover:bg-white/[0.015]${
+      className={`group flex gap-3 rounded-xl pr-2 pt-2.5 pb-0.5 hover:bg-white/[0.015]${
         isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""
       }`}
+      style={{ paddingLeft }}
     >
-      <UserAvatar username={message.sender} size={38} />
+      <div
+        className="cursor-pointer"
+        onClick={handleSenderClick}
+        onContextMenu={handleSenderContextMenu}
+      >
+        <UserAvatar username={message.sender} size={38} />
+      </div>
 
       <div className="select-text min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span
             className="cursor-pointer text-sm font-bold hover:underline"
             style={{ color: stringToColor(message.sender) }}
-            onClick={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              openProfilePopup(
-                message.sender,
-                { x: rect.right + 8, y: rect.top },
-                serverId,
-              );
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              openContextMenu(message.sender, { x: e.clientX, y: e.clientY });
-            }}
+            onClick={handleSenderClick}
+            onContextMenu={handleSenderContextMenu}
           >
             {message.sender}
           </span>

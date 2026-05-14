@@ -207,8 +207,8 @@ function ImageItem({
   // adjacent cells. Standalone mode: reserve the sqrt-scaled box and
   // use object-contain to preserve the full image.
   const wrapperClass = fillCell
-    ? "block h-full w-full overflow-hidden bg-bg-secondary"
-    : "block overflow-hidden rounded-xl border border-border bg-bg-secondary";
+    ? "block h-full w-full cursor-pointer overflow-hidden bg-bg-secondary"
+    : "block cursor-pointer overflow-hidden rounded-xl border border-border bg-bg-secondary";
   const wrapperStyle: React.CSSProperties | undefined = fillCell
     ? undefined
     : { width: box.width, height: box.height };

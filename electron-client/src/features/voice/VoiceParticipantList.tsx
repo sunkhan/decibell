@@ -78,7 +78,7 @@ const PresenceRow = memo(function PresenceRow({
 
   return (
     <div
-      className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-hover"
+      className="group flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(
@@ -93,7 +93,9 @@ const PresenceRow = memo(function PresenceRow({
       }}
     >
       <UserAvatar username={username} size={22} />
-      <span className="min-w-0 truncate">{username}</span>
+      <span className="min-w-0 truncate text-text-secondary transition-colors group-hover:text-text-primary">
+        {username}
+      </span>
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         {isStreaming && <LiveBadge />}
         {isLocallyMuted && <LocalMuteIcon />}
@@ -138,7 +140,7 @@ const ActiveRow = memo(function ActiveRow({
 
   return (
     <div
-      className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-hover"
+      className="group flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(
@@ -160,7 +162,15 @@ const ActiveRow = memo(function ActiveRow({
       >
         <UserAvatar username={username} size={22} />
       </div>
-      <span className="min-w-0 truncate">{username}</span>
+      <span
+        className={`min-w-0 truncate transition-colors ${
+          isSpeaking
+            ? "text-[#3fb950]"
+            : "text-text-secondary group-hover:text-text-primary"
+        }`}
+      >
+        {username}
+      </span>
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         {isStreaming && <LiveBadge />}
         {isLocallyMuted && <LocalMuteIcon />}
