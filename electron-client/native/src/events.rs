@@ -206,6 +206,8 @@ pub const STREAM_CAPTURE_ENDED: &str = "stream_capture_ended";
 // stream_frame removed — encoded frames ride the binary STREAM_BUS
 // TSFN now (see install_stream_bus / send_stream_frame).
 pub const CAPS_REFRESHED: &str = "caps_refreshed";
+pub const DM_CONVERSATIONS_RECEIVED: &str = "dm_conversations_received";
+pub const DM_HISTORY_RECEIVED: &str = "dm_history_received";
 
 // ── Payload structs ───────────────────────────────────────────────
 
@@ -854,4 +856,48 @@ pub fn emit_stream_capture_ended() {
 
 pub fn emit_caps_refreshed() {
     send(CAPS_REFRESHED, serde_json::Value::Null);
+}
+
+// ── Persistent DMs ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmConversationPreviewPayload {
+    pub peer: String,
+    pub last_message_content: String,
+    pub last_message_sender: String,
+    pub last_message_id: i64,
+    pub last_timestamp: i64,
+    pub unread_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmConversationsReceivedPayload {
+    pub conversations: Vec<DmConversationPreviewPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmHistoryMessagePayload {
+    pub id: i64,
+    pub sender: String,
+    pub content: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmHistoryReceivedPayload {
+    pub peer: String,
+    pub messages: Vec<DmHistoryMessagePayload>,
+    pub has_more: bool,
+}
+
+pub fn emit_dm_conversations_received(payload: DmConversationsReceivedPayload) {
+    send(DM_CONVERSATIONS_RECEIVED, payload);
+}
+
+pub fn emit_dm_history_received(payload: DmHistoryReceivedPayload) {
+    send(DM_HISTORY_RECEIVED, payload);
 }
