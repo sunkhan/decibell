@@ -349,38 +349,47 @@ export default function DmChatPanel() {
             className="flex-1 bg-transparent text-sm leading-snug text-text-primary"
             maxHeight={160}
           />
-          <div className="relative self-end">
+          {/* Emoji + send buttons grouped in an inner flex so the
+              gap between them is gap-1 (4px) — matches the server-
+              channel ChatPanel pattern. Otherwise they'd be siblings
+              of the outer gap-2.5 (10px) parent and visually sit too
+              far apart. self-end is on the wrapper, not each button,
+              so they slide together when the textarea grows
+              multi-line. */}
+          <div className="flex shrink-0 self-end gap-1">
+            <div className="relative">
+              <button
+                ref={emojiTriggerRef}
+                onClick={() => setPickerOpen((v) => !v)}
+                className={`flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-md transition-colors ${
+                  pickerOpen
+                    ? "bg-surface-hover text-text-secondary"
+                    : "text-text-muted hover:text-text-secondary"
+                }`}
+                title="Emoji"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
+                </svg>
+              </button>
+              {pickerOpen && (
+                <EmojiPicker
+                  onSelect={(emoji) => insertEmoji(emoji)}
+                  onClose={() => setPickerOpen(false)}
+                  triggerRef={emojiTriggerRef}
+                />
+              )}
+            </div>
             <button
-              ref={emojiTriggerRef}
-              onClick={() => setPickerOpen((v) => !v)}
-              className={`flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-md transition-colors ${
-                pickerOpen
-                  ? "bg-surface-hover text-text-secondary"
-                  : "text-text-muted hover:text-text-secondary"
-              }`}
-              title="Emoji"
+              onClick={handleSend}
+              disabled={sending || !input.trim()}
+              className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
               </svg>
             </button>
-            {pickerOpen && (
-              <EmojiPicker
-                onSelect={(emoji) => insertEmoji(emoji)}
-                onClose={() => setPickerOpen(false)}
-                triggerRef={emojiTriggerRef}
-              />
-            )}
           </div>
-          <button
-            onClick={handleSend}
-            disabled={sending || !input.trim()}
-            className="flex h-[34px] w-[34px] shrink-0 items-center justify-center self-end rounded-md bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-            </svg>
-          </button>
         </div>
       </div>
     </div>
