@@ -126,14 +126,21 @@ export default function DmChatPanel() {
     if (latestId === 0 || latestId <= conv.lastReadId) return;
     // Optimistic local clear; server sync follows after a small
     // coalesce window so a burst of new messages results in a
-    // single mark-read RPC.
+    // single mark-read RPC. Capture peer + upToId into closure consts
+    // so the fire isn't tripped by later activeDmUser/latestId mutation.
     useDmStore.getState().markRead(activeDmUser, latestId);
-    const handle = window.setTimeout(() => {
-      invoke("mark_dm_read", { peer: activeDmUser, upToId: latestId }).catch(
-        console.error,
-      );
+    const peer = activeDmUser;
+    const upToId = latestId;
+    // Intentionally NO cleanup return. React StrictMode in dev would
+    // otherwise cancel this timeout immediately, and the second mount
+    // would early-return on the now-bumped lastReadId — so the RPC
+    // would never fire on the view path. Semantically we also want
+    // the RPC to fire even if the user navigates away within 250ms;
+    // they read those messages, mark them read. Server's GREATEST
+    // upsert dedupes any extra fires in a burst.
+    window.setTimeout(() => {
+      invoke("mark_dm_read", { peer, upToId }).catch(console.error);
     }, 250);
-    return () => window.clearTimeout(handle);
   }, [activeDmUser, messagesLenForMarkRead]);
 
   // Auto-focus the editor when the user starts typing anywhere — same
