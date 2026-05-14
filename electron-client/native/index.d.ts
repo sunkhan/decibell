@@ -137,6 +137,18 @@ export interface RevokeInviteArgs {
   code: string
 }
 export declare function revokeInvite(args: RevokeInviteArgs): Promise<void>
+export declare function requestDmConversations(): Promise<void>
+export interface RequestDmHistoryArgs {
+  peer: string
+  beforeId: number
+  limit: number
+}
+export declare function requestDmHistory(args: RequestDmHistoryArgs): Promise<void>
+export interface MarkDmReadArgs {
+  peer: string
+  upToId: number
+}
+export declare function markDmRead(args: MarkDmReadArgs): Promise<void>
 export declare function requestFriendList(): Promise<void>
 export interface SendFriendActionArgs {
   /**
