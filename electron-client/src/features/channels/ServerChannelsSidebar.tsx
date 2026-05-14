@@ -162,10 +162,23 @@ export default function ServerChannelsSidebar() {
             }}
             onDisconnect={() => {
               setShowServerMenu(false);
-              invoke("disconnect_from_community", {
-                serverId: activeServerId,
-              }).catch(console.error);
+              if (!activeServerId) return;
+              const server = useChatStore
+                .getState()
+                .servers.find((s) => s.id === activeServerId);
+              const name = server?.name ?? "this server";
+              if (
+                !window.confirm(
+                  `Leave ${name}? You will need a new invite to rejoin.`,
+                )
+              ) {
+                return;
+              }
+              invoke("leave_server", { serverId: activeServerId }).catch(
+                console.error,
+              );
               useChatStore.getState().removeConnectedServer(activeServerId);
+              useChatStore.getState().removePendingMembership(activeServerId);
               useChatStore.getState().setActiveServer(null);
               setActiveChannel(null);
               setActiveView("home");
