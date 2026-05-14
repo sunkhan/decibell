@@ -7,6 +7,7 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import VoiceParticipantList from "../voice/VoiceParticipantList";
 import ServerActionsDropdown from "../servers/ServerActionsDropdown";
+import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { useSidebarResize } from "./useSidebarResize";
 
 /// Server-mode sidebar. Mounted when activeView is "server" or
@@ -89,59 +90,7 @@ export default function ServerChannelsSidebar() {
       setActiveView("voice");
       return;
     }
-    // Optimistic state update so the channel sidebar shows the
-    // pending-join immediately. join_voice_channel.catch resets state
-    // if the engine fails to start.
-    import("../../utils/sounds").then(({ playSound }) => playSound("connect"));
-    useVoiceStore.getState().setConnectedChannel(activeServerId, channelId);
-    const channel = useChatStore
-      .getState()
-      .channelsByServer[activeServerId]?.find((ch) => ch.id === channelId);
-    invoke("join_voice_channel", {
-      serverId: activeServerId,
-      channelId,
-      voiceBitrateKbps: channel?.voiceBitrateKbps ?? null,
-    })
-      .then(() => {
-        // Re-apply persisted preferences whenever a fresh pipeline
-        // boots — saved threshold + AEC/NS/AGC + device picks.
-        const {
-          inputDevice,
-          outputDevice,
-          separateStreamOutput,
-          streamOutputDevice,
-          voiceThresholdDb,
-          aecEnabled,
-          noiseSuppressionLevel,
-          agcEnabled,
-        } = useUiStore.getState();
-        invoke("set_voice_threshold", {
-          thresholdDb: voiceThresholdDb <= -60 ? -96 : voiceThresholdDb,
-        }).catch(console.error);
-        if (inputDevice) {
-          invoke("set_input_device", { name: inputDevice }).catch(console.error);
-        }
-        if (outputDevice) {
-          invoke("set_output_device", { name: outputDevice }).catch(console.error);
-        }
-        if (separateStreamOutput) {
-          invoke("set_separate_stream_output", {
-            enabled: true,
-            device: streamOutputDevice,
-          }).catch(console.error);
-        }
-        if (aecEnabled) invoke("set_aec_enabled", { enabled: true }).catch(console.error);
-        if (noiseSuppressionLevel > 0) {
-          invoke("set_noise_suppression_level", { level: noiseSuppressionLevel }).catch(
-            console.error,
-          );
-        }
-        if (agcEnabled) invoke("set_agc_enabled", { enabled: true }).catch(console.error);
-      })
-      .catch((err) => {
-        console.error(err);
-        useVoiceStore.getState().disconnect();
-      });
+    joinVoiceChannel(activeServerId, channelId).catch(console.error);
     setActiveView("voice");
   };
 
