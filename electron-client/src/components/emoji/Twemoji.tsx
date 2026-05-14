@@ -16,10 +16,15 @@ function toCodePoints(emoji: string): string {
   return codes.join("-");
 }
 
+// SVGs are copied from `@twemoji/svg@15.0.0` into `public/twemoji/`
+// at build time by `scripts/copy-twemoji.cjs` (wired into the `dev`
+// and `build` npm scripts). Vite serves `public/` from the app
+// origin, so this is a same-origin file load — no network, no CDN
+// 404s. Emojis missing from the local set (mostly gendered ZWJ
+// sequences that were retired in twemoji 15.x) hit the `onError`
+// branch below and fall back to native OS emoji rendering.
 export function twemojiUrl(emoji: string): string {
-  return `https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/svg/${toCodePoints(
-    emoji,
-  )}.svg`;
+  return `/twemoji/${toCodePoints(emoji)}.svg`;
 }
 
 interface TwemojiProps {

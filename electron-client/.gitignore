@@ -10,3 +10,7 @@ native/npm/
 
 # Electron
 .vite/
+
+# Twemoji SVGs — generated from @twemoji/svg npm package by
+# scripts/copy-twemoji.cjs on every `npm run dev` / `npm run build`.
+public/twemoji/
