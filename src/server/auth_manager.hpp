@@ -56,6 +56,53 @@ public:
     // reading the BYTEA payload.
     std::string getAvatarVersion(const std::string& username);
 
+    // --- Persistent DMs ---
+    // (see docs/superpowers/specs/2026-05-14-persistent-dms-design.md)
+    struct DmHistoryRow {
+        int64_t id;
+        std::string sender;
+        std::string content;
+        int64_t timestamp;
+    };
+    struct DmConversationPreviewRow {
+        std::string peer;
+        std::string last_message_content;
+        std::string last_message_sender;
+        int64_t last_message_id;
+        int64_t last_timestamp;
+        int64_t unread_count;
+    };
+
+    /// Insert a new DM, return its autoincrement id. Returns 0 on
+    /// DB failure (caller surfaces a "could not deliver" error to
+    /// the sender).
+    int64_t insertDm(const std::string& sender,
+                     const std::string& recipient,
+                     const std::string& content,
+                     int64_t sent_at);
+
+    /// Fetch a page of messages between user_a and user_b, ordered
+    /// newest first. before_id = 0 means "latest". limit is clamped
+    /// to [1, 200] internally. Sets has_more to true if more
+    /// messages exist older than the page.
+    std::vector<DmHistoryRow> fetchDmHistory(const std::string& user_a,
+                                              const std::string& user_b,
+                                              int64_t before_id,
+                                              int32_t limit,
+                                              bool& has_more);
+
+    /// One row per conversation the user is part of, with the most
+    /// recent message preview + unread count (messages from peer
+    /// with id > dm_read_state.last_read_id).
+    std::vector<DmConversationPreviewRow> fetchDmConversations(
+        const std::string& user);
+
+    /// Upsert dm_read_state, setting last_read_id =
+    /// GREATEST(existing, up_to_id). Idempotent and race-safe.
+    void markDmRead(const std::string& reader,
+                    const std::string& peer,
+                    int64_t up_to_id);
+
 private:
     std::string secret_key_;
     std::string db_conn_str_; // Add this member variable

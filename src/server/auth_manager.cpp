@@ -45,6 +45,42 @@ void AuthManager::initializeDatabase() {
             "  registered_at BIGINT NOT NULL"
             ")"
         );
+
+        // --- Persistent DMs (see docs/superpowers/specs/
+        //     2026-05-14-persistent-dms-design.md §1) ---
+        txn.exec(
+            "CREATE TABLE IF NOT EXISTS dm_messages ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  sender VARCHAR(32) NOT NULL,"
+            "  recipient VARCHAR(32) NOT NULL,"
+            "  content TEXT NOT NULL,"
+            "  sent_at BIGINT NOT NULL"
+            ")"
+        );
+        // Two-direction lookup ("messages between A and B" hits the
+        // same B-tree regardless of who sent which). The LEAST /
+        // GREATEST normalisation is what makes a single index serve
+        // both query directions.
+        txn.exec(
+            "CREATE INDEX IF NOT EXISTS dm_messages_pair_idx "
+            "ON dm_messages "
+            "(LEAST(sender, recipient), GREATEST(sender, recipient), id DESC)"
+        );
+        // Per-recipient unread queries —
+        // `WHERE recipient = me AND id > last_read_id`.
+        txn.exec(
+            "CREATE INDEX IF NOT EXISTS dm_messages_recipient_idx "
+            "ON dm_messages (recipient, id DESC)"
+        );
+        txn.exec(
+            "CREATE TABLE IF NOT EXISTS dm_read_state ("
+            "  reader VARCHAR(32) NOT NULL,"
+            "  peer VARCHAR(32) NOT NULL,"
+            "  last_read_id BIGINT NOT NULL DEFAULT 0,"
+            "  PRIMARY KEY (reader, peer)"
+            ")"
+        );
+
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] initializeDatabase: " << e.what() << "\n";
@@ -453,5 +489,149 @@ std::string AuthManager::getAvatarVersion(const std::string& username) {
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] getAvatarVersion: " << e.what() << "\n";
         return std::string();
+    }
+}
+
+// ─── Persistent DMs ──────────────────────────────────────────────────────
+
+int64_t AuthManager::insertDm(const std::string& sender,
+                               const std::string& recipient,
+                               const std::string& content,
+                               int64_t sent_at) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "INSERT INTO dm_messages (sender, recipient, content, sent_at) "
+            "VALUES ($1, $2, $3, $4) RETURNING id",
+            sender, recipient, content, sent_at);
+        txn.commit();
+        if (rs.empty()) return 0;
+        return rs[0][0].as<int64_t>();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] insertDm: " << e.what() << "\n";
+        return 0;
+    }
+}
+
+std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
+    const std::string& user_a, const std::string& user_b,
+    int64_t before_id, int32_t limit, bool& has_more) {
+    has_more = false;
+    std::vector<DmHistoryRow> out;
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        // Pull one extra row so we can detect has_more cheaply.
+        const int32_t clamped = std::max(1, std::min(limit, 200));
+        const int32_t fetch_n = clamped + 1;
+        // before_id=0 means "latest". For real cursoring we filter on
+        // id < before_id. Either way the pair_idx covers the predicate.
+        const char* sql =
+            "SELECT id, sender, content, sent_at FROM dm_messages "
+            "WHERE LEAST(sender, recipient) = LEAST($1, $2) "
+            "  AND GREATEST(sender, recipient) = GREATEST($1, $2) "
+            "  AND ($3 = 0 OR id < $3) "
+            "ORDER BY id DESC LIMIT $4";
+        pqxx::result rs = txn.exec_params(sql, user_a, user_b, before_id, fetch_n);
+        txn.commit();
+
+        out.reserve(rs.size());
+        for (const auto& row : rs) {
+            DmHistoryRow r{
+                row[0].as<int64_t>(),
+                row[1].as<std::string>(),
+                row[2].as<std::string>(),
+                row[3].as<int64_t>(),
+            };
+            out.push_back(std::move(r));
+        }
+        if (static_cast<int32_t>(out.size()) > clamped) {
+            out.pop_back();
+            has_more = true;
+        }
+        return out;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] fetchDmHistory: " << e.what() << "\n";
+        return {};
+    }
+}
+
+std::vector<AuthManager::DmConversationPreviewRow>
+AuthManager::fetchDmConversations(const std::string& user) {
+    std::vector<DmConversationPreviewRow> out;
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        // Picks the latest message id per conversation (pair grouped
+        // by LEAST/GREATEST), then joins back to dm_messages for the
+        // preview content, and to dm_read_state via a correlated
+        // subquery to derive unread count for messages from peer
+        // with id > last_read_id (i.e. messages the local user
+        // received, not their own outgoing).
+        const char* sql =
+            "WITH latest AS ( "
+            "  SELECT LEAST(sender, recipient) AS a, "
+            "         GREATEST(sender, recipient) AS b, "
+            "         MAX(id) AS max_id "
+            "  FROM dm_messages "
+            "  WHERE sender = $1 OR recipient = $1 "
+            "  GROUP BY 1, 2 "
+            ") "
+            "SELECT "
+            "  CASE WHEN m.sender = $1 THEN m.recipient ELSE m.sender END AS peer, "
+            "  m.content, m.sender, m.id, m.sent_at, "
+            "  COALESCE(( "
+            "    SELECT COUNT(*) FROM dm_messages d "
+            "    WHERE d.recipient = $1 "
+            "      AND d.sender = CASE WHEN m.sender = $1 THEN m.recipient ELSE m.sender END "
+            "      AND d.id > COALESCE(( "
+            "        SELECT last_read_id FROM dm_read_state rs "
+            "        WHERE rs.reader = $1 AND rs.peer = "
+            "          CASE WHEN m.sender = $1 THEN m.recipient ELSE m.sender END "
+            "      ), 0) "
+            "  ), 0) AS unread "
+            "FROM latest l "
+            "JOIN dm_messages m ON m.id = l.max_id "
+            "ORDER BY m.id DESC";
+        pqxx::result rs = txn.exec_params(sql, user);
+        txn.commit();
+
+        out.reserve(rs.size());
+        for (const auto& row : rs) {
+            DmConversationPreviewRow p{
+                row[0].as<std::string>(),       // peer
+                row[1].as<std::string>(),       // last_message_content
+                row[2].as<std::string>(),       // last_message_sender
+                row[3].as<int64_t>(),           // last_message_id
+                row[4].as<int64_t>(),           // last_timestamp
+                row[5].as<int64_t>(),           // unread_count
+            };
+            out.push_back(std::move(p));
+        }
+        return out;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] fetchDmConversations: " << e.what() << "\n";
+        return {};
+    }
+}
+
+void AuthManager::markDmRead(const std::string& reader,
+                              const std::string& peer,
+                              int64_t up_to_id) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        // Upsert with GREATEST so out-of-order or duplicate mark-read
+        // calls never regress the read cursor.
+        txn.exec_params(
+            "INSERT INTO dm_read_state (reader, peer, last_read_id) "
+            "VALUES ($1, $2, $3) "
+            "ON CONFLICT (reader, peer) DO UPDATE "
+            "SET last_read_id = GREATEST(dm_read_state.last_read_id, EXCLUDED.last_read_id)",
+            reader, peer, up_to_id);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] markDmRead: " << e.what() << "\n";
     }
 }
