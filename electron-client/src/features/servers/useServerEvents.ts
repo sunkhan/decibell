@@ -2,6 +2,8 @@ import { useEffect } from "react";
 import { invoke, listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
+import { toast } from "../../stores/toastStore";
+import type { CommunityServer } from "../../types";
 
 interface AttachmentTargetResult {
   host: string;
@@ -39,6 +41,17 @@ interface MembershipRevokedPayload {
   actor: string;
 }
 
+interface MembershipsReceivedPayload {
+  memberships: Array<{
+    id: number;
+    name: string;
+    description: string;
+    hostIp: string;
+    port: number;
+    memberCount: number;
+  }>;
+}
+
 // Subscribes to server-lifecycle events:
 //   • community_auth_responded — populate channels + server meta on
 //     successful join, mark the server connected.
@@ -48,11 +61,54 @@ interface MembershipRevokedPayload {
 //     local channel record.
 export function useServerEvents() {
   useEffect(() => {
+    // Auto-rejoin: LoginResponse.memberships → placeholder tiles in
+    // ServerBar. Native auto-fires connect_to_community for each, so
+    // we just need to (a) merge any unseen entries into chatStore.servers
+    // (b) mark them as "connecting…" until community_auth_responded
+    // lands per server.
+    const unlistenMemberships = listen<MembershipsReceivedPayload>(
+      "memberships_received",
+      (event) => {
+        const servers: CommunityServer[] = event.payload.memberships.map((s) => ({
+          id: String(s.id),
+          name: s.name,
+          description: s.description,
+          hostIp: s.hostIp,
+          port: s.port,
+          memberCount: s.memberCount,
+        }));
+        const chat = useChatStore.getState();
+        chat.mergeServers(servers);
+        chat.setPendingMemberships(servers.map((s) => s.id));
+      },
+    );
+
     const unlistenAuth = listen<CommunityAuthRespondedPayload>(
       "community_auth_responded",
       (event) => {
         const p = event.payload;
         if (!p.success) {
+          // Auto-rejoin: if this was a pending auto-rejoin attempt
+          // (entered the pendingMembershipServerIds set via the
+          // memberships_received listener above) and we got rejected,
+          // the user was kicked/banned while offline. Drop the stale
+          // central row + toast once.
+          const chat = useChatStore.getState();
+          if (chat.pendingMembershipServerIds.has(p.serverId)) {
+            chat.removePendingMembership(p.serverId);
+            invoke("request_drop_membership", { serverId: p.serverId }).catch(
+              (err) =>
+                console.error("[auto-rejoin] request_drop_membership:", err),
+            );
+            const serverName =
+              chat.servers.find((s) => s.id === p.serverId)?.name ??
+              "a community server";
+            toast.error(
+              "Membership revoked",
+              `You're no longer a member of ${serverName}.`,
+            );
+            return;
+          }
           // Surface the rejection so ServerBrowseView's invite-redeem
           // flow can render the error inline.
           useUiStore.getState().setAuthError({
@@ -62,6 +118,10 @@ export function useServerEvents() {
           });
           return;
         }
+        // Auto-rejoin: successful auth — drop the pending placeholder
+        // (next paint of ServerBar will pick up the connectedServers
+        // entry below and render the real tile state).
+        useChatStore.getState().removePendingMembership(p.serverId);
         useChatStore.getState().setChannelsForServer(p.serverId, p.channels);
         useChatStore.getState().setServerMeta(p.serverId, {
           name: p.serverName,
@@ -241,6 +301,7 @@ export function useServerEvents() {
     );
 
     return () => {
+      unlistenMemberships.then((fn) => fn());
       unlistenAuth.then((fn) => fn());
       unlistenLost.then((fn) => fn());
       unlistenRestored.then((fn) => fn());

@@ -24,6 +24,13 @@ interface ChatState {
   activeServerId: string | null;
   activeChannelId: string | null;
   connectedServers: Set<string>;
+  /// Auto-rejoin: server IDs the client is auto-connecting to as a
+  /// result of LoginResponse.memberships. Drives the "connecting…"
+  /// placeholder tile UI in ServerBar. Each entry is cleared in
+  /// useServerEvents on the matching community_auth_responded —
+  /// success moves it into connectedServers; failure drops it +
+  /// fires request_drop_membership + toasts.
+  pendingMembershipServerIds: Set<string>;
   serverMeta: Record<string, { name: string; description: string }>;
   serverOwner: Record<string, string>;
   membersByServer: Record<string, ServerMember[]>;
@@ -71,6 +78,14 @@ interface ChatState {
   upsertChannel: (serverId: string, channel: ChannelInfo) => void;
   addConnectedServer: (serverId: string) => void;
   removeConnectedServer: (serverId: string) => void;
+  /// Auto-rejoin: replace the pending-membership set entirely (used
+  /// on memberships_received). Setting an empty array clears.
+  setPendingMemberships: (ids: string[]) => void;
+  removePendingMembership: (id: string) => void;
+  /// De-duplicating union of the existing servers list with the new
+  /// entries. Used by useServerEvents on memberships_received to
+  /// backfill any servers not yet covered by server_list_received.
+  mergeServers: (entries: CommunityServer[]) => void;
   setServerMeta: (
     serverId: string,
     meta: { name: string; description: string },
@@ -191,6 +206,7 @@ export const useChatStore = create<ChatState>((set) => ({
   activeServerId: null,
   activeChannelId: null,
   connectedServers: new Set(),
+  pendingMembershipServerIds: new Set(),
   serverMeta: {},
   serverOwner: {},
   membersByServer: {},
@@ -265,6 +281,25 @@ export const useChatStore = create<ChatState>((set) => ({
       const next = new Set(state.connectedServers);
       next.delete(serverId);
       return { connectedServers: next };
+    }),
+
+  setPendingMemberships: (ids) =>
+    set({ pendingMembershipServerIds: new Set(ids) }),
+  removePendingMembership: (id) =>
+    set((state) => {
+      if (!state.pendingMembershipServerIds.has(id)) return {};
+      const next = new Set(state.pendingMembershipServerIds);
+      next.delete(id);
+      return { pendingMembershipServerIds: next };
+    }),
+  mergeServers: (entries) =>
+    set((state) => {
+      const byId = new Map<string, CommunityServer>();
+      for (const s of state.servers) byId.set(s.id, s);
+      for (const s of entries) {
+        if (!byId.has(s.id)) byId.set(s.id, s);
+      }
+      return { servers: Array.from(byId.values()) };
     }),
 
   setServerMeta: (serverId, meta) =>
@@ -382,6 +417,7 @@ export const useChatStore = create<ChatState>((set) => ({
       activeServerId: null,
       activeChannelId: null,
       connectedServers: new Set(),
+      pendingMembershipServerIds: new Set(),
       serverMeta: {},
       serverOwner: {},
       membersByServer: {},
