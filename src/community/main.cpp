@@ -77,6 +77,18 @@ public:
     void stop_stream(std::shared_ptr<Session> session, const std::string& channel_id);
     void broadcast_stream_presence(const std::string& channel_id);
 
+    // On-demand thumbnail cache for the UserPopup live preview.
+    // Written by update_thumbnail_cache() (called from the
+    // STREAM_THUMBNAIL_UPDATE handler), read by get_thumbnail()
+    // (called from the FETCH_STREAM_THUMBNAIL_REQ handler), erased by
+    // erase_thumbnail_cache() (called on stream stop + session
+    // disconnect). All three take their own lock on mutex_.
+    void update_thumbnail_cache(const std::string& username,
+                                const std::string& bytes);
+    void erase_thumbnail_cache(const std::string& username);
+    bool get_thumbnail(const std::string& username,
+                       std::vector<uint8_t>& out);
+
     // Watcher tracking
     void add_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
     void remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
@@ -163,6 +175,11 @@ private:
         chatproj::VideoCodec enforced_codec = chatproj::CODEC_UNKNOWN;
     };
     std::unordered_map<std::string, std::unordered_map<std::string, StreamInfo>> active_streams_;
+
+    // Latest thumbnail JPEG per streamer username. Written by
+    // update_thumbnail_cache(), served by get_thumbnail(), erased by
+    // erase_thumbnail_cache(). Guarded by mutex_.
+    std::unordered_map<std::string, std::vector<uint8_t>> latest_thumbnails_;
 
     // channel_id -> streamer_username -> set of watcher sessions
     std::unordered_map<std::string,
@@ -544,8 +561,36 @@ private:
             auto* update = packet.mutable_stream_thumbnail_update();
             update->set_owner_username(username_); // Enforce identity
             std::string channel_id = update->channel_id();
+            // Stash a copy for on-demand popup fetches before the
+            // broadcast — bytes are owned by the protobuf so the
+            // helper copies them.
+            manager_.update_thumbnail_cache(username_, update->thumbnail_data());
             // Broadcast to all voice channel participants (not just watchers)
             manager_.broadcast_to_voice_channel_tcp(packet, channel_id);
+        }
+
+        // --- FETCH_STREAM_THUMBNAIL_REQ ---
+        // Sent by clients when a UserPopup opens for a streaming user.
+        // Replies with the latest cached JPEG (or empty bytes if no
+        // frame has arrived yet). Authenticated callers only — the
+        // session is already authenticated to this community server,
+        // and the only way to know the streamer's username is to have
+        // received a stream-presence event from us, so no extra ACL
+        // check is needed.
+        else if (packet.type() == chatproj::Packet::FETCH_STREAM_THUMBNAIL_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.fetch_stream_thumbnail_req();
+            const std::string& target = req.owner_username();
+
+            chatproj::Packet response;
+            response.set_type(chatproj::Packet::FETCH_STREAM_THUMBNAIL_RES);
+            auto* res = response.mutable_fetch_stream_thumbnail_res();
+            res->set_owner_username(target);
+            std::vector<uint8_t> bytes;
+            if (manager_.get_thumbnail(target, bytes)) {
+                res->set_thumbnail_data(bytes.data(), bytes.size());
+            }
+            send_packet(response);
         }
 
         // --- VOICE STATE NOTIFY (mute/deafen) ---
@@ -1160,6 +1205,9 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
         }
         std::cout << "[Community] Session " << session->get_username() << " left. Total: " << sessions_.size() << "\n";
     }
+    // Stream may have been active when this user dropped; clear the
+    // popup-preview cache regardless. Idempotent on non-streamers.
+    erase_thumbnail_cache(session->get_username());
     // Broadcast updated presence to remaining clients (outside lock to avoid deadlock)
     for (const auto& ch : affected_voice_channels) {
         broadcast_voice_presence(ch);
@@ -1212,6 +1260,11 @@ void SessionManager::stop_stream(std::shared_ptr<Session> session, const std::st
             if (wch->second.empty()) stream_watchers_.erase(wch);
         }
     }
+    // Drop any cached thumbnail for this streamer; popup viewers
+    // will now get an empty response (and they'll stop polling
+    // once the next stream-presence event removes the entry from
+    // their streamsByUser map).
+    erase_thumbnail_cache(session->get_username());
     if (removed) {
         broadcast_stream_presence(channel_id);
     }
@@ -1254,6 +1307,26 @@ void SessionManager::broadcast_stream_presence(const std::string& channel_id) {
     for (auto& session : sessions_) {
         session->deliver(framed);
     }
+}
+
+void SessionManager::update_thumbnail_cache(const std::string& username,
+                                             const std::string& bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_thumbnails_[username].assign(bytes.begin(), bytes.end());
+}
+
+void SessionManager::erase_thumbnail_cache(const std::string& username) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_thumbnails_.erase(username);
+}
+
+bool SessionManager::get_thumbnail(const std::string& username,
+                                    std::vector<uint8_t>& out) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = latest_thumbnails_.find(username);
+    if (it == latest_thumbnails_.end() || it->second.empty()) return false;
+    out = it->second;
+    return true;
 }
 
 void SessionManager::join_voice_channel(std::shared_ptr<Session> session, const std::string& new_channel, const std::string& old_channel) {
