@@ -52,6 +52,12 @@ function expandShortcodes(text: string): string {
 interface MessageTextProps {
   content: string;
   emojiSize?: number;
+  /// Preview mode: shortcodes still expand and emojis still render
+  /// through twemoji, but emojis are not click-targets (no popover,
+  /// no jumbo sizing) and no popover element is rendered at all.
+  /// Used by the DM sidebar's last-message preview rows where the
+  /// outer button owns the click semantics.
+  preview?: boolean;
 }
 
 const INLINE_EMOJI_SIZE = 24;
@@ -63,7 +69,7 @@ function jumboSizeFor(count: number): number {
   return 32;
 }
 
-export default function MessageText({ content, emojiSize }: MessageTextProps) {
+export default function MessageText({ content, emojiSize, preview }: MessageTextProps) {
   const [popover, setPopover] = useState<{
     emoji: string;
     anchor: HTMLElement;
@@ -94,12 +100,17 @@ export default function MessageText({ content, emojiSize }: MessageTextProps) {
     }
     const emojiOnly = matches.length > 0 && remainder.trim().length === 0;
 
+    // Preview mode keeps a constant inline size — the sidebar row's
+    // line-height stays predictable and emoji-only DMs don't blow up
+    // to 56px in a 14px-tall preview row.
     const size =
       emojiSize !== undefined
         ? emojiSize
-        : emojiOnly
-          ? jumboSizeFor(matches.length)
-          : INLINE_EMOJI_SIZE;
+        : preview
+          ? INLINE_EMOJI_SIZE
+          : emojiOnly
+            ? jumboSizeFor(matches.length)
+            : INLINE_EMOJI_SIZE;
 
     const out: (string | JSX.Element)[] = [];
     let last = 0;
@@ -110,21 +121,21 @@ export default function MessageText({ content, emojiSize }: MessageTextProps) {
           key={`${m.index}-${m.text}`}
           emoji={m.text}
           size={size}
-          onClick={(e) => handleEmojiClick(e, m.text)}
+          onClick={preview ? undefined : (e) => handleEmojiClick(e, m.text)}
         />,
       );
       last = m.index + m.text.length;
     }
     if (last < expanded.length) out.push(expanded.slice(last));
     return out;
-  }, [content, emojiSize, handleEmojiClick]);
+  }, [content, emojiSize, handleEmojiClick, preview]);
 
   const shortcode = popover ? getNativeToIdMap().get(popover.emoji) ?? null : null;
 
   return (
     <>
       {tokens}
-      {popover && (
+      {!preview && popover && (
         <EmojiInfoPopover
           anchor={popover.anchor}
           emoji={popover.emoji}

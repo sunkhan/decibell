@@ -240,6 +240,7 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
                 id="frequent"
                 label={CATEGORY_LABELS.frequent}
                 sectionRef={(el) => (sectionRefs.current.frequent = el)}
+                emojiCount={recent.length}
               >
                 <EmojiGrid
                   ids={recent.filter((id) => EMOJIS[id])}
@@ -254,6 +255,7 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
                 id={cat.id}
                 label={CATEGORY_LABELS[cat.id] ?? cat.id}
                 sectionRef={(el) => (sectionRefs.current[cat.id] = el)}
+                emojiCount={cat.emojis.length}
               >
                 <EmojiGrid ids={cat.emojis} onPick={handlePick} onHover={setHoveredEmoji} />
               </Section>
@@ -303,17 +305,70 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
   );
 }
 
+// Each section lazy-mounts its emoji grid via IntersectionObserver:
+// while the section is more than ~600px from the viewport, only the
+// header + a fixed-height placeholder render, so 1700+ emoji buttons
+// don't sit in the DOM the moment the picker opens. Once the section
+// has been within scroll reach once, it stays rendered (cheap to keep,
+// expensive to mount/unmount on every scroll-by). The placeholder
+// height is computed from the emoji count so the scrollbar stays
+// accurate even before grids hydrate.
+const EMOJI_CELL_PX = 38;
+const EMOJI_GAP_PX = 2;
+const EMOJI_COLUMNS = 8;
+
+function estimateGridHeight(count: number): number {
+  const rows = Math.ceil(count / EMOJI_COLUMNS);
+  return rows * EMOJI_CELL_PX + Math.max(0, rows - 1) * EMOJI_GAP_PX;
+}
+
 function Section({
   id,
   label,
   sectionRef,
   children,
+  emojiCount,
 }: {
   id: string;
   label: string;
   sectionRef: (el: HTMLDivElement | null) => void;
   children: React.ReactNode;
+  /// Emoji count drives the placeholder height before lazy-mount —
+  /// without it the section's intrinsic height would be ~0 and the
+  /// scrollbar would jitter as each section hydrates.
+  emojiCount: number;
 }) {
+  const placeholderRef = useRef<HTMLDivElement | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    if (hydrated) return;
+    const el = placeholderRef.current;
+    if (!el) return;
+    // Find the nearest scrollable ancestor (the picker's scroll body)
+    // and use it as the IntersectionObserver root.
+    let scroller: HTMLElement | null = el.parentElement;
+    while (scroller) {
+      const cs = window.getComputedStyle(scroller);
+      if (/(auto|scroll)/.test(cs.overflowY)) break;
+      scroller = scroller.parentElement;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setHydrated(true);
+            observer.disconnect();
+            break;
+          }
+        }
+      },
+      { root: scroller, rootMargin: "600px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hydrated]);
+
   return (
     <div
       ref={sectionRef}
@@ -323,7 +378,14 @@ function Section({
       <div className="sticky top-0 z-10 bg-bg-light px-1.5 py-[6px] text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
         {label}
       </div>
-      {children}
+      {hydrated ? (
+        children
+      ) : (
+        <div
+          ref={placeholderRef}
+          style={{ height: estimateGridHeight(emojiCount) }}
+        />
+      )}
     </div>
   );
 }
