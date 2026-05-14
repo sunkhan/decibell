@@ -300,11 +300,12 @@ impl CentralClient {
                         recipient: msg.recipient,
                         content: msg.content,
                         timestamp: msg.timestamp.to_string(),
-                        // DMs aren't persisted server-side and don't carry
-                        // attachments or a nonce — keep them zero/empty so
-                        // the renderer's MessageReceivedPayload type stays
-                        // uniform with the channel-message path.
-                        id: 0,
+                        // DMs are now persisted server-side and the
+                        // routed packet carries the new id (stamped
+                        // by central after insertDm). 0 on legacy /
+                        // pre-persistence wire packets, used by the
+                        // renderer for the mark-read up_to_id cursor.
+                        id: msg.id,
                         attachments: Vec::new(),
                         nonce: String::new(),
                     });

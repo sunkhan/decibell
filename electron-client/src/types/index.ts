@@ -52,6 +52,12 @@ export interface DmMessage {
   sender: string;
   content: string;
   timestamp: string;
+  /// Server-assigned id from DirectMessage.id. Present on messages
+  /// that came via DIRECT_MSG after the persistent-DMs feature
+  /// shipped, and on every message in DmHistoryRes. Optional /
+  /// 0 means "legacy or pre-persistence; can't be marked read
+  /// individually". Used to feed `up_to_id` on DmMarkReadReq.
+  id?: number;
 }
 
 export interface ServerMember {

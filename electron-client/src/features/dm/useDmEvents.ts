@@ -21,11 +21,20 @@ export function useDmEvents() {
         p.sender === localUsername ? p.recipient : p.sender;
       if (!otherUser) return;
 
-      useDmStore.getState().addDmMessage(otherUser, {
-        sender: p.sender,
-        content: p.content,
-        timestamp: p.timestamp,
-      });
+      const isFromSelf = p.sender === localUsername;
+      useDmStore.getState().addDmMessage(
+        otherUser,
+        {
+          sender: p.sender,
+          content: p.content,
+          timestamp: p.timestamp,
+          // id is set by central after insertDm; 0 means the packet
+          // came from a pre-persistence server. The store handles
+          // both — 0 is just ineligible for mark-read.
+          id: p.id || undefined,
+        },
+        isFromSelf,
+      );
     });
 
     return () => {
