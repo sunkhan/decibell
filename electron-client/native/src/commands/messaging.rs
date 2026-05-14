@@ -45,6 +45,9 @@ pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<
                 recipient: args.recipient,
                 content: args.message,
                 timestamp,
+                // Server stamps the persisted id on the routed packet
+                // after insertDm; outbound from client is always 0.
+                id: 0,
             }),
             token.as_deref(),
         );

@@ -136,6 +136,9 @@ impl CentralClient {
                 recipient: recipient.into(),
                 content: content.into(),
                 timestamp,
+                // Server stamps the persisted id on the routed packet
+                // after insertDm; outbound from client is always 0.
+                id: 0,
             }),
             token,
         );

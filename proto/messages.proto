@@ -117,6 +117,14 @@ message Packet {
     // Live-stream popup: on-demand thumbnail fetch (community server).
     FETCH_STREAM_THUMBNAIL_REQ = 66;
     FETCH_STREAM_THUMBNAIL_RES = 67;
+
+    // Persistent DMs — see docs/superpowers/specs/
+    // 2026-05-14-persistent-dms-design.md
+    DM_CONVERSATIONS_REQ = 68;   // client→central; empty payload
+    DM_CONVERSATIONS_RES = 69;   // central→client
+    DM_HISTORY_REQ       = 70;   // client→central
+    DM_HISTORY_RES       = 71;   // central→client
+    DM_MARK_READ_REQ     = 72;   // client→central; fire-and-forget
   }
 
   Type type = 1;
@@ -208,6 +216,14 @@ message Packet {
     //     2026-05-14-live-stream-indicators-design.md §2) ---
     FetchStreamThumbnailReq fetch_stream_thumbnail_req = 68;
     FetchStreamThumbnailRes fetch_stream_thumbnail_res = 69;
+
+    // --- Persistent DMs (see docs/superpowers/specs/
+    //     2026-05-14-persistent-dms-design.md) ---
+    DmConversationsReq dm_conversations_req = 70;
+    DmConversationsRes dm_conversations_res = 71;
+    DmHistoryReq       dm_history_req       = 72;
+    DmHistoryRes       dm_history_res       = 73;
+    DmMarkReadReq      dm_mark_read_req     = 74;
   }
 }
 
@@ -243,6 +259,10 @@ message DirectMessage {
   string recipient = 2;
   string content = 3;
   int64 timestamp = 4;
+  // Server-assigned persistence id, stamped by central after insertDm.
+  // Old clients ignore the unknown field; new clients use it as the
+  // `up_to_id` cursor in DmMarkReadReq.
+  int64 id = 5;
 }
 
 message UserPresence {
@@ -808,4 +828,43 @@ message FetchStreamThumbnailReq {
 message FetchStreamThumbnailRes {
   string owner_username = 1;
   bytes thumbnail_data = 2;  // empty when no thumbnail cached yet
+}
+
+// --- Persistent DMs ---
+// (see docs/superpowers/specs/2026-05-14-persistent-dms-design.md)
+
+message DmConversationsReq {}
+
+message DmConversationPreview {
+  string peer = 1;
+  string last_message_content = 2;
+  string last_message_sender = 3;  // either the local user or the peer
+  int64  last_message_id = 4;
+  int64  last_timestamp = 5;
+  int64  unread_count = 6;
+}
+message DmConversationsRes {
+  repeated DmConversationPreview conversations = 1;
+}
+
+message DmHistoryReq {
+  string peer = 1;
+  int64  before_id = 2;   // 0 = latest
+  int32  limit = 3;       // server clamps to 200
+}
+message DmHistoryMessage {
+  int64  id = 1;
+  string sender = 2;
+  string content = 3;
+  int64  timestamp = 4;
+}
+message DmHistoryRes {
+  string peer = 1;
+  repeated DmHistoryMessage messages = 2;  // newest first
+  bool   has_more = 3;
+}
+
+message DmMarkReadReq {
+  string peer = 1;
+  int64  up_to_id = 2;
 }
