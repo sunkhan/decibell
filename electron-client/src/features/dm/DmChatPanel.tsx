@@ -353,7 +353,7 @@ export default function DmChatPanel() {
             <button
               ref={emojiTriggerRef}
               onClick={() => setPickerOpen((v) => !v)}
-              className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-md transition-colors ${
+              className={`flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-md transition-colors ${
                 pickerOpen
                   ? "bg-surface-hover text-text-secondary"
                   : "text-text-muted hover:text-text-secondary"
