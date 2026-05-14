@@ -603,6 +603,42 @@ private:
             std::cout << "[Server] Unregistered invite " << req.code() << "\n";
         }
 
+        // --- AUTO-REJOIN: COMMUNITY REGISTERS A MEMBERSHIP ---
+        // Idempotent — fires on every successful community auth, so
+        // re-firing is harmless and serves as the bootstrap mechanism
+        // for pre-feature memberships.
+        else if (packet.type() == chatproj::Packet::MEMBERSHIP_REGISTER_REQ) {
+            if (!auth_manager_.verifySharedSecret(packet.auth_token())) {
+                std::cout << "[Security] Dropped membership_register - invalid shared secret.\n";
+                return;
+            }
+            const auto& req = packet.membership_register_req();
+            if (req.username().empty() || req.server_id() == 0) return;
+            auth_manager_.registerMembership(req.username(), req.server_id());
+        }
+
+        // --- AUTO-REJOIN: REVOKE A MEMBERSHIP (dual-origin) ---
+        // Two callers can revoke: community server (shared-secret,
+        // kick/ban/leave path) or JWT-authed client (stale-membership
+        // cleanup). Community can revoke any user; client can only
+        // revoke its own (enforced via session username).
+        else if (packet.type() == chatproj::Packet::MEMBERSHIP_REVOKE_REQ) {
+            const auto& req = packet.membership_revoke_req();
+            if (req.server_id() == 0) return;
+
+            std::string target_username;
+            if (auth_manager_.verifySharedSecret(packet.auth_token())) {
+                if (req.username().empty()) return;
+                target_username = req.username();
+            } else if (authenticated_) {
+                target_username = username_;
+            } else {
+                std::cout << "[Security] Dropped membership_revoke - no valid auth.\n";
+                return;
+            }
+            auth_manager_.revokeMembership(target_username, req.server_id());
+        }
+
         // --- CLIENT: RESOLVE AN INVITE CODE TO HOST:PORT ---
         else if (packet.type() == chatproj::Packet::INVITE_RESOLVE_REQ) {
             if (!authenticated_) return;
