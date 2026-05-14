@@ -2002,6 +2002,11 @@ void SessionManager::force_disconnect(const std::string& username,
     auto session = find_session_by_username(username);
     if (!session) return;
 
+    // Auto-rejoin: tell central this user is no longer a member so
+    // auto-rejoin doesn't surface a stale tile on their next login.
+    // Single chokepoint for all three removal paths: kick, ban, leave.
+    sync_membership_revoke(username);
+
     // Best-effort notification before we close the socket. If the write is
     // already queued behind a slow client, the close below cancels it — the
     // target just won't see the reason, which is fine.
@@ -2095,6 +2100,28 @@ bool send_to_central_blocking(const std::string& host, int port,
     }
 }
 } // namespace
+
+void SessionManager::sync_membership_revoke(const std::string& username) {
+    if (central_host_.empty() || central_port_ == 0) return;
+    int64_t sid = server_id();
+    if (sid <= 0) return;
+    chatproj::Packet packet;
+    packet.set_type(chatproj::Packet::MEMBERSHIP_REVOKE_REQ);
+    packet.set_auth_token(central_jwt_secret_);
+    auto* req = packet.mutable_membership_revoke_req();
+    req->set_username(username);
+    req->set_server_id(sid);
+
+    std::string serialized;
+    packet.SerializeToString(&serialized);
+    auto framed = chatproj::create_framed_packet(serialized);
+
+    std::string host = central_host_;
+    int port = central_port_;
+    std::thread([host, port, framed = std::move(framed)]() {
+        send_to_central_blocking(host, port, framed);
+    }).detach();
+}
 
 void SessionManager::sync_membership_register(const std::string& username) {
     if (central_host_.empty() || central_port_ == 0) return;
