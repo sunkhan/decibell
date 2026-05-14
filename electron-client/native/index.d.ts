@@ -347,6 +347,28 @@ export interface StopWatchingArgs {
   targetUsername: string
 }
 export declare function stopWatching(args: StopWatchingArgs): Promise<void>
+export interface FetchStreamThumbnailArgs {
+  serverId: string
+  username: string
+}
+export interface FetchStreamThumbnailResult {
+  username: string
+  /**
+   * Empty Buffer when the server has no cached thumbnail yet
+   * (stream just started, or fetch arrived between frames).
+   */
+  jpeg: Buffer
+}
+/**
+ * On-demand fetch of the latest thumbnail for a streaming user.
+ * Called by the renderer when UserProfilePopup opens for a user
+ * known to be streaming. Returns empty bytes when no frame is
+ * cached yet — caller renders the gradient placeholder.
+ *
+ * Same shape as `fetch_avatar` in commands/auth.rs: single-slot
+ * oneshot per username, 5-second timeout, slot cleanup on timeout.
+ */
+export declare function fetchStreamThumbnail(args: FetchStreamThumbnailArgs): Promise<FetchStreamThumbnailResult>
 export interface CodecCapValue {
   /** 1=H264_HW, 2=H264_SW, 3=H265, 4=AV1. */
   codec: number

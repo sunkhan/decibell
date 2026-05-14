@@ -336,6 +336,90 @@ pub async fn stop_watching(args: StopWatchingArgs) -> napi::Result<()> {
     Ok(())
 }
 
+// ─── On-demand stream-thumbnail fetch (for UserPopup live preview) ──
+
+#[napi(object)]
+pub struct FetchStreamThumbnailArgs {
+    pub server_id: String,
+    pub username: String,
+}
+
+#[napi(object)]
+pub struct FetchStreamThumbnailResult {
+    pub username: String,
+    /// Empty Buffer when the server has no cached thumbnail yet
+    /// (stream just started, or fetch arrived between frames).
+    pub jpeg: napi::bindgen_prelude::Buffer,
+}
+
+/// On-demand fetch of the latest thumbnail for a streaming user.
+/// Called by the renderer when UserProfilePopup opens for a user
+/// known to be streaming. Returns empty bytes when no frame is
+/// cached yet — caller renders the gradient placeholder.
+///
+/// Same shape as `fetch_avatar` in commands/auth.rs: single-slot
+/// oneshot per username, 5-second timeout, slot cleanup on timeout.
+#[napi]
+pub async fn fetch_stream_thumbnail(
+    args: FetchStreamThumbnailArgs,
+) -> napi::Result<FetchStreamThumbnailResult> {
+    use tokio::sync::oneshot;
+
+    let FetchStreamThumbnailArgs { server_id, username } = args;
+    let state_arc = state::shared();
+
+    let (write_tx, data, rx) = {
+        let mut s = state_arc.lock().await;
+        let client = s.communities.get(&server_id).ok_or_else(|| {
+            napi::Error::from_reason(format!(
+                "Not connected to community {}",
+                server_id
+            ))
+        })?;
+        let tx = client.connection_write_tx().ok_or_else(|| {
+            napi::Error::from_reason("Community connection lost")
+        })?;
+        let pkt = build_packet(
+            packet::Type::FetchStreamThumbnailReq,
+            packet::Payload::FetchStreamThumbnailReq(FetchStreamThumbnailReq {
+                owner_username: username.clone(),
+            }),
+            Some(&client.jwt),
+        );
+        let (otx, orx) = oneshot::channel();
+        // Last-request-wins per username — supersedes any earlier
+        // in-flight fetch (its .await will time out, harmless).
+        s.pending_thumbnail_fetches.insert(username.clone(), otx);
+        (tx, pkt, orx)
+    };
+
+    if tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data))
+        .await
+        .is_err()
+    {
+        state_arc.lock().await.pending_thumbnail_fetches.remove(&username);
+        return Err(napi::Error::from_reason("Failed to send thumbnail fetch"));
+    }
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(resp)) => Ok(FetchStreamThumbnailResult {
+            username: resp.owner_username,
+            jpeg: resp.thumbnail_data.into(),
+        }),
+        Ok(Err(_)) => Err(napi::Error::from_reason(
+            "Community connection closed before thumbnail response",
+        )),
+        Err(_) => {
+            state_arc
+                .lock()
+                .await
+                .pending_thumbnail_fetches
+                .remove(&username);
+            Err(napi::Error::from_reason("Thumbnail fetch timed out"))
+        }
+    }
+}
+
 #[napi(object)]
 pub struct CodecCapValue {
     /// 1=H264_HW, 2=H264_SW, 3=H265, 4=AV1.
