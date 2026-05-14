@@ -7,7 +7,27 @@ import {
 } from "react";
 import data from "@emoji-mart/data";
 import emojiRegex from "emoji-regex";
-import { twemojiUrl } from "../emoji/Twemoji";
+import twemojiData from "../emoji/twemoji-data.json";
+
+const TWEMOJI: Record<string, string> = twemojiData as Record<string, string>;
+
+// Same codepoint logic as ../emoji/Twemoji.tsx — duplicated rather
+// than imported because RichInput's emoji atoms are built imperatively
+// (createElement, contenteditable=false) and pulling the React
+// component in would mean ReactDOM.render-ing one per atom into a
+// detached fragment, which is ~5× the cost of just stamping innerHTML.
+function toCodePoints(emoji: string): string {
+  const chars = Array.from(emoji);
+  const hasMultipleChars = chars.length > 1;
+  const codes: string[] = [];
+  for (const char of chars) {
+    const cp = char.codePointAt(0);
+    if (cp === undefined) continue;
+    if (cp === 0xfe0f && hasMultipleChars) continue;
+    codes.push(cp.toString(16));
+  }
+  return codes.join("-");
+}
 
 // Lightweight contentEditable editor. The DOM is the source of truth — React
 // does NOT drive innerHTML after mount. Parent receives serialized text via
@@ -15,8 +35,10 @@ import { twemojiUrl } from "../emoji/Twemoji";
 //
 // Two kinds of nodes live inside the editor:
 //   - text nodes
-//   - <img data-emoji="🎉"> atoms (contenteditable=false so they behave as
-//     single graphemes under the caret)
+//   - <span data-emoji="🎉"> atoms wrapping inline-SVG twemoji
+//     content (contenteditable=false so they behave as single
+//     graphemes under the caret). Was <img src="…twemoji.svg"> until
+//     the inline-SVG perf refactor — see 0263d69.
 //
 // `serialize()` walks the DOM producing the plain string that goes over the
 // wire — identical to what the old textarea held. `MessageText` on the
@@ -58,15 +80,26 @@ function getShortcodeMap(): Map<string, string> {
 
 const SHORTCODE_RE = /:([a-z0-9_+-]+):/gi;
 
-function makeEmojiNode(native: string): HTMLImageElement {
-  const img = document.createElement("img");
-  img.src = twemojiUrl(native);
-  img.alt = native;
-  img.className = "rich-emoji";
-  img.dataset.emoji = native;
-  img.draggable = false;
-  img.setAttribute("contenteditable", "false");
-  return img;
+function makeEmojiNode(native: string): HTMLElement {
+  const span = document.createElement("span");
+  span.className = "rich-emoji";
+  span.dataset.emoji = native;
+  span.draggable = false;
+  span.setAttribute("contenteditable", "false");
+  span.setAttribute("aria-label", native);
+  const cp = toCodePoints(native);
+  const svg = TWEMOJI[cp];
+  if (svg) {
+    // The SVG carries its own viewBox; .rich-emoji's width/height
+    // (1.375em × 1.375em) drive the displayed size and the SVG
+    // scales to fit.
+    span.innerHTML = svg;
+  } else {
+    // Fallback to native rendering for emoji not in @twemoji/svg
+    // 15.0 (retired gendered ZWJ sequences, etc.).
+    span.textContent = native;
+  }
+  return span;
 }
 
 // Drop an invisible marker span at the current caret. Because tokenize only
@@ -512,9 +545,9 @@ const RichInput = forwardRef<RichInputHandle, RichInputProps>(function RichInput
           sel.addRange(range);
         }
         range.deleteContents();
-        const img = makeEmojiNode(native);
-        range.insertNode(img);
-        range.setStartAfter(img);
+        const node = makeEmojiNode(native);
+        range.insertNode(node);
+        range.setStartAfter(node);
         range.collapse(true);
         if (sel) {
           sel.removeAllRanges();
