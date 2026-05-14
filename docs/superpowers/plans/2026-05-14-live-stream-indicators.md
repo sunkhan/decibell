@@ -102,21 +102,60 @@ git commit -m "proto: FetchStreamThumbnail request/response for popup live previ
 **Files:**
 - Modify: `src/community/main.cpp`
 
-- [ ] **Step 1: Add the cache field on `SessionManager`**
+- [ ] **Step 1: Add the cache field + public accessors on `SessionManager`**
 
-Find the `SessionManager` private state block (around line 148-165, near `active_streams_`). After `active_streams_`, add:
+In `src/community/main.cpp`, find the `SessionManager` class. After `active_streams_` in the private state block (around line 165), add:
 
 ```cpp
-    // Latest thumbnail JPEG per streamer username. Written on each
-    // STREAM_THUMBNAIL_UPDATE, served on FETCH_STREAM_THUMBNAIL_REQ.
-    // Erased on stream stop (stop_stream) and session disconnect.
-    // Guarded by mutex_.
+    // Latest thumbnail JPEG per streamer username. Written by
+    // update_thumbnail_cache(), served by get_thumbnail(),
+    // erased by erase_thumbnail_cache(). Guarded by mutex_.
     std::unordered_map<std::string, std::vector<uint8_t>> latest_thumbnails_;
+```
+
+Then in the PUBLIC section of `SessionManager` (around line 44-147), declare three accessor methods. A good spot is right after the existing stream methods (`stop_stream`, `broadcast_stream_presence`):
+
+```cpp
+    // Cache the most recent thumbnail bytes for `username` so popup
+    // viewers can fetch on demand without waiting for the next push.
+    void update_thumbnail_cache(const std::string& username,
+                                const std::string& bytes);
+    // Drop the cache entry — called when a stream stops or the
+    // streamer disconnects.
+    void erase_thumbnail_cache(const std::string& username);
+    // Copy the cached thumbnail bytes for `username` into `out`.
+    // Returns false if no entry is cached.
+    bool get_thumbnail(const std::string& username,
+                       std::vector<uint8_t>& out);
+```
+
+And the definitions, placed near `broadcast_stream_presence`:
+
+```cpp
+void SessionManager::update_thumbnail_cache(const std::string& username,
+                                            const std::string& bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_thumbnails_[username].assign(bytes.begin(), bytes.end());
+}
+
+void SessionManager::erase_thumbnail_cache(const std::string& username) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_thumbnails_.erase(username);
+}
+
+bool SessionManager::get_thumbnail(const std::string& username,
+                                    std::vector<uint8_t>& out) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = latest_thumbnails_.find(username);
+    if (it == latest_thumbnails_.end() || it->second.empty()) return false;
+    out = it->second;
+    return true;
+}
 ```
 
 - [ ] **Step 2: Cache the bytes on every thumbnail update**
 
-Find the `STREAM_THUMBNAIL_UPDATE` handler (around line 543). Replace the body so the broadcast path is preserved AND the cache is written:
+Find the `STREAM_THUMBNAIL_UPDATE` handler (around line 543). Replace the body so the broadcast path is preserved AND the cache is written via the public method:
 
 ```cpp
         else if (packet.type() == chatproj::Packet::STREAM_THUMBNAIL_UPDATE) {
@@ -124,39 +163,39 @@ Find the `STREAM_THUMBNAIL_UPDATE` handler (around line 543). Replace the body s
             update->set_owner_username(username_); // Enforce identity
             std::string channel_id = update->channel_id();
             // Stash a copy for on-demand popup fetches before the
-            // broadcast — bytes are owned by the protobuf so we copy.
-            {
-                std::lock_guard<std::mutex> lock(manager_.mutex_);
-                manager_.latest_thumbnails_[username_].assign(
-                    update->thumbnail_data().begin(),
-                    update->thumbnail_data().end());
-            }
+            // broadcast — bytes are owned by the protobuf so the
+            // helper copies them.
+            manager_.update_thumbnail_cache(username_, update->thumbnail_data());
             // Broadcast to all voice channel participants (not just watchers).
             manager_.broadcast_to_voice_channel_tcp(packet, channel_id);
         }
 ```
 
-Note: the `Session` class is a friend of `SessionManager` for `mutex_` access in many places already — verify by grepping. If not, expose a helper `update_thumbnail_cache(username, bytes)` on `SessionManager` and call that instead. (Pattern in the codebase: `manager_.broadcast_to_voice_channel_tcp` is already called the same way, so direct access likely works.)
-
 - [ ] **Step 3: Erase the cache when a stream stops**
 
-In `SessionManager::stop_stream` (around line 1197), inside the existing lock block, after `it->second.erase(...)`, add:
+In `SessionManager::stop_stream` (around line 1197), AFTER the existing lock block closes (around line 1214), add:
 
 ```cpp
-        // Drop any cached thumbnail for this streamer; popup viewers
-        // will now get an empty response (and they'll stop polling
-        // once the next stream-presence event removes the entry from
-        // their streamsByUser map).
-        latest_thumbnails_.erase(session->get_username());
+    // Drop any cached thumbnail for this streamer; popup viewers
+    // will now get an empty response (and they'll stop polling
+    // once the next stream-presence event removes the entry from
+    // their streamsByUser map).
+    erase_thumbnail_cache(session->get_username());
 ```
+
+Place it right before the `if (removed)` check.
 
 - [ ] **Step 4: Erase the cache when a session disconnects**
 
-In the session-disconnect path (around line 1144-1161 where `sessions_.erase(session)` and the loop over `active_streams_` happen), add inside the same lock block:
+In the session-disconnect path (the method where `sessions_.erase(session)` happens — `SessionManager::remove_session` or similar, around line 1144-1161), after the existing lock block, add:
 
 ```cpp
-        latest_thumbnails_.erase(session->get_username());
+    // Stream may have been active when this user dropped; clear the
+    // cache regardless. Idempotent on non-streamers.
+    erase_thumbnail_cache(session->get_username());
 ```
+
+(Use the same pattern as Step 3 — call the public method outside the existing lock block since the method takes its own lock.)
 
 - [ ] **Step 5: Implement the FETCH_STREAM_THUMBNAIL_REQ handler**
 
@@ -180,12 +219,9 @@ After the `STREAM_THUMBNAIL_UPDATE` handler (the one we modified in Step 2), add
             response.set_type(chatproj::Packet::FETCH_STREAM_THUMBNAIL_RES);
             auto* res = response.mutable_fetch_stream_thumbnail_res();
             res->set_owner_username(target);
-            {
-                std::lock_guard<std::mutex> lock(manager_.mutex_);
-                auto it = manager_.latest_thumbnails_.find(target);
-                if (it != manager_.latest_thumbnails_.end() && !it->second.empty()) {
-                    res->set_thumbnail_data(it->second.data(), it->second.size());
-                }
+            std::vector<uint8_t> bytes;
+            if (manager_.get_thumbnail(target, bytes)) {
+                res->set_thumbnail_data(bytes.data(), bytes.size());
             }
             send_packet(response);
         }
