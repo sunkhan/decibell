@@ -6,8 +6,13 @@ import { useAuthStore } from "../../stores/authStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
 import { useChatStore } from "../../stores/chatStore";
+import { useVoiceStore } from "../../stores/voiceStore";
+import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
+import { canWatchStream } from "../../utils/canWatchStream";
 import { stringToGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
+import { CodecBadge } from "../voice/CodecBadge";
+import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 
 // Anchored profile popup. Triggered from anywhere a username is shown
 // (members list, message bubble click, etc.) by calling
@@ -29,9 +34,26 @@ export default function UserProfilePopup() {
   const friends = useFriendsStore((s) => s.friends);
   const onlineUsers = useChatStore((s) => s.onlineUsers);
 
+  // Live-stream popup integration: read the stream's location (if
+  // any), pull the decode caps for the codec gate, and look up the
+  // stream's channel name from the chat store.
+  const streamEntry = useVoiceStore((s) =>
+    username ? s.streamsByUser.get(username) : undefined,
+  );
+  const decodeCaps = useCodecSettingsStore((s) => s.decodeCaps);
+  const streamChannelName = useChatStore((s) => {
+    if (!streamEntry) return null;
+    return (
+      s.channelsByServer[streamEntry.serverId]?.find(
+        (c) => c.id === streamEntry.channelId,
+      )?.name ?? "voice"
+    );
+  });
+
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [clampedY, setClampedY] = useState<number | null>(null);
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -39,6 +61,84 @@ export default function UserProfilePopup() {
     setInput("");
     setSending(false);
   }, [username]);
+
+  // Thumbnail fetch + 3s refresh while the popup is open for a
+  // streaming user. The community server caches the last received
+  // STREAM_THUMBNAIL_UPDATE per streamer; we poll for the most recent
+  // frame on demand instead of subscribing to a server-wide push (see
+  // spec §2 for the bandwidth rationale).
+  useEffect(() => {
+    if (!streamEntry || !username) {
+      setThumbnailUrl(null);
+      return;
+    }
+    let cancelled = false;
+    let currentUrl: string | null = null;
+    const serverIdForFetch = streamEntry.serverId;
+
+    const fetchOnce = async () => {
+      try {
+        const result = (await invoke("fetch_stream_thumbnail", {
+          serverId: serverIdForFetch,
+          username,
+        })) as { username: string; jpeg: Uint8Array };
+        if (cancelled) return;
+        if (result.jpeg && result.jpeg.byteLength > 0) {
+          const blob = new Blob([result.jpeg as BlobPart], { type: "image/jpeg" });
+          const url = URL.createObjectURL(blob);
+          // Revoke the previous URL after swapping in the new one so a
+          // momentary <img src=""> doesn't flash empty.
+          const prev = currentUrl;
+          currentUrl = url;
+          setThumbnailUrl(url);
+          if (prev) URL.revokeObjectURL(prev);
+        }
+        // Empty jpeg → leave the placeholder visible; next tick retries.
+      } catch (err) {
+        console.warn("[UserPopup] fetch_stream_thumbnail failed:", err);
+      }
+    };
+
+    fetchOnce();
+    const interval = window.setInterval(fetchOnce, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+    };
+  }, [streamEntry, username]);
+
+  // Auto-join + auto-watch when the live thumbnail is clicked.
+  // Codec mismatch short-circuits; the thumbnail button is also marked
+  // disabled in JSX so most users never reach this guard.
+  const handleJoinAndWatch = async () => {
+    if (!streamEntry || !username) return;
+    const { serverId: targetServerId, channelId: targetChannelId } = streamEntry;
+    const { canWatch } = canWatchStream(streamEntry.streamInfo, decodeCaps);
+    if (!canWatch) return;
+
+    closePopup();
+    setActiveView("voice");
+
+    try {
+      const v = useVoiceStore.getState();
+      if (
+        v.connectedServerId !== targetServerId ||
+        v.connectedChannelId !== targetChannelId
+      ) {
+        await joinVoiceChannel(targetServerId, targetChannelId);
+      }
+      await invoke("watch_stream", {
+        serverId: targetServerId,
+        channelId: targetChannelId,
+        targetUsername: username,
+      });
+      useVoiceStore.getState().addWatching(username);
+      useVoiceStore.getState().setFullscreenStream(username);
+    } catch (err) {
+      console.error("Join + watch failed:", err);
+    }
+  };
 
   // Measure rendered height and reposition so the full card stays in
   // the viewport. Reset clampedY when inputs change so the next mount
@@ -153,7 +253,7 @@ export default function UserProfilePopup() {
           </div>
         </div>
 
-        <div className="px-4 pb-1">
+        <div className="px-4 pb-1 pt-3">
           <div className="font-display text-[16px] font-semibold text-text-primary">
             {username}
           </div>
@@ -171,6 +271,76 @@ export default function UserProfilePopup() {
             )}
           </div>
         </div>
+
+        {/* Live-stream section — only when this user is currently
+            streaming on a server we have access to. See
+            docs/superpowers/specs/2026-05-14-live-stream-indicators-design.md.
+            Placed directly under the username/online block so it's
+            the first thing the viewer notices. */}
+        {streamEntry && username && (() => {
+          const { canWatch, reason } = canWatchStream(
+            streamEntry.streamInfo,
+            decodeCaps,
+          );
+          return (
+            <>
+              <div className="mx-4 my-3 h-px bg-border-divider" />
+              <div className="mx-4 mb-3">
+                <div className="mb-2 text-[11px] font-medium text-text-secondary">
+                  Live in{" "}
+                  <span className="text-accent-bright">
+                    #{streamChannelName}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleJoinAndWatch}
+                  disabled={!canWatch}
+                  title={canWatch ? "Watch stream" : reason}
+                  className={`group relative block aspect-video w-full overflow-hidden rounded-md ${
+                    canWatch
+                      ? "cursor-pointer"
+                      : "cursor-not-allowed opacity-50"
+                  }`}
+                >
+                  {/* Pulsing-gradient placeholder underneath; <img>
+                      sits on top once the fetch lands. Placeholder
+                      stays mounted so a brief blob-revoke between
+                      refreshes doesn't flash empty. */}
+                  <div
+                    className="absolute inset-0 animate-pulse"
+                    style={{ background: stringToGradient(username) }}
+                  />
+                  {thumbnailUrl && (
+                    <img
+                      src={thumbnailUrl}
+                      alt={`${username}'s stream`}
+                      className="absolute inset-0 h-full w-full object-cover"
+                      draggable={false}
+                    />
+                  )}
+                  <div className="absolute left-2 top-2">
+                    <CodecBadge
+                      codec={streamEntry.streamInfo.currentCodec}
+                      width={streamEntry.streamInfo.resolutionWidth}
+                      height={streamEntry.streamInfo.resolutionHeight}
+                      fps={streamEntry.streamInfo.fps}
+                      enforced={streamEntry.streamInfo.enforcedCodec !== 0}
+                      size="small"
+                    />
+                  </div>
+                  {canWatch && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/40">
+                      <span className="text-[12px] font-semibold text-white opacity-0 transition-opacity group-hover:opacity-100">
+                        WATCH STREAM
+                      </span>
+                    </div>
+                  )}
+                </button>
+              </div>
+            </>
+          );
+        })()}
 
         {/* Roles row — server context only, hard-coded to "Member" until
             server-side role data lands. */}
