@@ -123,7 +123,7 @@ Renders nothing if `streamEntry === undefined` (user isn't streaming, or local u
 
 - Header line: `Live in #{channelName}` — channel name resolved via `useChatStore.getState().channelsByServer[streamEntry.serverId]?.find(c => c.id === streamEntry.channelId)?.name ?? "voice"`.
 - Thumbnail box: `aspect-video`, full content-width (the gutter inside `mx-4`), `rounded-md`, `overflow-hidden`.
-  - **Placeholder state** (fetch in flight, fetch failed, or server has no cached frame yet): solid `bg-bg-darkest` plus a centered `LIVE` badge (the existing `LiveBadge` component from `VoiceParticipantList`, scaled up) on a pulsing dot. No user letter — this is a stream preview, not an avatar.
+  - **Placeholder state** (fetch in flight, fetch failed, or server has no cached frame yet): pulsing gradient — `stringToGradient(username)` background with a subtle `animate-pulse` opacity oscillation so the box feels alive while the real thumb is loading. No user letter — this is a stream preview, not an avatar.
   - **Loaded state**: `<img src={blobUrl}>` with `object-cover h-full w-full`. Placeholder underneath remains so a momentary blob-revoke during refresh doesn't flash empty.
   - Top-left corner: existing `CodecBadge` showing codec + resolution + fps + enforced indicator.
   - Hover state: dark gradient overlay with `WATCH STREAM` label, mirroring VoicePanel's tile hover.
