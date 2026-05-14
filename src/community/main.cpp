@@ -461,6 +461,11 @@ private:
             // a brand-new member (just added via invite redemption) and a
             // returning member flipping from offline to online.
             manager_.broadcast_members();
+            // Auto-rejoin: push membership to central so this user gets
+            // auto-rejoined on future logins. Idempotent — fires on
+            // every successful auth and serves as the bootstrap for
+            // pre-feature memberships.
+            manager_.sync_membership_register(username_);
             return;
         }
 
@@ -2090,6 +2095,32 @@ bool send_to_central_blocking(const std::string& host, int port,
     }
 }
 } // namespace
+
+void SessionManager::sync_membership_register(const std::string& username) {
+    if (central_host_.empty() || central_port_ == 0) return;
+    int64_t sid = server_id();
+    if (sid <= 0) {
+        // server_id not yet learned — skip. Next successful auth after
+        // the heartbeat response lands will pick this user up.
+        return;
+    }
+    chatproj::Packet packet;
+    packet.set_type(chatproj::Packet::MEMBERSHIP_REGISTER_REQ);
+    packet.set_auth_token(central_jwt_secret_);
+    auto* req = packet.mutable_membership_register_req();
+    req->set_username(username);
+    req->set_server_id(sid);
+
+    std::string serialized;
+    packet.SerializeToString(&serialized);
+    auto framed = chatproj::create_framed_packet(serialized);
+
+    std::string host = central_host_;
+    int port = central_port_;
+    std::thread([host, port, framed = std::move(framed)]() {
+        send_to_central_blocking(host, port, framed);
+    }).detach();
+}
 
 void SessionManager::sync_invite_register(const std::string& code, int64_t expires_at) {
     if (central_host_.empty() || central_port_ == 0) return;
