@@ -20,6 +20,11 @@ export function useAuthEvents() {
         // ServerBrowseView have data to render. Response arrives via
         // `server_list_received` below.
         invoke("request_server_list").catch(() => {});
+        // Pull DM conversation previews so the DmSidebar can show
+        // last-message + unread cards before the user opens anything.
+        // Response arrives via `dm_conversations_received` (handled
+        // in useDmEvents). Failure is silent — same as server list.
+        invoke("request_dm_conversations").catch(() => {});
       },
     );
 

@@ -37,8 +37,41 @@ export function useDmEvents() {
       );
     });
 
+    // Server-truth conversation previews — fired once on login by
+    // `request_dm_conversations` in useAuthEvents.
+    const unlistenConv = listen<{
+      conversations: {
+        peer: string;
+        lastMessageContent: string;
+        lastMessageSender: string;
+        lastMessageId: number;
+        lastTimestamp: number;
+        unreadCount: number;
+      }[];
+    }>("dm_conversations_received", (event) => {
+      useDmStore.getState().hydrateConversations(event.payload.conversations);
+    });
+
+    // One page of messages for a specific peer — fired by
+    // `request_dm_history` (DmChatPanel on mount + scroll-up).
+    const unlistenHist = listen<{
+      peer: string;
+      messages: {
+        id: number;
+        sender: string;
+        content: string;
+        timestamp: number;
+      }[];
+      hasMore: boolean;
+    }>("dm_history_received", (event) => {
+      const { peer, messages, hasMore } = event.payload;
+      useDmStore.getState().appendHistory(peer, messages, hasMore);
+    });
+
     return () => {
       unlisten.then((fn) => fn());
+      unlistenConv.then((fn) => fn());
+      unlistenHist.then((fn) => fn());
     };
   }, []);
 }
