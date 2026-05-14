@@ -674,6 +674,16 @@ impl CommunityClient {
                         thumb.thumbnail_data,
                     );
                 }
+                Some(packet::Payload::FetchStreamThumbnailRes(res)) => {
+                    // Resolve the matching oneshot waiter. If no waiter
+                    // is registered (response arrived after timeout),
+                    // drop silently — the caller already returned an
+                    // error.
+                    let mut s = state.lock().await;
+                    if let Some(tx) = s.pending_thumbnail_fetches.remove(&res.owner_username) {
+                        let _ = tx.send(res);
+                    }
+                }
                 Some(packet::Payload::StreamCodecChangedNotify(notify)) => {
                     events::emit_stream_codec_changed(events::StreamCodecChangedPayload {
                         channel_id: notify.channel_id,
