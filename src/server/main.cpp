@@ -562,7 +562,21 @@ private:
             }
             auto& hb = packet.server_heartbeat();
             std::cout << "[Server] Heartbeat from community server: " << hb.name() << " at " << hb.host_ip() << ":" << hb.port() << "\n";
-            auth_manager_.upsertCommunityServer(hb.name(), hb.description(), hb.host_ip(), hb.port(), hb.member_count());
+            int server_id = auth_manager_.upsertCommunityServer(
+                hb.name(), hb.description(), hb.host_ip(), hb.port(), hb.member_count());
+
+            // Auto-rejoin: reply with the assigned server_id so the
+            // community can populate Membership{Register,Revoke}Req on
+            // future packets. Community uses a one-shot TLS connection
+            // here — this is its only chance to read the id.
+            chatproj::Packet resp;
+            resp.set_type(chatproj::Packet::SERVER_HEARTBEAT_RES);
+            resp.mutable_server_heartbeat_res()->set_server_id(server_id);
+            std::string serialized;
+            resp.SerializeToString(&serialized);
+            auto framed = std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(serialized));
+            deliver(framed);
         }
 
         // --- COMMUNITY SERVER: REGISTER AN INVITE ---
