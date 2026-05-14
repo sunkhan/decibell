@@ -193,6 +193,8 @@ export function useVoiceEvents() {
 
     promises.push(
       listen<{
+        serverId: string;
+        channelId: string;
         streams: {
           streamId: string;
           ownerUsername: string;
@@ -205,6 +207,8 @@ export function useVoiceEvents() {
         }[];
       }>("stream_presence_updated", (event) => {
         const username = useAuthStore.getState().username;
+        const { serverId, channelId } = event.payload;
+
         const mapped: StreamInfo[] = event.payload.streams.map((s) => ({
           streamId: s.streamId,
           ownerUsername: s.ownerUsername,
@@ -215,6 +219,41 @@ export function useVoiceEvents() {
           currentCodec: (s.currentCodec ?? VideoCodec.UNKNOWN) as VideoCodec,
           enforcedCodec: (s.enforcedCodec ?? VideoCodec.UNKNOWN) as VideoCodec,
         }));
+
+        // ---- streamsByUser update (source of truth across all
+        // connected servers / channels). Drop entries whose
+        // (serverId, channelId) matches the incoming event and
+        // whose owner is no longer in event.streams; then add/update
+        // entries from event.streams.
+        const cur = useVoiceStore.getState().streamsByUser;
+        const next = new Map(cur);
+        for (const [user, loc] of cur) {
+          if (
+            loc.serverId === serverId &&
+            loc.channelId === channelId &&
+            !mapped.some((s) => s.ownerUsername === user)
+          ) {
+            next.delete(user);
+          }
+        }
+        for (const s of mapped) {
+          next.set(s.ownerUsername, {
+            serverId,
+            channelId,
+            streamInfo: s,
+          });
+        }
+        useVoiceStore.getState().setStreamsByUser(next);
+
+        // ---- The rest is scoped to events for the LOCAL user's
+        // CURRENT voice channel: sound effects, the legacy
+        // activeStreams field VoicePanel consumes, and watching
+        // cleanup. Events from other channels (cross-server,
+        // sibling channels in same server) drive only the
+        // streamsByUser map above.
+        const connSrv = useVoiceStore.getState().connectedServerId;
+        const connCh = useVoiceStore.getState().connectedChannelId;
+        if (serverId !== connSrv || channelId !== connCh) return;
 
         if (prevStreamOwners) {
           const current = new Set(mapped.map((s) => s.ownerUsername));
