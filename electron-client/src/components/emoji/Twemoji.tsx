@@ -1,8 +1,34 @@
-import { useState } from "react";
+// Twemoji renderer — inline SVG via dangerouslySetInnerHTML.
+//
+// Rationale: the previous <img src="/twemoji/X.svg"> approach made
+// every emoji a Chromium image resource. Each one carried a parsed
+// SVG DOM (~20-30 KB), a resource-scheduler entry (~10-20 KB), and a
+// rasterized buffer per display size (~5 KB × 3 sizes the app uses).
+// Scrolling through the picker mounted ~1800 of these and the
+// renderer process retained ~300 MB of resource caches even after the
+// picker closed, because Chromium intentionally holds decoded images
+// warm for fast re-render.
+//
+// Inline SVG content sidesteps all of that. The SVG markup lives in a
+// JSON bundle (~8 MB) generated at build time from @twemoji/svg by
+// scripts/build-twemoji-map.cjs. Each Twemoji renders the right svg
+// string as the body of a span — no <img>, no image resource, no
+// resource cache. When the component unmounts, React drops the DOM
+// node and the SVG string entry stays in the JS heap exactly once
+// (the JSON bundle).
+//
+// The bundle adds ~8 MB to the JS heap permanently in exchange for
+// eliminating the ~50-80 MB / ~3700 emojis residual cache. Net win.
 
-// Map an emoji grapheme to the Twemoji asset filename. Twemoji strips the
-// variation-selector-16 (FE0F) from all multi-char sequences; keep it for
-// lone-base ones (a bare single codepoint) so the asset name stays correct.
+import twemojiData from "./twemoji-data.json";
+
+const TWEMOJI: Record<string, string> = twemojiData as Record<string, string>;
+
+// Map an emoji grapheme to the codepoint-hyphenated lookup key.
+// Twemoji strips the variation-selector-16 (FE0F) from all multi-char
+// sequences; keep it for lone-base ones (a bare single codepoint) so
+// the lookup matches the @twemoji/svg filenames the build script
+// keyed the map with.
 function toCodePoints(emoji: string): string {
   const chars = Array.from(emoji);
   const hasMultipleChars = chars.length > 1;
@@ -14,17 +40,6 @@ function toCodePoints(emoji: string): string {
     codes.push(cp.toString(16));
   }
   return codes.join("-");
-}
-
-// SVGs are copied from `@twemoji/svg@15.0.0` into `public/twemoji/`
-// at build time by `scripts/copy-twemoji.cjs` (wired into the `dev`
-// and `build` npm scripts). Vite serves `public/` from the app
-// origin, so this is a same-origin file load — no network, no CDN
-// 404s. Emojis missing from the local set (mostly gendered ZWJ
-// sequences that were retired in twemoji 15.x) hit the `onError`
-// branch below and fall back to native OS emoji rendering.
-export function twemojiUrl(emoji: string): string {
-  return `/twemoji/${toCodePoints(emoji)}.svg`;
 }
 
 interface TwemojiProps {
@@ -40,15 +55,19 @@ export default function Twemoji({
   className,
   onClick,
 }: TwemojiProps) {
-  const [failed, setFailed] = useState(false);
+  const cp = toCodePoints(emoji);
+  const svg = TWEMOJI[cp];
   const interactive = !!onClick;
   const interactiveClass = interactive
     ? "cursor-pointer hover:opacity-75 transition-opacity"
     : "";
-  if (failed) {
+
+  if (!svg) {
+    // Fallback to native OS rendering — covers the gendered ZWJ
+    // sequences twemoji 15.x retired and any unknown emoji.
     return (
       <span
-        style={{ fontSize: size }}
+        style={{ fontSize: size, lineHeight: 1 }}
         className={interactiveClass}
         onClick={onClick}
         role={interactive ? "button" : undefined}
@@ -57,17 +76,27 @@ export default function Twemoji({
       </span>
     );
   }
+
   return (
-    <img
-      src={twemojiUrl(emoji)}
-      alt={emoji}
-      loading="lazy"
+    <span
       className={`inline-block align-[-0.2em] ${interactiveClass} ${className ?? ""}`}
+      // The SVG carries its own viewBox; the span's CSS width/height
+      // drives display size and the SVG scales via the viewBox. No
+      // separate raster per size variant in the resource cache.
       style={{ width: size, height: size }}
-      draggable={false}
-      onError={() => setFailed(true)}
       onClick={onClick}
       role={interactive ? "button" : undefined}
+      aria-label={emoji}
+      // Safe — content comes from the vetted @twemoji/svg npm package,
+      // not user input.
+      dangerouslySetInnerHTML={{ __html: svg }}
     />
   );
+}
+
+/// Legacy export. Kept so any straggling imports of `twemojiUrl`
+/// don't fail to compile, though there should be none now (only the
+/// component imported Twemoji's named export historically).
+export function twemojiUrl(emoji: string): string {
+  return `/twemoji/${toCodePoints(emoji)}.svg`;
 }

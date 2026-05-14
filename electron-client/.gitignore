@@ -11,6 +11,9 @@ native/npm/
 # Electron
 .vite/
 
-# Twemoji SVGs — generated from @twemoji/svg npm package by
-# scripts/copy-twemoji.cjs on every `npm run dev` / `npm run build`.
+# Twemoji JSON bundle — generated from @twemoji/svg npm package by
+# scripts/build-twemoji-map.cjs on every `npm run dev` / `npm run build`.
+src/components/emoji/twemoji-data.json
+# Old copy-twemoji output (kept ignored so existing checkouts don't
+# accidentally commit ~8 MB of SVGs that are no longer used).
 public/twemoji/
