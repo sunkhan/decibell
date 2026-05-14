@@ -189,7 +189,17 @@ Sends a `MEMBERSHIP_REVOKE_REQ` over the client's JWT-authenticated central conn
 
 **One new event listener** (extends `useServerEvents`): `memberships_received` → for each entry, add a placeholder tile to the server bar with a "connecting…" indicator. Tiles get replaced as `community_auth_responded` events land for each server_id.
 
-**Existing `disconnect_from_community` semantics unchanged** — disconnect is transient ("close the TCP connection"), not "leave the server permanently". Next login auto-reconnects. Explicit "Leave Server" still goes through the existing `LEAVE_SERVER_REQ` handler, which on the community side already fires `MEMBERSHIP_REVOKE_REQ` to central — no client-side cleanup needed for the explicit leave path.
+**`disconnect_from_community` is consolidated into Leave Server semantics.**
+
+Today there are two semantically-distinct user actions that look similar in the UI:
+- The `×` button on each server tab (ServerBar) and the dropdown "Disconnect" option (ServerChannelsSidebar) both fire `disconnect_from_community`, which closes the TLS connection but leaves the community-side `members` table untouched.
+- The "Leave Server" button in MembersAdminPanel fires `LEAVE_SERVER_REQ`, which permanently removes the user from the community.
+
+With auto-rejoin shipping, "close the connection but stay a member" becomes a meaningless action — next login auto-rejoins immediately, so `×` would effectively be a no-op visible only until app restart. Worse, it'd surprise users whose mental model (Discord-shaped) is "× = leave".
+
+**Resolution:** the existing `×` button and the dropdown "Disconnect" option are rewired to invoke the existing `leave_server` napi command (which routes to `LEAVE_SERVER_REQ` on the community side; community then fires `MEMBERSHIP_REVOKE_REQ` to central). The native `disconnect_from_community` command can stay as a low-level primitive for internal use (logout cleanup, app shutdown) but is no longer wired to any visible UI affordance.
+
+Because the action is now destructive, both the `×` button and the dropdown option get a confirmation dialog matching the one MembersAdminPanel's "Leave Server" already uses: `"Leave <server_name>? You will need a new invite to rejoin."`. The MembersAdminPanel's Leave Server button keeps working unchanged — it's redundant with the new × behavior but harmless and provides symmetry from the members-management context.
 
 ### Error handling matrix
 
@@ -224,7 +234,8 @@ So the migration is naturally amortized over each user's normal browsing behavio
 - `electron-client/native/src/commands/servers.rs` — new `request_drop_membership` napi command
 - `electron-client/native/src/events.rs` — new event name + payload struct
 - `electron-client/src/features/servers/useServerEvents.ts` — new `memberships_received` listener for placeholder tile rendering
-- `electron-client/src/features/servers/ServerBar.tsx` — render "connecting…" state for placeholder tiles
+- `electron-client/src/features/servers/ServerBar.tsx` — render "connecting…" state for placeholder tiles; rewire `×` button to invoke `leave_server` with confirmation dialog (replacing `disconnect_from_community`)
+- `electron-client/src/features/channels/ServerChannelsSidebar.tsx` — dropdown "Disconnect" → "Leave Server", invoke `leave_server` with confirmation dialog (replacing `disconnect_from_community`)
 - `electron-client/src/features/servers/useServerEvents.ts` (same hook, second concern) — on `community_auth_responded` with `success=false` and a placeholder still present, fire `request_drop_membership` + toast
 
-Rough effort: ~350 LOC new, ~120 LOC modified.
+Rough effort: ~400 LOC new, ~150 LOC modified.
