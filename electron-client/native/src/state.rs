@@ -20,7 +20,7 @@ use crate::media::{AudioStreamEngine, VideoEngine, VoiceEngine};
 use crate::net::central::CentralClient;
 use crate::net::community::CommunityClient;
 use crate::net::proto::{
-    FetchAvatarRes, InviteResolveResponse, UpdateAvatarRes,
+    FetchAvatarRes, FetchStreamThumbnailRes, InviteResolveResponse, UpdateAvatarRes,
 };
 
 /// Plan C: server-pushed event when a watcher starts or stops watching the
@@ -104,6 +104,12 @@ pub struct AppState {
     /// FETCH_AVATAR_RES arrives; the caller drops its half after a 5s
     /// timeout.
     pub pending_avatar_fetches: HashMap<String, oneshot::Sender<FetchAvatarRes>>,
+    /// In-flight FETCH_STREAM_THUMBNAIL_REQ calls keyed by streamer
+    /// username. Resolved by the community router when the matching
+    /// FETCH_STREAM_THUMBNAIL_RES arrives. Last-request-wins per
+    /// username — a previous in-flight fetch for the same user gets
+    /// its sender replaced; the earlier .await times out, harmless.
+    pub pending_thumbnail_fetches: HashMap<String, oneshot::Sender<FetchStreamThumbnailRes>>,
 }
 
 impl Default for AppState {
@@ -131,6 +137,7 @@ impl Default for AppState {
             watcher_event_tx,
             pending_avatar_update: None,
             pending_avatar_fetches: HashMap::new(),
+            pending_thumbnail_fetches: HashMap::new(),
         }
     }
 }
