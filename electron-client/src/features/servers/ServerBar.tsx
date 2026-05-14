@@ -1,5 +1,4 @@
 import { useMemo } from "react";
-import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
@@ -11,7 +10,9 @@ import { stringToGradient } from "../../utils/colors";
 // → drops + toast via useServerEvents). The home button (left)
 // toggles the home view; the add button (right) opens
 // ServerBrowseView. Servers in `servers` that are neither connected
-// nor pending live only in ServerBrowseView.
+// nor pending live only in ServerBrowseView. Leaving a server is
+// only accessible via the ServerChannelsSidebar dropdown — no
+// inline affordance on the tile itself.
 export default function ServerBar() {
   const servers = useChatStore((s) => s.servers);
   const connectedServers = useChatStore((s) => s.connectedServers);
@@ -48,31 +49,6 @@ export default function ServerBar() {
     }
   };
 
-  // The × button used to fire disconnect_from_community (close the
-  // connection but stay a member). With auto-rejoin, that's a no-op
-  // until app restart — and surprises users whose mental model is
-  // "× = leave server". Rewired to a confirmation-gated leave_server,
-  // which fully removes the user from the community and clears
-  // central's user_communities row via the community→central revoke.
-  const handleDisconnect = (e: React.MouseEvent, serverId: string) => {
-    e.stopPropagation();
-    const server = servers.find((s) => s.id === serverId);
-    const name = server?.name ?? "this server";
-    if (
-      !window.confirm(`Leave ${name}? You will need a new invite to rejoin.`)
-    ) {
-      return;
-    }
-    invoke("leave_server", { serverId }).catch(console.error);
-    useChatStore.getState().removeConnectedServer(serverId);
-    useChatStore.getState().removePendingMembership(serverId);
-    if (activeServerId === serverId) {
-      setActiveServer(null);
-      setActiveChannel(null);
-      setActiveView("home");
-    }
-  };
-
   return (
     <div className="relative z-10 flex h-[58px] shrink-0 items-center bg-bg-darkest">
       {/* Bottom separator starts after the home-button column. */}
@@ -101,42 +77,31 @@ export default function ServerBar() {
         {visible.map((server) => {
           const isPending = pendingMembershipServerIds.has(server.id);
           return (
-            <div key={server.id} className="group relative">
-              <button
-                onClick={() => !isPending && handleServerClick(server.id)}
-                disabled={isPending}
-                title={isPending ? "Connecting…" : undefined}
-                className={`relative flex h-[38px] shrink-0 items-center gap-2 rounded-lg px-3.5 text-[13px] font-semibold transition-all duration-200 ${
-                  isPending
-                    ? "cursor-wait bg-surface-hover text-text-muted opacity-60"
-                    : activeServerId === server.id
-                      ? "bg-accent-mid text-accent-bright shadow-[0_2px_12px_rgba(56,143,255,0.10)]"
-                      : "text-text-secondary hover:bg-surface-hover hover:text-text-primary hover:-translate-y-px"
-                }`}
-              >
-                {!isPending && activeServerId === server.id && (
-                  <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
-                )}
-
-                <div
-                  className="flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
-                  style={{ background: stringToGradient(server.name) }}
-                >
-                  {server.name.charAt(0).toUpperCase()}
-                </div>
-                <span className="max-w-[100px] truncate">{server.name}</span>
-              </button>
-
-              {!isPending && (
-                <button
-                  onClick={(e) => handleDisconnect(e, server.id)}
-                  className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-error text-[10px] text-white group-hover:flex"
-                  title="Leave server"
-                >
-                  ×
-                </button>
+            <button
+              key={server.id}
+              onClick={() => !isPending && handleServerClick(server.id)}
+              disabled={isPending}
+              title={isPending ? "Connecting…" : undefined}
+              className={`relative flex h-[38px] shrink-0 items-center gap-2 rounded-lg px-3.5 text-[13px] font-semibold transition-all duration-200 ${
+                isPending
+                  ? "cursor-wait bg-surface-hover text-text-muted opacity-60"
+                  : activeServerId === server.id
+                    ? "bg-accent-mid text-accent-bright shadow-[0_2px_12px_rgba(56,143,255,0.10)]"
+                    : "text-text-secondary hover:bg-surface-hover hover:text-text-primary hover:-translate-y-px"
+              }`}
+            >
+              {!isPending && activeServerId === server.id && (
+                <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
               )}
-            </div>
+
+              <div
+                className="flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
+                style={{ background: stringToGradient(server.name) }}
+              >
+                {server.name.charAt(0).toUpperCase()}
+              </div>
+              <span className="max-w-[100px] truncate">{server.name}</span>
+            </button>
           );
         })}
 
