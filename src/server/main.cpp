@@ -682,6 +682,15 @@ private:
             if (!token.empty()) {
                 resp->set_jwt_token(token);
             }
+            // Auto-rejoin: on a successful login, ship the user's
+            // community memberships inline so the client can start
+            // auto-connecting without an extra round-trip. By this
+            // point in the LOGIN_REQ handler, username_ has been set.
+            if (success && !username_.empty()) {
+                for (const auto& info : auth_manager_.getUserCommunities(username_)) {
+                    *resp->add_memberships() = info;
+                }
+            }
         }
 
         std::string serialized;
