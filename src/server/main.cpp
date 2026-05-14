@@ -146,16 +146,23 @@ private:
         std::cout << "[Server] Raw packet received, type ID: " << packet.type() << "\n";
 
         // --- ENFORCE JWT VALIDATION ---
-        // Heartbeats and invite register/unregister from community servers
-        // authenticate with the pre-shared secret, not a JWT — they are
-        // verified below in their own handlers.
+        // Heartbeats and invite/membership register/unregister/revoke from
+        // community servers authenticate with the pre-shared secret, not a
+        // JWT — they are verified below in their own handlers.
+        //
+        // MEMBERSHIP_REVOKE_REQ has dual origins: shared-secret community
+        // path falls through here as unauthenticated (verified in handler);
+        // JWT-authed client path comes in on an already-authenticated
+        // session and never hits the unauthenticated branch below.
         if (packet.type() != chatproj::Packet::REGISTER_REQ &&
             packet.type() != chatproj::Packet::LOGIN_REQ &&
             packet.type() != chatproj::Packet::HANDSHAKE &&
             packet.type() != chatproj::Packet::SERVER_HEARTBEAT &&
             packet.type() != chatproj::Packet::CLIENT_PING &&
             packet.type() != chatproj::Packet::INVITE_REGISTER_REQ &&
-            packet.type() != chatproj::Packet::INVITE_UNREGISTER_REQ) {
+            packet.type() != chatproj::Packet::INVITE_UNREGISTER_REQ &&
+            packet.type() != chatproj::Packet::MEMBERSHIP_REGISTER_REQ &&
+            packet.type() != chatproj::Packet::MEMBERSHIP_REVOKE_REQ) {
 
             if (!auth_manager_.validateToken(packet.auth_token())) {
                 std::cout << "[Security] Dropped packet - Missing or invalid JWT.\n";
