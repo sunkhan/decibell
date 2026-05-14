@@ -398,6 +398,40 @@ impl CentralClient {
                         }),
                     );
                 }
+                Some(packet::Payload::DmConversationsRes(res)) => {
+                    let conversations = res
+                        .conversations
+                        .into_iter()
+                        .map(|c| events::DmConversationPreviewPayload {
+                            peer: c.peer,
+                            last_message_content: c.last_message_content,
+                            last_message_sender: c.last_message_sender,
+                            last_message_id: c.last_message_id,
+                            last_timestamp: c.last_timestamp,
+                            unread_count: c.unread_count,
+                        })
+                        .collect();
+                    events::emit_dm_conversations_received(
+                        events::DmConversationsReceivedPayload { conversations },
+                    );
+                }
+                Some(packet::Payload::DmHistoryRes(res)) => {
+                    let messages = res
+                        .messages
+                        .into_iter()
+                        .map(|m| events::DmHistoryMessagePayload {
+                            id: m.id,
+                            sender: m.sender,
+                            content: m.content,
+                            timestamp: m.timestamp,
+                        })
+                        .collect();
+                    events::emit_dm_history_received(events::DmHistoryReceivedPayload {
+                        peer: res.peer,
+                        messages,
+                        has_more: res.has_more,
+                    });
+                }
                 _ => {
                     log::debug!("Unhandled central packet type: {}", packet.r#type);
                 }
