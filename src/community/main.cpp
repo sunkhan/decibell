@@ -2391,7 +2391,8 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
     packet.SerializeToString(&serialized);
     auto framed = chatproj::create_framed_packet(serialized);
 
-    // Connect to central server over TLS and send
+    // Connect to central over TLS, write the heartbeat, and read back
+    // SERVER_HEARTBEAT_RES carrying our central-assigned server_id.
     try {
         ssl::context ctx(ssl::context::tlsv12_client);
         ctx.set_verify_mode(ssl::verify_none);
@@ -2406,6 +2407,44 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
         ssl_socket.handshake(ssl::stream_base::client);
 
         boost::asio::write(ssl_socket, boost::asio::buffer(framed));
+
+        // Read one framed response with a 2-second deadline. If
+        // anything goes wrong, log + continue — heartbeat sync of
+        // metadata still succeeded, only the id-learn step failed.
+        boost::asio::steady_timer deadline(io_context);
+        deadline.expires_after(std::chrono::seconds(2));
+        bool timed_out = false;
+        deadline.async_wait([&](const boost::system::error_code& ec) {
+            if (!ec) {
+                timed_out = true;
+                boost::system::error_code ignore;
+                ssl_socket.lowest_layer().cancel(ignore);
+            }
+        });
+
+        uint32_t len_be = 0;
+        boost::asio::read(ssl_socket, boost::asio::buffer(&len_be, 4));
+        deadline.cancel();
+        if (!timed_out) {
+            uint32_t len = ntohl(len_be);
+            if (len > 0 && len <= (1u << 20)) {
+                std::vector<uint8_t> body(len);
+                boost::asio::read(ssl_socket, boost::asio::buffer(body));
+                chatproj::Packet resp;
+                if (resp.ParseFromArray(body.data(), static_cast<int>(body.size())) &&
+                    resp.type() == chatproj::Packet::SERVER_HEARTBEAT_RES) {
+                    int64_t id = resp.server_heartbeat_res().server_id();
+                    if (id > 0 && manager.server_id() != id) {
+                        manager.set_server_id(id);
+                        if (auto* db = manager.db()) {
+                            db->set_central_server_id(id);
+                        }
+                        std::cout << "[Heartbeat] Cached central server_id = "
+                                  << id << "\n";
+                    }
+                }
+            }
+        }
         ssl_socket.lowest_layer().close();
 
         std::cout << "[Heartbeat] Sent to central server (" << central_host << ":" << central_port << ")\n";
