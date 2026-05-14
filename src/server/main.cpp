@@ -200,8 +200,15 @@ private:
         }
 
         // --- DIRECT MESSAGE ---
+        // Persistence-first flow: identity stamp → self-DM guard →
+        // friends-only check → insert into dm_messages → stamp the
+        // persisted id back on the routed packet → live-deliver to
+        // recipient if online → always echo to sender. The previous
+        // "user is offline" error packet is gone — DMs are always
+        // persisted, so the recipient will see them on their next
+        // login via DM_CONVERSATIONS_REQ / DM_HISTORY_REQ.
         else if (packet.type() == chatproj::Packet::DIRECT_MSG) {
-            if (!authenticated_) return; 
+            if (!authenticated_) return;
 
             auto now = std::chrono::system_clock::now();
             int64_t current_time = std::chrono::system_clock::to_time_t(now);
@@ -210,6 +217,13 @@ private:
             auto* dmsg = routed_packet.mutable_direct_msg();
             dmsg->set_sender(username_); // Enforce sender identity
             dmsg->set_timestamp(current_time);
+
+            // Self-DM guard. The DB schema allows self-rows, but the
+            // UX doesn't make sense; reject explicitly so persistence
+            // doesn't silently accumulate them.
+            if (dmsg->recipient() == username_) {
+                return;
+            }
 
             if (!manager_.check_dm_allowed(username_, dmsg->recipient(), auth_manager_)) {
                 chatproj::Packet error_packet;
@@ -227,29 +241,42 @@ private:
                 return;
             }
 
-            bool delivered = manager_.send_private(routed_packet, dmsg->recipient());
-            
-            if (!delivered) {
-                // Offline queuing to PostgreSQL will go here
+            // Persist before delivery. On DB failure, surface to
+            // sender as a generic "couldn't deliver" — the message
+            // is genuinely lost in that branch (rare).
+            int64_t new_id = auth_manager_.insertDm(
+                username_, dmsg->recipient(), dmsg->content(), current_time);
+            if (new_id == 0) {
                 chatproj::Packet error_packet;
                 error_packet.set_type(chatproj::Packet::DIRECT_MSG);
                 auto* err_msg = error_packet.mutable_direct_msg();
                 err_msg->set_sender(username_);
                 err_msg->set_recipient(dmsg->recipient());
-                err_msg->set_content("This user is currently offline. Your message could not be delivered.");
+                err_msg->set_content("The server couldn't deliver your message. Please try again.");
                 err_msg->set_timestamp(current_time);
-                
+
                 std::string serialized;
                 error_packet.SerializeToString(&serialized);
                 auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
                 deliver(framed);
-            } else {
-                // Echo back to sender
-                std::string serialized;
-                routed_packet.SerializeToString(&serialized);
-                auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-                deliver(framed);
+                return;
             }
+
+            // Stamp the persisted id onto the routed packet so the
+            // client can use it as `up_to_id` in DmMarkReadReq.
+            dmsg->set_id(new_id);
+
+            // Best-effort live delivery — return value is informational
+            // only. Recipient gets it now if online, on next login
+            // via DM_CONVERSATIONS_REQ / DM_HISTORY_REQ otherwise.
+            manager_.send_private(routed_packet, dmsg->recipient());
+
+            // Always echo to sender so their UI shows the DM as
+            // delivered, carrying the new id field.
+            std::string serialized;
+            routed_packet.SerializeToString(&serialized);
+            auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
+            deliver(framed);
         }
 
         // --- SERVER LIST DIRECTORY ---
