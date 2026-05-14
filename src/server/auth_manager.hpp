@@ -24,7 +24,11 @@ public:
 
     bool verifySharedSecret(const std::string& secret) const { return secret == secret_key_; }
     std::vector<chatproj::CommunityServerInfo> getCommunityServers();
-    void upsertCommunityServer(const std::string& name, const std::string& description, const std::string& host_ip, int port, int member_count);
+    /// Returns the assigned id (community_servers.id, SERIAL). Used by
+    /// the heartbeat handler to ack the community with its
+    /// central-side id via SERVER_HEARTBEAT_RES so it can later
+    /// populate Membership{Register,Revoke}Req packets.
+    int upsertCommunityServer(const std::string& name, const std::string& description, const std::string& host_ip, int port, int member_count);
 
     // Invite lookup (community servers register invites here so clients can
     // redeem a raw code without knowing the hosting server's host:port).
@@ -102,6 +106,26 @@ public:
     void markDmRead(const std::string& reader,
                     const std::string& peer,
                     int64_t up_to_id);
+
+    // --- Auto-rejoin community memberships ---
+    // (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)
+
+    /// Idempotent insert. Called on every successful community auth
+    /// (via MEMBERSHIP_REGISTER_REQ). ON CONFLICT DO NOTHING — safe to
+    /// re-fire on every auth and serves as bootstrap for pre-feature
+    /// memberships.
+    void registerMembership(const std::string& username, int64_t server_id);
+
+    /// Idempotent delete. Called by the community-side kick/ban/leave
+    /// path (shared secret) and by the client-side stale-membership
+    /// cleanup (JWT auth).
+    void revokeMembership(const std::string& username, int64_t server_id);
+
+    /// Returns every CommunityServerInfo the user is a member of.
+    /// Orphan rows (server_id no longer in community_servers) filtered
+    /// out via the JOIN, so the client never sees phantom tiles.
+    std::vector<chatproj::CommunityServerInfo> getUserCommunities(
+        const std::string& username);
 
 private:
     std::string secret_key_;

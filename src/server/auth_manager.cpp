@@ -81,6 +81,21 @@ void AuthManager::initializeDatabase() {
             ")"
         );
 
+        // --- Auto-rejoin community memberships (see docs/superpowers/
+        //     specs/2026-05-14-auto-rejoin-communities-design.md §1) ---
+        txn.exec(
+            "CREATE TABLE IF NOT EXISTS user_communities ("
+            "  username VARCHAR(32) NOT NULL,"
+            "  server_id BIGINT NOT NULL,"
+            "  joined_at BIGINT NOT NULL,"
+            "  PRIMARY KEY (username, server_id)"
+            ")"
+        );
+        txn.exec(
+            "CREATE INDEX IF NOT EXISTS user_communities_user_idx "
+            "ON user_communities (username)"
+        );
+
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] initializeDatabase: " << e.what() << "\n";
@@ -218,7 +233,7 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
     return servers;
 }
 
-void AuthManager::upsertCommunityServer(const std::string& name, const std::string& description, const std::string& host_ip, int port, int member_count) {
+int AuthManager::upsertCommunityServer(const std::string& name, const std::string& description, const std::string& host_ip, int port, int member_count) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
@@ -234,17 +249,21 @@ void AuthManager::upsertCommunityServer(const std::string& name, const std::stri
             "  UNIQUE(host_ip, port)"
             ")"
         );
-        txn.exec_params(
+        pqxx::result rs = txn.exec_params(
             "INSERT INTO community_servers (name, description, host_ip, port, member_count, last_heartbeat) "
             "VALUES ($1, $2, $3, $4, $5, NOW()) "
             "ON CONFLICT (host_ip, port) DO UPDATE SET "
             "name = EXCLUDED.name, description = EXCLUDED.description, "
-            "member_count = EXCLUDED.member_count, last_heartbeat = NOW()",
+            "member_count = EXCLUDED.member_count, last_heartbeat = NOW() "
+            "RETURNING id",
             name, description, host_ip, port, member_count
         );
         txn.commit();
+        if (rs.empty()) return 0;
+        return rs[0][0].as<int>();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] upsertCommunityServer: " << e.what() << "\n";
+        return 0;
     }
 }
 
@@ -633,5 +652,75 @@ void AuthManager::markDmRead(const std::string& reader,
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] markDmRead: " << e.what() << "\n";
+    }
+}
+
+// --- Auto-rejoin community memberships ---
+// (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)
+
+void AuthManager::registerMembership(const std::string& username,
+                                       int64_t server_id) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        auto now = std::chrono::system_clock::now();
+        int64_t now_ts = std::chrono::system_clock::to_time_t(now);
+        txn.exec_params(
+            "INSERT INTO user_communities (username, server_id, joined_at) "
+            "VALUES ($1, $2, $3) "
+            "ON CONFLICT (username, server_id) DO NOTHING",
+            username, server_id, now_ts);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] registerMembership: " << e.what() << "\n";
+    }
+}
+
+void AuthManager::revokeMembership(const std::string& username,
+                                     int64_t server_id) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        txn.exec_params(
+            "DELETE FROM user_communities "
+            "WHERE username = $1 AND server_id = $2",
+            username, server_id);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] revokeMembership: " << e.what() << "\n";
+    }
+}
+
+std::vector<chatproj::CommunityServerInfo>
+AuthManager::getUserCommunities(const std::string& username) {
+    std::vector<chatproj::CommunityServerInfo> out;
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "SELECT cs.id, cs.name, cs.description, cs.host_ip, "
+            "       cs.port, cs.member_count "
+            "FROM user_communities uc "
+            "JOIN community_servers cs ON cs.id = uc.server_id "
+            "WHERE uc.username = $1 "
+            "ORDER BY uc.joined_at",
+            username);
+        txn.commit();
+
+        out.reserve(rs.size());
+        for (const auto& row : rs) {
+            chatproj::CommunityServerInfo info;
+            info.set_id(row[0].as<int>());
+            info.set_name(row[1].as<std::string>());
+            info.set_description(row[2].is_null() ? "" : row[2].as<std::string>());
+            info.set_host_ip(row[3].as<std::string>());
+            info.set_port(row[4].as<int>());
+            info.set_member_count(row[5].as<int>());
+            out.push_back(std::move(info));
+        }
+        return out;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getUserCommunities: " << e.what() << "\n";
+        return {};
     }
 }
