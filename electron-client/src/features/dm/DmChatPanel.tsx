@@ -60,9 +60,81 @@ export default function DmChatPanel() {
     setInput(stored);
   }, [activeDmUser]);
 
+  // On switching to a peer, pull the latest page of history IF we
+  // haven't already loaded server history for this conversation in
+  // this session. Live in-memory messages aren't enough to know we've
+  // "seen" the full history; the server's view is authoritative.
+  useEffect(() => {
+    if (!activeDmUser) return;
+    const conv = useDmStore.getState().conversations[activeDmUser];
+    if (conv?.historyLoaded) return;
+    invoke("request_dm_history", {
+      peer: activeDmUser,
+      beforeId: 0,
+      limit: 50,
+    }).catch(console.error);
+  }, [activeDmUser]);
+
+  // Scroll-up paginator. Fires when the message list scrolls near
+  // the top and the server says there are older messages available.
+  // Single-flight via the ref so rapid scroll doesn't fire parallel
+  // pages.
+  const loadMoreInFlightRef = useRef(false);
+  const onScrollLoadMore = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (el.scrollTop > 80) return;
+    if (!activeDmUser) return;
+    const conv = useDmStore.getState().conversations[activeDmUser];
+    if (!conv?.hasMoreHistory) return;
+    if (loadMoreInFlightRef.current) return;
+    loadMoreInFlightRef.current = true;
+    const oldest = conv.messages.find(
+      (m): m is typeof m & { id: number } => typeof m.id === "number" && m.id > 0,
+    );
+    const beforeId = oldest?.id ?? 0;
+    invoke("request_dm_history", {
+      peer: activeDmUser,
+      beforeId,
+      limit: 50,
+    })
+      .catch(console.error)
+      .finally(() => {
+        loadMoreInFlightRef.current = false;
+      });
+  };
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
+
+  // Debounced mark-read. Fires whenever the local user is viewing
+  // the panel for a peer and there are unread messages with a real
+  // id. Optimistically zeroes the unread count locally; server call
+  // is fire-and-forget.
+  const conversationForActive = activeDmUser
+    ? conversations[activeDmUser]
+    : undefined;
+  const messagesLenForMarkRead = conversationForActive?.messages.length ?? 0;
+  useEffect(() => {
+    if (!activeDmUser) return;
+    const conv = useDmStore.getState().conversations[activeDmUser];
+    if (!conv) return;
+    let latestId = 0;
+    for (const m of conv.messages) {
+      if (typeof m.id === "number" && m.id > latestId) latestId = m.id;
+    }
+    if (latestId === 0 || latestId <= conv.lastReadId) return;
+    // Optimistic local clear; server sync follows after a small
+    // coalesce window so a burst of new messages results in a
+    // single mark-read RPC.
+    useDmStore.getState().markRead(activeDmUser, latestId);
+    const handle = window.setTimeout(() => {
+      invoke("mark_dm_read", { peer: activeDmUser, upToId: latestId }).catch(
+        console.error,
+      );
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [activeDmUser, messagesLenForMarkRead]);
 
   // Auto-focus the editor when the user starts typing anywhere — same
   // ergonomics as the channel chat panel.
@@ -187,9 +259,12 @@ export default function DmChatPanel() {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-4">
+      <div
+        className="flex-1 overflow-y-auto pr-4 py-4"
+        onScroll={onScrollLoadMore}
+      >
         {messages.length === 0 ? (
-          <div className="animate-[fadeUp_0.4s_ease_both]">
+          <div className="animate-[fadeUp_0.4s_ease_both] pl-4">
             <div className="border-b border-border pb-5 mb-5">
               <div
                 className="mb-3 flex h-[60px] w-[60px] items-center justify-center rounded-xl text-[26px] font-bold text-white"
@@ -221,7 +296,7 @@ export default function DmChatPanel() {
               return (
                 <div
                   key={`${msg.timestamp}-${msg.sender}-${i}`}
-                  className="px-2 py-1.5"
+                  className="pl-4 pr-2 py-1.5"
                 >
                   <ErrorCard>
                     {msg.content === ERROR_MESSAGES[0] ? (
@@ -247,6 +322,10 @@ export default function DmChatPanel() {
                   i > 0 ? bubbleMessages[i - 1] : undefined,
                   msg
                 )}
+                // Align avatar's left edge with the input bar card's
+                // left edge: outer wrapper `px-3` = 12px from chat
+                // panel's left. The card's rounded border starts there.
+                paddingLeft={12}
               />
             );
           })
