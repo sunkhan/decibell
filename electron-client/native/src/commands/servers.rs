@@ -316,7 +316,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-async fn connect_with_invite(
+pub(crate) async fn connect_with_invite(
     server_id: String,
     host: String,
     port: u16,

@@ -271,6 +271,42 @@ impl CentralClient {
                         s.username = Some(username.clone());
                         drop(s);
                         events::emit_login_succeeded(username);
+
+                        // Auto-rejoin: ship memberships to the renderer
+                        // for placeholder tile rendering, then auto-
+                        // connect to each in parallel. Each connection
+                        // surfaces its own community_auth_responded
+                        // event through the existing path; renderer
+                        // collapses placeholders to connected tiles
+                        // there.
+                        let memberships: Vec<events::ServerInfo> = resp
+                            .memberships
+                            .into_iter()
+                            .map(|s| events::ServerInfo {
+                                id: s.id,
+                                name: s.name,
+                                description: s.description,
+                                host_ip: s.host_ip,
+                                port: s.port,
+                                member_count: s.member_count,
+                            })
+                            .collect();
+                        events::emit_memberships_received(memberships.clone());
+
+                        for info in memberships {
+                            let server_id = info.id.to_string();
+                            let host = info.host_ip.clone();
+                            let port = info.port as u16;
+                            tokio::spawn(async move {
+                                if let Err(e) = crate::commands::servers::connect_with_invite(
+                                    server_id, host, port, None,
+                                )
+                                .await
+                                {
+                                    eprintln!("[auto-rejoin] connect failed: {e}");
+                                }
+                            });
+                        }
                     } else {
                         events::emit_login_failed(resp.message);
                     }

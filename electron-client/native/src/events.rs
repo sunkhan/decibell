@@ -173,6 +173,7 @@ pub const LOGIN_FAILED: &str = "login_failed";
 pub const REGISTER_RESPONDED: &str = "register_responded";
 pub const LOGGED_OUT: &str = "logged_out";
 pub const SERVER_LIST_RECEIVED: &str = "server_list_received";
+pub const MEMBERSHIPS_RECEIVED: &str = "memberships_received";
 pub const COMMUNITY_AUTH_RESPONDED: &str = "community_auth_responded";
 pub const MESSAGE_RECEIVED: &str = "message_received";
 pub const CHANNEL_HISTORY_RECEIVED: &str = "channel_history_received";
@@ -248,6 +249,14 @@ pub struct ServerInfo {
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerListReceivedPayload {
     pub servers: Vec<ServerInfo>,
+}
+
+/// Auto-rejoin: list of community servers the user is a member of,
+/// derived from LoginResponse.memberships. Drives the placeholder
+/// tile UI before each community_auth_responded lands.
+#[derive(Debug, Clone, Serialize)]
+pub struct MembershipsReceivedPayload {
+    pub memberships: Vec<ServerInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -428,6 +437,10 @@ pub fn emit_logged_out() {
 
 pub fn emit_server_list_received(servers: Vec<ServerInfo>) {
     send(SERVER_LIST_RECEIVED, ServerListReceivedPayload { servers });
+}
+
+pub fn emit_memberships_received(memberships: Vec<ServerInfo>) {
+    send(MEMBERSHIPS_RECEIVED, MembershipsReceivedPayload { memberships });
 }
 
 pub fn emit_community_auth_responded(payload: CommunityAuthRespondedPayload) {
