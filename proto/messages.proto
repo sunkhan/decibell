@@ -135,6 +135,15 @@ message Packet {
     MEMBERSHIP_REVOKE_REQ   = 74;  // community→central (shared secret)
                                     // AND client→central (JWT) for stale cleanup
     SERVER_HEARTBEAT_RES    = 75;  // central→community (one-shot, post-heartbeat)
+
+    // --- Message deletion ---
+    // (see docs/superpowers/specs/2026-05-15-message-deletion-design.md)
+    DM_DELETE_REQ           = 76;   // client→central; JWT-authed
+    DM_DELETE_RES           = 77;   // central→requester
+    DM_MESSAGE_DELETED      = 78;   // central→sender + recipient (success only)
+    MESSAGE_DELETE_REQ      = 79;   // client→community
+    MESSAGE_DELETE_RES      = 80;   // community→requester
+    CHANNEL_MESSAGE_DELETED = 81;   // community→all members (success only)
   }
 
   Type type = 1;
@@ -239,6 +248,14 @@ message Packet {
     MembershipRegisterReq membership_register_req = 75;
     MembershipRevokeReq   membership_revoke_req   = 76;
     ServerHeartbeatRes    server_heartbeat_res    = 77;
+
+    // --- Message deletion ---
+    DmDeleteReq           dm_delete_req           = 78;
+    DmDeleteRes           dm_delete_res           = 79;
+    DmMessageDeleted      dm_message_deleted      = 80;
+    MessageDeleteReq      message_delete_req      = 81;
+    MessageDeleteRes      message_delete_res      = 82;
+    ChannelMessageDeleted channel_message_deleted = 83;
   }
 }
 
@@ -910,4 +927,47 @@ message MembershipRevokeReq {
 // populate Membership{Register,Revoke}Req on future packets.
 message ServerHeartbeatRes {
   int64 server_id = 1;
+}
+
+// --- Message deletion ---
+// See docs/superpowers/specs/2026-05-15-message-deletion-design.md
+
+message DmDeleteReq {
+  string peer = 1;
+  int64  message_id = 2;
+}
+
+message DmDeleteRes {
+  bool   success = 1;
+  string message = 2;
+  string peer = 3;
+  int64  message_id = 4;
+}
+
+// Peer field is rewritten by central per recipient — always "the
+// other user" from the receiving session's perspective.
+message DmMessageDeleted {
+  string peer = 1;
+  int64  message_id = 2;
+  int64  deleted_at = 3;
+}
+
+message MessageDeleteReq {
+  string channel_id = 1;
+  int64  message_id = 2;
+}
+
+message MessageDeleteRes {
+  bool   success = 1;
+  string message = 2;
+  string channel_id = 3;
+  int64  message_id = 4;
+}
+
+message ChannelMessageDeleted {
+  string channel_id = 1;
+  int64  message_id = 2;
+  int64  deleted_at = 3;
+  // For future audit-log surfacing; not consumed by current UI.
+  string deleted_by = 4;
 }
