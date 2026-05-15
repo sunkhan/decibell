@@ -5,6 +5,19 @@ directories:
   output: release
   buildResources: resources
 
+# Update metadata target. Without a publish block configured,
+# electron-builder skips generating the latest.yml / latest-linux.yml
+# / *.blockmap files that electron-updater needs to discover newer
+# versions. The CI still uploads artifacts via softprops/action-gh-
+# release (clearer semantics; single source of truth for what lands
+# on the release page), so we keep --publish=never on the package
+# step. This block exists purely to coerce electron-builder into
+# emitting the metadata files into release/ as part of the build.
+publish:
+  provider: github
+  owner: sunkhan
+  repo: decibell
+
 # We use the Castlabs Widevine-enabled Electron fork
 # (github:castlabs/electron-releases#v33.4.11+wvcus in package.json),
 # which publishes its release zips to github.com/castlabs/electron-
