@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { listen } from "../../lib/ipc";
 import { useDmStore } from "../../stores/dmStore";
 import { useAuthStore } from "../../stores/authStore";
+import { toast } from "../../stores/toastStore";
 import type { MessageReceivedPayload } from "../../types";
 
 // Pulls DMs out of the unified `message_received` bus event (the
@@ -68,10 +69,42 @@ export function useDmEvents() {
       useDmStore.getState().appendHistory(peer, messages, hasMore);
     });
 
+    const unlistenDmDeleteRes = listen<{
+      success: boolean;
+      message: string;
+      peer: string;
+      messageId: number;
+    }>("dm_message_delete_responded", (event) => {
+      const p = event.payload;
+      const dm = useDmStore.getState();
+      if (!p.success) {
+        dm.restorePendingDmDeletion(p.peer, p.messageId);
+        toast.error(
+          "Couldn't delete message",
+          p.message || "Server rejected the request.",
+        );
+        return;
+      }
+      dm.clearPendingDmDeletion(p.peer, p.messageId);
+    });
+
+    const unlistenDmDeleted = listen<{
+      peer: string;
+      messageId: number;
+      deletedAt: number;
+    }>("dm_message_deleted", (event) => {
+      const { peer, messageId } = event.payload;
+      const dm = useDmStore.getState();
+      dm.removeDmMessage(peer, messageId);
+      dm.clearPendingDmDeletion(peer, messageId);
+    });
+
     return () => {
       unlisten.then((fn) => fn());
       unlistenConv.then((fn) => fn());
       unlistenHist.then((fn) => fn());
+      unlistenDmDeleteRes.then((fn) => fn());
+      unlistenDmDeleted.then((fn) => fn());
     };
   }, []);
 }
