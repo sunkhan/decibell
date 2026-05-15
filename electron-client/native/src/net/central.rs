@@ -289,6 +289,7 @@ impl CentralClient {
                                 host_ip: s.host_ip,
                                 port: s.port,
                                 member_count: s.member_count,
+                                picture_version: s.picture_version,
                             })
                             .collect();
                         events::emit_memberships_received(memberships.clone());
@@ -325,6 +326,7 @@ impl CentralClient {
                             host_ip: s.host_ip,
                             port: s.port,
                             member_count: s.member_count,
+                            picture_version: s.picture_version,
                         })
                         .collect();
                     events::emit_server_list_received(servers);

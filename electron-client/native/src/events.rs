@@ -255,6 +255,10 @@ pub struct ServerInfo {
     pub host_ip: String,
     pub port: i32,
     pub member_count: i32,
+    /// sha256-hex of the server's picture; '' when no picture is
+    /// set. Drives whether the ServerBar tile renders the image
+    /// branch or the gradient-letter fallback.
+    pub picture_version: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
