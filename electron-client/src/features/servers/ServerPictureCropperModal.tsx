@@ -50,6 +50,12 @@ export function ServerPictureCropperModal({
   const dragStart = useRef<{ x: number; y: number } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Track whether the LATEST mousedown landed on the backdrop. If the
+  // user drags the picture and releases outside the canvas, the
+  // browser dispatches a click on the common ancestor (the backdrop)
+  // — without this guard, the modal would close mid-drag. Real
+  // backdrop-clicks (mousedown AND mouseup on backdrop) still close.
+  const backdropDownRef = useRef(false);
 
   // Load the picked file as an HTMLImageElement; centre + fit-to-cover
   // it inside the viewport on first paint. Revoke deferred to
@@ -175,7 +181,20 @@ export function ServerPictureCropperModal({
   return createPortal(
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60"
-      onClick={(e) => e.target === e.currentTarget && !uploading && onCancel()}
+      onMouseDown={(e) => {
+        backdropDownRef.current = e.target === e.currentTarget;
+      }}
+      onMouseUp={(e) => {
+        const wasBackdropDown = backdropDownRef.current;
+        backdropDownRef.current = false;
+        if (
+          !uploading &&
+          wasBackdropDown &&
+          e.target === e.currentTarget
+        ) {
+          onCancel();
+        }
+      }}
     >
       <div className="rounded-2xl border border-border bg-bg-dark p-6 shadow-[0_24px_80px_rgba(0,0,0,0.6)]">
         <p className="mb-1 font-display text-[15px] font-semibold text-text-primary">
