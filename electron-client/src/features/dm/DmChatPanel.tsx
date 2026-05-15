@@ -43,6 +43,11 @@ export default function DmChatPanel() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<RichInputHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
+  // Per-peer record of the most recently observed messages.length.
+  // Used to skip the auto-scroll when length *decreases* (a delete or
+  // an optimistic remove). Switching conversations still scrolls to
+  // bottom because the new peer's entry starts at 0.
+  const prevMessagesLenRef = useRef<Record<string, number>>({});
 
   // Fire the delete flow for a DM message. Optimistic: snapshot
   // into pendingDmDeletions, remove from the view, fire the native
@@ -160,8 +165,16 @@ export default function DmChatPanel() {
   };
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length]);
+    if (!activeDmUser) return;
+    const prev = prevMessagesLenRef.current[activeDmUser] ?? 0;
+    prevMessagesLenRef.current[activeDmUser] = messages.length;
+    // Only scroll when the list grew — new send/receive, history page
+    // arriving, or first open of this conversation. Skips the case
+    // where a delete (or any other shrink) reduces the count.
+    if (messages.length > prev) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages.length, activeDmUser]);
 
   // Debounced mark-read. Fires whenever the local user is viewing
   // the panel for a peer and there are unread messages with a real
