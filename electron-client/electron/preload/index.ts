@@ -57,6 +57,23 @@ ipcRenderer.on("decibell:stream_thumbnail", (_e, thumb: StreamThumbnail) => {
   for (const cb of streamThumbnailSubs) cb(thumb);
 });
 
+type UpdateStatus =
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "not-available"; checkedAt: number }
+  | { state: "available"; version: string }
+  | { state: "downloading"; pct: number; version: string }
+  | { state: "downloaded"; version: string }
+  | { state: "error"; message: string };
+
+type UpdateMode = "self-update" | "notify-only" | "disabled";
+
+type UpdateSnapshot = {
+  status: UpdateStatus;
+  mode: UpdateMode;
+  currentVersion: string;
+};
+
 type CaptureSource = {
   id: string;
   name: string;
@@ -259,5 +276,26 @@ contextBridge.exposeInMainWorld("decibell", {
     /// Pass null to clear (e.g., after a cancelled getDisplayMedia call).
     setNextSource: (id: string | null): Promise<void> =>
       ipcRenderer.invoke("decibell:capture:setNextSource", id) as Promise<void>,
+  },
+  update: {
+    /// Pull the current main-process snapshot. Called on AppLayout
+    /// mount to cover the case where initUpdater()'s boot-time
+    /// broadcast fired before the renderer attached its listener.
+    getStatus: (): Promise<UpdateSnapshot> =>
+      ipcRenderer.invoke("decibell:update:getStatus") as Promise<UpdateSnapshot>,
+    /// Manually trigger a check. Resolves once the autoUpdater promise
+    /// resolves — the actual update_status events stream over
+    /// 'decibell:event' as usual, so a caller can fire-and-forget.
+    check: (): Promise<void> =>
+      ipcRenderer.invoke("decibell:update:check") as Promise<void>,
+    /// Quit the app and install the downloaded update. Caller must
+    /// have already seen status.state === "downloaded". No-op when
+    /// mode !== "self-update".
+    quitAndInstall: (): Promise<void> =>
+      ipcRenderer.invoke("decibell:update:quitAndInstall") as Promise<void>,
+    /// Open the GitHub releases page in the user's default browser.
+    /// Used by the notify-only mode action button.
+    openReleasePage: (): Promise<void> =>
+      ipcRenderer.invoke("decibell:update:openReleasePage") as Promise<void>,
   },
 });

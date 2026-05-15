@@ -99,6 +99,23 @@ declare global {
         }) => Promise<CaptureSource[]>;
         setNextSource: (id: string | null) => Promise<void>;
       };
+      update: {
+        getStatus: () => Promise<{
+          status:
+            | { state: "idle" }
+            | { state: "checking" }
+            | { state: "not-available"; checkedAt: number }
+            | { state: "available"; version: string }
+            | { state: "downloading"; pct: number; version: string }
+            | { state: "downloaded"; version: string }
+            | { state: "error"; message: string };
+          mode: "self-update" | "notify-only" | "disabled";
+          currentVersion: string;
+        }>;
+        check: () => Promise<void>;
+        quitAndInstall: () => Promise<void>;
+        openReleasePage: () => Promise<void>;
+      };
     };
   }
 }
