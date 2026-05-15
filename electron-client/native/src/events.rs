@@ -216,6 +216,11 @@ pub const DM_MESSAGE_DELETED: &str = "dm_message_deleted";
 pub const CHANNEL_MESSAGE_DELETE_RESPONDED: &str = "channel_message_delete_responded";
 pub const CHANNEL_MESSAGE_DELETED: &str = "channel_message_deleted";
 
+// --- Custom server pictures ---
+pub const SERVER_PICTURE_UPDATE_RESPONDED: &str = "server_picture_update_responded";
+pub const SERVER_PICTURE_RECEIVED: &str = "server_picture_received";
+pub const SERVER_PICTURE_CHANGED: &str = "server_picture_changed";
+
 // ── Payload structs ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -974,4 +979,44 @@ pub fn emit_channel_message_delete_responded(payload: ChannelMessageDeleteRespon
 
 pub fn emit_channel_message_deleted(payload: ChannelMessageDeletedPayload) {
     send(CHANNEL_MESSAGE_DELETED, payload);
+}
+
+// --- Custom server pictures ---
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerPictureUpdateRespondedPayload {
+    pub success: bool,
+    pub message: String,
+    pub server_id: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerPictureReceivedPayload {
+    pub server_id: i32,
+    pub version: String,
+    /// Pre-encoded `data:image/...;base64,...` URL ready to drop into
+    /// an <img src>. Empty string when the server has no picture set.
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerPictureChangedPayload {
+    pub server_id: i32,
+    pub version: String,
+}
+
+pub fn emit_server_picture_update_responded(payload: ServerPictureUpdateRespondedPayload) {
+    send(SERVER_PICTURE_UPDATE_RESPONDED, payload);
+}
+
+pub fn emit_server_picture_received(payload: ServerPictureReceivedPayload) {
+    send(SERVER_PICTURE_RECEIVED, payload);
+}
+
+pub fn emit_server_picture_changed(payload: ServerPictureChangedPayload) {
+    send(SERVER_PICTURE_CHANGED, payload);
 }
