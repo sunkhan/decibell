@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.6.4",
   "description": "Decibell — Electron + Rust (napi-rs) client",
-  "homepage": "https://github.com/decibell/decibell",
+  "homepage": "https://github.com/sunkhan/decibell",
   "author": {
     "name": "Decibell",
     "email": "noreply@decibell.app"
@@ -31,6 +31,7 @@
     "@fontsource-variable/outfit": "^5.2.8",
     "emoji-mart": "^5.6.0",
     "emoji-regex": "^10.6.0",
+    "electron-updater": "^6.3.9",
     "lucide-react": "^1.8.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
