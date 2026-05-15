@@ -555,7 +555,7 @@ private:
                         chatproj::create_framed_packet(s)));
                     return;
                 }
-                if (data.size() > 200 * 1024) {
+                if (data.size() > 1024 * 1024) {
                     res->set_success(false);
                     res->set_message("Avatar too large");
                     std::string s;

@@ -851,7 +851,7 @@ message StreamWatcherNotify {
 // See docs/superpowers/specs/2026-05-12-custom-profile-pictures-design.md.
 
 message UpdateAvatarReq {
-  bytes data = 1;       // empty = remove; otherwise JPEG bytes, max 200 KB
+  bytes data = 1;       // empty = remove; otherwise JPEG bytes, max 1 MB
 }
 
 message UpdateAvatarRes {

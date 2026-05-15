@@ -4,7 +4,7 @@
 // the image inside a 320×320 viewport → Save draws the visible region
 // onto a 256×256 OffscreenCanvas, JPEG-encodes at quality 0.85, ships
 // bytes via the upload_avatar napi command → server validates magic +
-// 200 KB cap → stores → broadcasts AvatarChanged → avatarStore on this
+// 1 MB cap → stores → broadcasts AvatarChanged → avatarStore on this
 // renderer invalidates → UserAvatar across the app re-renders.
 //
 // Inline implementation, no external crop library (~200 LOC).

@@ -1014,9 +1014,9 @@ private:
                 send_packet(rsp);
                 return;
             }
-            if (req.data().size() > 200 * 1024) {
+            if (req.data().size() > 1024 * 1024) {
                 res->set_success(false);
-                res->set_message("Image exceeds 200 KB.");
+                res->set_message("Image exceeds 1 MB.");
                 send_packet(rsp);
                 return;
             }

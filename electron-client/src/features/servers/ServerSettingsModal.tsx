@@ -31,7 +31,7 @@ const TABS = [
   },
 ];
 
-const MAX_BYTES = 200 * 1024;
+const MAX_BYTES = 1024 * 1024;
 
 /// Mirrors SettingsModal chrome 1:1 (820×560, tabbed sidebar, fade-in
 /// scale-95→1, Esc closes, backdrop click closes, portal to body).
@@ -85,7 +85,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
     e.target.value = ""; // allow re-select of the same file
     if (!file) return;
     if (file.size > MAX_BYTES) {
-      toast.error("Image too large", "Maximum size is 200 KB.");
+      toast.error("Image too large", "Maximum size is 1 MB.");
       return;
     }
     // Sniff JPEG/PNG magic bytes.
@@ -208,7 +208,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
             </h3>
             <p className="text-[13px] text-text-secondary">
               Shown in the server bar in place of the default gradient and
-              letter. Square images work best; JPEG or PNG, max 200 KB.
+              letter. Square images work best; JPEG or PNG, max 1 MB.
             </p>
             <div className="flex items-center gap-6">
               {hasPicture && pictureDataUrl ? (
