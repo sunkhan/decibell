@@ -1020,3 +1020,24 @@ pub fn emit_server_picture_received(payload: ServerPictureReceivedPayload) {
 pub fn emit_server_picture_changed(payload: ServerPictureChangedPayload) {
     send(SERVER_PICTURE_CHANGED, payload);
 }
+
+/// Convert raw image bytes into a data URL ready for an <img src>.
+/// Sniffs JPEG/PNG magic bytes; falls back to image/jpeg if neither
+/// matches. Returns an empty string when `bytes` is empty.
+pub fn bytes_to_data_url(bytes: &[u8]) -> String {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let mime = if bytes.len() >= 4 && &bytes[..4] == [0x89, 0x50, 0x4E, 0x47] {
+        "image/png"
+    } else if bytes.len() >= 3 && &bytes[..3] == [0xFF, 0xD8, 0xFF] {
+        "image/jpeg"
+    } else {
+        "image/jpeg"
+    };
+    let b64 = STANDARD.encode(bytes);
+    format!("data:{};base64,{}", mime, b64)
+}
