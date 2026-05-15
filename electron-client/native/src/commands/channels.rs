@@ -225,3 +225,32 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
         Err(_) => Err(napi::Error::from_reason("Send timed out")),
     }
 }
+
+#[napi(object)]
+pub struct DeleteChannelMessageArgs {
+    pub server_id: String,
+    pub channel_id: String,
+    pub message_id: i64,
+}
+
+/// Sends MESSAGE_DELETE_REQ over the community session for server_id.
+/// The ack arrives as the `channel_message_delete_responded` event;
+/// the broadcast (if successful) arrives as `channel_message_deleted`.
+/// Server-side handler enforces self-or-can_delete_others.
+#[napi]
+pub async fn delete_channel_message(args: DeleteChannelMessageArgs) -> napi::Result<()> {
+    let DeleteChannelMessageArgs {
+        server_id,
+        channel_id,
+        message_id,
+    } = args;
+    send_for_server(
+        &server_id,
+        packet::Type::MessageDeleteReq,
+        packet::Payload::MessageDeleteReq(MessageDeleteReq {
+            channel_id,
+            message_id,
+        }),
+    )
+    .await
+}
