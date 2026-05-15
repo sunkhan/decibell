@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { invoke } from "../../lib/ipc";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
@@ -47,12 +47,18 @@ export default function DmChatPanel() {
   // Used to skip the auto-scroll when length *decreases* (a delete or
   // an optimistic remove).
   const prevMessagesLenRef = useRef<Record<string, number>>({});
-  // Tracks the previous active peer so a conversation switch always
-  // forces a scroll to bottom — even when revisiting a cached
-  // conversation whose length hasn't changed since last view. Without
-  // this, scrollTop carries over from the previous (different) DM
-  // and lands the user mid-scroll or at the top.
+  // Tracks the previous active peer so a conversation switch can
+  // distinguish "same conversation, length changed" from "switched to
+  // a different conversation".
   const prevActiveDmUserRef = useRef<string | null>(null);
+  // Per-peer scroll position. Saved continuously as the user scrolls;
+  // restored on conversation switch so revisiting lands the user
+  // where they left off (Discord behavior). undefined for never-
+  // visited peers — those default to scroll-to-bottom.
+  const savedScrollPositionsRef = useRef<Record<string, number>>({});
+  // Ref to the scrollable messages container so the restore can set
+  // scrollTop directly.
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Fire the delete flow for a DM message. Optimistic: snapshot
   // into pendingDmDeletions, remove from the view, fire the native
@@ -169,20 +175,32 @@ export default function DmChatPanel() {
       });
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!activeDmUser) return;
     const conversationChanged = prevActiveDmUserRef.current !== activeDmUser;
     prevActiveDmUserRef.current = activeDmUser;
     const prevLen = prevMessagesLenRef.current[activeDmUser] ?? 0;
     prevMessagesLenRef.current[activeDmUser] = messages.length;
-    // Scroll on:
-    //   - Conversation switch (even if length unchanged — preserves
-    //     "open lands at bottom" UX for cached conversations whose
-    //     scrollTop would otherwise carry over from the previous DM).
-    //   - List growth in the current conversation (new send/receive,
-    //     history page arriving, first open).
-    // Don't scroll on shrink (delete / optimistic remove).
-    if (conversationChanged || messages.length > prevLen) {
+
+    if (conversationChanged) {
+      // Switched conversations: restore saved scroll position if any,
+      // otherwise default to bottom (first-open behavior). Done in a
+      // layout effect (synchronous post-DOM-update, pre-paint) so the
+      // user doesn't see a flicker at the wrong scroll position.
+      const saved = savedScrollPositionsRef.current[activeDmUser];
+      const el = scrollContainerRef.current;
+      if (el && saved !== undefined) {
+        el.scrollTop = saved;
+      } else {
+        messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+      }
+      return;
+    }
+
+    // Same conversation: scroll to bottom only when the list grew
+    // (new send/receive, history page). Don't scroll on shrink
+    // (delete / optimistic remove).
+    if (messages.length > prevLen) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages.length, activeDmUser]);
@@ -349,8 +367,20 @@ export default function DmChatPanel() {
 
       {/* Messages */}
       <div
+        ref={scrollContainerRef}
         className="flex-1 overflow-y-auto pr-4 py-4"
-        onScroll={onScrollLoadMore}
+        onScroll={(e) => {
+          onScrollLoadMore(e);
+          // Continuously remember the active peer's scroll position
+          // so a return-visit restores it. This fires for both manual
+          // scrolling and programmatic scrollIntoView, which is
+          // exactly what we want — the saved value always reflects
+          // the latest visible position.
+          if (activeDmUser) {
+            savedScrollPositionsRef.current[activeDmUser] =
+              e.currentTarget.scrollTop;
+          }
+        }}
       >
         {messages.length === 0 ? (
           <div className="animate-[fadeUp_0.4s_ease_both] pl-4">
