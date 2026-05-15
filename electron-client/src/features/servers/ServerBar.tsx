@@ -189,7 +189,17 @@ export default function ServerBar() {
           <ServerTile
             key={server.id}
             server={server}
-            isActive={activeServerId === server.id}
+            // Active state is only meaningful when the user is actually
+            // *viewing* this server (the channel grid or a voice
+            // channel inside it). On home / browse / dm views the
+            // activeServerId is sticky so the user's previously
+            // selected server doesn't get forgotten — but we must NOT
+            // render the tile as active in those modes, or the breathing
+            // glow + image-only treatment lies about where the user is.
+            isActive={
+              activeServerId === server.id &&
+              (activeView === "server" || activeView === "voice")
+            }
             isPending={pendingMembershipServerIds.has(server.id)}
             onClick={handleServerClick}
           />

@@ -8,6 +8,7 @@ import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import VoiceParticipantList from "../voice/VoiceParticipantList";
 import ServerActionsDropdown from "../servers/ServerActionsDropdown";
 import ServerSettingsModal from "../servers/ServerSettingsModal";
+import LeaveServerConfirmModal from "../../components/LeaveServerConfirmModal";
 import { useCanEditServerSettings } from "../servers/useCanEditServerSettings";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { useSidebarResize } from "./useSidebarResize";
@@ -38,6 +39,7 @@ export default function ServerChannelsSidebar() {
   const [textCollapsed, setTextCollapsed] = useState(false);
   const [voiceCollapsed, setVoiceCollapsed] = useState(false);
   const [showServerMenu, setShowServerMenu] = useState(false);
+  const [leavePending, setLeavePending] = useState<{ id: string; name: string } | null>(null);
   const serverMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -178,22 +180,11 @@ export default function ServerChannelsSidebar() {
               const server = useChatStore
                 .getState()
                 .servers.find((s) => s.id === activeServerId);
-              const name = server?.name ?? "this server";
-              if (
-                !window.confirm(
-                  `Leave ${name}? You will need a new invite to rejoin.`,
-                )
-              ) {
-                return;
-              }
-              invoke("leave_server", { serverId: activeServerId }).catch(
-                console.error,
-              );
-              useChatStore.getState().removeConnectedServer(activeServerId);
-              useChatStore.getState().removePendingMembership(activeServerId);
-              useChatStore.getState().setActiveServer(null);
-              setActiveChannel(null);
-              setActiveView("home");
+              setLeavePending({
+                id: activeServerId,
+                name: server?.name ?? "this server",
+              });
+              useUiStore.getState().openModal("leave-server-confirm");
             }}
           />
         )}
@@ -316,6 +307,22 @@ export default function ServerChannelsSidebar() {
       />
       {activeModal === "server-settings" && activeServerId && (
         <ServerSettingsModal serverId={activeServerId} />
+      )}
+      {activeModal === "leave-server-confirm" && leavePending && (
+        <LeaveServerConfirmModal
+          serverName={leavePending.name}
+          onConfirm={() => {
+            invoke("leave_server", { serverId: leavePending.id }).catch(
+              console.error,
+            );
+            useChatStore.getState().removeConnectedServer(leavePending.id);
+            useChatStore.getState().removePendingMembership(leavePending.id);
+            useChatStore.getState().setActiveServer(null);
+            setActiveChannel(null);
+            setActiveView("home");
+            setLeavePending(null);
+          }}
+        />
       )}
     </div>
   );
