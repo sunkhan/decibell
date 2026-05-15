@@ -100,6 +100,18 @@ export interface SendChannelMessageArgs {
   nonce?: string
 }
 export declare function sendChannelMessage(args: SendChannelMessageArgs): Promise<void>
+export interface DeleteChannelMessageArgs {
+  serverId: string
+  channelId: string
+  messageId: number
+}
+/**
+ * Sends MESSAGE_DELETE_REQ over the community session for server_id.
+ * The ack arrives as the `channel_message_delete_responded` event;
+ * the broadcast (if successful) arrives as `channel_message_deleted`.
+ * Server-side handler enforces self-or-can_delete_others.
+ */
+export declare function deleteChannelMessage(args: DeleteChannelMessageArgs): Promise<void>
 export interface ListMembersArgs {
   serverId: string
 }
@@ -149,6 +161,17 @@ export interface MarkDmReadArgs {
   upToId: number
 }
 export declare function markDmRead(args: MarkDmReadArgs): Promise<void>
+export interface DeleteDmMessageArgs {
+  peer: string
+  messageId: number
+}
+/**
+ * Sends DM_DELETE_REQ over the JWT-authed central session. The
+ * ack arrives as the `dm_message_delete_responded` event; the
+ * broadcast (if successful) arrives as `dm_message_deleted`. Both
+ * land in useDmEvents on the renderer side.
+ */
+export declare function deleteDmMessage(args: DeleteDmMessageArgs): Promise<void>
 export declare function requestFriendList(): Promise<void>
 export interface SendFriendActionArgs {
   /**
