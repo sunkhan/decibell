@@ -10,7 +10,7 @@ import MessageBubble, { shouldGroup } from "./MessageBubble";
 import PendingAttachmentsRow from "./PendingAttachmentsRow";
 import EmojiPicker from "./EmojiPicker";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
-import { pickFiles, ATTACHMENT_FILTERS } from "./filePicker";
+import { pickFiles } from "./filePicker";
 import { queueUpload, startQueuedUpload } from "./uploadAttachment";
 import { chunkSourceFromPath } from "./chunkSource";
 import WelcomeState from "./WelcomeState";
@@ -193,7 +193,11 @@ export default function ChatPanel() {
 
   const handlePickFiles = async () => {
     if (!activeServerId || !activeChannelId) return;
-    const paths = await pickFiles({ multiple: true, filters: ATTACHMENT_FILTERS });
+    // No filters — Windows remembers the last-used type filter per
+    // app session, so passing a list with "Images" or similar in it
+    // means the dialog reopens with that selection. We want "All
+    // Files" every time so attachment sending isn't a 2-click flow.
+    const paths = await pickFiles({ multiple: true });
     if (!paths) return;
     for (const p of paths) {
       try {

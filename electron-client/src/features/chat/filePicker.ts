@@ -23,22 +23,3 @@ export async function pickSavePath(args: {
 } = {}): Promise<string | null> {
   return window.decibell.dialog.save(args);
 }
-
-/// File-extension filters the chat composer offers when picking
-/// attachments. Matches tauri-client's tauri.conf.json file-association
-/// list.
-export const ATTACHMENT_FILTERS = [
-  { name: "All Files", extensions: ["*"] },
-  {
-    name: "Images",
-    extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "avif"],
-  },
-  {
-    name: "Videos",
-    extensions: ["mp4", "webm", "mov", "mkv", "avi"],
-  },
-  {
-    name: "Audio",
-    extensions: ["mp3", "wav", "ogg", "m4a", "flac", "opus"],
-  },
-];

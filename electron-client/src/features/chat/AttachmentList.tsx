@@ -719,13 +719,43 @@ function DocumentItem({
   serverId: string | null;
 }) {
   const url = buildAttachmentUrl(serverId, attachment);
+
+  // The <a download="..."> attribute is silently ignored when href
+  // points to a different origin (Chromium spec). Our attachments are
+  // served from the loopback media server (http://127.0.0.1:PORT) while
+  // the renderer lives at file:// (prod) or http://localhost:5173 (dev),
+  // so the browser falls back to the last path segment of the URL —
+  // which is the numeric attachment id. To save under the real filename
+  // we route through the same dialog.save + netFetch + fs.writeFile
+  // path that the audio attachment download uses.
+  const onDownload = async () => {
+    if (!serverId) return;
+    const dest = await window.decibell.dialog.save({
+      defaultPath: attachment.filename || "attachment",
+    });
+    if (!dest) return;
+    try {
+      const res = await window.decibell.netFetch("", {
+        method: "GET",
+        attachmentTarget: {
+          serverId,
+          path: `/attachments/${attachment.id}`,
+        },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await window.decibell.fs.writeFile(dest, new Uint8Array(res.body));
+      toast.success("File saved", attachment.filename);
+    } catch (err) {
+      toast.error("Save failed", String(err));
+    }
+  };
+
   return (
-    <a
-      href={url ?? "#"}
-      download={attachment.filename}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={`flex max-w-[420px] items-center gap-3 rounded-xl border border-border bg-bg-secondary p-3 transition-colors hover:bg-bg-light ${
+    <button
+      onClick={onDownload}
+      disabled={!url}
+      title={`Download ${attachment.filename}`}
+      className={`flex max-w-[420px] items-center gap-3 rounded-xl border border-border bg-bg-secondary p-3 text-left transition-colors hover:bg-bg-light ${
         url ? "" : "pointer-events-none opacity-50"
       }`}
     >
@@ -743,7 +773,7 @@ function DocumentItem({
           {formatFileSize(attachment.sizeBytes)}
         </div>
       </div>
-    </a>
+    </button>
   );
 }
 
