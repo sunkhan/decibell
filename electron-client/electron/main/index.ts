@@ -13,6 +13,7 @@ import { registerDialogHandlers } from "./dialog";
 import { registerFsHandlers } from "./fs";
 import { registerNetHandlers } from "./netFetch";
 import { startMediaServer, stopMediaServer, getMediaServerPort } from "./mediaServer";
+import { initUpdater, kickoffInitialCheck } from "./update";
 
 // Single-instance lock — second launches focus the existing window.
 // Required for deep-link handling on Windows/Linux (so a second
@@ -309,6 +310,10 @@ function createWindow(): void {
       }
       pendingDeepLinks.length = 0;
     }
+    // Schedule the first auto-update check. kickoffInitialCheck has
+    // its own internal 5s delay so the login + websocket handshake
+    // gets to land first.
+    kickoffInitialCheck();
   });
   attachWindowEvents(mainWindow);
 
@@ -541,6 +546,7 @@ app.whenReady().then(async () => {
   // webContents.send calls after did-finish-load. The PR2 demo emit
   // sleeps 3s for exactly this reason.
   initAddon();
+  initUpdater();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
