@@ -1312,6 +1312,85 @@ CommunityDb::WipeChannelResult CommunityDb::wipe_channel(const std::string& chan
     return out;
 }
 
+// --- Per-message delete (see docs/superpowers/specs/
+//     2026-05-15-message-deletion-design.md) ---
+
+std::optional<std::string> CommunityDb::get_message_sender(
+    const std::string& channel_id, int64_t message_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "SELECT sender FROM messages WHERE id=? AND channel_id=?;");
+    if (!q.s) return std::nullopt;
+    q.bind_int64(1, message_id);
+    q.bind_text(2, channel_id);
+    if (q.step() == SQLITE_ROW) {
+        return q.col_text(0);
+    }
+    return std::nullopt;
+}
+
+CommunityDb::DeleteMessageResult CommunityDb::delete_message(
+    const std::string& channel_id, int64_t message_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    DeleteMessageResult result;
+
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return result;
+
+    auto rollback = [&]() {
+        exec_sql(db_, "ROLLBACK;");
+        result.unlink_paths.clear();
+        result.ok = false;
+    };
+
+    // Collect storage_paths of bound attachments before deletion.
+    // Only rows with a non-empty storage_path get an unlink — 'uploading'
+    // rows with placeholder paths and tombstoned rows where storage_path
+    // is empty are skipped (they have no on-disk blob to remove).
+    {
+        Stmt q(db_,
+            "SELECT COALESCE(storage_path, '') FROM attachments "
+            "WHERE message_id=?;");
+        if (!q.s) { rollback(); return result; }
+        q.bind_int64(1, message_id);
+        while (q.step() == SQLITE_ROW) {
+            std::string p = q.col_text(0);
+            if (!p.empty()) result.unlink_paths.push_back(std::move(p));
+        }
+    }
+
+    // Delete attachment rows.
+    {
+        Stmt q(db_, "DELETE FROM attachments WHERE message_id=?;");
+        if (!q.s) { rollback(); return result; }
+        q.bind_int64(1, message_id);
+        if (q.step() != SQLITE_DONE) { rollback(); return result; }
+    }
+
+    // Delete the message row. FTS5 mirror trigger handles the index
+    // sync — no manual FTS DELETE needed (same as in wipe_channel).
+    bool deleted = false;
+    {
+        Stmt q(db_, "DELETE FROM messages WHERE id=? AND channel_id=?;");
+        if (!q.s) { rollback(); return result; }
+        q.bind_int64(1, message_id);
+        q.bind_text(2, channel_id);
+        deleted = (q.step() == SQLITE_DONE) && sqlite3_changes(db_) == 1;
+    }
+
+    if (deleted) {
+        if (!exec_sql(db_, "COMMIT;")) { rollback(); return result; }
+        result.ok = true;
+    } else {
+        rollback();
+    }
+    return result;
+}
+
+bool CommunityDb::can_delete_others(const std::string& username) const {
+    // Today: owner-only. When roles ship, extend with:
+    //   || role_has_permission(username, "DELETE_MESSAGES")
+    return owner() == username;
+}
+
 CommunityDb::PrunedTextResult CommunityDb::prune_text_messages(
     const std::string& channel_id, int64_t cutoff_ts) {
     PrunedTextResult out;

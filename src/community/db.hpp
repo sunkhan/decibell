@@ -267,6 +267,28 @@ public:
         int64_t deleted_attachment_count = 0;
         std::vector<std::string> unlink_paths;
     };
+
+    // --- per-message delete ---
+    // (see docs/superpowers/specs/2026-05-15-message-deletion-design.md)
+    struct DeleteMessageResult {
+        bool ok = false;
+        std::vector<std::string> unlink_paths;
+    };
+
+    /// Returns the sender username of the given message in this channel,
+    /// or nullopt if no such row exists.
+    std::optional<std::string> get_message_sender(
+        const std::string& channel_id, int64_t message_id) const;
+
+    /// Hard-deletes the message + its bound attachments in one
+    /// transaction. Returns storage_paths the caller should unlink
+    /// from disk (matches WipeChannelResult.unlink_paths pattern).
+    DeleteMessageResult delete_message(
+        const std::string& channel_id, int64_t message_id);
+
+    /// Forward-compat permission helper. owner() == username today;
+    /// extends with an OR clause when roles ship.
+    bool can_delete_others(const std::string& username) const;
     // Delete every message + attachment row for `channel_id`, returning
     // the counts and the storage paths whose blobs (and thumbnails) the
     // server should unlink. The AFTER DELETE trigger on messages mirrors
