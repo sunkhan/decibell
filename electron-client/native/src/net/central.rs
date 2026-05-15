@@ -486,6 +486,23 @@ impl CentralClient {
                         deleted_at: b.deleted_at,
                     });
                 }
+                Some(packet::Payload::FetchServerPictureRes(resp)) => {
+                    events::emit_server_picture_received(
+                        events::ServerPictureReceivedPayload {
+                            server_id: resp.server_id,
+                            version: resp.version,
+                            data: events::bytes_to_data_url(&resp.data),
+                        },
+                    );
+                }
+                Some(packet::Payload::ServerPictureChanged(b)) => {
+                    events::emit_server_picture_changed(
+                        events::ServerPictureChangedPayload {
+                            server_id: b.server_id,
+                            version: b.version,
+                        },
+                    );
+                }
                 _ => {
                     log::debug!("Unhandled central packet type: {}", packet.r#type);
                 }
