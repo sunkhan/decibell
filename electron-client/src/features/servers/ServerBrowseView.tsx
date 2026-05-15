@@ -3,6 +3,7 @@ import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
+import type { CommunityServer } from "../../types";
 
 interface ParsedInviteLink {
   host: string;
@@ -14,6 +15,95 @@ interface ResolvedInvite {
   host: string;
   port: number;
   code: string;
+}
+
+// Dedupes in-flight picture fetches across re-renders. Keyed by
+// "<serverId>:<version>" so a new version triggers a fresh fetch.
+// Module-level so it survives component remounts within a session.
+const inflightFetches = new Set<string>();
+
+function useFetchServerPictureIfMissing(
+  serverId: string,
+  version: string,
+  cachedDataUrl: string | undefined,
+) {
+  useEffect(() => {
+    if (!version || cachedDataUrl) return;
+    const key = `${serverId}:${version}`;
+    if (inflightFetches.has(key)) return;
+    inflightFetches.add(key);
+    invoke("fetch_server_picture", { serverId: parseInt(serverId, 10) })
+      .catch(console.error)
+      .finally(() => inflightFetches.delete(key));
+  }, [serverId, version, cachedDataUrl]);
+}
+
+interface ServerBrowseCardProps {
+  server: CommunityServer;
+  isConnected: boolean;
+  isConnecting: boolean;
+  onConnect: () => void;
+}
+
+function ServerBrowseCard({
+  server,
+  isConnected,
+  isConnecting,
+  onConnect,
+}: ServerBrowseCardProps) {
+  const pictureVersion = useChatStore(
+    (s) => s.serverPictureVersions[server.id] ?? "",
+  );
+  const pictureDataUrl = useChatStore((s) => s.serverPictures[server.id]);
+  const hasPicture = pictureVersion !== "";
+  useFetchServerPictureIfMissing(server.id, pictureVersion, pictureDataUrl);
+
+  return (
+    <button
+      onClick={() => !isConnected && onConnect()}
+      disabled={isConnected || isConnecting}
+      className="flex items-center gap-4 rounded-2xl border border-border bg-bg-dark p-4 text-left transition-all hover:border-accent/40 hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0"
+    >
+      {hasPicture ? (
+        <img
+          src={pictureDataUrl ?? ""}
+          alt={server.name}
+          className="h-16 w-16 shrink-0 rounded-xl object-cover"
+        />
+      ) : (
+        <div
+          className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl text-2xl font-semibold text-white"
+          style={{ background: stringToGradient(server.name) }}
+        >
+          {server.name.charAt(0).toUpperCase()}
+        </div>
+      )}
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="truncate text-sm font-bold text-text-bright">
+          {server.name}
+        </span>
+        <span className="line-clamp-2 text-xs text-text-secondary">
+          {server.description}
+        </span>
+        <span className="mt-0.5 text-xs text-text-muted">
+          {server.memberCount} members
+          {isConnected && (
+            <span className="ml-1 text-success">· Connected</span>
+          )}
+        </span>
+      </div>
+      {isConnecting && (
+        <svg
+          className="h-4 w-4 shrink-0 animate-spin text-accent"
+          viewBox="0 0 24 24"
+          fill="none"
+        >
+          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+          <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
+        </svg>
+      )}
+    </button>
+  );
 }
 
 export default function ServerBrowseView() {
@@ -217,61 +307,34 @@ export default function ServerBrowseView() {
 
       <div className="flex-1 overflow-y-auto px-8 py-6">
         {isLoadingList && servers.length === 0 ? (
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-            {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
               <div
                 key={i}
-                className="flex animate-pulse flex-col items-center rounded-2xl border border-border bg-bg-dark p-5"
+                className="flex animate-pulse items-center gap-4 rounded-2xl border border-border bg-bg-dark p-4"
               >
-                <div className="mb-3 h-14 w-14 rounded-xl bg-bg-tertiary" />
-                <div className="mb-1.5 h-4 w-24 rounded bg-bg-tertiary" />
-                <div className="mb-2 h-3 w-32 rounded bg-bg-tertiary" />
-                <div className="h-3 w-16 rounded bg-bg-tertiary" />
+                <div className="h-16 w-16 shrink-0 rounded-xl bg-bg-tertiary" />
+                <div className="flex flex-1 flex-col gap-2">
+                  <div className="h-4 w-32 rounded bg-bg-tertiary" />
+                  <div className="h-3 w-48 rounded bg-bg-tertiary" />
+                  <div className="h-3 w-20 rounded bg-bg-tertiary" />
+                </div>
               </div>
             ))}
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-            {filtered.map((server) => {
-              const isConnected = connectedServers.has(server.id);
-              const isConnecting = connectingId === server.id;
-              return (
-                <button
-                  key={server.id}
-                  onClick={() =>
-                    !isConnected &&
-                    handleConnect(server.id, server.hostIp, server.port)
-                  }
-                  disabled={isConnected || isConnecting}
-                  className="flex flex-col items-center rounded-2xl border border-border bg-bg-dark p-5 text-center transition-all hover:border-accent/40 hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0"
-                >
-                  <div
-                    className="mb-3 flex h-14 w-14 items-center justify-center rounded-xl text-xl font-semibold text-white"
-                    style={{ background: stringToGradient(server.name) }}
-                  >
-                    {server.name.charAt(0).toUpperCase()}
-                  </div>
-                  <span className="mb-1 text-sm font-bold text-text-bright">
-                    {server.name}
-                  </span>
-                  <span className="mb-2 line-clamp-2 text-xs text-text-secondary">
-                    {server.description}
-                  </span>
-                  <span className="mt-auto text-xs text-text-muted">
-                    {server.memberCount} members
-                    {isConnected && (
-                      <span className="ml-1 text-success">· Connected</span>
-                    )}
-                  </span>
-                  {isConnecting && (
-                    <svg className="mt-2 h-4 w-4 animate-spin text-accent" viewBox="0 0 24 24" fill="none">
-                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
-                      <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
-                    </svg>
-                  )}
-                </button>
-              );
-            })}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {filtered.map((server) => (
+              <ServerBrowseCard
+                key={server.id}
+                server={server}
+                isConnected={connectedServers.has(server.id)}
+                isConnecting={connectingId === server.id}
+                onConnect={() =>
+                  handleConnect(server.id, server.hostIp, server.port)
+                }
+              />
+            ))}
           </div>
         )}
         {filtered.length === 0 && !isLoadingList && (
