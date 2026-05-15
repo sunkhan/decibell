@@ -210,6 +210,12 @@ pub const CAPS_REFRESHED: &str = "caps_refreshed";
 pub const DM_CONVERSATIONS_RECEIVED: &str = "dm_conversations_received";
 pub const DM_HISTORY_RECEIVED: &str = "dm_history_received";
 
+// --- Message deletion ---
+pub const DM_MESSAGE_DELETE_RESPONDED: &str = "dm_message_delete_responded";
+pub const DM_MESSAGE_DELETED: &str = "dm_message_deleted";
+pub const CHANNEL_MESSAGE_DELETE_RESPONDED: &str = "channel_message_delete_responded";
+pub const CHANNEL_MESSAGE_DELETED: &str = "channel_message_deleted";
+
 // ── Payload structs ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -913,4 +919,59 @@ pub fn emit_dm_conversations_received(payload: DmConversationsReceivedPayload) {
 
 pub fn emit_dm_history_received(payload: DmHistoryReceivedPayload) {
     send(DM_HISTORY_RECEIVED, payload);
+}
+
+// --- Message deletion ---
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmMessageDeleteRespondedPayload {
+    pub success: bool,
+    pub message: String,
+    pub peer: String,
+    pub message_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmMessageDeletedPayload {
+    pub peer: String,
+    pub message_id: i64,
+    pub deleted_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMessageDeleteRespondedPayload {
+    pub success: bool,
+    pub message: String,
+    pub server_id: String,
+    pub channel_id: String,
+    pub message_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMessageDeletedPayload {
+    pub server_id: String,
+    pub channel_id: String,
+    pub message_id: i64,
+    pub deleted_at: i64,
+    pub deleted_by: String,
+}
+
+pub fn emit_dm_message_delete_responded(payload: DmMessageDeleteRespondedPayload) {
+    send(DM_MESSAGE_DELETE_RESPONDED, payload);
+}
+
+pub fn emit_dm_message_deleted(payload: DmMessageDeletedPayload) {
+    send(DM_MESSAGE_DELETED, payload);
+}
+
+pub fn emit_channel_message_delete_responded(payload: ChannelMessageDeleteRespondedPayload) {
+    send(CHANNEL_MESSAGE_DELETE_RESPONDED, payload);
+}
+
+pub fn emit_channel_message_deleted(payload: ChannelMessageDeletedPayload) {
+    send(CHANNEL_MESSAGE_DELETED, payload);
 }
