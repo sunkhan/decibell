@@ -23,6 +23,7 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <openssl/sha.h>
 #include <jwt-cpp/traits/nlohmann-json/defaults.h>
 #include "messages.pb.h"
 #include "../common/net_utils.hpp"
@@ -2117,6 +2118,25 @@ void SessionManager::set_central_sync(const std::string& central_host, int centr
 }
 
 namespace {
+
+/// Returns the lowercase sha256 hex digest of `data`. Used to derive
+/// the picture_version for SyncServerPictureReq — central trusts the
+/// community to compute it consistently with what it can re-verify on
+/// the bytes it stores.
+std::string sha256_hex(const std::string& data) {
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char*>(data.data()),
+           data.size(), digest);
+    static const char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(SHA256_DIGEST_LENGTH * 2);
+    for (unsigned char b : digest) {
+        out.push_back(kHex[b >> 4]);
+        out.push_back(kHex[b & 0x0F]);
+    }
+    return out;
+}
+
 // One-shot TLS send of a framed packet to central. Blocks briefly; call from
 // a detached thread so packet-handler coroutines never stall.
 //
