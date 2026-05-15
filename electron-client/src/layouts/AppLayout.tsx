@@ -1,16 +1,56 @@
+import { useEffect } from "react";
 import { Outlet } from "react-router-dom";
 import Titlebar from "./Titlebar";
 import ToastStack from "../components/ToastStack";
+import { listen } from "../lib/ipc";
+import {
+  useUpdateStore,
+  type UpdateStatus,
+  type UpdateMode,
+} from "../stores/updateStore";
 
 // Always-on chrome wrapper. Both /login and / sit inside this layout
 // so the custom Titlebar (with min/max/close) stays present from the
 // moment the window opens. The outlet renders the active route's
 // content beneath the titlebar. ToastStack is also mounted here so
 // notifications appear on /login as well as /.
-//
-// UpdateChecker (electron-updater) and ResizeHandles (edge-pull
-// resize affordances on frameless windows) port with their own PRs.
+
+interface UpdateEventPayload {
+  status: UpdateStatus;
+  mode: UpdateMode;
+  currentVersion: string;
+}
+
 export default function AppLayout() {
+  useEffect(() => {
+    // Pull the current snapshot first — covers the case where
+    // initUpdater()'s boot-time broadcast fired before this listener
+    // attached. After this, every subsequent transition arrives via
+    // the 'update_status' event below.
+    window.decibell.update.getStatus().then((snap) => {
+      useUpdateStore.getState().setFromEvent(
+        snap.status,
+        snap.mode,
+        snap.currentVersion,
+      );
+    });
+
+    let unlistenFn: (() => void) | null = null;
+    listen<UpdateEventPayload>("update_status", (event) => {
+      const p = event.payload;
+      useUpdateStore.getState().setFromEvent(
+        p.status,
+        p.mode,
+        p.currentVersion,
+      );
+    }).then((u) => {
+      unlistenFn = u;
+    });
+    return () => {
+      if (unlistenFn) unlistenFn();
+    };
+  }, []);
+
   return (
     <div className="relative flex h-screen w-screen flex-col bg-bg-primary text-text-primary">
       <Titlebar />
