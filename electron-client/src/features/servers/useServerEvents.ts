@@ -300,9 +300,51 @@ export function useServerEvents() {
       },
     );
 
+    const unlistenChannelDeleteRes = listen<{
+      success: boolean;
+      message: string;
+      serverId: string;
+      channelId: string;
+      messageId: number;
+    }>("channel_message_delete_responded", (event) => {
+      const p = event.payload;
+      const chat = useChatStore.getState();
+      if (!p.success) {
+        // Server rejected (403/404). Restore the bubble + surface
+        // the server's reason as a toast.
+        chat.restorePendingDeletion(p.channelId, p.messageId);
+        toast.error(
+          "Couldn't delete message",
+          p.message || "Server rejected the request.",
+        );
+        return;
+      }
+      // Success: clear the pending entry. The broadcast (or already-
+      // optimistic-remove) keeps the bubble gone.
+      chat.clearPendingDeletion(p.channelId, p.messageId);
+    });
+
+    const unlistenChannelDeleted = listen<{
+      serverId: string;
+      channelId: string;
+      messageId: number;
+      deletedAt: number;
+      deletedBy: string;
+    }>("channel_message_deleted", (event) => {
+      const { channelId, messageId } = event.payload;
+      const chat = useChatStore.getState();
+      // Idempotent: removeMessage on an already-gone id is a no-op.
+      // Same handler for "my delete succeeded" (already removed
+      // optimistically) and "someone else deleted this message".
+      chat.removeMessage(channelId, messageId);
+      chat.clearPendingDeletion(channelId, messageId);
+    });
+
     return () => {
       unlistenMemberships.then((fn) => fn());
       unlistenAuth.then((fn) => fn());
+      unlistenChannelDeleteRes.then((fn) => fn());
+      unlistenChannelDeleted.then((fn) => fn());
       unlistenLost.then((fn) => fn());
       unlistenRestored.then((fn) => fn());
       unlistenChannelUpdated.then((fn) => fn());
