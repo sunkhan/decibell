@@ -4,8 +4,8 @@
 // viewport matching the ServerBar tile's aspect ratio (see
 // serverTileDimensions.ts). The user pans + zooms an image inside
 // the cropper viewport; Save draws the visible region onto an
-// OffscreenCanvas sized at 4× the tile (520×152 for the current
-// 130×38 tile), JPEG-encodes at quality 0.85, ships bytes via the
+// OffscreenCanvas sized at 4× the tile (440×152 for the current
+// 110×38 tile), JPEG-encodes at quality 0.85, ships bytes via the
 // update_server_picture napi command → community validates owner +
 // size → forwards to central → central broadcasts SERVER_PICTURE_
 // CHANGED → tile updates on every member's ServerBar.
@@ -25,13 +25,13 @@ interface Props {
   onCancel: () => void;
 }
 
-// Cropper viewport — comfortable working size, ~3.7× the tile width.
+// Cropper viewport — comfortable working size, ~4.4× the tile width.
 const VIEWPORT_W = 480;
-const VIEWPORT_H = Math.round(VIEWPORT_W / TILE_ASPECT); // 140 at 3.42 aspect
+const VIEWPORT_H = Math.round(VIEWPORT_W / TILE_ASPECT); // 166 at 2.89 aspect
 // Output canvas — 4× the tile width so renderers downscale rather
-// than upscale on retina/HiDPI displays. The tile is 130×38; output
-// is 520×152.
-const OUTPUT_W = 520;
+// than upscale on retina/HiDPI displays. The tile is 110×38; output
+// is 440×152.
+const OUTPUT_W = 440;
 const OUTPUT_H = Math.round(OUTPUT_W / TILE_ASPECT); // 152
 const JPEG_QUALITY = 0.85;
 
