@@ -809,11 +809,16 @@ AuthManager::getServerPicture(int server_id) {
         txn.commit();
         if (rs.empty()) return {"", ""};
         std::string version = rs[0][0].as<std::string>();
-        if (rs[0][1].is_null()) {
-            return {std::move(version), ""};
+        std::string data;
+        if (!rs[0][1].is_null()) {
+            pqxx::binarystring blob(rs[0][1]);
+            // blob.data() is `const unsigned char*` in pqxx 7+;
+            // std::string::assign needs `const char*`. Byte-identical
+            // cast — same pattern as getAvatar above.
+            data.assign(
+                reinterpret_cast<const char*>(blob.data()),
+                blob.size());
         }
-        pqxx::binarystring bs(rs[0][1]);
-        std::string data(bs.data(), bs.size());
         return {std::move(version), std::move(data)};
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] getServerPicture: " << e.what() << "\n";
