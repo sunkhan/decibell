@@ -45,9 +45,24 @@ interface Props {
   /// its attach button; DmChatPanel passes a smaller value matching
   /// its input-bar inner padding.
   paddingLeft?: number;
+  /// True iff the local user is allowed to delete this message.
+  /// Drives the hover-only trash icon visibility. Parents compute
+  /// this — ChatPanel: sender-match OR owner; DmChatPanel: sender-match.
+  canDelete?: boolean;
+  /// Fired when the user clicks the trash icon. Parents open the
+  /// DeleteMessageConfirmModal with the right context payload.
+  onDelete?: (message: Message) => void;
 }
 
-function MessageBubble({ message, grouped, serverId, isLast, paddingLeft = 8 }: Props) {
+function MessageBubble({
+  message,
+  grouped,
+  serverId,
+  isLast,
+  paddingLeft = 8,
+  canDelete = false,
+  onDelete,
+}: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
 
@@ -70,7 +85,7 @@ function MessageBubble({ message, grouped, serverId, isLast, paddingLeft = 8 }: 
   if (grouped) {
     return (
       <div
-        className="group flex gap-3 rounded-xl py-px pr-2 hover:bg-white/[0.015]"
+        className="group relative flex gap-3 rounded-xl py-px pr-2 hover:bg-white/[0.015]"
         style={{ paddingLeft }}
       >
         <div className="flex w-[38px] shrink-0 items-baseline justify-end">
@@ -92,13 +107,35 @@ function MessageBubble({ message, grouped, serverId, isLast, paddingLeft = 8 }: 
             <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
           )}
         </div>
+        {canDelete && onDelete && (
+          <button
+            onClick={() => onDelete(message)}
+            title="Delete message"
+            className="absolute right-2 top-0 hidden h-6 w-6 items-center justify-center rounded-md bg-bg-secondary text-error hover:bg-error/10 group-hover:flex"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6" />
+              <path d="M10 11v6M14 11v6" />
+              <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+            </svg>
+          </button>
+        )}
       </div>
     );
   }
 
   return (
     <div
-      className={`group flex gap-3 rounded-xl pr-2 pt-2.5 pb-0.5 hover:bg-white/[0.015]${
+      className={`group relative flex gap-3 rounded-xl pr-2 pt-2.5 pb-0.5 hover:bg-white/[0.015]${
         isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""
       }`}
       style={{ paddingLeft }}
@@ -135,6 +172,28 @@ function MessageBubble({ message, grouped, serverId, isLast, paddingLeft = 8 }: 
           <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
         )}
       </div>
+      {canDelete && onDelete && (
+        <button
+          onClick={() => onDelete(message)}
+          title="Delete message"
+          className="absolute right-2 top-1 hidden h-6 w-6 items-center justify-center rounded-md bg-bg-secondary text-error hover:bg-error/10 group-hover:flex"
+        >
+          <svg
+            className="h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6" />
+            <path d="M10 11v6M14 11v6" />
+            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
