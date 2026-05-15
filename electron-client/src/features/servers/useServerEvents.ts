@@ -49,6 +49,7 @@ interface MembershipsReceivedPayload {
     hostIp: string;
     port: number;
     memberCount: number;
+    pictureVersion: string;
   }>;
 }
 
@@ -80,6 +81,11 @@ export function useServerEvents() {
         const chat = useChatStore.getState();
         chat.mergeServers(servers);
         chat.setPendingMemberships(servers.map((s) => s.id));
+        // Propagate picture_version so the ServerBar tile knows up-front
+        // whether to lazy-fetch a picture.
+        for (const m of event.payload.memberships) {
+          chat.setServerPictureVersion(String(m.id), m.pictureVersion ?? "");
+        }
       },
     );
 
@@ -340,11 +346,56 @@ export function useServerEvents() {
       chat.clearPendingDeletion(channelId, messageId);
     });
 
+    const unlistenServerPictureUpdateRes = listen<{
+      success: boolean;
+      message: string;
+      serverId: string;
+      version: string;
+    }>("server_picture_update_responded", (event) => {
+      const p = event.payload;
+      if (!p.success) {
+        toast.error("Couldn't update server picture", p.message);
+        return;
+      }
+      // Success: the broadcast (server_picture_changed) updates the
+      // version + invalidates cached bytes; next tile render lazy-
+      // fetches. Modal closes implicitly via the upload handler.
+    });
+
+    const unlistenServerPictureChanged = listen<{
+      serverId: number;
+      version: string;
+    }>("server_picture_changed", (event) => {
+      const { serverId, version } = event.payload;
+      useChatStore
+        .getState()
+        .setServerPictureVersion(String(serverId), version);
+    });
+
+    const unlistenServerPictureReceived = listen<{
+      serverId: number;
+      version: string;
+      data: string;
+    }>("server_picture_received", (event) => {
+      const { serverId, version, data } = event.payload;
+      // Empty data means the server has no picture set (or unknown
+      // server_id). setServerPictureData also drops mismatched
+      // versions, so a stale fetch landing after a newer
+      // version-changed event is a no-op.
+      if (!data) return;
+      useChatStore
+        .getState()
+        .setServerPictureData(String(serverId), version, data);
+    });
+
     return () => {
       unlistenMemberships.then((fn) => fn());
       unlistenAuth.then((fn) => fn());
       unlistenChannelDeleteRes.then((fn) => fn());
       unlistenChannelDeleted.then((fn) => fn());
+      unlistenServerPictureUpdateRes.then((fn) => fn());
+      unlistenServerPictureChanged.then((fn) => fn());
+      unlistenServerPictureReceived.then((fn) => fn());
       unlistenLost.then((fn) => fn());
       unlistenRestored.then((fn) => fn());
       unlistenChannelUpdated.then((fn) => fn());

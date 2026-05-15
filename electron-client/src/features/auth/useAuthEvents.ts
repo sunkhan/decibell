@@ -57,7 +57,15 @@ export function useAuthEvents() {
           port: s.port,
           memberCount: s.memberCount,
         }));
-        useChatStore.getState().setServers(servers);
+        const chat = useChatStore.getState();
+        chat.setServers(servers);
+        // Propagate picture_version so the ServerBar tile / browse
+        // view knows up-front whether to lazy-fetch a picture.
+        for (const s of event.payload.servers as Array<
+          ServerInfoPayload & { pictureVersion?: string }
+        >) {
+          chat.setServerPictureVersion(String(s.id), s.pictureVersion ?? "");
+        }
       },
     );
 
