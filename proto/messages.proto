@@ -144,6 +144,15 @@ message Packet {
     MESSAGE_DELETE_REQ      = 79;   // client→community
     MESSAGE_DELETE_RES      = 80;   // community→requester
     CHANNEL_MESSAGE_DELETED = 81;   // community→all members (success only)
+
+    // --- Custom server pictures ---
+    // (see docs/superpowers/specs/2026-05-15-custom-server-pictures-design.md)
+    UPDATE_SERVER_PICTURE_REQ = 82;  // client→community (JWT)
+    UPDATE_SERVER_PICTURE_RES = 83;  // community→requester
+    SYNC_SERVER_PICTURE_REQ   = 84;  // community→central (shared secret)
+    FETCH_SERVER_PICTURE_REQ  = 85;  // client→central (JWT)
+    FETCH_SERVER_PICTURE_RES  = 86;  // central→requester
+    SERVER_PICTURE_CHANGED    = 87;  // central→every online member
   }
 
   Type type = 1;
@@ -256,6 +265,14 @@ message Packet {
     MessageDeleteReq      message_delete_req      = 81;
     MessageDeleteRes      message_delete_res      = 82;
     ChannelMessageDeleted channel_message_deleted = 83;
+
+    // --- Custom server pictures ---
+    UpdateServerPictureReq update_server_picture_req = 84;
+    UpdateServerPictureRes update_server_picture_res = 85;
+    SyncServerPictureReq   sync_server_picture_req   = 86;
+    FetchServerPictureReq  fetch_server_picture_req  = 87;
+    FetchServerPictureRes  fetch_server_picture_res  = 88;
+    ServerPictureChanged   server_picture_changed    = 89;
   }
 }
 
@@ -324,6 +341,11 @@ message CommunityServerInfo {
   string host_ip = 4;
   int32 port = 5;
   int32 member_count = 6;
+  // sha256-hex of the server picture; '' when no picture is set.
+  // Propagates through LoginResponse.memberships and
+  // ServerListResponse.servers so clients know up-front which tiles
+  // have a picture set.
+  string picture_version = 7;
 }
 
 message ServerListResponse {
@@ -970,4 +992,39 @@ message ChannelMessageDeleted {
   int64  deleted_at = 3;
   // For future audit-log surfacing; not consumed by current UI.
   string deleted_by = 4;
+}
+
+// --- Custom server pictures ---
+// See docs/superpowers/specs/2026-05-15-custom-server-pictures-design.md
+
+message UpdateServerPictureReq {
+  bytes data = 1;   // empty = remove
+}
+
+message UpdateServerPictureRes {
+  bool   success = 1;
+  string message = 2;
+  string version = 3;   // sha256-hex; '' on removal or failure
+}
+
+message SyncServerPictureReq {
+  string host = 1;
+  int32  port = 2;
+  bytes  data = 3;
+  string version = 4;   // pre-computed by community
+}
+
+message FetchServerPictureReq {
+  int32 server_id = 1;
+}
+
+message FetchServerPictureRes {
+  int32  server_id = 1;
+  string version = 2;
+  bytes  data = 3;
+}
+
+message ServerPictureChanged {
+  int32  server_id = 1;
+  string version = 2;
 }
