@@ -480,6 +480,28 @@ impl CommunityClient {
                         wiped_by: msg.wiped_by,
                     });
                 }
+                Some(packet::Payload::MessageDeleteRes(resp)) => {
+                    events::emit_channel_message_delete_responded(
+                        events::ChannelMessageDeleteRespondedPayload {
+                            success: resp.success,
+                            message: resp.message,
+                            server_id: server_id.clone(),
+                            channel_id: resp.channel_id,
+                            message_id: resp.message_id,
+                        },
+                    );
+                }
+                Some(packet::Payload::ChannelMessageDeleted(b)) => {
+                    events::emit_channel_message_deleted(
+                        events::ChannelMessageDeletedPayload {
+                            server_id: server_id.clone(),
+                            channel_id: b.channel_id,
+                            message_id: b.message_id,
+                            deleted_at: b.deleted_at,
+                            deleted_by: b.deleted_by,
+                        },
+                    );
+                }
                 Some(packet::Payload::InviteCreateRes(resp)) => {
                     let invite = resp.invite.map(|i| events::InviteInfoPayload {
                         code: i.code,
