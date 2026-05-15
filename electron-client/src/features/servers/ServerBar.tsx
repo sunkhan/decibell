@@ -94,14 +94,18 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
         alt={server.name}
         className="absolute inset-0 h-full w-full object-cover"
       />
-      {!isActive && (
-        <>
-          <div className="absolute inset-0 bg-black/45" />
-          <span className="relative max-w-[100px] truncate text-[13px] font-semibold text-white">
-            {server.name}
-          </span>
-        </>
-      )}
+      {/* Dim overlay only when inactive */}
+      {!isActive && <div className="absolute inset-0 bg-black/45" />}
+      {/* Name always rendered so the tile keeps the same width whether
+          active or not — invisible (but still occupies layout space)
+          when active so only the image shows. */}
+      <span
+        className={`relative max-w-[100px] truncate text-[13px] font-semibold text-white ${
+          isActive ? "invisible" : ""
+        }`}
+      >
+        {server.name}
+      </span>
       {!isPending && isActive && (
         <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
       )}
