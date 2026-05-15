@@ -250,11 +250,13 @@ export default function DmChatPanel() {
   }
 
   // Map DmMessages to Message shape for MessageBubble compatibility.
-  // DMs aren't persisted server-side so id/channelId are placeholders
-  // and attachments are always empty.
+  // Preserve the real server-assigned id when present (persistent-DMs)
+  // — the delete flow keys on it. Legacy / synthetic preview entries
+  // (pre-persistence DMs) fall back to 0 and the trash icon won't
+  // appear for those, which is correct (nothing to delete).
   const bubbleMessages = messages.map((m) => ({
     ...m,
-    id: 0,
+    id: typeof m.id === "number" ? m.id : 0,
     channelId: "",
     attachments: [],
   }));
