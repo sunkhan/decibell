@@ -92,13 +92,27 @@ export function AvatarCropperModal({ file, onSave, onCancel }: Props) {
   // React attaches wheel listeners as passive by default, which makes
   // preventDefault a silent no-op (and lets the modal's wheel events
   // scroll the page underneath). Bind manually with passive:false.
+  // Zooms toward the cursor: the image-coordinate point under the
+  // pointer stays under the pointer after the scale change.
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-      setScale((s) => Math.max(0.1, Math.min(10, s * factor)));
+      const rect = el.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      setScale((s) => {
+        const next = Math.max(0.1, Math.min(10, s * factor));
+        if (next === s) return s;
+        const realFactor = next / s;
+        setPos((p) => ({
+          x: cx - (cx - p.x) * realFactor,
+          y: cy - (cy - p.y) * realFactor,
+        }));
+        return next;
+      });
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
