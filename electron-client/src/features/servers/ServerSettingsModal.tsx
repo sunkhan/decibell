@@ -100,10 +100,13 @@ export default function ServerSettingsModal({ serverId }: Props) {
       toast.error("Unsupported format", "Only JPEG and PNG are supported.");
       return;
     }
+    // napi-rs's Buffer type accepts a Uint8Array at the JS boundary —
+    // and `Buffer` itself isn't defined in Electron's renderer process.
+    // Same pattern as the existing user-avatar upload in AccountTab.
     const buf = new Uint8Array(await file.arrayBuffer());
     invoke("update_server_picture", {
       serverId,
-      data: Buffer.from(buf),
+      data: buf,
     }).catch((err) => {
       console.error("update_server_picture:", err);
       toast.error("Failed to upload", "Please try again.");
@@ -120,7 +123,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
     }
     invoke("update_server_picture", {
       serverId,
-      data: Buffer.alloc(0),
+      data: new Uint8Array(0),
     }).catch((err) => {
       console.error("update_server_picture:", err);
       toast.error("Failed to remove", "Please try again.");
