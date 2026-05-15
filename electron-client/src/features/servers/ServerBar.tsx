@@ -1,7 +1,113 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
+import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
+import type { CommunityServer } from "../../types";
+
+// Tiny 1×1 transparent PNG. Used as the <img> placeholder while the
+// picture bytes are in-flight so we don't flash a broken-image icon.
+const PLACEHOLDER_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
+// Module-level dedupe set for in-flight picture fetches.
+// Keyed by "<serverId>:<version>" so a new version triggers a fresh
+// fetch even if the previous one is still pending.
+const inflightFetches = new Set<string>();
+
+function useFetchServerPictureIfMissing(
+  serverId: string,
+  version: string,
+  cachedDataUrl: string | undefined,
+) {
+  useEffect(() => {
+    if (!version || cachedDataUrl) return;
+    const key = `${serverId}:${version}`;
+    if (inflightFetches.has(key)) return;
+    inflightFetches.add(key);
+    invoke("fetch_server_picture", { serverId: parseInt(serverId, 10) })
+      .catch(console.error)
+      .finally(() => inflightFetches.delete(key));
+  }, [serverId, version, cachedDataUrl]);
+}
+
+interface ServerTileProps {
+  server: CommunityServer;
+  isActive: boolean;
+  isPending: boolean;
+  onClick: (serverId: string) => void;
+}
+
+function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
+  const pictureVersion = useChatStore(
+    (s) => s.serverPictureVersions[server.id] ?? "",
+  );
+  const pictureDataUrl = useChatStore((s) => s.serverPictures[server.id]);
+  const hasPicture = pictureVersion !== "";
+
+  useFetchServerPictureIfMissing(server.id, pictureVersion, pictureDataUrl);
+
+  if (!hasPicture) {
+    return (
+      <button
+        onClick={() => !isPending && onClick(server.id)}
+        disabled={isPending}
+        title={isPending ? "Connecting…" : undefined}
+        className={`relative flex h-[38px] shrink-0 items-center gap-2 rounded-lg px-3.5 text-[13px] font-semibold transition-all duration-200 ${
+          isPending
+            ? "cursor-wait bg-surface-hover text-text-muted opacity-60"
+            : isActive
+              ? "bg-accent-mid text-accent-bright shadow-[0_2px_12px_rgba(56,143,255,0.10)]"
+              : "text-text-secondary hover:bg-surface-hover hover:text-text-primary hover:-translate-y-px"
+        }`}
+      >
+        {!isPending && isActive && (
+          <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
+        )}
+        <div
+          className="flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
+          style={{ background: stringToGradient(server.name) }}
+        >
+          {server.name.charAt(0).toUpperCase()}
+        </div>
+        <span className="max-w-[100px] truncate">{server.name}</span>
+      </button>
+    );
+  }
+
+  // Picture branch.
+  return (
+    <button
+      onClick={() => !isPending && onClick(server.id)}
+      disabled={isPending}
+      title={isPending ? "Connecting…" : server.name}
+      className={`relative flex h-[38px] shrink-0 items-center justify-center overflow-hidden rounded-lg px-3.5 transition-all duration-200 ${
+        isPending
+          ? "cursor-wait opacity-60"
+          : isActive
+            ? "shadow-[0_2px_12px_rgba(56,143,255,0.10)]"
+            : "hover:-translate-y-px"
+      }`}
+    >
+      <img
+        src={pictureDataUrl ?? PLACEHOLDER_DATA_URL}
+        alt={server.name}
+        className="absolute inset-0 h-full w-full object-cover"
+      />
+      {!isActive && (
+        <>
+          <div className="absolute inset-0 bg-black/45" />
+          <span className="relative max-w-[100px] truncate text-[13px] font-semibold text-white">
+            {server.name}
+          </span>
+        </>
+      )}
+      {!isPending && isActive && (
+        <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
+      )}
+    </button>
+  );
+}
 
 // Horizontal server tab strip — one tab per server the user is
 // currently connected to OR auto-rejoining as part of post-login
@@ -74,36 +180,15 @@ export default function ServerBar() {
 
       {/* Server tabs */}
       <div className="flex flex-1 items-center gap-2 px-2">
-        {visible.map((server) => {
-          const isPending = pendingMembershipServerIds.has(server.id);
-          return (
-            <button
-              key={server.id}
-              onClick={() => !isPending && handleServerClick(server.id)}
-              disabled={isPending}
-              title={isPending ? "Connecting…" : undefined}
-              className={`relative flex h-[38px] shrink-0 items-center gap-2 rounded-lg px-3.5 text-[13px] font-semibold transition-all duration-200 ${
-                isPending
-                  ? "cursor-wait bg-surface-hover text-text-muted opacity-60"
-                  : activeServerId === server.id
-                    ? "bg-accent-mid text-accent-bright shadow-[0_2px_12px_rgba(56,143,255,0.10)]"
-                    : "text-text-secondary hover:bg-surface-hover hover:text-text-primary hover:-translate-y-px"
-              }`}
-            >
-              {!isPending && activeServerId === server.id && (
-                <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
-              )}
-
-              <div
-                className="flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
-                style={{ background: stringToGradient(server.name) }}
-              >
-                {server.name.charAt(0).toUpperCase()}
-              </div>
-              <span className="max-w-[100px] truncate">{server.name}</span>
-            </button>
-          );
-        })}
+        {visible.map((server) => (
+          <ServerTile
+            key={server.id}
+            server={server}
+            isActive={activeServerId === server.id}
+            isPending={pendingMembershipServerIds.has(server.id)}
+            onClick={handleServerClick}
+          />
+        ))}
 
         {visible.length > 0 && (
           <div className="mx-1 h-6 w-px shrink-0 bg-border-divider" />
