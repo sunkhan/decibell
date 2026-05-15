@@ -42,7 +42,7 @@ export default function MembersList() {
         />
       </div>
       <span
-        className={`truncate font-channel text-[13px] font-medium transition-colors ${
+        className={`truncate font-channel text-[14px] font-medium transition-colors ${
           isOnline ? "text-text-secondary group-hover:text-text-primary" : "text-text-muted"
         }`}
       >

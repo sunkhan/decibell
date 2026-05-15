@@ -35,7 +35,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
           />
         )}
       </div>
-      <span className="min-w-0 flex-1 truncate font-channel text-[13px] font-normal text-text-secondary transition-colors group-hover:text-text-primary">
+      <span className="min-w-0 flex-1 truncate font-channel text-[14px] font-normal text-text-secondary transition-colors group-hover:text-text-primary">
         {friend.username}
       </span>
       {isPendingIn && (
