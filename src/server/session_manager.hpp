@@ -1,6 +1,7 @@
 #pragma once
 #include <memory>
 #include <set>
+#include <vector>
 #include <mutex>
 #include <iostream>
 #include <chrono>
@@ -38,6 +39,12 @@ public:
     void broadcast(const chatproj::Packet& packet);
 
     bool send_private(const chatproj::Packet& packet, const std::string& target_username);
+
+    /// Deliver `packet` to every online session whose username is in
+    /// `usernames`. Used for SERVER_PICTURE_CHANGED broadcasts where
+    /// the recipient set is the membership list of a specific community.
+    void broadcast_to_users(const chatproj::Packet& packet,
+                            const std::vector<std::string>& usernames);
 
     bool is_user_online(const std::string& username);
 

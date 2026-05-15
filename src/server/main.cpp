@@ -162,7 +162,8 @@ private:
             packet.type() != chatproj::Packet::INVITE_REGISTER_REQ &&
             packet.type() != chatproj::Packet::INVITE_UNREGISTER_REQ &&
             packet.type() != chatproj::Packet::MEMBERSHIP_REGISTER_REQ &&
-            packet.type() != chatproj::Packet::MEMBERSHIP_REVOKE_REQ) {
+            packet.type() != chatproj::Packet::MEMBERSHIP_REVOKE_REQ &&
+            packet.type() != chatproj::Packet::SYNC_SERVER_PICTURE_REQ) {
 
             if (!auth_manager_.validateToken(packet.auth_token())) {
                 std::cout << "[Security] Dropped packet - Missing or invalid JWT.\n";
@@ -711,6 +712,63 @@ private:
             auth_manager_.revokeMembership(target_username, req.server_id());
         }
 
+        // --- SYNC_SERVER_PICTURE_REQ ---
+        // Community proxies an owner-uploaded picture to central.
+        // Owner verification happened on the community side; central
+        // verifies the shared secret and writes to community_servers,
+        // then broadcasts SERVER_PICTURE_CHANGED to every online
+        // session whose username is a member of this server.
+        else if (packet.type() == chatproj::Packet::SYNC_SERVER_PICTURE_REQ) {
+            if (!auth_manager_.verifySharedSecret(packet.auth_token())) {
+                std::cout << "[Security] Dropped sync_server_picture - invalid shared secret.\n";
+                return;
+            }
+            const auto& req = packet.sync_server_picture_req();
+            int server_id = auth_manager_.setServerPicture(
+                req.host(), req.port(), req.data(), req.version());
+
+            if (server_id == 0) {
+                std::cout << "[Server] Dropped sync_server_picture - unknown community "
+                          << req.host() << ":" << req.port() << "\n";
+                return;
+            }
+
+            auto members = auth_manager_.getServerMembers(server_id);
+            chatproj::Packet bcast;
+            bcast.set_type(chatproj::Packet::SERVER_PICTURE_CHANGED);
+            auto* b = bcast.mutable_server_picture_changed();
+            b->set_server_id(server_id);
+            b->set_version(req.version());
+            manager_.broadcast_to_users(bcast, members);
+
+            std::cout << "[Server] Server picture updated for community " << server_id
+                      << " (" << members.size() << " online members broadcast)\n";
+        }
+
+        // --- FETCH_SERVER_PICTURE_REQ ---
+        // Any authenticated user can fetch any server's picture by id.
+        // Matches the public-fetch model of FETCH_AVATAR_REQ — server
+        // pictures are visible to every member of a community anyway.
+        else if (packet.type() == chatproj::Packet::FETCH_SERVER_PICTURE_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.fetch_server_picture_req();
+
+            auto [version, data] = auth_manager_.getServerPicture(req.server_id());
+
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::FETCH_SERVER_PICTURE_RES);
+            auto* res = rsp.mutable_fetch_server_picture_res();
+            res->set_server_id(req.server_id());
+            res->set_version(version);
+            res->set_data(data);
+
+            std::string serialized;
+            rsp.SerializeToString(&serialized);
+            auto framed = std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(serialized));
+            deliver(framed);
+        }
+
         // --- CLIENT: RESOLVE AN INVITE CODE TO HOST:PORT ---
         else if (packet.type() == chatproj::Packet::INVITE_RESOLVE_REQ) {
             if (!authenticated_) return;
@@ -905,6 +963,23 @@ bool SessionManager::send_private(const chatproj::Packet& packet, const std::str
         }
     }
     return false;
+}
+
+void SessionManager::broadcast_to_users(const chatproj::Packet& packet,
+                                          const std::vector<std::string>& usernames) {
+    if (usernames.empty()) return;
+    std::string serialized;
+    packet.SerializeToString(&serialized);
+    auto framed = std::make_shared<std::vector<uint8_t>>(
+        chatproj::create_framed_packet(serialized));
+
+    std::set<std::string> targets(usernames.begin(), usernames.end());
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& session : sessions_) {
+        if (!session) continue;
+        if (targets.count(session->username()) == 0) continue;
+        session->deliver(framed);
+    }
 }
 
 bool SessionManager::check_dm_allowed(const std::string& sender, const std::string& recipient, AuthManager& auth_manager) {
