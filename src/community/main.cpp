@@ -155,6 +155,11 @@ public:
     // Idempotent membership sync (fire-and-forget over a one-shot
     // TLS connection to central). Silently skips if server_id_ is 0.
     void sync_membership_register(const std::string& username);
+    /// Forward an owner-authorized picture (or empty data = removal)
+    /// to central via shared-secret one-shot TLS. Picture_version is
+    /// the pre-computed sha256-hex of `data` (or '' on removal).
+    void sync_server_picture(const std::string& data,
+                              const std::string& version);
     void sync_membership_revoke(const std::string& username);
 
     // Attachment config — reported to clients on CommunityAuthResponse so
@@ -962,6 +967,53 @@ private:
                       << " in #" << req.channel_id()
                       << " deleted by " << username_
                       << " (" << del.unlink_paths.size() << " attachments)\n";
+        }
+
+        // --- UPDATE_SERVER_PICTURE_REQ ---
+        // Owner-only. Verifies size + ownership locally, then forwards
+        // to central via shared-secret one-shot TLS (same pattern as
+        // sync_invite_register / sync_membership_register).
+        else if (packet.type() == chatproj::Packet::UPDATE_SERVER_PICTURE_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.update_server_picture_req();
+
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::UPDATE_SERVER_PICTURE_RES);
+            auto* res = rsp.mutable_update_server_picture_res();
+
+            if (!db) {
+                res->set_success(false);
+                res->set_message("Server misconfigured.");
+                send_packet(rsp);
+                return;
+            }
+            if (db->owner() != username_) {
+                res->set_success(false);
+                res->set_message("Only the server owner can change the server picture.");
+                send_packet(rsp);
+                return;
+            }
+            if (req.data().size() > 200 * 1024) {
+                res->set_success(false);
+                res->set_message("Image exceeds 200 KB.");
+                send_packet(rsp);
+                return;
+            }
+
+            std::string version = req.data().empty() ? "" : sha256_hex(req.data());
+            res->set_success(true);
+            res->set_message("");
+            res->set_version(version);
+            send_packet(rsp);
+
+            // Forward to central — fire-and-forget. SessionManager
+            // owns the central-host/port/secret config.
+            manager_.sync_server_picture(req.data(), version);
+
+            std::cout << "[Community] server picture "
+                      << (req.data().empty() ? "removed" : "updated")
+                      << " by " << username_
+                      << " (" << req.data().size() << " bytes)\n";
         }
 
         // --- INVITE: CREATE ---
@@ -2216,6 +2268,29 @@ void SessionManager::sync_membership_revoke(const std::string& username) {
     auto* req = packet.mutable_membership_revoke_req();
     req->set_username(username);
     req->set_server_id(sid);
+
+    std::string serialized;
+    packet.SerializeToString(&serialized);
+    auto framed = chatproj::create_framed_packet(serialized);
+
+    std::string host = central_host_;
+    int port = central_port_;
+    std::thread([host, port, framed = std::move(framed)]() {
+        send_to_central_blocking(host, port, framed);
+    }).detach();
+}
+
+void SessionManager::sync_server_picture(const std::string& data,
+                                            const std::string& version) {
+    if (central_host_.empty() || central_port_ == 0) return;
+    chatproj::Packet packet;
+    packet.set_type(chatproj::Packet::SYNC_SERVER_PICTURE_REQ);
+    packet.set_auth_token(central_jwt_secret_);
+    auto* req = packet.mutable_sync_server_picture_req();
+    req->set_host(public_ip_);
+    req->set_port(community_port_);
+    req->set_data(data);
+    req->set_version(version);
 
     std::string serialized;
     packet.SerializeToString(&serialized);
