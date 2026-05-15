@@ -395,7 +395,7 @@ export default function DmChatPanel() {
           // its instance across data swaps and ignores subsequent
           // changes to the initial-position prop.
           key={activeDmUser}
-          className="flex-1 pr-4 py-4"
+          className="flex-1 pr-4"
           data={bubbleMessages}
           initialTopMostItemIndex={initialIndex}
           followOutput="smooth"
@@ -456,8 +456,9 @@ export default function DmChatPanel() {
         <p className="px-4 text-xs text-error">{sendError}</p>
       )}
 
-      {/* Input bar */}
-      <div className="px-3 pb-2">
+      {/* Input bar — py-2 gives an 8px gap above the bar, matching
+          ChatPanel's spacing. */}
+      <div className="px-3 py-2">
         <div className="flex min-h-[54px] items-center gap-2.5 rounded-xl border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
           <RichInput
             ref={editorRef}
