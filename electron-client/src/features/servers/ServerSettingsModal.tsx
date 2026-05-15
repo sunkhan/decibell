@@ -142,7 +142,13 @@ export default function ServerSettingsModal({ serverId }: Props) {
       style={{
         backgroundColor: visible ? "rgba(0,0,0,0.65)" : "rgba(0,0,0,0)",
       }}
-      onClick={closeModal}
+      onClick={(e) => {
+        // Guard: only close on a real backdrop click, not on clicks
+        // that bubbled up from a nested modal (the cropper renders
+        // as a child in the React tree, so its clicks bubble here
+        // through React's portal-aware event system).
+        if (e.target === e.currentTarget) closeModal();
+      }}
       onTransitionEnd={handleTransitionEnd}
     >
       <div
