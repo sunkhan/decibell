@@ -9,7 +9,8 @@ use tokio::sync::oneshot;
 use crate::net::community::CommunityClient;
 use crate::net::connection::build_packet;
 use crate::net::proto::{
-    packet, InviteResolveRequest, InviteResolveResponse, MembershipRevokeReq, ServerListRequest,
+    packet, FetchServerPictureReq, InviteResolveRequest, InviteResolveResponse,
+    MembershipRevokeReq, ServerListRequest, UpdateServerPictureReq,
 };
 use crate::state;
 
@@ -393,6 +394,84 @@ pub async fn request_drop_membership(args: DropMembershipArgs) -> napi::Result<(
             packet::Payload::MembershipRevokeReq(MembershipRevokeReq {
                 username: String::new(),
                 server_id,
+            }),
+            token.as_deref(),
+        );
+        (tx, pkt)
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
+        Err(_) => Err(napi::Error::from_reason("Send timed out")),
+    }
+}
+
+#[napi(object)]
+pub struct UpdateServerPictureArgs {
+    pub server_id: String,
+    pub data: napi::bindgen_prelude::Buffer,
+}
+
+/// Sends UPDATE_SERVER_PICTURE_REQ over the community session for
+/// server_id. The ack arrives as the `server_picture_update_responded`
+/// event; on success, central then broadcasts SERVER_PICTURE_CHANGED
+/// to all online members (including the requester).
+#[napi]
+pub async fn update_server_picture(args: UpdateServerPictureArgs) -> napi::Result<()> {
+    let state_arc = state::shared();
+    let (write_tx, data) = {
+        let s = state_arc.lock().await;
+        let community = s.communities.get(&args.server_id).ok_or_else(|| {
+            napi::Error::from_reason(format!(
+                "Not connected to community server {}",
+                args.server_id
+            ))
+        })?;
+        let tx = community.connection_write_tx().ok_or_else(|| {
+            napi::Error::from_reason("Community connection lost")
+        })?;
+        let pkt = build_packet(
+            packet::Type::UpdateServerPictureReq,
+            packet::Payload::UpdateServerPictureReq(UpdateServerPictureReq {
+                data: args.data.to_vec(),
+            }),
+            Some(&community.jwt),
+        );
+        (tx, pkt)
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
+        Err(_) => Err(napi::Error::from_reason("Send timed out")),
+    }
+}
+
+#[napi(object)]
+pub struct FetchServerPictureArgs {
+    pub server_id: i32,
+}
+
+/// Sends FETCH_SERVER_PICTURE_REQ over the JWT-authed central
+/// session. Response lands as the `server_picture_received` event,
+/// with `data` already encoded as a data URL ready for <img src>.
+#[napi]
+pub async fn fetch_server_picture(args: FetchServerPictureArgs) -> napi::Result<()> {
+    let state_arc = state::shared();
+    let (write_tx, data) = {
+        let s = state_arc.lock().await;
+        let central = s.central.as_ref().ok_or_else(|| {
+            napi::Error::from_reason("Not connected to central server")
+        })?;
+        let tx = central.connection_write_tx().ok_or_else(|| {
+            napi::Error::from_reason("Central connection lost")
+        })?;
+        let token = s.token.clone();
+        let pkt = build_packet(
+            packet::Type::FetchServerPictureReq,
+            packet::Payload::FetchServerPictureReq(FetchServerPictureReq {
+                server_id: args.server_id,
             }),
             token.as_deref(),
         );
