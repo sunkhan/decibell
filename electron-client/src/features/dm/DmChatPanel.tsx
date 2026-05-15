@@ -6,11 +6,14 @@ import { useChatStore } from "../../stores/chatStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraftsStore } from "../../stores/draftsStore";
+import { toast } from "../../stores/toastStore";
 import { stringToGradient, stringToColor } from "../../utils/colors";
 import MessageBubble, { shouldGroup } from "../chat/MessageBubble";
 import EmojiPicker from "../chat/EmojiPicker";
 import ErrorCard from "../../components/ErrorCard";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
+import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
+import type { DmMessage, Message } from "../../types";
 
 // Canonical reject strings the central server echoes back as a DM
 // from us-to-us. Pattern-matched here so we can render them as a
@@ -29,13 +32,58 @@ export default function DmChatPanel() {
   const localUsername = useAuthStore((s) => s.username);
   const dmFriendsPanelVisible = useUiStore((s) => s.dmFriendsPanelVisible);
   const toggleDmFriendsPanel = useUiStore((s) => s.toggleDmFriendsPanel);
+  const activeModal = useUiStore((s) => s.activeModal);
+  const openModal = useUiStore((s) => s.openModal);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pendingDeleteTarget, setPendingDeleteTarget] =
+    useState<DmMessage | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<RichInputHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
+
+  // Fire the delete flow for a DM message. Optimistic: snapshot
+  // into pendingDmDeletions, remove from the view, fire the native
+  // command, and start a 5-second watchdog. useDmEvents handles
+  // success/failure acks.
+  const handleDeleteDmMessage = (message: DmMessage) => {
+    if (!activeDmUser || typeof message.id !== "number") return;
+    const peer = activeDmUser;
+    const messageId = message.id;
+
+    useDmStore.getState().snapshotAndRemoveDm(peer, messageId);
+
+    invoke("delete_dm_message", { peer, messageId }).catch((err) => {
+      console.error("delete_dm_message:", err);
+      useDmStore.getState().restorePendingDmDeletion(peer, messageId);
+      toast.error("Failed to delete message", "Please try again.");
+    });
+
+    window.setTimeout(() => {
+      const stillPending = useDmStore
+        .getState()
+        .pendingDmDeletions[peer]?.has(messageId);
+      if (stillPending) {
+        useDmStore.getState().restorePendingDmDeletion(peer, messageId);
+        toast.error(
+          "Delete timed out",
+          "Couldn't reach the server. Please try again.",
+        );
+      }
+    }, 5000);
+  };
+
+  const requestDeleteDmMessage = (message: Message) => {
+    if (typeof message.id !== "number" || message.id <= 0) return;
+    // Message and DmMessage are structurally compatible for what we
+    // need (id, sender, content, timestamp). Cast to DmMessage for
+    // the local state — MessageBubble passes a Message at the prop
+    // boundary; underneath it's the same object.
+    setPendingDeleteTarget(message as DmMessage);
+    openModal("delete-message-confirm");
+  };
 
   const conversation = activeDmUser
     ? conversations[activeDmUser]
@@ -333,6 +381,12 @@ export default function DmChatPanel() {
                 // left edge: outer wrapper `px-3` = 12px from chat
                 // panel's left. The card's rounded border starts there.
                 paddingLeft={12}
+                canDelete={
+                  typeof msg.id === "number" &&
+                  msg.id > 0 &&
+                  msg.sender === localUsername
+                }
+                onDelete={requestDeleteDmMessage}
               />
             );
           })
@@ -399,6 +453,15 @@ export default function DmChatPanel() {
           </div>
         </div>
       </div>
+
+      {activeModal === "delete-message-confirm" && pendingDeleteTarget && (
+        <DeleteMessageConfirmModal
+          onConfirm={() => {
+            handleDeleteDmMessage(pendingDeleteTarget);
+            setPendingDeleteTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
