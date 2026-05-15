@@ -5,6 +5,10 @@ interface ServerActionsDropdownProps {
   onInvites: () => void;
   onChannelSettings: () => void;
   onDisconnect: () => void;
+  /// Only present when the local user can edit server-wide settings
+  /// (owner today, role-extensible later). Drives visibility of the
+  /// new "Server Settings" dropdown entry.
+  onServerSettings?: () => void;
 }
 
 export default function ServerActionsDropdown({
@@ -14,6 +18,7 @@ export default function ServerActionsDropdown({
   onInvites,
   onChannelSettings,
   onDisconnect,
+  onServerSettings,
 }: ServerActionsDropdownProps) {
   return (
     <div className="absolute left-2 right-2 top-full z-30 mt-1.5 animate-[dropIn_0.18s_ease] rounded-[10px] border border-border bg-bg-light p-[5px] shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,255,255,0.02)]">
@@ -51,6 +56,18 @@ export default function ServerActionsDropdown({
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
           Channel settings
+        </button>
+      )}
+      {onServerSettings && (
+        <button
+          onClick={onServerSettings}
+          className="group flex w-full items-center gap-2.5 rounded-md px-2.5 py-[9px] text-[13px] text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-text-muted transition-colors group-hover:text-text-secondary">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <path d="M3 9h18M9 3v18" />
+          </svg>
+          Server settings
         </button>
       )}
       <div className="mx-1.5 my-1 h-px bg-border-divider" />

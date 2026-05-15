@@ -7,6 +7,8 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import VoiceParticipantList from "../voice/VoiceParticipantList";
 import ServerActionsDropdown from "../servers/ServerActionsDropdown";
+import ServerSettingsModal from "../servers/ServerSettingsModal";
+import { useCanEditServerSettings } from "../servers/useCanEditServerSettings";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { useSidebarResize } from "./useSidebarResize";
 
@@ -79,6 +81,8 @@ export default function ServerChannelsSidebar() {
       serverOwner[activeServerId] === currentUser,
     [activeServerId, currentUser, serverOwner],
   );
+  const canEditServerSettings = useCanEditServerSettings(activeServerId);
+  const activeModal = useUiStore((s) => s.activeModal);
 
   // Text channel click handler lives inside TextChannelRow now (it
   // reads serverId/channelId from its own props + getState()).
@@ -160,6 +164,14 @@ export default function ServerChannelsSidebar() {
               setShowServerMenu(false);
               useUiStore.getState().openModal("channel-settings");
             }}
+            onServerSettings={
+              canEditServerSettings
+                ? () => {
+                    setShowServerMenu(false);
+                    useUiStore.getState().openModal("server-settings");
+                  }
+                : undefined
+            }
             onDisconnect={() => {
               setShowServerMenu(false);
               if (!activeServerId) return;
@@ -302,6 +314,9 @@ export default function ServerChannelsSidebar() {
         onMouseDown={onResizeMouseDown}
         className="absolute right-0 top-0 z-10 h-full w-1 cursor-col-resize hover:bg-accent/40 active:bg-accent/60"
       />
+      {activeModal === "server-settings" && activeServerId && (
+        <ServerSettingsModal serverId={activeServerId} />
+      )}
     </div>
   );
 }
