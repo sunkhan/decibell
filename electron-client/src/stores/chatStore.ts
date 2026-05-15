@@ -31,6 +31,14 @@ interface ChatState {
   /// success moves it into connectedServers; failure drops it +
   /// fires request_drop_membership + toasts.
   pendingMembershipServerIds: Set<string>;
+  /// Per-server sha256-hex picture version. '' = no picture set.
+  /// Populated from CommunityServerInfo payloads (server_list_received,
+  /// memberships_received) and from server_picture_changed events.
+  serverPictureVersions: Record<string, string>;
+  /// Per-server cached image as a data URL. Populated lazily by the
+  /// fetch effect when a tile sees a non-empty version with no
+  /// cached bytes.
+  serverPictures: Record<string, string>;
   serverMeta: Record<string, { name: string; description: string }>;
   serverOwner: Record<string, string>;
   membersByServer: Record<string, ServerMember[]>;
@@ -89,6 +97,15 @@ interface ChatState {
   /// on memberships_received). Setting an empty array clears.
   setPendingMemberships: (ids: string[]) => void;
   removePendingMembership: (id: string) => void;
+  /// Set the picture version for a server. If the new version
+  /// differs from the cached one, clears serverPictures[serverId] so
+  /// the next tile render lazy-fetches fresh bytes. Idempotent.
+  setServerPictureVersion: (serverId: string, version: string) => void;
+  /// Cache fetched image bytes (data URL) for a server. Guarded:
+  /// only writes if the fetch's version still matches the current
+  /// serverPictureVersions[serverId] — a stale fetch landing after
+  /// a newer version-changed event is dropped silently.
+  setServerPictureData: (serverId: string, version: string, dataUrl: string) => void;
   /// De-duplicating union of the existing servers list with the new
   /// entries. Used by useServerEvents on memberships_received to
   /// backfill any servers not yet covered by server_list_received.
@@ -229,6 +246,8 @@ export const useChatStore = create<ChatState>((set) => ({
   activeChannelId: null,
   connectedServers: new Set(),
   pendingMembershipServerIds: new Set(),
+  serverPictureVersions: {},
+  serverPictures: {},
   serverMeta: {},
   serverOwner: {},
   membersByServer: {},
@@ -314,6 +333,34 @@ export const useChatStore = create<ChatState>((set) => ({
       const next = new Set(state.pendingMembershipServerIds);
       next.delete(id);
       return { pendingMembershipServerIds: next };
+    }),
+  setServerPictureVersion: (serverId, version) =>
+    set((state) => {
+      const current = state.serverPictureVersions[serverId] ?? "";
+      if (current === version) return {};
+      const nextVersions = {
+        ...state.serverPictureVersions,
+        [serverId]: version,
+      };
+      // Version changed → invalidate cached bytes; next tile render
+      // lazy-fetches the fresh data.
+      const nextPictures = { ...state.serverPictures };
+      delete nextPictures[serverId];
+      return {
+        serverPictureVersions: nextVersions,
+        serverPictures: nextPictures,
+      };
+    }),
+  setServerPictureData: (serverId, version, dataUrl) =>
+    set((state) => {
+      const current = state.serverPictureVersions[serverId] ?? "";
+      // Drop fetches whose version is no longer current — a newer
+      // server_picture_changed event invalidated this fetch before
+      // it returned.
+      if (current !== version) return {};
+      return {
+        serverPictures: { ...state.serverPictures, [serverId]: dataUrl },
+      };
     }),
   mergeServers: (entries) =>
     set((state) => {
@@ -518,6 +565,8 @@ export const useChatStore = create<ChatState>((set) => ({
       activeChannelId: null,
       connectedServers: new Set(),
       pendingMembershipServerIds: new Set(),
+      serverPictureVersions: {},
+      serverPictures: {},
       serverMeta: {},
       serverOwner: {},
       membersByServer: {},
