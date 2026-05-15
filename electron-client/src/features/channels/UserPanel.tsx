@@ -4,6 +4,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
+import { useUpdateStore } from "../../stores/updateStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { playSound } from "../../utils/sounds";
 import DeviceContextMenu from "../voice/DeviceContextMenu";
@@ -43,6 +44,15 @@ export default function UserPanel() {
     const serverId = s.activeServerId;
     return serverId ? s.channelsByServer[serverId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
   });
+  const updateStatus = useUpdateStore((s) => s.status);
+  const updateMode = useUpdateStore((s) => s.mode);
+  const showChip =
+    updateStatus.state === "downloaded" && updateMode === "self-update";
+  const handleChipRestart = () => {
+    window.decibell.update.quitAndInstall().catch((err) => {
+      console.error("[update] quitAndInstall failed:", err);
+    });
+  };
 
   const [showStats, setShowStats] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
@@ -112,6 +122,22 @@ export default function UserPanel() {
 
   return (
     <div className="rounded-[14px] border border-border bg-bg-light px-3 py-2.5 shadow-[0_4px_16px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.04)]">
+      {showChip && (
+        <button
+          onClick={handleChipRestart}
+          title={`Restart to update to ${updateStatus.state === "downloaded" ? updateStatus.version : ""}`}
+          className="mb-2 flex w-full items-center gap-2 rounded-md bg-accent-soft px-2 py-1.5 text-left text-[12px] font-medium text-accent-bright transition-colors hover:bg-accent-mid"
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-accent-bright animate-[dropPulse_2.4s_ease-in-out_infinite]" />
+          <span className="min-w-0 flex-1 truncate">
+            Update ready
+            {updateStatus.state === "downloaded" ? ` — ${updateStatus.version}` : ""}
+          </span>
+          <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide">
+            Restart
+          </span>
+        </button>
+      )}
       {connectedChannelId && (
         <div className="mb-2 flex items-center gap-1.5 px-0.5">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-text-muted">
