@@ -213,10 +213,11 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
         
         // Fetch up to 50 public community servers sorted by member count
         pqxx::result res = txn.exec(
-            "SELECT id, name, description, host_ip, port, member_count "
+            "SELECT id, name, description, host_ip, port, member_count, "
+            "       COALESCE(picture_version, '') "
             "FROM community_servers ORDER BY member_count DESC LIMIT 50"
         );
-        
+
         for (auto row : res) {
             chatproj::CommunityServerInfo info;
             info.set_id(row[0].as<int>());
@@ -225,6 +226,7 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
             info.set_host_ip(row[3].as<std::string>());
             info.set_port(row[4].as<int>());
             info.set_member_count(row[5].as<int>());
+            info.set_picture_version(row[6].as<std::string>());
             servers.push_back(info);
         }
     } catch (const std::exception& e) {
@@ -248,6 +250,18 @@ int AuthManager::upsertCommunityServer(const std::string& name, const std::strin
             "  last_heartbeat TIMESTAMP DEFAULT NOW(),"
             "  UNIQUE(host_ip, port)"
             ")"
+        );
+        // --- Custom server pictures migration (see docs/superpowers/
+        //     specs/2026-05-15-custom-server-pictures-design.md §3) ---
+        // Idempotent; safe on already-deployed servers.
+        txn.exec(
+            "ALTER TABLE community_servers "
+            "ADD COLUMN IF NOT EXISTS picture BYTEA"
+        );
+        txn.exec(
+            "ALTER TABLE community_servers "
+            "ADD COLUMN IF NOT EXISTS picture_version VARCHAR(64) "
+            "NOT NULL DEFAULT ''"
         );
         pqxx::result rs = txn.exec_params(
             "INSERT INTO community_servers (name, description, host_ip, port, member_count, last_heartbeat) "
@@ -720,7 +734,8 @@ AuthManager::getUserCommunities(const std::string& username) {
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
             "SELECT cs.id, cs.name, cs.description, cs.host_ip, "
-            "       cs.port, cs.member_count "
+            "       cs.port, cs.member_count, "
+            "       COALESCE(cs.picture_version, '') "
             "FROM user_communities uc "
             "JOIN community_servers cs ON cs.id = uc.server_id "
             "WHERE uc.username = $1 "
@@ -737,11 +752,92 @@ AuthManager::getUserCommunities(const std::string& username) {
             info.set_host_ip(row[3].as<std::string>());
             info.set_port(row[4].as<int>());
             info.set_member_count(row[5].as<int>());
+            info.set_picture_version(row[6].as<std::string>());
             out.push_back(std::move(info));
         }
         return out;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] getUserCommunities: " << e.what() << "\n";
+        return {};
+    }
+}
+
+// --- Custom server pictures ---
+// (see docs/superpowers/specs/2026-05-15-custom-server-pictures-design.md)
+
+int AuthManager::setServerPicture(const std::string& host_ip, int port,
+                                    const std::string& data,
+                                    const std::string& version) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs;
+        if (data.empty()) {
+            rs = txn.exec_params(
+                "UPDATE community_servers "
+                "SET picture = NULL, picture_version = '' "
+                "WHERE host_ip = $1 AND port = $2 "
+                "RETURNING id",
+                host_ip, port);
+        } else {
+            rs = txn.exec_params(
+                "UPDATE community_servers "
+                "SET picture = $1, picture_version = $2 "
+                "WHERE host_ip = $3 AND port = $4 "
+                "RETURNING id",
+                pqxx::binarystring(data.data(), data.size()),
+                version, host_ip, port);
+        }
+        txn.commit();
+        if (rs.empty()) return 0;
+        return rs[0][0].as<int>();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] setServerPicture: " << e.what() << "\n";
+        return 0;
+    }
+}
+
+std::pair<std::string, std::string>
+AuthManager::getServerPicture(int server_id) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "SELECT COALESCE(picture_version, ''), picture "
+            "FROM community_servers WHERE id = $1",
+            server_id);
+        txn.commit();
+        if (rs.empty()) return {"", ""};
+        std::string version = rs[0][0].as<std::string>();
+        if (rs[0][1].is_null()) {
+            return {std::move(version), ""};
+        }
+        pqxx::binarystring bs(rs[0][1]);
+        std::string data(bs.data(), bs.size());
+        return {std::move(version), std::move(data)};
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getServerPicture: " << e.what() << "\n";
+        return {"", ""};
+    }
+}
+
+std::vector<std::string> AuthManager::getServerMembers(int server_id) {
+    std::vector<std::string> out;
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "SELECT username FROM user_communities "
+            "WHERE server_id = $1",
+            server_id);
+        txn.commit();
+        out.reserve(rs.size());
+        for (const auto& row : rs) {
+            out.push_back(row[0].as<std::string>());
+        }
+        return out;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getServerMembers: " << e.what() << "\n";
         return {};
     }
 }

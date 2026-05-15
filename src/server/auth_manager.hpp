@@ -135,6 +135,27 @@ public:
     std::vector<chatproj::CommunityServerInfo> getUserCommunities(
         const std::string& username);
 
+    // --- Custom server pictures ---
+    // (see docs/superpowers/specs/2026-05-15-custom-server-pictures-design.md)
+
+    /// Atomic update of the picture bytes + sha256-hex version.
+    /// Looks up the community_servers row by (host_ip, port) and
+    /// writes the new picture + picture_version. Returns the
+    /// assigned id, or 0 if no matching row exists yet (the
+    /// community's first heartbeat hasn't landed). Empty `data`
+    /// means removal: column is set NULL, version becomes ''.
+    int setServerPicture(const std::string& host_ip, int port,
+                          const std::string& data,
+                          const std::string& version);
+
+    /// Returns (version, data). Both empty when the server has no
+    /// picture set, or when the id is unknown.
+    std::pair<std::string, std::string> getServerPicture(int server_id);
+
+    /// Every username in user_communities for this server_id.
+    /// Drives central's SERVER_PICTURE_CHANGED broadcast.
+    std::vector<std::string> getServerMembers(int server_id);
+
 private:
     std::string secret_key_;
     std::string db_conn_str_; // Add this member variable
