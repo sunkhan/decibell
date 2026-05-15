@@ -57,7 +57,7 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
           isPending
             ? "cursor-wait bg-surface-hover text-text-muted opacity-60"
             : isActive
-              ? "bg-accent-mid text-accent-bright shadow-[0_2px_12px_rgba(56,143,255,0.10)]"
+              ? "bg-accent-mid text-accent-bright animate-[dropPulse_2.4s_ease-in-out_infinite]"
               : "text-text-secondary hover:bg-surface-hover hover:text-text-primary hover:-translate-y-px"
         }`}
       >
@@ -85,7 +85,7 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
         isPending
           ? "cursor-wait opacity-60"
           : isActive
-            ? "shadow-[0_2px_12px_rgba(56,143,255,0.10)]"
+            ? "animate-[dropPulse_2.4s_ease-in-out_infinite]"
             : "hover:-translate-y-px"
       }`}
     >
