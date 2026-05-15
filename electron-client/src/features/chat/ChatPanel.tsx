@@ -5,6 +5,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
+import { toast } from "../../stores/toastStore";
 import MessageBubble, { shouldGroup } from "./MessageBubble";
 import PendingAttachmentsRow from "./PendingAttachmentsRow";
 import EmojiPicker from "./EmojiPicker";
@@ -13,6 +14,9 @@ import { pickFiles, ATTACHMENT_FILTERS } from "./filePicker";
 import { queueUpload, startQueuedUpload } from "./uploadAttachment";
 import { chunkSourceFromPath } from "./chunkSource";
 import WelcomeState from "./WelcomeState";
+import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
+import { useCanDeleteOthers } from "../servers/useCanDeleteOthers";
+import type { Message } from "../../types";
 
 function generateNonce(): string {
   return `n-${Date.now()}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
@@ -37,6 +41,15 @@ export default function ChatPanel() {
   const historyLoading = useChatStore((s) => s.historyLoading);
   const dragActive = useUiStore((s) => s.dragActive);
   const dragHoveredKey = useUiStore((s) => s.dragHoveredKey);
+  const activeModal = useUiStore((s) => s.activeModal);
+  const openModal = useUiStore((s) => s.openModal);
+  const canDeleteOthers = useCanDeleteOthers(activeServerId);
+
+  // Local state for which message is being deleted; the modal reads
+  // this when it confirms. Tracked locally rather than in uiStore so
+  // the modal lifecycle aligns with this panel's existence.
+  const [pendingDeleteTarget, setPendingDeleteTarget] =
+    useState<Message | null>(null);
 
   const [draft, setDraft] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -290,6 +303,50 @@ export default function ChatPanel() {
     e.preventDefault();
   };
 
+  // Fire the delete flow for a channel message. Optimistic: snapshot
+  // into pendingDeletions, remove from the view, fire the native
+  // command, and start a 5-second watchdog. The watchdog only acts
+  // if no `channel_message_delete_responded` event arrives by then —
+  // useServerEvents handles success (clear pending) and failure
+  // (restore via mergeMessage + toast.error).
+  const handleDeleteChannelMessage = (message: Message) => {
+    if (!activeServerId || !activeChannelId || typeof message.id !== "number") return;
+    const serverId = activeServerId;
+    const channelId = activeChannelId;
+    const messageId = message.id;
+
+    useChatStore.getState().snapshotAndRemove(channelId, messageId);
+
+    invoke("delete_channel_message", { serverId, channelId, messageId }).catch(
+      (err) => {
+        console.error("delete_channel_message:", err);
+        useChatStore.getState().restorePendingDeletion(channelId, messageId);
+        toast.error("Failed to delete message", "Please try again.");
+      },
+    );
+
+    // 5-second watchdog: if no response/broadcast arrives by then,
+    // restore the bubble (network probably hung).
+    window.setTimeout(() => {
+      const stillPending = useChatStore
+        .getState()
+        .pendingDeletions[channelId]?.has(messageId);
+      if (stillPending) {
+        useChatStore.getState().restorePendingDeletion(channelId, messageId);
+        toast.error(
+          "Delete timed out",
+          "Couldn't reach the server. Please try again.",
+        );
+      }
+    }, 5000);
+  };
+
+  const requestDeleteChannelMessage = (message: Message) => {
+    if (typeof message.id !== "number" || message.id <= 0) return;
+    setPendingDeleteTarget(message);
+    openModal("delete-message-confirm");
+  };
+
   if (!activeServerId) {
     return (
       <div className="flex flex-1 items-center justify-center bg-bg-mid text-sm text-text-muted">
@@ -352,6 +409,12 @@ export default function ChatPanel() {
                 // left edge: outer wrapper `px-3` = 12px from chat
                 // panel's left. The card's rounded border starts there.
                 paddingLeft={12}
+                canDelete={
+                  typeof message.id === "number" &&
+                  message.id > 0 &&
+                  (message.sender === username || canDeleteOthers)
+                }
+                onDelete={requestDeleteChannelMessage}
               />
             )}
             className="flex-1"
@@ -457,6 +520,15 @@ export default function ChatPanel() {
           </div>
         </div>
       </div>
+
+      {activeModal === "delete-message-confirm" && pendingDeleteTarget && (
+        <DeleteMessageConfirmModal
+          onConfirm={() => {
+            handleDeleteChannelMessage(pendingDeleteTarget);
+            setPendingDeleteTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
