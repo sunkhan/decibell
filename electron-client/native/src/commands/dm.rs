@@ -14,7 +14,7 @@
 //! caller of last resort, not a pending future.
 
 use crate::net::connection::build_packet;
-use crate::net::proto::{packet, DmConversationsReq, DmHistoryReq, DmMarkReadReq};
+use crate::net::proto::{packet, DmConversationsReq, DmDeleteReq, DmHistoryReq, DmMarkReadReq};
 use crate::state;
 
 #[napi]
@@ -117,4 +117,44 @@ pub async fn mark_dm_read(args: MarkDmReadArgs) -> napi::Result<()> {
 
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await;
     Ok(())
+}
+
+#[napi(object)]
+pub struct DeleteDmMessageArgs {
+    pub peer: String,
+    pub message_id: i64,
+}
+
+/// Sends DM_DELETE_REQ over the JWT-authed central session. The
+/// ack arrives as the `dm_message_delete_responded` event; the
+/// broadcast (if successful) arrives as `dm_message_deleted`. Both
+/// land in useDmEvents on the renderer side.
+#[napi]
+pub async fn delete_dm_message(args: DeleteDmMessageArgs) -> napi::Result<()> {
+    let state_arc = state::shared();
+    let (write_tx, data) = {
+        let s = state_arc.lock().await;
+        let central = s.central.as_ref().ok_or_else(|| {
+            napi::Error::from_reason("Not connected to central server")
+        })?;
+        let tx = central.connection_write_tx().ok_or_else(|| {
+            napi::Error::from_reason("Central connection lost")
+        })?;
+        let token = s.token.clone();
+        let pkt = build_packet(
+            packet::Type::DmDeleteReq,
+            packet::Payload::DmDeleteReq(DmDeleteReq {
+                peer: args.peer,
+                message_id: args.message_id,
+            }),
+            token.as_deref(),
+        );
+        (tx, pkt)
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
+        Err(_) => Err(napi::Error::from_reason("Send timed out")),
+    }
 }
