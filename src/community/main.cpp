@@ -878,6 +878,91 @@ private:
                       << wipe.deleted_attachment_count << " attachments\n";
         }
 
+        // --- MESSAGE_DELETE_REQ ---
+        // Per-message delete. Self-or-can_delete_others gate. Reuses
+        // the wipe filesystem-unlink pattern for attachment blobs.
+        else if (packet.type() == chatproj::Packet::MESSAGE_DELETE_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.message_delete_req();
+
+            // Always echo a RES so the renderer can clear the pending
+            // snapshot. Build it now; populate success/message below.
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::MESSAGE_DELETE_RES);
+            auto* res = rsp.mutable_message_delete_res();
+            res->set_channel_id(req.channel_id());
+            res->set_message_id(req.message_id());
+
+            if (!db) {
+                res->set_success(false);
+                res->set_message("Server misconfigured.");
+                send_packet(rsp);
+                return;
+            }
+            if (req.channel_id().empty() || req.message_id() == 0) {
+                res->set_success(false);
+                res->set_message("Invalid request.");
+                send_packet(rsp);
+                return;
+            }
+
+            auto sender = db->get_message_sender(req.channel_id(), req.message_id());
+            if (!sender) {
+                res->set_success(false);
+                res->set_message("Message not found.");
+                send_packet(rsp);
+                return;
+            }
+
+            if (*sender != username_ && !db->can_delete_others(username_)) {
+                res->set_success(false);
+                res->set_message("You don't have permission to delete this message.");
+                send_packet(rsp);
+                return;
+            }
+
+            auto del = db->delete_message(req.channel_id(), req.message_id());
+            if (!del.ok) {
+                res->set_success(false);
+                res->set_message("Failed to delete message.");
+                send_packet(rsp);
+                return;
+            }
+
+            res->set_success(true);
+            res->set_message("");
+            send_packet(rsp);
+
+            // Filesystem cleanup — mirror the CHANNEL_WIPE pattern.
+            // Each storage_path may have sibling thumbnail variants;
+            // remove them all, ignore errors (orphan files get swept
+            // by retention or a future delete).
+            for (const auto& path : del.unlink_paths) {
+                std::error_code ec;
+                std::filesystem::remove(path, ec);
+                std::filesystem::remove(path + ".partial", ec);
+                std::filesystem::remove(path + ".thumb.jpg", ec);
+                std::filesystem::remove(path + ".thumb-320px.jpg", ec);
+                std::filesystem::remove(path + ".thumb-640px.jpg", ec);
+                std::filesystem::remove(path + ".thumb-1280px.jpg", ec);
+            }
+
+            // Broadcast deletion to every authenticated session.
+            chatproj::Packet bcast;
+            bcast.set_type(chatproj::Packet::CHANNEL_MESSAGE_DELETED);
+            auto* bw = bcast.mutable_channel_message_deleted();
+            bw->set_channel_id(req.channel_id());
+            bw->set_message_id(req.message_id());
+            bw->set_deleted_at(static_cast<int64_t>(std::time(nullptr)));
+            bw->set_deleted_by(username_);
+            manager_.broadcast_to_members(bcast);
+
+            std::cout << "[Community] message " << req.message_id()
+                      << " in #" << req.channel_id()
+                      << " deleted by " << username_
+                      << " (" << del.unlink_paths.size() << " attachments)\n";
+        }
+
         // --- INVITE: CREATE ---
         else if (packet.type() == chatproj::Packet::INVITE_CREATE_REQ) {
             auto* db = manager_.db();
