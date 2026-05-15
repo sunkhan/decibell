@@ -469,6 +469,23 @@ impl CentralClient {
                         has_more: res.has_more,
                     });
                 }
+                Some(packet::Payload::DmDeleteRes(resp)) => {
+                    events::emit_dm_message_delete_responded(
+                        events::DmMessageDeleteRespondedPayload {
+                            success: resp.success,
+                            message: resp.message,
+                            peer: resp.peer,
+                            message_id: resp.message_id,
+                        },
+                    );
+                }
+                Some(packet::Payload::DmMessageDeleted(b)) => {
+                    events::emit_dm_message_deleted(events::DmMessageDeletedPayload {
+                        peer: b.peer,
+                        message_id: b.message_id,
+                        deleted_at: b.deleted_at,
+                    });
+                }
                 _ => {
                     log::debug!("Unhandled central packet type: {}", packet.r#type);
                 }
