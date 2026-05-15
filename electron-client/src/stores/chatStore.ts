@@ -45,6 +45,13 @@ interface ChatState {
   // Channel + message state
   channelsByServer: Record<string, ChannelInfo[]>;
   messagesByChannel: Record<string, Message[]>;
+  /// Per-channel snapshot of messages that have been optimistically
+  /// removed but whose server delete-ack hasn't landed yet. On
+  /// rejection (channel_message_delete_responded with success=false)
+  /// or watchdog timeout, the snapshot is re-inserted via
+  /// mergeMessage + a toast is surfaced. Keyed by channelId →
+  /// (messageId → Message).
+  pendingDeletions: Record<string, Map<number, Message>>;
   hasMoreHistory: Record<string, boolean>;
   historyLoading: Record<string, boolean>;
   historyFetched: Record<string, boolean>;
@@ -108,6 +115,21 @@ interface ChatState {
   markHistoryFetched: (channelId: string) => void;
   applyChannelPruned: (channelId: string, deletedMessageIds: number[]) => void;
   applyChannelWiped: (channelId: string) => void;
+  /// Per-message delete: remove from a channel's visible message list.
+  /// Idempotent. Same handler runs for "my delete succeeded" and
+  /// "someone else deleted this message".
+  removeMessage: (channelId: string, messageId: number) => void;
+  /// Snapshot a message into pendingDeletions, then remove it from
+  /// the visible list. Returns the snapshot so the caller knows the
+  /// optimistic remove actually happened.
+  snapshotAndRemove: (channelId: string, messageId: number) => Message | undefined;
+  /// Re-insert a previously-snapshotted message back into the array
+  /// (sorted by id via existing mergeMessage). Also clears the
+  /// pending entry. No-op if no matching snapshot exists.
+  restorePendingDeletion: (channelId: string, messageId: number) => void;
+  /// Drop the pending snapshot (called on success-ack or matching
+  /// broadcast). No-op if no matching snapshot exists.
+  clearPendingDeletion: (channelId: string, messageId: number) => void;
   /// Capture the user's current scroll position for a channel — called
   /// from ChatPanel on Virtuoso range/atBottom events.
   setScrollPosition: (channelId: string, topIndex: number, atBottom: boolean) => void;
@@ -216,6 +238,7 @@ export const useChatStore = create<ChatState>((set) => ({
   serverAttachmentConfig: {},
   channelsByServer: {},
   messagesByChannel: {},
+  pendingDeletions: {},
   hasMoreHistory: {},
   historyLoading: {},
   historyFetched: {},
@@ -410,6 +433,83 @@ export const useChatStore = create<ChatState>((set) => ({
       historyFetched: { ...state.historyFetched, [channelId]: true },
     })),
 
+  removeMessage: (channelId, messageId) =>
+    set((state) => {
+      const list = state.messagesByChannel[channelId];
+      if (!list) return {};
+      const next = list.filter((m) => m.id !== messageId);
+      if (next.length === list.length) return {};
+      return {
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [channelId]: next,
+        },
+      };
+    }),
+
+  snapshotAndRemove: (channelId, messageId) => {
+    const state = useChatStore.getState();
+    const list = state.messagesByChannel[channelId];
+    if (!list) return undefined;
+    const snap = list.find((m) => m.id === messageId);
+    if (!snap) return undefined;
+    useChatStore.setState((s) => {
+      const bucket = s.pendingDeletions[channelId] ?? new Map<number, Message>();
+      const next = new Map(bucket);
+      next.set(messageId, snap);
+      return {
+        pendingDeletions: {
+          ...s.pendingDeletions,
+          [channelId]: next,
+        },
+        messagesByChannel: {
+          ...s.messagesByChannel,
+          [channelId]: list.filter((m) => m.id !== messageId),
+        },
+      };
+    });
+    return snap;
+  },
+
+  restorePendingDeletion: (channelId, messageId) =>
+    set((state) => {
+      const bucket = state.pendingDeletions[channelId];
+      const snap = bucket?.get(messageId);
+      if (!snap) return {};
+      const existing = state.messagesByChannel[channelId] ?? [];
+      const merged = mergeMessage(existing, snap);
+      const nextBucket = new Map(bucket);
+      nextBucket.delete(messageId);
+      const nextPending = { ...state.pendingDeletions };
+      if (nextBucket.size === 0) {
+        delete nextPending[channelId];
+      } else {
+        nextPending[channelId] = nextBucket;
+      }
+      return {
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [channelId]: merged,
+        },
+        pendingDeletions: nextPending,
+      };
+    }),
+
+  clearPendingDeletion: (channelId, messageId) =>
+    set((state) => {
+      const bucket = state.pendingDeletions[channelId];
+      if (!bucket || !bucket.has(messageId)) return {};
+      const nextBucket = new Map(bucket);
+      nextBucket.delete(messageId);
+      const nextPending = { ...state.pendingDeletions };
+      if (nextBucket.size === 0) {
+        delete nextPending[channelId];
+      } else {
+        nextPending[channelId] = nextBucket;
+      }
+      return { pendingDeletions: nextPending };
+    }),
+
   resetForLogout: () =>
     set({
       servers: [],
@@ -425,6 +525,7 @@ export const useChatStore = create<ChatState>((set) => ({
       serverAttachmentConfig: {},
       channelsByServer: {},
       messagesByChannel: {},
+      pendingDeletions: {},
       hasMoreHistory: {},
       historyLoading: {},
       historyFetched: {},
