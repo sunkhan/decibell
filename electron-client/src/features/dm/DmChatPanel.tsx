@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useEffect } from "react";
+import { Virtuoso } from "react-virtuoso";
 import { invoke } from "../../lib/ipc";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
@@ -40,25 +41,23 @@ export default function DmChatPanel() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pendingDeleteTarget, setPendingDeleteTarget] =
     useState<DmMessage | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<RichInputHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
-  // Per-peer record of the most recently observed messages.length.
-  // Used to skip the auto-scroll when length *decreases* (a delete or
-  // an optimistic remove).
-  const prevMessagesLenRef = useRef<Record<string, number>>({});
-  // Tracks the previous active peer so a conversation switch can
-  // distinguish "same conversation, length changed" from "switched to
-  // a different conversation".
-  const prevActiveDmUserRef = useRef<string | null>(null);
-  // Per-peer scroll position. Saved continuously as the user scrolls;
-  // restored on conversation switch so revisiting lands the user
-  // where they left off (Discord behavior). undefined for never-
-  // visited peers — those default to scroll-to-bottom.
-  const savedScrollPositionsRef = useRef<Record<string, number>>({});
-  // Ref to the scrollable messages container so the restore can set
-  // scrollTop directly.
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // Per-peer scroll state. Saved on conversation switch via the
+  // cleanup of the activeDmUser effect; restored on Virtuoso mount
+  // through initialTopMostItemIndex. atBottom === true means the
+  // user was caught up; we land them at the latest message so any
+  // newer ones that arrived while away are visible.
+  const savedPositionsRef = useRef<
+    Record<string, { topIndex: number; atBottom: boolean }>
+  >({});
+  // Live cursors written by Virtuoso's rangeChanged / atBottomStateChange.
+  // Persisted into savedPositionsRef on conversation switch.
+  const topIndexRef = useRef<number>(0);
+  const atBottomRef = useRef<boolean>(true);
+  // Single-flight guard for the scroll-up paginator so rapid scroll
+  // doesn't fire parallel page loads.
+  const loadMoreInFlightRef = useRef(false);
 
   // Fire the delete flow for a DM message. Optimistic: snapshot
   // into pendingDmDeletions, remove from the view, fire the native
@@ -147,14 +146,11 @@ export default function DmChatPanel() {
     }).catch(console.error);
   }, [activeDmUser]);
 
-  // Scroll-up paginator. Fires when the message list scrolls near
-  // the top and the server says there are older messages available.
-  // Single-flight via the ref so rapid scroll doesn't fire parallel
-  // pages.
-  const loadMoreInFlightRef = useRef(false);
-  const onScrollLoadMore = (e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    if (el.scrollTop > 80) return;
+  // Scroll-up paginator. Virtuoso fires this when the user scrolls
+  // to the top of the list (typically a few items before the first).
+  // Single-flight via the ref so a rapid range update doesn't fire
+  // parallel page loads.
+  const handleStartReached = () => {
     if (!activeDmUser) return;
     const conv = useDmStore.getState().conversations[activeDmUser];
     if (!conv?.hasMoreHistory) return;
@@ -175,35 +171,22 @@ export default function DmChatPanel() {
       });
   };
 
-  useLayoutEffect(() => {
-    if (!activeDmUser) return;
-    const conversationChanged = prevActiveDmUserRef.current !== activeDmUser;
-    prevActiveDmUserRef.current = activeDmUser;
-    const prevLen = prevMessagesLenRef.current[activeDmUser] ?? 0;
-    prevMessagesLenRef.current[activeDmUser] = messages.length;
-
-    if (conversationChanged) {
-      // Switched conversations: restore saved scroll position if any,
-      // otherwise default to bottom (first-open behavior). Done in a
-      // layout effect (synchronous post-DOM-update, pre-paint) so the
-      // user doesn't see a flicker at the wrong scroll position.
-      const saved = savedScrollPositionsRef.current[activeDmUser];
-      const el = scrollContainerRef.current;
-      if (el && saved !== undefined) {
-        el.scrollTop = saved;
-      } else {
-        messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+  // Persist the outgoing peer's scroll state at the moment we leave
+  // it. Cleanup runs BEFORE the next setup with the new activeDmUser,
+  // so the closure-captured peer is the one we're leaving. Also fires
+  // on full unmount (e.g. switching back to the server view) so the
+  // position survives view switches and we can restore on return.
+  useEffect(() => {
+    const peer = activeDmUser;
+    return () => {
+      if (peer) {
+        savedPositionsRef.current[peer] = {
+          topIndex: topIndexRef.current,
+          atBottom: atBottomRef.current,
+        };
       }
-      return;
-    }
-
-    // Same conversation: scroll to bottom only when the list grew
-    // (new send/receive, history page). Don't scroll on shrink
-    // (delete / optimistic remove).
-    if (messages.length > prevLen) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [messages.length, activeDmUser]);
+    };
+  }, [activeDmUser]);
 
   // Debounced mark-read. Fires whenever the local user is viewing
   // the panel for a peer and there are unread messages with a real
@@ -311,6 +294,19 @@ export default function DmChatPanel() {
     attachments: [],
   }));
 
+  // Initial Virtuoso position when we mount/re-mount for this peer.
+  // atBottom: user was caught up — land them at LAST so newer messages
+  // received while away are visible. Otherwise restore the saved
+  // topmost index. Defensive clamps against eviction.
+  const initialIndex = (() => {
+    const last = Math.max(0, bubbleMessages.length - 1);
+    if (!activeDmUser) return last;
+    const saved = savedPositionsRef.current[activeDmUser];
+    if (!saved || saved.atBottom) return last;
+    if (saved.topIndex < 0 || saved.topIndex > last) return last;
+    return saved.topIndex;
+  })();
+
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-bg-mid">
       {/* DM header */}
@@ -366,23 +362,8 @@ export default function DmChatPanel() {
       </div>
 
       {/* Messages */}
-      <div
-        ref={scrollContainerRef}
-        className="flex-1 overflow-y-auto pr-4 py-4"
-        onScroll={(e) => {
-          onScrollLoadMore(e);
-          // Continuously remember the active peer's scroll position
-          // so a return-visit restores it. This fires for both manual
-          // scrolling and programmatic scrollIntoView, which is
-          // exactly what we want — the saved value always reflects
-          // the latest visible position.
-          if (activeDmUser) {
-            savedScrollPositionsRef.current[activeDmUser] =
-              e.currentTarget.scrollTop;
-          }
-        }}
-      >
-        {messages.length === 0 ? (
+      {messages.length === 0 ? (
+        <div className="flex-1 overflow-y-auto pr-4 py-4">
           <div className="animate-[fadeUp_0.4s_ease_both] pl-4">
             <div className="border-b border-border pb-5 mb-5">
               <div
@@ -406,17 +387,35 @@ export default function DmChatPanel() {
               </p>
             </div>
           </div>
-        ) : (
-          bubbleMessages.map((msg, i) => {
+        </div>
+      ) : (
+        <Virtuoso
+          // Re-mount when the active peer changes so
+          // initialTopMostItemIndex applies fresh — Virtuoso reuses
+          // its instance across data swaps and ignores subsequent
+          // changes to the initial-position prop.
+          key={activeDmUser}
+          className="flex-1 pr-4 py-4"
+          data={bubbleMessages}
+          initialTopMostItemIndex={initialIndex}
+          followOutput="smooth"
+          // Discord-style: stack messages from the bottom up against
+          // the input bar when total content height is below viewport.
+          alignToBottom={true}
+          startReached={handleStartReached}
+          rangeChanged={(range) => {
+            topIndexRef.current = range.startIndex;
+          }}
+          atBottomStateChange={(atBottom) => {
+            atBottomRef.current = atBottom;
+          }}
+          itemContent={(i, msg) => {
             const isError =
               msg.sender === localUsername &&
               ERROR_MESSAGES.includes(msg.content);
             if (isError) {
               return (
-                <div
-                  key={`${msg.timestamp}-${msg.sender}-${i}`}
-                  className="pl-4 pr-2 py-1.5"
-                >
+                <div className="pl-4 pr-2 py-1.5">
                   <ErrorCard>
                     {msg.content === ERROR_MESSAGES[0] ? (
                       <>
@@ -435,15 +434,11 @@ export default function DmChatPanel() {
             }
             return (
               <MessageBubble
-                key={`${msg.timestamp}-${msg.sender}-${i}`}
                 message={msg}
                 grouped={shouldGroup(
                   i > 0 ? bubbleMessages[i - 1] : undefined,
-                  msg
+                  msg,
                 )}
-                // Align avatar's left edge with the input bar card's
-                // left edge: outer wrapper `px-3` = 12px from chat
-                // panel's left. The card's rounded border starts there.
                 paddingLeft={12}
                 canDelete={
                   typeof msg.id === "number" &&
@@ -453,10 +448,9 @@ export default function DmChatPanel() {
                 onDelete={requestDeleteDmMessage}
               />
             );
-          })
-        )}
-        <div ref={messagesEndRef} />
-      </div>
+          }}
+        />
+      )}
 
       {sendError && (
         <p className="px-4 text-xs text-error">{sendError}</p>
