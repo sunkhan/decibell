@@ -502,6 +502,16 @@ impl CommunityClient {
                         },
                     );
                 }
+                Some(packet::Payload::UpdateServerPictureRes(resp)) => {
+                    events::emit_server_picture_update_responded(
+                        events::ServerPictureUpdateRespondedPayload {
+                            success: resp.success,
+                            message: resp.message,
+                            server_id: server_id.clone(),
+                            version: resp.version,
+                        },
+                    );
+                }
                 Some(packet::Payload::InviteCreateRes(resp)) => {
                     let invite = resp.invite.map(|i| events::InviteInfoPayload {
                         code: i.code,
