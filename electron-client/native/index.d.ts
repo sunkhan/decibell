@@ -275,6 +275,26 @@ export interface DropMembershipArgs {
  * username field on the packet.
  */
 export declare function requestDropMembership(args: DropMembershipArgs): Promise<void>
+export interface UpdateServerPictureArgs {
+  serverId: string
+  data: Buffer
+}
+/**
+ * Sends UPDATE_SERVER_PICTURE_REQ over the community session for
+ * server_id. The ack arrives as the `server_picture_update_responded`
+ * event; on success, central then broadcasts SERVER_PICTURE_CHANGED
+ * to all online members (including the requester).
+ */
+export declare function updateServerPicture(args: UpdateServerPictureArgs): Promise<void>
+export interface FetchServerPictureArgs {
+  serverId: number
+}
+/**
+ * Sends FETCH_SERVER_PICTURE_REQ over the JWT-authed central
+ * session. Response lands as the `server_picture_received` event,
+ * with `data` already encoded as a data URL ready for <img src>.
+ */
+export declare function fetchServerPicture(args: FetchServerPictureArgs): Promise<void>
 /**
  * Read the persisted config blob from disk. Returns
  * `{ credentials, settings }` as a JSON value so the renderer can
