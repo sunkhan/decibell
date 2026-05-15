@@ -43,6 +43,9 @@ interface DmState {
   conversations: Record<string, DmConversation>;
   activeDmUser: string | null;
   friendsOnlyDms: boolean;
+  /// Per-peer snapshot of optimistically-removed DM messages awaiting
+  /// the server ack. Mirror of chatStore.pendingDeletions for DMs.
+  pendingDmDeletions: Record<string, Map<number, DmMessage>>;
 
   setActiveDmUser: (username: string | null) => void;
   addDmMessage: (otherUser: string, message: DmMessage, isFromSelf: boolean) => void;
@@ -65,6 +68,14 @@ interface DmState {
   /// Optimistically zero the unread count and bump lastReadId.
   /// Called from DmChatPanel when the conversation becomes visible.
   markRead: (peer: string, upToId: number) => void;
+  /// Remove a DM from a peer's visible message list. Idempotent.
+  removeDmMessage: (peer: string, messageId: number) => void;
+  /// Snapshot + remove for optimistic delete; returns the snapshot.
+  snapshotAndRemoveDm: (peer: string, messageId: number) => DmMessage | undefined;
+  /// Re-insert a snapshotted DM (rejection path). Sorted by id.
+  restorePendingDmDeletion: (peer: string, messageId: number) => void;
+  /// Drop the pending snapshot (success-ack or matching broadcast).
+  clearPendingDmDeletion: (peer: string, messageId: number) => void;
 }
 
 function emptyConversation(username: string): DmConversation {
@@ -83,6 +94,7 @@ export const useDmStore = create<DmState>((set) => ({
   conversations: {},
   activeDmUser: null,
   friendsOnlyDms: false,
+  pendingDmDeletions: {},
 
   setActiveDmUser: (username) => set({ activeDmUser: username }),
 
@@ -227,5 +239,102 @@ export const useDmStore = create<DmState>((set) => ({
           },
         },
       };
+    }),
+
+  removeDmMessage: (peer, messageId) =>
+    set((state) => {
+      const conv = state.conversations[peer];
+      if (!conv) return {};
+      const next = conv.messages.filter((m) => m.id !== messageId);
+      if (next.length === conv.messages.length) return {};
+      return {
+        conversations: {
+          ...state.conversations,
+          [peer]: { ...conv, messages: next },
+        },
+      };
+    }),
+
+  snapshotAndRemoveDm: (peer, messageId) => {
+    const state = useDmStore.getState();
+    const conv = state.conversations[peer];
+    if (!conv) return undefined;
+    const snap = conv.messages.find((m) => m.id === messageId);
+    if (!snap) return undefined;
+    useDmStore.setState((s) => {
+      const bucket = s.pendingDmDeletions[peer] ?? new Map<number, DmMessage>();
+      const next = new Map(bucket);
+      next.set(messageId, snap);
+      const updatedConv = s.conversations[peer];
+      if (!updatedConv) return {};
+      return {
+        pendingDmDeletions: {
+          ...s.pendingDmDeletions,
+          [peer]: next,
+        },
+        conversations: {
+          ...s.conversations,
+          [peer]: {
+            ...updatedConv,
+            messages: updatedConv.messages.filter((m) => m.id !== messageId),
+          },
+        },
+      };
+    });
+    return snap;
+  },
+
+  restorePendingDmDeletion: (peer, messageId) =>
+    set((state) => {
+      const bucket = state.pendingDmDeletions[peer];
+      const snap = bucket?.get(messageId);
+      if (!snap) return {};
+      const conv = state.conversations[peer];
+      if (!conv) return {};
+      // Re-insert by id ascending. messages are stored oldest-first;
+      // linear scan is fine (50-200 messages typically).
+      const restored: DmMessage[] = [];
+      let inserted = false;
+      const snapId = snap.id ?? 0;
+      for (const m of conv.messages) {
+        const mid = typeof m.id === "number" ? m.id : 0;
+        if (!inserted && mid > snapId) {
+          restored.push(snap);
+          inserted = true;
+        }
+        restored.push(m);
+      }
+      if (!inserted) restored.push(snap);
+
+      const nextBucket = new Map(bucket);
+      nextBucket.delete(messageId);
+      const nextPending = { ...state.pendingDmDeletions };
+      if (nextBucket.size === 0) {
+        delete nextPending[peer];
+      } else {
+        nextPending[peer] = nextBucket;
+      }
+      return {
+        conversations: {
+          ...state.conversations,
+          [peer]: { ...conv, messages: restored },
+        },
+        pendingDmDeletions: nextPending,
+      };
+    }),
+
+  clearPendingDmDeletion: (peer, messageId) =>
+    set((state) => {
+      const bucket = state.pendingDmDeletions[peer];
+      if (!bucket || !bucket.has(messageId)) return {};
+      const nextBucket = new Map(bucket);
+      nextBucket.delete(messageId);
+      const nextPending = { ...state.pendingDmDeletions };
+      if (nextBucket.size === 0) {
+        delete nextPending[peer];
+      } else {
+        nextPending[peer] = nextBucket;
+      }
+      return { pendingDmDeletions: nextPending };
     }),
 }));
