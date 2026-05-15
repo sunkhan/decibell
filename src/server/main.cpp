@@ -362,6 +362,71 @@ private:
             auth_manager_.markDmRead(username_, req.peer(), req.up_to_id());
         }
 
+        // --- DM_DELETE_REQ ---
+        // Sender-only delete. The auth check happens inside the SQL
+        // WHERE clause (sender = username_), so a forged packet with
+        // someone else's message id is a no-op.
+        else if (packet.type() == chatproj::Packet::DM_DELETE_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.dm_delete_req();
+
+            // Build RES skeleton early so failure branches can reuse.
+            auto build_res = [&](bool success, const std::string& msg) {
+                chatproj::Packet rsp;
+                rsp.set_type(chatproj::Packet::DM_DELETE_RES);
+                auto* res = rsp.mutable_dm_delete_res();
+                res->set_success(success);
+                res->set_message(msg);
+                res->set_peer(req.peer());
+                res->set_message_id(req.message_id());
+                std::string serialized;
+                rsp.SerializeToString(&serialized);
+                auto framed = std::make_shared<std::vector<uint8_t>>(
+                    chatproj::create_framed_packet(serialized));
+                deliver(framed);
+            };
+
+            if (req.peer().empty() || req.message_id() == 0) {
+                build_res(false, "Invalid request.");
+                return;
+            }
+
+            bool ok = auth_manager_.deleteDmMessage(
+                username_, req.peer(), req.message_id());
+
+            build_res(ok, ok ? "" : "Message not found or not deletable.");
+
+            if (!ok) return;
+
+            // On success: broadcast DM_MESSAGE_DELETED to BOTH sessions.
+            // peer field is rewritten per recipient so it's always "the
+            // other user" from the receiving session's perspective.
+            int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
+
+            // Echo to the sender (the requester themselves) — drives
+            // the broadcast-handler dedupe with the optimistic remove.
+            chatproj::Packet sender_bcast;
+            sender_bcast.set_type(chatproj::Packet::DM_MESSAGE_DELETED);
+            auto* sb = sender_bcast.mutable_dm_message_deleted();
+            sb->set_peer(req.peer());     // from sender's POV, peer = recipient
+            sb->set_message_id(req.message_id());
+            sb->set_deleted_at(now_ts);
+            std::string sender_ser;
+            sender_bcast.SerializeToString(&sender_ser);
+            auto sender_framed = std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(sender_ser));
+            deliver(sender_framed);
+
+            // To the recipient (if online): peer = the sender.
+            chatproj::Packet recv_bcast;
+            recv_bcast.set_type(chatproj::Packet::DM_MESSAGE_DELETED);
+            auto* rb = recv_bcast.mutable_dm_message_deleted();
+            rb->set_peer(username_);       // from recipient's POV, peer = sender
+            rb->set_message_id(req.message_id());
+            rb->set_deleted_at(now_ts);
+            manager_.send_private(recv_bcast, req.peer());
+        }
+
         // --- SERVER LIST DIRECTORY ---
         else if (packet.type() == chatproj::Packet::SERVER_LIST_REQ) {
             if (!authenticated_) {
