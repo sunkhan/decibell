@@ -655,6 +655,27 @@ void AuthManager::markDmRead(const std::string& reader,
     }
 }
 
+bool AuthManager::deleteDmMessage(const std::string& sender,
+                                    const std::string& peer,
+                                    int64_t message_id) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        // Atomic auth: WHERE clause enforces sender-only + correct pair
+        // + existence in one shot. affected_rows == 1 means all three
+        // conditions held.
+        pqxx::result rs = txn.exec_params(
+            "DELETE FROM dm_messages "
+            "WHERE id = $1 AND sender = $2 AND recipient = $3",
+            message_id, sender, peer);
+        txn.commit();
+        return rs.affected_rows() == 1;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] deleteDmMessage: " << e.what() << "\n";
+        return false;
+    }
+}
+
 // --- Auto-rejoin community memberships ---
 // (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)
 

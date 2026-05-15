@@ -107,6 +107,14 @@ public:
                     const std::string& peer,
                     int64_t up_to_id);
 
+    /// Sender-enforced atomic delete. The WHERE clause is the
+    /// authorization check — only the row's sender can delete it,
+    /// and the recipient must match the requested peer. Returns
+    /// true iff exactly one row was deleted.
+    bool deleteDmMessage(const std::string& sender,
+                         const std::string& peer,
+                         int64_t message_id);
+
     // --- Auto-rejoin community memberships ---
     // (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)
 
