@@ -112,13 +112,30 @@ export function ServerPictureCropperModal({
   }, [imgLoaded, pos, scale]);
 
   // Bind wheel manually with passive:false so preventDefault works.
+  // Zooms toward the cursor: the image-coordinate point under the
+  // pointer stays under the pointer after the scale change. Math:
+  //   img_x = (cursor_x - pos.x) / scale   (image-coords at cursor)
+  //   we want: cursor_x = new_pos.x + img_x * new_scale
+  //   ⇒ new_pos.x = cursor_x - (cursor_x - pos.x) * (new_scale / scale)
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-      setScale((s) => Math.max(0.1, Math.min(10, s * factor)));
+      const rect = el.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      setScale((s) => {
+        const next = Math.max(0.1, Math.min(10, s * factor));
+        if (next === s) return s;
+        const realFactor = next / s;
+        setPos((p) => ({
+          x: cx - (cx - p.x) * realFactor,
+          y: cy - (cy - p.y) * realFactor,
+        }));
+        return next;
+      });
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
