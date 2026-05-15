@@ -8,7 +8,8 @@ import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraftsStore } from "../../stores/draftsStore";
 import { toast } from "../../stores/toastStore";
-import { stringToGradient, stringToColor } from "../../utils/colors";
+import { stringToColor } from "../../utils/colors";
+import { UserAvatar } from "../../components/UserAvatar";
 import MessageBubble, { shouldGroup } from "../chat/MessageBubble";
 import EmojiPicker from "../chat/EmojiPicker";
 import ErrorCard from "../../components/ErrorCard";
@@ -312,12 +313,7 @@ export default function DmChatPanel() {
       {/* DM header */}
       <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border px-4">
         <div className="relative">
-          <div
-            className="flex h-[26px] w-[26px] items-center justify-center rounded-lg text-[11px] font-bold text-white"
-            style={{ background: stringToGradient(activeDmUser) }}
-          >
-            {activeDmUser.charAt(0).toUpperCase()}
-          </div>
+          <UserAvatar username={activeDmUser} size={26} />
           <div
             className={`absolute -bottom-px -right-px h-2.5 w-2.5 rounded-full border-2 border-bg-tertiary ${
               isOnline ? "bg-success" : "bg-text-muted"
@@ -366,12 +362,7 @@ export default function DmChatPanel() {
         <div className="flex-1 overflow-y-auto pr-4 py-4">
           <div className="animate-[fadeUp_0.4s_ease_both] pl-4">
             <div className="border-b border-border pb-5 mb-5">
-              <div
-                className="mb-3 flex h-[60px] w-[60px] items-center justify-center rounded-xl text-[26px] font-bold text-white"
-                style={{ background: stringToGradient(activeDmUser) }}
-              >
-                {activeDmUser.charAt(0).toUpperCase()}
-              </div>
+              <UserAvatar username={activeDmUser} size={60} className="mb-3" />
               <h1 className="mb-1.5 text-[26px] font-semibold tracking-tight text-text-bright">
                 {activeDmUser}
               </h1>
