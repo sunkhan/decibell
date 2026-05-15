@@ -3,6 +3,7 @@ import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
+import { TILE_WIDTH, TILE_HEIGHT } from "./serverTileDimensions";
 import type { CommunityServer } from "../../types";
 
 // Tiny 1×1 transparent PNG. Used as the <img> placeholder while the
@@ -52,8 +53,9 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
       <button
         onClick={() => !isPending && onClick(server.id)}
         disabled={isPending}
-        title={isPending ? "Connecting…" : undefined}
-        className={`relative flex h-[38px] shrink-0 items-center gap-2 rounded-lg px-3.5 text-[13px] font-semibold transition-all duration-200 ${
+        title={isPending ? "Connecting…" : server.name}
+        style={{ width: TILE_WIDTH, height: TILE_HEIGHT }}
+        className={`relative flex shrink-0 items-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition-all duration-200 ${
           isPending
             ? "cursor-wait bg-surface-hover text-text-muted opacity-60"
             : isActive
@@ -65,12 +67,12 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
           <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
         )}
         <div
-          className="flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
           style={{ background: stringToGradient(server.name) }}
         >
           {server.name.charAt(0).toUpperCase()}
         </div>
-        <span className="max-w-[100px] truncate">{server.name}</span>
+        <span className="min-w-0 flex-1 truncate text-left">{server.name}</span>
       </button>
     );
   }
@@ -81,7 +83,8 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
       onClick={() => !isPending && onClick(server.id)}
       disabled={isPending}
       title={isPending ? "Connecting…" : server.name}
-      className={`relative flex h-[38px] shrink-0 items-center justify-center overflow-hidden rounded-lg px-3.5 transition-all duration-200 ${
+      style={{ width: TILE_WIDTH, height: TILE_HEIGHT }}
+      className={`relative flex shrink-0 items-center justify-center overflow-hidden rounded-lg px-3 transition-all duration-200 ${
         isPending
           ? "cursor-wait opacity-60"
           : isActive
@@ -96,16 +99,14 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
       />
       {/* Dim overlay only when inactive */}
       {!isActive && <div className="absolute inset-0 bg-black/45" />}
-      {/* Name always rendered so the tile keeps the same width whether
-          active or not — invisible (but still occupies layout space)
-          when active so only the image shows. */}
-      <span
-        className={`relative max-w-[100px] truncate text-[13px] font-semibold text-white ${
-          isActive ? "invisible" : ""
-        }`}
-      >
-        {server.name}
-      </span>
+      {/* Name overlay when inactive. Image fills the rectangle via
+          object-cover; tile width is now fixed via TILE_WIDTH, so the
+          name doesn't need to drive sizing. */}
+      {!isActive && (
+        <span className="relative max-w-full truncate text-[13px] font-semibold text-white">
+          {server.name}
+        </span>
+      )}
       {!isPending && isActive && (
         <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
       )}

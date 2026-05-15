@@ -5,6 +5,7 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { toast } from "../../stores/toastStore";
 import { stringToGradient } from "../../utils/colors";
+import { ServerPictureCropperModal } from "./ServerPictureCropperModal";
 
 interface Props {
   serverId: string;
@@ -75,6 +76,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
   }, [mounted, closeModal]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [cropperFile, setCropperFile] = useState<File | null>(null);
 
   const onUploadClick = () => {
     fileInputRef.current?.click();
@@ -100,17 +102,10 @@ export default function ServerSettingsModal({ serverId }: Props) {
       toast.error("Unsupported format", "Only JPEG and PNG are supported.");
       return;
     }
-    // napi-rs's Buffer type accepts a Uint8Array at the JS boundary —
-    // and `Buffer` itself isn't defined in Electron's renderer process.
-    // Same pattern as the existing user-avatar upload in AccountTab.
-    const buf = new Uint8Array(await file.arrayBuffer());
-    invoke("update_server_picture", {
-      serverId,
-      data: buf,
-    }).catch((err) => {
-      console.error("update_server_picture:", err);
-      toast.error("Failed to upload", "Please try again.");
-    });
+    // Hand off to the cropper — it owns the file-to-bytes conversion
+    // and the actual upload via update_server_picture. We just open
+    // the modal with the picked file.
+    setCropperFile(file);
   };
 
   const onRemove = () => {
@@ -131,6 +126,15 @@ export default function ServerSettingsModal({ serverId }: Props) {
   };
 
   if (!mounted || !server) return null;
+
+  const cropperModal = cropperFile ? (
+    <ServerPictureCropperModal
+      serverId={serverId}
+      file={cropperFile}
+      onSave={() => setCropperFile(null)}
+      onCancel={() => setCropperFile(null)}
+    />
+  ) : null;
 
   return createPortal(
     <div
@@ -252,6 +256,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
           </div>
         </div>
       </div>
+      {cropperModal}
     </div>,
     document.body,
   );
