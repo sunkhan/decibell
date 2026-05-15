@@ -398,6 +398,12 @@ export default function ChatPanel() {
             data={messages}
             initialTopMostItemIndex={initialIndex}
             followOutput="smooth"
+            // Discord-style: when total content height < viewport,
+            // stack messages from the bottom up against the input
+            // bar instead of pinning the first message to the top.
+            // Only affects the few-messages case; long histories are
+            // unchanged.
+            alignToBottom={true}
             rangeChanged={(range) => {
               topIndexRef.current = range.startIndex;
             }}
