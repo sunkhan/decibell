@@ -311,7 +311,7 @@ export default function ServerBrowseView() {
 
       <div className="flex-1 overflow-y-auto px-8 py-6">
         {isLoadingList && servers.length === 0 ? (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,360px))]">
             {[1, 2, 3, 4, 5, 6].map((i) => (
               <div
                 key={i}
@@ -327,7 +327,7 @@ export default function ServerBrowseView() {
             ))}
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,360px))]">
             {filtered.map((server) => (
               <ServerBrowseCard
                 key={server.id}
