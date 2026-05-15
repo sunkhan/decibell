@@ -45,9 +45,14 @@ export default function DmChatPanel() {
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   // Per-peer record of the most recently observed messages.length.
   // Used to skip the auto-scroll when length *decreases* (a delete or
-  // an optimistic remove). Switching conversations still scrolls to
-  // bottom because the new peer's entry starts at 0.
+  // an optimistic remove).
   const prevMessagesLenRef = useRef<Record<string, number>>({});
+  // Tracks the previous active peer so a conversation switch always
+  // forces a scroll to bottom — even when revisiting a cached
+  // conversation whose length hasn't changed since last view. Without
+  // this, scrollTop carries over from the previous (different) DM
+  // and lands the user mid-scroll or at the top.
+  const prevActiveDmUserRef = useRef<string | null>(null);
 
   // Fire the delete flow for a DM message. Optimistic: snapshot
   // into pendingDmDeletions, remove from the view, fire the native
@@ -166,12 +171,18 @@ export default function DmChatPanel() {
 
   useEffect(() => {
     if (!activeDmUser) return;
-    const prev = prevMessagesLenRef.current[activeDmUser] ?? 0;
+    const conversationChanged = prevActiveDmUserRef.current !== activeDmUser;
+    prevActiveDmUserRef.current = activeDmUser;
+    const prevLen = prevMessagesLenRef.current[activeDmUser] ?? 0;
     prevMessagesLenRef.current[activeDmUser] = messages.length;
-    // Only scroll when the list grew — new send/receive, history page
-    // arriving, or first open of this conversation. Skips the case
-    // where a delete (or any other shrink) reduces the count.
-    if (messages.length > prev) {
+    // Scroll on:
+    //   - Conversation switch (even if length unchanged — preserves
+    //     "open lands at bottom" UX for cached conversations whose
+    //     scrollTop would otherwise carry over from the previous DM).
+    //   - List growth in the current conversation (new send/receive,
+    //     history page arriving, first open).
+    // Don't scroll on shrink (delete / optimistic remove).
+    if (conversationChanged || messages.length > prevLen) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages.length, activeDmUser]);
