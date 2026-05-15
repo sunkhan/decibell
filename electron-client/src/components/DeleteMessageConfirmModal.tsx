@@ -56,6 +56,13 @@ export default function DeleteMessageConfirmModal({ onConfirm }: Props) {
         <p className="mt-2 text-[13px] text-text-secondary">
           Delete this message? This cannot be undone.
         </p>
+        <p className="mt-3 text-[11px] text-text-muted">
+          Tip: hold{" "}
+          <kbd className="rounded border border-border bg-bg-darkest px-1.5 py-0.5 font-mono text-[10px] text-text-secondary">
+            Shift
+          </kbd>{" "}
+          while clicking the trash icon to skip this confirmation next time.
+        </p>
         <div className="mt-5 flex justify-end gap-2">
           <button
             onClick={closeModal}

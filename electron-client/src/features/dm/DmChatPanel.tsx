@@ -75,12 +75,20 @@ export default function DmChatPanel() {
     }, 5000);
   };
 
-  const requestDeleteDmMessage = (message: Message) => {
+  const requestDeleteDmMessage = (
+    message: Message,
+    options?: { skipConfirm?: boolean },
+  ) => {
     if (typeof message.id !== "number" || message.id <= 0) return;
     // Message and DmMessage are structurally compatible for what we
     // need (id, sender, content, timestamp). Cast to DmMessage for
     // the local state — MessageBubble passes a Message at the prop
     // boundary; underneath it's the same object.
+    if (options?.skipConfirm) {
+      // Shift+click: power-user path. Delete immediately, no modal.
+      handleDeleteDmMessage(message as DmMessage);
+      return;
+    }
     setPendingDeleteTarget(message as DmMessage);
     openModal("delete-message-confirm");
   };

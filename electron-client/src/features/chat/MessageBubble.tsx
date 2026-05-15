@@ -50,8 +50,13 @@ interface Props {
   /// this — ChatPanel: sender-match OR owner; DmChatPanel: sender-match.
   canDelete?: boolean;
   /// Fired when the user clicks the trash icon. Parents open the
-  /// DeleteMessageConfirmModal with the right context payload.
-  onDelete?: (message: Message) => void;
+  /// DeleteMessageConfirmModal with the right context payload — or,
+  /// when `options.skipConfirm` is true (set by holding Shift on
+  /// click), delete immediately without prompting.
+  onDelete?: (
+    message: Message,
+    options?: { skipConfirm?: boolean },
+  ) => void;
 }
 
 function MessageBubble({
@@ -109,8 +114,8 @@ function MessageBubble({
         </div>
         {canDelete && onDelete && (
           <button
-            onClick={() => onDelete(message)}
-            title="Delete message"
+            onClick={(e) => onDelete(message, { skipConfirm: e.shiftKey })}
+            title="Delete message (Shift+click to skip confirmation)"
             className="absolute right-2 top-0 hidden h-6 w-6 items-center justify-center rounded-md bg-bg-secondary text-error hover:bg-error/10 group-hover:flex"
           >
             <svg
@@ -174,8 +179,8 @@ function MessageBubble({
       </div>
       {canDelete && onDelete && (
         <button
-          onClick={() => onDelete(message)}
-          title="Delete message"
+          onClick={(e) => onDelete(message, { skipConfirm: e.shiftKey })}
+          title="Delete message (Shift+click to skip confirmation)"
           className="absolute right-2 top-1 hidden h-6 w-6 items-center justify-center rounded-md bg-bg-secondary text-error hover:bg-error/10 group-hover:flex"
         >
           <svg

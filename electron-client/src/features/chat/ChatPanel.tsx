@@ -341,8 +341,16 @@ export default function ChatPanel() {
     }, 5000);
   };
 
-  const requestDeleteChannelMessage = (message: Message) => {
+  const requestDeleteChannelMessage = (
+    message: Message,
+    options?: { skipConfirm?: boolean },
+  ) => {
     if (typeof message.id !== "number" || message.id <= 0) return;
+    if (options?.skipConfirm) {
+      // Shift+click: power-user path. Delete immediately, no modal.
+      handleDeleteChannelMessage(message);
+      return;
+    }
     setPendingDeleteTarget(message);
     openModal("delete-message-confirm");
   };
