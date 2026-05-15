@@ -62,26 +62,40 @@ function ServerBrowseCard({
     <button
       onClick={() => !isConnected && onConnect()}
       disabled={isConnected || isConnecting}
-      className="flex items-center gap-4 rounded-2xl border border-border bg-bg-dark p-4 text-left transition-all hover:border-accent/40 hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0"
+      className="flex flex-col overflow-hidden rounded-2xl border border-border bg-bg-dark text-left transition-all hover:border-accent/40 hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0"
     >
+      {/* Banner image (wide rectangle, fixed height) */}
       {hasPicture ? (
         <img
           src={pictureDataUrl ?? ""}
           alt={server.name}
-          className="h-16 w-16 shrink-0 rounded-xl object-cover"
+          className="h-24 w-full object-cover"
         />
       ) : (
         <div
-          className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl text-2xl font-semibold text-white"
+          className="flex h-24 w-full items-center justify-center text-4xl font-bold text-white"
           style={{ background: stringToGradient(server.name) }}
         >
           {server.name.charAt(0).toUpperCase()}
         </div>
       )}
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className="truncate text-sm font-bold text-text-bright">
-          {server.name}
-        </span>
+      {/* Info block */}
+      <div className="flex flex-1 flex-col gap-1 p-4">
+        <div className="flex items-start justify-between gap-2">
+          <span className="truncate text-sm font-bold text-text-bright">
+            {server.name}
+          </span>
+          {isConnecting && (
+            <svg
+              className="h-4 w-4 shrink-0 animate-spin text-accent"
+              viewBox="0 0 24 24"
+              fill="none"
+            >
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+              <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
+            </svg>
+          )}
+        </div>
         <span className="line-clamp-2 text-xs text-text-secondary">
           {server.description}
         </span>
@@ -92,16 +106,6 @@ function ServerBrowseCard({
           )}
         </span>
       </div>
-      {isConnecting && (
-        <svg
-          className="h-4 w-4 shrink-0 animate-spin text-accent"
-          viewBox="0 0 24 24"
-          fill="none"
-        >
-          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
-          <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
-        </svg>
-      )}
     </button>
   );
 }
@@ -311,10 +315,10 @@ export default function ServerBrowseView() {
             {[1, 2, 3, 4, 5, 6].map((i) => (
               <div
                 key={i}
-                className="flex animate-pulse items-center gap-4 rounded-2xl border border-border bg-bg-dark p-4"
+                className="flex animate-pulse flex-col overflow-hidden rounded-2xl border border-border bg-bg-dark"
               >
-                <div className="h-16 w-16 shrink-0 rounded-xl bg-bg-tertiary" />
-                <div className="flex flex-1 flex-col gap-2">
+                <div className="h-24 w-full bg-bg-tertiary" />
+                <div className="flex flex-col gap-2 p-4">
                   <div className="h-4 w-32 rounded bg-bg-tertiary" />
                   <div className="h-3 w-48 rounded bg-bg-tertiary" />
                   <div className="h-3 w-20 rounded bg-bg-tertiary" />
