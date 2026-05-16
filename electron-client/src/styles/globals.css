@@ -203,6 +203,17 @@ html, body, #root {
   to   { transform: scale(1); }
 }
 
+/* Active-tile breathing glow — animates opacity only so Chromium can
+ * GPU-composite the layer. Animating box-shadow directly (the old
+ * dropPulse approach) forced a full ServerBar repaint at 60 Hz and
+ * landed idle CPU at 3-5 %. Apply via an absolutely-positioned overlay
+ * whose static box-shadow carries the peak glow; this keyframe just
+ * varies the layer's alpha. */
+@keyframes breathe {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
+}
+
 @keyframes toastIn {
   from { opacity: 0; transform: translateY(-8px); }
   to   { opacity: 1; transform: translateY(0); }

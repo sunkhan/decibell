@@ -48,69 +48,98 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
 
   useFetchServerPictureIfMissing(server.id, pictureVersion, pictureDataUrl);
 
+  const showGlow = isActive && !isPending;
+
   if (!hasPicture) {
     return (
-      <button
-        onClick={() => !isPending && onClick(server.id)}
-        disabled={isPending}
-        title={isPending ? "Connecting…" : server.name}
+      <div
+        className="relative shrink-0"
         style={{ width: TILE_WIDTH, height: TILE_HEIGHT }}
-        className={`relative flex shrink-0 items-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition-all duration-200 ${
-          isPending
-            ? "cursor-wait bg-surface-hover text-text-muted opacity-60"
-            : isActive
-              ? "bg-accent-mid text-accent-bright animate-[dropPulse_2.4s_ease-in-out_infinite]"
-              : "text-text-secondary hover:bg-surface-hover hover:text-text-primary hover:-translate-y-px"
-        }`}
       >
-        {!isPending && isActive && (
-          <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
-        )}
-        <div
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
-          style={{ background: stringToGradient(server.name) }}
+        {showGlow && <ActiveTileGlow />}
+        <button
+          onClick={() => !isPending && onClick(server.id)}
+          disabled={isPending}
+          title={isPending ? "Connecting…" : server.name}
+          className={`relative flex h-full w-full items-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition-all duration-200 ${
+            isPending
+              ? "cursor-wait bg-surface-hover text-text-muted opacity-60"
+              : isActive
+                ? "bg-accent-mid text-accent-bright"
+                : "text-text-secondary hover:bg-surface-hover hover:text-text-primary hover:-translate-y-px"
+          }`}
         >
-          {server.name.charAt(0).toUpperCase()}
-        </div>
-        <span className="min-w-0 flex-1 truncate text-left">{server.name}</span>
-      </button>
+          {!isPending && isActive && (
+            <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
+          )}
+          <div
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
+            style={{ background: stringToGradient(server.name) }}
+          >
+            {server.name.charAt(0).toUpperCase()}
+          </div>
+          <span className="min-w-0 flex-1 truncate text-left">{server.name}</span>
+        </button>
+      </div>
     );
   }
 
   // Picture branch.
   return (
-    <button
-      onClick={() => !isPending && onClick(server.id)}
-      disabled={isPending}
-      title={isPending ? "Connecting…" : server.name}
+    <div
+      className="relative shrink-0"
       style={{ width: TILE_WIDTH, height: TILE_HEIGHT }}
-      className={`relative flex shrink-0 items-center justify-center overflow-hidden rounded-lg px-3 transition-all duration-200 ${
-        isPending
-          ? "cursor-wait opacity-60"
-          : isActive
-            ? "animate-[dropPulse_2.4s_ease-in-out_infinite]"
-            : "hover:-translate-y-px"
-      }`}
     >
-      <img
-        src={pictureDataUrl ?? PLACEHOLDER_DATA_URL}
-        alt={server.name}
-        className="absolute inset-0 h-full w-full object-cover"
-      />
-      {/* Dim overlay only when inactive */}
-      {!isActive && <div className="absolute inset-0 bg-black/45" />}
-      {/* Name overlay when inactive. Image fills the rectangle via
-          object-cover; tile width is now fixed via TILE_WIDTH, so the
-          name doesn't need to drive sizing. */}
-      {!isActive && (
-        <span className="relative max-w-full truncate text-[13px] font-semibold text-white">
-          {server.name}
-        </span>
-      )}
-      {!isPending && isActive && (
-        <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
-      )}
-    </button>
+      {showGlow && <ActiveTileGlow />}
+      <button
+        onClick={() => !isPending && onClick(server.id)}
+        disabled={isPending}
+        title={isPending ? "Connecting…" : server.name}
+        className={`relative flex h-full w-full items-center justify-center overflow-hidden rounded-lg px-3 transition-all duration-200 ${
+          isPending
+            ? "cursor-wait opacity-60"
+            : isActive
+              ? ""
+              : "hover:-translate-y-px"
+        }`}
+      >
+        <img
+          src={pictureDataUrl ?? PLACEHOLDER_DATA_URL}
+          alt={server.name}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+        {/* Dim overlay only when inactive */}
+        {!isActive && <div className="absolute inset-0 bg-black/45" />}
+        {/* Name overlay when inactive. Image fills the rectangle via
+            object-cover; tile width is now fixed via TILE_WIDTH, so the
+            name doesn't need to drive sizing. */}
+        {!isActive && (
+          <span className="relative max-w-full truncate text-[13px] font-semibold text-white">
+            {server.name}
+          </span>
+        )}
+        {!isPending && isActive && (
+          <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
+        )}
+      </button>
+    </div>
+  );
+}
+
+// GPU-composited replacement for the dropPulse box-shadow animation
+// that used to live directly on the active tile. Sits as a sibling of
+// the button inside a relative wrapper so the picture branch's
+// overflow-hidden doesn't clip the glow. Carries the original
+// keyframe's peak box-shadow values as static styling; the `breathe`
+// keyframe (defined in globals.css) only varies opacity, which
+// Chromium auto-promotes to a composited layer — so the shadow is
+// rasterized once and the per-frame cost collapses to an alpha blend
+// on the GPU. Replaces the ~3-5 % idle CPU draw of the original.
+function ActiveTileGlow() {
+  return (
+    <div
+      className="pointer-events-none absolute inset-0 rounded-lg shadow-[0_0_0_1.5px_rgba(56,143,255,0.60),0_0_22px_4px_rgba(56,143,255,0.22)] animate-[breathe_2.4s_ease-in-out_infinite] will-change-[opacity]"
+    />
   );
 }
 
