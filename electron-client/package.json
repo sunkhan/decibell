@@ -29,9 +29,10 @@
     "@fontsource-variable/dm-sans": "^5.2.8",
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/outfit": "^5.2.8",
+    "@sentry/electron": "^5.12.0",
+    "electron-updater": "^6.3.9",
     "emoji-mart": "^5.6.0",
     "emoji-regex": "^10.6.0",
-    "electron-updater": "^6.3.9",
     "lucide-react": "^1.8.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -40,6 +41,7 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
+    "@sentry/cli": "^2.58.5",
     "@tailwindcss/vite": "^4.2.1",
     "@twemoji/svg": "^15.0.0",
     "@types/node": "^22.10.0",
