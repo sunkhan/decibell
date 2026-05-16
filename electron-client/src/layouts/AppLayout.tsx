@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { Outlet } from "react-router-dom";
+import * as Sentry from "@sentry/electron/renderer";
 import Titlebar from "./Titlebar";
 import ToastStack from "../components/ToastStack";
 import { listen } from "../lib/ipc";
+import { useChatStore } from "../stores/chatStore";
 import {
   useUpdateStore,
   type UpdateStatus,
@@ -49,6 +51,20 @@ export default function AppLayout() {
     return () => {
       if (unlistenFn) unlistenFn();
     };
+  }, []);
+
+  // Track how many community servers this install is connected to.
+  // Helps reproduce "happens when N+ servers connected" bug reports.
+  // Sentry.setTag is a scope mutation, not a network call, so it's
+  // safe to invoke whether or not initRendererSentry actually fired.
+  useEffect(() => {
+    const apply = (size: number) => {
+      Sentry.setTag("connected_servers", String(size));
+    };
+    apply(useChatStore.getState().connectedServers.size);
+    return useChatStore.subscribe((state) => {
+      apply(state.connectedServers.size);
+    });
   }, []);
 
   return (
