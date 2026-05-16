@@ -76,6 +76,12 @@ interface UiState {
   closeProfilePopup: () => void;
   openContextMenu: (username: string, anchor: { x: number; y: number }) => void;
   closeContextMenu: () => void;
+  crashReportingEnabled: boolean;
+  crashReportingConsentShown: boolean;
+  crashReportingInstallId: string | null;
+  setCrashReportingEnabled: (v: boolean) => void;
+  setCrashReportingConsentShown: (v: boolean) => void;
+  setCrashReportingInstallId: (v: string | null) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -145,4 +151,10 @@ export const useUiStore = create<UiState>((set) => ({
     set({ contextMenuUser: username, contextMenuAnchor: anchor }),
   closeContextMenu: () =>
     set({ contextMenuUser: null, contextMenuAnchor: null }),
+  crashReportingEnabled: true,
+  crashReportingConsentShown: false,
+  crashReportingInstallId: null,
+  setCrashReportingEnabled: (v) => set({ crashReportingEnabled: v }),
+  setCrashReportingConsentShown: (v) => set({ crashReportingConsentShown: v }),
+  setCrashReportingInstallId: (v) => set({ crashReportingInstallId: v }),
 }));
