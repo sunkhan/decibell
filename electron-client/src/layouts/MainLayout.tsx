@@ -20,6 +20,7 @@ import InviteModal from "../features/servers/InviteModal";
 import DeepLinkJoinModal from "../features/servers/DeepLinkJoinModal";
 import PersistentAudioLayer from "../features/chat/PersistentAudioLayer";
 import PersistentVideoLayer from "../features/chat/PersistentVideoLayer";
+import CrashReportingBanner from "../components/CrashReportingBanner";
 import DmChatPanel from "../features/dm/DmChatPanel";
 import UserProfilePopup from "../features/dm/UserProfilePopup";
 import { useDmEvents } from "../features/dm/useDmEvents";
@@ -75,6 +76,8 @@ export default function MainLayout() {
           Connection lost. Reconnecting...
         </div>
       )}
+
+      <CrashReportingBanner />
 
       <ServerBar />
 
