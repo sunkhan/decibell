@@ -4,7 +4,7 @@ import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
-import { stringToGradient } from "../../utils/colors";
+import { UserAvatar } from "../../components/UserAvatar";
 import { saveSettings } from "../settings/saveSettings";
 
 const MIN_DB = -40;
@@ -118,12 +118,7 @@ export default function UserContextMenu() {
     >
       {/* User header */}
       <div className="flex items-center gap-2.5 border-b border-border-divider px-3.5 py-3">
-        <div
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[13px] font-semibold text-white"
-          style={{ background: stringToGradient(username) }}
-        >
-          {username.charAt(0).toUpperCase()}
-        </div>
+        <UserAvatar username={username} size={32} />
         <span className="truncate font-display text-[14px] font-medium text-text-primary">
           {username}
         </span>
