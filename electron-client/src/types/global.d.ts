@@ -6,6 +6,11 @@ declare global {
     decibell: {
       platform: NodeJS.Platform;
       mediaServerPort: number;
+      sentryConfig: {
+        enabled: boolean;
+        installId: string;
+        version: string;
+      };
       invoke: (method: string, args: unknown) => Promise<unknown>;
       listen: (
         name: string,

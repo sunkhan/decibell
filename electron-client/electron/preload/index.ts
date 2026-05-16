@@ -95,6 +95,21 @@ const mediaServerPort = mediaPortArg
   ? parseInt(mediaPortArg.split("=")[1], 10) || 0
   : 0;
 
+const sentryEnabledArg = process.argv.find((a) =>
+  a.startsWith("--decibell-sentry-enabled="),
+);
+const installIdArg = process.argv.find((a) =>
+  a.startsWith("--decibell-install-id="),
+);
+const versionArg = process.argv.find((a) =>
+  a.startsWith("--decibell-version="),
+);
+const sentryConfig = {
+  enabled: sentryEnabledArg === "--decibell-sentry-enabled=1",
+  installId: installIdArg ? installIdArg.split("=")[1] : "",
+  version: versionArg ? versionArg.split("=")[1] : "unknown",
+};
+
 contextBridge.exposeInMainWorld("decibell", {
   /// Platform identifier copied from Node's process.platform so the
   /// renderer can branch UI without lying via navigator.userAgent. The
@@ -106,6 +121,7 @@ contextBridge.exposeInMainWorld("decibell", {
   /// Renderer constructs `http://127.0.0.1:${port}/attachments/<sid>/<aid>`
   /// for `<video>` / `<audio>` element sources. See electron/main/mediaServer.ts.
   mediaServerPort,
+  sentryConfig,
   invoke: (method: string, args: unknown): Promise<unknown> =>
     ipcRenderer.invoke("decibell:invoke", method, args),
   listen: async (name: string, cb: Handler): Promise<() => void> => {
