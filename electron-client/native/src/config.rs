@@ -93,6 +93,24 @@ pub struct AppSettings {
     /// 3=H265, 4=AV1). Restored on load; downgraded to 0 by the client
     /// at runtime if the saved codec isn't in the user's encodeCaps.
     pub stream_enforced_codec: Option<u8>,
+
+    /// Crash reporting (Sentry) opt-out. Defaults to `true` (opt-out
+    /// posture). Existing 0.6.5 configs without this field deserialize
+    /// to the default via #[serde(default = "default_true")], so users
+    /// upgrading get auto-opted-in.
+    #[serde(default = "default_true")]
+    pub crash_reporting_enabled: bool,
+    /// Anonymous per-install identifier (UUID v4). Generated once on
+    /// first boot of a Sentry-enabled build and persisted forever.
+    /// Lets Sentry group multiple crashes from the same install without
+    /// identifying the user.
+    #[serde(default)]
+    pub crash_reporting_install_id: Option<String>,
+    /// Whether the first-launch disclosure banner has been shown.
+    /// Flips true on dismiss; never reverted. Independent of `_enabled`
+    /// (have we told the user? vs. is it on?).
+    #[serde(default)]
+    pub crash_reporting_consent_shown: bool,
 }
 
 fn default_true() -> bool {
