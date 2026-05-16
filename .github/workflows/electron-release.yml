@@ -155,6 +155,16 @@ jobs:
           npm run build:renderer
           npm run build:tsc
 
+      - name: Bake Sentry DSN
+        if: env.SENTRY_DSN != ''
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        shell: bash
+        run: |
+          mkdir -p electron-client/resources
+          echo "{\"dsn\":\"$SENTRY_DSN\"}" > electron-client/resources/sentry.json
+          echo "[sentry] DSN written to electron-client/resources/sentry.json"
+
       - name: Package
         # Don't expose GH_TOKEN here. electron-builder treats its
         # presence as "implicit GitHub publish provider", then tries
@@ -163,6 +173,23 @@ jobs:
         # set. We don't need its publishing — the release job below
         # uploads via softprops/action-gh-release directly.
         run: npx electron-builder --publish=never
+
+      - name: Upload source maps to Sentry
+        if: matrix.target_label == 'linux' && startsWith(github.ref, 'refs/tags/ev') && env.SENTRY_AUTH_TOKEN != ''
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/ev}"
+          echo "[sentry] uploading source maps for decibell@${VERSION}"
+          npx @sentry/cli sourcemaps inject \
+            --release "decibell@${VERSION}" \
+            electron-client/dist/renderer
+          npx @sentry/cli sourcemaps upload \
+            --release "decibell@${VERSION}" \
+            electron-client/dist/renderer
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
