@@ -14,6 +14,8 @@ import { registerFsHandlers } from "./fs";
 import { registerNetHandlers } from "./netFetch";
 import { startMediaServer, stopMediaServer, getMediaServerPort } from "./mediaServer";
 import { initUpdater, kickoffInitialCheck } from "./update";
+import { initMainSentry } from "./sentry";
+import * as crypto from "node:crypto";
 
 // Single-instance lock — second launches focus the existing window.
 // Required for deep-link handling on Windows/Linux (so a second
@@ -250,6 +252,66 @@ app.commandLine.appendSwitch("enable-logging", "stderr");
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 let mainWindow: BrowserWindow | null = null;
 
+// Sentry boot config — populated once at app.whenReady() top, then
+// read by createWindow() when assembling additionalArguments for the
+// renderer preload bridge. Defaults are safe for the very-first-launch
+// case where config.json doesn't yet exist.
+let cachedSentryBoot: { enabled: boolean; installId: string } = {
+  enabled: true,
+  installId: "",
+};
+
+interface ParsedConfigFile {
+  credentials?: string;
+  settings?: Record<string, unknown>;
+}
+
+function configJsonPath(): string {
+  return path.join(app.getPath("userData"), "config.json");
+}
+
+// Reads config.json directly from disk rather than going through the
+// napi addon. Two reasons:
+//   1. createWindow() needs the install ID synchronously (it's baked
+//      into webPreferences.additionalArguments), and the addon's
+//      load_config command is async — we can't await it before
+//      createWindow without reordering initAddon (which requires a
+//      window to dispatch its event bus to).
+//   2. Sidesteps any addon-init failure: even if the native binding
+//      fails to load, we still want Sentry to report that failure.
+//
+// Write-back preserves the encrypted credentials field and every
+// other settings field so we don't clobber state the renderer hasn't
+// hydrated yet.
+function loadSentryBootConfig(): { enabled: boolean; installId: string } {
+  let config: ParsedConfigFile = {};
+  try {
+    const data = fs.readFileSync(configJsonPath(), "utf8");
+    config = JSON.parse(data) as ParsedConfigFile;
+  } catch {
+    // First launch or unreadable file — fall through with empty config.
+  }
+  const settings = (config.settings ?? {}) as Record<string, unknown>;
+  const enabled = settings.crash_reporting_enabled !== false; // default true
+  let installId = (settings.crash_reporting_install_id as string | undefined) ?? null;
+  if (!installId) {
+    installId = crypto.randomUUID();
+    settings.crash_reporting_install_id = installId;
+    const updated: ParsedConfigFile = {
+      credentials: config.credentials,
+      settings,
+    };
+    try {
+      const p = configJsonPath();
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, JSON.stringify(updated, null, 2));
+    } catch (e) {
+      console.warn("[sentry] could not persist install_id:", e);
+    }
+  }
+  return { enabled, installId };
+}
+
 function createWindow(): void {
   // App icon: in dev we live under <repo>/electron-client and the
   // icon sits at resources/icon.png; in a packaged build, electron-
@@ -290,6 +352,9 @@ function createWindow(): void {
       // hand-off at window creation — no IPC round-trip needed.
       additionalArguments: [
         `--decibell-media-server-port=${getMediaServerPort()}`,
+        `--decibell-sentry-enabled=${cachedSentryBoot.enabled ? "1" : "0"}`,
+        `--decibell-install-id=${cachedSentryBoot.installId}`,
+        `--decibell-version=${app.getVersion()}`,
       ],
     },
   });
@@ -538,6 +603,17 @@ app.whenReady().then(async () => {
       callback(true);
     },
   );
+
+  // Sentry config must be resolved before createWindow because the
+  // install ID + enabled flag ride along in webPreferences.
+  // additionalArguments — they have to be set at construction time.
+  // loadSentryBootConfig is synchronous (reads config.json directly)
+  // so we can put it on the main thread without blocking on the addon.
+  cachedSentryBoot = loadSentryBootConfig();
+  initMainSentry({
+    enabled: cachedSentryBoot.enabled,
+    installId: cachedSentryBoot.installId,
+  });
 
   createWindow();
   // initAddon must come AFTER createWindow so the bus broadcaster has
