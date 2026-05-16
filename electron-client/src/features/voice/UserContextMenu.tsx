@@ -42,20 +42,36 @@ export default function UserContextMenu() {
 
   const currentDb = username ? userVolumes[username] ?? DEFAULT_DB : DEFAULT_DB;
 
+  // The native set_user_volume command errors out with
+  // "Not in a voice channel" when we're not currently connected,
+  // because the gain map only exists while a voice engine is up.
+  // We still want changes made offline to persist, though — the
+  // useVoiceEvents participant-list hydration replays every entry in
+  // userVolumes/localMutedUsers on the next voice join, so deferring
+  // the IPC call is safe. The store + saveSettings always run.
+  const sendGainToNative = useCallback(
+    (targetUsername: string, gain: number) => {
+      const connected =
+        useVoiceStore.getState().connectedChannelId !== null;
+      if (!connected) return;
+      invoke("set_user_volume", { username: targetUsername, gain }).catch(
+        console.error,
+      );
+    },
+    [],
+  );
+
   const handleVolumeChange = useCallback(
     (db: number) => {
       if (!username) return;
       const clamped = Math.max(MIN_DB, Math.min(MAX_DB, db));
       setUserVolume(username, clamped);
       if (!localMutedUsers.has(username)) {
-        invoke("set_user_volume", {
-          username,
-          gain: dbToGain(clamped),
-        }).catch(console.error);
+        sendGainToNative(username, dbToGain(clamped));
       }
       saveSettings();
     },
-    [username, setUserVolume, localMutedUsers],
+    [username, setUserVolume, localMutedUsers, sendGainToNative],
   );
 
   const handleReset = useCallback(() => {
@@ -67,13 +83,13 @@ export default function UserContextMenu() {
     const willMute = !localMutedUsers.has(username);
     toggleLocalMute(username);
     if (willMute) {
-      invoke("set_user_volume", { username, gain: 0 }).catch(console.error);
+      sendGainToNative(username, 0);
     } else {
       const db = userVolumes[username] ?? DEFAULT_DB;
-      invoke("set_user_volume", { username, gain: dbToGain(db) }).catch(console.error);
+      sendGainToNative(username, dbToGain(db));
     }
     saveSettings();
-  }, [username, localMutedUsers, toggleLocalMute, userVolumes]);
+  }, [username, localMutedUsers, toggleLocalMute, userVolumes, sendGainToNative]);
 
   useEffect(() => {
     if (!username) return;
