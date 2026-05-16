@@ -17,3 +17,6 @@ src/components/emoji/twemoji-data.json
 # Old copy-twemoji output (kept ignored so existing checkouts don't
 # accidentally commit ~8 MB of SVGs that are no longer used).
 public/twemoji/
+
+# Sentry DSN baked by CI on release builds — never tracked.
+resources/sentry.json

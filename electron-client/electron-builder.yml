@@ -29,6 +29,7 @@ electronDownload:
 
 files:
   - dist/**/*
+  - "!dist/renderer/assets/*.map"
   - native/index.js
   - native/index.d.ts
   # napi-rs writes the binary as `index.{platform}-{arch}-{libc}.node`
@@ -59,6 +60,13 @@ asarUnpack:
 extraResources:
   - from: resources/icon.png
     to: icon.png
+  # CI writes resources/sentry.json from the SENTRY_DSN secret before
+  # packaging. Local builds without the secret leave the file absent;
+  # main process's initMainSentry handles missing-DSN as "skip init",
+  # so the absent file is the correct fallback.
+  - from: resources/sentry.json
+    to: sentry.json
+    filter: ["**/*"]
 
 linux:
   # Without this, electron-builder names the binary after package.json's

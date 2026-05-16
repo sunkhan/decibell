@@ -16,5 +16,10 @@ export default defineConfig({
     outDir: "dist/renderer",
     emptyOutDir: true,
     target: "chrome120",
+    // Emit .js.map files so sentry-cli can upload them on tagged
+    // releases. The maps are excluded from the packaged build via
+    // electron-builder.yml so they reach Sentry's artifact store
+    // but not the user's machine.
+    sourcemap: true,
   },
 });
