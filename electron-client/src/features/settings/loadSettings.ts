@@ -46,6 +46,9 @@ interface LoadedConfigShape {
     stream_share_audio: boolean | null;
     stream_audio_bitrate_kbps: number | null;
     stream_enforced_codec: number | null;
+    crash_reporting_enabled: boolean;
+    crash_reporting_install_id: string | null;
+    crash_reporting_consent_shown: boolean;
   };
 }
 
@@ -62,6 +65,13 @@ export async function loadSettings(): Promise<void> {
 
   // Privacy
   useDmStore.getState().setFriendsOnlyDms(settings.friends_only_dms);
+
+  // Crash reporting (Sentry). Always hydrate all three — defaults
+  // baked into the Rust schema cover users upgrading from a config
+  // file that predates these fields.
+  useUiStore.getState().setCrashReportingEnabled(settings.crash_reporting_enabled);
+  useUiStore.getState().setCrashReportingInstallId(settings.crash_reporting_install_id);
+  useUiStore.getState().setCrashReportingConsentShown(settings.crash_reporting_consent_shown);
 
   // Voice / audio
   if (settings.voice_threshold_db != null) {
