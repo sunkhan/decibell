@@ -6,7 +6,14 @@ import { probeDecoders } from "./utils/decoderProbe";
 import { probeEncoders } from "./utils/encoderProbe";
 import { loadSettings } from "./features/settings/loadSettings";
 import { flushSaveSettings } from "./features/settings/saveSettings";
+import { initRendererSentry } from "./lib/sentry";
 import "./styles/globals.css";
+
+// Initialize Sentry FIRST, before any other boot work. Any throw
+// inside loadSettings, probeDecoders, the React mount itself, etc.,
+// is then captured by the SDK. Boot order matters: Sentry init must
+// be the first executable statement that runs.
+initRendererSentry();
 
 // saveSettings is debounced (250ms trailing) so slider drags collapse
 // to one disk write. Flush any pending save on window unload so the
