@@ -312,6 +312,20 @@ function loadSentryBootConfig(): { enabled: boolean; installId: string } {
   return { enabled, installId };
 }
 
+// MUST run before app.whenReady() fires — @sentry/electron's main
+// SDK registers a custom protocol scheme via app.setAsDefault... and
+// throws "Sentry SDK should be initialized before the Electron app
+// 'ready' event is fired" if invoked after. We run it at module
+// scope (right after the helper definitions) so it executes during
+// the initial synchronous boot before any app event has time to
+// fire. loadSentryBootConfig is sync — reads config.json via fs —
+// so this whole block stays on the main thread's first tick.
+cachedSentryBoot = loadSentryBootConfig();
+initMainSentry({
+  enabled: cachedSentryBoot.enabled,
+  installId: cachedSentryBoot.installId,
+});
+
 function createWindow(): void {
   // App icon: in dev we live under <repo>/electron-client and the
   // icon sits at resources/icon.png; in a packaged build, electron-
@@ -603,17 +617,6 @@ app.whenReady().then(async () => {
       callback(true);
     },
   );
-
-  // Sentry config must be resolved before createWindow because the
-  // install ID + enabled flag ride along in webPreferences.
-  // additionalArguments — they have to be set at construction time.
-  // loadSentryBootConfig is synchronous (reads config.json directly)
-  // so we can put it on the main thread without blocking on the addon.
-  cachedSentryBoot = loadSentryBootConfig();
-  initMainSentry({
-    enabled: cachedSentryBoot.enabled,
-    installId: cachedSentryBoot.installId,
-  });
 
   createWindow();
   // initAddon must come AFTER createWindow so the bus broadcaster has
