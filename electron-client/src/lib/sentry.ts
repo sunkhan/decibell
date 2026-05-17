@@ -30,6 +30,12 @@ export function initRendererSentry(): boolean {
     },
     beforeSend(event) {
       if (event.user) delete event.user.ip_address;
+      // Same filter as main process — "No component available" with
+      // no stacktrace is Chromium internal noise, not a real bug.
+      const top = event.exception?.values?.[0];
+      if (top?.value === "No component available" && !top?.stacktrace) {
+        return null;
+      }
       return event;
     },
   });

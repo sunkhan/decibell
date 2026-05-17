@@ -75,6 +75,16 @@ export function initMainSentry(args: InitArgs): boolean {
       // Belt-and-suspenders even though Sentry's project-side "Strip
       // IP" setting will also be enabled. We never want IPs in events.
       if (event.user) delete event.user.ip_address;
+      // Drop Electron/Chromium Mojo init noise. "No component available"
+      // arrives with no stacktrace because the throw originated in
+      // Chromium native code, propagated via IPC to Node, and gets
+      // caught by Sentry's unhandledRejection hook with only a
+      // message string. Real bugs always carry a stacktrace; gating
+      // suppression on the stackless variant keeps the filter tight.
+      const top = event.exception?.values?.[0];
+      if (top?.value === "No component available" && !top?.stacktrace) {
+        return null;
+      }
       return event;
     },
   });
