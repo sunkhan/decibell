@@ -63,10 +63,12 @@ extraResources:
   # CI writes resources/sentry.json from the SENTRY_DSN secret before
   # packaging. Local builds without the secret leave the file absent;
   # main process's initMainSentry handles missing-DSN as "skip init",
-  # so the absent file is the correct fallback.
+  # so the absent file is the correct fallback. Note: NO filter line
+  # — electron-builder treats `filter` as "this is a directory copy"
+  # and silently skips single-file sources where it's present, even
+  # if the syntactically-valid value just means "include everything".
   - from: resources/sentry.json
     to: sentry.json
-    filter: ["**/*"]
 
 linux:
   # Without this, electron-builder names the binary after package.json's
