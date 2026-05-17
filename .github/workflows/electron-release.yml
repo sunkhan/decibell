@@ -156,13 +156,18 @@ jobs:
           npm run build:tsc
 
       - name: Bake Sentry DSN
+        # The job's default working-directory is electron-client/ (set
+        # in the top-level `defaults:` block) so all paths here are
+        # relative to that. Prefixing them with `electron-client/`
+        # would resolve to electron-client/electron-client/... and miss
+        # the file entirely — which is the bug that bit 0.6.6 silently.
         if: env.SENTRY_DSN != ''
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         shell: bash
         run: |
-          mkdir -p electron-client/resources
-          echo "{\"dsn\":\"$SENTRY_DSN\"}" > electron-client/resources/sentry.json
+          mkdir -p resources
+          echo "{\"dsn\":\"$SENTRY_DSN\"}" > resources/sentry.json
           echo "[sentry] DSN written to electron-client/resources/sentry.json"
 
       - name: Package
@@ -191,17 +196,20 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/ev}"
           echo "[sentry] uploading source maps for decibell@${VERSION}"
-          # Explicitly create the release first. sentry-cli's
+          # Paths are relative to the job's default working-directory
+          # (electron-client/), NOT the repo root. Prefixing with
+          # electron-client/ here is what made 0.6.6's upload fail.
+          # Explicitly create the release first — sentry-cli's
           # `sourcemaps upload --release X` auto-creates X in recent
           # versions, but `releases new` is idempotent and works
           # across older CLI versions / restricted auth scopes too.
           npx @sentry/cli releases new "decibell@${VERSION}" || true
           npx @sentry/cli sourcemaps inject \
             --release "decibell@${VERSION}" \
-            electron-client/dist/renderer
+            dist/renderer
           npx @sentry/cli sourcemaps upload \
             --release "decibell@${VERSION}" \
-            electron-client/dist/renderer
+            dist/renderer
           npx @sentry/cli releases finalize "decibell@${VERSION}" || true
 
       - name: Upload artifacts
