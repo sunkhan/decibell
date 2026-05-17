@@ -25,9 +25,18 @@ function loadDsn(): string | null {
   if (!app.isPackaged) return null;
   try {
     const p = path.join(process.resourcesPath, "sentry.json");
-    const j = JSON.parse(fs.readFileSync(p, "utf8")) as DsnJson;
+    let raw = fs.readFileSync(p, "utf8");
+    // Strip UTF-8 BOM if present. PowerShell 5.x's `Out-File -Encoding
+    // utf8` writes UTF-8 *with* BOM by default, and JSON.parse rejects
+    // the leading ﻿. Get-Content silently strips it on read which
+    // makes the file look fine — making this a confusing failure mode
+    // for anyone who hand-writes the file on Windows. CI's bash echo
+    // never adds a BOM so this is purely defensive for local builds.
+    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+    const j = JSON.parse(raw) as DsnJson;
     return j.dsn && j.dsn.length > 0 ? j.dsn : null;
-  } catch {
+  } catch (e) {
+    console.warn("[sentry] loadDsn failed:", e);
     return null;
   }
 }
