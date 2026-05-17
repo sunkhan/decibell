@@ -66,6 +66,16 @@ fn default_comms_device_name(input: bool) -> Option<String> {
 
 /// Get the default device for voice — on Windows, prefer the communications
 /// device; on Linux, just use CPAL's default.
+///
+/// Last-resort fallback: if both the platform-specific path AND CPAL's
+/// `default_*_device()` come up empty, pick the first device from the
+/// host's enumeration. We've seen this on Windows with SteelSeries Sonar
+/// (and similar virtual-driver setups) where Windows' default endpoint
+/// lookup fails even though the host has perfectly usable devices. Same
+/// shape fires on any OS where the user's audio state is unusual but
+/// real devices exist. Without this final fallback the voice pipeline
+/// gives up before the user has a chance to pick a device from
+/// Settings → Audio.
 pub fn get_default_device(host: &cpal::Host, input: bool) -> Option<cpal::Device> {
     #[cfg(target_os = "windows")]
     {
@@ -86,11 +96,30 @@ pub fn get_default_device(host: &cpal::Host, input: bool) -> Option<cpal::Device
         }
     }
 
-    if input {
+    let cpal_default = if input {
         host.default_input_device()
     } else {
         host.default_output_device()
+    };
+    if let Some(d) = cpal_default {
+        return Some(d);
     }
+
+    // Final fallback: any device the host knows about.
+    let mut devices = if input {
+        host.input_devices().ok()?
+    } else {
+        host.output_devices().ok()?
+    };
+    let picked = devices.next()?;
+    if let Ok(name) = picked.name() {
+        eprintln!(
+            "[pipeline] No default {} device reported by host; falling back to first available: {}",
+            if input { "input" } else { "output" },
+            name,
+        );
+    }
+    Some(picked)
 }
 
 // ── Input stream builder ─────────────────────────────────────────────────────

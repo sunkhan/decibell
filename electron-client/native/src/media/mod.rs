@@ -98,6 +98,8 @@ impl VoiceEngine {
         server_port: u16,
         jwt: &str,
         voice_bitrate_bps: i32,
+        initial_input_device: Option<String>,
+        initial_output_device: Option<String>,
     ) -> Result<Self, String> {
         let (control_tx, control_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
@@ -144,6 +146,8 @@ impl VoiceEngine {
                     voice_socket_for_audio,
                     sender_id_for_audio,
                     voice_bitrate_bps,
+                    initial_input_device,
+                    initial_output_device,
                     control_rx,
                     event_tx,
                 );

@@ -131,8 +131,30 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
         let port = client.port;
         let jwt = client.jwt.clone();
 
-        let mut engine = VoiceEngine::start(&host, port, &jwt, bitrate_bps)
-            .map_err(napi::Error::from_reason)?;
+        // Load the user's saved audio-device preferences from disk so the
+        // pipeline starts with them on the first build attempt instead of
+        // hitting system defaults first and then hot-swapping. Falls back
+        // to None on missing/corrupt config — `build_*_stream` then tries
+        // the OS default, and `get_default_device` has its own final
+        // fallback (first available device) so the pipeline survives
+        // most pathological audio states.
+        let (saved_input, saved_output) = match crate::config::load() {
+            Ok(loaded) => (
+                loaded.settings.input_device.clone(),
+                loaded.settings.output_device.clone(),
+            ),
+            Err(_) => (None, None),
+        };
+
+        let mut engine = VoiceEngine::start(
+            &host,
+            port,
+            &jwt,
+            bitrate_bps,
+            saved_input,
+            saved_output,
+        )
+        .map_err(napi::Error::from_reason)?;
 
         // Restore persisted mute/deafen so the user's preference is
         // sticky across voice sessions.

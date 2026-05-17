@@ -79,6 +79,8 @@ pub fn run_audio_pipeline(
     socket: Arc<UdpSocket>,
     sender_id: String,
     voice_bitrate_bps: i32,
+    initial_input_device: Option<String>,
+    initial_output_device: Option<String>,
     control_rx: std::sync::mpsc::Receiver<ControlMessage>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
 ) {
@@ -131,7 +133,7 @@ pub fn run_audio_pipeline(
 
     let (mut output_stream, mut output_sample_rate) = match build_output_stream(
         &host,
-        None, // system default on startup
+        initial_output_device.as_deref(),
         Arc::clone(&peers),
         Arc::clone(&stream_cons),
         Arc::clone(&stream_stereo),
@@ -140,17 +142,28 @@ pub fn run_audio_pipeline(
     ) {
         Some((stream, rate, _ch)) => (Some(stream), rate),
         None => {
+            // Stay alive in a degraded "no output" state instead of
+            // killing the pipeline thread. The user might still be
+            // able to recover by picking a device from Settings →
+            // Audio, which sends a SetOutputDevice ControlMessage —
+            // but only if we're still here to receive it. Without
+            // this, the engine becomes a zombie holding a control_tx
+            // whose receiver was dropped, and the device picker has
+            // no effect (silently swallowed SendError). Output stays
+            // None; control loop runs; hot-swap to a real device on
+            // user action is identical to any other SetOutputDevice
+            // flow.
             let _ = event_tx.send(VoiceEvent::Error(
-                "No audio output device found".to_string(),
+                "No audio output device — pick one in Settings → Audio".to_string(),
             ));
-            return;
+            (None, SAMPLE_RATE)
         }
     };
 
     // ── Build input (capture) stream ──────────────────────────────────────────
     let (mut input_stream_opt, mut input_sample_rate): (Option<cpal::Stream>, u32) = match build_input_stream(
         &host,
-        None, // system default on startup
+        initial_input_device.as_deref(),
         Arc::clone(&capture_prod),
     ) {
         Some((s, rate)) => (Some(s), rate),
