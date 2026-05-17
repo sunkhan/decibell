@@ -755,7 +755,7 @@ function DocumentItem({
       onClick={onDownload}
       disabled={!url}
       title={`Download ${attachment.filename}`}
-      className={`flex max-w-[420px] items-center gap-3 rounded-xl border border-border bg-bg-secondary p-3 text-left transition-colors hover:bg-bg-light ${
+      className={`flex max-w-[400px] items-center gap-3 rounded-xl border border-border bg-bg-secondary p-3 text-left transition-colors hover:bg-bg-light ${
         url ? "" : "pointer-events-none opacity-50"
       }`}
     >
@@ -779,7 +779,7 @@ function DocumentItem({
 
 function PurgedTombstone({ attachment }: { attachment: Attachment }) {
   return (
-    <div className="flex max-w-[420px] items-center gap-2 rounded-xl border border-dashed border-border bg-bg-secondary/50 p-3 text-[12px] italic text-text-muted">
+    <div className="flex max-w-[400px] items-center gap-2 rounded-xl border border-dashed border-border bg-bg-secondary/50 p-3 text-[12px] italic text-text-muted">
       <span className="truncate">
         {attachment.filename || "Attachment"} (deleted by retention policy)
       </span>
