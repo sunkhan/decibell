@@ -92,6 +92,14 @@ export default function ConversationSidebar() {
                       isOnline ? "bg-success" : "bg-text-muted"
                     }`}
                   />
+                  {conv.unreadCount > 0 && (
+                    <div
+                      className="absolute -top-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full border-[2px] border-bg-dark bg-error text-[9px] font-bold leading-none text-white"
+                      title={`${conv.unreadCount} unread`}
+                    >
+                      {conv.unreadCount > 99 ? "99+" : conv.unreadCount}
+                    </div>
+                  )}
                 </div>
                 <div className="min-w-0 flex-1 text-left">
                   <div className="truncate font-channel text-[13px] font-medium">

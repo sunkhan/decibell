@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { DmMessage } from "../types";
+import { useUiStore } from "./uiStore";
 
 interface DmConversation {
   username: string;
@@ -104,7 +105,16 @@ export const useDmStore = create<DmState>((set) => ({
       const timestamp = parseInt(message.timestamp, 10);
       const time = isNaN(timestamp) ? Date.now() : timestamp * 1000;
 
-      const isViewing = state.activeDmUser === otherUser;
+      // "Actively viewing" requires BOTH: the active DM peer is this
+      // sender AND the active view is the DM view. activeDmUser is
+      // sticky across view changes (same intentional pattern as
+      // activeServerId), so checking it alone falsely treats DMs
+      // from your last-opened peer as "you're reading them" while
+      // you're in a community server / home / browse view — and the
+      // unread badge never bumps. Reading activeView from uiStore
+      // here keeps the gate in one place.
+      const isInDmView = useUiStore.getState().activeView === "dm";
+      const isViewing = isInDmView && state.activeDmUser === otherUser;
       const baseUnread = existing?.unreadCount ?? 0;
       // Don't bump unread for self-sent or for the conversation
       // we're actively reading. DmChatPanel's mark-read effect
