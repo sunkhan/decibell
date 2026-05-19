@@ -23,29 +23,21 @@ export function usePasteToAttach() {
       const dt = e.clipboardData;
       if (!dt) return;
 
-      // Pull every file-kind entry. Cross-app pastes (Firefox/Chrome
-      // copy-image, screenshot tools) often only surface the image
-      // via dt.items[*].getAsFile(); dt.files can be empty in those
-      // cases even though items[i].kind === "file" is true. Take the
-      // union so screenshots (which DO populate files) and browser
-      // image copies (which sometimes don't) both work.
+      // Pull every file-kind entry from `dt.items`. We intentionally
+      // do NOT also iterate `dt.files`: it's spec-defined as a view
+      // over the same file-kind items, so unioning would double-count
+      // each clipboard entry. (Object-identity de-dup doesn't save us
+      // here because `getAsFile()` and `FileList.item()` are both
+      // specified to return fresh File instances on each call.)
+      // Cross-app image pastes (Firefox/Chrome copy-image, screenshot
+      // tools) all surface their image as a file-kind item, so
+      // items-only is sufficient.
       const files: File[] = [];
-      const seen = new Set<File>();
       for (let i = 0; i < dt.items.length; i++) {
         const item = dt.items[i];
         if (item.kind !== "file") continue;
         const f = item.getAsFile();
-        if (f && !seen.has(f)) {
-          seen.add(f);
-          files.push(f);
-        }
-      }
-      for (let i = 0; i < dt.files.length; i++) {
-        const f = dt.files.item(i);
-        if (f && !seen.has(f)) {
-          seen.add(f);
-          files.push(f);
-        }
+        if (f) files.push(f);
       }
       if (files.length === 0) return;
 
