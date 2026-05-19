@@ -11,36 +11,54 @@ function generatePendingId(): string {
 /// the clipboard contains a File (image data, copied media), enqueue
 /// the upload bound to the active channel.
 ///
-/// Chromium's ClipboardEvent.clipboardData.files is populated for
-/// image-bearing pastes (screenshots, copy-image-from-browser). No
-/// permission prompt, no second IPC.
+/// We read from `dt.items` rather than `dt.files`: cross-app image
+/// pastes (e.g. Firefox right-click → Copy Image) often expose the
+/// image as a file-kind item but leave `dt.files` empty, and we want
+/// Discord-style behaviour where the image always wins over the
+/// accompanying source URL / HTML that the browser also stuffs onto
+/// the clipboard.
 export function usePasteToAttach() {
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
       const dt = e.clipboardData;
-      if (!dt || dt.files.length === 0) return;
+      if (!dt) return;
 
-      // Only intercept paste when the active focus isn't a text input
-      // expecting normal text paste. A paste in the message textarea
-      // gets the file too, but we should check `items` for text/plain
-      // and let the textarea keep its own paste behaviour for text.
-      const target = e.target as HTMLElement | null;
-      const isTextField =
-        target?.tagName === "INPUT" ||
-        target?.tagName === "TEXTAREA" ||
-        target?.isContentEditable;
-      // If there's text content too, prefer the text paste — only
-      // intercept "pure file" paste events.
-      const hasText = Array.from(dt.items).some((i) => i.kind === "string");
-      if (isTextField && hasText) return;
+      // Pull every file-kind entry. Cross-app pastes (Firefox/Chrome
+      // copy-image, screenshot tools) often only surface the image
+      // via dt.items[*].getAsFile(); dt.files can be empty in those
+      // cases even though items[i].kind === "file" is true. Take the
+      // union so screenshots (which DO populate files) and browser
+      // image copies (which sometimes don't) both work.
+      const files: File[] = [];
+      const seen = new Set<File>();
+      for (let i = 0; i < dt.items.length; i++) {
+        const item = dt.items[i];
+        if (item.kind !== "file") continue;
+        const f = item.getAsFile();
+        if (f && !seen.has(f)) {
+          seen.add(f);
+          files.push(f);
+        }
+      }
+      for (let i = 0; i < dt.files.length; i++) {
+        const f = dt.files.item(i);
+        if (f && !seen.has(f)) {
+          seen.add(f);
+          files.push(f);
+        }
+      }
+      if (files.length === 0) return;
 
       const chat = useChatStore.getState();
       if (!chat.activeServerId || !chat.activeChannelId) return;
 
+      // We have at least one file — intercept the paste so the
+      // editor doesn't also insert the accompanying text/HTML
+      // representation (Firefox's copy-image ships an image + the
+      // source page's URL; without preventDefault the URL would be
+      // inserted into the input on top of our attachment chip).
       e.preventDefault();
-      for (let i = 0; i < dt.files.length; i++) {
-        const file = dt.files.item(i);
-        if (!file) continue;
+      for (const file of files) {
         // Pasted files (clipboard images / screenshots) have no
         // backing disk path, so chunkSourceFromFile falls back to a
         // Blob URL. The bytes already live in Chromium's clipboard
