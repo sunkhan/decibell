@@ -6,6 +6,7 @@ import {
   registerProtocol,
   registerAttachmentProtocol,
   registerFileProtocol,
+  registerCustomSchemes,
 } from "./protocol";
 import { initAddon, shutdownAddon } from "./addon";
 import { registerWindowHandlers, attachWindowEvents } from "./window";
@@ -325,6 +326,16 @@ initMainSentry({
   enabled: cachedSentryBoot.enabled,
   installId: cachedSentryBoot.installId,
 });
+
+// Register our custom schemes AFTER initMainSentry. See the long
+// comment on registerCustomSchemes() in protocol.ts for why ordering
+// matters: Sentry's init replaces the privileged-scheme list and then
+// installs an append-Proxy — registering before it wipes our schemes
+// out of the renderer-fetch capable set, breaking chunk-read uploads
+// in release builds (dev sidesteps the issue because Sentry skips init
+// when !app.isPackaged). Still on the first tick before whenReady, so
+// Electron is happy.
+registerCustomSchemes();
 
 function createWindow(): void {
   // App icon: in dev we live under <repo>/electron-client and the

@@ -46,42 +46,54 @@ export function cacheDir(): string {
 
 // Custom schemes need to be registered as privileged BEFORE app.whenReady()
 // for them to support fetch, streaming, CSP bypass, etc.
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: SCHEME,
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      stream: true,
-      bypassCSP: false,
+//
+// Caller MUST invoke this AFTER `initMainSentry()` runs (in packaged
+// builds). @sentry/electron's Sentry.init() internally calls
+// `protocol.registerSchemesAsPrivileged([sentry-ipc])` which overwrites
+// any prior call, and only THEN installs a Proxy that appends sentry-
+// ipc to subsequent user registrations. If we register first, Sentry
+// blows our schemes away — silently in `<img src>`/`<video src>` paths
+// (they go through Chromium's HTML resource loader and don't need the
+// privileged-list entry), but visibly in renderer `fetch()` paths,
+// which fail with "URL scheme 'decibell-file' is not supported". The
+// chunk-read upload loop in chunkSource.ts is the canonical victim.
+// In dev, initMainSentry early-returns on `!app.isPackaged` and the
+// Proxy never gets installed, so prior-vs-after-Sentry doesn't matter
+// — which is why this only manifests in release builds.
+export function registerCustomSchemes(): void {
+  protocol.registerSchemesAsPrivileged([
+    {
+      scheme: SCHEME,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        stream: true,
+        bypassCSP: false,
+      },
     },
-  },
-  {
-    scheme: ATTACHMENT_SCHEME,
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      stream: true,
-      bypassCSP: false,
+    {
+      scheme: ATTACHMENT_SCHEME,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        stream: true,
+        bypassCSP: false,
+      },
     },
-  },
-  {
-    scheme: FILE_SCHEME,
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      stream: true,
-      bypassCSP: false,
-      // No `corsEnabled` — leaving it off matches the other schemes
-      // and means renderer fetch() doesn't get a CORS preflight that
-      // would fail without an explicit Access-Control-Allow-Origin
-      // response. The privileged scheme is already trusted.
+    {
+      scheme: FILE_SCHEME,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        stream: true,
+        bypassCSP: false,
+      },
     },
-  },
-]);
+  ]);
+}
 
 /// Authenticated proxy to community-server attachment GETs. Renderer
 /// references images/audio/video as
