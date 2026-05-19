@@ -17,6 +17,9 @@ use crate::net::connection::build_packet;
 use crate::net::proto::{packet, *};
 use crate::state;
 
+#[cfg(target_os = "windows")]
+use crate::media::{capture_audio_wasapi, source_id as source_id_parser, AudioStreamEngine};
+
 #[napi(object)]
 pub struct StartScreenShareArgs {
     pub server_id: String,
@@ -51,7 +54,17 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
             napi::Error::from_reason("Must be in a voice channel to share screen")
         })?;
         let media_socket = voice.media_socket();
+        // Stream audio rides the voice UDP socket — receivers demux by
+        // packet type (STREAM_AUDIO = 6) in the main voice pipeline.
+        // Grabbed alongside media_socket so we don't have to re-borrow
+        // `voice` after `s.video_engine = ...` consumes the mutable
+        // state. Sender ID gets a second clone because VideoEngine::start
+        // takes ownership of the first.
+        #[cfg(target_os = "windows")]
+        let voice_socket = voice.voice_socket();
         let sender_id = voice.sender_id().to_string();
+        #[cfg(target_os = "windows")]
+        let audio_sender_id = sender_id.clone();
         let self_username = s
             .username
             .clone()
@@ -130,6 +143,79 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                     args.channel_id.clone(),
                 )
                 .map_err(napi::Error::from_reason)?;
+
+            // Stream audio: spin up the WASAPI capture + Opus encode +
+            // packetise pipeline alongside the video engine. Branch on
+            // source_id — `screen:N:0` means full-display capture (we
+            // exclude our own process tree so participants don't hear
+            // themselves echoed back); `window:HWND:0` means per-window
+            // capture (resolve HWND → owning PID via
+            // GetWindowThreadProcessId, then INCLUDE that process tree).
+            //
+            // Audio failures here are non-fatal: video keeps streaming,
+            // the warning logs and the user gets a stream with no
+            // audio. Better than the whole start failing because of an
+            // audio device hiccup.
+            if args.share_audio {
+                let frame_rx_opt: Option<std::sync::mpsc::Receiver<crate::media::capture::AudioFrame>> =
+                    match source_id_parser::parse(source_id) {
+                        Ok(source_id_parser::CaptureTarget::Monitor(_)) => {
+                            match capture_audio_wasapi::start_system_audio_capture() {
+                                Ok(rx) => {
+                                    eprintln!("[stream-audio] system loopback (exclude decibell) started");
+                                    Some(rx)
+                                }
+                                Err(e) => {
+                                    eprintln!("[stream-audio] system loopback failed: {}", e);
+                                    None
+                                }
+                            }
+                        }
+                        Ok(source_id_parser::CaptureTarget::Window(hwnd_u64)) => {
+                            // Resolve the window's owning process so the
+                            // process-loopback target matches what the
+                            // user is actually streaming.
+                            let pid: Option<u32> = unsafe {
+                                use windows::Win32::Foundation::HWND;
+                                use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+                                let hwnd = HWND(hwnd_u64 as *mut _);
+                                let mut pid: u32 = 0;
+                                let tid = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                                if tid == 0 || pid == 0 { None } else { Some(pid) }
+                            };
+                            match pid {
+                                Some(p) => match capture_audio_wasapi::start_process_audio_capture(p) {
+                                    Ok(rx) => {
+                                        eprintln!("[stream-audio] per-window loopback for pid={} started", p);
+                                        Some(rx)
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[stream-audio] per-window loopback failed: {}", e);
+                                        None
+                                    }
+                                },
+                                None => {
+                                    eprintln!("[stream-audio] could not resolve PID from HWND={}", hwnd_u64);
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[stream-audio] source_id parse error: {:?}", e);
+                            None
+                        }
+                    };
+
+                if let Some(frame_rx) = frame_rx_opt {
+                    let audio_engine = AudioStreamEngine::start(
+                        frame_rx,
+                        voice_socket,
+                        audio_sender_id,
+                        args.audio_bitrate_kbps,
+                    );
+                    s.audio_stream_engine = Some(audio_engine);
+                }
+            }
         }
         #[cfg(not(target_os = "windows"))]
         {

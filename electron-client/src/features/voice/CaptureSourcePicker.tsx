@@ -127,6 +127,7 @@ export default function CaptureSourcePicker({
         fps: streamSettings.fps,
         bitrateKbps: streamSettings.videoBitrateKbps,
         shareAudio: streamSettings.shareAudio,
+        audioBitrateKbps: streamSettings.audioBitrateKbps,
         serverId,
         channelId,
         useNativeSize: streamSettings.resolution === "source",

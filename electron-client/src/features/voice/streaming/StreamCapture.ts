@@ -55,6 +55,12 @@ export interface StreamCaptureOptions {
   fps: number;
   bitrateKbps: number;
   shareAudio: boolean;
+  /// Stream-audio Opus bitrate in kbps. Honored on the Windows native
+  /// path (passed straight through to start_screen_share). On Linux /
+  /// macOS the picker's separate start_screen_share invoke is the
+  /// one that carries this — set both sites to the same value from
+  /// the user's stream settings so there's no skew.
+  audioBitrateKbps: number;
   /// Routing for the periodic JPEG thumbnail the streamer broadcasts
   /// to non-watching voice-channel participants (so they see a poster
   /// image on the participant tile instead of a black square). The
@@ -147,7 +153,7 @@ export class StreamCapture {
         height: this.opts.height,
         videoBitrateKbps: this.opts.bitrateKbps,
         shareAudio: this.opts.shareAudio,
-        audioBitrateKbps: 128,
+        audioBitrateKbps: this.opts.audioBitrateKbps,
         initialCodec: this.codec,
         enforcedCodec: this.codec,
       });

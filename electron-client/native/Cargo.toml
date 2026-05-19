@@ -81,6 +81,10 @@ windows = { version = "0.61", features = [
     # IPropertyStore — return type of IMMDevice::OpenPropertyStore.
     # Without this feature the method itself isn't exposed.
     "Win32_UI_Shell_PropertiesSystem",
+    # GetWindowThreadProcessId for resolving a Chromium-desktopCapturer
+    # window HWND to the owning process PID, so stream-audio capture can
+    # target that process tree via WASAPI Process Loopback.
+    "Win32_UI_WindowsAndMessaging",
     # Windows Graphics Capture + D3D11 surfaces for the native HW
     # encoder pipeline (see docs/superpowers/specs/2026-05-12-windows-
     # native-ffmpeg-encoder-design.md §5-§6).
