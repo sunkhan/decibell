@@ -17,6 +17,22 @@ use napi::JsFunction;
 /// requiring the EventBus or paths waits for `init(opts, bus)`.
 #[napi::module_init]
 fn on_load() {
+    // Electron sets this child process's stdout/stderr pipes to
+    // non-blocking. Under bursty native logging (e.g. the encoder thread's
+    // per-keyframe diagnostics) the pipe fills, writes return EAGAIN, and
+    // `eprintln!`/`println!` PANIC ("failed printing to stderr: Resource
+    // temporarily unavailable") — which silently killed the encode thread.
+    // Clear O_NONBLOCK so writes block briefly (Electron drains the pipe)
+    // instead of panicking. Unix-only; harmless if the flag's already clear.
+    #[cfg(unix)]
+    unsafe {
+        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags != -1 {
+                libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+            }
+        }
+    }
     state::init();
 }
 

@@ -16,6 +16,7 @@ import { invoke } from "../../../lib/ipc";
 import { VideoCodec } from "../../../types";
 import { toast } from "../../../stores/toastStore";
 import { videoCodecHumanName } from "../../../utils/codecMap";
+import { isNativeEncodeActive } from "../../../utils/encoderProbe";
 
 /// Frame shape emitted to local self-preview subscribers. Matches the
 /// wire `StreamFrame` shape minus `username` — local frames have only
@@ -61,6 +62,10 @@ export interface StreamCaptureOptions {
   /// one that carries this — set both sites to the same value from
   /// the user's stream settings so there's no skew.
   audioBitrateKbps: number;
+  /// Embed the mouse cursor in the captured video (native paths honour
+  /// it via the portal/WGC cursor option). Passed through to
+  /// start_screen_share.
+  includeCursor: boolean;
   /// Routing for the periodic JPEG thumbnail the streamer broadcasts
   /// to non-watching voice-channel participants (so they see a poster
   /// image on the participant tile instead of a black square). The
@@ -104,6 +109,11 @@ export class StreamCapture {
   private wantKeyframe = true;
   private frameCounter = 0;
   private stopping = false;
+  /// True once start() took the native (start_screen_share) branch —
+  /// Windows always, Linux when a HW encoder was probed. Drives stop() to
+  /// tear the native engine down via stop_screen_share regardless of which
+  /// caller invoked stop, so no error path can orphan a running encoder.
+  private usedNative = false;
   private encoderConfig: VideoEncoderConfig | null = null;
   private buildEncoder: (() => VideoEncoder) | null = null;
   private preferHardwareTried = false;
@@ -133,15 +143,19 @@ export class StreamCapture {
   /// can announce them to the server with truthful values (the
   /// pre-capture dims passed via opts are best-guess).
   async start(): Promise<{ width: number; height: number }> {
-    // Windows: skip the renderer-encoded path entirely. Native owns
-    // capture (WGC) + color convert (D3D11VP) + encode (FFmpeg
-    // NVENC/AMF) + UDP + self-preview fan-out. We just kick off
-    // `start_screen_share` with the picked source id and let native
-    // run until `stop()` is called. Frames flow back to the renderer
-    // for self-preview through the same per-stream Buffer TSFN used
-    // for remote streams (StreamVideoPlayer subscribes by username).
-    if (window.decibell.platform === "win32") {
-      if (!this.opts.sourceId) {
+    // Native encode path: skip the renderer-encoded path entirely.
+    // Native owns capture + color convert + encode (FFmpeg NVENC/AMF on
+    // Windows; NVENC/VAAPI on Linux) + UDP + self-preview fan-out. We
+    // kick off `start_screen_share` and let native run until `stop()`.
+    // Frames flow back for self-preview through the same per-stream
+    // Buffer TSFN as remote streams (StreamVideoPlayer subscribes by
+    // username). On Windows the source id comes from the in-app picker
+    // (WGC opens it); on Linux it's omitted — the XDG portal's own
+    // dialog selects the source.
+    if (isNativeEncodeActive()) {
+      this.usedNative = true;
+      const isWindows = window.decibell.platform === "win32";
+      if (isWindows && !this.opts.sourceId) {
         throw new Error("sourceId required on Windows");
       }
       await invoke("start_screen_share", {
@@ -156,9 +170,14 @@ export class StreamCapture {
         audioBitrateKbps: this.opts.audioBitrateKbps,
         initialCodec: this.codec,
         enforcedCodec: this.codec,
+        // Linux opt-in flag that routes start_screen_share to the native
+        // PipeWire/portal capture + FFmpeg encode path. Ignored on
+        // Windows (always native).
+        nativeEncode: !isWindows,
+        includeCursor: this.opts.includeCursor,
       });
       console.log(
-        `[StreamCapture/win] native pipeline started at ${this.opts.width}x${this.opts.height}@${this.opts.fps} (codec=${this.codec})`,
+        `[StreamCapture/native] pipeline started at ${this.opts.width}x${this.opts.height}@${this.opts.fps} (codec=${this.codec}, platform=${window.decibell.platform})`,
       );
       return { width: this.opts.width, height: this.opts.height };
     }
@@ -683,12 +702,18 @@ export class StreamCapture {
   async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
-    // Windows native pipeline: nothing renderer-side to tear down —
-    // never set up `reader`/`encoder`/`stream`. Caller (UserPanel /
-    // CaptureSourcePicker / onCaptureEnded) already invokes
-    // stop_screen_share, which calls VideoEngine::stop() → joins
-    // the WGC capture + encoder threads in native.
-    if (window.decibell.platform === "win32") {
+    // Native pipeline (Windows always; Linux when a HW encoder was used):
+    // nothing renderer-side to tear down (no reader/encoder/stream). Drive
+    // stop_screen_share here so the native engine is torn down even on
+    // error paths that call stopActiveStream() without a separate
+    // stop_screen_share (e.g. a start failure). It's idempotent, so the
+    // external stop callers (UserPanel / VoicePanel / leave handler /
+    // onCaptureEnded) invoking it too is harmless.
+    if (this.usedNative) {
+      invoke("stop_screen_share", {
+        serverId: this.opts.serverId,
+        channelId: this.opts.channelId,
+      }).catch(() => {});
       return;
     }
     try {

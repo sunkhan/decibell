@@ -7,6 +7,7 @@ import {
   subscribeLocalFrames,
   activeStreamCapture,
 } from "./streaming/StreamCapture";
+import { isNativeEncodeActive } from "../../utils/encoderProbe";
 
 interface Props {
   streamerUsername: string;
@@ -309,14 +310,16 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     // out every active watcher's frames; multiple players coexist by
     // each filtering independently).
     //
-    // Windows native pipeline is the exception: there is no
-    // renderer-side encoder, so subscribeLocalFrames is silent there.
-    // The native encoder thread fans into the same stream_frame TSFN
-    // remote streams use (keyed by our local username), so we
-    // subscribe through that path for own-stream too.
-    const isWindowsNative = window.decibell.platform === "win32";
+    // Native pipelines (Windows always; Linux when a HW encoder was used)
+    // are the exception: there is no renderer-side WebCodecs encoder, so
+    // subscribeLocalFrames is silent. The native encoder thread fans into
+    // the same stream_frame TSFN remote streams use (keyed by our local
+    // username), so own-stream self-preview subscribes through that path
+    // too. (Non-native Linux/macOS still paint from the renderer encoder's
+    // local fan-out via subscribeLocalFrames.)
+    const isNative = isNativeEncodeActive();
     let unsubscribe: () => void;
-    if (isOwnStream && !isWindowsNative) {
+    if (isOwnStream && !isNative) {
       unsubscribe = subscribeLocalFrames((frame) => {
         handleFrame(
           frame.data,
@@ -356,12 +359,12 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       // request_keyframe command on native or let the natural PLI
       // delay stand.
       //
-      // Windows native self-preview takes the wire-shaped path too
-      // (handled above by isOwnStream && isWindowsNative falling into
-      // this branch). For that case we DO have a way to force a
-      // keyframe — invoke the force_keyframe IPC which signals the
-      // native encoder thread's AtomicBool.
-      if (isOwnStream && isWindowsNative) {
+      // Native self-preview (Windows + Linux) takes the wire-shaped path
+      // too (isOwnStream && isNative falls into this branch). For that we
+      // force an immediate keyframe via the force_keyframe IPC, which
+      // signals the native encoder thread's AtomicBool — so the decoder
+      // doesn't sit on a spinner until the next ~2s GOP boundary.
+      if (isOwnStream && isNative) {
         invoke("force_keyframe", {}).catch(() => {});
       }
     }

@@ -83,6 +83,18 @@ linux:
   category: Network
   artifactName: ${productName}-${version}-${arch}.${ext}
 
+# Debian/Ubuntu runtime deps for the native stream encoder's static
+# FFmpeg (VAAPI stack + opus). electron-builder auto-adds the standard
+# Electron deps (gtk/nss/…) but not these. NVENC's libnvidia-encode comes
+# from the NVIDIA driver at runtime (dlopened), so it's not listed.
+deb:
+  depends:
+    - libva2
+    - libva-drm2
+    - libvdpau1
+    - libdrm2
+    - libopus0
+
 # electron-builder's pacman target (built via fpm) inherits the deb
 # dependency list by default, which contains Debian package names like
 # `http-parser`, `re2`, `snappy` that don't exist in Arch's repos and
@@ -100,6 +112,13 @@ pacman:
     - libsecret
     - pipewire
     - libpipewire
+    # Native stream encoder (static FFmpeg) runtime libs: VAAPI stack +
+    # opus. NVENC's libnvidia-encode is dlopened from the NVIDIA driver
+    # (nvidia-utils) at runtime — not linked, so not a hard depend.
+    - libva
+    - libvdpau
+    - libdrm
+    - opus
 
 win:
   target: nsis

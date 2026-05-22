@@ -369,6 +369,21 @@ export interface StartScreenShareArgs {
    * handles the picker via xdg-desktop-portal / ScreenCaptureKit.
    */
   sourceId?: string
+  /**
+   * Linux-only opt-in: when true, native PipeWire/portal capture +
+   * FFmpeg (NVENC/VAAPI) encoding runs instead of the renderer's
+   * WebCodecs path (the renderer skips getDisplayMedia + VideoEncoder
+   * and does not pump `send_video_frame`). The renderer sets this when
+   * a hardware encoder was probed and the user hasn't opted out.
+   * Ignored on Windows (always native) and macOS (always renderer).
+   */
+  nativeEncode?: boolean
+  /**
+   * Embed the mouse cursor in the captured video. Honoured by the
+   * native capture paths (XDG portal cursor_mode / wlr overlay_cursor /
+   * Windows WGC SetIsCursorCaptureEnabled). Defaults to true (show).
+   */
+  includeCursor?: boolean
 }
 export declare function startScreenShare(args: StartScreenShareArgs): Promise<void>
 export interface StopScreenShareArgs {
@@ -496,8 +511,10 @@ export interface NativeEncoderCap {
   encoderName: string
 }
 /**
- * Runs the native FFmpeg encoder probe. Windows-only. Returns the
- * list of (codec, vendor) tuples that successfully opened.
+ * Linux native FFmpeg encoder probe. Test-opens each codec's candidate
+ * encoders (NVENC → VAAPI → software) and reports which work. Hardware
+ * codecs advertise a 4K/60 ceiling; software libx264 is capped lower
+ * since CPU 4K encoding isn't realtime.
  */
 export declare function probeNativeEncoders(): Array<NativeEncoderCap>
 /**

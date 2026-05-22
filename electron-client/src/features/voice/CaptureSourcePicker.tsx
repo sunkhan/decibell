@@ -6,6 +6,7 @@ import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
 import { VideoCodec, type CaptureSource } from "../../types";
 import { playSound } from "../../utils/sounds";
 import { startActiveStream, stopActiveStream } from "./streaming/StreamCapture";
+import { isNativeEncodeActive } from "../../utils/encoderProbe";
 
 interface Props {
   serverId: string;
@@ -128,6 +129,7 @@ export default function CaptureSourcePicker({
         bitrateKbps: streamSettings.videoBitrateKbps,
         shareAudio: streamSettings.shareAudio,
         audioBitrateKbps: streamSettings.audioBitrateKbps,
+        includeCursor: streamSettings.includeCursor,
         serverId,
         channelId,
         useNativeSize: streamSettings.resolution === "source",
@@ -152,11 +154,13 @@ export default function CaptureSourcePicker({
       // encoder, already running via stream.start() above, will start
       // pumping send_video_frame in a few ms).
       //
-      // On Windows we skip this — stream.start() already invoked
-      // start_screen_share to spin up the native capture + encoder
-      // pipeline AND send the StartStreamReq. Calling it again would
-      // bounce off the "Already sharing screen" guard in native.
-      if (window.decibell.platform !== "win32") {
+      // On the native path (Windows always; Linux when a HW encoder was
+      // probed) stream.start() ALREADY invoked start_screen_share to spin
+      // up native capture + encode AND send the StartStreamReq — calling
+      // it again bounces off the "Already sharing screen" guard. Only the
+      // renderer-WebCodecs path (Linux without native, macOS) needs this
+      // separate call to create the VideoEngine sender + announce.
+      if (!isNativeEncodeActive()) {
         try {
           await invoke("start_screen_share", {
             serverId,
@@ -169,6 +173,7 @@ export default function CaptureSourcePicker({
             audioBitrateKbps: streamSettings.audioBitrateKbps,
             initialCodec: codec,
             enforcedCodec: streamSettings.enforcedCodec || 0,
+            includeCursor: streamSettings.includeCursor,
           });
         } catch (e) {
           await stopActiveStream();
@@ -387,27 +392,57 @@ export default function CaptureSourcePicker({
         </div>
 
         <div className="flex items-center justify-between px-5 py-4">
-          <label className="flex cursor-pointer items-center gap-3 text-[13px] text-text-secondary">
-            <button
-              onClick={() =>
-                setStreamSettings({ shareAudio: !streamSettings.shareAudio })
-              }
-              className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
-                streamSettings.shareAudio
-                  ? "border-accent bg-accent shadow-[0_0_8px_rgba(56,143,255,0.22)]"
-                  : "border-border bg-bg-lighter"
-              }`}
-            >
-              <div
-                className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
+          <div className="flex flex-col gap-2">
+            <label className="flex cursor-pointer items-center gap-3 text-[13px] text-text-secondary">
+              <button
+                onClick={() =>
+                  setStreamSettings({ shareAudio: !streamSettings.shareAudio })
+                }
+                className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
                   streamSettings.shareAudio
-                    ? "translate-x-[18px] bg-white"
-                    : "translate-x-[3px] bg-text-muted"
+                    ? "border-accent bg-accent shadow-[0_0_8px_rgba(56,143,255,0.22)]"
+                    : "border-border bg-bg-lighter"
                 }`}
-              />
-            </button>
-            Share audio
-          </label>
+              >
+                <div
+                  className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
+                    streamSettings.shareAudio
+                      ? "translate-x-[18px] bg-white"
+                      : "translate-x-[3px] bg-text-muted"
+                  }`}
+                />
+              </button>
+              {/* Linux shares whole-system audio (minus our own output) for
+                  both window and monitor captures — the portal can't isolate
+                  a single window's app audio — so the label is explicit. */}
+              {window.decibell.platform === "linux"
+                ? "Share system audio"
+                : "Share audio"}
+            </label>
+            <label className="flex cursor-pointer items-center gap-3 text-[13px] text-text-secondary">
+              <button
+                onClick={() =>
+                  setStreamSettings({
+                    includeCursor: !streamSettings.includeCursor,
+                  })
+                }
+                className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
+                  streamSettings.includeCursor
+                    ? "border-accent bg-accent shadow-[0_0_8px_rgba(56,143,255,0.22)]"
+                    : "border-border bg-bg-lighter"
+                }`}
+              >
+                <div
+                  className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
+                    streamSettings.includeCursor
+                      ? "translate-x-[18px] bg-white"
+                      : "translate-x-[3px] bg-text-muted"
+                  }`}
+                />
+              </button>
+              Show cursor
+            </label>
+          </div>
           <button
             onClick={handleGoLive}
             disabled={starting || (NEEDS_CUSTOM_PICKER && !pickedSourceId)}

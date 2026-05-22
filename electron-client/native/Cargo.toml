@@ -56,6 +56,25 @@ memfd = "0.6"
 # runtime instead of failing at link.
 khronos-egl = { version = "6", features = ["dynamic"] }
 gl = "0.14"
+# libcuda.so.1 is dlopened at runtime (gpu_interop) so a machine without
+# the NVIDIA driver still loads the addon and falls back to VAAPI/sw.
+libloading = "0.8"
+# STATICALLY-linked FFmpeg 8 (NVENC/VAAPI, LGPL). The `static` feature is
+# essential on Linux: Electron bundles Chromium's libffmpeg.so which
+# exports decode-only FFmpeg symbols into the global scope, shadowing a
+# dynamically-linked system libavcodec so the encoder probe finds nothing
+# (and RTLD_DEEPBIND, which would fix the symbols, breaks CUDA's cuInit).
+# Static-linking makes libav* symbols internal to the .node — nothing for
+# Electron's libffmpeg to interpose — and NVENC's libnvidia-encode loads
+# normally. Build the static libs first: `scripts/build-ffmpeg-linux.sh`,
+# then build with PKG_CONFIG_PATH=vendor/ffmpeg/lib/pkgconfig (FFMPEG_DIR
+# unset) so pkg-config resolves the transitive deps (libva/libdrm) from
+# Libs.private. See docs/superpowers/specs/2026-05-15-linux-native-ffmpeg-
+# encoder-design.md.
+ffmpeg-next = { version = "8", features = ["static"] }
+# Stream thumbnail JPEG encoder (Linux native capture path), same crate
+# the Windows encoder thread uses.
+jpeg-encoder = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # windows-core must be a direct dep so the `#[implement]` macro's

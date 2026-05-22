@@ -45,6 +45,22 @@ pub mod video_processor;
 pub mod bitrate_preset;
 #[cfg(target_os = "windows")]
 pub mod encoder;
+// Linux native FFmpeg encoder (NVENC/VAAPI/libx264) — the Linux
+// counterpart to the Windows `encoder` module.
+#[cfg(target_os = "linux")]
+pub mod encoder_linux;
+// DMA-BUF → CUDA / VAAPI zero-copy interop for the Linux native pipeline.
+#[cfg(target_os = "linux")]
+pub mod gpu_interop;
+// PipeWire / XDG-portal screen capture (universal Linux capture path).
+#[cfg(target_os = "linux")]
+pub mod capture_pipewire;
+// wlr-screencopy fast path for wlroots compositors (Hyprland/Niri/Sway).
+#[cfg(target_os = "linux")]
+pub mod capture_wlr_screencopy;
+// Linux encode loop wiring capture → encoder → VideoSender + self-preview.
+#[cfg(target_os = "linux")]
+pub mod encoder_thread_linux;
 #[cfg(target_os = "windows")]
 pub mod capture_wgc;
 #[cfg(target_os = "windows")]
@@ -574,6 +590,16 @@ pub struct VideoEngine {
     /// and ships them to the community server. Aborted on stop_windows.
     #[cfg(target_os = "windows")]
     win_thumbnail_task: Option<tokio::task::JoinHandle<()>>,
+    /// Linux-only: native PipeWire/portal capture + FFmpeg
+    /// (NVENC/VAAPI/libx264) encode thread, the keyframe flag handle, and
+    /// the thumbnail drain task. None unless the native path is engaged
+    /// (the renderer WebCodecs path stays as the fallback).
+    #[cfg(target_os = "linux")]
+    lin_encoder_thread: Option<encoder_thread_linux::LinuxEncoderThread>,
+    #[cfg(target_os = "linux")]
+    lin_force_keyframe: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(target_os = "linux")]
+    lin_thumbnail_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl VideoEngine {
@@ -603,6 +629,12 @@ impl VideoEngine {
             win_force_keyframe: None,
             #[cfg(target_os = "windows")]
             win_thumbnail_task: None,
+            #[cfg(target_os = "linux")]
+            lin_encoder_thread: None,
+            #[cfg(target_os = "linux")]
+            lin_force_keyframe: None,
+            #[cfg(target_os = "linux")]
+            lin_thumbnail_task: None,
         }
     }
 
@@ -621,6 +653,7 @@ impl VideoEngine {
         height: u32,
         fps: u32,
         bitrate_kbps: u32,
+        include_cursor: bool,
         server_id: String,
         channel_id: String,
     ) -> Result<(u32, u32), String> {
@@ -653,7 +686,7 @@ impl VideoEngine {
             }
         });
 
-        let capture = capture_wgc::Capture::start(&gpu, target, tx)?;
+        let capture = capture_wgc::Capture::start(&gpu, target, tx, include_cursor)?;
         let encoder_thread = encoder_thread::EncoderThread::start(
             gpu,
             encoder_thread::EncoderThreadConfig {
@@ -707,6 +740,110 @@ impl VideoEngine {
         }
     }
 
+    /// Linux-only: spin up the native PipeWire/portal capture + FFmpeg
+    /// (NVENC/VAAPI/libx264) encode pipeline. `source_id` is forwarded to
+    /// the capture backend; the portal path ignores it (its own dialog
+    /// picks the source), the wlr path parses it. Returns the encoded
+    /// (width, height) the renderer announces to the server.
+    #[cfg(target_os = "linux")]
+    pub async fn start_linux(
+        &mut self,
+        source_id: &str,
+        target_codec: caps::CodecKind,
+        codec_wire_byte: u8,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate_kbps: u32,
+        include_cursor: bool,
+        server_id: String,
+        channel_id: String,
+    ) -> Result<(u32, u32), String> {
+        let config = capture::CaptureConfig {
+            target_fps: fps,
+            target_width: width,
+            target_height: height,
+            include_cursor,
+        };
+
+        // wlr-screencopy is the fast path on wlroots compositors
+        // (Hyprland/Niri/Sway); everywhere else (KDE/GNOME) we go through
+        // the XDG ScreenCast portal, whose own dialog handles selection.
+        let capture = if capture_wlr_screencopy::is_available()
+            && capture_wlr_screencopy::owns_source(source_id)
+        {
+            log::info!("[video-linux] capture via wlr-screencopy");
+            capture_wlr_screencopy::start_capture(source_id, &config).await?
+        } else {
+            log::info!("[video-linux] capture via xdg-desktop-portal");
+            capture_pipewire::start_capture(source_id, &config).await?
+        };
+
+        // Thumbnail drain task — identical pattern to start_windows:
+        // bounded depth=1, so a slow server drops thumbs rather than
+        // back-pressuring the encoder thread.
+        let (thumb_tx, mut thumb_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let thumb_server_id = server_id.clone();
+        let thumb_channel_id = channel_id.clone();
+        let thumb_task = tokio::spawn(async move {
+            while let Some(jpeg) = thumb_rx.recv().await {
+                let state_arc = crate::state::shared();
+                let s = state_arc.lock().await;
+                let Some(client) = s.communities.get(&thumb_server_id) else {
+                    continue;
+                };
+                if let Err(e) = client.send_stream_thumbnail(&thumb_channel_id, &jpeg).await {
+                    log::warn!("[video-linux/thumb] server send failed: {e}");
+                }
+            }
+        });
+
+        let thread = encoder_thread_linux::LinuxEncoderThread::start(
+            encoder_thread_linux::LinuxEncoderThreadConfig {
+                target_codec,
+                codec_wire_byte,
+                width,
+                height,
+                fps,
+                bitrate_kbps,
+                local_username: self.self_username.clone(),
+                video_sender: self.sender.clone(),
+                thumbnail_tx: thumb_tx,
+            },
+            capture,
+        )?;
+
+        self.lin_force_keyframe = Some(thread.force_keyframe_handle());
+        self.lin_encoder_thread = Some(thread);
+        self.lin_thumbnail_task = Some(thumb_task);
+        let _ = (server_id, channel_id);
+        Ok((width, height))
+    }
+
+    /// Linux-only: tear down the native pipeline. The encode thread's
+    /// stop() joins it (which drops its capture receivers, ending the
+    /// capture threads); dropping the thumbnail Sender ends the drain
+    /// task naturally, with abort() as belt-and-suspenders.
+    #[cfg(target_os = "linux")]
+    pub fn stop_linux(&mut self) {
+        log::info!("[video-linux] stop_linux: tearing down native pipeline");
+        if let Some(t) = self.lin_encoder_thread.take() {
+            t.stop();
+        }
+        if let Some(h) = self.lin_thumbnail_task.take() {
+            h.abort();
+        }
+        self.lin_force_keyframe = None;
+    }
+
+    /// Linux-only: nudge the encode thread to emit a keyframe.
+    #[cfg(target_os = "linux")]
+    pub fn request_keyframe(&self) {
+        if let Some(flag) = &self.lin_force_keyframe {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// Send a single encoded chunk produced by the renderer's
     /// `WebCodecs.VideoEncoder`. The renderer-side `StreamCapture`
     /// also paints a self-preview locally from raw `VideoFrame`s, so
@@ -734,6 +871,8 @@ impl VideoEngine {
         // onto a dead socket.
         #[cfg(target_os = "windows")]
         self.stop_windows();
+        #[cfg(target_os = "linux")]
+        self.stop_linux();
         video_pipeline::clear_frame_sink();
     }
 }

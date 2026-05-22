@@ -12,6 +12,7 @@
 
 import { VideoCodec, type CodecCapability } from "../types";
 import { invoke } from "../lib/ipc";
+import { probeDecoders } from "./decoderProbe";
 
 // Match decoderProbe ceilings + caps.rs::encode_ceiling so the LCD
 // picker doesn't downgrade 120 fps streamers when a viewer joins.
@@ -56,15 +57,52 @@ const PROBE_CONFIGS: { codec: VideoCodec; webCodecsString: string }[] = [
 // still answering `supported: true`.
 const LOCAL_STORAGE_KEY = "decibell.encoder_caps.v6";
 
+// Linux native-encode opt-in. Default on so NVIDIA users get NVENC out of
+// the box; flip to "0" (e.g. via Settings, or devtools for A/B testing the
+// native vs WebCodecs path) to force the renderer WebCodecs path.
+const LINUX_NATIVE_KEY = "decibell.linux_native_encode";
+function linuxNativeEncodeEnabled(): boolean {
+  return localStorage.getItem(LINUX_NATIVE_KEY) !== "0";
+}
+
+// Set by probeEncoders(): true when the active encode path is the native
+// FFmpeg pipeline (always on Windows; on Linux only when enabled AND a
+// hardware encoder was actually probed). StreamCapture reads this to
+// decide whether to skip WebCodecs and drive start_screen_share natively.
+let nativeEncodeActive = false;
+
+/// Whether the native FFmpeg encode pipeline owns this session (vs the
+/// renderer's WebCodecs path). Reflects the most recent probeEncoders().
+export function isNativeEncodeActive(): boolean {
+  return nativeEncodeActive;
+}
+
 export async function probeEncoders(force = false): Promise<CodecCapability[]> {
-  // On Windows we use the native FFmpeg probe instead of the WebCodecs
-  // probe — Chromium's WebCodecs encoder factory caps at 30 fps in this
-  // Castlabs build, so its `isConfigSupported` results are misleading
-  // (it claims HW support at 720p30 but won't allocate at 1080p60).
+  const platform = typeof window !== "undefined" ? window.decibell?.platform : undefined;
+
+  // Windows: always native. Chromium's WebCodecs encoder factory caps at
+  // 30 fps in this Castlabs build, so its `isConfigSupported` results are
+  // misleading (claims HW support at 720p30 but won't allocate 1080p60).
   // Native FFmpeg talks directly to NVENC/AMF/QSV and reports the truth.
-  if (typeof window !== "undefined" && window.decibell?.platform === "win32") {
-    return await probeWindowsNativeEncoders(force);
+  if (platform === "win32") {
+    nativeEncodeActive = true;
+    return await probeNativeEncoders(force);
   }
+
+  // Linux: native is opt-in and only taken if a hardware encoder is
+  // actually present (Chromium WebCodecs doesn't reach NVENC on Linux —
+  // that's the whole reason for the native path). If the native probe
+  // finds no HW encoder, fall through to the WebCodecs probe so AMD/Intel
+  // (where WebCodecs VAAPI works) and GPU-less boxes still stream.
+  if (platform === "linux" && linuxNativeEncodeEnabled()) {
+    const native = await probeNativeEncoders(force);
+    if (native.some((c) => c.hardware)) {
+      nativeEncodeActive = true;
+      return native;
+    }
+    console.log("[encoderProbe] no native HW encoder on Linux — using WebCodecs");
+  }
+  nativeEncodeActive = false;
 
   let caps: CodecCapability[] | null = null;
 
@@ -186,7 +224,7 @@ export async function probeEncoders(force = false): Promise<CodecCapability[]> {
 /// the populated list. Without this, opening Settings while a stream
 /// is running would overwrite the in-memory caps with an empty list
 /// and the codec picker would collapse back to "Auto" only.
-async function probeWindowsNativeEncoders(
+async function probeNativeEncoders(
   force: boolean,
 ): Promise<CodecCapability[]> {
   const NATIVE_KEY = "decibell.native_encoder_caps.v1";
@@ -237,6 +275,29 @@ async function probeWindowsNativeEncoders(
       console.error("[encoderProbe/native] probe failed:", e);
       return [];
     }
+  }
+
+  // Only offer codecs the local Chromium can also DECODE. The native
+  // encoder can produce HEVC (NVENC), but Chromium on Linux can't decode
+  // it — so the streamer's own self-preview (and same-platform watchers)
+  // would get a codec they can't render (infinite spinner). Intersecting
+  // with the decoder probe drops HEVC on Linux while keeping H.264 + AV1
+  // (AV1 supersedes HEVC anyway); on Windows, where HEVC decode exists,
+  // nothing is dropped.
+  try {
+    const decodable = new Set((await probeDecoders()).map((c) => c.codec));
+    const usable = caps.filter((c) => decodable.has(c.codec));
+    if (usable.length < caps.length) {
+      const dropped = caps
+        .filter((c) => !decodable.has(c.codec))
+        .map((c) => c.codec);
+      console.log(
+        `[encoderProbe/native] dropping encode codec(s) not locally decodable: ${dropped.join(", ")}`,
+      );
+      caps = usable;
+    }
+  } catch (e) {
+    console.warn("[encoderProbe/native] decode-intersect skipped:", e);
   }
   // Ship to native's encoder_caps slot every boot — both fresh probes
   // and cache-hit code paths. AppState.encoder_caps is in-memory and

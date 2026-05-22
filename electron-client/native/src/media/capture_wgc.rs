@@ -44,6 +44,7 @@ impl Capture {
         gpu: &GpuDevice,
         target: CaptureTarget,
         tx: mpsc::SyncSender<ID3D11Texture2D>,
+        include_cursor: bool,
     ) -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let frames_dropped = Arc::new(AtomicU32::new(0));
@@ -105,11 +106,12 @@ fn run_capture_thread(
         .CreateCaptureSession(&item)
         .map_err(|e| format!("CreateCaptureSession: {e:?}"))?;
 
-    // Yellow border off. Cursor on. Both are best-effort — older Win10
-    // builds don't expose IGraphicsCaptureSession3 so SetIsBorderRequired
-    // returns Err there and we keep the border (acceptable degradation).
+    // Yellow border off. Cursor per the user's toggle. Both are best-
+    // effort — older Win10 builds don't expose IGraphicsCaptureSession3 so
+    // SetIsBorderRequired returns Err there and we keep the border
+    // (acceptable degradation).
     let _ = session.SetIsBorderRequired(false);
-    let _ = session.SetIsCursorCaptureEnabled(true);
+    let _ = session.SetIsCursorCaptureEnabled(include_cursor);
 
     session
         .StartCapture()

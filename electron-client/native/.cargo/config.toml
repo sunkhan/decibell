@@ -1,0 +1,15 @@
+# Point pkg-config at our statically-built FFmpeg (scripts/build-ffmpeg-
+# linux.sh → vendor/ffmpeg) so ffmpeg-sys-next's pkg-config probe resolves
+# OUR static libav* (with the `static` feature on ffmpeg-next) instead of
+# the system shared libs. This is what lets the addon escape Electron's
+# bundled libffmpeg.so symbol interposition — see the ffmpeg-next comment
+# in Cargo.toml and docs/superpowers/specs/2026-05-15-linux-native-ffmpeg-
+# encoder-design.md.
+#
+# `relative = true` resolves against this file's package dir (native/), so
+# the path is native/vendor/ffmpeg/lib/pkgconfig regardless of cwd.
+# Harmless on Windows (uses vcpkg, not pkg-config) and macOS (no FFmpeg
+# dep). pkg-config still searches its default system dirs for everything
+# else (opus, alsa, …) — this only prepends our FFmpeg .pc files.
+[env]
+PKG_CONFIG_PATH = { value = "vendor/ffmpeg/lib/pkgconfig", relative = true }

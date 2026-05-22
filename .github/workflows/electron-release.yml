@@ -77,7 +77,15 @@ jobs:
             libclang-dev \
             pkg-config \
             fakeroot \
-            libarchive-tools
+            libarchive-tools \
+            nasm \
+            libva-dev \
+            libdrm-dev
+        # NOTE: no system libav*-dev — the addon static-links its own
+        # FFmpeg (built by native/scripts/build-ffmpeg-linux.sh, invoked
+        # automatically via ensure-ffmpeg-linux.cjs during build:native).
+        # That escapes Electron's libffmpeg.so symbol interposition. nasm
+        # is for FFmpeg's x86 asm; libva-dev/libdrm-dev for --enable-vaapi.
         working-directory: .
 
       # Windows runners have MSVC, CMake, and the SDK pre-installed.
@@ -125,6 +133,18 @@ jobs:
       - name: Install native npm deps
         run: npm ci
         working-directory: electron-client/native
+
+      # Cache the statically-built FFmpeg so we don't rebuild it (~5-10
+      # min) every run. Keyed on the build script + the FFmpeg/nv-headers
+      # versions it pins, so a bump invalidates the cache. ensure-ffmpeg-
+      # linux.cjs (run during build:native) skips the build if these libs
+      # are already present.
+      - name: Cache static FFmpeg (Linux)
+        if: matrix.target_label == 'linux'
+        uses: actions/cache@v4
+        with:
+          path: electron-client/native/vendor/ffmpeg
+          key: ffmpeg-static-${{ runner.os }}-${{ hashFiles('electron-client/native/scripts/build-ffmpeg-linux.sh') }}
 
       - name: Build native addon
         env:

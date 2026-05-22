@@ -40,12 +40,26 @@ pub struct StartScreenShareArgs {
     /// Optional on Linux/macOS where the renderer's getDisplayMedia
     /// handles the picker via xdg-desktop-portal / ScreenCaptureKit.
     pub source_id: Option<String>,
+    /// Linux-only opt-in: when true, native PipeWire/portal capture +
+    /// FFmpeg (NVENC/VAAPI) encoding runs instead of the renderer's
+    /// WebCodecs path (the renderer skips getDisplayMedia + VideoEncoder
+    /// and does not pump `send_video_frame`). The renderer sets this when
+    /// a hardware encoder was probed and the user hasn't opted out.
+    /// Ignored on Windows (always native) and macOS (always renderer).
+    pub native_encode: Option<bool>,
+    /// Embed the mouse cursor in the captured video. Honoured by the
+    /// native capture paths (XDG portal cursor_mode / wlr overlay_cursor /
+    /// Windows WGC SetIsCursorCaptureEnabled). Defaults to true (show).
+    pub include_cursor: Option<bool>,
 }
 
 #[napi]
 pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> {
     let state_arc = state::shared();
-    let (write_tx, data) = {
+    // Linux-only: renderer opted into native encoding. Drives whether we
+    // defer engine storage to attach the capture pipeline after the lock.
+    let native_linux = cfg!(target_os = "linux") && args.native_encode.unwrap_or(false);
+    let (write_tx, data, deferred_engine) = {
         let mut s = state_arc.lock().await;
         if s.video_engine.is_some() {
             return Err(napi::Error::from_reason("Already sharing screen"));
@@ -139,6 +153,7 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                     args.height,
                     args.fps,
                     args.video_bitrate_kbps,
+                    args.include_cursor.unwrap_or(true),
                     args.server_id.clone(),
                     args.channel_id.clone(),
                 )
@@ -219,20 +234,130 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
         }
         #[cfg(not(target_os = "windows"))]
         {
-            // source_id is ignored on Linux/macOS; renderer's
-            // getDisplayMedia handles the picker there.
+            // source_id is ignored on the renderer (WebCodecs) path;
+            // getDisplayMedia / ScreenCaptureKit handle the picker there.
             let _ = args.source_id;
         }
 
-        s.video_engine = Some(engine);
-        (tx, pkt)
+        // Linux native encode is attached AFTER the lock (below) because
+        // the portal dialog blocks on the user — so defer storing the
+        // engine. Every other path stores it here under the lock.
+        if native_linux {
+            (tx, pkt, Some(engine))
+        } else {
+            s.video_engine = Some(engine);
+            (tx, pkt, None)
+        }
     };
 
+    // Linux native: bring up the portal + capture pipeline FIRST, then
+    // announce. We must not hold the AppState lock across the portal
+    // dialog (it blocks on the user for seconds), and we must not announce
+    // before the pipeline is live — otherwise watchers (and the streamer's
+    // own UI) see a "streaming" presence with no frames, and a portal
+    // cancel would leave a dangling StartStreamReq. On start_linux failure
+    // the owned `engine` drops here → Drop clears the frame sink.
+    #[cfg(target_os = "linux")]
+    if let Some(mut engine) = deferred_engine {
+        let (target_codec, wire_byte) = resolve_linux_codec(args.initial_codec);
+        engine
+            .start_linux(
+                args.source_id.as_deref().unwrap_or(""),
+                target_codec,
+                wire_byte,
+                args.width,
+                args.height,
+                args.fps,
+                args.video_bitrate_kbps,
+                args.include_cursor.unwrap_or(true),
+                args.server_id.clone(),
+                args.channel_id.clone(),
+            )
+            .await
+            .map_err(napi::Error::from_reason)?;
+
+        // Stream audio (Linux): whole-system loopback minus Decibell's own
+        // output, so watchers don't hear themselves. We use the same
+        // system capture for BOTH window and monitor captures — the XDG
+        // portal hands us an opaque video node with no window/PID/app
+        // identity, so per-window app audio isn't reachable (unlike
+        // Windows WASAPI process-loopback). Non-fatal: a capture failure
+        // logs and the video stream keeps running without audio.
+        let audio_engine = if args.share_audio {
+            // Grab the voice socket + sender id under a brief lock, then
+            // release it before the (~100 ms) PipeWire capture + null-sink
+            // setup so we don't stall other commands.
+            let voice_ctx = {
+                let s = state_arc.lock().await;
+                s.voice_engine
+                    .as_ref()
+                    .map(|v| (v.voice_socket(), v.sender_id().to_string()))
+            };
+            match voice_ctx {
+                Some((voice_socket, audio_sender_id)) => {
+                    match crate::media::capture_audio_pipewire::start_system_audio_capture() {
+                        Ok((frame_rx, cleanup)) => {
+                            log::info!("[video-linux] sharing system audio (loopback minus self)");
+                            Some(crate::media::AudioStreamEngine::start(
+                                frame_rx,
+                                voice_socket,
+                                audio_sender_id,
+                                args.audio_bitrate_kbps,
+                                Some(cleanup),
+                            ))
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "[video-linux] system audio capture failed ({e}); video continues without audio"
+                            );
+                            None
+                        }
+                    }
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err(napi::Error::from_reason("Connection closed")),
+            Err(_) => return Err(napi::Error::from_reason("Send timed out")),
+        }
+        let mut s = state_arc.lock().await;
+        s.video_engine = Some(engine);
+        if let Some(a) = audio_engine {
+            s.audio_stream_engine = Some(a);
+        }
+        return Ok(());
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = deferred_engine;
+
+    // Renderer-WebCodecs path (Linux without native, macOS) and Windows
+    // native (engine already stored under the lock): announce now.
     match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
         Err(_) => Err(napi::Error::from_reason("Send timed out")),
     }
+}
+
+/// Map the renderer's requested VideoCodec byte to a Linux encoder codec
+/// + the wire byte stamped on packets. 0 ("auto") and 1 both resolve to
+/// hardware H.264 (h264_nvenc/vaapi, the most broadly decodable). The
+/// encoder itself falls back through its candidate list per codec.
+#[cfg(target_os = "linux")]
+fn resolve_linux_codec(initial: u8) -> (crate::media::caps::CodecKind, u8) {
+    use crate::media::caps::CodecKind;
+    let kind = match initial {
+        2 => CodecKind::H264Sw,
+        3 => CodecKind::H265,
+        4 => CodecKind::Av1,
+        _ => CodecKind::H264Hw,
+    };
+    (kind, kind as u8)
 }
 
 #[napi(object)]
@@ -246,8 +371,17 @@ pub async fn stop_screen_share(args: StopScreenShareArgs) -> napi::Result<()> {
     let state_arc = state::shared();
     let (write_tx, data) = {
         let mut s = state_arc.lock().await;
+        // Setting video_engine = None runs VideoEngine::Drop → stop()
+        // → stop_linux()/stop_windows() (joins the native threads) +
+        // clear_frame_sink. Idempotent: StreamCapture.stop() and the
+        // external stop callers may both invoke this; if we weren't
+        // streaming, return without a duplicate StopStreamReq.
+        let was_streaming = s.video_engine.is_some();
         s.video_engine = None;
         s.audio_stream_engine = None;
+        if !was_streaming {
+            return Ok(());
+        }
         let client = s.communities.get(&args.server_id).ok_or_else(|| {
             napi::Error::from_reason(format!(
                 "Not connected to community {}",
@@ -651,7 +785,7 @@ pub async fn send_stream_thumbnail(args: SendStreamThumbnailArgs) -> napi::Resul
 
 /// Native encoder capability returned by `probe_native_encoders`.
 /// Same shape the renderer's WebCodecs probe used to populate.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[napi(object)]
 pub struct NativeEncoderCap {
     /// VideoCodec wire id (1=H264_HW, 3=H265, 4=AV1).
@@ -684,6 +818,33 @@ pub fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
         .collect())
 }
 
+/// Linux native FFmpeg encoder probe. Test-opens each codec's candidate
+/// encoders (NVENC → VAAPI → software) and reports which work. Hardware
+/// codecs advertise a 4K/60 ceiling; software libx264 is capped lower
+/// since CPU 4K encoding isn't realtime.
+#[cfg(target_os = "linux")]
+#[napi]
+pub fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
+    Ok(crate::media::encoder_linux::probe_caps()
+        .into_iter()
+        .map(|(kind, name, hardware)| {
+            let (max_width, max_height, max_fps) = if hardware {
+                (3840, 2160, 60)
+            } else {
+                (1920, 1080, 30)
+            };
+            NativeEncoderCap {
+                codec: kind as i32,
+                max_width,
+                max_height,
+                max_fps,
+                hardware,
+                encoder_name: name,
+            }
+        })
+        .collect())
+}
+
 /// Force the next encoded frame on the active stream (if any) to be a
 /// keyframe. Wired from the renderer's `keyframe_requested` event.
 /// On Linux/macOS this is a no-op stub — the renderer's WebCodecs
@@ -691,7 +852,10 @@ pub fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
 /// `keyFrame: true` option.
 #[napi]
 pub async fn force_keyframe() -> napi::Result<()> {
-    #[cfg(target_os = "windows")]
+    // Native pipelines (Windows always; Linux when native_encode is on)
+    // own keyframe forcing. On macOS / the Linux renderer-fallback path
+    // this is a no-op — WebCodecs forces keyframes JS-side.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         let state_arc = state::shared();
         let guard = state_arc.lock().await;

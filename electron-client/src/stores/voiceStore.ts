@@ -77,6 +77,7 @@ interface VoiceState {
     shareAudio: boolean;
     audioBitrateKbps: 128 | 192;
     enforcedCodec: VideoCodec;
+    includeCursor: boolean;
   };
   setWatching: (username: string | null) => void;
   addWatching: (username: string) => void;
@@ -196,6 +197,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     shareAudio: false,
     audioBitrateKbps: 128,
     enforcedCodec: 0 as VideoCodec,
+    includeCursor: true,
   },
   setWatching: (username) => set({ watching: username }),
   addWatching: (username) =>

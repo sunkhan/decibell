@@ -21,6 +21,14 @@ depends=(
     'libsecret'
     'pipewire'
     'libpipewire'
+    # Native stream encoder (static FFmpeg) runtime libs: VAAPI stack + opus.
+    'libva'
+    'libvdpau'
+    'libdrm'
+    'opus'
+)
+optdepends=(
+    'nvidia-utils: NVENC hardware video encoding for screen sharing (libnvidia-encode, dlopened at runtime)'
 )
 provides=('decibell')
 conflicts=('decibell' 'decibell-git')

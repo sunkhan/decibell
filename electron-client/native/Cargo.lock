@@ -563,6 +563,7 @@ dependencies = [
  "jpeg-encoder",
  "khronos-egl",
  "libc",
+ "libloading",
  "log",
  "memfd",
  "napi",
