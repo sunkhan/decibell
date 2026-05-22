@@ -54,7 +54,9 @@ impl Capture {
         let thread = std::thread::Builder::new()
             .name("decibell-wgc-capture".to_string())
             .spawn(move || {
-                if let Err(e) = run_capture_thread(&device, target, tx, stop_t, drops_t) {
+                if let Err(e) =
+                    run_capture_thread(&device, target, tx, stop_t, drops_t, include_cursor)
+                {
                     log::error!("[capture_wgc] thread error: {e}");
                 }
             })
@@ -84,6 +86,7 @@ fn run_capture_thread(
     tx: mpsc::SyncSender<ID3D11Texture2D>,
     stop: Arc<AtomicBool>,
     drops: Arc<AtomicU32>,
+    include_cursor: bool,
 ) -> Result<(), String> {
     let item = open_capture_item(target)?;
     let winrt_device = winrt_device_from_d3d11(d3d11_device)?;
