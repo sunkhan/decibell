@@ -385,7 +385,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       {!hasFirstFrame && (
         <div className="absolute inset-0 flex items-center justify-center">
           <svg
-            className="h-8 w-8 animate-spin text-[#00bfff]"
+            className="h-8 w-8 animate-spin text-accent"
             viewBox="0 0 24 24"
             fill="none"
           >

@@ -3,6 +3,15 @@ use std::time::{Duration, Instant};
 
 use super::video_packet::{UdpVideoPacket, UdpFecPacket, UDP_MAX_PAYLOAD};
 
+/// Wire-safety caps. `total_packets` comes straight off an untrusted
+/// datagram and sizes the reassembly buffer (`total_packets *
+/// UDP_MAX_PAYLOAD`); unbounded, a single crafted packet allocates ~75 MB.
+/// A 4K IDR is well under 2048 fragments, so anything larger is malformed.
+/// `MAX_FRAMES_IN_PROGRESS` bounds concurrent partial frames so a peer
+/// spraying distinct frame_ids can't grow memory without bound.
+const MAX_PACKETS_PER_FRAME: u16 = 2048;
+const MAX_FRAMES_IN_PROGRESS: usize = 64;
+
 /// A reassembled video frame ready for decoding.
 #[derive(Debug, Clone)]
 pub struct ReassembledFrame {
@@ -32,10 +41,20 @@ struct FecGroup {
 }
 
 /// Tracks in-progress frame assembly.
+///
+/// Hot-path layout: one contiguous buffer with a fixed 1400-byte slot
+/// per packet index, plus a per-slot size table. The old shape
+/// (HashMap<u16, Vec<u8>>) allocated a Vec per fragment (~2000/sec at
+/// 1080p60) and then re-copied everything through an unsized Vec in
+/// reassemble(); this does one allocation per *frame* and compacts in
+/// place when the frame completes.
 struct FrameAssembly {
     total_packets: u16,
-    received: HashMap<u16, Vec<u8>>, // packet_index -> payload
-    payload_sizes: HashMap<u16, u16>, // packet_index -> payload_size
+    /// Slot i occupies buf[i*UDP_MAX_PAYLOAD ..][..sizes[i]].
+    buf: Vec<u8>,
+    /// Per-slot payload size; None = not received yet.
+    sizes: Vec<Option<u16>>,
+    received_count: u16,
     is_keyframe: bool,
     created_at: Instant,
     streamer_username: String,
@@ -47,24 +66,63 @@ struct FrameAssembly {
 }
 
 impl FrameAssembly {
+    fn new(total_packets: u16, is_keyframe: bool, streamer_username: String, codec: u8) -> Self {
+        FrameAssembly {
+            total_packets,
+            buf: vec![0u8; total_packets as usize * UDP_MAX_PAYLOAD],
+            sizes: vec![None; total_packets as usize],
+            received_count: 0,
+            is_keyframe,
+            created_at: Instant::now(),
+            streamer_username,
+            codec,
+            fec_groups: Vec::new(),
+            fec_recovered: false,
+        }
+    }
+
+    /// Store a fragment. Out-of-range indices and oversized payloads
+    /// are dropped (wire safety); duplicates (NACK retransmits)
+    /// overwrite their slot without double-counting.
+    fn insert(&mut self, index: u16, payload: &[u8]) {
+        if index >= self.total_packets || payload.len() > UDP_MAX_PAYLOAD {
+            return;
+        }
+        let start = index as usize * UDP_MAX_PAYLOAD;
+        self.buf[start..start + payload.len()].copy_from_slice(payload);
+        if self.sizes[index as usize]
+            .replace(payload.len() as u16)
+            .is_none()
+        {
+            self.received_count += 1;
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.received_count == self.total_packets
+    }
+
     /// Try FEC recovery across all stored FEC groups. Returns true if a packet
     /// was recovered and the frame is now complete.
     fn try_fec_recovery(&mut self) -> bool {
         if self.fec_recovered || self.fec_groups.is_empty() {
             return false;
         }
-        if self.received.len() == self.total_packets as usize {
+        if self.is_complete() {
             return false; // already complete
         }
 
         for fec in &self.fec_groups {
-            let group_end = (fec.group_start + fec.group_count).min(self.total_packets);
+            // saturating_add: group_start/group_count are untrusted u16s;
+            // a crafted FEC packet could overflow the sum (release wraps,
+            // debug panics) and corrupt the recovery window.
+            let group_end = fec.group_start.saturating_add(fec.group_count).min(self.total_packets);
 
             // Count missing packets in this FEC group
             let mut missing_count = 0u16;
             let mut missing_idx = 0u16;
             for i in fec.group_start..group_end {
-                if !self.received.contains_key(&i) {
+                if self.sizes[i as usize].is_none() {
                     missing_count += 1;
                     missing_idx = i;
                 }
@@ -83,42 +141,52 @@ impl FrameAssembly {
                 if i == missing_idx {
                     continue;
                 }
-                if let Some(pkt_data) = self.received.get(&i) {
+                if let Some(size) = self.sizes[i as usize] {
                     // XOR payload bytes (received packets are variable-length,
                     // but FEC was computed with zero-padding to UDP_MAX_PAYLOAD)
-                    for (j, &b) in pkt_data.iter().enumerate() {
+                    let start = i as usize * UDP_MAX_PAYLOAD;
+                    for (j, &b) in self.buf[start..start + size as usize].iter().enumerate() {
                         recovered[j] ^= b;
                     }
-                    if let Some(&pkt_size) = self.payload_sizes.get(&i) {
-                        recovered_size ^= pkt_size;
-                    }
+                    recovered_size ^= size;
                 }
             }
 
             // Validate recovered size
             if recovered_size as usize <= UDP_MAX_PAYLOAD {
-                let data = recovered[..recovered_size as usize].to_vec();
-                self.payload_sizes.insert(missing_idx, recovered_size);
-                self.received.insert(missing_idx, data);
+                let start = missing_idx as usize * UDP_MAX_PAYLOAD;
+                self.buf[start..start + recovered_size as usize]
+                    .copy_from_slice(&recovered[..recovered_size as usize]);
+                self.sizes[missing_idx as usize] = Some(recovered_size);
+                self.received_count += 1;
                 self.fec_recovered = true;
-                eprintln!("[video-recv] FEC recovered packet {} (frame has {}/{} now)",
-                    missing_idx, self.received.len(), self.total_packets);
-                return self.received.len() == self.total_packets as usize;
+                log::debug!("[video-recv] FEC recovered packet {} (frame has {}/{} now)",
+                    missing_idx, self.received_count, self.total_packets);
+                return self.is_complete();
             }
         }
 
         false
     }
 
-    /// Reassemble the complete frame data in packet order.
-    fn reassemble(&self) -> Vec<u8> {
-        let mut data = Vec::new();
-        for i in 0..self.total_packets {
-            if let Some(chunk) = self.received.get(&i) {
-                data.extend_from_slice(chunk);
+    /// Compact the slot buffer into contiguous frame data, in packet
+    /// order, reusing the buffer itself (copy_within is a memmove and
+    /// every destination offset is <= its source offset).
+    fn into_data(mut self) -> Vec<u8> {
+        let mut write = 0usize;
+        for i in 0..self.total_packets as usize {
+            let size = match self.sizes[i] {
+                Some(s) => s as usize,
+                None => continue,
+            };
+            let start = i * UDP_MAX_PAYLOAD;
+            if start != write {
+                self.buf.copy_within(start..start + size, write);
             }
+            write += size;
         }
-        data
+        self.buf.truncate(write);
+        self.buf
     }
 }
 
@@ -150,44 +218,60 @@ impl VideoReceiver {
         let frame_id = { pkt.frame_id };
         let packet_index = { pkt.packet_index };
         let total_packets = { pkt.total_packets };
-        let is_keyframe = { pkt.is_keyframe };
-        let payload_size = { pkt.payload_size };
-        let username = pkt.sender_username();
-
+        let is_keyframe = pkt.is_keyframe();
         let pkt_codec = { pkt.codec };
-        let frame = self.frames_in_progress.entry(frame_id).or_insert_with(|| {
-            FrameAssembly {
-                total_packets,
-                received: HashMap::new(),
-                payload_sizes: HashMap::new(),
-                is_keyframe,
-                created_at: Instant::now(),
-                streamer_username: username.clone(),
-                codec: pkt_codec,
-                fec_groups: Vec::new(),
-                fec_recovered: false,
+
+        // Wire safety: a frame with zero packets or an index outside
+        // its own declared range is malformed.
+        if total_packets == 0 || packet_index >= total_packets {
+            return None;
+        }
+
+        // Wire safety: cap the declared fragment count so a single crafted
+        // packet can't force a huge (~75 MB) reassembly-buffer allocation.
+        if total_packets > MAX_PACKETS_PER_FRAME {
+            return None;
+        }
+
+        // Bound concurrent partial frames: evict the oldest so a peer
+        // spraying distinct frame_ids can't grow memory without bound.
+        if !self.frames_in_progress.contains_key(&frame_id)
+            && self.frames_in_progress.len() >= MAX_FRAMES_IN_PROGRESS
+        {
+            let oldest = self
+                .frames_in_progress
+                .iter()
+                .min_by_key(|(_, a)| a.created_at)
+                .map(|(&id, _)| id);
+            if let Some(oldest) = oldest {
+                self.frames_in_progress.remove(&oldest);
+                self.nack_tracking.retain(|&(fid, _), _| fid != oldest);
             }
+        }
+
+        let frame = self.frames_in_progress.entry(frame_id).or_insert_with(|| {
+            // sender_username() allocates — only pay it when a new
+            // assembly is created (per frame), not per fragment.
+            FrameAssembly::new(total_packets, is_keyframe, pkt.sender_username(), pkt_codec)
         });
 
-        frame.received.insert(packet_index, pkt.payload_data().to_vec());
-        frame.payload_sizes.insert(packet_index, payload_size);
+        frame.insert(packet_index, pkt.payload_data());
 
         // Check if frame is complete (directly or after FEC recovery)
-        let complete = frame.received.len() == frame.total_packets as usize
-            || frame.try_fec_recovery();
+        let complete = frame.is_complete() || frame.try_fec_recovery();
 
         if complete {
-            let assembly = self.frames_in_progress.remove(&frame_id).unwrap();
+            let mut assembly = self.frames_in_progress.remove(&frame_id).unwrap();
             self.last_complete_frame_id = Some(frame_id);
             self.nack_tracking.retain(|&(fid, _), _| fid != frame_id);
 
             return Some(ReassembledFrame {
                 frame_id,
-                data: assembly.reassemble(),
                 is_keyframe: assembly.is_keyframe,
-                streamer_username: assembly.streamer_username,
+                streamer_username: std::mem::take(&mut assembly.streamer_username),
                 codec: assembly.codec,
                 description: None,
+                data: assembly.into_data(),
             });
         }
 
@@ -211,17 +295,17 @@ impl VideoReceiver {
         });
 
         if frame.try_fec_recovery() {
-            let assembly = self.frames_in_progress.remove(&frame_id).unwrap();
+            let mut assembly = self.frames_in_progress.remove(&frame_id).unwrap();
             self.last_complete_frame_id = Some(frame_id);
             self.nack_tracking.retain(|&(fid, _), _| fid != frame_id);
 
             return Some(ReassembledFrame {
                 frame_id,
-                data: assembly.reassemble(),
                 is_keyframe: assembly.is_keyframe,
-                streamer_username: assembly.streamer_username,
+                streamer_username: std::mem::take(&mut assembly.streamer_username),
                 codec: assembly.codec,
                 description: None,
+                data: assembly.into_data(),
             });
         }
 
@@ -248,7 +332,7 @@ impl VideoReceiver {
             if assembly.created_at.elapsed() > self.nack_timeout {
                 let mut missing = Vec::new();
                 for i in 0..assembly.total_packets {
-                    if !assembly.received.contains_key(&i) {
+                    if assembly.sizes[i as usize].is_none() {
                         let key = (frame_id, i);
                         // Initial entry uses a past timestamp so the first NACK fires immediately
                         let entry = self.nack_tracking.entry(key).or_insert((now - self.nack_timeout - Duration::from_millis(1), 0));
@@ -282,7 +366,7 @@ impl VideoReceiver {
         let mut dropped = 0u32;
         self.frames_in_progress.retain(|_frame_id, assembly| {
             if assembly.created_at.elapsed() >= cutoff {
-                if assembly.received.len() < assembly.total_packets as usize {
+                if assembly.received_count < assembly.total_packets {
                     dropped += 1;
                 }
                 false // remove
@@ -291,7 +375,7 @@ impl VideoReceiver {
             }
         });
         if dropped > 0 {
-            eprintln!("[video-recv] Dropped {} incomplete frames", dropped);
+            log::info!("[video-recv] Dropped {} incomplete frames", dropped);
         }
         // Also prune stale NACK tracking entries
         self.nack_tracking.retain(|&(fid, _), _| self.frames_in_progress.contains_key(&fid));
@@ -458,5 +542,156 @@ mod tests {
         assert_eq!(&frame.data[0..4], data0.as_slice());
         assert_eq!(&frame.data[4..8], data1.as_slice());
         assert_eq!(&frame.data[8..12], data2.as_slice());
+    }
+
+    // ── Wire-condition tests for the contiguous-slot reassembly ──
+    // Self-preview never exercises this path (frames go encoder→TSFN
+    // directly), so these simulate what a real watcher session sees:
+    // big shuffled keyframes, NACK-retransmit duplicates, malformed
+    // headers, and FEC recovery of the short tail fragment.
+
+    /// Deterministic Fisher–Yates with an inline LCG (no rand dep).
+    fn shuffle<T>(items: &mut [T], mut seed: u64) {
+        for i in (1..items.len()).rev() {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let j = (seed >> 33) as usize % (i + 1);
+            items.swap(i, j);
+        }
+    }
+
+    #[test]
+    fn large_shuffled_keyframe_reassembles_byte_exact() {
+        // ~200KB keyframe: 143 full fragments + one short tail, the
+        // realistic worst case for a 1080p60 IDR frame.
+        let total: u16 = 144;
+        let tail_len = 137usize;
+        let mut expected = Vec::new();
+        let mut payloads: Vec<Vec<u8>> = Vec::new();
+        for i in 0..total {
+            let len = if i == total - 1 { tail_len } else { UDP_MAX_PAYLOAD };
+            let chunk: Vec<u8> =
+                (0..len).map(|j| (i as usize * 31 + j) as u8).collect();
+            expected.extend_from_slice(&chunk);
+            payloads.push(chunk);
+        }
+
+        let mut order: Vec<u16> = (0..total).collect();
+        shuffle(&mut order, 0xDEC1BE11);
+
+        let mut receiver = VideoReceiver::new();
+        let mut completed = None;
+        for (n, &i) in order.iter().enumerate() {
+            let pkt = make_packet(7, i, total, true, &payloads[i as usize]);
+            let res = receiver.process_packet(&pkt);
+            if n + 1 < order.len() {
+                assert!(res.is_none(), "completed early at packet {}", n);
+            } else {
+                completed = res;
+            }
+        }
+        let frame = completed.expect("frame must complete on last fragment");
+        assert_eq!(frame.data.len(), expected.len());
+        assert_eq!(frame.data, expected);
+        assert!(frame.is_keyframe);
+    }
+
+    #[test]
+    fn duplicate_fragments_do_not_double_count_or_corrupt() {
+        // NACK retransmits deliver the same fragment twice; the frame
+        // must complete exactly when all *distinct* fragments arrived.
+        let mut receiver = VideoReceiver::new();
+        let pkt0 = make_packet(1, 0, 3, false, b"aaaa");
+        let pkt1 = make_packet(1, 1, 3, false, b"bbbb");
+        let pkt2 = make_packet(1, 2, 3, false, b"cccc");
+
+        assert!(receiver.process_packet(&pkt0).is_none());
+        assert!(receiver.process_packet(&pkt0).is_none()); // retransmit
+        assert!(receiver.process_packet(&pkt1).is_none());
+        assert!(receiver.process_packet(&pkt1).is_none()); // retransmit
+        let frame = receiver.process_packet(&pkt2).expect("complete on 3rd distinct");
+        assert_eq!(frame.data, b"aaaabbbbcccc");
+    }
+
+    #[test]
+    fn out_of_range_index_is_ignored() {
+        let mut receiver = VideoReceiver::new();
+        // index 5 in a 3-packet frame: malformed, must not panic and
+        // must not pollute the assembly.
+        let bogus = make_packet(1, 5, 3, false, b"evil");
+        assert!(receiver.process_packet(&bogus).is_none());
+
+        let pkt0 = make_packet(1, 0, 3, false, b"aaaa");
+        let pkt1 = make_packet(1, 1, 3, false, b"bbbb");
+        let pkt2 = make_packet(1, 2, 3, false, b"cccc");
+        assert!(receiver.process_packet(&pkt0).is_none());
+        assert!(receiver.process_packet(&pkt1).is_none());
+        let frame = receiver.process_packet(&pkt2).expect("valid fragments complete");
+        assert_eq!(frame.data, b"aaaabbbbcccc");
+    }
+
+    #[test]
+    fn zero_total_packets_is_rejected() {
+        let mut receiver = VideoReceiver::new();
+        let bogus = make_packet(1, 0, 0, false, b"evil");
+        assert!(receiver.process_packet(&bogus).is_none());
+    }
+
+    #[test]
+    fn oversized_total_packets_is_rejected() {
+        // A crafted packet claiming an enormous fragment count must be
+        // dropped before it allocates total_packets * UDP_MAX_PAYLOAD
+        // (~75 MB at u16::MAX) and must not create an assembly entry.
+        let mut receiver = VideoReceiver::new();
+        let evil = make_packet(1, 0, u16::MAX, true, b"boom");
+        assert!(receiver.process_packet(&evil).is_none());
+        let over = make_packet(2, 0, MAX_PACKETS_PER_FRAME + 1, true, b"boom");
+        assert!(receiver.process_packet(&over).is_none());
+        assert_eq!(receiver.frames_in_progress.len(), 0);
+
+        // A frame right at the cap is still accepted (creates an assembly).
+        let ok = make_packet(3, 0, MAX_PACKETS_PER_FRAME, false, b"ok");
+        assert!(receiver.process_packet(&ok).is_none());
+        assert_eq!(receiver.frames_in_progress.len(), 1);
+    }
+
+    #[test]
+    fn concurrent_partial_frames_are_bounded() {
+        // Spraying distinct frame_ids that never complete must not grow
+        // frames_in_progress without bound.
+        let mut receiver = VideoReceiver::new();
+        for fid in 0..(MAX_FRAMES_IN_PROGRESS as u32 + 50) {
+            // total=2 so the frame never completes on a single fragment
+            let pkt = make_packet(fid, 0, 2, false, b"x");
+            assert!(receiver.process_packet(&pkt).is_none());
+        }
+        assert!(receiver.frames_in_progress.len() <= MAX_FRAMES_IN_PROGRESS);
+    }
+
+    #[test]
+    fn fec_recovers_short_tail_fragment() {
+        // The lost fragment is the short tail — recovery must restore
+        // its exact (non-padded) length, and compaction must place it
+        // flush after the full-size fragments.
+        let mut receiver = VideoReceiver::new();
+        let data0: Vec<u8> = vec![0xAA; UDP_MAX_PAYLOAD];
+        let data1: Vec<u8> = vec![0xBB; UDP_MAX_PAYLOAD];
+        let data2: Vec<u8> = (0..200u16).map(|j| j as u8).collect();
+
+        let mut xor_payload = [0u8; UDP_MAX_PAYLOAD];
+        for (j, &b) in data0.iter().enumerate() { xor_payload[j] ^= b; }
+        for (j, &b) in data1.iter().enumerate() { xor_payload[j] ^= b; }
+        for (j, &b) in data2.iter().enumerate() { xor_payload[j] ^= b; }
+        let size_xor =
+            (data0.len() as u16) ^ (data1.len() as u16) ^ (data2.len() as u16);
+
+        assert!(receiver.process_packet(&make_packet(9, 0, 3, true, &data0)).is_none());
+        assert!(receiver.process_packet(&make_packet(9, 1, 3, true, &data1)).is_none());
+        // tail (index 2) lost — FEC packet completes the frame
+        let fec = UdpFecPacket::new("streamer1", 9, 0, 3, size_xor, &xor_payload);
+        let frame = receiver.process_fec_packet(&fec).expect("FEC recovery");
+        assert_eq!(frame.data.len(), UDP_MAX_PAYLOAD * 2 + 200);
+        assert_eq!(&frame.data[..UDP_MAX_PAYLOAD], data0.as_slice());
+        assert_eq!(&frame.data[UDP_MAX_PAYLOAD..UDP_MAX_PAYLOAD * 2], data1.as_slice());
+        assert_eq!(&frame.data[UDP_MAX_PAYLOAD * 2..], data2.as_slice());
     }
 }

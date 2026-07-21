@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Virtuoso } from "react-virtuoso";
 import { invoke } from "../../lib/ipc";
 import { useDmStore } from "../../stores/dmStore";
@@ -113,6 +113,24 @@ export default function DmChatPanel() {
     ? conversations[activeDmUser]
     : null;
   const messages = conversation?.messages ?? [];
+
+  // Map DmMessages to Message shape for MessageBubble compatibility.
+  // Preserve the real server-assigned id when present (persistent-DMs)
+  // — the delete flow keys on it. Legacy / synthetic preview entries
+  // (pre-persistence DMs) fall back to 0 and the trash icon won't
+  // appear for those, which is correct (nothing to delete).
+  // Memoized: this used to rebuild (and re-allocate) the whole array
+  // on every render — keystrokes included — not just message changes.
+  const bubbleMessages = useMemo(
+    () =>
+      messages.map((m) => ({
+        ...m,
+        id: typeof m.id === "number" ? m.id : 0,
+        channelId: "",
+        attachments: [],
+      })),
+    [messages],
+  );
 
   const friend = activeDmUser
     ? friends.find((f) => f.username === activeDmUser)
@@ -283,18 +301,6 @@ export default function DmChatPanel() {
     );
   }
 
-  // Map DmMessages to Message shape for MessageBubble compatibility.
-  // Preserve the real server-assigned id when present (persistent-DMs)
-  // — the delete flow keys on it. Legacy / synthetic preview entries
-  // (pre-persistence DMs) fall back to 0 and the trash icon won't
-  // appear for those, which is correct (nothing to delete).
-  const bubbleMessages = messages.map((m) => ({
-    ...m,
-    id: typeof m.id === "number" ? m.id : 0,
-    channelId: "",
-    attachments: [],
-  }));
-
   // Initial Virtuoso position when we mount/re-mount for this peer.
   // atBottom: user was caught up — land them at LAST so newer messages
   // received while away are visible. Otherwise restore the saved
@@ -320,30 +326,30 @@ export default function DmChatPanel() {
             }`}
           />
         </div>
-        <span className="font-display text-[15px] font-semibold text-text-bright">
+        <span className="font-display text-[16px] font-semibold text-text-bright">
           {activeDmUser}
         </span>
         {isOnline ? (
-          <div className="flex items-center gap-[5px] rounded bg-success/15 px-2 py-0.5 font-channel text-[11px] font-medium text-success">
+          <div className="flex items-center gap-[5px] rounded-sm bg-success/15 px-2 py-0.5 font-channel text-[11px] font-medium text-success">
             <div className="h-1.5 w-1.5 rounded-full bg-success" />
             Online
           </div>
         ) : (
-          <div className="flex items-center gap-[5px] rounded bg-text-muted/15 px-2 py-0.5 font-channel text-[11px] font-medium text-text-muted">
+          <div className="flex items-center gap-[5px] rounded-sm bg-text-muted/15 px-2 py-0.5 font-channel text-[11px] font-medium text-text-muted">
             <div className="h-1.5 w-1.5 rounded-full bg-text-muted" />
             Offline
           </div>
         )}
         <div className="flex-1" />
         <div className="flex gap-1">
-          <button className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary">
+          <button className="flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
           </button>
           <button
             onClick={toggleDmFriendsPanel}
-            className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+            className={`flex h-8 w-8 items-center justify-center rounded-sm transition-colors ${
               dmFriendsPanelVisible
                 ? "text-text-secondary bg-surface-hover"
                 : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
@@ -366,7 +372,7 @@ export default function DmChatPanel() {
               <h1 className="mb-1.5 text-[26px] font-semibold tracking-tight text-text-bright">
                 {activeDmUser}
               </h1>
-              <p className="text-sm text-text-secondary leading-relaxed">
+              <p className="text-sm text-text-secondary leading-[1.55]">
                 This is the beginning of your conversation with{" "}
                 <span
                   className="font-semibold"
@@ -450,7 +456,7 @@ export default function DmChatPanel() {
       {/* Input bar — py-2 gives an 8px gap above the bar, matching
           ChatPanel's spacing. */}
       <div className="px-3 py-2">
-        <div className="flex min-h-[54px] items-center gap-2.5 rounded-xl border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
+        <div className="flex min-h-[54px] items-center gap-2.5 rounded-lg border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-ring">
           <RichInput
             ref={editorRef}
             onChange={handleInputChange}
@@ -472,7 +478,7 @@ export default function DmChatPanel() {
               <button
                 ref={emojiTriggerRef}
                 onClick={() => setPickerOpen((v) => !v)}
-                className={`flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-md transition-colors ${
+                className={`flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-sm transition-colors ${
                   pickerOpen
                     ? "bg-surface-hover text-text-secondary"
                     : "text-text-muted hover:text-text-secondary"
@@ -494,7 +500,7 @@ export default function DmChatPanel() {
             <button
               onClick={handleSend}
               disabled={sending || !input.trim()}
-              className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-sm bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />

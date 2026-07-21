@@ -130,7 +130,7 @@ export default function ImageContextMenu() {
 
   return (
     <div
-      className="fixed z-[80] min-w-[180px] rounded-lg border border-border bg-bg-light p-1 shadow-[0_8px_32px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.02)] animate-[fadeUp_0.12s_ease_both]"
+      className="fixed z-[80] min-w-[180px] rounded-md border border-border bg-bg-light p-1 shadow-float animate-[fadeUp_0.12s_ease_both]"
       style={position}
       onMouseDown={(e) => e.stopPropagation()}
     >
@@ -176,7 +176,7 @@ function MenuItem({
     <button
       onClick={onClick}
       onMouseDown={(e) => e.stopPropagation()}
-      className="flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-[12.5px] text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+      className="flex w-full items-center gap-2.5 rounded-sm px-3 py-1.5 text-[13px] text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
     >
       <span className="text-accent">{icon}</span>
       <span>{children}</span>

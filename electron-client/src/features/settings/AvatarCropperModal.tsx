@@ -176,8 +176,8 @@ export function AvatarCropperModal({ file, onSave, onCancel }: Props) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       onClick={(e) => e.target === e.currentTarget && !uploading && onCancel()}
     >
-      <div className="rounded-2xl border border-border bg-bg-dark p-6 shadow-[0_24px_80px_rgba(0,0,0,0.6)]">
-        <p className="mb-1 font-display text-[15px] font-semibold text-text-primary">
+      <div className="rounded-xl border border-border bg-bg-dark p-6 shadow-modal">
+        <p className="mb-1 font-display text-[16px] font-semibold text-text-primary">
           Crop your picture
         </p>
         <p className="mb-3 text-[12px] text-text-muted">
@@ -191,7 +191,7 @@ export function AvatarCropperModal({ file, onSave, onCancel }: Props) {
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
           onMouseLeave={onMouseUp}
-          className={`rounded-md bg-bg-darkest ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+          className={`rounded-sm bg-bg-darkest ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
           style={{ width: VIEWPORT, height: VIEWPORT }}
         />
         {error && <p className="mt-3 max-w-[320px] text-[12px] text-error">{error}</p>}
@@ -199,14 +199,14 @@ export function AvatarCropperModal({ file, onSave, onCancel }: Props) {
           <button
             onClick={onCancel}
             disabled={uploading}
-            className="rounded-md border border-border px-4 py-2 text-[13px] text-text-secondary hover:bg-bg-light disabled:opacity-50"
+            className="rounded-sm border border-border px-4 py-2 text-[13px] text-text-secondary hover:bg-bg-light disabled:opacity-50"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={uploading || !imgLoaded}
-            className="rounded-md bg-accent px-4 py-2 text-[13px] font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
+            className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
           >
             {uploading ? "Saving…" : "Save"}
           </button>

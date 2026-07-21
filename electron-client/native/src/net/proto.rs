@@ -47,6 +47,7 @@ mod tests {
             success: true,
             message: "Welcome".into(),
             jwt_token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.test".into(),
+            memberships: vec![],
         };
         let bytes = resp.encode_to_vec();
         let decoded = LoginResponse::decode(&bytes[..]).unwrap();

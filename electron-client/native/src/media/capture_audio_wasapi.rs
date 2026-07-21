@@ -28,7 +28,7 @@ pub fn start_process_audio_capture(
         .name("decibell-audio-capture".to_string())
         .spawn(move || {
             if let Err(e) = run_wasapi_capture(tx, pid, false) {
-                eprintln!("[audio-capture] WASAPI capture error: {}", e);
+                log::warn!("[audio-capture] WASAPI capture error: {}", e);
             }
         })
         .map_err(|e| format!("Spawn audio capture thread: {}", e))?;
@@ -47,7 +47,7 @@ pub fn start_system_audio_capture() -> Result<std::sync::mpsc::Receiver<AudioFra
         .name("decibell-audio-capture".to_string())
         .spawn(move || {
             if let Err(e) = run_wasapi_capture(tx, our_pid, true) {
-                eprintln!("[audio-capture] WASAPI capture error: {}", e);
+                log::warn!("[audio-capture] WASAPI capture error: {}", e);
             }
         })
         .map_err(|e| format!("Spawn audio capture thread: {}", e))?;
@@ -128,7 +128,7 @@ fn run_wasapi_capture(
             .map_err(|e| format!("CoInitializeEx: {}", e))?;
 
         let mode = if exclude { "EXCLUDE_TARGET_PROCESS_TREE" } else { "INCLUDE_TARGET_PROCESS_TREE" };
-        eprintln!("[audio-capture] Starting WASAPI Process Loopback: pid={}, mode={}", target_pid, mode);
+        log::info!("[audio-capture] Starting WASAPI Process Loopback: pid={}, mode={}", target_pid, mode);
 
         // Get the mix format from the default render endpoint — the process
         // loopback virtual device mirrors this format but doesn't support
@@ -154,7 +154,7 @@ fn run_wasapi_capture(
         let bits_per_sample = mix_format.wBitsPerSample;
         let block_align = mix_format.nBlockAlign;
 
-        eprintln!("[audio-capture] Mix format: {}ch, {}Hz, {}bit, block_align={}",
+        log::info!("[audio-capture] Mix format: {}ch, {}Hz, {}bit, block_align={}",
             channels, sample_rate, bits_per_sample, block_align);
 
         let is_float = if mix_format.wFormatTag == WAVE_FORMAT_EXTENSIBLE_TAG {
@@ -215,7 +215,7 @@ unsafe fn run_capture_loop(
         .Start()
         .map_err(|e| format!("Start: {}", e))?;
 
-    eprintln!("[audio-capture] WASAPI capture started");
+    log::info!("[audio-capture] WASAPI capture started");
 
     let mut frame_count: u64 = 0;
 
@@ -263,7 +263,7 @@ unsafe fn run_capture_loop(
 
                 frame_count += 1;
                 if frame_count == 1 || frame_count % 2400 == 0 {
-                    eprintln!("[audio-capture] Frame {}: {} stereo samples",
+                    log::info!("[audio-capture] Frame {}: {} stereo samples",
                         frame_count, stereo_f32.len() / 2);
                 }
 
@@ -278,7 +278,7 @@ unsafe fn run_capture_loop(
                     Err(std::sync::mpsc::TrySendError::Full(_)) => {}
                     Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                         let _ = capture_client.ReleaseBuffer(num_frames);
-                        eprintln!("[audio-capture] Channel closed, stopping");
+                        log::info!("[audio-capture] Channel closed, stopping");
                         break 'capture;
                     }
                 }
@@ -292,7 +292,7 @@ unsafe fn run_capture_loop(
 
     let _ = audio_client.Stop();
 
-    eprintln!("[audio-capture] WASAPI capture stopped after {} frames", frame_count);
+    log::info!("[audio-capture] WASAPI capture stopped after {} frames", frame_count);
     Ok(())
 }
 

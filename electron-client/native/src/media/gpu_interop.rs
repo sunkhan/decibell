@@ -310,17 +310,17 @@ impl CudaBackend {
         let cuda = CudaApi::load()?;
         let rc = unsafe { (cuda.cu_init)(0) };
         if rc != CUDA_SUCCESS {
-            eprintln!("[gpu] cuInit failed: {}", rc);
+            log::warn!("[gpu] cuInit failed: {}", rc);
             return None;
         }
         let mut cu_dev: CUdevice = 0;
         if unsafe { (cuda.cu_device_get)(&mut cu_dev, 0) } != CUDA_SUCCESS {
-            eprintln!("[gpu] cuDeviceGet failed");
+            log::warn!("[gpu] cuDeviceGet failed");
             return None;
         }
         let mut cu_ctx: CUcontext = std::ptr::null_mut();
         if unsafe { (cuda.cu_ctx_create)(&mut cu_ctx, 0, cu_dev) } != CUDA_SUCCESS {
-            eprintln!("[gpu] cuCtxCreate failed");
+            log::warn!("[gpu] cuCtxCreate failed");
             return None;
         }
 
@@ -328,7 +328,7 @@ impl CudaBackend {
         let egl_lib = match unsafe { Library::new("libEGL.so.1") } {
             Ok(lib) => lib,
             Err(e) => {
-                eprintln!("[gpu] Failed to load libEGL.so.1: {}", e);
+                log::warn!("[gpu] Failed to load libEGL.so.1: {}", e);
                 unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
                 return None;
             }
@@ -338,7 +338,7 @@ impl CudaBackend {
         } {
             Ok(egl) => egl,
             Err(e) => {
-                eprintln!("[gpu] EGL load failed: {}", e);
+                log::warn!("[gpu] EGL load failed: {}", e);
                 unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
                 return None;
             }
@@ -365,7 +365,7 @@ impl CudaBackend {
         let query_devices: EglQueryDevicesExtFn = match egl.get_proc_address("eglQueryDevicesEXT") {
             Some(p) => unsafe { std::mem::transmute(p) },
             None => {
-                eprintln!("[gpu] eglQueryDevicesEXT not available");
+                log::info!("[gpu] eglQueryDevicesEXT not available");
                 unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
                 return None;
             }
@@ -373,7 +373,7 @@ impl CudaBackend {
         let query_device_string: EglQueryDeviceStringExtFn = match egl.get_proc_address("eglQueryDeviceStringEXT") {
             Some(p) => unsafe { std::mem::transmute(p) },
             None => {
-                eprintln!("[gpu] eglQueryDeviceStringEXT not available");
+                log::info!("[gpu] eglQueryDeviceStringEXT not available");
                 unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
                 return None;
             }
@@ -382,7 +382,7 @@ impl CudaBackend {
         let mut num_devices: i32 = 0;
         unsafe { query_devices(0, std::ptr::null_mut(), &mut num_devices) };
         if num_devices <= 0 {
-            eprintln!("[gpu] eglQueryDevicesEXT reported 0 devices");
+            log::info!("[gpu] eglQueryDevicesEXT reported 0 devices");
             unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
             return None;
         }
@@ -403,15 +403,15 @@ impl CudaBackend {
                     .to_string_lossy()
                     .into_owned()
             };
-            eprintln!("[gpu] EGL device[{}] extensions: {}", i, ext_str);
+            log::info!("[gpu] EGL device[{}] extensions: {}", i, ext_str);
             if ext_str.contains("EGL_NV_device_cuda") {
                 nvidia_device = dev;
-                eprintln!("[gpu] Selected EGL device[{}] (NVIDIA CUDA-capable)", i);
+                log::info!("[gpu] Selected EGL device[{}] (NVIDIA CUDA-capable)", i);
                 break;
             }
         }
         if nvidia_device.is_null() {
-            eprintln!("[gpu] No NVIDIA CUDA-capable EGL device found");
+            log::info!("[gpu] No NVIDIA CUDA-capable EGL device found");
             unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
             return None;
         }
@@ -425,13 +425,13 @@ impl CudaBackend {
         } {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("[gpu] eglGetPlatformDisplay(EGL_PLATFORM_DEVICE_EXT) failed: {:?}", e);
+                log::warn!("[gpu] eglGetPlatformDisplay(EGL_PLATFORM_DEVICE_EXT) failed: {:?}", e);
                 unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
                 return None;
             }
         };
         if egl.initialize(egl_display).is_err() {
-            eprintln!("[gpu] eglInitialize on NVIDIA device failed");
+            log::warn!("[gpu] eglInitialize on NVIDIA device failed");
             unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
             return None;
         }
@@ -442,7 +442,7 @@ impl CudaBackend {
         // MOD_INVALID / tiled modifiers — the GLES driver path on NVIDIA
         // doesn't support that combination. Desktop GL does.
         if egl.bind_api(khronos_egl::OPENGL_API).is_err() {
-            eprintln!("[gpu] eglBindAPI(OPENGL) failed");
+            log::warn!("[gpu] eglBindAPI(OPENGL) failed");
             unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
             return None;
         }
@@ -455,7 +455,7 @@ impl CudaBackend {
         let config = match egl.choose_first_config(egl_display, &config_attribs) {
             Ok(Some(c)) => c,
             _ => {
-                eprintln!("[gpu] eglChooseConfig(OPENGL_BIT) failed");
+                log::warn!("[gpu] eglChooseConfig(OPENGL_BIT) failed");
                 unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
                 return None;
             }
@@ -466,13 +466,13 @@ impl CudaBackend {
         let egl_context = match egl.create_context(egl_display, config, None, &[khronos_egl::NONE]) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[gpu] eglCreateContext(OPENGL) failed: {}", e);
+                log::warn!("[gpu] eglCreateContext(OPENGL) failed: {}", e);
                 unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
                 return None;
             }
         };
         if egl.make_current(egl_display, None, None, Some(egl_context)).is_err() {
-            eprintln!("[gpu] eglMakeCurrent failed");
+            log::warn!("[gpu] eglMakeCurrent failed");
             let _ = egl.destroy_context(egl_display, egl_context);
             unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
             return None;
@@ -493,7 +493,7 @@ impl CudaBackend {
             let version = if version_ptr.is_null() { "?".into() } else { std::ffi::CStr::from_ptr(version_ptr).to_string_lossy() };
             let renderer = if renderer_ptr.is_null() { "?".into() } else { std::ffi::CStr::from_ptr(renderer_ptr).to_string_lossy() };
             let vendor = if vendor_ptr.is_null() { "?".into() } else { std::ffi::CStr::from_ptr(vendor_ptr).to_string_lossy() };
-            eprintln!("[gpu] GL_VERSION={} | GL_VENDOR={} | GL_RENDERER={}", version, vendor, renderer);
+            log::info!("[gpu] GL_VERSION={} | GL_VENDOR={} | GL_RENDERER={}", version, vendor, renderer);
 
             // Use glGetStringi for extensions (core profile doesn't expose GL_EXTENSIONS as a single string).
             let mut num_ext: i32 = 0;
@@ -508,7 +508,7 @@ impl CudaBackend {
                     if ext_str.as_ref() == *w && !found.contains(w) { found.push(*w); }
                 }
             }
-            eprintln!("[gpu] Relevant GL extensions present: {:?}", found);
+            log::info!("[gpu] Relevant GL extensions present: {:?}", found);
         }
 
         // Load glEGLImageTargetTexture2DOES extension (legacy path).
@@ -516,7 +516,7 @@ impl CudaBackend {
             match egl.get_proc_address("glEGLImageTargetTexture2DOES") {
                 Some(p) => unsafe { std::mem::transmute(p) },
                 None => {
-                    eprintln!("[gpu] glEGLImageTargetTexture2DOES not available");
+                    log::info!("[gpu] glEGLImageTargetTexture2DOES not available");
                     let _ = egl.destroy_context(egl_display, egl_context);
                     unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
                     return None;
@@ -536,13 +536,13 @@ impl CudaBackend {
         let mut gl_tex: u32 = 0;
         unsafe { gl::GenTextures(1, &mut gl_tex) };
         if gl_tex == 0 {
-            eprintln!("[gpu] glGenTextures failed");
+            log::warn!("[gpu] glGenTextures failed");
             let _ = egl.destroy_context(egl_display, egl_context);
             unsafe { (cuda.cu_ctx_destroy)(cu_ctx) };
             return None;
         }
 
-        eprintln!("[gpu] CUDA backend ready (device={})", cu_dev);
+        log::info!("[gpu] CUDA backend ready (device={})", cu_dev);
 
         Some(CudaBackend {
             cuda,
@@ -610,7 +610,7 @@ impl CudaBackend {
             ) {
                 Ok(img) => img,
                 Err(e) => {
-                    eprintln!("[gpu] eglCreateImage failed: {}", e);
+                    log::warn!("[gpu] eglCreateImage failed: {}", e);
                     self.pop_ctx();
                     return None;
                 }
@@ -623,7 +623,7 @@ impl CudaBackend {
             let mut tex: u32 = 0;
             unsafe { gl::GenTextures(1, &mut tex) };
             if tex == 0 {
-                eprintln!("[gpu] glGenTextures failed inside import_dmabuf");
+                log::warn!("[gpu] glGenTextures failed inside import_dmabuf");
                 let _ = self.egl.destroy_image(self.egl_display, egl_image);
                 self.pop_ctx();
                 return None;
@@ -662,7 +662,7 @@ impl CudaBackend {
             if gl_err != 0 && used_storage {
                 // Storage path failed — delete the tainted texture, create
                 // a fresh one, and retry with the legacy target function.
-                eprintln!(
+                log::info!(
                     "[gpu] glEGLImageTargetTexStorageEXT failed (gl_err=0x{:x}), retrying with glEGLImageTargetTexture2DOES",
                     gl_err
                 );
@@ -687,7 +687,7 @@ impl CudaBackend {
                 )
             };
             if rc != CUDA_SUCCESS {
-                eprintln!(
+                log::info!(
                     "[gpu] cuGraphicsGLRegisterImage failed: {} (gl_err=0x{:x}, tex_internal_format=0x{:x}, used_storage_ext={}, drm_fourcc=0x{:08x}, modifier=0x{:x})",
                     rc, gl_err, internal_fmt as u32, used_storage, drm_format, modifier
                 );
@@ -697,7 +697,7 @@ impl CudaBackend {
                 return None;
             }
 
-            eprintln!(
+            log::info!(
                 "[gpu] Imported DMA-BUF fd={}: tex={}, internal_format=0x{:x}, via_storage_ext={}",
                 fd, tex, internal_fmt as u32, used_storage
             );
@@ -726,7 +726,7 @@ impl CudaBackend {
             )
         };
         if rc != CUDA_SUCCESS {
-            eprintln!("[gpu] cuGraphicsSubResourceGetMappedArray failed: {}", rc);
+            log::warn!("[gpu] cuGraphicsSubResourceGetMappedArray failed: {}", rc);
             unsafe {
                 (self.cuda.cu_graphics_unmap_resources)(1, &mut cu_resource_copy, std::ptr::null_mut());
             }
@@ -787,7 +787,7 @@ impl CudaBackend {
             }
             let all_zero = bytes.iter().all(|&b| b == 0);
             if all_zero {
-                eprintln!(
+                log::info!(
                     "[gpu] WARNING: DMA-BUF imported but CONTENT IS ALL ZEROS. \
                      This is the NVIDIA proprietary driver + mesa-allocated \
                      DMA-BUF interop failure (common on Wayland with \
@@ -798,7 +798,7 @@ impl CudaBackend {
                      allocation."
                 );
             } else {
-                eprintln!(
+                log::info!(
                     "[gpu] First frame sample OK (non-zero content): topleft={:?} center={:?}",
                     &bytes[0..4], &bytes[4..8]
                 );
@@ -811,7 +811,7 @@ impl CudaBackend {
         self.pop_ctx();
 
         if rc != CUDA_SUCCESS {
-            eprintln!("[gpu] cuMemcpy2D failed: {}", rc);
+            log::warn!("[gpu] cuMemcpy2D failed: {}", rc);
             return None;
         }
 
@@ -829,7 +829,7 @@ impl CudaBackend {
         let mut ptr: CUdeviceptr = 0;
         let rc = unsafe { (self.cuda.cu_mem_alloc)(&mut ptr, size) };
         if rc != CUDA_SUCCESS {
-            eprintln!("[gpu] cuMemAlloc({} bytes) failed: {}", size, rc);
+            log::warn!("[gpu] cuMemAlloc({} bytes) failed: {}", size, rc);
             return None;
         }
         self.dev_buf = Some((ptr, width, height));
@@ -896,7 +896,7 @@ impl VaapiBackend {
         } else if std::path::Path::new("/dev/dri/renderD129").exists() {
             "/dev/dri/renderD129"
         } else {
-            eprintln!("[gpu] No DRI render node found");
+            log::info!("[gpu] No DRI render node found");
             return None;
         };
 
@@ -912,7 +912,7 @@ impl VaapiBackend {
                 0,
             );
             if rc < 0 || drm_device_ref.is_null() {
-                eprintln!("[gpu] av_hwdevice_ctx_create(DRM, {}) failed: {}", render_node, rc);
+                log::warn!("[gpu] av_hwdevice_ctx_create(DRM, {}) failed: {}", render_node, rc);
                 return None;
             }
 
@@ -925,12 +925,12 @@ impl VaapiBackend {
                 0,
             );
             if rc < 0 || vaapi_device_ref.is_null() {
-                eprintln!("[gpu] av_hwdevice_ctx_create_derived(VAAPI from DRM) failed: {}", rc);
+                log::warn!("[gpu] av_hwdevice_ctx_create_derived(VAAPI from DRM) failed: {}", rc);
                 av_buffer_unref(&mut drm_device_ref);
                 return None;
             }
 
-            eprintln!("[gpu] VA-API backend ready (DRM: {})", render_node);
+            log::info!("[gpu] VA-API backend ready (DRM: {})", render_node);
 
             Some(VaapiBackend {
                 drm_device_ref,
@@ -990,7 +990,7 @@ impl VaapiBackend {
         use ffmpeg_next::sys::*;
 
         if self.vaapi_frames_ref.is_null() {
-            eprintln!("[gpu] VAAPI frames context not initialized");
+            log::info!("[gpu] VAAPI frames context not initialized");
             return None;
         }
 
@@ -1022,7 +1022,7 @@ impl VaapiBackend {
             // or the av_buffer_ref would leak when overwritten.
             let rc = av_hwframe_get_buffer(self.vaapi_frames_ref, vaapi_frame, 0);
             if rc < 0 {
-                eprintln!("[gpu] av_hwframe_get_buffer(VAAPI) failed: {}", rc);
+                log::warn!("[gpu] av_hwframe_get_buffer(VAAPI) failed: {}", rc);
                 av_frame_free(&mut (drm_frame as *mut AVFrame));
                 av_frame_free(&mut (vaapi_frame as *mut AVFrame));
                 return None;
@@ -1040,7 +1040,7 @@ impl VaapiBackend {
             av_frame_free(&mut (drm_frame as *mut AVFrame));
 
             if rc < 0 {
-                eprintln!("[gpu] av_hwframe_map(DRM->VAAPI) failed: {}", rc);
+                log::warn!("[gpu] av_hwframe_map(DRM->VAAPI) failed: {}", rc);
                 av_frame_free(&mut (vaapi_frame as *mut AVFrame));
                 return None;
             }
@@ -1100,7 +1100,7 @@ impl GpuContext {
     /// Try to initialize GPU interop. Returns None if no GPU backend is available.
     /// Tries NVIDIA (CUDA) first, then AMD/Intel (VAAPI).
     pub fn new() -> Option<Self> {
-        eprintln!("[gpu] Probing GPU backends...");
+        log::info!("[gpu] Probing GPU backends...");
 
         // Try CUDA first (NVIDIA)
         if let Some(cuda) = CudaBackend::new() {
@@ -1112,7 +1112,7 @@ impl GpuContext {
             return Some(GpuContext { backend: GpuBackendInner::Vaapi(vaapi) });
         }
 
-        eprintln!("[gpu] No GPU backend available, falling back to CPU encoding");
+        log::info!("[gpu] No GPU backend available, falling back to CPU encoding");
         None
     }
 

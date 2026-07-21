@@ -72,7 +72,13 @@ export default function PersistentAudioLayer() {
       }}
       onLoadedMetadata={(e) => {
         const el = e.currentTarget;
-        setPlaybackState({ duration: el.duration || 0 });
+        // Chromium reports Infinity for some VBR/CBR MP3 durations.
+        // Infinity || 0 is Infinity, which then poisons the scrub math
+        // (ratio * Infinity → non-finite currentTime → throws) and the
+        // total-time display. Guard to a finite value.
+        setPlaybackState({
+          duration: Number.isFinite(el.duration) ? el.duration : 0,
+        });
         // Resume from the cached lastTime if the user previously
         // paused this attachment mid-playback.
         const cached = getCachedAudio(active.channelId, active.attachmentId);
@@ -81,7 +87,11 @@ export default function PersistentAudioLayer() {
         }
       }}
       onDurationChange={(e) =>
-        setPlaybackState({ duration: e.currentTarget.duration || 0 })
+        setPlaybackState({
+          duration: Number.isFinite(e.currentTarget.duration)
+            ? e.currentTarget.duration
+            : 0,
+        })
       }
       onError={(e) => {
         const el = e.currentTarget;

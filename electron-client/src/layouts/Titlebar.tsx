@@ -42,10 +42,6 @@ function Titlebar() {
       <span
         data-tauri-drag-region
         className="pointer-events-none text-[12px] font-medium text-text-secondary"
-        style={{
-          fontFamily: '"Segoe UI Variable", "Segoe UI", system-ui, -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif',
-          letterSpacing: 0,
-        }}
       >
         {title}
       </span>

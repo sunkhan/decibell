@@ -95,6 +95,18 @@ pub fn install_stream_bus(callback: JsFunction) -> Result<()> {
     Ok(())
 }
 
+/// Frames discarded because the JS-side TSFN queue was saturated (a
+/// busy/stalled renderer). Voice counts its drops; without this, video
+/// drops were invisible and "stream stutters" had no diagnosable trail.
+static STREAM_FRAME_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Not yet surfaced in the stats event — kept for the wiring when
+/// voice_connection_stats grows a video section.
+#[allow(dead_code)]
+pub fn stream_frame_drop_count() -> u64 {
+    STREAM_FRAME_DROPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Push an encoded video frame to JS. Safe from any thread.
 /// Drops silently if the stream bus hasn't been installed yet (the
 /// renderer's video receive thread starts before the bus is installed
@@ -103,7 +115,15 @@ pub fn send_stream_frame(frame: StreamFrame) {
     let Some(bus) = STREAM_BUS.get() else {
         return;
     };
-    bus.call(frame, ThreadsafeFunctionCallMode::NonBlocking);
+    let status = bus.call(frame, ThreadsafeFunctionCallMode::NonBlocking);
+    if status != napi::Status::Ok {
+        let n = STREAM_FRAME_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        // First drop and every 100th after — visible in logs without
+        // becoming its own hot path during a sustained renderer stall.
+        if n == 1 || n % 100 == 0 {
+            log::warn!("stream frame bus saturated — {} frames dropped so far", n);
+        }
+    }
 }
 
 // ── Stream thumbnail bus ──────────────────────────────────────────

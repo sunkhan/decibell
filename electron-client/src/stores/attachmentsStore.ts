@@ -2,6 +2,10 @@ import { create } from "zustand";
 import type { AttachmentKind } from "../types";
 import type { ChunkSource } from "../features/chat/chunkSource";
 
+// Last committed progress timestamp per upload — lives outside the
+// store so throttle bookkeeping never triggers renders itself.
+const lastProgressCommit = new Map<string, number>();
+
 // Per-attachment lifecycle for the composer:
 //
 //   queued    — file selected + metadata probed; bytes NOT yet sent.
@@ -107,6 +111,17 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
     set((state) => {
       const existing = state.pendings[pendingId];
       if (!existing) return {};
+      // Throttle to ~10Hz per upload. The caller reports per 256KB
+      // chunk, which on a fast link is hundreds of store commits per
+      // second — every one re-rendering the progress UI for a bar the
+      // eye can't track anyway. The final chunk always commits so the
+      // bar lands on 100%.
+      const now = Date.now();
+      const done =
+        existing.totalBytes > 0 && transferredBytes >= existing.totalBytes;
+      const last = lastProgressCommit.get(pendingId) ?? 0;
+      if (!done && now - last < 100) return {};
+      lastProgressCommit.set(pendingId, now);
       return {
         pendings: {
           ...state.pendings,
@@ -151,6 +166,7 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
     set((state) => {
       const existing = state.pendings[pendingId];
       if (existing?.previewUrl) URL.revokeObjectURL(existing.previewUrl);
+      lastProgressCommit.delete(pendingId);
       const next = { ...state.pendings };
       delete next[pendingId];
       return { pendings: next };

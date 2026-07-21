@@ -282,7 +282,7 @@ fn run_encode_loop(
         }
 
         if last_telemetry.elapsed() >= Duration::from_secs(1) {
-            log::info!(
+            log::debug!(
                 "[encoder-linux] codec_byte={} {}x{}@{} {}kbps frames_sent={} thumbs_sent={}",
                 cfg.codec_wire_byte,
                 cfg.width,

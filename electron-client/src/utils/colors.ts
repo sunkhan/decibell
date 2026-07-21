@@ -1,17 +1,17 @@
 const AVATAR_COLORS = [
-  "#388bfd", "#f0883e", "#a371f7", "#3fb950",
+  "#4596ff", "#f0883e", "#a371f7", "#3fb950",
   "#d29922", "#f85149", "#e879f9", "#79c0ff",
 ];
 
 const GRADIENT_PAIRS: [string, string][] = [
-  ["#388bfd", "#1a5fc9"],
+  ["#4596ff", "#2569cd"],
   ["#f0883e", "#da6d25"],
   ["#a371f7", "#8957e5"],
   ["#3fb950", "#238636"],
   ["#d29922", "#b37a15"],
   ["#f85149", "#da3633"],
   ["#e879f9", "#c840e0"],
-  ["#79c0ff", "#388bfd"],
+  ["#79c0ff", "#4596ff"],
 ];
 
 export function stringToColor(str: string): string {

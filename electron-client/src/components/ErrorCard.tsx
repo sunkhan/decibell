@@ -23,11 +23,11 @@ const defaultIcon = (
 
 export default function ErrorCard({ icon, children }: ErrorCardProps) {
   return (
-    <div className="flex max-w-[520px] items-start gap-3 rounded-[10px] border border-warning/10 bg-warning/[0.06] px-4 py-3.5 animate-[fadeUp_0.4s_ease]">
+    <div className="flex max-w-[520px] items-start gap-3 rounded-md border border-warning/10 bg-warning/[0.06] px-4 py-3.5 animate-[fadeUp_0.4s_ease]">
       <div className="mt-px flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-warning/[0.12]">
         {icon ?? defaultIcon}
       </div>
-      <p className="text-[13px] leading-relaxed text-text-secondary">
+      <p className="text-[13px] leading-[1.55] text-text-secondary">
         {children}
       </p>
     </div>

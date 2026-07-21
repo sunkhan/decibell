@@ -129,7 +129,7 @@ export default function SettingsModal() {
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="flex h-[560px] w-[820px] overflow-hidden rounded-2xl border border-border bg-bg-dark shadow-[0_24px_80px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.02)] transition-all duration-300"
+        className="flex h-[560px] w-[820px] overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-all duration-300"
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",
@@ -138,14 +138,14 @@ export default function SettingsModal() {
       >
         {/* Left sidebar */}
         <div className="flex w-[210px] shrink-0 flex-col gap-0.5 border-r border-border-divider bg-bg-darkest px-3 py-6">
-          <div className="mb-2 px-3 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+          <div className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
             Settings
           </div>
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setSettingsTab(tab.id)}
-              className={`flex items-center gap-2.5 rounded-[10px] px-3 py-[9px] text-[14px] transition-colors ${
+              className={`flex items-center gap-2.5 rounded-md px-3 py-[9px] text-[14px] transition-colors ${
                 settingsTab === tab.id
                   ? "bg-accent-soft font-medium text-text-primary"
                   : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
@@ -162,12 +162,12 @@ export default function SettingsModal() {
         {/* Right content */}
         <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
           <div className="flex items-center justify-between px-8 pt-7 pb-5">
-            <h2 className="font-display text-xl font-semibold text-text-primary">
+            <h2 className="font-display text-[18px] font-semibold text-text-primary">
               {activeTab.label}
             </h2>
             <button
               onClick={closeModal}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+              className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                 <line x1="18" y1="6" x2="6" y2="18" />

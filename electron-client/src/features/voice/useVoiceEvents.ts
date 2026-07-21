@@ -13,6 +13,7 @@ import { playSound } from "../../utils/sounds";
 import { buildCodecToast } from "../../utils/codecToasts";
 import { getCurrentWindow } from "../../lib/window";
 import { activeStreamCapture } from "./streaming/StreamCapture";
+import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { toast } from "../../stores/toastStore";
 
 /// dB → linear gain. -40 dB floor maps to 0 (effectively muted).
@@ -336,14 +337,17 @@ export function useVoiceEvents() {
     // loss never converges. No-op for clients that aren't streaming.
     promises.push(
       listen("keyframe_requested", () => {
-        if (window.decibell.platform === "win32") {
-          // Windows: native encoder thread owns the encoder; signal it
-          // via the AtomicBool flip that force_keyframe maps to.
+        if (isNativeEncodeActive()) {
+          // Native encoder thread owns the encoder — Windows always, and
+          // Linux with NVENC/VAAPI. Signal it via the AtomicBool that
+          // force_keyframe flips. Branching on platform alone missed the
+          // Linux-native case, so those watchers stayed black/corrupt
+          // until the encoder's next natural IDR (~4s GOP).
           invoke("force_keyframe", {}).catch((e) =>
             console.error("[voice] force_keyframe failed:", e),
           );
         } else {
-          // Linux/macOS: WebCodecs encoder lives in the renderer.
+          // Renderer WebCodecs encoder path (Linux/macOS software encode).
           activeStreamCapture()?.forceKeyframe();
         }
       }),

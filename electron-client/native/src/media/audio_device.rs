@@ -88,11 +88,11 @@ pub fn get_default_device(host: &cpal::Host, input: bool) -> Option<cpal::Device
             };
             if let Ok(mut devs) = devices {
                 if let Some(d) = devs.find(|d| d.name().map(|n| n == comms_name).unwrap_or(false)) {
-                    eprintln!("[pipeline] Using Windows communications device: {}", comms_name);
+                    log::info!("[pipeline] Using Windows communications device: {}", comms_name);
                     return Some(d);
                 }
             }
-            eprintln!("[pipeline] Communications device '{}' not found in CPAL, falling back to default", comms_name);
+            log::info!("[pipeline] Communications device '{}' not found in CPAL, falling back to default", comms_name);
         }
     }
 
@@ -113,7 +113,7 @@ pub fn get_default_device(host: &cpal::Host, input: bool) -> Option<cpal::Device
     };
     let picked = devices.next()?;
     if let Ok(name) = picked.name() {
-        eprintln!(
+        log::info!(
             "[pipeline] No default {} device reported by host; falling back to first available: {}",
             if input { "input" } else { "output" },
             name,
@@ -143,7 +143,7 @@ pub fn build_input_stream(
             match found {
                 Some(d) => d,
                 None => {
-                    eprintln!("[pipeline] Input device '{}' not found, falling back to default", name);
+                    log::info!("[pipeline] Input device '{}' not found, falling back to default", name);
                     get_default_device(host, true)?
                 }
             }
@@ -155,7 +155,7 @@ pub fn build_input_stream(
         Ok(default_cfg) => {
             let rate = default_cfg.sample_rate();
             let channels = default_cfg.channels();
-            eprintln!(
+            log::info!(
                 "[pipeline] Input device: {}ch @ {}Hz (sample format: {:?})",
                 channels, rate.0, default_cfg.sample_format()
             );
@@ -197,21 +197,21 @@ pub fn build_input_stream(
             }
         },
         |e| {
-            eprintln!("[pipeline] capture stream error: {}", e);
+            log::warn!("[pipeline] capture stream error: {}", e);
         },
         None,
     ) {
         Ok(stream) => {
             if let Err(e) = stream.play() {
-                eprintln!("[pipeline] failed to start capture stream: {}", e);
+                log::warn!("[pipeline] failed to start capture stream: {}", e);
                 None
             } else {
-                eprintln!("[pipeline] Capture stream started: mono @ {}Hz (no callback resampling)", input_sample_rate);
+                log::info!("[pipeline] Capture stream started: mono @ {}Hz (no callback resampling)", input_sample_rate);
                 Some((stream, input_sample_rate))
             }
         }
         Err(e) => {
-            eprintln!("[pipeline] build_input_stream failed: {}", e);
+            log::warn!("[pipeline] build_input_stream failed: {}", e);
             None
         }
     }
@@ -239,7 +239,7 @@ pub fn build_output_stream(
             match found {
                 Some(d) => d,
                 None => {
-                    eprintln!("[pipeline] Output device '{}' not found, falling back to default", name);
+                    log::info!("[pipeline] Output device '{}' not found, falling back to default", name);
                     get_default_device(host, false)?
                 }
             }
@@ -254,14 +254,14 @@ pub fn build_output_stream(
                 sample_rate: default_cfg.sample_rate(),
                 buffer_size: cpal::BufferSize::Default,
             };
-            eprintln!(
+            log::info!(
                 "[pipeline] Output device: {}ch @ {}Hz (sample format: {:?})",
                 cfg.channels, cfg.sample_rate.0, default_cfg.sample_format()
             );
             (cfg, default_cfg.channels())
         }
         Err(e) => {
-            eprintln!("[pipeline] default_output_config failed ({}), trying 48kHz stereo", e);
+            log::warn!("[pipeline] default_output_config failed ({}), trying 48kHz stereo", e);
             let cfg = cpal::StreamConfig {
                 channels: 2,
                 sample_rate: cpal::SampleRate(SAMPLE_RATE),
@@ -338,7 +338,7 @@ pub fn build_output_stream(
             }
         },
         |e| {
-            eprintln!("[pipeline] playback stream error: {}", e);
+            log::warn!("[pipeline] playback stream error: {}", e);
         },
         None,
     ) {
@@ -380,7 +380,7 @@ pub fn build_voice_output_stream(
             match found {
                 Some(d) => d,
                 None => {
-                    eprintln!("[pipeline] Voice output device '{}' not found, falling back to default", name);
+                    log::info!("[pipeline] Voice output device '{}' not found, falling back to default", name);
                     get_default_device(host, false)?
                 }
             }
@@ -395,14 +395,14 @@ pub fn build_voice_output_stream(
                 sample_rate: default_cfg.sample_rate(),
                 buffer_size: cpal::BufferSize::Default,
             };
-            eprintln!(
+            log::info!(
                 "[pipeline] Voice output device: {}ch @ {}Hz",
                 cfg.channels, cfg.sample_rate.0
             );
             (cfg, default_cfg.channels())
         }
         Err(e) => {
-            eprintln!("[pipeline] voice output default_output_config failed ({}), trying 48kHz stereo", e);
+            log::warn!("[pipeline] voice output default_output_config failed ({}), trying 48kHz stereo", e);
             (cpal::StreamConfig { channels: 2, sample_rate: cpal::SampleRate(SAMPLE_RATE), buffer_size: cpal::BufferSize::Default }, 2)
         }
     };
@@ -430,7 +430,7 @@ pub fn build_voice_output_stream(
                 for ch in frame.iter_mut() { *ch = v; }
             }
         },
-        |e| eprintln!("[pipeline] voice output stream error: {}", e),
+        |e| log::warn!("[pipeline] voice output stream error: {}", e),
         None,
     ) {
         Ok(s) => s,
@@ -467,7 +467,7 @@ pub fn build_stream_output_stream(
             match found {
                 Some(d) => d,
                 None => {
-                    eprintln!("[pipeline] Stream output device '{}' not found, falling back to default", name);
+                    log::info!("[pipeline] Stream output device '{}' not found, falling back to default", name);
                     get_default_device(host, false)?
                 }
             }
@@ -482,14 +482,14 @@ pub fn build_stream_output_stream(
                 sample_rate: default_cfg.sample_rate(),
                 buffer_size: cpal::BufferSize::Default,
             };
-            eprintln!(
+            log::info!(
                 "[pipeline] Stream output device: {}ch @ {}Hz",
                 cfg.channels, cfg.sample_rate.0
             );
             (cfg, default_cfg.channels())
         }
         Err(e) => {
-            eprintln!("[pipeline] stream output default_output_config failed ({}), trying 48kHz stereo", e);
+            log::warn!("[pipeline] stream output default_output_config failed ({}), trying 48kHz stereo", e);
             (cpal::StreamConfig { channels: 2, sample_rate: cpal::SampleRate(SAMPLE_RATE), buffer_size: cpal::BufferSize::Default }, 2)
         }
     };
@@ -528,7 +528,7 @@ pub fn build_stream_output_stream(
                 }
             }
         },
-        |e| eprintln!("[pipeline] stream output error: {}", e),
+        |e| log::warn!("[pipeline] stream output error: {}", e),
         None,
     ) {
         Ok(s) => s,

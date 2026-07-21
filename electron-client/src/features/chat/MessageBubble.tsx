@@ -26,13 +26,30 @@ function formatTimestamp(ts: string): string {
   return `${date.toLocaleDateString()}, at ${time}`;
 }
 
+// Parsed-epoch cache keyed on message identity. shouldGroup runs in
+// Virtuoso's itemContent for every visible row on every list render —
+// intentionally lazy (see ChatPanel's no-precomputed-array note), but
+// re-parsing the same timestamps each pass wastes Date churn during
+// scroll. Message objects are stable in the stores, so a WeakMap makes
+// each parse once-per-message; replaced objects just re-parse.
+const epochCache = new WeakMap<Message, number>();
+
+function messageEpoch(m: Message): number {
+  let epoch = epochCache.get(m);
+  if (epoch === undefined) {
+    epoch = parseTimestamp(m.timestamp).getTime();
+    epochCache.set(m, epoch);
+  }
+  return epoch;
+}
+
 /** Same sender within 7 minutes of the previous → grouped row. */
 export function shouldGroup(prev: Message | undefined, curr: Message): boolean {
   if (!prev || prev.sender !== curr.sender) return false;
-  const prevDate = parseTimestamp(prev.timestamp);
-  const currDate = parseTimestamp(curr.timestamp);
-  if (isNaN(prevDate.getTime()) || isNaN(currDate.getTime())) return false;
-  return Math.abs(currDate.getTime() - prevDate.getTime()) < 7 * 60 * 1000;
+  const prevEpoch = messageEpoch(prev);
+  const currEpoch = messageEpoch(curr);
+  if (isNaN(prevEpoch) || isNaN(currEpoch)) return false;
+  return Math.abs(currEpoch - prevEpoch) < 7 * 60 * 1000;
 }
 
 interface Props {
@@ -90,11 +107,11 @@ function MessageBubble({
   if (grouped) {
     return (
       <div
-        className="group relative flex gap-3 rounded-xl py-px pr-2 hover:bg-white/[0.015]"
+        className="group relative flex gap-3 rounded-lg py-px pr-2 hover:bg-white/[0.015]"
         style={{ paddingLeft }}
       >
         <div className="flex w-[38px] shrink-0 items-baseline justify-end">
-          <span className="text-[10px] font-medium leading-none text-text-muted opacity-0 group-hover:opacity-100">
+          <span className="text-[11px] font-medium leading-none tabular-nums text-text-muted opacity-0 group-hover:opacity-100">
             {parseTimestamp(message.timestamp).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
@@ -116,7 +133,7 @@ function MessageBubble({
           <button
             onClick={(e) => onDelete(message, { skipConfirm: e.shiftKey })}
             title="Delete message (Shift+click to skip confirmation)"
-            className="absolute right-2 top-0 hidden h-6 w-6 items-center justify-center rounded-md bg-bg-secondary text-error hover:bg-error/10 group-hover:flex"
+            className="absolute right-2 top-0 hidden h-6 w-6 items-center justify-center rounded-sm bg-bg-secondary text-error hover:bg-error/10 group-hover:flex"
           >
             <svg
               className="h-3.5 w-3.5"
@@ -140,7 +157,7 @@ function MessageBubble({
 
   return (
     <div
-      className={`group relative flex gap-3 rounded-xl pr-2 pt-2.5 pb-0.5 hover:bg-white/[0.015]${
+      className={`group relative flex gap-3 rounded-lg pr-2 pt-2.5 pb-0.5 hover:bg-white/[0.015]${
         isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""
       }`}
       style={{ paddingLeft }}
@@ -156,19 +173,19 @@ function MessageBubble({
       <div className="select-text min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span
-            className="cursor-pointer text-sm font-bold hover:underline"
+            className="cursor-pointer text-sm font-semibold hover:underline"
             style={{ color: stringToColor(message.sender) }}
             onClick={handleSenderClick}
             onContextMenu={handleSenderContextMenu}
           >
             {message.sender}
           </span>
-          <span className="text-[11px] font-medium text-text-muted">
+          <span className="text-[11px] font-medium tabular-nums text-text-muted">
             {formatTimestamp(message.timestamp)}
           </span>
         </div>
         {message.content && (
-          <p className="mt-0.5 break-all text-sm leading-relaxed text-text-primary [overflow-wrap:anywhere]">
+          <p className="mt-0.5 break-all text-sm leading-[1.55] text-text-primary [overflow-wrap:anywhere]">
             <MessageText content={message.content} />
           </p>
         )}
@@ -181,7 +198,7 @@ function MessageBubble({
         <button
           onClick={(e) => onDelete(message, { skipConfirm: e.shiftKey })}
           title="Delete message (Shift+click to skip confirmation)"
-          className="absolute right-2 top-1 hidden h-6 w-6 items-center justify-center rounded-md bg-bg-secondary text-error hover:bg-error/10 group-hover:flex"
+          className="absolute right-2 top-1 hidden h-6 w-6 items-center justify-center rounded-sm bg-bg-secondary text-error hover:bg-error/10 group-hover:flex"
         >
           <svg
             className="h-3.5 w-3.5"

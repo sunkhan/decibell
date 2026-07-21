@@ -177,11 +177,11 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                         Ok(source_id_parser::CaptureTarget::Monitor(_)) => {
                             match capture_audio_wasapi::start_system_audio_capture() {
                                 Ok(rx) => {
-                                    eprintln!("[stream-audio] system loopback (exclude decibell) started");
+                                    log::info!("[stream-audio] system loopback (exclude decibell) started");
                                     Some(rx)
                                 }
                                 Err(e) => {
-                                    eprintln!("[stream-audio] system loopback failed: {}", e);
+                                    log::warn!("[stream-audio] system loopback failed: {}", e);
                                     None
                                 }
                             }
@@ -201,22 +201,22 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                             match pid {
                                 Some(p) => match capture_audio_wasapi::start_process_audio_capture(p) {
                                     Ok(rx) => {
-                                        eprintln!("[stream-audio] per-window loopback for pid={} started", p);
+                                        log::info!("[stream-audio] per-window loopback for pid={} started", p);
                                         Some(rx)
                                     }
                                     Err(e) => {
-                                        eprintln!("[stream-audio] per-window loopback failed: {}", e);
+                                        log::warn!("[stream-audio] per-window loopback failed: {}", e);
                                         None
                                     }
                                 },
                                 None => {
-                                    eprintln!("[stream-audio] could not resolve PID from HWND={}", hwnd_u64);
+                                    log::info!("[stream-audio] could not resolve PID from HWND={}", hwnd_u64);
                                     None
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("[stream-audio] source_id parse error: {:?}", e);
+                            log::warn!("[stream-audio] source_id parse error: {:?}", e);
                             None
                         }
                     };
@@ -369,39 +369,47 @@ pub struct StopScreenShareArgs {
 #[napi]
 pub async fn stop_screen_share(args: StopScreenShareArgs) -> napi::Result<()> {
     let state_arc = state::shared();
-    let (write_tx, data) = {
+    // Take the engines under the lock but DON'T drop them here: VideoEngine::
+    // Drop → stop_linux()/stop_windows() joins the native encode/capture
+    // threads, and joining under the AppState mutex stalls every other
+    // command for the flush duration. Idempotent: StreamCapture.stop() and
+    // external stop callers may both invoke this; the StopStreamReq is
+    // best-effort so a dead community connection still tears down locally.
+    let (video, audio, send) = {
         let mut s = state_arc.lock().await;
-        // Setting video_engine = None runs VideoEngine::Drop → stop()
-        // → stop_linux()/stop_windows() (joins the native threads) +
-        // clear_frame_sink. Idempotent: StreamCapture.stop() and the
-        // external stop callers may both invoke this; if we weren't
-        // streaming, return without a duplicate StopStreamReq.
         let was_streaming = s.video_engine.is_some();
-        s.video_engine = None;
-        s.audio_stream_engine = None;
-        if !was_streaming {
-            return Ok(());
-        }
-        let client = s.communities.get(&args.server_id).ok_or_else(|| {
-            napi::Error::from_reason(format!(
-                "Not connected to community {}",
-                args.server_id
-            ))
-        })?;
-        let tx = client.connection_write_tx().ok_or_else(|| {
-            napi::Error::from_reason("Community connection lost")
-        })?;
-        let pkt = build_packet(
-            packet::Type::StopStreamReq,
-            packet::Payload::StopStreamReq(StopStreamRequest {
-                channel_id: args.channel_id,
-            }),
-            Some(&client.jwt),
-        );
-        (tx, pkt)
+        let video = s.video_engine.take();
+        let audio = s.audio_stream_engine.take();
+        let send = if was_streaming {
+            s.communities.get(&args.server_id).and_then(|client| {
+                client.connection_write_tx().map(|tx| {
+                    let pkt = build_packet(
+                        packet::Type::StopStreamReq,
+                        packet::Payload::StopStreamReq(StopStreamRequest {
+                            channel_id: args.channel_id.clone(),
+                        }),
+                        Some(&client.jwt),
+                    );
+                    (tx, pkt)
+                })
+            })
+        } else {
+            None
+        };
+        (video, audio, send)
     };
 
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await;
+    // Drop (→ join native threads + clear_frame_sink) off the async runtime.
+    if video.is_some() || audio.is_some() {
+        tokio::task::spawn_blocking(move || {
+            drop(video);
+            drop(audio);
+        });
+    }
+
+    if let Some((write_tx, data)) = send {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await;
+    }
     Ok(())
 }
 
@@ -762,17 +770,25 @@ pub struct SendStreamThumbnailArgs {
 #[napi]
 pub async fn send_stream_thumbnail(args: SendStreamThumbnailArgs) -> napi::Result<()> {
     let state_arc = state::shared();
-    let s = state_arc.lock().await;
-    let client = s.communities.get(&args.server_id).ok_or_else(|| {
-        napi::Error::from_reason(format!(
-            "Not connected to community {}",
-            args.server_id
-        ))
-    })?;
-    client
-        .send_stream_thumbnail(&args.channel_id, args.jpeg_data.as_ref())
-        .await
-        .map_err(napi::Error::from_reason)
+    // Clone the write channel + build the packet under the lock, then
+    // release it before awaiting the send.
+    let parts = {
+        let s = state_arc.lock().await;
+        let client = s.communities.get(&args.server_id).ok_or_else(|| {
+            napi::Error::from_reason(format!(
+                "Not connected to community {}",
+                args.server_id
+            ))
+        })?;
+        client.thumbnail_send_parts(&args.channel_id, args.jpeg_data.as_ref())
+    };
+    let (write_tx, data) =
+        parts.ok_or_else(|| napi::Error::from_reason("Community connection lost"))?;
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
+        Err(_) => Err(napi::Error::from_reason("Send timed out")),
+    }
 }
 
 // ─── Windows native FFmpeg encoder commands (PR after PR8) ─────────

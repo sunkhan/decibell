@@ -112,16 +112,40 @@ async function handleRequest(
       // buffered into RAM. Chromium's MF renderer reads with its own
       // range-fetch loop anyway, so each request is typically only
       // a few MB.
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          if (!res.write(Buffer.from(value))) {
-            // Backpressure — wait for drain.
-            await new Promise<void>((r) => res.once("drain", () => r()));
+      //
+      // The client routinely goes away mid-stream (seek = abort the
+      // old range request, close the player = abort everything), so
+      // the loop must stop pulling from upstream the moment the
+      // response socket closes — and the backpressure wait must wake
+      // on close too, or a disconnect during a full write buffer
+      // leaves this handler awaiting a "drain" that never fires.
+      let clientGone = false;
+      const onClose = () => {
+        clientGone = true;
+        reader.cancel().catch(() => {});
+      };
+      res.on("close", onClose);
+      try {
+        while (!clientGone) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value && !clientGone) {
+            if (!res.write(Buffer.from(value))) {
+              await new Promise<void>((r) => {
+                const wake = () => {
+                  res.off("drain", wake);
+                  res.off("close", wake);
+                  r();
+                };
+                res.once("drain", wake);
+                res.once("close", wake);
+              });
+            }
           }
         }
+      } finally {
+        res.off("close", onClose);
+        reader.cancel().catch(() => {});
       }
     }
     res.end();
@@ -130,7 +154,11 @@ async function handleRequest(
     console.error(`[mediaServer] error: ${(e as Error).message}`);
     if (!res.headersSent) {
       res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end(`error: ${(e as Error).message}`);
+    } else {
+      // Headers (and possibly part of a binary body) already went
+      // out — appending an error string would corrupt the stream.
+      res.destroy();
     }
-    res.end(`error: ${(e as Error).message}`);
   }
 }

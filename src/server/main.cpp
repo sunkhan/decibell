@@ -100,12 +100,24 @@ private:
             boost::asio::buffer(inbound_header_, 4),
             [this, self](boost::system::error_code ec, std::size_t /*length*/) {
                 if (!ec) {
-                    uint32_t net_len = *reinterpret_cast<uint32_t*>(inbound_header_);
+                    // memcpy rather than reinterpret_cast: reading a
+                    // uint32_t through a char[4] violates strict aliasing.
+                    uint32_t net_len;
+                    std::memcpy(&net_len, inbound_header_, 4);
                     uint32_t body_length = ntohl(net_len);
-                    if (body_length > 2 * 1024 * 1024) return;
+                    if (body_length > 2 * 1024 * 1024) {
+                        // Don't just `return` — that leaves the read loop
+                        // dead but the socket open, lingering until the
+                        // stale sweep. Drop the session (destroying it
+                        // closes the socket).
+                        std::cout << "[Session] Oversized frame (" << body_length
+                                  << " bytes); closing connection.\n";
+                        manager_.leave(shared_from_this());
+                        return;
+                    }
                     inbound_body_.resize(body_length);
                     do_read_body(body_length);
-                } 
+                }
                 else {
                     std::cout << "[Session] Client disconnected: " << username_ << "\n";
                     manager_.leave(shared_from_this());
@@ -184,14 +196,15 @@ private:
         else if (packet.type() == chatproj::Packet::LOGIN_REQ) {
             const auto& req = packet.login_req();
 
-            // If the user already has a session, force-kick the stale one.
-            // This handles the case where the previous connection died without
-            // a clean TCP close (e.g. client crashed, network dropped).
-            manager_.kick_user(req.username());
-
             auto token_opt = auth_manager_.authenticateUser(req.username(), req.password());
-            
+
             if (token_opt.has_value()) {
+                // Only now that the password is verified, force-kick any
+                // stale session for this user (previous connection died
+                // without a clean TCP close). Kicking BEFORE the password
+                // check let any unauthenticated client evict any user by
+                // name (send LOGIN_REQ{victim} with a bogus password).
+                manager_.kick_user(req.username());
                 authenticated_ = true;
                 username_ = req.username();
                 // Prime avatar_version_ so broadcast_presence below

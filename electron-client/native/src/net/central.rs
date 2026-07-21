@@ -304,7 +304,7 @@ impl CentralClient {
                                 )
                                 .await
                                 {
-                                    eprintln!("[auto-rejoin] connect failed: {e}");
+                                    log::info!("[auto-rejoin] connect failed: {e}");
                                 }
                             });
                         }
@@ -514,6 +514,14 @@ impl CentralClient {
         // Read loop ended — connection lost, start reconnect
         log::warn!("Central server read loop ended, starting reconnect");
         let mut s = state.lock().await;
+        // Fail in-flight request/response pairs immediately: dropping
+        // the oneshot senders wakes every waiter with RecvError right
+        // now, instead of each caller burning its full timeout — and
+        // keeps the maps from accumulating stranded entries across
+        // connection bounces.
+        s.pending_invite_resolves.clear();
+        s.pending_avatar_fetches.clear();
+        s.pending_avatar_update = None;
         if let Some(ref mut central) = s.central {
             central.start_reconnect(state.clone());
         }

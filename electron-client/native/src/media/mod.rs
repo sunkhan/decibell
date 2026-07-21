@@ -454,15 +454,20 @@ fn run_video_recv_thread(
 
                 if packet_type == video_packet::PACKET_TYPE_VIDEO {
                     if let Some(pkt) = UdpVideoPacket::from_bytes(&recv_buf[..n]) {
-                        let username = pkt.sender_username();
-                        if video_streamer_username.as_deref() != Some(&username) {
-                            has_received_keyframe = false;
+                        // Alloc-free fast path: only build a String when
+                        // the streamer actually changes, not per packet
+                        // (~2000/sec at 1080p60).
+                        match &video_streamer_username {
+                            Some(u) if pkt.sender_username_matches(u) => {}
+                            _ => {
+                                has_received_keyframe = false;
+                                video_streamer_username = Some(pkt.sender_username());
+                            }
                         }
-                        video_streamer_username = Some(username.clone());
                         if let Some(frame) = video_receiver.process_packet(&pkt) {
                             video_frames_received += 1;
                             if frame.is_keyframe || video_frames_received % 300 == 1 {
-                                eprintln!(
+                                log::debug!(
                                     "[video-recv] Frame {} reassembled: {} bytes, keyframe={} (total={})",
                                     frame.frame_id,
                                     frame.data.len(),
@@ -477,22 +482,25 @@ fn run_video_recv_thread(
                         }
                     }
                 } else if packet_type == video_packet::PACKET_TYPE_FEC {
-                    let header_size = std::mem::size_of::<video_packet::UdpFecPacket>()
-                        - video_packet::UDP_MAX_PAYLOAD;
-                    if n >= header_size {
+                    // FEC packets are always serialized at full struct
+                    // size (the XOR payload is the whole 1400-byte
+                    // window — see UdpFecPacket::to_bytes). A shorter
+                    // datagram is malformed; accepting it would leave a
+                    // zero-filled payload tail that silently corrupts
+                    // XOR recovery.
+                    if n >= std::mem::size_of::<video_packet::UdpFecPacket>() {
                         let fec_pkt = unsafe {
                             let mut pkt: video_packet::UdpFecPacket = std::mem::zeroed();
-                            let copy_len = n.min(std::mem::size_of::<video_packet::UdpFecPacket>());
                             std::ptr::copy_nonoverlapping(
                                 recv_buf.as_ptr(),
                                 &mut pkt as *mut video_packet::UdpFecPacket as *mut u8,
-                                copy_len,
+                                std::mem::size_of::<video_packet::UdpFecPacket>(),
                             );
                             pkt
                         };
                         if let Some(frame) = video_receiver.process_fec_packet(&fec_pkt) {
                             video_frames_received += 1;
-                            eprintln!(
+                            log::debug!(
                                 "[video-recv] Frame {} completed via FEC: {} bytes, keyframe={}",
                                 frame.frame_id, frame.data.len(), frame.is_keyframe
                             );
@@ -505,7 +513,7 @@ fn run_video_recv_thread(
                 } else if packet_type == video_packet::PACKET_TYPE_KEYFRAME_REQUEST
                     && n >= std::mem::size_of::<UdpKeyframeRequest>()
                 {
-                    eprintln!("[video-recv] Keyframe request received, signaling encoder");
+                    log::debug!("[video-recv] Keyframe request received, signaling encoder");
                     let _ = event_tx.send(pipeline::VoiceEvent::KeyframeRequested);
                 }
             }
@@ -517,7 +525,7 @@ fn run_video_recv_thread(
                     || e.raw_os_error() == Some(997)
                     || e.raw_os_error() == Some(10054) => {}
             Err(e) => {
-                eprintln!("[video-recv] Socket error: {}", e);
+                log::warn!("[video-recv] Socket error: {}", e);
                 break;
             }
         }
@@ -545,7 +553,7 @@ fn run_video_recv_thread(
                     Duration::from_millis(500)
                 };
                 if need_pli && last_pli_time.elapsed() > pli_interval {
-                    eprintln!(
+                    log::info!(
                         "[video-recv] Sending keyframe request (PLI) to '{}' (has_keyframe={})",
                         target, has_received_keyframe
                     );
@@ -673,15 +681,22 @@ impl VideoEngine {
         let thumb_channel_id = channel_id.clone();
         let thumb_task = tokio::spawn(async move {
             while let Some(jpeg) = thumb_rx.recv().await {
-                let state_arc = crate::state::shared();
-                let s = state_arc.lock().await;
-                let Some(client) = s.communities.get(&thumb_server_id) else {
-                    continue;
+                // Clone the write channel + build the packet under the
+                // lock, then release it before awaiting the send — holding
+                // AppState across the send stalls every other command.
+                let parts = {
+                    let state_arc = crate::state::shared();
+                    let s = state_arc.lock().await;
+                    s.communities
+                        .get(&thumb_server_id)
+                        .and_then(|c| c.thumbnail_send_parts(&thumb_channel_id, &jpeg))
                 };
-                if let Err(e) =
-                    client.send_stream_thumbnail(&thumb_channel_id, &jpeg).await
-                {
-                    log::warn!("[encoder/thumb] server send failed: {e}");
+                if let Some((tx, data)) = parts {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        tx.send(data),
+                    )
+                    .await;
                 }
             }
         });
@@ -787,13 +802,22 @@ impl VideoEngine {
         let thumb_channel_id = channel_id.clone();
         let thumb_task = tokio::spawn(async move {
             while let Some(jpeg) = thumb_rx.recv().await {
-                let state_arc = crate::state::shared();
-                let s = state_arc.lock().await;
-                let Some(client) = s.communities.get(&thumb_server_id) else {
-                    continue;
+                // Clone the write channel + build the packet under the
+                // lock, then release it before awaiting the send — holding
+                // AppState across the send stalls every other command.
+                let parts = {
+                    let state_arc = crate::state::shared();
+                    let s = state_arc.lock().await;
+                    s.communities
+                        .get(&thumb_server_id)
+                        .and_then(|c| c.thumbnail_send_parts(&thumb_channel_id, &jpeg))
                 };
-                if let Err(e) = client.send_stream_thumbnail(&thumb_channel_id, &jpeg).await {
-                    log::warn!("[video-linux/thumb] server send failed: {e}");
+                if let Some((tx, data)) = parts {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        tx.send(data),
+                    )
+                    .await;
                 }
             }
         });

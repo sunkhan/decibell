@@ -14,7 +14,8 @@ import { registerDialogHandlers } from "./dialog";
 import { registerFsHandlers } from "./fs";
 import { registerNetHandlers } from "./netFetch";
 import { startMediaServer, stopMediaServer, getMediaServerPort } from "./mediaServer";
-import { initUpdater, kickoffInitialCheck } from "./update";
+import { initUpdater, kickoffInitialCheck, cancelInitialCheck } from "./update";
+import { sweepStale } from "./fileRegistry";
 import { initMainSentry } from "./sentry";
 import * as crypto from "node:crypto";
 
@@ -552,6 +553,10 @@ app.whenReady().then(async () => {
   registerFsHandlers();
   registerNetHandlers();
 
+  // GC abandoned decibell-file:// registrations (renderer crash or
+  // forgotten upload). Entries expire after 1h; sweep every 5 min.
+  setInterval(sweepStale, 5 * 60_000).unref();
+
   // Loopback HTTP proxy for `<video>` / `<audio>` element sources. See
   // mediaServer.ts header for the why; the port the OS picks is passed
   // into the renderer through BrowserWindow additionalArguments below.
@@ -654,6 +659,7 @@ app.on("before-quit", async (e) => {
   // running and the user would have to kill it via Task Manager —
   // exactly the bug we're fixing here.
   e.preventDefault();
+  cancelInitialCheck();
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, 3000));
   try {
     await Promise.race([shutdownAddon(), timeout]);

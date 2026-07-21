@@ -1,3 +1,4 @@
+import { useShallow } from "zustand/react/shallow";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import { useChatStore } from "../../stores/chatStore";
 
@@ -5,16 +6,21 @@ import { useChatStore } from "../../stores/chatStore";
 /// for the active channel above the chat input, with cancel + remove
 /// buttons. Empty when there's nothing pending.
 export default function PendingAttachmentsRow() {
-  const pendings = useAttachmentsStore((s) => s.pendings);
   const removePending = useAttachmentsStore((s) => s.removePending);
   const activeServerId = useChatStore((s) => s.activeServerId);
   const activeChannelId = useChatStore((s) => s.activeChannelId);
+  // Shallow-compared per-channel slice: uploads in other channels
+  // replace the pendings record but leave these entries' identities
+  // untouched, so they no longer re-render this row.
+  const items = useAttachmentsStore(
+    useShallow((s) =>
+      Object.values(s.pendings).filter(
+        (p) => p.serverId === activeServerId && p.channelId === activeChannelId,
+      ),
+    ),
+  );
 
   if (!activeServerId || !activeChannelId) return null;
-
-  const items = Object.values(pendings).filter(
-    (p) => p.serverId === activeServerId && p.channelId === activeChannelId,
-  );
   if (items.length === 0) return null;
 
   return (
@@ -27,17 +33,17 @@ export default function PendingAttachmentsRow() {
         return (
           <div
             key={p.pendingId}
-            className="relative flex items-center gap-2 rounded-lg border border-border bg-bg-light p-2"
+            className="relative flex items-center gap-2 rounded-md border border-border bg-bg-light p-2"
           >
             {isImage ? (
               <img
                 src={p.previewUrl ?? undefined}
                 alt={p.filename}
-                className="h-12 w-12 rounded object-cover"
+                className="h-12 w-12 rounded-sm object-cover"
                 draggable={false}
               />
             ) : (
-              <div className="flex h-12 w-12 items-center justify-center rounded bg-bg-secondary text-text-muted">
+              <div className="flex h-12 w-12 items-center justify-center rounded-sm bg-bg-secondary text-text-muted">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                   <polyline points="14 2 14 8 20 8" />

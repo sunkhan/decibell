@@ -222,7 +222,7 @@ export default function UserProfilePopup() {
     <div className="fixed inset-0 z-[9999] isolate">
       <div
         ref={popupRef}
-        className="absolute overflow-hidden rounded-[14px] border border-border bg-bg-light shadow-[0_12px_48px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.02)]"
+        className="absolute overflow-hidden rounded-lg border border-border bg-bg-light shadow-modal"
         style={{
           left: x,
           top: y,
@@ -243,8 +243,8 @@ export default function UserProfilePopup() {
         <div className="h-[60px]" style={{ background: gradient }} />
 
         <div className="relative h-7 mx-4">
-          <div className="absolute -top-9 left-0 rounded-2xl border-[4px] border-bg-light">
-            <UserAvatar username={username} size={64} className="!rounded-[10px]" />
+          <div className="absolute -top-9 left-0 rounded-xl border-[4px] border-bg-light">
+            <UserAvatar username={username} size={64} />
             <div
               className={`absolute -bottom-px -right-px h-[14px] w-[14px] rounded-full border-[3px] border-bg-light ${
                 isOnline ? "bg-success" : "bg-text-muted"
@@ -259,12 +259,12 @@ export default function UserProfilePopup() {
           </div>
           <div className="mt-1.5">
             {isOnline ? (
-              <span className="inline-flex items-center gap-[5px] rounded bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
+              <span className="inline-flex items-center gap-[5px] rounded-sm bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
                 <span className="h-1.5 w-1.5 rounded-full bg-success" />
                 Online
               </span>
             ) : (
-              <span className="inline-flex items-center gap-[5px] rounded bg-text-muted/15 px-2 py-0.5 text-[11px] font-medium text-text-muted">
+              <span className="inline-flex items-center gap-[5px] rounded-sm bg-text-muted/15 px-2 py-0.5 text-[11px] font-medium text-text-muted">
                 <span className="h-1.5 w-1.5 rounded-full bg-text-muted" />
                 Offline
               </span>
@@ -297,7 +297,7 @@ export default function UserProfilePopup() {
                   onClick={handleJoinAndWatch}
                   disabled={!canWatch}
                   title={canWatch ? "Watch stream" : reason}
-                  className={`group relative block aspect-video w-full overflow-hidden rounded-md ${
+                  className={`group relative block aspect-video w-full overflow-hidden rounded-sm ${
                     canWatch
                       ? "cursor-pointer"
                       : "cursor-not-allowed opacity-50"
@@ -348,11 +348,11 @@ export default function UserProfilePopup() {
           <>
             <div className="mx-4 my-3 h-px bg-border-divider" />
             <div className={`px-4 ${username === currentUsername ? "pb-4" : ""}`}>
-              <div className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                 Roles
               </div>
               <div className="flex flex-wrap gap-1.5">
-                <span className="inline-flex items-center gap-[5px] rounded border border-border-divider bg-bg-lighter px-2 py-[3px] text-[11px] font-medium text-text-secondary">
+                <span className="inline-flex items-center gap-[5px] rounded-sm border border-border-divider bg-bg-lighter px-2 py-[3px] text-[11px] font-medium text-text-secondary">
                   <span className="h-2 w-2 rounded-full bg-accent-bright" />
                   Member
                 </span>
@@ -374,7 +374,7 @@ export default function UserProfilePopup() {
                 onKeyDown={handleKeyDown}
                 disabled={sending}
                 placeholder={`Message @${username}`}
-                className="w-full rounded-[10px] border border-border bg-bg-mid px-3 py-[9px] text-[12px] text-text-primary outline-none transition-all placeholder:text-text-faint focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-soft)] disabled:opacity-50"
+                className="w-full rounded-md border border-border bg-bg-mid px-3 py-[9px] text-[12px] text-text-primary outline-none transition-all placeholder:text-text-faint focus:border-accent focus:shadow-ring disabled:opacity-50"
               />
             </div>
           </>

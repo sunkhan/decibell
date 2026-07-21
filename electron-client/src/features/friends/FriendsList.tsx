@@ -15,7 +15,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
 
   return (
     <div
-      className="group flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-hover"
+      className="group flex cursor-pointer items-center gap-2.5 rounded-sm px-2 py-1.5 transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(friend.username, { x: rect.right + 8, y: rect.top });
@@ -106,10 +106,10 @@ export default function FriendsList() {
   return (
     <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-dark">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="font-display text-[15px] font-semibold text-text-bright">Friends</h2>
+        <h2 className="font-display text-[16px] font-semibold text-text-bright">Friends</h2>
         <button
           onClick={() => setShowAdd(!showAdd)}
-          className="rounded-md px-2 py-1 font-channel text-[12px] font-medium text-accent-bright transition-colors hover:bg-accent-hover/15"
+          className="rounded-sm px-2 py-1 font-channel text-[12px] font-medium text-accent-bright transition-colors hover:bg-accent-hover/15"
         >
           Add Friend
         </button>
@@ -124,11 +124,11 @@ export default function FriendsList() {
               onChange={(e) => setAddUsername(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleAddFriend()}
               placeholder="Username"
-              className="min-w-0 flex-1 rounded-lg border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary outline-none transition-colors focus:border-accent"
+              className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary outline-none transition-colors focus:border-accent"
             />
             <button
               onClick={handleAddFriend}
-              className="shrink-0 rounded-lg bg-accent px-2.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-accent-hover"
+              className="shrink-0 rounded-md bg-accent px-2.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-accent-hover"
             >
               Send
             </button>
@@ -143,12 +143,12 @@ export default function FriendsList() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search friends..."
-          className="w-full rounded-[10px] border border-border bg-bg-light px-3 py-2 text-[12px] text-text-primary outline-none transition-all focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-soft)] placeholder:font-channel placeholder:text-[12px] placeholder:font-normal placeholder:text-text-faint"
+          className="w-full rounded-md border border-border bg-bg-light px-3 py-2 text-[12px] text-text-primary outline-none transition-all focus:border-accent focus:shadow-ring placeholder:font-channel placeholder:text-[12px] placeholder:font-normal placeholder:text-text-faint"
         />
       </div>
 
       {lastActionError && (
-        <div className="mx-3 mb-1 rounded-lg bg-error/10 px-2.5 py-1.5 text-xs text-error">
+        <div className="mx-3 mb-1 rounded-md bg-error/10 px-2.5 py-1.5 text-xs text-error">
           {lastActionError}
         </div>
       )}
@@ -158,7 +158,7 @@ export default function FriendsList() {
           (section) =>
             section.items.length > 0 && (
               <div key={section.label} className="mb-3">
-                <h3 className="mb-1 px-2 font-channel text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+                <h3 className="mb-1 px-2 font-channel text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                   {section.label} — {section.items.length}
                 </h3>
                 {section.items.map((friend) => (

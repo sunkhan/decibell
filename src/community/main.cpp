@@ -363,8 +363,19 @@ private:
         boost::asio::async_read(socket_, boost::asio::buffer(inbound_header_, 4),
             [this, self](boost::system::error_code ec, std::size_t) {
                 if (!ec) {
-                    uint32_t length = ntohl(*reinterpret_cast<uint32_t*>(inbound_header_));
-                    if (length > 2 * 1024 * 1024) return;
+                    // memcpy rather than reinterpret_cast: reading a
+                    // uint32_t through char[4] violates strict aliasing.
+                    uint32_t net_len;
+                    std::memcpy(&net_len, inbound_header_, 4);
+                    uint32_t length = ntohl(net_len);
+                    if (length > 2 * 1024 * 1024) {
+                        // Drop the session instead of a bare `return`,
+                        // which would leave the read loop dead but the
+                        // socket open (and the session still receiving
+                        // broadcasts) until the stale sweep.
+                        manager_.leave(shared_from_this());
+                        return;
+                    }
                     inbound_body_.resize(length);
                     do_read_body(length);
                 } else {
@@ -1363,7 +1374,16 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!session->get_udp_key().empty()) {
-            udp_key_index_.erase(session->get_udp_key());
+            // Only erase the index entry if it still points at THIS
+            // session. On reconnect the same JWT-derived udp_key is
+            // re-registered onto the new session; erasing unconditionally
+            // when the old session finally errors would drop the live
+            // session's UDP routing (find_session_by_token → no match →
+            // that user's voice/video silently dies).
+            auto it = udp_key_index_.find(session->get_udp_key());
+            if (it != udp_key_index_.end() && it->second == session) {
+                udp_key_index_.erase(it);
+            }
         }
         sessions_.erase(session);
         for (auto& pair : voice_channels_) {

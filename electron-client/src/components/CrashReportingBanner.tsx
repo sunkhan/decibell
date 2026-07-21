@@ -23,7 +23,7 @@ export default function CrashReportingBanner() {
       </span>
       <button
         onClick={dismiss}
-        className="ml-3 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-accent-bright transition-colors hover:bg-accent-mid"
+        className="ml-3 flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-accent-bright transition-colors hover:bg-accent-mid"
         title="Dismiss"
       >
         <svg

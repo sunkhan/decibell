@@ -22,8 +22,17 @@ pub async fn load_config() -> napi::Result<serde_json::Value> {
 /// into AppSettings.
 #[napi]
 pub async fn save_settings(settings: serde_json::Value) -> napi::Result<()> {
-    let app_settings: crate::config::AppSettings = serde_json::from_value(settings)
+    let mut app_settings: crate::config::AppSettings = serde_json::from_value(settings)
         .map_err(|e| napi::Error::from_reason(format!("Invalid settings: {}", e)))?;
+    // The renderer's settings blob doesn't carry the codec preference
+    // toggles — those are owned by `set_codec_settings`, and serde
+    // defaults them to `true` when absent. Preserve whatever is currently
+    // on disk so a routine settings save (volume, mute, stream settings…)
+    // doesn't silently re-enable AV1/H.265 that the user turned off.
+    if let Ok(existing) = crate::config::load() {
+        app_settings.use_av1 = existing.settings.use_av1;
+        app_settings.use_h265 = existing.settings.use_h265;
+    }
     crate::config::save(None, &app_settings).map_err(napi::Error::from_reason)
 }
 

@@ -566,7 +566,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     <div
       ref={wrapperRef}
       className={`flex items-center justify-center overflow-hidden bg-bg-darkest outline-none ${
-        fullscreen ? "" : "rounded-xl border border-border"
+        fullscreen ? "" : "rounded-lg border border-border"
       } ${cursorHidden ? "cursor-none" : ""}`}
       style={wrapperStyle}
       tabIndex={-1}
@@ -609,7 +609,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
               handleDownload();
             }}
             title="Download"
-            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-md bg-bg-darkest/85 text-white/85 backdrop-blur-md transition-colors hover:bg-bg-darkest hover:text-white"
+            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-sm bg-bg-darkest/85 text-white/85 backdrop-blur-md transition-colors hover:bg-bg-darkest hover:text-white"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -639,7 +639,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
               style={{ width: `${progress}%` }}
             />
             <div
-              className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-darkest opacity-0 shadow-[0_0_6px_rgba(56,143,255,0.3)] transition-opacity group-hover:opacity-100"
+              className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-darkest opacity-0 shadow-[0_0_6px_rgba(69,150,255,0.3)] transition-opacity group-hover:opacity-100"
               style={{ left: `${progress}%` }}
             />
           </div>
@@ -691,7 +691,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
                   style={{ width: `${(muted ? 0 : volume) * 100}%` }}
                 />
                 <div
-                  className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-darkest opacity-0 shadow-[0_0_6px_rgba(56,143,255,0.3)] transition-opacity group-hover:opacity-100"
+                  className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-darkest opacity-0 shadow-[0_0_6px_rgba(69,150,255,0.3)] transition-opacity group-hover:opacity-100"
                   style={{ left: `${(muted ? 0 : volume) * 100}%` }}
                 />
               </div>
@@ -739,7 +739,7 @@ function PlayerIconButton({
         e.stopPropagation();
         onClick();
       }}
-      className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-white/80 transition-colors hover:bg-surface-active hover:text-white"
+      className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-sm text-white/80 transition-colors hover:bg-surface-active hover:text-white"
     >
       {children}
     </button>

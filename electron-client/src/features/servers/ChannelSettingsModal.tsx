@@ -51,7 +51,7 @@ function RetentionRow({
   const presetMatch = PRESETS.some((p) => p.days === value);
   return (
     <div
-      className={`flex items-center gap-3 rounded-[10px] border px-3 py-2.5 transition-colors ${
+      className={`flex items-center gap-3 rounded-md border px-3 py-2.5 transition-colors ${
         disabled ? "border-border-divider bg-bg-light/30 opacity-60" : "border-border-divider bg-bg-light"
       }`}
     >
@@ -70,7 +70,7 @@ function RetentionRow({
             if (v === "custom") return;
             onChange(parseInt(v, 10));
           }}
-          className="appearance-none rounded-md border border-border bg-bg-lighter px-3 py-1.5 pr-8 text-[12px] text-text-primary outline-none transition-all hover:border-white/[0.1] focus:border-accent disabled:cursor-not-allowed"
+          className="appearance-none rounded-sm border border-border bg-bg-lighter px-3 py-1.5 pr-8 text-[12px] text-text-primary outline-none transition-all hover:border-white/[0.1] focus:border-accent disabled:cursor-not-allowed"
         >
           {PRESETS.map((p) => (
             <option key={p.days} value={p.days}>
@@ -226,7 +226,7 @@ export default function ChannelSettingsModal() {
       onClick={closeModal}
     >
       <div
-        className="flex w-full max-w-[480px] animate-[cardIn_0.25s_ease] flex-col overflow-hidden rounded-2xl border border-border bg-bg-dark shadow-[0_24px_80px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.02)]"
+        className="flex w-full max-w-[480px] animate-[cardIn_0.25s_ease] flex-col overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-border-divider px-6 py-5">
@@ -240,7 +240,7 @@ export default function ChannelSettingsModal() {
           </div>
           <button
             onClick={closeModal}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+            className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
               <line x1="18" y1="6" x2="6" y2="18" />
@@ -250,10 +250,10 @@ export default function ChannelSettingsModal() {
         </div>
 
         <div className="flex-1 px-6 py-5">
-          <div className="mb-3 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+          <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
             Retention
           </div>
-          <p className="mb-4 text-[12px] leading-relaxed text-text-muted">
+          <p className="mb-4 text-[12px] leading-[1.55] text-text-muted">
             Text retention governs the message row itself. Attachment retention
             removes the file but leaves a tombstone so readers can see what used
             to be there. Forever keeps content indefinitely.
@@ -303,16 +303,16 @@ export default function ChannelSettingsModal() {
 
           {isOwner && (
             <div className="mt-6">
-              <div className="mb-3 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-error">
+              <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-error">
                 Danger zone
               </div>
-              <div className="rounded-[10px] border border-error/25 bg-error/5 p-3">
+              <div className="rounded-md border border-error/25 bg-error/5 p-3">
                 <div className="flex items-start gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="text-[13px] font-medium text-text-primary">
                       Wipe channel history
                     </div>
-                    <p className="mt-0.5 text-[11.5px] leading-relaxed text-text-muted">
+                    <p className="mt-0.5 text-[12px] leading-[1.55] text-text-muted">
                       Permanently deletes every message and attachment in
                       #{channel.name}. The channel itself, members, and
                       retention settings stay. Cannot be undone.
@@ -321,7 +321,7 @@ export default function ChannelSettingsModal() {
                   {!wipeConfirmOpen && (
                     <button
                       onClick={() => setWipeConfirmOpen(true)}
-                      className="shrink-0 rounded-md border border-error/40 bg-error/10 px-3 py-1.5 text-[11.5px] font-semibold text-error transition-colors hover:border-error/70 hover:bg-error/20"
+                      className="shrink-0 rounded-sm border border-error/40 bg-error/10 px-3 py-1.5 text-[12px] font-semibold text-error transition-colors hover:border-error/70 hover:bg-error/20"
                     >
                       Wipe…
                     </button>
@@ -344,7 +344,7 @@ export default function ChannelSettingsModal() {
                         }
                       }}
                       placeholder={channel.name}
-                      className="w-full rounded-md border border-border bg-bg-lighter px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-error"
+                      className="w-full rounded-sm border border-border bg-bg-lighter px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-error"
                     />
                     <div className="mt-2 flex gap-2">
                       <button
@@ -353,14 +353,14 @@ export default function ChannelSettingsModal() {
                           setWipeConfirmText("");
                         }}
                         disabled={wiping}
-                        className="flex-1 rounded-md bg-bg-light py-1.5 text-[11.5px] font-medium text-text-primary transition-colors hover:bg-bg-lighter disabled:opacity-50"
+                        className="flex-1 rounded-sm bg-bg-light py-1.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-lighter disabled:opacity-50"
                       >
                         Cancel
                       </button>
                       <button
                         onClick={handleWipe}
                         disabled={wiping || wipeConfirmText !== channel.name}
-                        className="flex-1 rounded-md bg-error py-1.5 text-[11.5px] font-semibold text-white transition-all hover:bg-error/85 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+                        className="flex-1 rounded-sm bg-error py-1.5 text-[12px] font-semibold text-white transition-all hover:bg-error/85 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {wiping ? "Wiping…" : "Wipe history"}
                       </button>
@@ -375,14 +375,14 @@ export default function ChannelSettingsModal() {
         <div className="flex shrink-0 gap-2 border-t border-border-divider px-6 py-4">
           <button
             onClick={closeModal}
-            className="flex-1 rounded-[10px] bg-bg-light py-2.5 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter"
+            className="flex-1 rounded-md bg-bg-light py-2.5 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={saving || !dirty || !isOwner}
-            className="flex-1 rounded-[10px] bg-accent py-2.5 text-[13px] font-semibold text-white transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50"
+            className="flex-1 rounded-md bg-accent py-2.5 text-[13px] font-semibold text-white transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50"
           >
             {saving ? "Saving..." : "Save"}
           </button>

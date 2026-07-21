@@ -178,11 +178,11 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
   return (
     <div
       ref={containerRef}
-      className="absolute bottom-full right-0 z-50 mb-2 flex h-[420px] w-[352px] animate-[pickerIn_0.2s_ease] flex-col overflow-hidden rounded-[14px] border border-border bg-bg-light shadow-[0_12px_48px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.02)]"
+      className="absolute bottom-full right-0 z-50 mb-2 flex h-[420px] w-[352px] animate-[pickerIn_0.2s_ease] flex-col overflow-hidden rounded-lg border border-border bg-bg-light shadow-modal"
     >
       {/* Search */}
       <div className="shrink-0 px-3 pb-2 pt-3">
-        <div className="flex items-center gap-2 rounded-[10px] border border-border bg-bg-lighter px-3 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]"
+        <div className="flex items-center gap-2 rounded-md border border-border bg-bg-lighter px-3 transition-all focus-within:border-accent focus-within:shadow-ring"
           style={{ height: 36 }}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="shrink-0 text-text-muted">
@@ -273,7 +273,7 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
               key={id}
               onClick={() => scrollToCategory(id)}
               title={CATEGORY_LABELS[id] ?? id}
-              className={`relative flex h-[34px] flex-1 cursor-pointer items-center justify-center rounded-lg transition-colors ${
+              className={`relative flex h-[34px] flex-1 cursor-pointer items-center justify-center rounded-md transition-colors ${
                 isActive
                   ? "bg-accent-soft"
                   : "hover:bg-surface-hover"
@@ -380,7 +380,7 @@ function Section({
           search-bar's bottom edge. Without this, fast scrolling
           occasionally leaves a sub-pixel gap where emojis from the
           scroll body show through behind the stuck header. */}
-      <div className="sticky -top-px z-10 bg-bg-light px-1.5 pb-[6px] pt-[7px] text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+      <div className="sticky -top-px z-10 bg-bg-light px-1.5 pb-[6px] pt-[7px] text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
         {label}
       </div>
       {hydrated ? (
@@ -418,7 +418,7 @@ function EmojiGrid({
             onMouseEnter={() => onHover({ native, name: emoji.name, id: emoji.id })}
             onMouseLeave={() => onHover(null)}
             title={emoji.name}
-            className="flex h-[38px] w-[38px] cursor-pointer items-center justify-center rounded-lg transition-all hover:scale-110 hover:bg-surface-active active:scale-95"
+            className="flex h-[38px] w-[38px] cursor-pointer items-center justify-center rounded-md transition-all hover:scale-110 hover:bg-surface-active active:scale-95"
           >
             <Twemoji emoji={native} size={22} />
           </button>

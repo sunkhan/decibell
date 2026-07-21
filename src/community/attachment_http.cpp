@@ -169,6 +169,31 @@ bool HttpRequest::parse_head(const std::string& head) {
     return true;
 }
 
+// Validate a stored MIME type before reflecting it into a response header.
+// `mime` is client-controlled at upload time and stored verbatim, so a
+// value containing CR/LF would split the HTTP response (header injection),
+// and a `text/html`/`image/svg+xml` value would let an uploaded blob run
+// script in the community server's own TLS origin. Reject anything that
+// isn't a well-formed `type/subtype` over a safe charset, falling back to
+// a benign default. Paired with X-Content-Type-Options: nosniff and
+// Content-Disposition: attachment on the serve path.
+static std::string safe_content_type(const std::string& mime) {
+    if (mime.empty() || mime.size() > 128) return "application/octet-stream";
+    auto ok = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c == '/' || c == '.' ||
+               c == '+' || c == '-';
+    };
+    int slashes = 0;
+    for (char c : mime) {
+        if (!ok(c)) return "application/octet-stream";
+        if (c == '/') slashes++;
+    }
+    if (slashes != 1 || mime.front() == '/' || mime.back() == '/')
+        return "application/octet-stream";
+    return mime;
+}
+
 // -------- connection handler --------
 
 // Each incoming TCP/TLS connection lives inside one AttachmentConnection.
@@ -393,12 +418,17 @@ private:
             send_error(409, "Conflict"); return;
         }
         if (req_.content_length < 0) { send_error(411, "Length Required"); return; }
+        // Overflow-safe caps. `offset + content_length` is signed 64-bit;
+        // a Content-Length near INT64_MAX would wrap negative and pass both
+        // `>` checks, letting the upload blow past expected_size AND
+        // max_attachment_bytes_ (disk-fill DoS). offset == cur_size here
+        // (checked above) so `limit - offset` is a non-negative headroom.
         if (att->expected_size > 0 &&
-            offset + req_.content_length > att->expected_size) {
+            req_.content_length > att->expected_size - offset) {
             send_error(413, "Payload Too Large"); return;
         }
         if (max_attachment_bytes_ > 0 &&
-            offset + req_.content_length > max_attachment_bytes_) {
+            req_.content_length > max_attachment_bytes_ - offset) {
             send_error(413, "Payload Too Large"); return;
         }
 
@@ -688,7 +718,14 @@ private:
         } else {
             headers = "HTTP/1.1 200 OK\r\n";
         }
-        headers += "Content-Type: "   + att->mime + "\r\n";
+        headers += "Content-Type: "   + safe_content_type(att->mime) + "\r\n";
+        // nosniff: don't let the browser MIME-sniff an octet-stream back
+        // into executable HTML. attachment: force download rather than
+        // inline top-level rendering, so an uploaded HTML/SVG blob can't
+        // execute in this origin. (Subresource loads — <img>/<video> in
+        // the client — are unaffected by Content-Disposition.)
+        headers += "X-Content-Type-Options: nosniff\r\n";
+        headers += "Content-Disposition: attachment\r\n";
         headers += "Content-Length: " + std::to_string(body_len) + "\r\n";
         headers += "Accept-Ranges: bytes\r\n";
         headers += "Connection: close\r\n\r\n";
@@ -890,7 +927,11 @@ private:
     std::string storage_root_;
     int64_t max_attachment_bytes_;
 
-    boost::asio::streambuf head_buf_;
+    // Bounded so a client that never sends the CRLFCRLF head terminator
+    // can't grow this streambuf without limit (its default max_size is
+    // SIZE_MAX). async_read_until errors out at the cap; the 16 KB guard
+    // in read_head() still applies once the delimiter is found.
+    boost::asio::streambuf head_buf_{16 * 1024};
     HttpRequest req_;
     std::string username_;
     std::vector<char> body_; // small-body JSON endpoints only

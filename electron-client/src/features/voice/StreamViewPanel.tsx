@@ -139,10 +139,26 @@ export default function StreamViewPanel() {
   const stream = activeStreams.find((s) => s.ownerUsername === displayUser);
   const isOwnStream = displayUser === currentUsername;
 
+  // Keep the latest slider value reachable from the mute effect's cleanup
+  // without re-running that effect on every volume tick.
+  const streamVolumeRef = useRef(streamVolume);
   useEffect(() => {
-    if (isOwnStream) {
-      invoke("set_stream_volume", { volume: 0 }).catch(() => {});
-    }
+    streamVolumeRef.current = streamVolume;
+  }, [streamVolume]);
+
+  useEffect(() => {
+    if (!isOwnStream) return;
+    // Mute the (global) native stream-audio gain while previewing our own
+    // stream so we don't hear our own shared audio echoed back.
+    invoke("set_stream_volume", { volume: 0 }).catch(() => {});
+    return () => {
+      // Restore when we stop previewing our own stream (switching to
+      // someone else's) or unmount — otherwise every subsequently watched
+      // stream stays silent while the slider still shows its old value.
+      invoke("set_stream_volume", {
+        volume: streamVolumeRef.current / 100,
+      }).catch(() => {});
+    };
   }, [isOwnStream]);
 
   const [hoverControlsVisible, setHoverControlsVisible] = useState(false);
@@ -228,7 +244,7 @@ export default function StreamViewPanel() {
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={toggleMute}
-                      className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
+                      className={`flex h-6 w-6 items-center justify-center rounded-sm transition-colors ${
                         streamVolume === 0
                           ? "text-error"
                           : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
@@ -243,14 +259,14 @@ export default function StreamViewPanel() {
                       max={100}
                       value={streamVolume}
                       onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                      className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-dark [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(56,143,255,0.3)]"
+                      className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-dark [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(69,150,255,0.3)]"
                       title={`Stream volume: ${streamVolume}%`}
                     />
                   </div>
                 )}
                 <button
                   onClick={handleBackToCards}
-                  className="flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+                  className="flex h-6 w-6 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
                   title="Back (Esc)"
                 >
                   <svg
@@ -275,7 +291,7 @@ export default function StreamViewPanel() {
             className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden ${
               isFullscreen
                 ? `${overlayVisible ? "cursor-default" : "cursor-none"}`
-                : "cursor-pointer rounded-xl border border-border bg-bg-darkest"
+                : "cursor-pointer rounded-lg border border-border bg-bg-darkest"
             }`}
             onClick={handleBackToCards}
             onMouseMove={handleMouseMove}
@@ -283,12 +299,12 @@ export default function StreamViewPanel() {
           >
             <StreamVideoPlayer
               streamerUsername={displayUser}
-              className={`h-full w-full object-contain ${isFullscreen ? "" : "rounded-xl"}`}
+              className={`h-full w-full object-contain ${isFullscreen ? "" : "rounded-lg"}`}
             />
 
             {!isFullscreen && (
               <div
-                className={`absolute bottom-3 right-3 flex items-center gap-2 rounded-[10px] border border-border bg-bg-light/95 px-2.5 py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.4)] transition-opacity duration-200 ${
+                className={`absolute bottom-3 right-3 flex items-center gap-2 rounded-md border border-border bg-bg-light/95 px-2.5 py-1.5 shadow-float transition-opacity duration-150 ${
                   hoverControlsVisible
                     ? "opacity-100"
                     : "pointer-events-none opacity-0"
@@ -303,7 +319,7 @@ export default function StreamViewPanel() {
                   <>
                     <button
                       onClick={toggleMute}
-                      className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+                      className={`flex h-7 w-7 items-center justify-center rounded-sm transition-colors ${
                         streamVolume === 0
                           ? "text-error hover:bg-white/[0.08]"
                           : "text-white/80 hover:bg-white/[0.08] hover:text-white"
@@ -320,7 +336,7 @@ export default function StreamViewPanel() {
                       onChange={(e) =>
                         handleVolumeChange(Number(e.target.value))
                       }
-                      className="h-[4px] w-16 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-darkest [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(56,143,255,0.3)]"
+                      className="h-[4px] w-16 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-darkest [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(69,150,255,0.3)]"
                       title={`Stream volume: ${streamVolume}%`}
                     />
                     <div className="mx-0.5 h-5 w-px bg-white/10" />
@@ -328,7 +344,7 @@ export default function StreamViewPanel() {
                 )}
                 <button
                   onClick={enterFullscreen}
-                  className="flex h-7 w-7 items-center justify-center rounded-md text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white"
+                  className="flex h-7 w-7 items-center justify-center rounded-sm text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white"
                   title="Fullscreen"
                 >
                   <svg
@@ -370,7 +386,7 @@ export default function StreamViewPanel() {
                     {participants.slice(0, 4).map((p) => (
                       <div
                         key={p.username}
-                        className="rounded-md border-2 border-black"
+                        className="rounded-sm border-2 border-black"
                       >
                         <UserAvatar username={p.username} size={20} />
                       </div>
@@ -378,10 +394,10 @@ export default function StreamViewPanel() {
                   </div>
                 </div>
 
-                <div className="mb-4 flex items-center gap-2 rounded-xl border border-border bg-bg-light/95 px-3 py-2 shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
+                <div className="mb-4 flex items-center gap-2 rounded-lg border border-border bg-bg-light/95 px-3 py-2 shadow-float">
                   <button
                     onClick={handleMute}
-                    className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                    className={`flex h-9 w-9 items-center justify-center rounded-md transition-colors ${
                       isMuted
                         ? "bg-white/15 text-error hover:bg-white/20"
                         : "text-white/80 hover:bg-white/[0.08] hover:text-white"
@@ -419,7 +435,7 @@ export default function StreamViewPanel() {
 
                   <button
                     onClick={handleDeafen}
-                    className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                    className={`flex h-9 w-9 items-center justify-center rounded-md transition-colors ${
                       isDeafened
                         ? "bg-white/15 text-error hover:bg-white/20"
                         : "text-white/80 hover:bg-white/[0.08] hover:text-white"
@@ -453,7 +469,7 @@ export default function StreamViewPanel() {
                     <>
                       <button
                         onClick={toggleMute}
-                        className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                        className={`flex h-9 w-9 items-center justify-center rounded-md transition-colors ${
                           streamVolume === 0
                             ? "bg-white/15 text-error hover:bg-white/20"
                             : "text-white/80 hover:bg-white/[0.08] hover:text-white"
@@ -471,7 +487,7 @@ export default function StreamViewPanel() {
                           handleVolumeChange(Number(e.target.value))
                         }
                         onClick={(e) => e.stopPropagation()}
-                        className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-darkest [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(56,143,255,0.3)]"
+                        className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-darkest [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(69,150,255,0.3)]"
                         title={`Stream volume: ${streamVolume}%`}
                       />
                       <div className="mx-1 h-6 w-px bg-white/10" />
@@ -480,7 +496,7 @@ export default function StreamViewPanel() {
 
                   <button
                     onClick={handleStopWatching}
-                    className="flex h-9 items-center gap-1.5 rounded-lg bg-error/[0.15] px-3 text-[12px] font-medium text-error transition-colors hover:bg-error/[0.25]"
+                    className="flex h-9 items-center gap-1.5 rounded-md bg-error/[0.15] px-3 text-[12px] font-medium text-error transition-colors hover:bg-error/[0.25]"
                     title="Stop watching"
                   >
                     <svg
@@ -507,7 +523,7 @@ export default function StreamViewPanel() {
                       e.stopPropagation();
                       exitFullscreen();
                     }}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white"
+                    className="flex h-9 w-9 items-center justify-center rounded-md text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white"
                     title="Exit fullscreen"
                   >
                     <svg
@@ -531,7 +547,7 @@ export default function StreamViewPanel() {
 
         {!isFullscreen && (
           <div className="flex w-[160px] shrink-0 flex-col gap-1 border-l border-border-divider bg-bg-dark p-3">
-            <h4 className="mb-1 px-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+            <h4 className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
               Voice — {participants.length}
             </h4>
 
@@ -545,7 +561,7 @@ export default function StreamViewPanel() {
 
             {activeStreams.length > 1 && (
               <div className="mt-auto border-t border-border-divider pt-2">
-                <h4 className="mb-1 px-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+                <h4 className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                   Streams
                 </h4>
                 {activeStreams
@@ -554,7 +570,7 @@ export default function StreamViewPanel() {
                     <button
                       key={s.ownerUsername}
                       onClick={() => handleSwitchStream(s.ownerUsername)}
-                      className={`w-full rounded-md px-2 py-1.5 text-left text-[10px] font-medium transition-colors ${
+                      className={`w-full rounded-sm px-2 py-1.5 text-left text-[10px] font-medium transition-colors ${
                         s.ownerUsername === displayUser
                           ? "border-l-2 border-accent bg-accent-soft text-accent-bright"
                           : "text-text-secondary hover:bg-surface-hover"
@@ -593,7 +609,7 @@ const SidebarParticipantRow = memo(function SidebarParticipantRow({
 
   return (
     <div
-      className="flex cursor-pointer items-center gap-2 rounded-[10px] p-2 transition-colors hover:bg-surface-hover"
+      className="flex cursor-pointer items-center gap-2 rounded-md p-2 transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(
@@ -608,7 +624,7 @@ const SidebarParticipantRow = memo(function SidebarParticipantRow({
       }}
     >
       <div
-        className={`rounded-md ${
+        className={`rounded-sm ${
           isSpeaking
             ? "shadow-[0_0_0_2px_var(--color-bg-dark),0_0_0_3.5px_var(--color-success)]"
             : ""
@@ -621,7 +637,7 @@ const SidebarParticipantRow = memo(function SidebarParticipantRow({
           {username}
         </div>
         {isStreaming && (
-          <div className="text-[9px] font-medium text-accent">Streaming</div>
+          <div className="text-[10px] font-medium text-accent">Streaming</div>
         )}
       </div>
     </div>

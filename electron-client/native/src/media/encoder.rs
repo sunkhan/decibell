@@ -181,7 +181,7 @@ impl Encoder {
             ));
         }
 
-        eprintln!(
+        log::info!(
             "[encoder] D3D11VA hw_frames_ctx initialized ({}x{}, pool=6, BindFlags={})",
             width, height, chosen_label
         );

@@ -92,7 +92,7 @@ fn run_capture_thread(
     let winrt_device = winrt_device_from_d3d11(d3d11_device)?;
 
     let item_size = item.Size().map_err(|e| format!("item.Size: {e:?}"))?;
-    eprintln!(
+    log::info!(
         "[capture_wgc] item size = {}x{}",
         item_size.Width, item_size.Height
     );
@@ -120,7 +120,7 @@ fn run_capture_thread(
         .StartCapture()
         .map_err(|e| format!("StartCapture: {e:?}"))?;
 
-    eprintln!("[capture_wgc] StartCapture OK; entering poll loop");
+    log::info!("[capture_wgc] StartCapture OK; entering poll loop");
 
     while !stop.load(Ordering::Relaxed) {
         let frame = match pool.TryGetNextFrame() {

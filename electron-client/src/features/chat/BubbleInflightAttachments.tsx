@@ -1,3 +1,4 @@
+import { useShallow } from "zustand/react/shallow";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
 
 interface Props {
@@ -9,10 +10,15 @@ interface Props {
 /// the server echoes the broadcast back, the bubble itself stops
 /// referencing pendingIds and the canonical AttachmentList renders.
 export default function BubbleInflightAttachments({ pendingIds }: Props) {
-  const pendings = useAttachmentsStore((s) => s.pendings);
-  const visible = pendingIds
-    .map((id) => pendings[id])
-    .filter((p): p is NonNullable<typeof p> => Boolean(p));
+  // Select only this bubble's entries (shallow-compared) so progress
+  // ticks from unrelated uploads can't re-render every bubble.
+  const visible = useAttachmentsStore(
+    useShallow((s) =>
+      pendingIds
+        .map((id) => s.pendings[id])
+        .filter((p): p is NonNullable<typeof p> => Boolean(p)),
+    ),
+  );
   if (visible.length === 0) return null;
 
   return (
@@ -25,17 +31,17 @@ export default function BubbleInflightAttachments({ pendingIds }: Props) {
         return (
           <div
             key={p.pendingId}
-            className="flex max-w-[420px] items-center gap-3 rounded-xl border border-border bg-bg-secondary p-3"
+            className="flex max-w-[420px] items-center gap-3 rounded-lg border border-border bg-bg-secondary p-3"
           >
             {isImage ? (
               <img
                 src={p.previewUrl ?? undefined}
                 alt={p.filename}
-                className="h-12 w-12 shrink-0 rounded-lg object-cover opacity-70"
+                className="h-12 w-12 shrink-0 rounded-md object-cover opacity-70"
                 draggable={false}
               />
             ) : (
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-bg-light text-text-muted">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-bg-light text-text-muted">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                   <polyline points="14 2 14 8 20 8" />

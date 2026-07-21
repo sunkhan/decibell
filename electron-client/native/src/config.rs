@@ -243,7 +243,13 @@ pub fn load() -> Result<LoadedConfig, String> {
     })
 }
 
+/// Serializes save() callers so two concurrent saves can't interleave
+/// their read-preserve-write sequences (e.g. login persisting
+/// credentials while a settings save races the read of the old file).
+static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn save(credentials: Option<&Credentials>, settings: &AppSettings) -> Result<(), String> {
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = config_path();
 
     if let Some(parent) = path.parent() {
@@ -273,12 +279,27 @@ pub fn save(credentials: Option<&Credentials>, settings: &AppSettings) -> Result
     let json = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-    std::fs::write(&path, json).map_err(|e| format!("Failed to write config: {}", e))?;
+    write_atomic(&path, json.as_bytes())?;
 
     Ok(())
 }
 
+/// Write-to-temp-then-rename so a crash mid-write can never tear the
+/// config file (which would lose saved credentials AND settings). The
+/// rename is atomic on every platform we ship as long as the temp file
+/// lives in the same directory.
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| format!("Failed to write config: {}", e))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("Failed to replace config: {}", e)
+    })?;
+    Ok(())
+}
+
 pub fn clear_credentials() -> Result<(), String> {
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = config_path();
     if !path.exists() {
         return Ok(());
@@ -294,7 +315,7 @@ pub fn clear_credentials() -> Result<(), String> {
     let json = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-    std::fs::write(&path, json).map_err(|e| format!("Failed to write config: {}", e))?;
+    write_atomic(&path, json.as_bytes())?;
 
     Ok(())
 }

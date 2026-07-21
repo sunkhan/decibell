@@ -37,7 +37,7 @@ const WelcomeState: React.FC<WelcomeStateProps> = ({
           width: 72px;
           height: 72px;
           border-radius: 50%;
-          background: rgba(56, 143, 255, 0.12);
+          background: rgba(69, 150, 255, 0.12);
           display: flex;
           align-items: center;
           justify-content: center;
@@ -50,7 +50,7 @@ const WelcomeState: React.FC<WelcomeStateProps> = ({
           position: absolute;
           inset: -6px;
           border-radius: 50%;
-          border: 1.5px dashed #388fff;
+          border: 1.5px dashed #4596ff;
           opacity: 0.25;
           animation: welcome-spin-slow 20s linear infinite;
         }
@@ -105,14 +105,14 @@ const WelcomeState: React.FC<WelcomeStateProps> = ({
         }
 
         .welcome-btn.primary {
-          background: #388fff;
+          background: #4596ff;
           color: white;
-          box-shadow: 0 2px 12px rgba(56, 143, 255, 0.22);
+          box-shadow: 0 2px 12px rgba(69, 150, 255, 0.22);
         }
 
         .welcome-btn.primary:hover {
           background: #2d7ae6;
-          box-shadow: 0 4px 20px rgba(56, 143, 255, 0.22);
+          box-shadow: 0 4px 20px rgba(69, 150, 255, 0.22);
         }
 
         .welcome-btn.secondary {

@@ -160,10 +160,23 @@ export function useServerEvents() {
             .catch((err) => console.error("get_attachment_target:", err));
         }
         // Auto-select the first text channel so the user lands somewhere
-        // after joining. Matches tauri-client behaviour.
+        // after joining — but ONLY when this response is for the server the
+        // user is actually viewing and they don't already have a valid
+        // channel selected. Post-login auto-rejoin fires one
+        // community_auth_responded per membership; without this guard each
+        // arriving server would yank activeChannelId (last responder wins),
+        // stranding the user on a channel that isn't in the server they're
+        // looking at.
         const firstText = p.channels.find((ch) => ch.type === "text");
         if (firstText) {
-          useChatStore.getState().setActiveChannel(firstText.id);
+          const chat = useChatStore.getState();
+          const isActiveServer = chat.activeServerId === p.serverId;
+          const hasValidChannel = p.channels.some(
+            (ch) => ch.id === chat.activeChannelId,
+          );
+          if (isActiveServer && !hasValidChannel) {
+            chat.setActiveChannel(firstText.id);
+          }
         }
         // Populate the members sidebar — every server view uses it.
         invoke("list_members", { serverId: p.serverId }).catch(console.error);

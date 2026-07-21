@@ -131,7 +131,7 @@ fn build_hevc_hvcc(annexb_extradata: &[u8]) -> Option<Vec<u8>> {
     let pps: Vec<&[u8]> = nals.iter().filter(|(t, _)| *t == 34).map(|(_, d)| *d).collect();
 
     if vps.is_empty() || sps.is_empty() || pps.is_empty() {
-        eprintln!("[encoder] hvcC build failed — missing NAL types: vps={}, sps={}, pps={}",
+        log::warn!("[encoder] hvcC build failed — missing NAL types: vps={}, sps={}, pps={}",
                   vps.len(), sps.len(), pps.len());
         return None;
     }
@@ -143,7 +143,7 @@ fn build_hevc_hvcc(annexb_extradata: &[u8]) -> Option<Vec<u8>> {
     // shifts level_idc by N bytes per emulation byte ahead of it.
     let sps0 = unescape_rbsp(sps0_raw);
     if sps0.len() < 15 {
-        eprintln!("[encoder] hvcC build failed — SPS RBSP too short ({} bytes)", sps0.len());
+        log::warn!("[encoder] hvcC build failed — SPS RBSP too short ({} bytes)", sps0.len());
         return None;
     }
 
@@ -368,7 +368,7 @@ fn probe_one_encoder(name: &str) -> bool {
     let codec = match ffmpeg_next::encoder::find_by_name(name) {
         Some(c) => c,
         None => {
-            eprintln!("[probe] {name}: not registered in libavcodec");
+            log::info!("[probe] {name}: not registered in libavcodec");
             return false;
         }
     };
@@ -376,7 +376,7 @@ fn probe_one_encoder(name: &str) -> bool {
     let mut enc = match ctx.encoder().video() {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("[probe] {name}: encoder().video() failed: {e}");
+            log::warn!("[probe] {name}: encoder().video() failed: {e}");
             return false;
         }
     };
@@ -389,7 +389,7 @@ fn probe_one_encoder(name: &str) -> bool {
     match enc.open_as(codec) {
         Ok(_) => true,
         Err(e) => {
-            eprintln!("[probe] {name}: open failed: {e}");
+            log::warn!("[probe] {name}: open failed: {e}");
             false
         }
     }
@@ -627,7 +627,7 @@ impl H264Encoder {
             .map_err(|e| format!("Open encoder: {}", e))?;
 
         let input_fmt = if supports_bgra_input { "BGRA (GPU convert)" } else { "NV12" };
-        eprintln!("[encoder] {:?} encoder opened: {} — {}x{} @ {}fps, {}kbps, input={}",
+        log::info!("[encoder] {:?} encoder opened: {} — {}x{} @ {}fps, {}kbps, input={}",
                   target_codec, codec_name, config.width, config.height, config.fps, config.bitrate_kbps, input_fmt);
 
         let nv12_frame = ffmpeg_next::frame::Video::new(
@@ -771,7 +771,7 @@ impl H264Encoder {
                     av_buffer_unref(&mut dr);
                     return Err(format!("av_hwdevice_ctx_init(CUDA, shared ctx) failed: {}", rc));
                 }
-                eprintln!("[encoder] CUDA hw_device_ctx initialized with shared context");
+                log::info!("[encoder] CUDA hw_device_ctx initialized with shared context");
                 dev_ref
             };
 
@@ -805,7 +805,7 @@ impl H264Encoder {
             self.cuda_hw_device_ref = hw_device_ref as *mut std::ffi::c_void;
             self.cuda_hw_frames_ref = frames_ref as *mut std::ffi::c_void;
 
-            eprintln!("[encoder] CUDA hw_frames_ctx initialized ({}x{})",
+            log::info!("[encoder] CUDA hw_frames_ctx initialized ({}x{})",
                 self.target_width, self.target_height);
             Ok(())
         }
@@ -994,7 +994,7 @@ impl H264Encoder {
         let encoder = context.open_with(opts)
             .map_err(|e| format!("Open h264_vaapi encoder: {}", e))?;
 
-        eprintln!("[encoder] h264_vaapi opened: {}x{} @ {}fps, {}kbps (DMA-BUF zero-copy)",
+        log::info!("[encoder] h264_vaapi opened: {}x{} @ {}fps, {}kbps (DMA-BUF zero-copy)",
             config.width, config.height, config.fps, config.bitrate_kbps);
 
         // NV12 frame is unused in VAAPI path but required by struct
@@ -1099,7 +1099,7 @@ impl H264Encoder {
                 av_buffer_unref(&mut dr);
                 return Err(format!("av_hwframe_ctx_init(CUDA) failed: {}", rc));
             }
-            eprintln!("[encoder] CUDA hw_frames_ctx initialized ({}x{}) with shared ctx",
+            log::info!("[encoder] CUDA hw_frames_ctx initialized ({}x{}) with shared ctx",
                 config.width, config.height);
             (dev_ref, frames_ref)
         };
@@ -1156,7 +1156,7 @@ impl H264Encoder {
                 format!("Open h264_nvenc (CUDA path): {}", e)
             })?;
 
-        eprintln!(
+        log::info!(
             "[encoder] h264_nvenc opened with CUDA pix_fmt: {}x{} @ {}fps, {}kbps (zero-copy)",
             config.width, config.height, config.fps, config.bitrate_kbps
         );
@@ -1236,7 +1236,7 @@ impl H264Encoder {
                 av_buffer_unref(&mut rr);
                 return Err(format!("av_hwdevice_ctx_init(D3D11VA) failed: {}", rc));
             }
-            eprintln!("[encoder] D3D11VA hw_device_ctx initialized with shared device");
+            log::info!("[encoder] D3D11VA hw_device_ctx initialized with shared device");
             r
         };
 
@@ -1325,7 +1325,7 @@ impl H264Encoder {
             return Err(format!("av_hwframe_ctx_init(D3D11VA) failed for all BindFlags combos; last: {}", last_err));
         }
 
-        eprintln!("[encoder] D3D11VA hw_frames_ctx initialized ({}x{}, pool=6, BindFlags={})",
+        log::info!("[encoder] D3D11VA hw_frames_ctx initialized ({}x{}, pool=6, BindFlags={})",
             config.width, config.height, chosen_label);
 
         // ── QSV (Intel): derive a QSV hwdevice from the D3D11 hwdevice,
@@ -1373,7 +1373,7 @@ impl H264Encoder {
                     return Err(format!("av_hwframe_ctx_create_derived(QSV frames): {}", rc));
                 }
 
-                eprintln!("[encoder] QSV hw_frames_ctx initialized ({}x{}, derived from D3D11VA pool)",
+                log::info!("[encoder] QSV hw_frames_ctx initialized ({}x{}, derived from D3D11VA pool)",
                     config.width, config.height);
                 qsv_hw_device_ref = qsv_dev;
                 qsv_hw_frames_ref = qsv_frames;
@@ -1475,7 +1475,7 @@ impl H264Encoder {
                 format!("Open D3D11 encoder ({}): {}", codec_name, e)
             })?;
 
-        eprintln!(
+        log::info!(
             "[encoder] D3D11 zero-copy encoder opened: {} — {}x{} @ {}fps, {}kbps",
             codec_name, config.width, config.height, config.fps, config.bitrate_kbps
         );
@@ -1567,15 +1567,15 @@ impl H264Encoder {
     fn build_hvcc_description(&self) -> Option<Vec<u8>> {
         let raw = self.read_raw_extradata()?;
         if raw.is_empty() {
-            eprintln!("[encoder] WARNING: HEVC extradata empty");
+            log::info!("[encoder] WARNING: HEVC extradata empty");
             return None;
         }
         // Diagnostic: log first 16 bytes so the format is unambiguous in
         // debug output. annex-B starts with 00 00 00 01, hvcC starts with 01.
         let preview_len = raw.len().min(16);
-        eprintln!("[encoder] HEVC extradata first {} bytes: {:02X?}", preview_len, &raw[..preview_len]);
+        log::info!("[encoder] HEVC extradata first {} bytes: {:02X?}", preview_len, &raw[..preview_len]);
         let hvcc = build_hevc_hvcc(&raw)?;
-        eprintln!("[encoder] hvcC built ({} bytes from {} bytes annex-B)", hvcc.len(), raw.len());
+        log::info!("[encoder] hvcC built ({} bytes from {} bytes annex-B)", hvcc.len(), raw.len());
         Some(hvcc)
     }
 
@@ -1599,11 +1599,11 @@ impl H264Encoder {
             let extradata = (*ctx_ptr).extradata;
             let size = (*ctx_ptr).extradata_size as usize;
             if extradata.is_null() || size == 0 {
-                eprintln!("[encoder] WARNING: {} keyframe has no extradata", label);
+                log::info!("[encoder] WARNING: {} keyframe has no extradata", label);
                 return None;
             }
             let bytes = std::slice::from_raw_parts(extradata, size).to_vec();
-            eprintln!("[encoder] {} description extracted ({} bytes)", label, bytes.len());
+            log::info!("[encoder] {} description extracted ({} bytes)", label, bytes.len());
             Some(bytes)
         }
     }
@@ -1856,10 +1856,10 @@ impl H264Encoder {
                     // at the keyframe bitstream.
                     let built = build_hevc_hvcc(&raw_data);
                     if built.is_some() {
-                        eprintln!("[encoder] hvcC built from keyframe ({} bytes from {} bytes annex-B)",
+                        log::info!("[encoder] hvcC built from keyframe ({} bytes from {} bytes annex-B)",
                                   built.as_ref().unwrap().len(), raw_data.len());
                     } else {
-                        eprintln!("[encoder] WARNING: failed to build hvcC from keyframe ({} bytes)", raw_data.len());
+                        log::warn!("[encoder] WARNING: failed to build hvcC from keyframe ({} bytes)", raw_data.len());
                     }
                     built
                 } else { None };

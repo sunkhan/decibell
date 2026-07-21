@@ -129,7 +129,7 @@ export default function UserContextMenu() {
   return createPortal(
     <div
       ref={menuRef}
-      className="fixed z-[100] w-[220px] animate-[dropIn_0.15s_ease] overflow-hidden rounded-xl border border-border bg-bg-light shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,255,255,0.02)]"
+      className="fixed z-[100] w-[220px] animate-[dropIn_0.15s_ease] overflow-hidden rounded-lg border border-border bg-bg-light shadow-float"
       style={{ left: x, top: y }}
     >
       {/* User header */}
@@ -146,7 +146,7 @@ export default function UserContextMenu() {
           <div className="px-[5px] py-1">
             <button
               onClick={handleToggleMute}
-              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors ${
+              className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-[13px] font-medium transition-colors ${
                 isLocallyMuted
                   ? "bg-error/10 text-error"
                   : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
@@ -187,7 +187,7 @@ export default function UserContextMenu() {
           {/* Volume section */}
           <div className="px-3.5 py-3">
             <div className="mb-2.5 flex items-center justify-between">
-              <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                 User volume
               </span>
               <button

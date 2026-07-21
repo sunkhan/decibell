@@ -50,9 +50,9 @@ function RateRow({
     : PRESETS_MBPS.find((p) => p.mbps === Math.round(mbps))?.mbps ?? -1;
 
   return (
-    <div className="rounded-[10px] border border-border-divider bg-bg-light p-4">
+    <div className="rounded-md border border-border-divider bg-bg-light p-4">
       <div className="mb-0.5 text-[13px] font-medium text-text-primary">{label}</div>
-      <div className="mb-3 text-[11.5px] text-text-muted">{description}</div>
+      <div className="mb-3 text-[12px] text-text-muted">{description}</div>
 
       <div className="flex flex-wrap gap-2">
         {PRESETS_MBPS.map((p) => {
@@ -64,7 +64,7 @@ function RateRow({
                 onChange(mbpsToBps(p.mbps));
                 setCustomStr("");
               }}
-              className={`rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors ${
+              className={`rounded-sm px-3 py-1.5 text-[12px] font-medium transition-colors ${
                 selected
                   ? "bg-accent text-white"
                   : "bg-bg-mid text-text-secondary hover:bg-surface-hover hover:text-text-primary"
@@ -77,7 +77,7 @@ function RateRow({
       </div>
 
       <div className="mt-3 flex items-center gap-2">
-        <label className="text-[11.5px] text-text-muted">Custom:</label>
+        <label className="text-[12px] text-text-muted">Custom:</label>
         <input
           type="number"
           min={0}
@@ -90,9 +90,9 @@ function RateRow({
             const n = parseFloat(customStr);
             if (!isNaN(n) && n >= 0) onChange(mbpsToBps(n));
           }}
-          className="w-28 rounded-md border border-border bg-bg-mid px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-accent"
+          className="w-28 rounded-sm border border-border bg-bg-mid px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-accent"
         />
-        <span className="text-[11.5px] text-text-muted">MB/s</span>
+        <span className="text-[12px] text-text-muted">MB/s</span>
       </div>
     </div>
   );
@@ -181,11 +181,11 @@ function ChannelCacheRow() {
   };
 
   return (
-    <div className="rounded-[10px] border border-border-divider bg-bg-light p-4">
+    <div className="rounded-md border border-border-divider bg-bg-light p-4">
       <div className="mb-0.5 text-[13px] font-medium text-text-primary">
         Cached channel count
       </div>
-      <div className="mb-3 text-[11.5px] text-text-muted">
+      <div className="mb-3 text-[12px] text-text-muted">
         Default 10. Each cached channel holds at most ~1000 messages and a few
         KB of scroll state — roughly 0.5–1 MB per channel.
       </div>
@@ -200,7 +200,7 @@ function ChannelCacheRow() {
                 apply(n);
                 setCustomStr("");
               }}
-              className={`rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors ${
+              className={`rounded-sm px-3 py-1.5 text-[12px] font-medium transition-colors ${
                 selected
                   ? "bg-accent text-white"
                   : "bg-bg-mid text-text-secondary hover:bg-surface-hover hover:text-text-primary"
@@ -213,7 +213,7 @@ function ChannelCacheRow() {
       </div>
 
       <div className="mt-3 flex items-center gap-2">
-        <label className="text-[11.5px] text-text-muted">Custom:</label>
+        <label className="text-[12px] text-text-muted">Custom:</label>
         <input
           type="number"
           min={1}
@@ -227,9 +227,9 @@ function ChannelCacheRow() {
             const n = parseInt(customStr, 10);
             if (!isNaN(n) && n >= 1) apply(n);
           }}
-          className="w-28 rounded-md border border-border bg-bg-mid px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-accent"
+          className="w-28 rounded-sm border border-border bg-bg-mid px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-accent"
         />
-        <span className="text-[11.5px] text-text-muted">channels</span>
+        <span className="text-[12px] text-text-muted">channels</span>
       </div>
     </div>
   );

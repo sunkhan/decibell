@@ -53,7 +53,7 @@ export default function FriendActionButton({
       <button
         onClick={handleClick}
         disabled={loading}
-        className={`rounded-md px-2.5 py-1 text-xs font-semibold text-white transition-colors disabled:opacity-50 ${colorClass}`}
+        className={`rounded-sm px-2.5 py-1 text-xs font-semibold text-white transition-colors disabled:opacity-50 ${colorClass}`}
       >
         {loading ? "..." : label}
       </button>

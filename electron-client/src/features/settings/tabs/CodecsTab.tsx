@@ -28,12 +28,12 @@ interface ToggleRowProps {
 
 function ToggleRow({ label, hint, checked, disabled, disabledHint, onToggle }: ToggleRowProps) {
   return (
-    <div className="flex items-center justify-between rounded-[10px] border border-border-divider bg-bg-light px-4 py-3.5 transition-colors hover:bg-bg-lighter">
+    <div className="flex items-center justify-between rounded-md border border-border-divider bg-bg-light px-4 py-3.5 transition-colors hover:bg-bg-lighter">
       <div className="pr-4">
         <div className={`text-[14px] font-medium ${disabled ? "text-text-muted" : "text-text-primary"}`}>
           {label}
         </div>
-        <div className="mt-1 text-[12px] leading-relaxed text-text-muted">
+        <div className="mt-1 text-[12px] leading-[1.55] text-text-muted">
           {disabled && disabledHint ? disabledHint : hint}
         </div>
       </div>
@@ -44,7 +44,7 @@ function ToggleRow({ label, hint, checked, disabled, disabledHint, onToggle }: T
           disabled
             ? "cursor-not-allowed border-border bg-bg-lighter opacity-50"
             : checked
-            ? "border-accent bg-accent shadow-[0_0_8px_rgba(56,143,255,0.22)]"
+            ? "border-accent bg-accent shadow-[0_0_8px_rgba(69,150,255,0.22)]"
             : "border-border bg-bg-lighter"
         }`}
       >
@@ -94,7 +94,7 @@ export default function CodecsTab() {
         <button
           onClick={() => refresh().catch(console.error)}
           disabled={loadingRefresh}
-          className="rounded-[8px] border border-border-divider bg-bg-light px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md border border-border-divider bg-bg-light px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter disabled:cursor-not-allowed disabled:opacity-50"
         >
           {loadingRefresh ? "Refreshing…" : "Refresh codec capabilities"}
         </button>
@@ -105,8 +105,8 @@ export default function CodecsTab() {
 
       {loaded && (
         <div className="mt-4 grid grid-cols-2 gap-3">
-          <div className="rounded-[10px] border border-border-divider bg-bg-light p-4">
-            <div className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-text-muted">
+          <div className="rounded-md border border-border-divider bg-bg-light p-4">
+            <div className="mb-2 text-[12px] font-semibold uppercase tracking-[0.07em] text-text-muted">
               Detected encoders
             </div>
             {encodeCaps.length === 0 ? (
@@ -114,15 +114,15 @@ export default function CodecsTab() {
             ) : (
               <ul className="space-y-1.5">
                 {encodeCaps.map((c) => (
-                  <li key={`enc-${c.codec}`} className="text-[12.5px] text-text-primary">
+                  <li key={`enc-${c.codec}`} className="text-[13px] text-text-primary">
                     {formatCap(c)}
                   </li>
                 ))}
               </ul>
             )}
           </div>
-          <div className="rounded-[10px] border border-border-divider bg-bg-light p-4">
-            <div className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-text-muted">
+          <div className="rounded-md border border-border-divider bg-bg-light p-4">
+            <div className="mb-2 text-[12px] font-semibold uppercase tracking-[0.07em] text-text-muted">
               Detected decoders
             </div>
             {decodeCaps.length === 0 ? (
@@ -130,7 +130,7 @@ export default function CodecsTab() {
             ) : (
               <ul className="space-y-1.5">
                 {decodeCaps.map((c) => (
-                  <li key={`dec-${c.codec}`} className="text-[12.5px] text-text-primary">
+                  <li key={`dec-${c.codec}`} className="text-[13px] text-text-primary">
                     {formatCap(c)}
                   </li>
                 ))}
@@ -140,7 +140,7 @@ export default function CodecsTab() {
         </div>
       )}
 
-      <p className="mt-2 text-[11.5px] text-text-muted">
+      <p className="mt-2 text-[12px] text-text-muted">
         Disabling a codec removes it from the list advertised to peers, so streams
         you start will skip it during auto-selection. You can still receive streams
         that use it (decoding is independent).

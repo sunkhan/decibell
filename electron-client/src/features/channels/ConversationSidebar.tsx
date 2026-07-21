@@ -58,7 +58,7 @@ export default function ConversationSidebar() {
       style={{ width }}
     >
       <div className="flex h-12 shrink-0 items-center border-b border-border px-4">
-        <h2 className="font-display text-[15px] font-semibold text-text-bright">
+        <h2 className="font-display text-[16px] font-semibold text-text-bright">
           Direct Messages
         </h2>
       </div>
@@ -79,7 +79,7 @@ export default function ConversationSidebar() {
               <button
                 key={conv.username}
                 onClick={() => handleClick(conv.username)}
-                className={`flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors ${
+                className={`flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 transition-colors ${
                   isActive
                     ? "bg-accent-soft text-text-bright"
                     : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
@@ -94,7 +94,7 @@ export default function ConversationSidebar() {
                   />
                   {conv.unreadCount > 0 && (
                     <div
-                      className="absolute -top-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full border-[2px] border-bg-dark bg-error text-[9px] font-bold leading-none text-white"
+                      className="absolute -top-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full border-[2px] border-bg-dark bg-error text-[10px] font-semibold leading-none text-white"
                       title={`${conv.unreadCount} unread`}
                     >
                       {conv.unreadCount > 99 ? "99+" : conv.unreadCount}

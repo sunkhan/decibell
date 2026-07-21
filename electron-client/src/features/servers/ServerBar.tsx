@@ -61,7 +61,7 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
           onClick={() => !isPending && onClick(server.id)}
           disabled={isPending}
           title={isPending ? "Connecting…" : server.name}
-          className={`relative flex h-full w-full items-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition-all duration-200 ${
+          className={`relative flex h-full w-full items-center gap-2 rounded-md px-3 text-[13px] font-semibold transition-all duration-150 ${
             isPending
               ? "cursor-wait bg-surface-hover text-text-muted opacity-60"
               : isActive
@@ -73,7 +73,7 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
             <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
           )}
           <div
-            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-[11px] font-semibold text-white"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-[11px] font-semibold text-white"
             style={{ background: stringToGradient(server.name) }}
           >
             {server.name.charAt(0).toUpperCase()}
@@ -95,7 +95,7 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
         onClick={() => !isPending && onClick(server.id)}
         disabled={isPending}
         title={isPending ? "Connecting…" : server.name}
-        className={`relative flex h-full w-full items-center justify-center overflow-hidden rounded-lg px-3 transition-all duration-200 ${
+        className={`relative flex h-full w-full items-center justify-center overflow-hidden rounded-md px-3 transition-all duration-150 ${
           isPending
             ? "cursor-wait opacity-60"
             : isActive
@@ -138,7 +138,7 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
 function ActiveTileGlow() {
   return (
     <div
-      className="pointer-events-none absolute inset-0 rounded-lg shadow-[0_0_0_1.5px_rgba(56,143,255,0.60),0_0_22px_4px_rgba(56,143,255,0.22)] animate-[breathe_2.4s_ease-in-out_infinite] will-change-[opacity]"
+      className="pointer-events-none absolute inset-0 rounded-md shadow-[0_0_0_1.5px_rgba(69,150,255,0.60),0_0_22px_4px_rgba(69,150,255,0.22)] animate-[breathe_2.4s_ease-in-out_infinite] will-change-[opacity]"
     />
   );
 }
@@ -197,7 +197,7 @@ export default function ServerBar() {
       <div className="flex w-[68px] shrink-0 items-center justify-center">
         <button
           onClick={() => { setActiveServer(null); setActiveChannel(null); setActiveView("home"); }}
-          className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-md transition-all duration-200 ${
+          className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-sm transition-all duration-150 ${
             activeView === "home"
               ? "bg-accent text-white shadow-[0_0_0_2px_var(--color-accent)]"
               : "bg-surface-active text-text-secondary hover:bg-accent hover:text-white hover:-translate-y-0.5"
@@ -240,7 +240,7 @@ export default function ServerBar() {
 
         <button
           onClick={() => setActiveView("browse")}
-          className={`flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-lg text-lg transition-all duration-200 ${
+          className={`flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-md text-lg transition-all duration-150 ${
             activeView === "browse"
               ? "bg-success text-white"
               : "border-[1.5px] border-dashed border-text-muted text-text-muted hover:border-accent hover:bg-accent-soft hover:text-accent"

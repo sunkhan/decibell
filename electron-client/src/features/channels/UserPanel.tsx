@@ -93,8 +93,22 @@ export default function UserPanel() {
     invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
   };
 
-  const handleDisconnect = () => {
+  const handleDisconnect = async () => {
     playSound("disconnect");
+    // If streaming, stop the capture/encoder + native stream before
+    // leaving; otherwise capture keeps running after disconnect with no
+    // UI left to stop it.
+    if (useVoiceStore.getState().isStreaming) {
+      const { stopActiveStream } = await import(
+        "../voice/streaming/StreamCapture"
+      );
+      await stopActiveStream();
+      await invoke("stop_screen_share", {
+        serverId: connectedServerId,
+        channelId: connectedChannelId,
+      }).catch(console.error);
+      useVoiceStore.getState().setIsStreaming(false);
+    }
     invoke("leave_voice_channel").catch(console.error);
     disconnect();
     setActiveView("server");
@@ -121,19 +135,19 @@ export default function UserPanel() {
   };
 
   return (
-    <div className="rounded-[14px] border border-border bg-bg-light px-3 py-2.5 shadow-[0_4px_16px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.04)]">
+    <div className="rounded-lg border border-border bg-bg-light px-3 py-2.5 shadow-float">
       {showChip && (
         <button
           onClick={handleChipRestart}
           title={`Restart to update to ${updateStatus.state === "downloaded" ? updateStatus.version : ""}`}
-          className="mb-2 flex w-full items-center gap-2 rounded-md bg-accent-soft px-2 py-1.5 text-left text-[12px] font-medium text-accent-bright transition-colors hover:bg-accent-mid"
+          className="mb-2 flex w-full items-center gap-2 rounded-sm bg-accent-soft px-2 py-1.5 text-left text-[12px] font-medium text-accent-bright transition-colors hover:bg-accent-mid"
         >
           <span className="h-1.5 w-1.5 rounded-full bg-accent-bright animate-[dropPulse_2.4s_ease-in-out_infinite]" />
           <span className="min-w-0 flex-1 truncate">
             Update ready
             {updateStatus.state === "downloaded" ? ` — ${updateStatus.version}` : ""}
           </span>
-          <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide">
+          <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.05em]">
             Restart
           </span>
         </button>
@@ -146,7 +160,7 @@ export default function UserPanel() {
           </svg>
           <span className="font-display text-[13px] font-semibold text-text-primary">{channelName}</span>
           {activeStreams.length > 0 && (
-            <span className="rounded bg-accent/[0.12] px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+            <span className="rounded-sm bg-accent/[0.12] px-1.5 py-0.5 text-[10px] font-semibold text-accent">
               {activeStreams.length} stream{activeStreams.length > 1 ? "s" : ""}
             </span>
           )}
@@ -171,14 +185,14 @@ export default function UserPanel() {
         </div>
       )}
       {error && connectedChannelId && (
-        <div className="mb-2 rounded-md bg-error/10 px-2 py-1 text-[11px] text-error">{error}</div>
+        <div className="mb-2 rounded-sm bg-error/10 px-2 py-1 text-[11px] text-error">{error}</div>
       )}
 
       {connectedChannelId && (
         <div className="mb-2 flex items-center gap-1.5">
           <button
             onClick={isStreaming ? handleStopSharing : () => setShowPicker(true)}
-            className={`flex h-8 flex-1 items-center justify-center gap-[6px] rounded-lg border text-[12px] font-medium transition-colors ${
+            className={`flex h-8 flex-1 items-center justify-center gap-[6px] rounded-md border text-[12px] font-medium transition-colors ${
               isStreaming
                 ? "border-accent/[0.25] bg-accent/[0.12] text-accent hover:bg-accent/[0.18]"
                 : "border-accent/[0.2] bg-accent/[0.08] text-accent hover:bg-accent/[0.15] hover:text-accent-bright"
@@ -206,9 +220,9 @@ export default function UserPanel() {
 
       <div className="flex items-center gap-2">
         <div
-          className="relative shrink-0 rounded-lg transition-shadow"
+          className="relative shrink-0 rounded-md transition-shadow"
           style={{
-            boxShadow: isSpeaking ? "0 0 0 2px #3fb950" : "none",
+            boxShadow: isSpeaking ? "0 0 0 2px var(--color-success)" : "none",
           }}
         >
           <UserAvatar username={username} size={36} />
@@ -322,7 +336,7 @@ function PanelButton({
   variant?: "default" | "danger";
   children: React.ReactNode;
 }) {
-  const base = "flex h-8 w-8 items-center justify-center rounded-md transition-colors";
+  const base = "flex h-8 w-8 items-center justify-center rounded-sm transition-colors";
   const tone =
     variant === "danger"
       ? "bg-error/15 text-error hover:bg-error/25"

@@ -448,7 +448,7 @@ export default function ChatPanel() {
         <div
           onDragOver={suppressDrop}
           onDrop={suppressDrop}
-          className={`relative flex min-h-[54px] flex-col gap-2.5 rounded-xl border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)] ${
+          className={`relative flex min-h-[54px] flex-col gap-2.5 rounded-lg border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-ring ${
             dropHoveredHere
               ? "border-accent bg-accent-soft/50 animate-[dropTargetIn_0.18s_ease_both]"
               : dragActive
@@ -459,7 +459,7 @@ export default function ChatPanel() {
           <PendingAttachmentsRow />
           <div className="flex items-center gap-2.5">
             {dropHoveredHere && (
-              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-accent-soft/80 to-accent-soft/40 backdrop-blur-[3px]">
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-accent-soft/80 to-accent-soft/40 backdrop-blur-[3px]">
                 <svg
                   width="20" height="20" viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" strokeWidth="2" strokeLinecap="round"
@@ -478,7 +478,7 @@ export default function ChatPanel() {
             <button
               onClick={handlePickFiles}
               title="Attach files"
-              className="flex h-[34px] w-[34px] shrink-0 self-end items-center justify-center rounded-lg bg-surface-hover text-text-muted transition-colors hover:bg-accent-soft hover:text-accent"
+              className="flex h-[34px] w-[34px] shrink-0 self-end items-center justify-center rounded-md bg-surface-hover text-text-muted transition-colors hover:bg-accent-soft hover:text-accent"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <circle cx="12" cy="12" r="10" />

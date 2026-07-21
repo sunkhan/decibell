@@ -3,7 +3,6 @@
    ═══════════════════════════════════════ */
 
 @import "@fontsource-variable/inter/index.css";
-@import "@fontsource-variable/dm-sans/index.css";
 @import "@fontsource-variable/outfit/index.css";
 
 @font-face {
@@ -23,47 +22,79 @@
 @import "tailwindcss";
 
 @theme {
-  /* Surface scale — darkest → lightest */
-  --color-bg-darkest: #0a0c10;
-  --color-bg-dark: #0f1218;
-  --color-bg-mid: #141820;
-  --color-bg-light: #1a1f2b;
-  --color-bg-lighter: #212836;
-  --color-bg-surface: #283040;
+  /* ─── Decibell DS v1 ───
+     Surface ramp — one scale, six roles. Legacy token names are kept
+     so existing classes resolve; the *values* now map onto the roles:
+       chrome   (titlebar, server bar, DM rail)  → darkest / titlebar / dmbar
+       sidebar  (channel + member sidebars)      → dark
+       content  (chat / main viewport)           → mid
+       raised   (cards, composer, popovers)      → light
+       high     (hover on raised)                → lighter / surface
+       input    (text fields)                    → input / primary       */
+  --color-bg-darkest: #0b0d12;
+  --color-bg-dark: #10141c;
+  --color-bg-mid: #151a25;
+  --color-bg-light: #1d2433;
+  --color-bg-lighter: #273043;
+  --color-bg-surface: #2d374e;
 
-  --color-bg-titlebar: #0a0b10;
-  --color-bg-primary: #0e0f16;
-  --color-bg-secondary: #14151e;
-  --color-bg-tertiary: #191a25;
-  --color-bg-input: #14151e;
-  --color-bg-dmbar: #101119;
-  --color-border: rgba(255, 255, 255, 0.06);
-  --color-border-divider: rgba(255, 255, 255, 0.035);
+  --color-bg-titlebar: #0b0d12;
+  --color-bg-primary: #0f131c;
+  --color-bg-secondary: #161b27;
+  --color-bg-tertiary: #1b2130;
+  --color-bg-input: #11151f;
+  --color-bg-dmbar: #0b0d12;
+  /* Borders carry a faint blue tint so raised surfaces separate
+     without going lighter. */
+  --color-border: rgba(167, 184, 224, 0.09);
+  --color-border-divider: rgba(167, 184, 224, 0.05);
 
-  --color-accent: #388fff;
-  --color-accent-bright: #5ea8ff;
-  --color-accent-hover: #2d7ae6;
-  --color-accent-pressed: #1a5fc9;
-  --color-accent-soft: rgba(56, 143, 255, 0.10);
-  --color-accent-mid: rgba(56, 143, 255, 0.16);
+  --color-accent: #4596ff;
+  --color-accent-bright: #79b4ff;
+  --color-accent-hover: #3282ef;
+  --color-accent-pressed: #2569cd;
+  --color-accent-soft: rgba(69, 150, 255, 0.12);
+  --color-accent-mid: rgba(69, 150, 255, 0.20);
 
-  --color-success: #3fb950;
-  --color-warning: #d29922;
-  --color-error: #f85149;
-  --color-danger: #f85149;
+  --color-success: #45c46a;
+  --color-warning: #dca64a;
+  --color-error: #f2655c;
+  --color-danger: #f2655c;
 
-  --color-text-primary: #dce4f0;
-  --color-text-bright: #f0f3f6;
-  --color-text-secondary: #7e8da6;
-  --color-text-muted: #4d5b72;
-  --color-text-faint: #3a4556;
+  /* Text ramp — secondary/muted lifted ~1.3× vs the old values so
+     11–12px metadata stays above ~4.5:1 contrast on raised surfaces. */
+  --color-text-primary: #d9e1ee;
+  --color-text-bright: #f3f6fb;
+  --color-text-secondary: #94a2ba;
+  --color-text-muted: #6b7890;
+  --color-text-faint: #45526a;
 
-  --color-surface-hover: rgba(255, 255, 255, 0.04);
-  --color-surface-active: rgba(255, 255, 255, 0.07);
+  --color-surface-hover: rgba(167, 184, 224, 0.06);
+  --color-surface-active: rgba(167, 184, 224, 0.10);
+
+  /* Radius scale: sm (rows, chips) · md (buttons, inputs, tiles,
+     avatars) · lg (cards, popovers, composer) · xl (modals). */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* Elevation — three tokens + one focus ring. Use these instead of
+     ad-hoc shadow-[…] stacks. */
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-float: 0 8px 24px rgb(0 0 0 / 0.38), 0 0 0 1px rgb(167 184 224 / 0.07);
+  --shadow-modal: 0 24px 64px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(167 184 224 / 0.08);
+  --shadow-ring: 0 0 0 2px var(--color-accent-soft);
+
+  /* Hover/state transitions default. Transform/layout transitions
+     should opt into duration-150 explicitly. */
+  --default-transition-duration: 100ms;
 
   --font-sans: "Inter Variable", "Inter", "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --font-channel: "DM Sans Variable", "DM Sans", "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
+  /* DM Sans retired — channel/list text is Inter like the rest of the
+     UI. Token kept so font-channel classes stay valid. */
+  --font-channel: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Outfit Variable", "Outfit", "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
@@ -72,6 +103,9 @@
     @apply bg-bg-primary text-text-primary font-sans antialiased;
     margin: 0;
     overflow: hidden;
+    /* DS v1 weight discipline: body 450, labels 500, emphasis 600.
+       The variable font makes 450 free. */
+    font-weight: 450;
     letter-spacing: -0.01em;
     /* Inter typographic alternates: cv11 (single-storey a), ss01
        (open digits), ss03 (alt curly braces). Matches tauri-client
@@ -132,22 +166,17 @@ input[type="password"]::-webkit-caps-lock-indicator {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #388bfd;
-  border: 2px solid #0e0f16;
+  background: var(--color-accent);
+  border: 2px solid var(--color-bg-primary);
   cursor: pointer;
 }
 .custom-slider::-moz-range-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #388bfd;
-  border: 2px solid #0e0f16;
+  background: var(--color-accent);
+  border: 2px solid var(--color-bg-primary);
   cursor: pointer;
-}
-
-/* Snappy hover transitions globally */
-button, a, [class*="transition"] {
-  transition-duration: 75ms !important;
 }
 
 html, body, #root {
@@ -187,13 +216,13 @@ html, body, #root {
 @keyframes dropPulse {
   0%, 100% {
     box-shadow:
-      0 0 0 1px rgba(56, 143, 255, 0.32),
-      0 0 14px 0 rgba(56, 143, 255, 0.10);
+      0 0 0 1px rgba(69, 150, 255, 0.32),
+      0 0 14px 0 rgba(69, 150, 255, 0.10);
   }
   50% {
     box-shadow:
-      0 0 0 1.5px rgba(56, 143, 255, 0.60),
-      0 0 22px 4px rgba(56, 143, 255, 0.22);
+      0 0 0 1.5px rgba(69, 150, 255, 0.60),
+      0 0 22px 4px rgba(69, 150, 255, 0.22);
   }
 }
 

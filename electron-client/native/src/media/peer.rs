@@ -77,6 +77,10 @@ pub struct PeerAudio {
     /// 48kHz → output device rate. None when rates already match.
     resampler: Option<SincFixedOut<f64>>,
     resamp_accum: Vec<f64>,
+    /// Reusable chunk handed to the resampler — drained from
+    /// resamp_accum each iteration. Persistent so the per-20ms decode
+    /// path stops allocating a fresh Vec per chunk.
+    resamp_scratch: Vec<f64>,
     output_rate: u32,
 }
 
@@ -106,6 +110,7 @@ impl PeerAudio {
             cons,
             resampler,
             resamp_accum: Vec::with_capacity(1024),
+            resamp_scratch: Vec::with_capacity(1024),
             output_rate,
         }
     }
@@ -153,8 +158,9 @@ impl PeerAudio {
         let resampler = self.resampler.as_mut().unwrap();
         let mut needed = resampler.input_frames_next();
         while self.resamp_accum.len() >= needed {
-            let chunk: Vec<f64> = self.resamp_accum.drain(..needed).collect();
-            if let Ok(out) = resampler.process(&[&chunk], None) {
+            self.resamp_scratch.clear();
+            self.resamp_scratch.extend(self.resamp_accum.drain(..needed));
+            if let Ok(out) = resampler.process(&[&self.resamp_scratch], None) {
                 for &s in &out[0] {
                     let q = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
                     let _ = self.prod.try_push(q);

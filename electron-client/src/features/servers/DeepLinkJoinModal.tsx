@@ -75,7 +75,7 @@ export default function DeepLinkJoinModal() {
       onClick={close}
     >
       <div
-        className="w-full max-w-sm rounded-2xl border border-border bg-bg-secondary p-6 shadow-2xl"
+        className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-6 shadow-modal"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
@@ -84,7 +84,7 @@ export default function DeepLinkJoinModal() {
           </h2>
           <button
             onClick={close}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary"
           >
             ×
           </button>
@@ -92,11 +92,11 @@ export default function DeepLinkJoinModal() {
         <p className="mb-2 text-sm text-text-secondary">
           You have been invited to:
         </p>
-        <div className="mb-1 rounded-xl border border-border bg-bg-dark px-3 py-2.5">
+        <div className="mb-1 rounded-lg border border-border bg-bg-dark px-3 py-2.5">
           <div className="font-mono text-sm text-text-bright">
             {host}:{port}
           </div>
-          <div className="mt-1 font-mono text-[11px] tracking-wider text-text-muted">
+          <div className="mt-1 font-mono text-[11px] tracking-[0.07em] text-text-muted">
             Code: {code}
           </div>
         </div>
@@ -110,14 +110,14 @@ export default function DeepLinkJoinModal() {
         <div className="mt-4 flex gap-2">
           <button
             onClick={close}
-            className="flex-1 rounded-lg border border-border bg-bg-primary px-4 py-2 text-sm font-semibold text-text-primary transition-colors hover:bg-surface-hover"
+            className="flex-1 rounded-md border border-border bg-bg-primary px-4 py-2 text-sm font-semibold text-text-primary transition-colors hover:bg-surface-hover"
           >
             Cancel
           </button>
           <button
             onClick={handleJoin}
             disabled={joining}
-            className="flex-1 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+            className="flex-1 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
           >
             {joining ? "Joining..." : "Accept"}
           </button>

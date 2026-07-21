@@ -29,8 +29,8 @@ export default function MembershipRevokedToast() {
 
   return (
     <div className="pointer-events-none fixed inset-x-0 top-6 z-[60] flex justify-center">
-      <div className="pointer-events-auto flex w-full max-w-md items-start gap-3 rounded-xl border border-error/50 bg-bg-secondary p-4 shadow-2xl">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-error/15 text-error">
+      <div className="pointer-events-auto flex w-full max-w-md items-start gap-3 rounded-lg border border-error/50 bg-bg-secondary p-4 shadow-modal">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-error/15 text-error">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10" />
             <line x1="12" y1="8" x2="12" y2="12" />

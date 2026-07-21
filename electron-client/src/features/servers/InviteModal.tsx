@@ -66,7 +66,7 @@ export default function InviteModal() {
         onClick={closeModal}
       >
         <div
-          className="w-full max-w-sm rounded-2xl border border-border bg-bg-dark p-6 shadow-[0_24px_80px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.02)]"
+          className="w-full max-w-sm rounded-xl border border-border bg-bg-dark p-6 shadow-modal"
           onClick={(e) => e.stopPropagation()}
         >
           <h2 className="mb-2 font-display text-lg font-semibold text-text-primary">
@@ -77,7 +77,7 @@ export default function InviteModal() {
           </p>
           <button
             onClick={closeModal}
-            className="mt-4 w-full rounded-[10px] bg-bg-light px-4 py-2.5 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter"
+            className="mt-4 w-full rounded-md bg-bg-light px-4 py-2.5 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter"
           >
             Close
           </button>
@@ -161,7 +161,7 @@ export default function InviteModal() {
       onClick={closeModal}
     >
       <div
-        className="flex max-h-[80vh] w-full max-w-[440px] animate-[cardIn_0.25s_ease] flex-col overflow-hidden rounded-2xl border border-border bg-bg-dark shadow-[0_24px_80px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.02)]"
+        className="flex max-h-[80vh] w-full max-w-[440px] animate-[cardIn_0.25s_ease] flex-col overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -171,7 +171,7 @@ export default function InviteModal() {
           </h2>
           <button
             onClick={closeModal}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+            className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
               <line x1="18" y1="6" x2="6" y2="18" />
@@ -182,7 +182,7 @@ export default function InviteModal() {
 
         {/* Create form */}
         <div className="shrink-0 px-6 py-5">
-          <div className="mb-3.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+          <div className="mb-3.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
             Create invite
           </div>
 
@@ -196,7 +196,7 @@ export default function InviteModal() {
                 <select
                   value={expirySec}
                   onChange={(e) => setExpirySec(parseInt(e.target.value, 10))}
-                  className="w-full appearance-none rounded-lg border border-border bg-bg-lighter px-3 py-2.5 pr-9 text-[13px] text-text-primary outline-none transition-all hover:border-white/[0.1] focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-soft)]"
+                  className="w-full appearance-none rounded-md border border-border bg-bg-lighter px-3 py-2.5 pr-9 text-[13px] text-text-primary outline-none transition-all hover:border-white/[0.1] focus:border-accent focus:shadow-ring"
                 >
                   {EXPIRY_OPTIONS.map((opt) => (
                     <option key={opt.seconds} value={opt.seconds} className="bg-bg-lighter">
@@ -215,7 +215,7 @@ export default function InviteModal() {
               <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                 Max uses
               </label>
-              <div className="flex h-[40px] items-center overflow-hidden rounded-lg border border-border bg-bg-lighter transition-all focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-soft)]">
+              <div className="flex h-[40px] items-center overflow-hidden rounded-md border border-border bg-bg-lighter transition-all focus-within:border-accent focus-within:shadow-ring">
                 <label className="flex h-full shrink-0 cursor-pointer items-center gap-[7px] border-r border-border-divider px-3 transition-colors hover:bg-surface-hover">
                   <input
                     type="checkbox"
@@ -224,7 +224,7 @@ export default function InviteModal() {
                     className="hidden"
                   />
                   <div
-                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded transition-all ${
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-sm transition-all ${
                       maxUsesUnlimited
                         ? "border-accent bg-accent"
                         : "border-[1.5px] border-white/[0.12] bg-transparent"
@@ -308,7 +308,7 @@ export default function InviteModal() {
           <button
             onClick={handleCreate}
             disabled={creating || !maxUsesValid}
-            className="w-full rounded-[10px] bg-accent py-[11px] text-[13px] font-semibold text-white shadow-[0_2px_12px_rgba(56,143,255,0.22)] transition-all hover:bg-accent-hover hover:shadow-[0_4px_20px_rgba(56,143,255,0.3)] active:scale-[0.98] disabled:opacity-50 disabled:shadow-none"
+            className="w-full rounded-md bg-accent py-[11px] text-[13px] font-semibold text-white transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50 disabled:shadow-none"
           >
             {creating ? "Creating..." : "Create Invite"}
           </button>
@@ -319,7 +319,7 @@ export default function InviteModal() {
 
         {/* Invite list */}
         <div className="flex-1 overflow-y-auto border-t border-border-divider px-6 py-5">
-          <div className="mb-3 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+          <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
             Active invites ({invites.length})
           </div>
 
@@ -340,13 +340,13 @@ export default function InviteModal() {
               {invites.map((invite) => (
                 <div
                   key={invite.code}
-                  className="rounded-[10px] border border-border-divider bg-bg-light p-3.5"
+                  className="rounded-md border border-border-divider bg-bg-light p-3.5"
                 >
                   <div className="flex items-center gap-2.5">
                     <button
                       onClick={() => handleCopyCode(invite.code)}
                       title="Copy code"
-                      className="group flex items-center gap-2 rounded-md bg-bg-mid px-2.5 py-1.5 font-mono text-[13px] font-semibold tracking-wider text-accent-bright transition-colors hover:bg-bg-lighter"
+                      className="group flex items-center gap-2 rounded-sm bg-bg-mid px-2.5 py-1.5 font-mono text-[13px] font-semibold tracking-[0.07em] text-accent-bright transition-colors hover:bg-bg-lighter"
                     >
                       {invite.code}
                       <span className="text-[10px] font-normal tracking-normal text-text-muted transition-colors group-hover:text-text-secondary">
@@ -357,13 +357,13 @@ export default function InviteModal() {
                     <div className="ml-auto flex gap-1.5">
                       <button
                         onClick={() => handleCopy(invite.code)}
-                        className="rounded-md bg-accent-soft px-3 py-1.5 text-[11px] font-medium text-accent-bright transition-colors hover:bg-accent-mid"
+                        className="rounded-sm bg-accent-soft px-3 py-1.5 text-[11px] font-medium text-accent-bright transition-colors hover:bg-accent-mid"
                       >
                         {copiedCode === invite.code ? "Copied!" : "Copy link"}
                       </button>
                       <button
                         onClick={() => handleRevoke(invite.code)}
-                        className="rounded-md bg-error/10 px-3 py-1.5 text-[11px] font-medium text-error transition-colors hover:bg-error/20"
+                        className="rounded-sm bg-error/10 px-3 py-1.5 text-[11px] font-medium text-error transition-colors hover:bg-error/20"
                       >
                         Revoke
                       </button>

@@ -91,7 +91,7 @@ export default function MembersAdminPanel() {
       onClick={closeModal}
     >
       <div
-        className="flex max-h-[80vh] w-full max-w-[480px] animate-[cardIn_0.25s_ease] flex-col overflow-hidden rounded-2xl border border-border bg-bg-dark shadow-[0_24px_80px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.02)]"
+        className="flex max-h-[80vh] w-full max-w-[480px] animate-[cardIn_0.25s_ease] flex-col overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -101,7 +101,7 @@ export default function MembersAdminPanel() {
           </h2>
           <button
             onClick={closeModal}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+            className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
               <line x1="18" y1="6" x2="6" y2="18" />
@@ -162,7 +162,7 @@ export default function MembersAdminPanel() {
                   return (
                     <div
                       key={m.username}
-                      className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 transition-colors hover:bg-surface-hover"
+                      className="flex items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-hover"
                     >
                       {/* Avatar */}
                       <div className="relative shrink-0">
@@ -181,12 +181,12 @@ export default function MembersAdminPanel() {
                             {displayName}
                           </span>
                           {m.isOwner && (
-                            <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-warning">
+                            <span className="rounded-sm bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-warning">
                               Owner
                             </span>
                           )}
                           {isSelf && (
-                            <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-accent-bright">
+                            <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-accent-bright">
                               You
                             </span>
                           )}
@@ -204,7 +204,7 @@ export default function MembersAdminPanel() {
                               setConfirm({ kind: "kick", username: m.username })
                             }
                             disabled={pendingAction === `kick:${m.username}`}
-                            className="rounded-md bg-warning/10 px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-warning/20 hover:text-warning disabled:opacity-50"
+                            className="rounded-sm bg-warning/10 px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-warning/20 hover:text-warning disabled:opacity-50"
                           >
                             Kick
                           </button>
@@ -213,7 +213,7 @@ export default function MembersAdminPanel() {
                               setConfirm({ kind: "ban", username: m.username })
                             }
                             disabled={pendingAction === `ban:${m.username}`}
-                            className="rounded-md bg-error/10 px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-error/20 hover:text-error disabled:opacity-50"
+                            className="rounded-sm bg-error/10 px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-error/20 hover:text-error disabled:opacity-50"
                           >
                             Ban
                           </button>
@@ -239,7 +239,7 @@ export default function MembersAdminPanel() {
               {bans.map((username) => (
                 <div
                   key={username}
-                  className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 transition-colors hover:bg-surface-hover"
+                  className="flex items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-hover"
                 >
                   <div className="opacity-50">
                     <UserAvatar username={username} size={36} />
@@ -247,7 +247,7 @@ export default function MembersAdminPanel() {
                   <span className="flex-1 truncate text-[13px] font-medium text-text-secondary">
                     {username}
                   </span>
-                  <span className="rounded bg-error/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-error">
+                  <span className="rounded-sm bg-error/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-error">
                     Banned
                   </span>
                 </div>
@@ -262,7 +262,7 @@ export default function MembersAdminPanel() {
             <button
               onClick={() => setConfirm({ kind: "leave" })}
               disabled={pendingAction === "leave"}
-              className="w-full rounded-[10px] border border-error/20 bg-error/10 py-2.5 text-[13px] font-semibold text-error transition-colors hover:bg-error/20 disabled:opacity-50"
+              className="w-full rounded-md border border-error/20 bg-error/10 py-2.5 text-[13px] font-semibold text-error transition-colors hover:bg-error/20 disabled:opacity-50"
             >
               Leave Server
             </button>
@@ -280,7 +280,7 @@ export default function MembersAdminPanel() {
           }}
         >
           <div
-            className="w-full max-w-sm animate-[cardIn_0.2s_ease] rounded-2xl border border-border bg-bg-dark p-6 shadow-[0_24px_80px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.02)]"
+            className="w-full max-w-sm animate-[cardIn_0.2s_ease] rounded-xl border border-border bg-bg-dark p-6 shadow-modal"
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="mb-2 font-display text-[16px] font-semibold text-text-primary">
@@ -288,7 +288,7 @@ export default function MembersAdminPanel() {
               {confirm.kind === "ban" && `Ban ${confirm.username}?`}
               {confirm.kind === "leave" && "Leave this server?"}
             </h3>
-            <p className="mb-5 text-[13px] leading-relaxed text-text-secondary">
+            <p className="mb-5 text-[13px] leading-[1.55] text-text-secondary">
               {confirm.kind === "kick" &&
                 "They will be disconnected but can rejoin with a valid invite."}
               {confirm.kind === "ban" &&
@@ -299,7 +299,7 @@ export default function MembersAdminPanel() {
             <div className="flex gap-2.5">
               <button
                 onClick={() => setConfirm(null)}
-                className="flex-1 rounded-[10px] bg-bg-light py-2.5 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter"
+                className="flex-1 rounded-md bg-bg-light py-2.5 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter"
               >
                 Cancel
               </button>
@@ -312,7 +312,7 @@ export default function MembersAdminPanel() {
                   else if (confirm.kind === "leave") runLeave();
                 }}
                 disabled={!!pendingAction}
-                className="flex-1 rounded-[10px] bg-error py-2.5 text-[13px] font-semibold text-white transition-colors hover:bg-error/85 disabled:opacity-50"
+                className="flex-1 rounded-md bg-error py-2.5 text-[13px] font-semibold text-white transition-colors hover:bg-error/85 disabled:opacity-50"
               >
                 {pendingAction ? "Working..." : "Confirm"}
               </button>

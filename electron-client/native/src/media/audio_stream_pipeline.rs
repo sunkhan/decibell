@@ -38,7 +38,7 @@ pub fn run_audio_stream_pipeline(
     };
 
     let _ = event_tx.send(AudioStreamEvent::Started);
-    eprintln!(
+    log::info!(
         "[stream-audio] Pipeline started, stereo Opus @ {}kbps",
         bitrate_kbps
     );
@@ -77,9 +77,9 @@ pub fn run_audio_stream_pipeline(
             let from_rate = frame.sample_rate;
             if from_rate == SAMPLE_RATE {
                 passthrough = true;
-                eprintln!("[stream-audio] Device rate {}Hz matches Opus, passthrough", from_rate);
+                log::info!("[stream-audio] Device rate {}Hz matches Opus, passthrough", from_rate);
             } else {
-                eprintln!(
+                log::info!(
                     "[stream-audio] Device rate {}Hz != {}Hz, enabling sinc resampler",
                     from_rate, SAMPLE_RATE
                 );
@@ -100,7 +100,7 @@ pub fn run_audio_stream_pipeline(
                     Ok(r) => resampler = Some(r),
                     Err(e) => {
                         let msg = format!("Failed to create stereo resampler ({}Hz → {}Hz): {}", from_rate, SAMPLE_RATE, e);
-                        eprintln!("[stream-audio] {}", msg);
+                        log::info!("[stream-audio] {}", msg);
                         let _ = event_tx.send(AudioStreamEvent::Error(msg));
                         break;
                     }
@@ -149,14 +149,14 @@ pub fn run_audio_stream_pipeline(
                     frame_count += 1;
 
                     if frame_count == 1 || frame_count % 500 == 0 {
-                        eprintln!(
+                        log::debug!(
                             "[stream-audio] Encoded frame {}, {} Opus bytes, seq={}",
                             frame_count, len, sequence
                         );
                     }
                 }
                 Err(e) => {
-                    eprintln!("[stream-audio] Encode error: {}", e);
+                    log::warn!("[stream-audio] Encode error: {}", e);
                     let _ = event_tx.send(AudioStreamEvent::Error(format!("Encode: {}", e)));
                 }
             }
@@ -164,6 +164,6 @@ pub fn run_audio_stream_pipeline(
         }
     }
 
-    eprintln!("[stream-audio] Pipeline stopped after {} frames", frame_count);
+    log::info!("[stream-audio] Pipeline stopped after {} frames", frame_count);
     let _ = event_tx.send(AudioStreamEvent::Stopped);
 }

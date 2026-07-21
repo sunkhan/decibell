@@ -44,7 +44,7 @@ function DeviceSelector({
   const displayName = devices.find((d) => d.name === selected)?.label ?? selected ?? "Default";
 
   return (
-    <div className="rounded-[10px] border border-border-divider bg-bg-light p-4" ref={ref}>
+    <div className="rounded-md border border-border-divider bg-bg-light p-4" ref={ref}>
       <div className="mb-2.5 flex items-center gap-2.5">
         <span className="text-text-muted">{icon}</span>
         <span className="text-[13px] font-medium text-text-secondary">{label}</span>
@@ -52,7 +52,7 @@ function DeviceSelector({
       <div className="relative">
         <button
           onClick={() => setOpen(!open)}
-          className="flex w-full items-center justify-between rounded-md border border-border bg-bg-lighter px-3.5 py-2.5 text-left text-[13px] text-text-primary transition-all hover:border-accent/40 focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-soft)] focus:outline-none"
+          className="flex w-full items-center justify-between rounded-sm border border-border bg-bg-lighter px-3.5 py-2.5 text-left text-[13px] text-text-primary transition-all hover:border-accent/40 focus:border-accent focus:shadow-ring focus:outline-none"
         >
           <span className="truncate">{displayName}</span>
           <svg
@@ -69,7 +69,7 @@ function DeviceSelector({
           </svg>
         </button>
         {open && (
-          <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-y-auto rounded-[10px] border border-border bg-bg-lighter shadow-[0_8px_32px_rgba(0,0,0,0.4)]">
+          <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-y-auto rounded-md border border-border bg-bg-lighter shadow-float">
             <button
               onClick={() => {
                 onChange(null);
@@ -284,7 +284,7 @@ function VoiceThresholdBar() {
   const aboveThreshold = isOpenMic || inputLevel >= voiceThresholdDb;
 
   return (
-    <div className="rounded-[10px] border border-border-divider bg-bg-light p-4">
+    <div className="rounded-md border border-border-divider bg-bg-light p-4">
       <div className="mb-3 flex items-center gap-2.5">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-text-muted">
           <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
@@ -292,7 +292,7 @@ function VoiceThresholdBar() {
           <line x1="12" y1="19" x2="12" y2="23" />
         </svg>
         <span className="text-[14px] font-medium text-text-primary">Voice Activity Threshold</span>
-        <span className="ml-auto rounded bg-accent-soft px-2 py-0.5 text-[12px] font-medium text-accent-bright">
+        <span className="ml-auto rounded-sm bg-accent-soft px-2 py-0.5 text-[12px] font-medium text-accent-bright">
           {voiceThresholdDb <= MIN_THRESHOLD_DB ? "Off" : `${Math.round(voiceThresholdDb)} dB`}
         </span>
       </div>
@@ -312,7 +312,7 @@ function VoiceThresholdBar() {
           className="absolute top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 items-center justify-center"
           style={{ left: `${thresholdPercent}%` }}
         >
-          <div className="h-[18px] w-[18px] rounded-full border-2 border-accent bg-bg-mid shadow-[0_0_8px_rgba(56,143,255,0.35)]" />
+          <div className="h-[18px] w-[18px] rounded-full border-2 border-accent bg-bg-mid shadow-[0_0_8px_rgba(69,150,255,0.35)]" />
         </div>
       </div>
 
@@ -331,16 +331,16 @@ function ToggleSwitch({ label, description, enabled, onToggle }: {
   onToggle: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between rounded-[10px] border border-border-divider bg-bg-light px-4 py-3.5 transition-colors hover:bg-bg-lighter">
+    <div className="flex items-center justify-between rounded-md border border-border-divider bg-bg-light px-4 py-3.5 transition-colors hover:bg-bg-lighter">
       <div className="pr-4">
         <div className="text-[14px] font-medium text-text-primary">{label}</div>
-        <div className="mt-1 text-[12px] leading-relaxed text-text-muted">{description}</div>
+        <div className="mt-1 text-[12px] leading-[1.55] text-text-muted">{description}</div>
       </div>
       <button
         onClick={onToggle}
         className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
           enabled
-            ? "border-accent bg-accent shadow-[0_0_8px_rgba(56,143,255,0.22)]"
+            ? "border-accent bg-accent shadow-[0_0_8px_rgba(69,150,255,0.22)]"
             : "border-border bg-bg-lighter"
         }`}
       >
@@ -433,7 +433,7 @@ export default function AudioTab() {
     <div className="flex flex-col gap-6">
       {/* Devices section */}
       <div>
-        <div className="mb-2.5 pl-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+        <div className="mb-2.5 pl-0.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
           Devices
         </div>
         <div className="flex flex-col gap-2.5">
@@ -468,7 +468,7 @@ export default function AudioTab() {
 
       {/* Voice Threshold section */}
       <div>
-        <div className="mb-2.5 pl-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+        <div className="mb-2.5 pl-0.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
           Input Sensitivity
         </div>
         <VoiceThresholdBar />
@@ -476,7 +476,7 @@ export default function AudioTab() {
 
       {/* Voice Processing section */}
       <div>
-        <div className="mb-2.5 pl-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+        <div className="mb-2.5 pl-0.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
           Voice Processing
         </div>
         <div className="flex flex-col gap-2.5">
@@ -503,7 +503,7 @@ export default function AudioTab() {
 
       {/* Stream Audio section */}
       <div>
-        <div className="mb-2.5 pl-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+        <div className="mb-2.5 pl-0.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
           Stream Audio
         </div>
         <div className="flex flex-col gap-2.5">

@@ -47,7 +47,7 @@ export default function LeaveServerConfirmModal({ serverName, onConfirm }: Props
       onClick={closeModal}
     >
       <div
-        className="w-full max-w-[400px] rounded-2xl border border-border bg-bg-secondary p-6 shadow-2xl"
+        className="w-full max-w-[400px] rounded-xl border border-border bg-bg-secondary p-6 shadow-modal"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-[16px] font-semibold text-text-primary">
@@ -60,13 +60,13 @@ export default function LeaveServerConfirmModal({ serverName, onConfirm }: Props
         <div className="mt-5 flex justify-end gap-2">
           <button
             onClick={closeModal}
-            className="rounded-lg border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
+            className="rounded-md border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
           >
             Cancel
           </button>
           <button
             onClick={handleConfirm}
-            className="rounded-lg bg-error px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-error/90"
+            className="rounded-md bg-error px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-error/90"
           >
             Leave
           </button>

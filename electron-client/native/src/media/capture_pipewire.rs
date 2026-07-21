@@ -66,7 +66,7 @@ pub async fn start_capture(
             .name("decibell-capture".to_string())
             .spawn(move || {
                 if let Err(e) = pipewire_capture_loop(pw_fd, node_id, tx, gpu_tx, config, dbus_conn, dim_tx) {
-                    eprintln!("[capture] Capture loop error: {}", e);
+                    log::warn!("[capture] Capture loop error: {}", e);
                 }
             })
             .map_err(|e| format!("Spawn capture thread: {}", e))?;
@@ -693,7 +693,7 @@ fn pipewire_capture_loop(
     let target_width = config.target_width;
     let target_height = config.target_height;
 
-    eprintln!(
+    log::info!(
         "[capture] Starting PipeWire capture (node={}, target={}x{}@{}fps)",
         node_id, target_width, target_height, config.target_fps
     );
@@ -742,26 +742,26 @@ fn pipewire_capture_loop(
     let _listener = stream
         .add_local_listener_with_user_data(data)
         .state_changed(move |_stream, _data, old, new| {
-            eprintln!("[capture] PipeWire stream: {:?} -> {:?}", old, new);
+            log::info!("[capture] PipeWire stream: {:?} -> {:?}", old, new);
             if let pw::stream::StreamState::Error(msg) = &new {
-                eprintln!("[capture] Stream error: {}", msg);
+                log::warn!("[capture] Stream error: {}", msg);
                 if let Some(ml) = mainloop_weak.upgrade() {
                     ml.quit();
                 }
             }
         })
         .add_buffer(|_stream, _data, _buf| {
-            eprintln!("[capture] add_buffer (producer allocated a buffer)");
+            log::info!("[capture] add_buffer (producer allocated a buffer)");
         })
         .remove_buffer(|_stream, _data, _buf| {
-            eprintln!("[capture] remove_buffer");
+            log::info!("[capture] remove_buffer");
         })
         .param_changed(|stream, data, id, param| {
             let Some(param) = param else {
-                eprintln!("[capture] param_changed(id={}, param=None)", id);
+                log::info!("[capture] param_changed(id={}, param=None)", id);
                 return;
             };
-            eprintln!(
+            log::info!(
                 "[capture] param_changed(id={} = {:?})",
                 id,
                 spa::param::ParamType::from_raw(id)
@@ -814,7 +814,7 @@ fn pipewire_capture_loop(
                 let _ = dim_tx.send((data.target_width, data.target_height));
             }
 
-            eprintln!(
+            log::info!(
                 "[capture] Negotiated format: {:?} {}x{} -> {}x{} @ {}/{} (modifier=0x{:x}, dmabuf={}, fixate={})",
                 fmt, w, h,
                 data.target_width, data.target_height,
@@ -837,7 +837,7 @@ fn pipewire_capture_loop(
                 // prefer a non-LINEAR modifier (the GPU's native layout).
                 let alternatives = extract_modifier_alternatives(param).unwrap_or_default();
                 let chosen_modifier = pick_modifier(&alternatives, modifier);
-                eprintln!(
+                log::info!(
                     "[capture] Fixating modifier: producer offered {:?} (default 0x{:x}) -> sending 0x{:x}",
                     alternatives
                         .iter()
@@ -863,7 +863,7 @@ fn pipewire_capture_loop(
                 .collect();
             let mut params: Vec<&Pod> = pods;
             if let Err(e) = stream.update_params(&mut params) {
-                eprintln!("[capture] update_params failed: {:?}", e);
+                log::warn!("[capture] update_params failed: {:?}", e);
             }
         })
         .process(|stream, data| {
@@ -873,7 +873,7 @@ fn pipewire_capture_loop(
             let Some(mut buffer) = stream.dequeue_buffer() else {
                 data.diag_no_buffer = data.diag_no_buffer.saturating_add(1);
                 if log_diag {
-                    eprintln!("[capture] process(): dequeue_buffer returned None");
+                    log::info!("[capture] process(): dequeue_buffer returned None");
                 }
                 return;
             };
@@ -891,7 +891,7 @@ fn pipewire_capture_loop(
             if datas.is_empty() {
                 data.diag_empty_datas = data.diag_empty_datas.saturating_add(1);
                 if log_diag {
-                    eprintln!("[capture] process(): buffer.datas is empty");
+                    log::info!("[capture] process(): buffer.datas is empty");
                 }
                 return;
             }
@@ -903,7 +903,7 @@ fn pipewire_capture_loop(
 
             use pw::spa::buffer::DataType;
             if log_diag {
-                eprintln!(
+                log::info!(
                     "[capture] process() diag: chunk_size={}, stride={}, buf_type={:?}, has_data={}",
                     chunk_size, stride, buf_type, d.data().is_some()
                 );
@@ -917,7 +917,7 @@ fn pipewire_capture_loop(
             if stride == 0 {
                 data.diag_zero_chunk = data.diag_zero_chunk.saturating_add(1);
                 if data.diag_zero_chunk == 1 || data.diag_zero_chunk % 600 == 0 {
-                    eprintln!(
+                    log::info!(
                         "[capture] process(): zero stride — count={}",
                         data.diag_zero_chunk
                     );
@@ -927,7 +927,7 @@ fn pipewire_capture_loop(
             if buf_type != DataType::DmaBuf && chunk_size == 0 {
                 data.diag_zero_chunk = data.diag_zero_chunk.saturating_add(1);
                 if data.diag_zero_chunk == 1 || data.diag_zero_chunk % 600 == 0 {
-                    eprintln!(
+                    log::info!(
                         "[capture] process(): SHM buffer with zero chunk_size — count={}",
                         data.diag_zero_chunk
                     );
@@ -941,7 +941,7 @@ fn pipewire_capture_loop(
 
             data.frame_count += 1;
             if data.frame_count <= 3 || data.frame_count % 120 == 0 {
-                eprintln!(
+                log::info!(
                     "[capture] Frame {} ({:?} {}x{}, stride={}, chunk={} bytes, buf_type={:?}, {:.1}s)",
                     data.frame_count, fmt, src_w, src_h, stride, chunk_size,
                     buf_type, data.start.elapsed().as_secs_f64()
@@ -955,7 +955,7 @@ fn pipewire_capture_loop(
 
             if !is_bgra && !is_rgba {
                 if data.frame_count <= 3 {
-                    eprintln!("[capture] Unsupported format {:?}, skipping", fmt);
+                    log::info!("[capture] Unsupported format {:?}, skipping", fmt);
                 }
                 return;
             }
@@ -973,7 +973,7 @@ fn pipewire_capture_loop(
                 let modifier = if has_modifier { data.format.modifier() } else { 0 };
                 if modifier != 0 {
                     if data.frame_count == 1 {
-                        eprintln!(
+                        log::info!(
                             "[capture] FATAL: producer chose tiled DMA-BUF (modifier=0x{:x}). \
                              Cannot read tiled buffers via mmap. This is the NVIDIA + Wayland + \
                              gnome-portal limitation — mutter on NVIDIA can't allocate LINEAR \
@@ -1007,7 +1007,7 @@ fn pipewire_capture_loop(
             };
             if raw_data.len() < chunk_offset + bytes_per_frame {
                 if data.frame_count <= 3 {
-                    eprintln!(
+                    log::info!(
                         "[capture] mmap'd buffer too small: have={}, need={} (offset={}, bytes={})",
                         raw_data.len(), chunk_offset + bytes_per_frame, chunk_offset, bytes_per_frame
                     );
@@ -1035,7 +1035,7 @@ fn pipewire_capture_loop(
                 Ok(()) => { data.last_capture_us = now_us; }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {}
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    eprintln!("[capture] Frame channel closed, stopping");
+                    log::info!("[capture] Frame channel closed, stopping");
                     if let Some(ml) = data.quit_mainloop.upgrade() { ml.quit(); }
                 }
             }
@@ -1098,12 +1098,12 @@ fn pipewire_capture_loop(
     // flips it active, even without PW_STREAM_FLAG_INACTIVE set. This is a
     // harmless no-op when the stream is already active.
     if let Err(e) = stream.set_active(true) {
-        eprintln!("[capture] set_active(true) failed: {:?}", e);
+        log::warn!("[capture] set_active(true) failed: {:?}", e);
     }
 
-    eprintln!("[capture] PipeWire stream connected, running main loop");
+    log::info!("[capture] PipeWire stream connected, running main loop");
     mainloop.run();
-    eprintln!("[capture] PipeWire main loop exited");
+    log::info!("[capture] PipeWire main loop exited");
 
     Ok(())
 }

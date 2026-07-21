@@ -85,7 +85,11 @@ export default function VoicePanel() {
     useVoiceStore.getState().setFullscreenStream(username);
   };
 
-  const handleStopSharing = () => {
+  const handleStopSharing = async () => {
+    // Tear down the renderer-side capture + encoder first so no more
+    // frames are pushed to native after we tell native to stop.
+    const { stopActiveStream } = await import("./streaming/StreamCapture");
+    await stopActiveStream();
     invoke("stop_screen_share", {
       serverId: connectedServerId,
       channelId: connectedChannelId,
@@ -94,6 +98,20 @@ export default function VoicePanel() {
   };
 
   const handleDisconnect = async () => {
+    // If we're streaming, stop the capture/encoder and tell native to
+    // stop BEFORE leaving. Otherwise capture keeps running and, since
+    // disconnect() hides the Stop button, there's no UI left to end it.
+    if (useVoiceStore.getState().isStreaming) {
+      const { stopActiveStream } = await import("./streaming/StreamCapture");
+      await stopActiveStream();
+      if (connectedServerId && connectedChannelId) {
+        await invoke("stop_screen_share", {
+          serverId: connectedServerId,
+          channelId: connectedChannelId,
+        }).catch(console.error);
+      }
+      useVoiceStore.getState().setIsStreaming(false);
+    }
     if (connectedServerId && connectedChannelId) {
       for (const username of watchingStreams) {
         if (username !== ownUsername) {
@@ -127,7 +145,7 @@ export default function VoicePanel() {
             <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
             <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
           </svg>
-          <span className="font-display text-[15px] font-semibold text-text-primary">
+          <span className="font-display text-[16px] font-semibold text-text-primary">
             {channelName}
           </span>
           <span
@@ -162,7 +180,7 @@ export default function VoicePanel() {
       {hasStreams && (
         <div className={fullscreenStream ? "hidden" : "flex flex-1 overflow-hidden"}>
           <div className="flex flex-1 flex-col overflow-hidden">
-            <div className="px-5 py-3 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+            <div className="px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
               Live — {activeStreams.length}
             </div>
             <div className="flex-1 overflow-y-auto px-5 pt-4 pb-4">
@@ -199,12 +217,12 @@ export default function VoicePanel() {
                           handleWatchStream(stream.ownerUsername);
                         }
                       }}
-                      className={`group relative overflow-hidden rounded-xl border transition-all duration-200 ease-out ${
+                      className={`group relative overflow-hidden rounded-lg border transition-all duration-150 ease-out ${
                         !canWatch
                           ? "cursor-not-allowed border-border-divider opacity-50"
                           : isWatching
-                            ? "cursor-pointer border-accent/40 shadow-[0_0_12px_var(--color-accent-soft)] hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(0,0,0,0.35),0_0_16px_var(--color-accent-soft)]"
-                            : "cursor-pointer border-border bg-bg-light hover:-translate-y-0.5 hover:border-accent/30 hover:shadow-[0_8px_20px_rgba(0,0,0,0.35)]"
+                            ? "cursor-pointer border-accent/40 shadow-[0_0_12px_var(--color-accent-soft)] hover:shadow-float"
+                            : "cursor-pointer border-border bg-bg-light hover:border-accent/30 hover:shadow-float"
                       }`}
                     >
                       <div className="relative aspect-video w-full bg-bg-darkest">
@@ -236,7 +254,7 @@ export default function VoicePanel() {
                           </div>
                         )}
                         <div
-                          className={`absolute left-2.5 top-2.5 flex items-center gap-[5px] rounded-md px-2 py-1 ${
+                          className={`absolute left-2.5 top-2.5 flex items-center gap-[5px] rounded-sm px-2 py-1 ${
                             isWatching ? "bg-accent/90" : "bg-error/90"
                           }`}
                         >
@@ -298,7 +316,7 @@ export default function VoicePanel() {
                                 .getState()
                                 .removeWatching(stream.ownerUsername);
                             }}
-                            className="ml-auto flex h-7 items-center gap-1.5 rounded-md border border-error/[0.25] bg-error/[0.12] px-2.5 text-[11px] font-medium text-error transition-colors hover:border-error/[0.4] hover:bg-error/[0.18]"
+                            className="ml-auto flex h-7 items-center gap-1.5 rounded-sm border border-error/[0.25] bg-error/[0.12] px-2.5 text-[11px] font-medium text-error transition-colors hover:border-error/[0.4] hover:bg-error/[0.18]"
                           >
                             <svg
                               className="h-3.5 w-3.5"
@@ -345,7 +363,7 @@ export default function VoicePanel() {
         <div className="flex justify-center gap-2 border-t border-border-divider bg-bg-dark px-5 py-3.5">
           <button
             onClick={handleMute}
-            className={`flex items-center gap-[7px] rounded-[10px] border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
+            className={`flex items-center gap-[7px] rounded-md border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
               isMuted
                 ? "border-error/20 bg-error/10 text-error"
                 : "border-border bg-bg-light text-text-secondary hover:bg-bg-lighter hover:text-text-primary"
@@ -382,7 +400,7 @@ export default function VoicePanel() {
           </button>
           <button
             onClick={handleDeafen}
-            className={`flex items-center gap-[7px] rounded-[10px] border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
+            className={`flex items-center gap-[7px] rounded-md border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
               isDeafened
                 ? "border-error/20 bg-error/10 text-error"
                 : "border-border bg-bg-light text-text-secondary hover:bg-bg-lighter hover:text-text-primary"
@@ -411,7 +429,7 @@ export default function VoicePanel() {
           </button>
           <button
             onClick={isStreaming ? handleStopSharing : () => setShowPicker(true)}
-            className={`flex items-center gap-[7px] rounded-[10px] border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
+            className={`flex items-center gap-[7px] rounded-md border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
               isStreaming
                 ? "border-accent/25 bg-accent/[0.12] text-accent hover:bg-accent/[0.18]"
                 : "border-accent/20 bg-accent-soft text-accent hover:bg-accent/[0.18] hover:text-accent-bright"
@@ -452,7 +470,7 @@ export default function VoicePanel() {
           </button>
           <button
             onClick={handleDisconnect}
-            className="flex items-center gap-[7px] rounded-[10px] border border-error/20 bg-error/10 px-[18px] py-[9px] text-[13px] font-medium text-error transition-colors hover:bg-error/[0.18]"
+            className="flex items-center gap-[7px] rounded-md border border-error/20 bg-error/10 px-[18px] py-[9px] text-[13px] font-medium text-error transition-colors hover:bg-error/[0.18]"
           >
             Disconnect
           </button>
@@ -489,7 +507,7 @@ const ParticipantCard = memo(function ParticipantCard({
 
   return (
     <div
-      className="flex cursor-pointer flex-col items-center gap-2.5 rounded-xl px-5 py-4 transition-all hover:bg-white/[0.035]"
+      className="flex cursor-pointer flex-col items-center gap-2.5 rounded-lg px-5 py-4 transition-all hover:bg-white/[0.035]"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(
@@ -505,13 +523,13 @@ const ParticipantCard = memo(function ParticipantCard({
     >
       <div className="relative">
         <div
-          className={`rounded-xl transition-all duration-200 ${
+          className={`rounded-lg transition-all duration-150 ${
             isSpeaking
               ? "shadow-[0_0_0_3px_var(--color-bg-mid),0_0_0_5px_var(--color-success)]"
               : ""
           }`}
         >
-          <UserAvatar username={username} size={80} className="!rounded-xl" />
+          <UserAvatar username={username} size={80} />
         </div>
         {isMuted && (
           <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-[2.5px] border-bg-mid bg-bg-light">

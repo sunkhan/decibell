@@ -56,7 +56,7 @@ pub fn start_system_audio_capture() -> Result<(std::sync::mpsc::Receiver<AudioFr
         let mut set = redirected.lock().unwrap();
         for id in &initial_node_ids {
             if let Err(e) = redirect_node_to_sink(*id, "decibell_private") {
-                eprintln!("[audio-capture] Failed to redirect node {}: {}", id, e);
+                log::warn!("[audio-capture] Failed to redirect node {}: {}", id, e);
             } else {
                 set.insert(*id);
             }
@@ -79,7 +79,7 @@ pub fn start_system_audio_capture() -> Result<(std::sync::mpsc::Receiver<AudioFr
                     let nodes = match find_our_playback_nodes(our_pid) {
                         Ok(n) => n,
                         Err(e) => {
-                            eprintln!("[audio-capture] Poller scan failed: {}", e);
+                            log::warn!("[audio-capture] Poller scan failed: {}", e);
                             continue;
                         }
                     };
@@ -88,11 +88,11 @@ pub fn start_system_audio_capture() -> Result<(std::sync::mpsc::Receiver<AudioFr
                         if set.contains(&id) { continue; }
                         match redirect_node_to_sink(id, "decibell_private") {
                             Ok(()) => {
-                                eprintln!("[audio-capture] Poller redirected late node {}", id);
+                                log::info!("[audio-capture] Poller redirected late node {}", id);
                                 set.insert(id);
                             }
                             Err(e) => {
-                                eprintln!("[audio-capture] Poller redirect of {} failed: {}", id, e);
+                                log::warn!("[audio-capture] Poller redirect of {} failed: {}", id, e);
                             }
                         }
                     }
@@ -124,7 +124,7 @@ pub fn start_system_audio_capture() -> Result<(std::sync::mpsc::Receiver<AudioFr
             match run_audio_capture_loop(tx, monitor_target, ready_tx.clone()) {
                 Ok(()) => {}
                 Err(e) => {
-                    eprintln!("[audio-capture] Capture loop error: {}", e);
+                    log::warn!("[audio-capture] Capture loop error: {}", e);
                     let _ = ready_tx.send(Err(e));
                 }
             }
@@ -157,7 +157,7 @@ pub fn start_system_audio_capture() -> Result<(std::sync::mpsc::Receiver<AudioFr
     let cleanup_redirected = redirected.clone();
     let cleanup_poller_stop = poller_stop.clone();
     let cleanup = Box::new(move || {
-        eprintln!("[audio-capture] Cleanup: restoring audio routing");
+        log::info!("[audio-capture] Cleanup: restoring audio routing");
         cleanup_poller_stop.store(true, Ordering::Relaxed);
         for id in cleanup_redirected.lock().unwrap().iter() {
             let _ = restore_node_routing(*id);
@@ -205,16 +205,16 @@ fn find_default_sink_and_our_nodes(our_pid: u32) -> Result<(String, Vec<u32>), S
         return Err("Could not find default sink name".to_string());
     }
 
-    eprintln!("[audio-capture] Default sink: {}", default_sink_name);
+    log::info!("[audio-capture] Default sink: {}", default_sink_name);
 
     let nodes = find_our_playback_nodes(our_pid).unwrap_or_else(|e| {
-        eprintln!("[audio-capture] Initial node scan failed (poller will retry): {}", e);
+        log::warn!("[audio-capture] Initial node scan failed (poller will retry): {}", e);
         Vec::new()
     });
     if nodes.is_empty() {
-        eprintln!("[audio-capture] No Decibell playback nodes found yet — poller will pick them up when they appear.");
+        log::info!("[audio-capture] No Decibell playback nodes found yet — poller will pick them up when they appear.");
     } else {
-        eprintln!("[audio-capture] Found {} Decibell playback node(s): {:?}", nodes.len(), nodes);
+        log::info!("[audio-capture] Found {} Decibell playback node(s): {:?}", nodes.len(), nodes);
     }
 
     Ok((default_sink_name, nodes))
@@ -292,7 +292,7 @@ fn create_null_sink() -> Result<u32, String> {
         .parse()
         .map_err(|_| "Failed to parse null-sink module ID".to_string())?;
 
-    eprintln!("[audio-capture] Created null-sink module {}", module_id);
+    log::info!("[audio-capture] Created null-sink module {}", module_id);
     Ok(module_id)
 }
 
@@ -313,7 +313,7 @@ fn redirect_node_to_sink(node_id: u32, sink_name: &str) -> Result<(), String> {
 
     if !output.status.success() {
         // Fallback: try pactl move-sink-input
-        eprintln!(
+        log::info!(
             "[audio-capture] pw-metadata failed, trying pactl move-sink-input: {}",
             String::from_utf8_lossy(&output.stderr)
         );
@@ -336,7 +336,7 @@ fn redirect_node_to_sink(node_id: u32, sink_name: &str) -> Result<(), String> {
         }
     }
 
-    eprintln!(
+    log::info!(
         "[audio-capture] Redirected node {} to sink '{}'",
         node_id, sink_name
     );
@@ -368,7 +368,7 @@ fn restore_node_routing(node_id: u32) -> Result<(), String> {
             .output();
     }
 
-    eprintln!("[audio-capture] Restored routing for node {}", node_id);
+    log::info!("[audio-capture] Restored routing for node {}", node_id);
     Ok(())
 }
 
@@ -380,13 +380,13 @@ fn remove_null_sink(module_id: u32) -> Result<(), String> {
         .map_err(|e| format!("pactl unload-module: {}", e))?;
 
     if !output.status.success() {
-        eprintln!(
+        log::info!(
             "[audio-capture] Warning: failed to remove null-sink module {}: {}",
             module_id,
             String::from_utf8_lossy(&output.stderr)
         );
     } else {
-        eprintln!("[audio-capture] Removed null-sink module {}", module_id);
+        log::info!("[audio-capture] Removed null-sink module {}", module_id);
     }
     Ok(())
 }
@@ -425,7 +425,7 @@ fn find_sink_monitor_target(sink_name: &str) -> Result<u32, String> {
                 && (media_class == "Audio/Sink" || media_class == "Audio/Duplex")
             {
                 if let Some(id) = obj.get("id").and_then(|v| v.as_u64()) {
-                    eprintln!("[audio-capture] Found sink '{}' at node {}", sink_name, id);
+                    log::info!("[audio-capture] Found sink '{}' at node {}", sink_name, id);
                     return Ok(id as u32);
                 }
             }
@@ -481,10 +481,10 @@ fn run_audio_capture_loop(
     let _listener = stream
         .add_local_listener_with_user_data(data)
         .state_changed(move |_stream, _data, old, new| {
-            eprintln!("[audio-capture] Stream: {:?} -> {:?}", old, new);
+            log::info!("[audio-capture] Stream: {:?} -> {:?}", old, new);
             match &new {
                 pw::stream::StreamState::Error(msg) => {
-                    eprintln!("[audio-capture] Stream error: {}", msg);
+                    log::warn!("[audio-capture] Stream error: {}", msg);
                     let _ = ready_tx_clone.send(Err(format!("Stream error: {}", msg)));
                     if let Some(ml) = mainloop_weak.upgrade() {
                         ml.quit();
@@ -521,7 +521,7 @@ fn run_audio_capture_loop(
             data.channels = data.format.channels();
             data.sample_rate = data.format.rate();
 
-            eprintln!(
+            log::info!(
                 "[audio-capture] Negotiated: {:?} {}ch @ {}Hz",
                 data.format.format(),
                 data.channels,
@@ -565,7 +565,7 @@ fn run_audio_capture_loop(
                 }
                 _ => {
                     if data.frame_count == 0 {
-                        eprintln!("[audio-capture] Unsupported audio format: {:?}", format);
+                        log::info!("[audio-capture] Unsupported audio format: {:?}", format);
                     }
                     data.frame_count += 1;
                     return;
@@ -574,7 +574,7 @@ fn run_audio_capture_loop(
 
             data.frame_count += 1;
             if data.frame_count == 1 || data.frame_count % 2400 == 0 {
-                eprintln!(
+                log::info!(
                     "[audio-capture] Frame {}: {} stereo samples",
                     data.frame_count,
                     stereo_f32.len() / 2
@@ -591,7 +591,7 @@ fn run_audio_capture_loop(
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {}
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    eprintln!("[audio-capture] Channel closed, stopping");
+                    log::info!("[audio-capture] Channel closed, stopping");
                     if let Some(ml) = data.quit_mainloop.upgrade() {
                         ml.quit();
                     }
@@ -659,9 +659,9 @@ fn run_audio_capture_loop(
         )
         .map_err(|e| format!("PW stream connect: {:?}", e))?;
 
-    eprintln!("[audio-capture] PipeWire stream connected, running main loop");
+    log::info!("[audio-capture] PipeWire stream connected, running main loop");
     mainloop.run();
-    eprintln!("[audio-capture] PipeWire main loop exited");
+    log::info!("[audio-capture] PipeWire main loop exited");
 
     Ok(())
 }

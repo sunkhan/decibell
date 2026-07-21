@@ -62,7 +62,7 @@ function ServerBrowseCard({
     <button
       onClick={() => !isConnected && onConnect()}
       disabled={isConnected || isConnecting}
-      className="flex flex-col overflow-hidden rounded-2xl border border-border bg-bg-dark text-left transition-all hover:border-accent/40 hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0"
+      className="flex flex-col overflow-hidden rounded-xl border border-border bg-bg-dark text-left transition-all hover:border-accent/40 disabled:opacity-60 disabled:hover:translate-y-0"
     >
       {/* Banner image (wide rectangle, fixed height) */}
       {hasPicture ? (
@@ -73,7 +73,7 @@ function ServerBrowseCard({
         />
       ) : (
         <div
-          className="flex h-24 w-full items-center justify-center text-4xl font-bold text-white"
+          className="flex h-24 w-full items-center justify-center text-4xl font-semibold text-white"
           style={{ background: stringToGradient(server.name) }}
         >
           {server.name.charAt(0).toUpperCase()}
@@ -82,7 +82,7 @@ function ServerBrowseCard({
       {/* Info block */}
       <div className="flex flex-1 flex-col gap-1 p-4">
         <div className="flex items-start justify-between gap-2">
-          <span className="truncate text-sm font-bold text-text-bright">
+          <span className="truncate text-sm font-semibold text-text-bright">
             {server.name}
           </span>
           {isConnecting && (
@@ -231,7 +231,7 @@ export default function ServerBrowseView() {
   return (
     <div className="flex flex-1 flex-col overflow-hidden bg-bg-mid">
       <div className="border-b border-border px-8 py-6">
-        <h1 className="mb-1 text-xl font-semibold text-text-bright">
+        <h1 className="mb-1 text-[18px] font-semibold text-text-bright">
           Discover Servers
         </h1>
         <p className="mb-4 text-sm text-text-secondary">
@@ -242,14 +242,14 @@ export default function ServerBrowseView() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search servers..."
-          className="w-full max-w-md rounded-xl border border-border bg-bg-dark px-4 py-2.5 text-sm text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-soft)]"
+          className="w-full max-w-md rounded-lg border border-border bg-bg-dark px-4 py-2.5 text-sm text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent focus:shadow-ring"
         />
 
         {(() => {
           const isLink = inviteInput.trim().toLowerCase().startsWith("decibell:");
           const canJoin = !redeeming && inviteInput.trim().length > 0;
           return (
-            <div className="mt-5 flex max-w-2xl items-start gap-2 rounded-2xl border border-border bg-bg-dark p-3">
+            <div className="mt-5 flex max-w-2xl items-start gap-2 rounded-xl border border-border bg-bg-dark p-3">
               <div className="flex-1">
                 <input
                   type="text"
@@ -257,7 +257,7 @@ export default function ServerBrowseView() {
                   onChange={(e) => setInviteInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleRedeemInvite()}
                   placeholder="Have an invite? Paste a code or decibell:// link"
-                  className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 font-mono text-sm text-text-primary outline-none transition-colors placeholder:font-sans placeholder:text-text-muted focus:border-accent"
+                  className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 font-mono text-sm text-text-primary outline-none transition-colors placeholder:font-sans placeholder:text-text-muted focus:border-accent"
                 />
                 {!isLink && showManualHost && (
                   <div className="mt-2 flex flex-col gap-2 sm:flex-row">
@@ -267,7 +267,7 @@ export default function ServerBrowseView() {
                       onChange={(e) => setInviteHost(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleRedeemInvite()}
                       placeholder="host (e.g. 203.0.113.5)"
-                      className="flex-1 rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+                      className="flex-1 rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
                     />
                     <input
                       type="text"
@@ -275,7 +275,7 @@ export default function ServerBrowseView() {
                       onChange={(e) => setInvitePort(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleRedeemInvite()}
                       placeholder="port"
-                      className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent sm:w-24"
+                      className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent sm:w-24"
                     />
                   </div>
                 )}
@@ -298,7 +298,7 @@ export default function ServerBrowseView() {
               <button
                 onClick={handleRedeemInvite}
                 disabled={!canJoin}
-                className="shrink-0 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+                className="shrink-0 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {redeeming ? "Joining..." : "Join"}
               </button>
@@ -315,13 +315,13 @@ export default function ServerBrowseView() {
             {[1, 2, 3, 4, 5, 6].map((i) => (
               <div
                 key={i}
-                className="flex animate-pulse flex-col overflow-hidden rounded-2xl border border-border bg-bg-dark"
+                className="flex animate-pulse flex-col overflow-hidden rounded-xl border border-border bg-bg-dark"
               >
                 <div className="h-24 w-full bg-bg-tertiary" />
                 <div className="flex flex-col gap-2 p-4">
-                  <div className="h-4 w-32 rounded bg-bg-tertiary" />
-                  <div className="h-3 w-48 rounded bg-bg-tertiary" />
-                  <div className="h-3 w-20 rounded bg-bg-tertiary" />
+                  <div className="h-4 w-32 rounded-sm bg-bg-tertiary" />
+                  <div className="h-3 w-48 rounded-sm bg-bg-tertiary" />
+                  <div className="h-3 w-20 rounded-sm bg-bg-tertiary" />
                 </div>
               </div>
             ))}

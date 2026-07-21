@@ -51,10 +51,10 @@ function ToggleRow({
   onToggle: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between rounded-[10px] border border-border-divider bg-bg-light px-4 py-3.5 transition-colors hover:bg-bg-lighter">
+    <div className="flex items-center justify-between rounded-md border border-border-divider bg-bg-light px-4 py-3.5 transition-colors hover:bg-bg-lighter">
       <div className="pr-4">
         <div className="text-[14px] font-medium text-text-primary">{title}</div>
-        <div className="mt-1 text-[12px] leading-relaxed text-text-muted">
+        <div className="mt-1 text-[12px] leading-[1.55] text-text-muted">
           {description}
         </div>
       </div>
@@ -62,7 +62,7 @@ function ToggleRow({
         onClick={onToggle}
         className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
           value
-            ? "border-accent bg-accent shadow-[0_0_8px_rgba(56,143,255,0.22)]"
+            ? "border-accent bg-accent shadow-[0_0_8px_rgba(69,150,255,0.22)]"
             : "border-border bg-bg-lighter"
         }`}
       >

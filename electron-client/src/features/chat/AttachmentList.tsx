@@ -144,7 +144,7 @@ function MediaGrid({
 
   return (
     <div
-      className="mt-2 flex flex-col overflow-hidden rounded-[10px] border border-border-divider"
+      className="mt-2 flex flex-col overflow-hidden rounded-md border border-border-divider"
       style={{ width: containerWidth, gap: GRID_GAP_PX }}
     >
       {rows.map((row, ri) => (
@@ -208,7 +208,7 @@ function ImageItem({
   // use object-contain to preserve the full image.
   const wrapperClass = fillCell
     ? "block h-full w-full cursor-pointer overflow-hidden bg-bg-secondary"
-    : "block cursor-pointer overflow-hidden rounded-xl border border-border bg-bg-secondary";
+    : "block cursor-pointer overflow-hidden rounded-lg border border-border bg-bg-secondary";
   const wrapperStyle: React.CSSProperties | undefined = fillCell
     ? undefined
     : { width: box.width, height: box.height };
@@ -354,7 +354,7 @@ function VideoItem({
   // ResizeObserver, so it picks up either box correctly.
   const wrapperClass = fillCell
     ? "h-full w-full overflow-hidden bg-bg-darkest"
-    : "mt-2 overflow-hidden rounded-xl border border-border bg-bg-darkest";
+    : "mt-2 overflow-hidden rounded-lg border border-border bg-bg-darkest";
   const wrapperStyle: React.CSSProperties | undefined = fillCell
     ? undefined
     : { width: box.width, height: box.height };
@@ -389,7 +389,7 @@ function VideoItem({
           <div className="pointer-events-none absolute inset-0 bg-black/30" />
         )}
         {!isActive && (
-          <div className="relative flex h-12 w-12 items-center justify-center rounded-xl bg-accent shadow-[0_2px_8px_rgba(56,143,255,0.15)] transition-all group-hover:scale-110 group-hover:bg-accent-hover group-hover:shadow-[0_3px_12px_rgba(56,143,255,0.22)]">
+          <div className="relative flex h-12 w-12 items-center justify-center rounded-lg bg-accent transition-all group-hover:scale-110 group-hover:bg-accent-hover group-">
             <svg className="h-7 w-7 text-white" viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z" />
             </svg>
@@ -589,11 +589,11 @@ function AudioItem({
       tabIndex={-1}
       onMouseDownCapture={() => wrapperRef.current?.focus()}
       onKeyDown={onWrapperKeyDown}
-      className="mt-2 flex w-full max-w-[400px] flex-col gap-2.5 rounded-xl border border-border bg-bg-light p-3 shadow-[0_4px_16px_rgba(0,0,0,0.3)] outline-none"
+      className="mt-2 flex w-full max-w-[400px] flex-col gap-2.5 rounded-lg border border-border bg-bg-light p-3 shadow-float outline-none"
     >
       {/* Top row: kind icon + filename + size + small download button */}
       <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-accent-soft text-accent-bright">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent-bright">
           <AudioIcon size={18} />
         </div>
         <div className="min-w-0 flex-1">
@@ -611,7 +611,7 @@ function AudioItem({
         <button
           onClick={onDownload}
           title="Download"
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -626,7 +626,7 @@ function AudioItem({
         <button
           onClick={onPlay}
           disabled={!!error}
-          className="flex h-8 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-white shadow-[0_2px_8px_rgba(56,143,255,0.25)] transition-all hover:bg-accent-hover hover:scale-105 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-8 w-10 shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-hover hover:scale-105 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
           title={playing ? "Pause" : "Play"}
         >
           {error ? (
@@ -656,7 +656,7 @@ function AudioItem({
             style={{ width: `${progress}%` }}
           />
           <div
-            className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-light opacity-0 shadow-[0_0_6px_rgba(56,143,255,0.3)] transition-opacity group-hover:opacity-100"
+            className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-light opacity-0 shadow-[0_0_6px_rgba(69,150,255,0.3)] transition-opacity group-hover:opacity-100"
             style={{ left: `${progress}%` }}
           />
         </div>
@@ -671,7 +671,7 @@ function AudioItem({
         <button
           onClick={() => audioToggleMute()}
           title={muted ? "Unmute" : "Mute"}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
         >
           {muted || volume === 0 ? (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -755,11 +755,11 @@ function DocumentItem({
       onClick={onDownload}
       disabled={!url}
       title={`Download ${attachment.filename}`}
-      className={`flex max-w-[400px] items-center gap-3 rounded-xl border border-border bg-bg-secondary p-3 text-left transition-colors hover:bg-bg-light ${
+      className={`flex max-w-[400px] items-center gap-3 rounded-lg border border-border bg-bg-secondary p-3 text-left transition-colors hover:bg-bg-light ${
         url ? "" : "pointer-events-none opacity-50"
       }`}
     >
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-bg-light text-text-muted">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-bg-light text-text-muted">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
           <polyline points="14 2 14 8 20 8" />
@@ -779,7 +779,7 @@ function DocumentItem({
 
 function PurgedTombstone({ attachment }: { attachment: Attachment }) {
   return (
-    <div className="flex max-w-[400px] items-center gap-2 rounded-xl border border-dashed border-border bg-bg-secondary/50 p-3 text-[12px] italic text-text-muted">
+    <div className="flex max-w-[400px] items-center gap-2 rounded-lg border border-dashed border-border bg-bg-secondary/50 p-3 text-[12px] italic text-text-muted">
       <span className="truncate">
         {attachment.filename || "Attachment"} (deleted by retention policy)
       </span>

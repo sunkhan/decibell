@@ -41,7 +41,11 @@ pub struct UdpVideoPacket {
     pub packet_index: u16,
     pub total_packets: u16,
     pub payload_size: u16,
-    pub is_keyframe: bool,
+    /// Keyframe flag on the wire. Stored as a raw byte, not a Rust `bool`:
+    /// `from_bytes` copies this straight off an untrusted datagram, and a
+    /// `bool` holding any value other than 0/1 is instant undefined
+    /// behavior. Read it through `is_keyframe()`.
+    pub is_keyframe: u8,
     pub codec: u8,
     pub payload: [u8; UDP_MAX_PAYLOAD],
 }
@@ -127,7 +131,7 @@ impl UdpVideoPacket {
             packet_index,
             total_packets,
             payload_size: data_len as u16,
-            is_keyframe,
+            is_keyframe: is_keyframe as u8,
             codec: CODEC_H264_HW,
             payload,
         }
@@ -165,7 +169,7 @@ impl UdpVideoPacket {
             packet_index: 0,
             total_packets: 0,
             payload_size: 0,
-            is_keyframe: false,
+            is_keyframe: 0,
             codec: 0,
             payload: [0; UDP_MAX_PAYLOAD],
         };
@@ -182,6 +186,11 @@ impl UdpVideoPacket {
         let available = buf.len() - header_size;
         let copy_len = ps.min(available).min(UDP_MAX_PAYLOAD);
         pkt.payload[..copy_len].copy_from_slice(&buf[header_size..header_size + copy_len]);
+        // Clamp the size field to what was actually copied. A datagram
+        // claiming payload_size > UDP_MAX_PAYLOAD (or longer than the
+        // datagram itself) would otherwise survive with the lie intact
+        // and panic payload_data()'s slice on the recv thread.
+        pkt.payload_size = copy_len as u16;
         Some(pkt)
     }
 
@@ -190,10 +199,24 @@ impl UdpVideoPacket {
         String::from_utf8_lossy(&self.sender_id[..end]).to_string()
     }
 
+    /// Allocation-free comparison against an already-known username —
+    /// the recv loop checks the streamer per packet (up to ~2000/sec),
+    /// which must not cost a String per datagram.
+    pub fn sender_username_matches(&self, other: &str) -> bool {
+        let end = self.sender_id.iter().position(|&b| b == 0).unwrap_or(SENDER_ID_SIZE);
+        self.sender_id[..end] == *other.as_bytes()
+    }
+
     pub fn payload_data(&self) -> &[u8] {
         // Copy from packed struct to avoid unaligned access
         let size = { self.payload_size } as usize;
         &self.payload[..size]
+    }
+
+    /// Wire-safe keyframe flag. The field is a raw byte off the network,
+    /// so it is stored as `u8` and normalized to a `bool` here.
+    pub fn is_keyframe(&self) -> bool {
+        self.is_keyframe != 0
     }
 }
 
@@ -315,7 +338,7 @@ mod tests {
         let fid = decoded.frame_id;
         let pidx = decoded.packet_index;
         let total = decoded.total_packets;
-        let kf = decoded.is_keyframe;
+        let kf = decoded.is_keyframe();
         let codec = decoded.codec;
         let psize = decoded.payload_size;
         assert_eq!(ptype, PACKET_TYPE_VIDEO);
@@ -397,5 +420,35 @@ mod tests {
         assert_eq!(m0, 2);
         assert_eq!(m1, 5);
         assert_eq!(m2, 7);
+    }
+
+    #[test]
+    fn from_bytes_clamps_lying_payload_size() {
+        // A datagram whose header claims payload_size=65535 but only
+        // carries 4 bytes. Before the clamp this survived parsing with
+        // the lie intact and panicked payload_data()'s slice on the
+        // recv thread — remotely triggerable by anything that can hit
+        // the media port.
+        let pkt = UdpVideoPacket::new("streamer1", 1, 0, 1, false, b"data");
+        let mut raw = pkt.to_bytes();
+        // payload_size lives at offset 41..43 (packed, little-endian):
+        // type(1) + sender_id(32) + frame_id(4) + index(2) + total(2).
+        raw[41] = 0xFF;
+        raw[42] = 0xFF;
+
+        let parsed = UdpVideoPacket::from_bytes(&raw).expect("parses");
+        let ps = { parsed.payload_size };
+        assert_eq!(ps, 4); // clamped to what actually arrived
+        assert_eq!(parsed.payload_data(), b"data"); // and no panic
+    }
+
+    #[test]
+    fn sender_username_matches_is_alloc_free_equivalent() {
+        let pkt = UdpVideoPacket::new("alice", 1, 0, 1, false, b"x");
+        assert!(pkt.sender_username_matches("alice"));
+        assert!(!pkt.sender_username_matches("alicia"));
+        assert!(!pkt.sender_username_matches("ali"));
+        assert!(!pkt.sender_username_matches(""));
+        assert_eq!(pkt.sender_username(), "alice");
     }
 }

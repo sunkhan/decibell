@@ -268,6 +268,14 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       isStreaming: false,
       streamThumbnails: {},
       streamsByUser: new Map(),
+      // Clear per-channel session state too, otherwise rejoining shows
+      // ghost "Live" cards / stale mute badges from the previous channel
+      // until the next presence broadcast, and userCapabilities grows
+      // unbounded across a long session.
+      activeStreams: [],
+      channelPresence: {},
+      channelUserStates: {},
+      userCapabilities: {},
     });
   },
 }));

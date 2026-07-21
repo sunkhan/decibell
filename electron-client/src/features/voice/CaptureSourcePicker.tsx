@@ -32,14 +32,14 @@ function SegmentedControl<T extends string | number>({
   onChange: (v: T) => void;
 }) {
   return (
-    <div className="flex rounded-[8px] bg-bg-darkest p-[3px]">
+    <div className="flex rounded-md bg-bg-darkest p-[3px]">
       {options.map((opt) => (
         <button
           key={String(opt.value)}
           onClick={() => onChange(opt.value)}
-          className={`flex-1 rounded-[6px] px-3 py-[7px] text-[11px] font-semibold transition-all ${
+          className={`flex-1 rounded-sm px-3 py-[7px] text-[11px] font-semibold transition-all ${
             value === opt.value
-              ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(56,143,255,0.1)]"
+              ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(69,150,255,0.1)]"
               : "text-text-muted hover:text-text-secondary"
           }`}
         >
@@ -200,7 +200,7 @@ export default function CaptureSourcePicker({
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="w-[560px] overflow-hidden rounded-2xl border border-border bg-bg-dark shadow-[0_24px_80px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.02)] transition-all duration-300"
+        className="w-[560px] overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-all duration-300"
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",
@@ -230,19 +230,19 @@ export default function CaptureSourcePicker({
                 <line x1="12" y1="17" x2="12" y2="21" />
               </svg>
             </div>
-            <p className="font-display text-[15px] font-semibold text-text-primary">
+            <p className="font-display text-[16px] font-semibold text-text-primary">
               Screen or window selection
             </p>
-            <p className="mt-1.5 text-[13px] leading-relaxed text-text-muted">
+            <p className="mt-1.5 text-[13px] leading-[1.55] text-text-muted">
               A system dialog will appear after you click Go Live to choose what to share.
             </p>
           </div>
         )}
 
-        <div className="mx-5 mb-1 space-y-3 rounded-[10px] border border-border-divider bg-bg-light p-4">
+        <div className="mx-5 mb-1 space-y-3 rounded-md border border-border-divider bg-bg-light p-4">
           <div className="flex gap-3">
             <div className="flex-1">
-              <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+              <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                 Resolution
               </label>
               <SegmentedControl
@@ -269,7 +269,7 @@ export default function CaptureSourcePicker({
               />
             </div>
             <div className="flex-1">
-              <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+              <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                 Frame rate
               </label>
               <SegmentedControl
@@ -288,10 +288,10 @@ export default function CaptureSourcePicker({
           <CodecPicker />
 
           <div>
-            <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
               Video quality
             </label>
-            <div className="flex rounded-[8px] bg-bg-darkest p-[3px]">
+            <div className="flex rounded-md bg-bg-darkest p-[3px]">
               {(() => {
                 const isHighRes = streamSettings.resolution === "source";
                 return [
@@ -328,16 +328,16 @@ export default function CaptureSourcePicker({
                       setStreamSettings({ quality: "custom" });
                     }
                   }}
-                  className={`flex flex-1 flex-col items-center rounded-[6px] px-2 py-[7px] transition-all ${
+                  className={`flex flex-1 flex-col items-center rounded-sm px-2 py-[7px] transition-all ${
                     streamSettings.quality === opt.key
-                      ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(56,143,255,0.1)]"
+                      ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(69,150,255,0.1)]"
                       : "text-text-muted hover:text-text-secondary"
                   }`}
                 >
                   <span className="text-[11px] font-semibold">{opt.label}</span>
                   {opt.sub && (
                     <span
-                      className={`text-[9px] ${
+                      className={`text-[10px] ${
                         streamSettings.quality === opt.key
                           ? "text-accent/60"
                           : "text-text-faint"
@@ -363,7 +363,7 @@ export default function CaptureSourcePicker({
                       videoBitrateKbps: Number(e.target.value),
                     })
                   }
-                  className="h-[6px] flex-1 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[16px] [&::-webkit-slider-thumb]:w-[16px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-mid [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(56,143,255,0.3)]"
+                  className="h-[6px] flex-1 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[16px] [&::-webkit-slider-thumb]:w-[16px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-mid [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(69,150,255,0.3)]"
                 />
                 <span className="w-[60px] shrink-0 whitespace-nowrap text-right text-[11px] font-medium tabular-nums text-text-secondary">
                   {streamSettings.videoBitrateKbps >= 1000
@@ -376,7 +376,7 @@ export default function CaptureSourcePicker({
 
           {streamSettings.shareAudio && (
             <div>
-              <label className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+              <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                 Audio bitrate
               </label>
               <SegmentedControl
@@ -400,7 +400,7 @@ export default function CaptureSourcePicker({
                 }
                 className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
                   streamSettings.shareAudio
-                    ? "border-accent bg-accent shadow-[0_0_8px_rgba(56,143,255,0.22)]"
+                    ? "border-accent bg-accent shadow-[0_0_8px_rgba(69,150,255,0.22)]"
                     : "border-border bg-bg-lighter"
                 }`}
               >
@@ -428,7 +428,7 @@ export default function CaptureSourcePicker({
                 }
                 className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
                   streamSettings.includeCursor
-                    ? "border-accent bg-accent shadow-[0_0_8px_rgba(56,143,255,0.22)]"
+                    ? "border-accent bg-accent shadow-[0_0_8px_rgba(69,150,255,0.22)]"
                     : "border-border bg-bg-lighter"
                 }`}
               >
@@ -446,7 +446,7 @@ export default function CaptureSourcePicker({
           <button
             onClick={handleGoLive}
             disabled={starting || (NEEDS_CUSTOM_PICKER && !pickedSourceId)}
-            className="rounded-[10px] bg-accent px-7 py-2.5 text-[13px] font-semibold text-white shadow-[0_2px_12px_rgba(56,143,255,0.22)] transition-all hover:bg-accent-hover hover:shadow-[0_4px_20px_rgba(56,143,255,0.3)] active:scale-[0.98] disabled:opacity-50 disabled:shadow-none"
+            className="rounded-md bg-accent px-7 py-2.5 text-[13px] font-semibold text-white transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50 disabled:shadow-none"
           >
             {starting ? "Starting..." : "Go Live"}
           </button>
@@ -513,7 +513,7 @@ function SourceGrid({
       <p className="mb-3 font-display text-[14px] font-semibold text-text-primary">
         Choose what to share
       </p>
-      <div className="mb-3 flex rounded-[8px] bg-bg-darkest p-[3px]">
+      <div className="mb-3 flex rounded-md bg-bg-darkest p-[3px]">
         {([
           { value: "screen" as const, label: `Screens (${screens.length})` },
           { value: "window" as const, label: `Windows (${windows.length})` },
@@ -521,9 +521,9 @@ function SourceGrid({
           <button
             key={t.value}
             onClick={() => setTab(t.value)}
-            className={`flex-1 rounded-[6px] px-3 py-[7px] text-[11px] font-semibold transition-all ${
+            className={`flex-1 rounded-sm px-3 py-[7px] text-[11px] font-semibold transition-all ${
               tab === t.value
-                ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(56,143,255,0.1)]"
+                ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(69,150,255,0.1)]"
                 : "text-text-muted hover:text-text-secondary"
             }`}
           >
@@ -549,9 +549,9 @@ function SourceGrid({
               <button
                 key={s.id}
                 onClick={() => onPick(s.id)}
-                className={`group flex flex-col overflow-hidden rounded-[8px] border bg-bg-darkest transition-all ${
+                className={`group flex flex-col overflow-hidden rounded-md border bg-bg-darkest transition-all ${
                   picked
-                    ? "border-accent shadow-[0_0_0_1px_rgba(56,143,255,0.4)]"
+                    ? "border-accent shadow-[0_0_0_1px_rgba(69,150,255,0.4)]"
                     : "border-border hover:border-border-hover"
                 }`}
               >
@@ -576,7 +576,7 @@ function SourceGrid({
                     />
                   )}
                   <span
-                    className={`truncate text-[11.5px] font-medium ${
+                    className={`truncate text-[12px] font-medium ${
                       picked ? "text-accent-bright" : "text-text-secondary"
                     }`}
                     title={s.name}
@@ -640,7 +640,7 @@ function CodecPicker() {
   return (
     <div>
       <label
-        className="mb-2 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted"
+        className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted"
         title="Forcing a codec prevents viewers without that decoder from watching this stream."
       >
         Codec

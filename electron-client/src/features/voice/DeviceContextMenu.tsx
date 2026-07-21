@@ -62,11 +62,11 @@ export default function DeviceContextMenu({ type, anchor, devices, onClose }: Pr
   return createPortal(
     <div
       ref={menuRef}
-      className="fixed z-[100] w-[240px] rounded-xl border border-border bg-bg-secondary shadow-2xl"
+      className="fixed z-[100] w-[240px] rounded-lg border border-border bg-bg-secondary shadow-modal"
       style={{ left: x, top: y, maxHeight: menuMaxHeight }}
     >
       <div className="border-b border-border px-3 py-2.5">
-        <span className="text-[11px] font-bold uppercase tracking-wider text-text-muted">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
           {type === "input" ? "Input Device" : "Output Device"}
         </span>
       </div>

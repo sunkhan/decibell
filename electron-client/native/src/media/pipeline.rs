@@ -180,7 +180,7 @@ pub fn run_audio_pipeline(
     let mut capture_resampler = if input_sample_rate == SAMPLE_RATE {
         None
     } else {
-        eprintln!("[pipeline] Capture resampler: {}Hz → {}Hz", input_sample_rate, SAMPLE_RATE);
+        log::info!("[pipeline] Capture resampler: {}Hz → {}Hz", input_sample_rate, SAMPLE_RATE);
         Some(make_sinc_resampler(input_sample_rate, SAMPLE_RATE, 480, 1))
     };
     let mut capture_accum: Vec<f64> = Vec::new();
@@ -192,10 +192,13 @@ pub fn run_audio_pipeline(
     let mut playback_stream_resampler = if output_sample_rate == SAMPLE_RATE {
         None
     } else {
-        eprintln!("[pipeline] Playback stream resampler: {}Hz → {}Hz (stereo)", SAMPLE_RATE, output_sample_rate);
+        log::info!("[pipeline] Playback stream resampler: {}Hz → {}Hz (stereo)", SAMPLE_RATE, output_sample_rate);
         Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2))
     };
     let mut playback_stream_accum_l: Vec<f64> = Vec::new();
+    // Reusable resampler input chunks (see peer.rs resamp_scratch).
+    let mut playback_stream_scratch_l: Vec<f64> = Vec::new();
+    let mut playback_stream_scratch_r: Vec<f64> = Vec::new();
     let mut playback_stream_accum_r: Vec<f64> = Vec::new();
 
     // Separate stream output (None = disabled, stream mixed into main output)
@@ -285,11 +288,11 @@ pub fn run_audio_pipeline(
             .enable_gain_controller2(agc);
         match builder.build() {
             Ok(processor) => {
-                eprintln!("[pipeline] Voice processor built: aec={}, ns_level={}, agc={}", aec, ns_level, agc);
+                log::info!("[pipeline] Voice processor built: aec={}, ns_level={}, agc={}", aec, ns_level, agc);
                 Some(processor)
             }
             Err(e) => {
-                eprintln!("[pipeline] Failed to build voice processor: {}", e);
+                log::warn!("[pipeline] Failed to build voice processor: {}", e);
                 None
             }
         }
@@ -299,7 +302,7 @@ pub fn run_audio_pipeline(
         if ns_level == 0 {
             return None;
         }
-        eprintln!("[pipeline] RNNoise deep-learning noise suppressor enabled (level={})", ns_level);
+        log::info!("[pipeline] RNNoise deep-learning noise suppressor enabled (level={})", ns_level);
         Some(nnnoiseless::DenoiseState::new())
     }
 
@@ -375,11 +378,11 @@ pub fn run_audio_pipeline(
                     stream_stereo.store(enabled, std::sync::atomic::Ordering::Relaxed);
                 }
                 Ok(ControlMessage::SetUserVolume(username, gain)) => {
-                    eprintln!("[pipeline] SetUserVolume: '{}' → gain={:.3}", username, gain);
+                    log::info!("[pipeline] SetUserVolume: '{}' → gain={:.3}", username, gain);
                     user_volumes.insert(username, gain);
                 }
                 Ok(ControlMessage::SetInputDevice(name)) => {
-                    eprintln!("[pipeline] Hot-swapping input device to: {:?}", name);
+                    log::info!("[pipeline] Hot-swapping input device to: {:?}", name);
                     input_stream_opt = None; // drop old stream
                     { let mut g = capture_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     capture_48k_buf.clear();
@@ -390,15 +393,15 @@ pub fn run_audio_pipeline(
                             input_sample_rate = rate;
                             if rate == SAMPLE_RATE {
                                 capture_resampler = None;
-                                eprintln!("[pipeline] Input device {}Hz — passthrough", rate);
+                                log::info!("[pipeline] Input device {}Hz — passthrough", rate);
                             } else {
                                 capture_resampler = Some(make_sinc_resampler(rate, SAMPLE_RATE, 480, 1));
-                                eprintln!("[pipeline] Input device {}Hz — resampler to {}Hz", rate, SAMPLE_RATE);
+                                log::info!("[pipeline] Input device {}Hz — resampler to {}Hz", rate, SAMPLE_RATE);
                             }
                         }
                         None => {
                             input_stream_opt = None;
-                            eprintln!("[pipeline] Warning: no input device after hot-swap");
+                            log::info!("[pipeline] Warning: no input device after hot-swap");
                         }
                     }
                     // Reset voice processor state on device change
@@ -409,7 +412,7 @@ pub fn run_audio_pipeline(
                     }
                 }
                 Ok(ControlMessage::SetOutputDevice(name)) => {
-                    eprintln!("[pipeline] Hot-swapping output device to: {:?}", name);
+                    log::info!("[pipeline] Hot-swapping output device to: {:?}", name);
                     output_stream = None; // drop old stream
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     for peer in remote_peers.values_mut() { peer.drain_ring(); }
@@ -421,7 +424,7 @@ pub fn run_audio_pipeline(
                                 output_sample_rate = rate;
                                 output_stream = Some(stream);
                             }
-                            None => eprintln!("[pipeline] Warning: no output device after hot-swap"),
+                            None => log::info!("[pipeline] Warning: no output device after hot-swap"),
                         }
                     } else {
                         match build_output_stream(&host, name.as_deref(), Arc::clone(&peers), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), &event_tx) {
@@ -429,7 +432,7 @@ pub fn run_audio_pipeline(
                                 output_sample_rate = rate;
                                 output_stream = Some(stream);
                             }
-                            None => eprintln!("[pipeline] Warning: no output device after hot-swap"),
+                            None => log::info!("[pipeline] Warning: no output device after hot-swap"),
                         }
                     }
                     // Update every peer's resampler for the new output rate.
@@ -447,7 +450,7 @@ pub fn run_audio_pipeline(
                     }
                 }
                 Ok(ControlMessage::SetSeparateStreamOutput(enabled, device)) => {
-                    eprintln!("[pipeline] Separate stream output: enabled={}, device={:?}", enabled, device);
+                    log::info!("[pipeline] Separate stream output: enabled={}, device={:?}", enabled, device);
                     separate_stream_enabled = enabled;
                     stream_output_device_name = device.clone();
                     // Rebuild main output and stream output
@@ -489,7 +492,7 @@ pub fn run_audio_pipeline(
                 }
                 Ok(ControlMessage::SetStreamOutputDevice(name)) => {
                     if separate_stream_enabled {
-                        eprintln!("[pipeline] Hot-swapping stream output device to: {:?}", name);
+                        log::info!("[pipeline] Hot-swapping stream output device to: {:?}", name);
                         stream_output_device_name = name.clone();
                         stream_output = None;
                         // Drain stream ring buffer
@@ -509,14 +512,14 @@ pub fn run_audio_pipeline(
                     }
                 }
                 Ok(ControlMessage::SetAecEnabled(enabled)) => {
-                    eprintln!("[pipeline] AEC enabled={}", enabled);
+                    log::info!("[pipeline] AEC enabled={}", enabled);
                     aec_enabled = enabled;
                     voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
                     render_ref_accum.clear();
                     if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
                 }
                 Ok(ControlMessage::SetNoiseSuppressionLevel(level)) => {
-                    eprintln!("[pipeline] NS level={}", level);
+                    log::info!("[pipeline] NS level={}", level);
                     ns_level = level;
                     rnnoise = build_rnnoise(ns_level);
                     voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
@@ -524,7 +527,7 @@ pub fn run_audio_pipeline(
                     if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
                 }
                 Ok(ControlMessage::SetAgcEnabled(enabled)) => {
-                    eprintln!("[pipeline] AGC enabled={}", enabled);
+                    log::info!("[pipeline] AGC enabled={}", enabled);
                     agc_enabled = enabled;
                     voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
                     render_ref_accum.clear();
@@ -783,7 +786,7 @@ pub fn run_audio_pipeline(
                                 let now = Instant::now();
                                 let is_new = !remote_peers.contains_key(&username);
                                 if is_new {
-                                    eprintln!("[pipeline] New remote peer '{}' detected (type={}, seq={}, payload={}B)",
+                                    log::info!("[pipeline] New remote peer '{}' detected (type={}, seq={}, payload={}B)",
                                         username, pkt.packet_type, pkt.sequence, pkt.payload_size);
                                 }
                                 let inserted = !remote_peers.contains_key(&username);
@@ -875,7 +878,7 @@ pub fn run_audio_pipeline(
                         // Log once per underrun episode; the flag is cleared when
                         // packets resume in the recv handler.
                         if !peer.voice_underrun_logged {
-                            eprintln!("[pipeline] Jitter buffer reset for peer '{}' — re-buffering", username);
+                            log::info!("[pipeline] Jitter buffer reset for peer '{}' — re-buffering", username);
                             peer.voice_underrun_logged = true;
                         }
                         peer.voice_drain_time = drain_now;
@@ -988,9 +991,11 @@ pub fn run_audio_pipeline(
                             }
                             let mut needed = resampler.input_frames_next();
                             while playback_stream_accum_l.len() >= needed && playback_stream_accum_r.len() >= needed {
-                                let cl: Vec<f64> = playback_stream_accum_l.drain(..needed).collect();
-                                let cr: Vec<f64> = playback_stream_accum_r.drain(..needed).collect();
-                                if let Ok(out) = resampler.process(&[&cl, &cr], None) {
+                                playback_stream_scratch_l.clear();
+                                playback_stream_scratch_l.extend(playback_stream_accum_l.drain(..needed));
+                                playback_stream_scratch_r.clear();
+                                playback_stream_scratch_r.extend(playback_stream_accum_r.drain(..needed));
+                                if let Ok(out) = resampler.process(&[&playback_stream_scratch_l, &playback_stream_scratch_r], None) {
                                     if let Ok(mut prod) = stream_prod.lock() {
                                         let is_stereo = stream_stereo.load(std::sync::atomic::Ordering::Relaxed);
                                         let len = out[0].len().min(out[1].len());
@@ -1096,7 +1101,7 @@ pub fn run_audio_pipeline(
                     n, p.voice_jitter.jitter_ms(), p.voice_jitter.target(),
                     p.voice_jitter.plc_frames, p.voice_jitter.dropped_frames)
             }).collect();
-            eprintln!("[pipeline] diag: peers=[{}], stream_buf={}/{}, recv_drops={}, pkts_this_iter={}",
+            log::info!("[pipeline] diag: peers=[{}], stream_buf={}/{}, recv_drops={}, pkts_this_iter={}",
                 peer_stats.join(", "), stream_fill, BUF_CAP, recv_drop_total, pkt_count_this_iter);
         }
 
@@ -1156,7 +1161,7 @@ fn voice_recv_thread(
             Ok(n) if n >= 1 => {
                 recv_count += 1;
                 if recv_log_time.elapsed() >= Duration::from_secs(5) {
-                    eprintln!("[voice-recv] 5s stats: packets={}", recv_count);
+                    log::debug!("[voice-recv] 5s stats: packets={}", recv_count);
                     recv_count = 0;
                     recv_log_time = Instant::now();
                 }
@@ -1184,11 +1189,11 @@ fn voice_recv_thread(
                     || e.raw_os_error() == Some(10054)
             => {}
             Err(e) => {
-                eprintln!("[voice-recv] Socket error: {}", e);
+                log::warn!("[voice-recv] Socket error: {}", e);
                 break;
             }
         }
     }
 
-    eprintln!("[voice-recv] Exiting");
+    log::info!("[voice-recv] Exiting");
 }

@@ -46,9 +46,9 @@ export default function LoginPage() {
       <p className="absolute bottom-3 right-4 text-[11px] text-text-muted">Decibell 0.6.8</p>
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-[400px] rounded-2xl border border-border bg-bg-secondary p-8 shadow-2xl"
+        className="w-full max-w-[400px] rounded-xl border border-border bg-bg-secondary p-8 shadow-modal"
       >
-        <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-accent-bright">
+        <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-br from-accent to-accent-bright">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
             <path d="M9 18V5l12-2v13" />
             <circle cx="6" cy="18" r="3" fill="white" stroke="none" />
@@ -56,54 +56,54 @@ export default function LoginPage() {
           </svg>
         </div>
 
-        <h1 className="mb-1 text-center text-xl font-semibold text-text-bright">
+        <h1 className="mb-1 text-center font-display text-[22px] font-semibold text-text-bright">
           {mode === "login" ? "Decibell" : "Create an account"}
         </h1>
         <p className="mb-6 text-center text-sm text-text-secondary">
           {mode === "login" ? "Decentralized game chat" : "Join the conversation"}
         </p>
 
-        <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-text-muted">
+        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
           Username
         </label>
         <input
           type="text"
           value={username}
           onChange={(e) => setUsername(e.target.value)}
-          className="mb-3 w-full rounded-lg border border-border bg-bg-primary px-3 py-2.5 text-sm text-text-primary outline-none transition-colors focus:border-accent"
+          className="mb-3 w-full rounded-md border border-border bg-bg-primary px-3 py-2.5 text-sm text-text-primary outline-none transition-colors focus:border-accent"
           required
         />
 
         {mode === "register" && (
           <>
-            <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-text-muted">
+            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
               Email
             </label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="mb-3 w-full rounded-lg border border-border bg-bg-primary px-3 py-2.5 text-sm text-text-primary outline-none transition-colors focus:border-accent"
+              className="mb-3 w-full rounded-md border border-border bg-bg-primary px-3 py-2.5 text-sm text-text-primary outline-none transition-colors focus:border-accent"
               required
             />
           </>
         )}
 
-        <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-text-muted">
+        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
           Password
         </label>
         <input
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="mb-5 w-full rounded-lg border border-border bg-bg-primary px-3 py-2.5 text-sm text-text-primary outline-none transition-colors focus:border-accent"
+          className="mb-5 w-full rounded-md border border-border bg-bg-primary px-3 py-2.5 text-sm text-text-primary outline-none transition-colors focus:border-accent"
           required
         />
 
         <button
           type="submit"
           disabled={isLoading}
-          className="flex w-full items-center justify-center rounded-lg bg-accent py-2.5 text-sm font-bold text-white transition-colors hover:bg-accent-hover active:bg-accent-pressed disabled:opacity-50"
+          className="flex w-full items-center justify-center rounded-md bg-accent py-2.5 text-sm font-semibold text-white transition-colors hover:bg-accent-hover active:bg-accent-pressed disabled:opacity-50"
         >
           {isLoading ? (
             <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">

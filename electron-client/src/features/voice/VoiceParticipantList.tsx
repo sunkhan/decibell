@@ -43,9 +43,9 @@ function DeafenIcon() {
 
 function LiveBadge() {
   return (
-    <div className="flex items-center gap-1 rounded bg-error/20 px-1.5 py-0.5">
+    <div className="flex items-center gap-1 rounded-sm bg-error/20 px-1.5 py-0.5">
       <div className="h-1.5 w-1.5 rounded-full bg-error" />
-      <span className="text-[9px] font-bold text-error">LIVE</span>
+      <span className="text-[10px] font-semibold text-error">LIVE</span>
     </div>
   );
 }
@@ -78,7 +78,7 @@ const PresenceRow = memo(function PresenceRow({
 
   return (
     <div
-      className="group flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] transition-colors hover:bg-surface-hover"
+      className="group flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-[12px] transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(
@@ -140,7 +140,7 @@ const ActiveRow = memo(function ActiveRow({
 
   return (
     <div
-      className="group flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] transition-colors hover:bg-surface-hover"
+      className="group flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-[12px] transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(
@@ -155,9 +155,9 @@ const ActiveRow = memo(function ActiveRow({
       }}
     >
       <div
-        className="shrink-0 rounded-md transition-shadow duration-200"
+        className="shrink-0 rounded-sm transition-shadow duration-150"
         style={{
-          boxShadow: isSpeaking ? "0 0 0 2px #3fb950, 0 0 6px #3fb950" : "none",
+          boxShadow: isSpeaking ? "0 0 0 2px var(--color-success), 0 0 6px var(--color-success)" : "none",
         }}
       >
         <UserAvatar username={username} size={22} />
@@ -165,7 +165,7 @@ const ActiveRow = memo(function ActiveRow({
       <span
         className={`min-w-0 truncate transition-colors ${
           isSpeaking
-            ? "text-[#3fb950]"
+            ? "text-success"
             : "text-text-secondary group-hover:text-text-primary"
         }`}
       >

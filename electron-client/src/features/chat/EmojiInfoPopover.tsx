@@ -72,7 +72,7 @@ export default function EmojiInfoPopover({
     <div
       ref={popoverRef}
       style={style}
-      className="z-50 min-w-[180px] overflow-hidden rounded-xl border border-border bg-bg-light shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,255,255,0.02)]"
+      className="z-50 min-w-[180px] overflow-hidden rounded-lg border border-border bg-bg-light shadow-float"
     >
       <div className="flex items-center gap-3 border-b border-border-divider px-4 py-3">
         <Twemoji emoji={emoji} size={36} />

@@ -25,7 +25,12 @@ export function audioPause(): void {
 
 export function audioSeek(t: number): void {
   if (!element) return;
-  const max = element.duration || 0;
+  // Guard against a non-finite target (e.g. a scrub ratio multiplied by
+  // an Infinity duration from a VBR MP3): assigning currentTime = Infinity
+  // throws a TypeError.
+  if (!Number.isFinite(t)) return;
+  const dur = element.duration;
+  const max = Number.isFinite(dur) ? dur : t;
   element.currentTime = Math.max(0, Math.min(max, t));
 }
 

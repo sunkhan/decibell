@@ -47,7 +47,7 @@ export default function DeleteMessageConfirmModal({ onConfirm }: Props) {
       onClick={closeModal}
     >
       <div
-        className="w-full max-w-[400px] rounded-2xl border border-border bg-bg-secondary p-6 shadow-2xl"
+        className="w-full max-w-[400px] rounded-xl border border-border bg-bg-secondary p-6 shadow-modal"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-[16px] font-semibold text-text-primary">
@@ -58,7 +58,7 @@ export default function DeleteMessageConfirmModal({ onConfirm }: Props) {
         </p>
         <p className="mt-3 text-[11px] text-text-muted">
           Tip: hold{" "}
-          <kbd className="rounded border border-border bg-bg-darkest px-1.5 py-0.5 font-mono text-[10px] text-text-secondary">
+          <kbd className="rounded-sm border border-border bg-bg-darkest px-1.5 py-0.5 font-mono text-[10px] text-text-secondary">
             Shift
           </kbd>{" "}
           while clicking the trash icon to skip this confirmation next time.
@@ -66,13 +66,13 @@ export default function DeleteMessageConfirmModal({ onConfirm }: Props) {
         <div className="mt-5 flex justify-end gap-2">
           <button
             onClick={closeModal}
-            className="rounded-lg border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
+            className="rounded-md border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
           >
             Cancel
           </button>
           <button
             onClick={handleConfirm}
-            className="rounded-lg bg-error px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-error/90"
+            className="rounded-md bg-error px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-error/90"
           >
             Delete
           </button>

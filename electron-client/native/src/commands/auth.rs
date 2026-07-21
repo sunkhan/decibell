@@ -126,15 +126,32 @@ pub async fn register(args: RegisterArgs) -> napi::Result<()> {
 pub async fn logout() -> napi::Result<()> {
     let state_arc = state::shared();
 
-    // Extract clients and clear state under lock, then disconnect outside.
-    let (old_central, old_communities) = {
+    // Extract clients + media engines and clear state under lock, then
+    // disconnect/stop outside. Taking the engines here is what actually
+    // stops the mic + screen capture: without it, logging out while in a
+    // voice channel or streaming leaves those threads alive and pumping
+    // UDP under the old session (privacy leak), and leaves connected_voice_*
+    // pointing at a channel we've left.
+    let (old_central, old_communities, voice, video, audio) = {
         let mut s = state_arc.lock().await;
         let central = s.central.take();
         let communities: Vec<_> = s.communities.drain().map(|(_, c)| c).collect();
+        let voice = s.voice_engine.take();
+        let video = s.video_engine.take();
+        let audio = s.audio_stream_engine.take();
         s.username = None;
         s.token = None;
         s.credentials = None;
-        (central, communities)
+        s.connected_voice_server = None;
+        s.connected_voice_channel = None;
+        s.voice_muted = false;
+        s.voice_deafened = false;
+        s.voice_muted_before_deafen = false;
+        s.pending_invite_resolves.clear();
+        s.pending_avatar_fetches.clear();
+        s.pending_thumbnail_fetches.clear();
+        s.pending_avatar_update = None;
+        (central, communities, voice, video, audio)
     };
 
     if let Some(mut central) = old_central {
@@ -142,6 +159,17 @@ pub async fn logout() -> napi::Result<()> {
     }
     for mut client in old_communities {
         client.disconnect();
+    }
+
+    // Stop capture/encode engines off the async runtime — their Drop joins
+    // native threads, which must not block a Tokio worker or run under the
+    // AppState lock.
+    if voice.is_some() || video.is_some() || audio.is_some() {
+        tokio::task::spawn_blocking(move || {
+            drop(voice);
+            drop(video);
+            drop(audio);
+        });
     }
 
     events::emit_logged_out();

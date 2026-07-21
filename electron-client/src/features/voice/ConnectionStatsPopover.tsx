@@ -152,19 +152,19 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
   return (
     <div
       ref={popoverRef}
-      className="absolute bottom-[calc(100%+6px)] left-0 z-50 w-[260px] overflow-hidden rounded-xl border border-border bg-bg-light shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,255,255,0.02)]"
+      className="absolute bottom-[calc(100%+6px)] left-0 z-50 w-[260px] overflow-hidden rounded-lg border border-border bg-bg-light tabular-nums shadow-float"
       onClick={(e) => e.stopPropagation()}
     >
       {/* Header */}
       <div className="border-b border-border-divider px-4 py-3">
-        <div className="mb-2.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+        <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
           Connection
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
             <span className="h-[7px] w-[7px] rounded-full" style={{ background: PING_COLOR }} />
             <span className="text-[12px] text-text-secondary">Ping</span>
-            <span className="whitespace-nowrap text-[12.5px] font-semibold tabular-nums text-text-primary">
+            <span className="whitespace-nowrap text-[13px] font-semibold tabular-nums text-text-primary">
               {formatPing(latestPing)}
             </span>
             {avgPing != null && avgPing !== latestPing && (
@@ -176,7 +176,7 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
           <div className="flex items-center gap-1.5">
             <span className="h-[7px] w-[7px] rounded-full" style={{ background: LOSS_COLOR }} />
             <span className="text-[12px] text-text-secondary">Loss</span>
-            <span className="whitespace-nowrap text-[12.5px] font-semibold tabular-nums text-text-primary">
+            <span className="whitespace-nowrap text-[13px] font-semibold tabular-nums text-text-primary">
               {formatLoss(latestLoss)}
             </span>
           </div>
@@ -185,7 +185,7 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
 
       {/* Chart */}
       <div className="px-4 pb-3 pt-2.5">
-        <div className="relative overflow-hidden rounded-[10px] border border-border-divider bg-bg-mid">
+        <div className="relative overflow-hidden rounded-md border border-border-divider bg-bg-mid">
           <svg
             width={WIDTH}
             height={HEIGHT}
@@ -325,7 +325,7 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
         </div>
       )}
       {samples.length > 0 && avgLoss > 0.5 && (
-        <div className="px-4 pb-3 text-[11px] leading-relaxed text-text-muted">
+        <div className="px-4 pb-3 text-[11px] leading-[1.55] text-text-muted">
           Avg loss {formatLoss(avgLoss)} over window — sustained loss above 1%
           can cause stuttering.
         </div>

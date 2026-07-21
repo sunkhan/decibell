@@ -117,7 +117,7 @@ pub fn pick(
     // WebCodecs and we always fallback-add it (decoderProbe.ts §3.3
     // fallback). If we land here, pick the streamer's top codec; affected
     // watchers will get incompatible packets and their decoder will fail.
-    eprintln!("[codec_selection] LCD failed to converge — falling back");
+    log::warn!("[codec_selection] LCD failed to converge — falling back");
     let fallback_codec = streamer_encode.first().map(|c| c.codec).unwrap_or(CodecKind::H264Hw);
     let fallback_cap = find_cap(streamer_encode, fallback_codec);
     StreamSettings {

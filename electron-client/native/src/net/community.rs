@@ -213,13 +213,18 @@ impl CommunityClient {
         self.send(data).await
     }
 
-    /// Push a JPEG thumbnail of the local stream. Server enforces identity
-    /// from the connection's session, so `owner_username` is left blank.
-    pub async fn send_stream_thumbnail(
+    /// Build the StreamThumbnailUpdate packet and clone the write channel,
+    /// without awaiting. This lets a caller holding the AppState lock
+    /// release it *before* awaiting the send — holding the global mutex
+    /// across a network send (thumbnails fire every ~3s) stalls every other
+    /// command. Returns None if the connection is down. Server enforces
+    /// identity from the session, so `owner_username` is left blank.
+    pub fn thumbnail_send_parts(
         &self,
         channel_id: &str,
         jpeg_data: &[u8],
-    ) -> Result<(), String> {
+    ) -> Option<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> {
+        let tx = self.connection_write_tx()?;
         let data = build_packet(
             packet::Type::StreamThumbnailUpdate,
             packet::Payload::StreamThumbnailUpdate(StreamThumbnailUpdate {
@@ -229,7 +234,7 @@ impl CommunityClient {
             }),
             Some(&self.jwt),
         );
-        self.send(data).await
+        Some((tx, data))
     }
 
     /// Disconnect from the community server. Stops reconnection and keepalive.
@@ -770,7 +775,10 @@ impl CommunityClient {
         // Read loop ended — connection lost. Pull host/port/jwt from
         // current AppState so a moved client doesn't lose its config.
         let (host, port, jwt) = {
-            let s = state.lock().await;
+            let mut s = state.lock().await;
+            // Drop in-flight thumbnail waiters so their callers fail
+            // fast (RecvError) instead of riding out the full timeout.
+            s.pending_thumbnail_fetches.clear();
             match s.communities.get(&server_id) {
                 Some(c) => (c.host.clone(), c.port, c.jwt.clone()),
                 None => {

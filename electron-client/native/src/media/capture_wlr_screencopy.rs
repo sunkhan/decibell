@@ -121,7 +121,7 @@ pub async fn start_capture(
             .name("decibell-wlr-screencopy".to_string())
             .spawn(move || {
                 if let Err(e) = capture_loop(conn, output, config, tx) {
-                    eprintln!("[wlr-screencopy] capture loop ended: {}", e);
+                    log::info!("[wlr-screencopy] capture loop ended: {}", e);
                 }
             })
             .map_err(|e| format!("spawn capture thread: {}", e))?;
@@ -528,7 +528,7 @@ fn capture_loop(
     let mut sample_count: u64 = 0;
     let mut last_cycle_end = Instant::now();
 
-    eprintln!("[wlr-screencopy] capture loop started, target {}fps", config.target_fps);
+    log::info!("[wlr-screencopy] capture loop started, target {}fps", config.target_fps);
 
     loop {
         // First-iteration bootstrap: queue the very first capture.
@@ -670,7 +670,7 @@ fn capture_loop(
                 // absolute pace target keeps cadence intact.
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                eprintln!("[wlr-screencopy] consumer disconnected, exiting");
+                log::info!("[wlr-screencopy] consumer disconnected, exiting");
                 frame.destroy();
                 return Ok(());
             }
@@ -699,7 +699,7 @@ fn capture_loop(
             let avg_cycle = (sum_cycle_us as f64 / n) / 1000.0;
             let max_cycle = (max_cycle_us as f64) / 1000.0;
             let actual_fps = if avg_cycle > 0.0 { 1000.0 / avg_cycle } else { 0.0 };
-            eprintln!(
+            log::info!(
                 "[wlr-screencopy] timing avg over {} frames: \
                  buffer={:.2}ms copy→ready={:.2}ms process={:.2}ms \
                  pace_sleep={:.2}ms cycle={:.2}ms (max={:.2}ms) → {:.1}fps actual",

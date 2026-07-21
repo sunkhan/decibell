@@ -63,11 +63,11 @@ export default function AccountTab() {
   return (
     <div>
       {/* User card */}
-      <div className="flex items-center gap-4 rounded-[10px] border border-border-divider bg-bg-light px-5 py-4">
+      <div className="flex items-center gap-4 rounded-md border border-border-divider bg-bg-light px-5 py-4">
         {username ? (
           <UserAvatar username={username} size={64} />
         ) : (
-          <div className="h-16 w-16 rounded-md bg-bg-darkest" />
+          <div className="h-16 w-16 rounded-sm bg-bg-darkest" />
         )}
         <div className="flex-1">
           <div className="text-[14px] font-medium text-text-primary">{username}</div>
@@ -76,14 +76,14 @@ export default function AccountTab() {
         <div className="flex flex-col gap-2">
           <button
             onClick={handlePickClick}
-            className="rounded-md border border-border bg-bg-darkest px-3 py-1.5 text-[12px] text-text-secondary hover:bg-bg-dark"
+            className="rounded-sm border border-border bg-bg-darkest px-3 py-1.5 text-[12px] text-text-secondary hover:bg-bg-dark"
           >
             Change picture
           </button>
           <button
             onClick={handleRemove}
             disabled={removing || !hasAvatar}
-            className="rounded-md border border-border px-3 py-1.5 text-[12px] text-text-muted hover:text-text-secondary disabled:opacity-40"
+            className="rounded-sm border border-border px-3 py-1.5 text-[12px] text-text-muted hover:text-text-secondary disabled:opacity-40"
           >
             {removing ? "Removing…" : "Remove"}
           </button>
@@ -109,7 +109,7 @@ export default function AccountTab() {
       {/* Logout */}
       <button
         onClick={handleLogout}
-        className="mt-5 rounded-[10px] border border-error/20 bg-error/10 px-5 py-2.5 text-[13px] font-medium text-error transition-colors hover:bg-error/20"
+        className="mt-5 rounded-md border border-error/20 bg-error/10 px-5 py-2.5 text-[13px] font-medium text-error transition-colors hover:bg-error/20"
       >
         Log Out
       </button>

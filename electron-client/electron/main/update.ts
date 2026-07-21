@@ -88,15 +88,27 @@ export function initUpdater(): void {
   broadcast();
 }
 
+let initialCheckTimer: NodeJS.Timeout | null = null;
+
 export function kickoffInitialCheck(): void {
   if (mode === "disabled") return;
   // 5s gives the login flow + websocket handshake room to land
-  // before we add another network operation.
-  setTimeout(() => {
+  // before we add another network operation. unref + cancel so a
+  // quick app close can't fire a network call mid-teardown.
+  initialCheckTimer = setTimeout(() => {
+    initialCheckTimer = null;
     autoUpdater.checkForUpdates().catch((err) => {
       console.error("[update] initial check failed:", err);
     });
   }, 5_000);
+  initialCheckTimer.unref();
+}
+
+export function cancelInitialCheck(): void {
+  if (initialCheckTimer) {
+    clearTimeout(initialCheckTimer);
+    initialCheckTimer = null;
+  }
 }
 
 export async function manualCheck(): Promise<void> {
