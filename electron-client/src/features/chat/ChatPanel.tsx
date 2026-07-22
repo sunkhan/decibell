@@ -54,6 +54,10 @@ export default function ChatPanel() {
   const [draft, setDraft] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const editorRef = useRef<RichInputHandle>(null);
+  // pendingIds already claimed by an in-flight send, so a second Enter
+  // pressed while uploads are still running can't re-send the same
+  // attachments as a duplicate message.
+  const claimedPendingsRef = useRef<Set<string>>(new Set());
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
@@ -224,15 +228,32 @@ export default function ChatPanel() {
     const channelPendings = useAttachmentsStore
       .getState()
       .selectForChannel(activeServerId, activeChannelId);
-    if (!content && channelPendings.length === 0) return;
 
-    const livePendings = channelPendings.filter((p) => p.status !== "failed");
+    // Only claim pendings that are still live AND not already claimed by
+    // an in-flight send. Without the claimed guard, a second Enter pressed
+    // while uploads are running re-reads the SAME live pendings and fires a
+    // duplicate message referencing the same attachments.
+    const livePendings = channelPendings.filter(
+      (p) =>
+        p.status !== "failed" && !claimedPendingsRef.current.has(p.pendingId),
+    );
     const pendingIds = livePendings.map((p) => p.pendingId);
+    if (!content && pendingIds.length === 0) return;
+    for (const id of pendingIds) claimedPendingsRef.current.add(id);
+    const releaseClaims = () => {
+      for (const id of pendingIds) claimedPendingsRef.current.delete(id);
+    };
+
+    // Capture the target channel: activeChannelId can change while we
+    // await uploads / the send, and this message belongs to the channel
+    // it was composed in.
+    const serverId = activeServerId;
+    const channelId = activeChannelId;
 
     const nonce = generateNonce();
     useChatStore.getState().addMessage({
       id: 0,
-      channelId: activeChannelId,
+      channelId,
       sender: username,
       content,
       timestamp: String(Math.floor(Date.now() / 1000)),
@@ -283,20 +304,54 @@ export default function ChatPanel() {
       attachmentIds = await waitForUploads();
     }
 
+    // Nothing left to send: every attachment failed and there's no text.
+    // Drop the optimistic bubble and surface the failure rather than
+    // firing an empty message at the server.
+    if (!content && attachmentIds.length === 0) {
+      useChatStore.getState().removeMessageByNonce(channelId, nonce);
+      if (pendingIds.length > 0) toast.error("Attachment upload failed");
+      for (const id of pendingIds) {
+        useAttachmentsStore.getState().removePending(id);
+      }
+      releaseClaims();
+      return;
+    }
+
     try {
       await invoke("send_channel_message", {
-        serverId: activeServerId,
-        channelId: activeChannelId,
+        serverId,
+        channelId,
         message: content,
         attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         nonce,
       });
+      // Message went out (with whatever uploaded). Surface any partial
+      // upload failures instead of dropping their chips silently.
+      const failed = pendingIds.filter(
+        (id) =>
+          useAttachmentsStore.getState().pendings[id]?.status === "failed",
+      ).length;
+      if (failed > 0) {
+        toast.error(
+          `${failed} attachment${failed > 1 ? "s" : ""} failed to upload`,
+        );
+      }
+      for (const id of pendingIds) {
+        useAttachmentsStore.getState().removePending(id);
+      }
     } catch (err) {
       console.error("send_channel_message:", err);
-    }
-
-    for (const id of pendingIds) {
-      useAttachmentsStore.getState().removePending(id);
+      // Never delivered — drop the phantom "sent" bubble and let the user
+      // retry with their text restored (queued attachments stay for the
+      // retry). Previously this left an undeletable id-0 bubble forever.
+      useChatStore.getState().removeMessageByNonce(channelId, nonce);
+      toast.error("Failed to send message");
+      if (content) {
+        setDraft(content);
+        editorRef.current?.setValue(content);
+      }
+    } finally {
+      releaseClaims();
     }
   };
 

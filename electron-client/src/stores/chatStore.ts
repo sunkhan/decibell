@@ -136,6 +136,11 @@ interface ChatState {
   /// Idempotent. Same handler runs for "my delete succeeded" and
   /// "someone else deleted this message".
   removeMessage: (channelId: string, messageId: number) => void;
+  /// Remove an optimistic (id === 0) message by its nonce. Used when a
+  /// send is abandoned (nothing left to send after all uploads failed) or
+  /// the send call rejects, so the placeholder bubble doesn't linger
+  /// forever unreconciled.
+  removeMessageByNonce: (channelId: string, nonce: string) => void;
   /// Snapshot a message into pendingDeletions, then remove it from
   /// the visible list. Returns the snapshot so the caller knows the
   /// optimistic remove actually happened.
@@ -485,6 +490,20 @@ export const useChatStore = create<ChatState>((set) => ({
       const list = state.messagesByChannel[channelId];
       if (!list) return {};
       const next = list.filter((m) => m.id !== messageId);
+      if (next.length === list.length) return {};
+      return {
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [channelId]: next,
+        },
+      };
+    }),
+
+  removeMessageByNonce: (channelId, nonce) =>
+    set((state) => {
+      const list = state.messagesByChannel[channelId];
+      if (!list) return {};
+      const next = list.filter((m) => !(m.id === 0 && m.nonce === nonce));
       if (next.length === list.length) return {};
       return {
         messagesByChannel: {

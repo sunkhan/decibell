@@ -1075,9 +1075,13 @@ int main() {
         const char* jwt_env = std::getenv("DECIBELL_JWT_SECRET");
         const char* db_env = std::getenv("DECIBELL_DB_CONN");
 
-        if (!jwt_env || !db_env) {
-            std::cerr << "Missing required environment variables:\n";
-            if (!jwt_env) std::cerr << "  DECIBELL_JWT_SECRET\n";
+        // Reject an empty JWT secret, not just an unset one: an empty HMAC
+        // key makes every token trivially forgeable and makes
+        // verifySharedSecret("") accept an empty community auth_token.
+        if (!jwt_env || jwt_env[0] == '\0' || !db_env) {
+            std::cerr << "Missing or empty required environment variables:\n";
+            if (!jwt_env || jwt_env[0] == '\0')
+                std::cerr << "  DECIBELL_JWT_SECRET (must be non-empty)\n";
             if (!db_env) std::cerr << "  DECIBELL_DB_CONN\n";
             return 1;
         }

@@ -1694,7 +1694,11 @@ impl H264Encoder {
             }
         }
 
-        sws.ctx.run(&sws.src_frame, &mut self.nv12_frame).expect("sws_scale");
+        // Propagate rather than .expect(): a scaler failure on the
+        // per-frame path should kill the stream cleanly (caught by the
+        // encode loop), not panic the encode thread.
+        sws.ctx.run(&sws.src_frame, &mut self.nv12_frame)
+            .map_err(|e| format!("sws_scale: {}", e))?;
         self.prepare_and_encode()
     }
 
@@ -1749,7 +1753,8 @@ impl H264Encoder {
                 }
             }
 
-            sws.ctx.run(&sws.src_frame, frame).expect("sws_scale bgra");
+            sws.ctx.run(&sws.src_frame, frame)
+                .map_err(|e| format!("sws_scale bgra: {}", e))?;
         }
 
         self.prepare_and_encode_bgra()

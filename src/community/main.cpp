@@ -1504,7 +1504,12 @@ void SessionManager::broadcast_stream_presence(const std::string& channel_id) {
 
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& session : sessions_) {
-        session->deliver(framed);
+        // Only authenticated sessions receive presence. A peer that merely
+        // completed the TLS handshake (never sent COMMUNITY_AUTH_REQ) must
+        // not passively harvest usernames / codec caps / mute state.
+        if (session->is_authenticated()) {
+            session->deliver(framed);
+        }
     }
 }
 
@@ -2057,7 +2062,11 @@ void SessionManager::broadcast_voice_presence(const std::string& channel_id) {
 
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& session : sessions_) {
-        session->deliver(framed);
+        // Authenticated sessions only — an unauthenticated TLS peer must
+        // not receive the voice roster (usernames + mute/deafen state).
+        if (session->is_authenticated()) {
+            session->deliver(framed);
+        }
     }
 }
 

@@ -22,7 +22,18 @@ public:
     // Verifies an incoming JWT from a client or community server
     bool validateToken(const std::string& token);
 
-    bool verifySharedSecret(const std::string& secret) const { return secret == secret_key_; }
+    // Constant-time comparison — this value is also the HS256 JWT signing
+    // key, so a timing side-channel here is high-value. (Length is allowed
+    // to short-circuit; the length isn't the secret.)
+    bool verifySharedSecret(const std::string& secret) const {
+        if (secret.size() != secret_key_.size()) return false;
+        volatile unsigned char diff = 0;
+        for (std::size_t i = 0; i < secret_key_.size(); ++i) {
+            diff |= static_cast<unsigned char>(secret[i]) ^
+                    static_cast<unsigned char>(secret_key_[i]);
+        }
+        return diff == 0;
+    }
     std::vector<chatproj::CommunityServerInfo> getCommunityServers();
     /// Returns the assigned id (community_servers.id, SERIAL). Used by
     /// the heartbeat handler to ack the community with its

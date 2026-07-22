@@ -782,9 +782,14 @@ fn pipewire_capture_loop(
                 return;
             }
 
-            data.format
-                .parse(param)
-                .expect("Failed to parse VideoInfoRaw");
+            // This closure runs on PipeWire's realtime thread via a C
+            // trampoline — a panic unwinding across the extern "C"
+            // boundary is UB/abort. Log and bail on a malformed format
+            // pod instead of .expect().
+            if let Err(e) = data.format.parse(param) {
+                log::warn!("[video-capture] failed to parse VideoInfoRaw: {:?}; ignoring format change", e);
+                return;
+            }
 
             let w = data.format.size().width;
             let h = data.format.size().height;

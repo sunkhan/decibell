@@ -102,6 +102,14 @@ export const useDmStore = create<DmState>((set) => ({
   addDmMessage: (otherUser, message, isFromSelf) =>
     set((state) => {
       const existing = state.conversations[otherUser];
+      // Dedup replayed live messages (reconnect / at-least-once delivery):
+      // a real-id message we've already inserted must not create a
+      // duplicate bubble or double-bump the unread count.
+      // message.id is truthy only for real (server-assigned) ids; 0 /
+      // undefined are optimistic and handled by nonce reconciliation.
+      if (message.id && existing?.messages.some((m) => m.id === message.id)) {
+        return {};
+      }
       const timestamp = parseInt(message.timestamp, 10);
       const time = isNaN(timestamp) ? Date.now() : timestamp * 1000;
 

@@ -514,9 +514,13 @@ fn run_audio_capture_loop(
                 return;
             }
 
-            data.format
-                .parse(param)
-                .expect("Failed to parse AudioInfoRaw");
+            // Runs on PipeWire's realtime thread via a C trampoline — a
+            // panic across the extern "C" boundary is UB/abort. Log and
+            // bail on a malformed format pod instead of .expect().
+            if let Err(e) = data.format.parse(param) {
+                log::warn!("[audio-capture] failed to parse AudioInfoRaw: {:?}; ignoring format change", e);
+                return;
+            }
 
             data.channels = data.format.channels();
             data.sample_rate = data.format.rate();
