@@ -179,6 +179,6 @@ private:
 
     // Database interaction stubs (to be replaced with PostgreSQL pool)
     bool userExists(const std::string& username, const std::string& email);
-    void insertUser(const std::string& username, const std::string& email, const std::string& hash);
+    bool insertUser(const std::string& username, const std::string& email, const std::string& hash);
     std::optional<std::string> getPasswordHash(const std::string& username);
 };

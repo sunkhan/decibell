@@ -2599,6 +2599,27 @@ private:
                         std::string token_str;
                         chatproj::UdpVideoPacket* packet =
                             reinterpret_cast<chatproj::UdpVideoPacket*>(media_udp_buffer_);
+
+                        // Defence-in-depth: a VIDEO packet is relayed
+                        // verbatim to every watcher, so reject one whose
+                        // declared payload_size overruns the datagram before
+                        // it's amplified. Rejects only lies — a well-formed
+                        // compact packet has bytes_recvd == 45 + payload_size,
+                        // and a legacy full-size one has payload_size <= 1200
+                        // <= bytes_recvd - 45. (The || short-circuit means
+                        // payload_size is only read once the 45-byte header
+                        // is known to be present. FEC uses a different layout
+                        // and is left to the receiver's own bounds checks.)
+                        if (packet_type == chatproj::UdpPacketType::VIDEO) {
+                            constexpr size_t VIDEO_HEADER = 45;
+                            if (bytes_recvd < VIDEO_HEADER ||
+                                static_cast<size_t>(packet->payload_size) >
+                                    bytes_recvd - VIDEO_HEADER) {
+                                do_receive_media_udp();
+                                return;
+                            }
+                        }
+
                         for (int i = 0; i < SID; ++i) {
                             if (packet->sender_id[i] == '\0') break;
                             token_str.push_back(packet->sender_id[i]);

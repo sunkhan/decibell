@@ -60,10 +60,12 @@ export function useFriendsEvents() {
 
         const { friends, setFriends } = useFriendsStore.getState();
         if (friends.length === 0) return;
+        let changed = false;
         const updated = friends.map((f) => {
           if (f.status === "online" || f.status === "offline") {
             const shouldBeOnline = onlineSet.has(f.username);
             if ((f.status === "online") !== shouldBeOnline) {
+              changed = true;
               return {
                 ...f,
                 status: shouldBeOnline ? ("online" as const) : ("offline" as const),
@@ -72,7 +74,10 @@ export function useFriendsEvents() {
           }
           return f;
         });
-        setFriends(updated);
+        // Skip the store write (and the re-render of every friends
+        // subscriber) when no presence actually flipped — this fires on
+        // every presence broadcast.
+        if (changed) setFriends(updated);
       },
     );
 

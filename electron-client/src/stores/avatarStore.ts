@@ -103,7 +103,10 @@ export const useAvatarStore = create<AvatarStoreState>((set, get) => ({
             const blobUrl = URL.createObjectURL(blob);
             next.set(username, {
               version: result.version,
-              data: result.data,
+              // Drop the raw bytes once the blob URL exists — only blobUrl
+              // is ever consumed, so keeping `data` doubled memory per
+              // avatar and grew monotonically over a session.
+              data: null,
               blobUrl,
               status: "loaded",
             });

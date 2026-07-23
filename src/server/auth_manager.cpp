@@ -111,14 +111,30 @@ std::string AuthManager::registerUser(const std::string& username, const std::st
     }
 
     std::string hash = hashPassword(password);
-    insertUser(username, email, hash);
+    if (!insertUser(username, email, hash)) {
+        // Insert failed (DB error, or a unique-constraint race between the
+        // userExists() check above and here). Don't report success — the
+        // account was not created, and the user would otherwise be told to
+        // log in with credentials that don't exist.
+        return "Registration failed. Please try again.";
+    }
     return "";
 }
 
 std::optional<std::string> AuthManager::authenticateUser(const std::string& username, const std::string& password) {
     auto stored_hash = getPasswordHash(username);
-    
-    if (!stored_hash || !verifyPassword(password, *stored_hash)) {
+
+    if (!stored_hash) {
+        // Equalize timing with the "user exists, wrong password" path so
+        // login latency can't be used to enumerate valid usernames: run a
+        // bcrypt hash at the same cost and discard it. Read the result
+        // through a volatile so the optimizer can't elide the work.
+        std::string sink = hashPassword(password);
+        volatile char keep = sink.empty() ? 0 : sink[0];
+        (void)keep;
+        return std::nullopt;
+    }
+    if (!verifyPassword(password, *stored_hash)) {
         return std::nullopt;
     }
 
@@ -167,17 +183,19 @@ bool AuthManager::userExists(const std::string& username, const std::string& ema
     }
 }
 
-void AuthManager::insertUser(const std::string& username, const std::string& email, const std::string& hash) {
+bool AuthManager::insertUser(const std::string& username, const std::string& email, const std::string& hash) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         txn.exec_params(
-            "INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3)", 
+            "INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3)",
             username, email, hash
         );
         txn.commit();
+        return true;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] insertUser: " << e.what() << "\n";
+        return false;
     }
 }
 
