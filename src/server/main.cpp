@@ -996,6 +996,14 @@ void SessionManager::broadcast_to_users(const chatproj::Packet& packet,
 }
 
 bool SessionManager::check_dm_allowed(const std::string& sender, const std::string& recipient, AuthManager& auth_manager) {
+    // Blocking applies regardless of the recipient's online state or
+    // friends-only setting — a blocked user must not DM the person who
+    // blocked them, even into the offline queue. Checked before taking the
+    // lock (isBlocked hits the DB) so it doesn't extend the mutex hold.
+    if (auth_manager.isBlocked(sender, recipient)) {
+        return false;
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Find recipient's session

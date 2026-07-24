@@ -51,6 +51,10 @@ public:
     // Friend System
     std::string handleFriendAction(const std::string& requester, chatproj::FriendActionType action, const std::string& target);
     std::vector<chatproj::FriendInfo> getFriends(const std::string& username);
+    /// True if there is a BLOCKED relationship between the two users
+    /// (canonical pair, either direction). Used to reject DMs to/from a
+    /// blocked user regardless of online state or friends-only setting.
+    bool isBlocked(const std::string& a, const std::string& b);
 
     // Avatar storage (see docs/superpowers/specs/
     // 2026-05-12-custom-profile-pictures-design.md §5).

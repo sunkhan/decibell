@@ -58,6 +58,8 @@ export default function ChatPanel() {
   // pressed while uploads are still running can't re-send the same
   // attachments as a duplicate message.
   const claimedPendingsRef = useRef<Set<string>>(new Set());
+  // Single-flight guard for scroll-up history pagination.
+  const loadMoreInFlightRef = useRef(false);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
@@ -184,6 +186,33 @@ export default function ChatPanel() {
       useChatStore.getState().setHistoryLoading(activeChannelId, false);
     });
   }, [activeServerId, activeChannelId]);
+
+  // Scroll-up paginator: Virtuoso fires startReached near the top of the
+  // list. Fetch the next older page when the server says there's more and
+  // no fetch is already in flight. Without this, channel chat dead-ended
+  // at the first 50 messages even though the store/protocol already
+  // support paging (DmChatPanel does the same).
+  const handleStartReached = () => {
+    if (!activeServerId || !activeChannelId) return;
+    const chat = useChatStore.getState();
+    if (!chat.hasMoreHistory[activeChannelId]) return;
+    if (loadMoreInFlightRef.current) return;
+    loadMoreInFlightRef.current = true;
+    // messages are sorted by id ascending, so the first real-id entry is
+    // the oldest loaded message.
+    const list = chat.messagesByChannel[activeChannelId] ?? [];
+    const oldest = list.find((m: { id: number }) => m.id > 0);
+    invoke("request_channel_history", {
+      serverId: activeServerId,
+      channelId: activeChannelId,
+      beforeId: oldest?.id ?? 0,
+      limit: 50,
+    })
+      .catch((err) => console.error("request_channel_history (more):", err))
+      .finally(() => {
+        loadMoreInFlightRef.current = false;
+      });
+  };
 
 
   // No more pre-computed `bubbles` array. The old code rebuilt it on
@@ -463,6 +492,7 @@ export default function ChatPanel() {
             // Only affects the few-messages case; long histories are
             // unchanged.
             alignToBottom={true}
+            startReached={handleStartReached}
             rangeChanged={(range) => {
               topIndexRef.current = range.startIndex;
             }}

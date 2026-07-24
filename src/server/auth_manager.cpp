@@ -347,12 +347,18 @@ std::optional<std::pair<std::string, int>> AuthManager::resolveCommunityInvite(c
                                     std::chrono::system_clock::now().time_since_epoch())
                                     .count();
             if (now >= expires_at) {
-                // Lazily prune expired entries so the table doesn't grow forever.
+                // Lazily prune the expired entry so the table doesn't grow
+                // forever. Reuse the ALREADY-OPEN transaction: opening a
+                // second pqxx::work on the same connection throws
+                // usage_error (libpqxx permits one active txn per
+                // connection), which the old nested-cleanup swallowed — so
+                // the prune never actually ran.
                 try {
-                    pqxx::work cleanup(conn);
-                    cleanup.exec_params("DELETE FROM community_invites WHERE code = $1", code);
-                    cleanup.commit();
-                } catch (...) {}
+                    txn.exec_params("DELETE FROM community_invites WHERE code = $1", code);
+                    txn.commit();
+                } catch (const std::exception& e) {
+                    std::cerr << "[DB Error] resolveCommunityInvite prune: " << e.what() << "\n";
+                }
                 return std::nullopt;
             }
         }
@@ -412,6 +418,26 @@ std::string AuthManager::handleFriendAction(const std::string& requester, chatpr
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] handleFriendAction: " << e.what() << "\n";
         return "Database error.";
+    }
+}
+
+bool AuthManager::isBlocked(const std::string& a, const std::string& b) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        const std::string u1 = (std::min)(a, b);
+        const std::string u2 = (std::max)(a, b);
+        pqxx::result res = txn.exec_params(
+            "SELECT 1 FROM friends WHERE user1 = $1 AND user2 = $2 AND status = 'BLOCKED'",
+            u1, u2
+        );
+        return !res.empty();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] isBlocked: " << e.what() << "\n";
+        // Fail open (treat as not-blocked): this gate runs for every DM,
+        // so failing closed would drop ALL DMs during a DB blip. A blocked
+        // user's message slipping through a rare outage is low harm.
+        return false;
     }
 }
 
