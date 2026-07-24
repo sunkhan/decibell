@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, type IpcMainInvokeEvent } from "electron";
+import { ipcMain, shell, BrowserWindow, type IpcMainInvokeEvent } from "electron";
 
 // Window controls — Tauri's `getCurrentWindow()` API mapped onto
 // Electron's BrowserWindow. The renderer's `src/lib/window.ts` calls
@@ -37,6 +37,41 @@ export function registerWindowHandlers(): void {
   });
   ipcMain.handle("decibell:window:setFullscreen", (e, on: boolean) => {
     senderWindow(e)?.setFullScreen(on);
+  });
+}
+
+/// Lock down navigation. The renderer only ever runs our own bundle
+/// (the dev-server URL, or the packaged file://). Since it holds the
+/// full `window.decibell` bridge with `webSecurity` off and the OS
+/// sandbox off, a single navigation to attacker content would be a
+/// straight path to RCE — so block top-frame navigations off-origin,
+/// deny all `window.open` (route https links to the OS browser), and
+/// refuse to attach any <webview>.
+export function hardenNavigation(win: BrowserWindow, allowedOrigin: string): void {
+  win.webContents.on("will-navigate", (e, url) => {
+    let origin = "";
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      /* unparseable → not allowed */
+    }
+    const ok =
+      allowedOrigin === "file://"
+        ? url.startsWith("file://")
+        : origin === allowedOrigin;
+    if (!ok) {
+      e.preventDefault();
+      console.warn("[nav] blocked top-frame navigation to", url);
+    }
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https:\/\//i.test(url)) void shell.openExternal(url);
+    return { action: "deny" };
+  });
+  win.webContents.on("will-attach-webview", (e) => {
+    // We never use <webview>; never let one attach (it could carry its
+    // own preload or disable sandboxing).
+    e.preventDefault();
   });
 }
 

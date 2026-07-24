@@ -2,6 +2,7 @@ import { ipcMain } from "electron";
 import * as fs from "fs/promises";
 import * as path from "node:path";
 import { registerFile, unregisterFile } from "./fileRegistry";
+import { consumeWritePath } from "./writeApproval";
 
 // Bridge for renderer to read/write picked files. Chromium's
 // `fetch('file://...')` is blocked from the renderer (cross-origin
@@ -30,13 +31,10 @@ function guessMime(filename: string): string {
 }
 
 export function registerFsHandlers(): void {
-  ipcMain.handle("decibell:fs:readFile", async (_e, p: string): Promise<Uint8Array> => {
-    const buf = await fs.readFile(p);
-    // Convert Node Buffer to Uint8Array so the renderer doesn't see
-    // a Buffer (which Chromium can't structured-clone with all its
-    // Buffer-specific properties). New view, same memory.
-    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-  });
+  // NOTE: an arbitrary-path `decibell:fs:readFile` used to live here. It
+  // had no live caller (the renderer streams picked files via
+  // `decibell:file:register` instead) and was an arbitrary local-read
+  // primitive, so it was removed. Reinstate only behind a path allowlist.
   ipcMain.handle("decibell:fs:stat", async (_e, p: string) => {
     const s = await fs.stat(p);
     return { size: s.size, isFile: s.isFile(), isDirectory: s.isDirectory() };
@@ -44,6 +42,15 @@ export function registerFsHandlers(): void {
   ipcMain.handle(
     "decibell:fs:writeFile",
     async (_e, p: string, data: Uint8Array): Promise<void> => {
+      // Only permit a write to a path the user just chose via a save
+      // dialog (single-use approval). Without this, a compromised
+      // renderer could write attacker bytes anywhere the app process can
+      // — arbitrary file write is an RCE primitive.
+      if (!consumeWritePath(p)) {
+        throw new Error(
+          "write denied: path was not chosen via a save dialog",
+        );
+      }
       // Wrap in a real Node Buffer view of the same memory — fs.writeFile
       // accepts Uint8Array directly but Buffer is the Node-idiomatic
       // path and avoids any structured-clone re-wrapping cost.

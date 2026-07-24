@@ -115,6 +115,15 @@ export const addon: Record<string, unknown> = addonModule.exports;
 console.log("[decibell] addon loaded, exports:", Object.keys(addon));
 
 export function callCommand(method: string, args: unknown): unknown {
+  // Dispatch only OWN function exports of the addon — never inherited
+  // Object.prototype members (constructor, hasOwnProperty, __proto__, …)
+  // that an attacker-controlled `method` string could otherwise reach.
+  if (
+    typeof method !== "string" ||
+    !Object.prototype.hasOwnProperty.call(addon, method)
+  ) {
+    throw new Error(`unknown command: ${method}`);
+  }
   const fn = addon[method];
   if (typeof fn !== "function") {
     throw new Error(`unknown command: ${method}`);

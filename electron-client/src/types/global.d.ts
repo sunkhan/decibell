@@ -27,7 +27,6 @@ declare global {
         }) => Promise<string | null>;
       };
       fs: {
-        readFile: (path: string) => Promise<Uint8Array>;
         stat: (path: string) => Promise<{
           size: number;
           isFile: boolean;

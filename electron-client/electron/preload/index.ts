@@ -144,8 +144,6 @@ contextBridge.exposeInMainWorld("decibell", {
       ipcRenderer.invoke("decibell:dialog:save", args ?? {}) as Promise<string | null>,
   },
   fs: {
-    readFile: (path: string): Promise<Uint8Array> =>
-      ipcRenderer.invoke("decibell:fs:readFile", path) as Promise<Uint8Array>,
     stat: (
       path: string,
     ): Promise<{ size: number; isFile: boolean; isDirectory: boolean }> =>

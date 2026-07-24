@@ -9,7 +9,7 @@ import {
   registerCustomSchemes,
 } from "./protocol";
 import { initAddon, shutdownAddon } from "./addon";
-import { registerWindowHandlers, attachWindowEvents } from "./window";
+import { registerWindowHandlers, attachWindowEvents, hardenNavigation } from "./window";
 import { registerDialogHandlers } from "./dialog";
 import { registerFsHandlers } from "./fs";
 import { registerNetHandlers } from "./netFetch";
@@ -50,7 +50,30 @@ const pendingDeepLinks: string[] = [];
 const findDeepLinkInArgv = (argv: string[]): string | undefined =>
   argv.find((a) => typeof a === "string" && a.startsWith("decibell://"));
 
+// Validate before handing a deep link to the renderer. `decibell://`
+// URLs can be triggered by any web page (<a href> / redirect) or any
+// local process re-invoking the binary, so reject anything that isn't a
+// bounded, control-char-free, parseable decibell: URL. (The renderer
+// still applies the invite-grammar check and requires explicit user
+// confirmation before joining.)
+const isValidDeepLink = (url: string): boolean => {
+  if (typeof url !== "string" || url.length > 2048) return false;
+  if (!url.startsWith("decibell://")) return false;
+  // No control chars or whitespace — blocks header/line smuggling.
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f\s]/.test(url)) return false;
+  try {
+    return new URL(url).protocol === "decibell:";
+  } catch {
+    return false;
+  }
+};
+
 const forwardDeepLink = (url: string): void => {
+  if (!isValidDeepLink(url)) {
+    console.warn("[deep-link] rejected malformed url");
+    return;
+  }
   const win = BrowserWindow.getAllWindows()[0];
   if (win && !win.webContents.isLoading()) {
     win.webContents.send("decibell:event", {
@@ -64,7 +87,7 @@ const forwardDeepLink = (url: string): void => {
 
 // Capture an invite URL passed on first launch (Linux/Windows).
 const launchUrl = findDeepLinkInArgv(process.argv);
-if (launchUrl) pendingDeepLinks.push(launchUrl);
+if (launchUrl) forwardDeepLink(launchUrl);
 
 // macOS: deep links arrive as an event after launch.
 app.on("open-url", (event, url) => {
@@ -240,10 +263,16 @@ if (process.platform === "linux") {
 // cause vs. a deeper integration mismatch. NEVER ship this — the GPU
 // process is a privileged target and disabling its sandbox is a real
 // security regression. Once the test answers our question we revert.
-if (process.platform === "linux" && process.env.DECIBELL_GPU_SANDBOX_OFF === "1") {
+if (
+  !app.isPackaged &&
+  process.platform === "linux" &&
+  process.env.DECIBELL_GPU_SANDBOX_OFF === "1"
+) {
+  // Gated on !app.isPackaged so this diagnostic can never take effect in
+  // a shipped build, no matter the environment.
   app.commandLine.appendSwitch("disable-gpu-sandbox");
   console.warn(
-    "[boot] GPU sandbox DISABLED via DECIBELL_GPU_SANDBOX_OFF=1 (diagnostic)",
+    "[boot] GPU sandbox DISABLED via DECIBELL_GPU_SANDBOX_OFF=1 (diagnostic, dev only)",
   );
 }
 // Surface Chromium's stderr to our terminal so GPU-init failures are
@@ -407,13 +436,22 @@ function createWindow(): void {
     kickoffInitialCheck();
   });
   attachWindowEvents(mainWindow);
+  // Block off-origin top-frame navigation / window.open / <webview>.
+  hardenNavigation(
+    mainWindow,
+    devServerUrl ? new URL(devServerUrl).origin : "file://",
+  );
 
   if (devServerUrl) {
-    mainWindow.loadURL(devServerUrl);
+    mainWindow
+      .loadURL(devServerUrl)
+      .catch((e) => console.error("[boot] loadURL failed:", e));
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     // dist/electron/main/index.js → dist/renderer/index.html
-    mainWindow.loadFile(path.join(__dirname, "..", "..", "renderer", "index.html"));
+    mainWindow
+      .loadFile(path.join(__dirname, "..", "..", "renderer", "index.html"))
+      .catch((e) => console.error("[boot] loadFile failed:", e));
   }
 
   mainWindow.on("closed", () => {

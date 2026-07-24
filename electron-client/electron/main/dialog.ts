@@ -1,6 +1,7 @@
 import { app, dialog, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { approveWritePath } from "./writeApproval";
 
 interface OpenDialogArgs {
   multiple?: boolean;
@@ -88,6 +89,9 @@ export function registerDialogHandlers(): void {
           filters: args.filters,
         });
     if (result.canceled || !result.filePath) return null;
+    // Authorize a single subsequent fs.writeFile to exactly this
+    // user-chosen path (see writeApproval + fs.ts).
+    approveWritePath(result.filePath);
     return result.filePath;
   });
 }

@@ -45,26 +45,38 @@ export function registerNetHandlers(): void {
     "decibell:net:fetch",
     async (
       _e,
-      url: string,
+      _url: string,
       init: FetchInit & {
         attachmentTarget?: { serverId: string; path: string };
       },
     ): Promise<FetchResult> => {
-      let finalUrl = url;
       const headers: Record<string, string> = { ...(init.headers ?? {}) };
-      if (init.attachmentTarget) {
-        const target = getAttachmentTarget(init.attachmentTarget.serverId);
-        if (!target) {
-          // eslint-disable-next-line no-console
-          console.error(
-            "[netFetch] no attachment target for server:",
-            init.attachmentTarget.serverId,
-          );
-          throw new Error("Attachment target not registered");
-        }
-        finalUrl = `https://${target.host}:${target.port}${init.attachmentTarget.path}`;
-        headers["Authorization"] = `Bearer ${target.jwt}`;
+      // Every legitimate caller fetches a registered community server via
+      // `attachmentTarget`. The old raw-`url` mode fetched whatever the
+      // renderer passed through main's `net.fetch` — an SSRF / arbitrary
+      // `file://` read primitive (net.fetch reaches localhost, cloud
+      // metadata, and file:). Refuse it entirely.
+      if (!init.attachmentTarget) {
+        throw new Error("netFetch requires attachmentTarget");
       }
+      const target = getAttachmentTarget(init.attachmentTarget.serverId);
+      if (!target) {
+        // eslint-disable-next-line no-console
+        console.error(
+          "[netFetch] no attachment target for server:",
+          init.attachmentTarget.serverId,
+        );
+        throw new Error("Attachment target not registered");
+      }
+      const reqPath = init.attachmentTarget.path;
+      // Must be an absolute path on the target host. A value like
+      // "@evil.com/x" would otherwise fold host:port into userinfo and
+      // redirect the request (with the bearer JWT) to another host.
+      if (typeof reqPath !== "string" || !reqPath.startsWith("/")) {
+        throw new Error("netFetch: attachmentTarget.path must start with '/'");
+      }
+      const finalUrl = `https://${target.host}:${target.port}${reqPath}`;
+      headers["Authorization"] = `Bearer ${target.jwt}`;
       const bodyLen =
         init.body instanceof Uint8Array
           ? init.body.byteLength
