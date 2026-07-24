@@ -122,6 +122,11 @@ export function useServerEvents() {
             message: p.message,
             errorCode: p.errorCode,
           });
+          // Also toast: a plain browse-view connect has no invite-redeem /
+          // deep-link modal mounted to render authError inline, so without
+          // this the user is stranded on an empty server view with no
+          // feedback about why the join failed.
+          toast.error("Couldn't join server", p.message || "Connection rejected.");
           return;
         }
         // Auto-rejoin: successful auth — drop the pending placeholder

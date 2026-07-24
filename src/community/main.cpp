@@ -279,13 +279,32 @@ public:
     }
 
     void deliver(std::shared_ptr<std::vector<uint8_t>> framed_data) {
+        // Cap the per-session backlog. A client that stops reading (or reads
+        // slowly) would otherwise let broadcasts / presence / channel
+        // messages pile up in memory without bound.
+        constexpr size_t MAX_QUEUED_MESSAGES = 1024;
         bool write_in_progress = false;
+        bool overflow = false;
         {
             std::lock_guard<std::mutex> lock(write_mutex_);
-            write_in_progress = !write_queue_.empty();
-            write_queue_.push_back(framed_data);
+            if (write_queue_.size() >= MAX_QUEUED_MESSAGES) {
+                overflow = true;
+            } else {
+                write_in_progress = !write_queue_.empty();
+                write_queue_.push_back(framed_data);
+            }
         }
-        
+
+        if (overflow) {
+            // Post the disconnect rather than calling leave() synchronously:
+            // deliver() runs inside broadcast loops that iterate sessions_,
+            // and erasing here would invalidate the iterator.
+            auto self = shared_from_this();
+            boost::asio::post(socket_.lowest_layer().get_executor(),
+                              [this, self]() { manager_.leave(self); });
+            return;
+        }
+
         if (!write_in_progress) {
             do_write();
         }

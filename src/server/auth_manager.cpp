@@ -96,6 +96,32 @@ void AuthManager::initializeDatabase() {
             "ON user_communities (username)"
         );
 
+        // --- Community server directory. Created here (once at startup)
+        //     rather than lazily in upsertCommunityServer, which used to run
+        //     this CREATE + two ALTERs on EVERY heartbeat.
+        txn.exec(
+            "CREATE TABLE IF NOT EXISTS community_servers ("
+            "  id SERIAL PRIMARY KEY,"
+            "  name VARCHAR(64) NOT NULL,"
+            "  description TEXT,"
+            "  host_ip VARCHAR(45) NOT NULL,"
+            "  port INTEGER NOT NULL,"
+            "  member_count INTEGER DEFAULT 0,"
+            "  last_heartbeat TIMESTAMP DEFAULT NOW(),"
+            "  UNIQUE(host_ip, port)"
+            ")"
+        );
+        // Custom server pictures migration (idempotent on deployed servers).
+        txn.exec(
+            "ALTER TABLE community_servers "
+            "ADD COLUMN IF NOT EXISTS picture BYTEA"
+        );
+        txn.exec(
+            "ALTER TABLE community_servers "
+            "ADD COLUMN IF NOT EXISTS picture_version VARCHAR(64) "
+            "NOT NULL DEFAULT ''"
+        );
+
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] initializeDatabase: " << e.what() << "\n";
@@ -260,30 +286,8 @@ int AuthManager::upsertCommunityServer(const std::string& name, const std::strin
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
-        txn.exec(
-            "CREATE TABLE IF NOT EXISTS community_servers ("
-            "  id SERIAL PRIMARY KEY,"
-            "  name VARCHAR(64) NOT NULL,"
-            "  description TEXT,"
-            "  host_ip VARCHAR(45) NOT NULL,"
-            "  port INTEGER NOT NULL,"
-            "  member_count INTEGER DEFAULT 0,"
-            "  last_heartbeat TIMESTAMP DEFAULT NOW(),"
-            "  UNIQUE(host_ip, port)"
-            ")"
-        );
-        // --- Custom server pictures migration (see docs/superpowers/
-        //     specs/2026-05-15-custom-server-pictures-design.md §3) ---
-        // Idempotent; safe on already-deployed servers.
-        txn.exec(
-            "ALTER TABLE community_servers "
-            "ADD COLUMN IF NOT EXISTS picture BYTEA"
-        );
-        txn.exec(
-            "ALTER TABLE community_servers "
-            "ADD COLUMN IF NOT EXISTS picture_version VARCHAR(64) "
-            "NOT NULL DEFAULT ''"
-        );
+        // Schema for community_servers (incl. the picture columns) is
+        // created once in initializeDatabase — no DDL on the heartbeat path.
         pqxx::result rs = txn.exec_params(
             "INSERT INTO community_servers (name, description, host_ip, port, member_count, last_heartbeat) "
             "VALUES ($1, $2, $3, $4, $5, NOW()) "
