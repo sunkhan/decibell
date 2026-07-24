@@ -122,13 +122,15 @@ export async function probeEncoders(force = false): Promise<CodecCapability[]> {
   }
 
   if (caps === null) {
-    if (typeof VideoEncoder === "undefined") {
-      console.warn("[encoderProbe] WebCodecs VideoEncoder not available");
-      return [];
-    }
-
     caps = [];
-    for (const cfg of PROBE_CONFIGS) {
+    const hasEncoder = typeof VideoEncoder !== "undefined";
+    if (!hasEncoder) {
+      // Don't early-return: fall through so the (empty) caps still get
+      // shipped to native below. Returning here left native's in-memory
+      // caps stale/empty, so the codec advertisement silently diverged.
+      console.warn("[encoderProbe] WebCodecs VideoEncoder not available");
+    }
+    for (const cfg of hasEncoder ? PROBE_CONFIGS : []) {
       const ceiling = ENCODE_CEILING[cfg.codec];
       if (!ceiling) continue;
 

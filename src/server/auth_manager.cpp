@@ -105,7 +105,10 @@ void AuthManager::initializeDatabase() {
 std::string AuthManager::registerUser(const std::string& username, const std::string& email, const std::string& password) {
     if (username.length() < 3 || username.length() > 32) return "Invalid username length.";
     if (email.empty() || email.find('@') == std::string::npos) return "Invalid email address.";
-    
+    // Reject empty / trivially-weak passwords at registration. Only affects
+    // new accounts — existing users (any length) can still log in.
+    if (password.length() < 8) return "Password must be at least 8 characters.";
+
     if (userExists(username, email)) {
         return "Username or email already exists.";
     }

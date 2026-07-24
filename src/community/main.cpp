@@ -617,14 +617,21 @@ private:
         // --- STREAM THUMBNAIL UPDATE ---
         else if (packet.type() == chatproj::Packet::STREAM_THUMBNAIL_UPDATE) {
             auto* update = packet.mutable_stream_thumbnail_update();
-            update->set_owner_username(username_); // Enforce identity
-            std::string channel_id = update->channel_id();
-            // Stash a copy for on-demand popup fetches before the
-            // broadcast — bytes are owned by the protobuf so the
-            // helper copies them.
-            manager_.update_thumbnail_cache(username_, update->thumbnail_data());
-            // Broadcast to all voice channel participants (not just watchers)
-            manager_.broadcast_to_voice_channel_tcp(packet, channel_id);
+            // Cap thumbnail size — these are small JPEG previews. Without a
+            // cap any member could repeatedly push ~2 MB blobs (up to the
+            // TCP frame limit) into the per-username cache. Oversized
+            // updates are dropped silently.
+            constexpr size_t MAX_STREAM_THUMB_BYTES = 128 * 1024;
+            if (update->thumbnail_data().size() <= MAX_STREAM_THUMB_BYTES) {
+                update->set_owner_username(username_); // Enforce identity
+                std::string channel_id = update->channel_id();
+                // Stash a copy for on-demand popup fetches before the
+                // broadcast — bytes are owned by the protobuf so the
+                // helper copies them.
+                manager_.update_thumbnail_cache(username_, update->thumbnail_data());
+                // Broadcast to all voice channel participants (not just watchers)
+                manager_.broadcast_to_voice_channel_tcp(packet, channel_id);
+            }
         }
 
         // --- FETCH_STREAM_THUMBNAIL_REQ ---
@@ -2562,6 +2569,21 @@ private:
                         bytes_recvd >= sizeof(chatproj::UdpKeyframeRequest)) {
                         chatproj::UdpKeyframeRequest* packet =
                             reinterpret_cast<chatproj::UdpKeyframeRequest*>(media_udp_buffer_);
+                        // Require the requester to be an authenticated
+                        // session. Without this, any host that can reach
+                        // this port could flood keyframe requests at a
+                        // named streamer, forcing continuous IDRs and
+                        // collapsing quality for every real viewer.
+                        std::string requester_token;
+                        for (int i = 0; i < SID; ++i) {
+                            if (packet->sender_id[i] == '\0') break;
+                            requester_token.push_back(packet->sender_id[i]);
+                        }
+                        if (requester_token.empty() ||
+                            !manager_.find_session_by_token(requester_token, jwt_secret_)) {
+                            do_receive_media_udp();
+                            return;
+                        }
                         std::string target;
                         for (int i = 0; i < SID; ++i) {
                             if (packet->target_username[i] == '\0') break;
@@ -2579,6 +2601,19 @@ private:
                         bytes_recvd >= sizeof(chatproj::UdpNackPacket) - sizeof(uint16_t) * chatproj::NACK_MAX_ENTRIES) {
                         chatproj::UdpNackPacket* packet =
                             reinterpret_cast<chatproj::UdpNackPacket*>(media_udp_buffer_);
+                        // Require an authenticated requester before relaying
+                        // (and amplifying) attacker-controlled NACK payloads
+                        // to a streamer — see the KEYFRAME_REQUEST branch.
+                        std::string requester_token;
+                        for (int i = 0; i < SID; ++i) {
+                            if (packet->sender_id[i] == '\0') break;
+                            requester_token.push_back(packet->sender_id[i]);
+                        }
+                        if (requester_token.empty() ||
+                            !manager_.find_session_by_token(requester_token, jwt_secret_)) {
+                            do_receive_media_udp();
+                            return;
+                        }
                         std::string target;
                         for (int i = 0; i < SID; ++i) {
                             if (packet->target_username[i] == '\0') break;
