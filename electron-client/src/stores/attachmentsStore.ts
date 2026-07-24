@@ -166,6 +166,10 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
     set((state) => {
       const existing = state.pendings[pendingId];
       if (existing?.previewUrl) URL.revokeObjectURL(existing.previewUrl);
+      // Release the streaming source (unregisters its decibell-file://
+      // whitelist entry). Idempotent, so a double-call with the upload
+      // loop's own cleanup is safe.
+      existing?.source.cleanup();
       lastProgressCommit.delete(pendingId);
       const next = { ...state.pendings };
       delete next[pendingId];
@@ -175,6 +179,11 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
   removePending: (pendingId) => {
     const existing = get().pendings[pendingId];
     if (existing?.previewUrl) URL.revokeObjectURL(existing.previewUrl);
+    // A pending removed while still queued (× button / abort) never runs
+    // the upload loop's finally, so release its source here — otherwise
+    // the main-process file whitelist entry lingers until the stale sweep.
+    existing?.source.cleanup();
+    lastProgressCommit.delete(pendingId);
     set((state) => {
       const next = { ...state.pendings };
       delete next[pendingId];

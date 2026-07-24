@@ -197,7 +197,12 @@ export function useServerEvents() {
       "mod_action_responded",
       (event) => {
         const { serverId, success, action } = event.payload;
-        if (!success) return;
+        if (!success) {
+          // The server denied the kick/ban/leave — surface it instead of
+          // leaving the member silently in the list (looks like a hang).
+          toast.error(event.payload.message || "Action failed");
+          return;
+        }
         if (action === "leave") {
           useChatStore.getState().removeConnectedServer(serverId);
           useUiStore.getState().setActiveView("browse");
@@ -245,9 +250,11 @@ export function useServerEvents() {
       message: string;
       invite: import("../../types").ServerInvite | null;
     }>("invite_create_responded", (event) => {
-      const { serverId, success, invite } = event.payload;
+      const { serverId, success, invite, message } = event.payload;
       if (success && invite) {
         useChatStore.getState().upsertInvite(serverId, invite);
+      } else if (!success) {
+        toast.error(message || "Failed to create invite");
       }
     });
 
@@ -257,9 +264,11 @@ export function useServerEvents() {
       message: string;
       code: string;
     }>("invite_revoke_responded", (event) => {
-      const { serverId, success, code } = event.payload;
+      const { serverId, success, code, message } = event.payload;
       if (success) {
         useChatStore.getState().removeInvite(serverId, code);
+      } else {
+        toast.error(message || "Failed to revoke invite");
       }
     });
 

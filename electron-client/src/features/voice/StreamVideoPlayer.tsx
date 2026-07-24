@@ -277,12 +277,18 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
 
       // If the decoder queue is backing up, drop non-keyframes to catch up.
       if (decoder.decodeQueueSize > 3 && !keyframe) {
+        // Re-arm the keyframe gate: dropping a delta leaves a hole in the
+        // reference chain, so subsequent deltas would smear/blocky until
+        // the next IDR. Skip them (via the needsKeyframeRef gate above)
+        // until a keyframe arrives.
+        needsKeyframeRef.current = true;
         return;
       }
 
       // If this frame is more than 500ms behind wall-clock, drop it
       // (unless it's a keyframe — we need those to keep decoding).
       if (lagUs > 500_000 && !keyframe) {
+        needsKeyframeRef.current = true;
         return;
       }
 

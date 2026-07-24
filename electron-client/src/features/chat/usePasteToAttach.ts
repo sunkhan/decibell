@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useChatStore } from "../../stores/chatStore";
+import { useUiStore } from "../../stores/uiStore";
 import { queueUpload } from "./uploadAttachment";
 import { chunkSourceFromFile } from "./chunkSource";
 
@@ -40,6 +41,13 @@ export function usePasteToAttach() {
         if (f) files.push(f);
       }
       if (files.length === 0) return;
+
+      // Only intercept in the server chat view. activeServerId/
+      // activeChannelId are sticky across view switches, so without this a
+      // paste in the DM/home/voice view would preventDefault() (stealing
+      // it from the focused input) and silently queue the file onto the
+      // last-viewed server channel.
+      if (useUiStore.getState().activeView !== "server") return;
 
       const chat = useChatStore.getState();
       if (!chat.activeServerId || !chat.activeChannelId) return;

@@ -117,9 +117,14 @@ export function useDragDrop() {
         }
       }
       if (!serverId || !channelId) {
-        const chat = useChatStore.getState();
-        serverId = chat.activeServerId;
-        channelId = chat.activeChannelId;
+        // Fall back to the active server channel only when the server view
+        // is showing — otherwise a drop in the DM/home/voice view would
+        // silently attach the file to the last-viewed channel.
+        if (useUiStore.getState().activeView === "server") {
+          const chat = useChatStore.getState();
+          serverId = chat.activeServerId;
+          channelId = chat.activeChannelId;
+        }
       }
       if (!serverId || !channelId) return;
 

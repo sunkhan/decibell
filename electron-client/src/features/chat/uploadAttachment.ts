@@ -249,10 +249,19 @@ async function probeMetadata(
       try {
         const target = Math.min(0.5, (video.duration || 1) * 0.1);
         video.currentTime = target;
-        await new Promise<void>((resolve, reject) => {
-          video.onseeked = () => resolve();
-          video.onerror = () => reject(new Error("video seek failed"));
-        });
+        // Timeout the seek like the metadata wait above — a truncated /
+        // stalling video can fire loadedmetadata but never `seeked`, which
+        // would hang probeMetadata (and the whole queueUpload) forever so
+        // the attachment never appears. Frame capture is best-effort, so a
+        // timeout just skips the poster.
+        await withTimeout(
+          new Promise<void>((resolve, reject) => {
+            video.onseeked = () => resolve();
+            video.onerror = () => reject(new Error("video seek failed"));
+          }),
+          5000,
+          "video seek timed out",
+        );
         if (video.videoWidth && video.videoHeight) {
           const canvas = new OffscreenCanvas(video.videoWidth, video.videoHeight);
           const ctx = canvas.getContext("2d");
