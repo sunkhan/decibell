@@ -3,6 +3,7 @@ import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
+import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import type { ServerInvite } from "../../types";
 
 const EXPIRY_OPTIONS: { label: string; seconds: number }[] = [
@@ -27,6 +28,7 @@ function formatUses(invite: ServerInvite): string {
 export default function InviteModal() {
   const activeModal = useUiStore((s) => s.activeModal);
   const closeModal = useUiStore((s) => s.closeModal);
+  useEscapeToClose(closeModal, activeModal === "invite-manage");
   const activeServerId = useChatStore((s) => s.activeServerId);
   const serverOwner = useChatStore((s) => s.serverOwner);
   const invitesByServer = useChatStore((s) => s.invitesByServer);

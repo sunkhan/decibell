@@ -5,6 +5,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
+import { useDraftsStore } from "../../stores/draftsStore";
 import { toast } from "../../stores/toastStore";
 import MessageBubble, { shouldGroup } from "./MessageBubble";
 import PendingAttachmentsRow from "./PendingAttachmentsRow";
@@ -187,6 +188,18 @@ export default function ChatPanel() {
     });
   }, [activeServerId, activeChannelId]);
 
+  // Restore the per-channel draft on channel switch (mirror the DM
+  // pattern). The editor is uncontrolled, so without this it keeps the
+  // previous channel's text — which could then be sent to the wrong
+  // channel.
+  useEffect(() => {
+    const stored = activeChannelId
+      ? useDraftsStore.getState().channelDrafts[activeChannelId] ?? ""
+      : "";
+    editorRef.current?.setValue(stored);
+    setDraft(stored);
+  }, [activeChannelId]);
+
   // Scroll-up paginator: Virtuoso fires startReached near the top of the
   // list. Fetch the next older page when the server says there's more and
   // no fetch is already in flight. Without this, channel chat dead-ended
@@ -292,6 +305,7 @@ export default function ChatPanel() {
     });
     editorRef.current?.clear();
     setDraft("");
+    useDraftsStore.getState().clearChannelDraft(channelId);
 
     // Kick off the actual byte transfer for every queued attachment.
     // queueUpload registered them with status "queued" at file-pick /
@@ -378,6 +392,7 @@ export default function ChatPanel() {
       if (content) {
         setDraft(content);
         editorRef.current?.setValue(content);
+        useDraftsStore.getState().setChannelDraft(channelId, content);
       }
     } finally {
       releaseClaims();
@@ -573,7 +588,13 @@ export default function ChatPanel() {
             </button>
             <RichInput
               ref={editorRef}
-              onChange={setDraft}
+              onChange={(value) => {
+                setDraft(value);
+                if (activeChannelId)
+                  useDraftsStore
+                    .getState()
+                    .setChannelDraft(activeChannelId, value);
+              }}
               onEnter={handleSend}
               placeholder={`Message #${channelName ?? "channel"}`}
               maxHeight={160}

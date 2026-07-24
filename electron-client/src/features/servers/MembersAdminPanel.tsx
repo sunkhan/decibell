@@ -4,6 +4,7 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
 import { UserAvatar } from "../../components/UserAvatar";
+import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 
 type Tab = "members" | "bans";
 
@@ -16,6 +17,7 @@ function formatJoined(epoch: number): string {
 export default function MembersAdminPanel() {
   const activeModal = useUiStore((s) => s.activeModal);
   const closeModal = useUiStore((s) => s.closeModal);
+  useEscapeToClose(closeModal, activeModal === "members-manage");
   const activeServerId = useChatStore((s) => s.activeServerId);
   const membersByServer = useChatStore((s) => s.membersByServer);
   const bansByServer = useChatStore((s) => s.bansByServer);

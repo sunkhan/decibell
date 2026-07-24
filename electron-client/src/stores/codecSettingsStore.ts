@@ -9,6 +9,7 @@ import { create } from "zustand";
 import { invoke } from "../lib/ipc";
 import type { CodecCapability, CodecSettings } from "../types";
 import { probeEncoders } from "../utils/encoderProbe";
+import { toast } from "./toastStore";
 import { probeDecoders } from "../utils/decoderProbe";
 
 interface CodecSettingsState {
@@ -48,19 +49,35 @@ export const useCodecSettingsStore = create<CodecSettingsState>((set, get) => ({
   },
 
   setUseAv1: async (v: boolean) => {
+    const prev = get().useAv1;
     set({ useAv1: v });
     // Native expects { useAv1, useH265 } as the args object directly
     // (napi-rs binds the JS arg to the CodecSettingsValue struct;
     // wrapping in `{ settings: ... }` was the tauri pattern and
     // doesn't apply here).
-    await invoke("set_codec_settings", { useAv1: v, useH265: get().useH265 });
-    await get().load();
+    try {
+      await invoke("set_codec_settings", { useAv1: v, useH265: get().useH265 });
+      await get().load();
+    } catch (e) {
+      // Roll back the optimistic toggle so the UI doesn't show a value
+      // that never persisted.
+      set({ useAv1: prev });
+      toast.error("Failed to update codec setting");
+      console.error("[codecSettings] setUseAv1:", e);
+    }
   },
 
   setUseH265: async (v: boolean) => {
+    const prev = get().useH265;
     set({ useH265: v });
-    await invoke("set_codec_settings", { useAv1: get().useAv1, useH265: v });
-    await get().load();
+    try {
+      await invoke("set_codec_settings", { useAv1: get().useAv1, useH265: v });
+      await get().load();
+    } catch (e) {
+      set({ useH265: prev });
+      toast.error("Failed to update codec setting");
+      console.error("[codecSettings] setUseH265:", e);
+    }
   },
 
   refresh: async () => {

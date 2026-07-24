@@ -211,6 +211,12 @@ function VoiceThresholdBar() {
     const tick = () => {
       setInputLevel((prev) => {
         const target = levelRef.current;
+        // Snap when close so the value reaches exact equality — otherwise
+        // the exponential approach never quite equals target and React
+        // re-renders the meter at 60fps even with a silent mic. Returning
+        // the identical value lets React's same-value bailout skip the
+        // render (the rAF keeps running but does no work).
+        if (Math.abs(target - prev) < 0.001) return target;
         const speed = target > prev ? 0.5 : 0.15;
         return prev + (target - prev) * speed;
       });

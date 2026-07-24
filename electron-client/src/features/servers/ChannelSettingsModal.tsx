@@ -4,6 +4,7 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
 import { toast } from "../../stores/toastStore";
+import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import type { ChannelInfo } from "../../types";
 
 type RetentionField =
@@ -92,6 +93,7 @@ function RetentionRow({
 export default function ChannelSettingsModal() {
   const activeModal = useUiStore((s) => s.activeModal);
   const closeModal = useUiStore((s) => s.closeModal);
+  useEscapeToClose(closeModal, activeModal === "channel-settings");
   const activeServerId = useChatStore((s) => s.activeServerId);
   const activeChannelId = useChatStore((s) => s.activeChannelId);
   const channelsByServer = useChatStore((s) => s.channelsByServer);
