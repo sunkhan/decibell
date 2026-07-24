@@ -18,6 +18,10 @@ export function useFriendsEvents() {
           | "pending_incoming"
           | "pending_outgoing"
           | "blocked",
+        // Required by FriendInfo (was silently omitted → undefined at
+        // runtime); the payload carries it and avatarStore uses it for
+        // cache invalidation.
+        avatarVersion: f.avatarVersion,
       }));
       useFriendsStore.getState().setFriends(friends);
       // Feed every friend's known avatar version into the cache so

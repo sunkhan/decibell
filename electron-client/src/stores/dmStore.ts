@@ -91,7 +91,7 @@ function emptyConversation(username: string): DmConversation {
   };
 }
 
-export const useDmStore = create<DmState>((set) => ({
+export const useDmStore = create<DmState>((set, get) => ({
   conversations: {},
   activeDmUser: null,
   friendsOnlyDms: false,
@@ -274,12 +274,12 @@ export const useDmStore = create<DmState>((set) => ({
     }),
 
   snapshotAndRemoveDm: (peer, messageId) => {
-    const state = useDmStore.getState();
+    const state = get();
     const conv = state.conversations[peer];
     if (!conv) return undefined;
     const snap = conv.messages.find((m) => m.id === messageId);
     if (!snap) return undefined;
-    useDmStore.setState((s) => {
+    set((s) => {
       const bucket = s.pendingDmDeletions[peer] ?? new Map<number, DmMessage>();
       const next = new Map(bucket);
       next.set(messageId, snap);

@@ -244,7 +244,7 @@ function mergeMessage(existing: Message[], incoming: Message): Message[] {
   return filtered;
 }
 
-export const useChatStore = create<ChatState>((set) => ({
+export const useChatStore = create<ChatState>((set, get) => ({
   servers: [],
   onlineUsers: [],
   activeServerId: null,
@@ -514,12 +514,12 @@ export const useChatStore = create<ChatState>((set) => ({
     }),
 
   snapshotAndRemove: (channelId, messageId) => {
-    const state = useChatStore.getState();
+    const state = get();
     const list = state.messagesByChannel[channelId];
     if (!list) return undefined;
     const snap = list.find((m) => m.id === messageId);
     if (!snap) return undefined;
-    useChatStore.setState((s) => {
+    set((s) => {
       const bucket = s.pendingDeletions[channelId] ?? new Map<number, Message>();
       const next = new Map(bucket);
       next.set(messageId, snap);
