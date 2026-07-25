@@ -352,56 +352,96 @@ function VideoItem({
   // Standalone mode: reserve the sqrt-scaled box and round here.
   // PersistentVideoLayer reads the placeholderRef's bounding rect via
   // ResizeObserver, so it picks up either box correctly.
-  const wrapperClass = fillCell
-    ? "h-full w-full overflow-hidden bg-bg-darkest"
-    : "mt-2 overflow-hidden rounded-lg border border-border bg-bg-darkest";
-  const wrapperStyle: React.CSSProperties | undefined = fillCell
-    ? undefined
-    : { width: box.width, height: box.height };
+  const onContextMenu = (e: React.MouseEvent) => {
+    if (!serverId) return;
+    e.preventDefault();
+    useImageContextMenuStore.getState().show({
+      x: e.clientX,
+      y: e.clientY,
+      serverId,
+      attachmentId: Number(attachment.id),
+      filename: attachment.filename,
+      mime: attachment.mime,
+      kind: "video",
+    });
+  };
 
+  const metaRight = resumeStamp
+    ? `Paused at ${resumeStamp}`
+    : formatFileSize(attachment.sizeBytes);
+
+  // The poster/play surface. In both modes this is what
+  // PersistentVideoLayer overlays its <video> on, so it is always the
+  // element `placeholderRef` points at — never a card wrapper that
+  // includes the meta bar, or the video would cover the bar.
+  const surface = (
+    <button
+      onClick={onPlay}
+      disabled={isActive}
+      title={attachment.filename}
+      className="group relative flex h-full w-full cursor-pointer items-center justify-center bg-black bg-cover bg-center disabled:cursor-default"
+      style={posterUrl ? { backgroundImage: `url(${posterUrl})` } : undefined}
+    >
+      {posterUrl && (
+        <div className="pointer-events-none absolute inset-0 bg-black/30" />
+      )}
+      {!isActive && (
+        <div className="relative flex h-12 w-12 items-center justify-center rounded-lg bg-accent transition-all group-hover:scale-110 group-hover:bg-accent-hover">
+          <svg className="h-7 w-7 text-on-accent" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        </div>
+      )}
+      {/* Grid cells are too tight to give the filename its own row, so
+          they keep the scrim treatment. Standalone videos get the
+          solid bar below instead. */}
+      {fillCell && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-3.5 pb-2.5 pt-10 text-[11px]">
+          <span className="min-w-0 truncate text-text-secondary">{attachment.filename}</span>
+          <span className="shrink-0 tabular-nums text-text-muted">{metaRight}</span>
+        </div>
+      )}
+    </button>
+  );
+
+  if (fillCell) {
+    return (
+      <div
+        ref={placeholderRef}
+        className="h-full w-full overflow-hidden bg-black"
+        onContextMenu={onContextMenu}
+      >
+        {surface}
+      </div>
+    );
+  }
+
+  // Standalone card: video on top, opaque meta bar underneath. The
+  // card must NOT clip its overflow — PersistentVideoLayer walks up
+  // from the host's parent looking for the scroll container, and an
+  // overflow-hidden card would masquerade as one, clipping the video
+  // to itself instead of to the chat viewport.
   return (
     <div
-      ref={placeholderRef}
-      className={wrapperClass}
-      style={wrapperStyle}
-      onContextMenu={(e) => {
-        if (!serverId) return;
-        e.preventDefault();
-        useImageContextMenuStore.getState().show({
-          x: e.clientX,
-          y: e.clientY,
-          serverId,
-          attachmentId: Number(attachment.id),
-          filename: attachment.filename,
-          mime: attachment.mime,
-          kind: "video",
-        });
-      }}
+      className="mt-2 rounded-lg border border-border bg-bg-light shadow-raised"
+      style={{ width: box.width }}
+      onContextMenu={onContextMenu}
     >
-      <button
-        onClick={onPlay}
-        disabled={isActive}
-        title={attachment.filename}
-        className="group relative flex h-full w-full cursor-pointer items-center justify-center bg-bg-darkest bg-cover bg-center disabled:cursor-default"
-        style={posterUrl ? { backgroundImage: `url(${posterUrl})` } : undefined}
+      <div
+        ref={placeholderRef}
+        className="overflow-hidden rounded-t-lg bg-black"
+        style={{ width: box.width, height: box.height }}
       >
-        {posterUrl && (
-          <div className="pointer-events-none absolute inset-0 bg-black/30" />
-        )}
-        {!isActive && (
-          <div className="relative flex h-12 w-12 items-center justify-center rounded-lg bg-accent transition-all group-hover:scale-110 group-hover:bg-accent-hover group-">
-            <svg className="h-7 w-7 text-white" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          </div>
-        )}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-3.5 pb-2.5 pt-10 text-[11px]">
-          <span className="truncate text-text-secondary">{attachment.filename}</span>
-          <span className="shrink-0 tabular-nums text-text-muted">
-            {resumeStamp ? `Paused at ${resumeStamp}` : formatFileSize(attachment.sizeBytes)}
-          </span>
-        </div>
-      </button>
+        {surface}
+      </div>
+      <div className="flex items-center justify-between gap-3 px-[11px] py-2 font-mono text-[10.5px]">
+        <span className="min-w-0 truncate text-text-muted" title={attachment.filename}>
+          {attachment.filename}
+        </span>
+        <span className="video-meta-size shrink-0 tabular-nums text-text-muted">
+          {metaRight}
+        </span>
+      </div>
     </div>
   );
 }

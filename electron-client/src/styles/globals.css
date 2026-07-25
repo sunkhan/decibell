@@ -609,6 +609,14 @@
   --t-shadow-glow: var(--tc-shadow-glow);
 }
 
+/* The video attachment's meta bar reads its size/resume stamp in the
+   signal accent under the console themes and in plain muted under the
+   graphite ones — the one place the two families diverge by role
+   rather than by value, so it can't come from a shared token. */
+:root[data-theme^="console"] .video-meta-size {
+  color: var(--color-accent);
+}
+
 /* The theme-preview swatches in Settings → Appearance render one card
    per theme, each showing *its own* palette rather than the active
    one. Same trick as .chrome-scope: re-resolve the --color-* layer
