@@ -93,7 +93,12 @@ export default function MainLayout() {
                 floating UserPanel anchored bottom-left over them.
                 Browse view above renders only DmSidebar — no
                 ChannelSidebar — to match tauri-client. */}
-            <div className="relative flex shrink-0">
+            {/* chrome-scope: in `console-split` this whole group —
+                DM rail, channel sidebar, floating user/voice panel —
+                paints from the dark `console` palette while the chat
+                canvas beside it stays on `console-light`. Inert in
+                the other four themes. */}
+            <div className="chrome-scope relative flex shrink-0">
               <DmSidebar />
               <ChannelSidebar />
               <div className="absolute bottom-2 left-2 right-2 z-20">

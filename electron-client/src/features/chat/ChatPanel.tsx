@@ -633,7 +633,7 @@ export default function ChatPanel() {
               <button
                 onClick={handleSend}
                 disabled={!draft.trim() && !hasLivePendings}
-                className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-on-accent transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                 title="Send"
               >
                 <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">

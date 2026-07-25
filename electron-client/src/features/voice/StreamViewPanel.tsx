@@ -259,7 +259,7 @@ export default function StreamViewPanel() {
                       max={100}
                       value={streamVolume}
                       onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                      className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-dark [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(69,150,255,0.3)]"
+                      className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-dark [&::-webkit-slider-thumb]:shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
                       title={`Stream volume: ${streamVolume}%`}
                     />
                   </div>
@@ -291,7 +291,7 @@ export default function StreamViewPanel() {
             className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden ${
               isFullscreen
                 ? `${overlayVisible ? "cursor-default" : "cursor-none"}`
-                : "cursor-pointer rounded-lg border border-border bg-bg-darkest"
+                : "cursor-pointer rounded-lg border border-border bg-black"
             }`}
             onClick={handleBackToCards}
             onMouseMove={handleMouseMove}
@@ -336,7 +336,7 @@ export default function StreamViewPanel() {
                       onChange={(e) =>
                         handleVolumeChange(Number(e.target.value))
                       }
-                      className="h-[4px] w-16 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-darkest [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(69,150,255,0.3)]"
+                      className="h-[4px] w-16 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-black [&::-webkit-slider-thumb]:shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
                       title={`Stream volume: ${streamVolume}%`}
                     />
                     <div className="mx-0.5 h-5 w-px bg-white/10" />
@@ -487,7 +487,7 @@ export default function StreamViewPanel() {
                           handleVolumeChange(Number(e.target.value))
                         }
                         onClick={(e) => e.stopPropagation()}
-                        className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-darkest [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(69,150,255,0.3)]"
+                        className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-black [&::-webkit-slider-thumb]:shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
                         title={`Stream volume: ${streamVolume}%`}
                       />
                       <div className="mx-1 h-6 w-px bg-white/10" />

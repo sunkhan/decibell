@@ -128,7 +128,7 @@ export default function FriendsList() {
             />
             <button
               onClick={handleAddFriend}
-              className="shrink-0 rounded-md bg-accent px-2.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-accent-hover"
+              className="shrink-0 rounded-md bg-accent px-2.5 py-1.5 text-xs font-semibold text-on-accent transition-colors hover:bg-accent-hover"
             >
               Send
             </button>
@@ -143,7 +143,7 @@ export default function FriendsList() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search friends..."
-          className="w-full rounded-md border border-border bg-bg-light px-3 py-2 text-[12px] text-text-primary outline-none transition-all focus:border-accent focus:shadow-ring placeholder:font-channel placeholder:text-[12px] placeholder:font-normal placeholder:text-text-faint"
+          className="w-full rounded-md border border-border bg-bg-light px-3 py-2 text-[12px] text-text-primary outline-none transition-all focus:border-accent focus:shadow-ring placeholder:font-channel placeholder:text-[12px] placeholder:font-normal placeholder:text-text-muted"
         />
       </div>
 

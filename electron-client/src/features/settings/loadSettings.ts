@@ -9,7 +9,7 @@
 // into its own module here so main.tsx stays terse.
 
 import { invoke } from "../../lib/ipc";
-import { useUiStore } from "../../stores/uiStore";
+import { useUiStore, THEME_IDS, DEFAULT_THEME, type ThemeId } from "../../stores/uiStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
@@ -46,6 +46,7 @@ interface LoadedConfigShape {
     stream_share_audio: boolean | null;
     stream_audio_bitrate_kbps: number | null;
     stream_enforced_codec: number | null;
+    theme: string;
     crash_reporting_enabled: boolean;
     crash_reporting_install_id: string | null;
     crash_reporting_consent_shown: boolean;
@@ -62,6 +63,17 @@ export async function loadSettings(): Promise<void> {
   }
 
   const { settings } = config;
+
+  // Appearance. Hydrated first so the repaint lands as early as
+  // possible — index.html's pre-mount script has already applied the
+  // localStorage mirror, and this is the authoritative value catching
+  // up with it. Whitelisted the same way stream_resolution is: a
+  // config written by a newer build (or edited by hand) falls back to
+  // the default rather than leaving the app with no palette at all.
+  const savedTheme = (THEME_IDS as readonly string[]).includes(settings.theme)
+    ? (settings.theme as ThemeId)
+    : DEFAULT_THEME;
+  useUiStore.getState().setTheme(savedTheme);
 
   // Privacy
   useDmStore.getState().setFriendsOnlyDms(settings.friends_only_dms);

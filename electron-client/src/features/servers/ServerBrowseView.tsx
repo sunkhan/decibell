@@ -298,7 +298,7 @@ export default function ServerBrowseView() {
               <button
                 onClick={handleRedeemInvite}
                 disabled={!canJoin}
-                className="shrink-0 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+                className="shrink-0 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-on-accent transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {redeeming ? "Joining..." : "Join"}
               </button>

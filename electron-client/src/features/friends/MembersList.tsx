@@ -33,7 +33,7 @@ export default function MembersList() {
         openContextMenu(username, { x: e.clientX, y: e.clientY });
       }}
     >
-      <div className={`relative shrink-0 ${isOnline ? "" : "opacity-50"}`}>
+      <div className={`relative shrink-0 ${isOnline ? "" : "opacity-[0.62]"}`}>
         <UserAvatar username={username} size={34} />
         <div
           className={`absolute -bottom-px -right-px h-[11px] w-[11px] rounded-full border-[2.5px] border-bg-tertiary ${
@@ -89,7 +89,7 @@ export default function MembersList() {
             />
           ))}
         </div>
-        <span className="font-display text-[11px] font-medium uppercase tracking-[0.07em] text-text-faint opacity-50">
+        <span className="font-display text-[11px] font-medium uppercase tracking-[0.07em] text-text-muted">
           Decibell
         </span>
       </div>

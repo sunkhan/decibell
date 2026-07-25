@@ -209,7 +209,7 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
                   x2={WIDTH - PADDING_X}
                   y1={y}
                   y2={y}
-                  stroke="rgba(255,255,255,0.03)"
+                  stroke="var(--color-border)"
                   strokeWidth={0.5}
                 />
               );
@@ -219,7 +219,7 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
             <text
               x={PADDING_X + 2}
               y={PADDING_TOP + 8}
-              fill="var(--color-text-faint)"
+              fill="var(--color-text-muted)"
               fontSize="10"
               fontFamily="inherit"
             >
@@ -228,7 +228,7 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
             <text
               x={PADDING_X + 2}
               y={PADDING_TOP + (HEIGHT - PADDING_TOP - PADDING_BOTTOM) * 0.5 + 3}
-              fill="var(--color-text-faint)"
+              fill="var(--color-text-muted)"
               fontSize="10"
               fontFamily="inherit"
             >
@@ -237,7 +237,7 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
             <text
               x={PADDING_X + 2}
               y={HEIGHT - PADDING_BOTTOM - 2}
-              fill="var(--color-text-faint)"
+              fill="var(--color-text-muted)"
               fontSize="10"
               fontFamily="inherit"
             >
@@ -249,7 +249,7 @@ export default function ConnectionStatsPopover({ onClose }: Props) {
               x={WIDTH - PADDING_X - 2}
               y={HEIGHT - 3}
               textAnchor="end"
-              fill="var(--color-text-faint)"
+              fill="var(--color-text-muted)"
               fontSize="10"
               fontFamily="inherit"
             >

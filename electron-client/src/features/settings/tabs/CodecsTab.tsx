@@ -44,14 +44,14 @@ function ToggleRow({ label, hint, checked, disabled, disabledHint, onToggle }: T
           disabled
             ? "cursor-not-allowed border-border bg-bg-lighter opacity-50"
             : checked
-            ? "border-accent bg-accent shadow-[0_0_8px_rgba(69,150,255,0.22)]"
+            ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
             : "border-border bg-bg-lighter"
         }`}
       >
         <div
           className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
             checked
-              ? "translate-x-[18px] bg-white"
+              ? "translate-x-[18px] bg-on-accent"
               : "translate-x-[3px] bg-text-muted"
           }`}
         />

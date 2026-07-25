@@ -10,13 +10,15 @@ interface Props {
   size?: "small" | "large";
 }
 
-// Per-codec accent. Tokens where the palette has an equivalent; H.264 HW
-// keeps a raw teal because there's no matching design-system color.
+// Per-codec accent. Deliberately theme-independent: the badge floats
+// over decoded video, not over a themed surface, so it keeps a dark
+// chip with light type in every palette — routing it through the DS
+// tokens would put dark-on-dark type over the light themes' video.
 const CODEC_COLOR: Record<number, string> = {
-  [VideoCodec.AV1]: "var(--color-success)",
-  [VideoCodec.H265]: "var(--color-accent-bright)",
-  [VideoCodec.H264_HW]: "#22D3EE",
-  [VideoCodec.H264_SW]: "var(--color-text-secondary)",
+  [VideoCodec.AV1]: "#4ade80",
+  [VideoCodec.H265]: "#93c5fd",
+  [VideoCodec.H264_HW]: "#22d3ee",
+  [VideoCodec.H264_SW]: "rgba(255,255,255,0.70)",
 };
 
 function formatResolution(w: number, h: number): string {
@@ -38,7 +40,7 @@ export function CodecBadge({
   if (codec === VideoCodec.UNKNOWN && width === 0 && height === 0 && fps === 0) {
     return null;
   }
-  const color = CODEC_COLOR[codec] ?? "var(--color-text-secondary)";
+  const color = CODEC_COLOR[codec] ?? "rgba(255,255,255,0.70)";
   const label = videoCodecHumanName(codec);
   const fontSize = size === "large" ? 13 : 10.5;
   const padX = size === "large" ? 12 : 8;
@@ -56,9 +58,8 @@ export function CodecBadge({
         gap,
         padding: `${padY}px ${padX}px`,
         borderRadius: 8,
-        background:
-          "color-mix(in oklab, var(--color-bg-darkest) 75%, transparent)",
-        border: "1px solid var(--color-border)",
+        background: "rgba(0,0,0,0.72)",
+        border: "1px solid rgba(255,255,255,0.14)",
         color: "white",
         fontSize,
         fontWeight: 600,
@@ -69,7 +70,7 @@ export function CodecBadge({
       title={enforced ? `Stream locked to ${label}` : undefined}
     >
       {width > 0 && height > 0 && fps > 0 && (
-        <span style={{ color: "var(--color-text-secondary)" }}>
+        <span style={{ color: "rgba(255,255,255,0.70)" }}>
           {formatResolution(width, height)}
           {fps}
         </span>
@@ -81,7 +82,7 @@ export function CodecBadge({
           height={fontSize}
           viewBox="0 0 24 24"
           fill="none"
-          stroke="var(--color-warning)"
+          stroke="#e0b050"
           strokeWidth="2.4"
           strokeLinecap="round"
           strokeLinejoin="round"

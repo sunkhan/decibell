@@ -1,5 +1,43 @@
 import { create } from "zustand";
 
+/// The five selectable palettes. `console-split` is not a palette of
+/// its own — it pairs `console` chrome with the `console-light`
+/// canvas — but it is a first-class choice as far as the UI and the
+/// persisted config are concerned.
+export type ThemeId =
+  | "graphite"
+  | "graphite-light"
+  | "console"
+  | "console-light"
+  | "console-split";
+
+export const THEME_IDS: readonly ThemeId[] = [
+  "graphite",
+  "graphite-light",
+  "console",
+  "console-light",
+  "console-split",
+];
+
+export const DEFAULT_THEME: ThemeId = "graphite";
+
+/// localStorage mirror of the persisted theme. The real store of
+/// record is the native config blob, but that only arrives after an
+/// async IPC round-trip — long after first paint. The pre-mount script
+/// in index.html reads this key so a light theme doesn't flash dark on
+/// cold start. Keep the key in sync with public/theme-boot.js.
+export const THEME_STORAGE_KEY = "decibell.theme";
+
+export function applyTheme(theme: ThemeId): void {
+  document.documentElement.dataset.theme = theme;
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch {
+    // Private mode / quota — the theme still applies this session,
+    // it just re-flashes the default on the next cold start.
+  }
+}
+
 export interface AuthErrorNotice {
   serverId: string;
   message: string;
@@ -61,6 +99,8 @@ interface UiState {
   separateStreamOutput: boolean;
   streamOutputDevice: string | null;
   settingsTab: string;
+  theme: ThemeId;
+  setTheme: (theme: ThemeId) => void;
   setInputDevice: (device: string | null) => void;
   setOutputDevice: (device: string | null) => void;
   setSeparateStreamOutput: (value: boolean) => void;
@@ -132,6 +172,14 @@ export const useUiStore = create<UiState>((set) => ({
   separateStreamOutput: false,
   streamOutputDevice: null,
   settingsTab: "account",
+  theme: DEFAULT_THEME,
+  // The attribute flip is what actually re-paints the app — every DS
+  // token resolves through it — so the store value is really just a
+  // mirror kept around for the settings UI and saveSettings.
+  setTheme: (theme) => {
+    applyTheme(theme);
+    set({ theme });
+  },
   setInputDevice: (device) => set({ inputDevice: device }),
   setOutputDevice: (device) => set({ outputDevice: device }),
   setSeparateStreamOutput: (value) => set({ separateStreamOutput: value }),

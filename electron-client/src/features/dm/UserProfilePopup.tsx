@@ -374,7 +374,7 @@ export default function UserProfilePopup() {
                 onKeyDown={handleKeyDown}
                 disabled={sending}
                 placeholder={`Message @${username}`}
-                className="w-full rounded-md border border-border bg-bg-mid px-3 py-[9px] text-[12px] text-text-primary outline-none transition-all placeholder:text-text-faint focus:border-accent focus:shadow-ring disabled:opacity-50"
+                className="w-full rounded-md border border-border bg-bg-mid px-3 py-[9px] text-[12px] text-text-primary outline-none transition-all placeholder:text-text-muted focus:border-accent focus:shadow-ring disabled:opacity-50"
               />
             </div>
           </>

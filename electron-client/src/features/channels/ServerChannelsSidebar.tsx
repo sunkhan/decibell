@@ -405,7 +405,7 @@ const TextChannelRow = memo(function TextChannelRow({
       data-channel-id={channelId}
       className={`relative flex w-full items-center gap-2 rounded-sm px-2.5 py-[7px] text-[13px] font-medium transition-all ${
         isHoveredDrop
-          ? "animate-[dropTargetIn_0.18s_ease_both] bg-accent text-white"
+          ? "animate-[dropTargetIn_0.18s_ease_both] bg-accent text-on-accent"
           : isActive
             ? "bg-accent-soft text-text-bright font-semibold"
             : dragActive
@@ -416,7 +416,7 @@ const TextChannelRow = memo(function TextChannelRow({
       <span
         className={`font-channel text-[16px] font-medium transition-colors ${
           isHoveredDrop
-            ? "text-white"
+            ? "text-on-accent"
             : isActive
               ? "text-accent-bright"
               : dragActive
@@ -444,7 +444,7 @@ const TextChannelRow = memo(function TextChannelRow({
           strokeLinecap="round"
           strokeLinejoin="round"
           className={`ml-auto shrink-0 ${
-            isHoveredDrop ? "text-white" : "text-accent"
+            isHoveredDrop ? "text-on-accent" : "text-accent"
           }`}
         >
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />

@@ -500,7 +500,7 @@ export default function DmChatPanel() {
             <button
               onClick={handleSend}
               disabled={sending || !input.trim()}
-              className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-sm bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-sm bg-accent text-on-accent transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />

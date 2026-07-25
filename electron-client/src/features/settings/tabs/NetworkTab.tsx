@@ -66,7 +66,7 @@ function RateRow({
               }}
               className={`rounded-sm px-3 py-1.5 text-[12px] font-medium transition-colors ${
                 selected
-                  ? "bg-accent text-white"
+                  ? "bg-accent text-on-accent"
                   : "bg-bg-mid text-text-secondary hover:bg-surface-hover hover:text-text-primary"
               }`}
             >
@@ -202,7 +202,7 @@ function ChannelCacheRow() {
               }}
               className={`rounded-sm px-3 py-1.5 text-[12px] font-medium transition-colors ${
                 selected
-                  ? "bg-accent text-white"
+                  ? "bg-accent text-on-accent"
                   : "bg-bg-mid text-text-secondary hover:bg-surface-hover hover:text-text-primary"
               }`}
             >

@@ -195,7 +195,7 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search emoji..."
-            className="flex-1 bg-transparent text-[13px] text-text-primary outline-none placeholder:text-text-faint"
+            className="flex-1 bg-transparent text-[13px] text-text-primary outline-none placeholder:text-text-muted"
           />
           {search && (
             <button
@@ -298,7 +298,7 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
             </span>
           </>
         ) : (
-          <span className="text-[12px] text-text-faint">Hover to preview</span>
+          <span className="text-[12px] text-text-muted">Hover to preview</span>
         )}
       </div>
     </div>

@@ -37,7 +37,7 @@ const WelcomeState: React.FC<WelcomeStateProps> = ({
           width: 72px;
           height: 72px;
           border-radius: 50%;
-          background: rgba(69, 150, 255, 0.12);
+          background: var(--color-accent-soft);
           display: flex;
           align-items: center;
           justify-content: center;
@@ -50,7 +50,7 @@ const WelcomeState: React.FC<WelcomeStateProps> = ({
           position: absolute;
           inset: -6px;
           border-radius: 50%;
-          border: 1.5px dashed #4596ff;
+          border: 1.5px dashed var(--color-accent);
           opacity: 0.25;
           animation: welcome-spin-slow 20s linear infinite;
         }
@@ -58,25 +58,25 @@ const WelcomeState: React.FC<WelcomeStateProps> = ({
         .welcome-icon-wrap .hash-icon {
           font-size: 30px;
           font-weight: 700;
-          color: #5ea8ff;
-          font-family: 'Outfit Variable', 'Outfit', sans-serif;
+          color: var(--color-accent-bright);
+          font-family: var(--font-display);
         }
 
         .welcome-title {
-          font-family: 'Outfit Variable', 'Outfit', sans-serif;
+          font-family: var(--font-display);
           font-size: 26px;
           font-weight: 700;
-          color: #dce4f0;
+          color: var(--color-text-primary);
           margin-bottom: 8px;
           letter-spacing: -0.01em;
         }
 
         .welcome-sub {
-          color: #7e8da6;
+          color: var(--color-text-muted);
           font-size: 14px;
           line-height: 1.6;
           margin-bottom: 28px;
-          font-family: 'DM Sans Variable', 'DM Sans', sans-serif;
+          font-family: var(--font-sans);
         }
 
         .welcome-actions {
@@ -91,13 +91,13 @@ const WelcomeState: React.FC<WelcomeStateProps> = ({
           align-items: center;
           gap: 7px;
           padding: 9px 16px;
-          border-radius: 10px;
+          border-radius: var(--radius-md);
           font-size: 13px;
           font-weight: 500;
           cursor: pointer;
           transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
           border: none;
-          font-family: 'DM Sans Variable', 'DM Sans', sans-serif;
+          font-family: var(--font-sans);
         }
 
         .welcome-btn:active {
@@ -105,24 +105,24 @@ const WelcomeState: React.FC<WelcomeStateProps> = ({
         }
 
         .welcome-btn.primary {
-          background: #4596ff;
-          color: white;
-          box-shadow: 0 2px 12px rgba(69, 150, 255, 0.22);
+          background: var(--color-accent);
+          color: var(--color-on-accent);
+          box-shadow: 0 2px 12px color-mix(in srgb, var(--color-accent) 22%, transparent);
         }
 
         .welcome-btn.primary:hover {
-          background: #2d7ae6;
-          box-shadow: 0 4px 20px rgba(69, 150, 255, 0.22);
+          background: var(--color-accent-hover);
+          box-shadow: 0 4px 20px color-mix(in srgb, var(--color-accent) 22%, transparent);
         }
 
         .welcome-btn.secondary {
-          background: #283040;
-          color: #7e8da6;
+          background: var(--color-bg-light);
+          color: var(--color-text-muted);
         }
 
         .welcome-btn.secondary:hover {
-          background: #212836;
-          color: #dce4f0;
+          background: var(--color-bg-lighter);
+          color: var(--color-text-primary);
         }
 
         .welcome-btn svg {

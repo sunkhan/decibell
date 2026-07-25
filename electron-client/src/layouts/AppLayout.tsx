@@ -68,7 +68,10 @@ export default function AppLayout() {
   }, []);
 
   return (
-    <div className="relative flex h-screen w-screen flex-col bg-bg-primary text-text-primary">
+    // transition-colors on the root eases the palette swap instead of
+    // snapping it. Deliberately not on box-shadow: the ServerBar's
+    // glow repaints at 60Hz if you animate it (see globals.css).
+    <div className="relative flex h-screen w-screen flex-col bg-bg-primary text-text-primary transition-colors duration-150">
       <Titlebar />
       <div className="flex min-h-0 flex-1">
         <Outlet />

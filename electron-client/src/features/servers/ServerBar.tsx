@@ -73,8 +73,8 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
             <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
           )}
           <div
-            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-[11px] font-semibold text-white"
-            style={{ background: stringToGradient(server.name) }}
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-[11px] font-semibold"
+            style={{ background: stringToGradient(server.name), color: "var(--color-av-fg)" }}
           >
             {server.name.charAt(0).toUpperCase()}
           </div>
@@ -138,7 +138,7 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
 function ActiveTileGlow() {
   return (
     <div
-      className="pointer-events-none absolute inset-0 rounded-md shadow-[0_0_0_1.5px_rgba(69,150,255,0.60),0_0_22px_4px_rgba(69,150,255,0.22)] animate-[breathe_2.4s_ease-in-out_infinite] will-change-[opacity]"
+      className="pointer-events-none absolute inset-0 rounded-md shadow-[0_0_0_1.5px_color-mix(in_srgb,var(--color-accent)_60%,transparent),0_0_22px_4px_color-mix(in_srgb,var(--color-accent)_22%,transparent)] animate-[breathe_2.4s_ease-in-out_infinite] will-change-[opacity]"
     />
   );
 }
@@ -190,7 +190,7 @@ export default function ServerBar() {
   };
 
   return (
-    <div className="relative z-10 flex h-[58px] shrink-0 items-center bg-bg-darkest">
+    <div className="chrome-scope relative z-10 flex h-[58px] shrink-0 items-center bg-bg-darkest">
       {/* Bottom separator starts after the home-button column. */}
       <div className="pointer-events-none absolute bottom-0 left-[68px] right-0 border-b border-border" />
       {/* Home button — width matches DM sidebar */}
@@ -199,8 +199,8 @@ export default function ServerBar() {
           onClick={() => { setActiveServer(null); setActiveChannel(null); setActiveView("home"); }}
           className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-sm transition-all duration-150 ${
             activeView === "home"
-              ? "bg-accent text-white shadow-[0_0_0_2px_var(--color-accent)]"
-              : "bg-surface-active text-text-secondary hover:bg-accent hover:text-white hover:-translate-y-0.5"
+              ? "bg-accent text-on-accent shadow-[0_0_0_2px_var(--color-accent)]"
+              : "bg-surface-active text-text-secondary hover:bg-accent hover:text-on-accent hover:-translate-y-0.5"
           }`}
           title="Home"
         >
@@ -242,7 +242,7 @@ export default function ServerBar() {
           onClick={() => setActiveView("browse")}
           className={`flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-md text-lg transition-all duration-150 ${
             activeView === "browse"
-              ? "bg-success text-white"
+              ? "bg-success text-on-accent"
               : "border-[1.5px] border-dashed border-text-muted text-text-muted hover:border-accent hover:bg-accent-soft hover:text-accent"
           }`}
           title="Browse servers"

@@ -107,11 +107,11 @@ function MessageBubble({
   if (grouped) {
     return (
       <div
-        className="group relative flex gap-3 rounded-lg py-px pr-2 hover:bg-white/[0.015]"
+        className="group relative flex gap-3 rounded-lg py-px pr-2 hover:bg-row-hover"
         style={{ paddingLeft }}
       >
         <div className="flex w-[38px] shrink-0 items-baseline justify-end">
-          <span className="text-[11px] font-medium leading-none tabular-nums text-text-muted opacity-0 group-hover:opacity-100">
+          <span className="font-mono text-[10.5px] font-medium leading-none tabular-nums text-text-muted opacity-0 group-hover:opacity-100">
             {parseTimestamp(message.timestamp).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
@@ -157,7 +157,7 @@ function MessageBubble({
 
   return (
     <div
-      className={`group relative flex gap-3 rounded-lg pr-2 pt-2.5 pb-0.5 hover:bg-white/[0.015]${
+      className={`group relative flex gap-3 rounded-lg pr-2 pt-2.5 pb-0.5 hover:bg-row-hover${
         isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""
       }`}
       style={{ paddingLeft }}
@@ -180,7 +180,7 @@ function MessageBubble({
           >
             {message.sender}
           </span>
-          <span className="text-[11px] font-medium tabular-nums text-text-muted">
+          <span className="font-mono text-[10.5px] font-medium tabular-nums text-text-muted">
             {formatTimestamp(message.timestamp)}
           </span>
         </div>

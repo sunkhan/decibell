@@ -603,7 +603,7 @@ function AudioItem({
           >
             {attachment.filename}
           </div>
-          <div className="text-[11px] text-text-muted">
+          <div className="font-mono text-[10.5px] text-text-muted">
             {attachment.durationMs > 0 && `${formatDuration(attachment.durationMs)} · `}
             {formatFileSize(attachment.sizeBytes)}
           </div>
@@ -626,7 +626,7 @@ function AudioItem({
         <button
           onClick={onPlay}
           disabled={!!error}
-          className="flex h-8 w-10 shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-hover hover:scale-105 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-8 w-10 shrink-0 items-center justify-center rounded-md bg-accent text-on-accent transition-all hover:bg-accent-hover hover:scale-105 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
           title={playing ? "Pause" : "Play"}
         >
           {error ? (
@@ -656,12 +656,12 @@ function AudioItem({
             style={{ width: `${progress}%` }}
           />
           <div
-            className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-light opacity-0 shadow-[0_0_6px_rgba(69,150,255,0.3)] transition-opacity group-hover:opacity-100"
+            className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-light opacity-0 shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)] transition-opacity group-hover:opacity-100"
             style={{ left: `${progress}%` }}
           />
         </div>
 
-        <span className="shrink-0 select-none text-[11px] tabular-nums text-text-secondary">
+        <span className="shrink-0 select-none font-mono text-[10px] tabular-nums text-text-muted">
           {fmt(time)} / {fmt(displayDuration)}
         </span>
 

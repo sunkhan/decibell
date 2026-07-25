@@ -24,11 +24,14 @@ export function LetterAvatar({ username, size, className }: Props) {
   const initial = (username.charAt(0) || "?").toUpperCase();
   return (
     <div
-      className={`flex shrink-0 items-center justify-center font-semibold text-white ${className ?? ""}`}
+      className={`flex shrink-0 items-center justify-center font-semibold ${className ?? ""}`}
       style={{
         width: size,
         height: size,
         borderRadius: avatarRadius(size),
+        // Per-theme initial colour: the light palettes keep white on
+        // their darker fills, but the token is the contract, not white.
+        color: "var(--color-av-fg)",
         // Same gradient generator the existing inline avatars use, so
         // a user's letter colour stays consistent across rendering
         // sites and across the load → fail-back transition.

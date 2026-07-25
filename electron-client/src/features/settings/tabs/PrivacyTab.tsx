@@ -62,13 +62,13 @@ function ToggleRow({
         onClick={onToggle}
         className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
           value
-            ? "border-accent bg-accent shadow-[0_0_8px_rgba(69,150,255,0.22)]"
+            ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
             : "border-border bg-bg-lighter"
         }`}
       >
         <div
           className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
-            value ? "translate-x-[18px] bg-white" : "translate-x-[3px] bg-text-muted"
+            value ? "translate-x-[18px] bg-on-accent" : "translate-x-[3px] bg-text-muted"
           }`}
         />
       </button>

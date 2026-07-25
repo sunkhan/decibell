@@ -116,7 +116,7 @@ export default function ConversationSidebar() {
                   )}
                 </div>
                 {conv.lastMessageTime > 0 && (
-                  <span className="shrink-0 font-channel text-[10px] font-normal text-text-faint">
+                  <span className="shrink-0 font-channel text-[10px] font-normal text-text-muted">
                     {formatRelativeTime(conv.lastMessageTime)}
                   </span>
                 )}

@@ -71,7 +71,7 @@ function RetentionRow({
             if (v === "custom") return;
             onChange(parseInt(v, 10));
           }}
-          className="appearance-none rounded-sm border border-border bg-bg-lighter px-3 py-1.5 pr-8 text-[12px] text-text-primary outline-none transition-all hover:border-white/[0.1] focus:border-accent disabled:cursor-not-allowed"
+          className="appearance-none rounded-sm border border-border bg-bg-lighter px-3 py-1.5 pr-8 text-[12px] text-text-primary outline-none transition-all hover:border-text-faint focus:border-accent disabled:cursor-not-allowed"
         >
           {PRESETS.map((p) => (
             <option key={p.days} value={p.days}>
@@ -384,7 +384,7 @@ export default function ChannelSettingsModal() {
           <button
             onClick={handleSave}
             disabled={saving || !dirty || !isOwner}
-            className="flex-1 rounded-md bg-accent py-2.5 text-[13px] font-semibold text-white transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50"
+            className="flex-1 rounded-md bg-accent py-2.5 text-[13px] font-semibold text-on-accent transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50"
           >
             {saving ? "Saving..." : "Save"}
           </button>

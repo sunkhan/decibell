@@ -103,7 +103,7 @@ export default function LoginPage() {
         <button
           type="submit"
           disabled={isLoading}
-          className="flex w-full items-center justify-center rounded-md bg-accent py-2.5 text-sm font-semibold text-white transition-colors hover:bg-accent-hover active:bg-accent-pressed disabled:opacity-50"
+          className="flex w-full items-center justify-center rounded-md bg-accent py-2.5 text-sm font-semibold text-on-accent transition-colors hover:bg-accent-hover active:bg-accent-pressed disabled:opacity-50"
         >
           {isLoading ? (
             <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
