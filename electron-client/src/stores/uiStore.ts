@@ -32,29 +32,51 @@ export const THEME_STORAGE_KEY = "decibell.theme";
 /// Both are plain scalars applied to the type scale and the list-row
 /// metrics in globals.css, so a change is one style write on <html>
 /// rather than a re-render.
-export const TEXT_SCALE_MIN = 0.85;
-export const TEXT_SCALE_MAX = 1.25;
+/// Text size is an absolute px value for the message body, stepped on
+/// a half-pixel grid so the readout never lands on 14.2px. 0 means
+/// "untouched" — the theme's own body size (13.5px graphite, 13px
+/// console), which is why the default isn't simply 13.5: forcing that
+/// number on `console*` would override a size its designer chose
+/// deliberately for a wider face.
+export const TEXT_SIZE_MIN_PX = 11;
+export const TEXT_SIZE_MAX_PX = 17;
+export const TEXT_SIZE_STEP_PX = 0.5;
+export const DEFAULT_TEXT_SIZE_PX = 0;
 export const ROW_SCALE_MIN = 0.85;
 export const ROW_SCALE_MAX = 1.3;
-export const DEFAULT_TEXT_SCALE = 1;
 export const DEFAULT_ROW_SCALE = 1;
 
-export const TEXT_SCALE_STORAGE_KEY = "decibell.textScale";
+export const TEXT_SIZE_STORAGE_KEY = "decibell.textSizePx";
 export const ROW_SCALE_STORAGE_KEY = "decibell.rowScale";
 
-/// Rounded to 2dp because the slider steps in 0.05 and float drift
-/// would otherwise write 1.0500000000000003 into the config.
+/// Rounded to 2dp because the sliders step in fractions and float
+/// drift would otherwise write 1.0500000000000003 into the config.
 export function clampScale(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.round(Math.min(max, Math.max(min, value)) * 100) / 100;
 }
 
-export function applyUiScale(textScale: number, rowScale: number): void {
+/// 0 passes through untouched — it's the "use the theme's own size"
+/// sentinel, not a value to clamp up into range.
+export function clampTextSizePx(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_TEXT_SIZE_PX;
+  const snapped = Math.round(value / TEXT_SIZE_STEP_PX) * TEXT_SIZE_STEP_PX;
+  return Math.min(TEXT_SIZE_MAX_PX, Math.max(TEXT_SIZE_MIN_PX, snapped));
+}
+
+export function applyUiScale(textSizePx: number, rowScale: number): void {
   const root = document.documentElement;
-  root.style.setProperty("--ui-text-scale", String(textScale));
+  // Unset rather than 0: globals.css falls back to the theme's own
+  // body size, so "default" follows the palette instead of pinning
+  // every theme to one number.
+  if (textSizePx > 0) {
+    root.style.setProperty("--ui-text-size-n", String(textSizePx));
+  } else {
+    root.style.removeProperty("--ui-text-size-n");
+  }
   root.style.setProperty("--ui-row-scale", String(rowScale));
   try {
-    localStorage.setItem(TEXT_SCALE_STORAGE_KEY, String(textScale));
+    localStorage.setItem(TEXT_SIZE_STORAGE_KEY, String(textSizePx));
     localStorage.setItem(ROW_SCALE_STORAGE_KEY, String(rowScale));
   } catch {
     // Same trade-off as the theme mirror: the setting still applies
@@ -135,9 +157,9 @@ interface UiState {
   settingsTab: string;
   theme: ThemeId;
   setTheme: (theme: ThemeId) => void;
-  textScale: number;
+  textSizePx: number;
   rowScale: number;
-  setTextScale: (value: number) => void;
+  setTextSizePx: (value: number) => void;
   setRowScale: (value: number) => void;
   setInputDevice: (device: string | null) => void;
   setOutputDevice: (device: string | null) => void;
@@ -218,16 +240,16 @@ export const useUiStore = create<UiState>((set, get) => ({
     applyTheme(theme);
     set({ theme });
   },
-  textScale: DEFAULT_TEXT_SCALE,
+  textSizePx: DEFAULT_TEXT_SIZE_PX,
   rowScale: DEFAULT_ROW_SCALE,
-  setTextScale: (value) => {
-    const textScale = clampScale(value, TEXT_SCALE_MIN, TEXT_SCALE_MAX, DEFAULT_TEXT_SCALE);
-    applyUiScale(textScale, get().rowScale);
-    set({ textScale });
+  setTextSizePx: (value) => {
+    const textSizePx = clampTextSizePx(value);
+    applyUiScale(textSizePx, get().rowScale);
+    set({ textSizePx });
   },
   setRowScale: (value) => {
     const rowScale = clampScale(value, ROW_SCALE_MIN, ROW_SCALE_MAX, DEFAULT_ROW_SCALE);
-    applyUiScale(get().textScale, rowScale);
+    applyUiScale(get().textSizePx, rowScale);
     set({ rowScale });
   },
   setInputDevice: (device) => set({ inputDevice: device }),

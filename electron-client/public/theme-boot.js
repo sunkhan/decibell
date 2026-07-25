@@ -28,17 +28,22 @@
 
   // Same story for the appearance scales: applying them after mount
   // would reflow the entire tree one frame in. Keys must match
-  // TEXT_SCALE_STORAGE_KEY / ROW_SCALE_STORAGE_KEY in uiStore.
-  function scale(key, min, max) {
+  // TEXT_SIZE_STORAGE_KEY / ROW_SCALE_STORAGE_KEY in uiStore.
+  //
+  // Note this only ever writes the raw numbers — globals.css turns the
+  // body size into a scale against whichever palette is active, so this
+  // script needs no knowledge of either theme's metrics.
+  function num(key, min, max) {
     try {
       var n = parseFloat(localStorage.getItem(key));
       if (n >= min && n <= max) return n;
     } catch (e) {
-      // Storage unavailable — fall through to 1.
+      // Storage unavailable — fall through to the default.
     }
-    return 1;
+    return 0;
   }
   var root = document.documentElement;
-  root.style.setProperty("--ui-text-scale", String(scale("decibell.textScale", 0.85, 1.25)));
-  root.style.setProperty("--ui-row-scale", String(scale("decibell.rowScale", 0.85, 1.3)));
+  var textSize = num("decibell.textSizePx", 11, 17);
+  if (textSize > 0) root.style.setProperty("--ui-text-size-n", String(textSize));
+  root.style.setProperty("--ui-row-scale", String(num("decibell.rowScale", 0.85, 1.3) || 1));
 })();

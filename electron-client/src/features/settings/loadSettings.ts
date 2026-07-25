@@ -13,7 +13,7 @@ import {
   useUiStore,
   THEME_IDS,
   DEFAULT_THEME,
-  DEFAULT_TEXT_SCALE,
+  DEFAULT_TEXT_SIZE_PX,
   DEFAULT_ROW_SCALE,
   type ThemeId,
 } from "../../stores/uiStore";
@@ -54,7 +54,7 @@ interface LoadedConfigShape {
     stream_audio_bitrate_kbps: number | null;
     stream_enforced_codec: number | null;
     theme: string;
-    text_scale: number;
+    text_size_px: number;
     list_density: number;
     crash_reporting_enabled: boolean;
     crash_reporting_install_id: string | null;
@@ -83,10 +83,11 @@ export async function loadSettings(): Promise<void> {
     ? (settings.theme as ThemeId)
     : DEFAULT_THEME;
   useUiStore.getState().setTheme(savedTheme);
-  // 0 = field absent from an older config; the setters clamp anything
-  // out of range, so a hand-edited 9000 lands on the max rather than
-  // rendering the app at nine thousand percent.
-  useUiStore.getState().setTextScale(settings.text_scale || DEFAULT_TEXT_SCALE);
+  // 0 = absent from an older config, and for text size 0 is also the
+  // real "use the theme's own size" value, so it passes straight
+  // through. Both setters clamp, so a hand-edited 9000 lands on the
+  // max rather than rendering the app at nine thousand pixels.
+  useUiStore.getState().setTextSizePx(settings.text_size_px || DEFAULT_TEXT_SIZE_PX);
   useUiStore.getState().setRowScale(settings.list_density || DEFAULT_ROW_SCALE);
 
   // Privacy

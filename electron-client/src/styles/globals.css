@@ -153,7 +153,15 @@
      so they beat everything here. Kept as two knobs on purpose: text
      size and list density are independent preferences — someone on a
      4K panel may want larger type with the rows left tight. */
-  --ui-text-scale: 1;
+  /* The user picks an absolute body size in px; --ui-text-size-n is
+     that number, unitless, or unset for "whatever this theme's own
+     body size is". Everything else in the type scale is a multiple of
+     it, so the scale is the ratio between what they asked for and the
+     theme's natural body size — 13.5 under graphite, 13 under console.
+     Doing the division here rather than in JS means a theme switch
+     re-derives it for free and the pre-mount script doesn't need to
+     know either number. */
+  --ui-text-scale: calc(var(--ui-text-size-n, var(--t-fs-body-n)) / var(--t-fs-body-n));
   --ui-row-scale: 1;
 
   /* Font stacks referenced by the palettes. */
@@ -258,6 +266,7 @@
 
   /* Type scale — graphite (Inter chrome, IBM Plex Mono metadata). */
   --t-fs-title: 14px;
+  --t-fs-body-n: 13.5;
   --t-fs-body: 13.5px;
   --t-fs-sender: 13.5px;
   --t-fs-channel: 13.5px;
@@ -351,6 +360,7 @@
 
   /* Type scale — graphite (Inter chrome, IBM Plex Mono metadata). */
   --t-fs-title: 14px;
+  --t-fs-body-n: 13.5;
   --t-fs-body: 13.5px;
   --t-fs-sender: 13.5px;
   --t-fs-channel: 13.5px;
@@ -447,6 +457,7 @@
   /* Type scale — console. Mono runs wide, so each role steps down and
      the uppercase labels open up to hold the same rhythm. */
   --t-fs-title: 13px;
+  --t-fs-body-n: 13;
   --t-fs-body: 13px;
   --t-fs-sender: 12.5px;
   --t-fs-channel: 12.5px;
@@ -542,6 +553,7 @@
   /* Type scale — console. Mono runs wide, so each role steps down and
      the uppercase labels open up to hold the same rhythm. */
   --t-fs-title: 13px;
+  --t-fs-body-n: 13;
   --t-fs-body: 13px;
   --t-fs-sender: 12.5px;
   --t-fs-channel: 12.5px;

@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   useUiStore,
-  TEXT_SCALE_MIN,
-  TEXT_SCALE_MAX,
+  TEXT_SIZE_MIN_PX,
+  TEXT_SIZE_MAX_PX,
+  TEXT_SIZE_STEP_PX,
   ROW_SCALE_MIN,
   ROW_SCALE_MAX,
-  DEFAULT_TEXT_SCALE,
+  DEFAULT_TEXT_SIZE_PX,
   DEFAULT_ROW_SCALE,
   type ThemeId,
 } from "../../../stores/uiStore";
@@ -137,7 +138,9 @@ function ScaleSlider({
   maxLabel,
   min,
   max,
+  step,
   value,
+  rawValue,
   defaultValue,
   onChange,
   onCommit,
@@ -152,13 +155,18 @@ function ScaleSlider({
   maxLabel: React.ReactNode;
   min: number;
   max: number;
+  step: number;
   value: number;
+  /// What the slider shows. `rawValue` is what's actually stored — the
+  /// two differ for text size, where 0 ("theme default") has no
+  /// position on a px track.
+  rawValue: number;
   defaultValue: number;
   onChange: (v: number) => void;
   onCommit: () => void;
   children: React.ReactNode;
 }) {
-  const isDefault = Math.abs(value - defaultValue) < 0.001;
+  const isDefault = Math.abs(rawValue - defaultValue) < 0.001;
   return (
     <div className="mt-6">
       <div className="mb-2.5 flex items-baseline justify-between">
@@ -187,11 +195,11 @@ function ScaleSlider({
         <input
           type="range"
           aria-label={label}
-          min={Math.round(min * 100)}
-          max={Math.round(max * 100)}
-          step={5}
-          value={Math.round(value * 100)}
-          onChange={(e) => onChange(Number(e.target.value) / 100)}
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
           // Commit on release rather than per tick: saveSettings is
           // debounced anyway, but this keeps the disk write to one per
           // drag instead of one per pixel.
@@ -212,9 +220,9 @@ function ScaleSlider({
 export default function AppearanceTab() {
   const theme = useUiStore((s) => s.theme);
   const setTheme = useUiStore((s) => s.setTheme);
-  const textScale = useUiStore((s) => s.textScale);
+  const textSizePx = useUiStore((s) => s.textSizePx);
   const rowScale = useUiStore((s) => s.rowScale);
-  const setTextScale = useUiStore((s) => s.setTextScale);
+  const setTextSizePx = useUiStore((s) => s.setTextSizePx);
   const setRowScale = useUiStore((s) => s.setRowScale);
   const username = useAuthStore((s) => s.username);
 
@@ -230,7 +238,7 @@ export default function AppearanceTab() {
     if (!sampleRef.current) return;
     const px = parseFloat(getComputedStyle(sampleRef.current).fontSize);
     setBodyPx(Number.isFinite(px) ? Math.round(px * 10) / 10 : null);
-  }, [textScale, theme]);
+  }, [textSizePx, theme]);
 
   const selectedIndex = Math.max(
     0,
@@ -369,11 +377,15 @@ export default function AppearanceTab() {
         readout={bodyPx === null ? "—" : `${bodyPx}px`}
         minLabel={<span className="text-[10px]">A</span>}
         maxLabel={<span className="text-[15px]">A</span>}
-        min={TEXT_SCALE_MIN}
-        max={TEXT_SCALE_MAX}
-        value={textScale}
-        defaultValue={DEFAULT_TEXT_SCALE}
-        onChange={setTextScale}
+        min={TEXT_SIZE_MIN_PX}
+        max={TEXT_SIZE_MAX_PX}
+        step={TEXT_SIZE_STEP_PX}
+        // 0 means "theme default", which has no slider position of its
+        // own — park the thumb on whatever that theme actually renders.
+        value={textSizePx || bodyPx || TEXT_SIZE_MIN_PX}
+        rawValue={textSizePx}
+        defaultValue={DEFAULT_TEXT_SIZE_PX}
+        onChange={setTextSizePx}
         onCommit={saveSettings}
       >
         {/* A real message row, down to the avatar and the hashed name
@@ -412,11 +424,13 @@ export default function AppearanceTab() {
       <ScaleSlider
         label="List density"
         readout={`${Math.round(rowScale * 100)}%`}
+        step={0.05}
         minLabel="Compact"
         maxLabel="Roomy"
         min={ROW_SCALE_MIN}
         max={ROW_SCALE_MAX}
         value={rowScale}
+        rawValue={rowScale}
         defaultValue={DEFAULT_ROW_SCALE}
         onChange={setRowScale}
         onCommit={saveSettings}
