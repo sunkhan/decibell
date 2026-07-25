@@ -326,7 +326,7 @@ export default function DmChatPanel() {
             }`}
           />
         </div>
-        <span className="font-display text-[16px] font-semibold text-text-bright">
+        <span className="font-display text-title font-emphasis tracking-title text-text-bright">
           {activeDmUser}
         </span>
         {isOnline ? (

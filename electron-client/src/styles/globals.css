@@ -5,20 +5,15 @@
 @import "@fontsource-variable/inter/index.css";
 @import "@fontsource/ibm-plex-mono/400.css";
 @import "@fontsource/ibm-plex-mono/500.css";
-
-@font-face {
-  font-family: "JetBrains Mono";
-  src: url("/fonts/JetBrainsMono-Regular.ttf") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-}
-
-@font-face {
-  font-family: "JetBrains Mono";
-  src: url("/fonts/JetBrainsMono-Medium.ttf") format("truetype");
-  font-weight: 500;
-  font-style: normal;
-}
+/* JetBrains Mono comes from npm rather than the two local .ttf files
+ * tauri-client vendored, because those only covered 400 and 500. The
+ * console themes set almost all of their chrome in mono and lean on
+ * 600/700 for names and headers — against a 400/500-only family
+ * Chromium synthesises those, which smears the glyphs at 10-12px. */
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
+@import "@fontsource/jetbrains-mono/700.css";
 
 @import "tailwindcss";
 
@@ -123,6 +118,33 @@
   --font-mono: var(--t-font-meta);
   --font-channel: var(--t-font-channel);
   --font-display: var(--t-font-display);
+
+  /* ─── Type scale ───
+     Per-theme, because the two families don't share a size. `console*`
+     set nearly all chrome in JetBrains Mono, which runs wider than
+     Inter at the same size, so every role steps down ~0.5–1px and the
+     uppercase labels open up to compensate. Sizes are the mock's, read
+     off the design bundle 1:1 (its 238px sidebar ≈ the app's 240px
+     default, so the artboard is not scaled).
+
+     One role per line of the design, not one per component — several
+     components share `text-section`, and that's the point.           */
+  --text-title: var(--t-fs-title);        /* sidebar + chat headers   */
+  --text-body: var(--t-fs-body);          /* message prose            */
+  --text-sender: var(--t-fs-sender);      /* message author           */
+  --text-channel: var(--t-fs-channel);    /* channel rows             */
+  --text-member: var(--t-fs-member);      /* member + participant rows*/
+  --text-section: var(--t-fs-section);    /* uppercase group labels   */
+  --text-meta: var(--t-fs-meta);          /* timestamps, file meta    */
+  --text-micro: var(--t-fs-micro);        /* counts, transport times  */
+
+  --tracking-title: var(--t-ls-title);
+  --tracking-section: var(--t-ls-section);
+  --tracking-wordmark: var(--t-ls-wordmark);
+
+  /* `graphite*` 600 / `console*` 700 — mono reads lighter at the same
+     weight, so the console family leans on the next step up. */
+  --font-weight-emphasis: var(--t-fw-emphasis);
 }
 
 :root {
@@ -225,6 +247,26 @@
   --t-font-channel: var(--font-stack-ui);
   --t-font-display: var(--font-stack-ui);
 
+
+  /* Type scale — graphite (Inter chrome, IBM Plex Mono metadata). */
+  --t-fs-title: 14px;
+  --t-fs-body: 13.5px;
+  --t-fs-sender: 13.5px;
+  --t-fs-channel: 13.5px;
+  --t-fs-member: 13px;
+  --t-fs-section: 10px;
+  --t-fs-meta: 10.5px;
+  --t-fs-micro: 10px;
+  --t-ls-title: -0.02em;
+  --t-ls-section: 0.12em;
+  --t-ls-wordmark: 0.14em;
+  --t-fw-emphasis: 600;
+
+  /* DS v1 squircle: a ratio, so every avatar size reads as the same
+     shape. Percentage radii resolve against the box, and avatars are
+     square, so 26% is the old size x 0.26 with no JS. */
+  --radius-avatar: 26%;
+
   --t-av-fg: #ffffff;
   --t-av-1: #4f8cff;
   --t-av-2: #d97b32;
@@ -297,6 +339,26 @@
   --t-font-meta: var(--font-stack-plex);
   --t-font-channel: var(--font-stack-ui);
   --t-font-display: var(--font-stack-ui);
+
+
+  /* Type scale — graphite (Inter chrome, IBM Plex Mono metadata). */
+  --t-fs-title: 14px;
+  --t-fs-body: 13.5px;
+  --t-fs-sender: 13.5px;
+  --t-fs-channel: 13.5px;
+  --t-fs-member: 13px;
+  --t-fs-section: 10px;
+  --t-fs-meta: 10.5px;
+  --t-fs-micro: 10px;
+  --t-ls-title: -0.02em;
+  --t-ls-section: 0.12em;
+  --t-ls-wordmark: 0.14em;
+  --t-fw-emphasis: 600;
+
+  /* DS v1 squircle: a ratio, so every avatar size reads as the same
+     shape. Percentage radii resolve against the box, and avatars are
+     square, so 26% is the old size x 0.26 with no JS. */
+  --radius-avatar: 26%;
 
   --t-av-fg: #ffffff;
   --t-av-1: #93a0b3;
@@ -373,6 +435,26 @@
   --t-font-channel: var(--font-stack-jetbrains);
   --t-font-display: var(--font-stack-jetbrains);
 
+
+  /* Type scale — console. Mono runs wide, so each role steps down and
+     the uppercase labels open up to hold the same rhythm. */
+  --t-fs-title: 13px;
+  --t-fs-body: 13px;
+  --t-fs-sender: 12.5px;
+  --t-fs-channel: 12.5px;
+  --t-fs-member: 12px;
+  --t-fs-section: 9.5px;
+  --t-fs-meta: 10px;
+  --t-fs-micro: 9.5px;
+  --t-ls-title: 0em;
+  --t-ls-section: 0.16em;
+  --t-ls-wordmark: 0.2em;
+  --t-fw-emphasis: 700;
+
+  /* Flat corners at every size — the squircle ratio would round a
+     64px profile avatar to 17px and break out of its 8px ring. */
+  --radius-avatar: var(--t-radius-md);
+
   --t-av-fg: #ffffff;
   --t-av-1: #2f6b4c;
   --t-av-2: #6b5a2f;
@@ -447,6 +529,26 @@
   --t-font-meta: var(--font-stack-jetbrains);
   --t-font-channel: var(--font-stack-jetbrains);
   --t-font-display: var(--font-stack-jetbrains);
+
+
+  /* Type scale — console. Mono runs wide, so each role steps down and
+     the uppercase labels open up to hold the same rhythm. */
+  --t-fs-title: 13px;
+  --t-fs-body: 13px;
+  --t-fs-sender: 12.5px;
+  --t-fs-channel: 12.5px;
+  --t-fs-member: 12px;
+  --t-fs-section: 9.5px;
+  --t-fs-meta: 10px;
+  --t-fs-micro: 9.5px;
+  --t-ls-title: 0em;
+  --t-ls-section: 0.16em;
+  --t-ls-wordmark: 0.2em;
+  --t-fw-emphasis: 700;
+
+  /* Flat corners at every size — the squircle ratio would round a
+     64px profile avatar to 17px and break out of its 8px ring. */
+  --radius-avatar: var(--t-radius-md);
 
   --t-av-fg: #ffffff;
   --t-av-1: #3f4a45;
@@ -811,7 +913,7 @@ html, body, #root {
   content: attr(data-placeholder);
   color: var(--color-text-muted);
   font-family: var(--font-channel);
-  font-size: 14px;
+  font-size: var(--text-channel);
   font-weight: 400;
   pointer-events: none;
 }

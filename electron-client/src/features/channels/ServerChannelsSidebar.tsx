@@ -117,7 +117,7 @@ export default function ServerChannelsSidebar() {
           className="flex flex-1 items-center gap-1.5 truncate text-left transition-colors disabled:cursor-default"
           title={activeServerId ? "Server options" : undefined}
         >
-          <span className="truncate font-display text-[16px] font-semibold tracking-[-0.01em] text-text-bright">
+          <span className="truncate font-display text-title font-emphasis tracking-title text-text-bright">
             {serverName ?? "Server"}
           </span>
           {activeServerId && (
@@ -137,11 +137,11 @@ export default function ServerChannelsSidebar() {
           )}
         </button>
         {servers.some((s) => s.id === activeServerId) ? (
-          <span className="rounded-sm bg-success/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.07em] text-success">
+          <span className="rounded-sm bg-success/15 px-1.5 py-0.5 font-mono text-micro font-medium uppercase leading-none tracking-[0.1em] text-success">
             Public
           </span>
         ) : (
-          <span className="rounded-sm bg-text-muted/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.07em] text-text-secondary">
+          <span className="rounded-sm bg-text-muted/15 px-1.5 py-0.5 font-mono text-micro font-medium uppercase leading-none tracking-[0.1em] text-text-secondary">
             Private
           </span>
         )}
@@ -209,7 +209,7 @@ export default function ServerChannelsSidebar() {
               >
                 <polyline points="6 9 12 15 18 9" />
               </svg>
-              <h3 className="font-channel text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted transition-colors group-hover:text-text-secondary">
+              <h3 className="font-channel font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted transition-colors group-hover:text-text-secondary">
                 Text Channels
               </h3>
             </div>
@@ -243,7 +243,7 @@ export default function ServerChannelsSidebar() {
               >
                 <polyline points="6 9 12 15 18 9" />
               </svg>
-              <h3 className="font-channel text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted transition-colors group-hover:text-text-secondary">
+              <h3 className="font-channel font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted transition-colors group-hover:text-text-secondary">
                 Voice Channels
               </h3>
             </div>
@@ -254,12 +254,12 @@ export default function ServerChannelsSidebar() {
                   <div key={ch.id}>
                     <button
                       onClick={() => handleVoiceChannelClick(ch.id)}
-                      className={`flex w-full items-center gap-2 rounded-sm px-2.5 py-[7px] text-[13px] font-medium transition-colors ${
+                      className={`flex w-full items-center gap-2 rounded-sm px-2.5 py-[7px] text-channel transition-colors ${
                         connectedChannelId === ch.id && activeView === "voice"
                           ? "bg-accent-soft text-text-bright font-semibold"
                           : connectedChannelId === ch.id
                             ? "text-success font-semibold hover:bg-surface-hover"
-                            : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                            : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
                       }`}
                     >
                       <svg
@@ -403,18 +403,18 @@ const TextChannelRow = memo(function TextChannelRow({
       data-drop-target={dropKey}
       data-server-id={serverId}
       data-channel-id={channelId}
-      className={`relative flex w-full items-center gap-2 rounded-sm px-2.5 py-[7px] text-[13px] font-medium transition-all ${
+      className={`relative flex w-full items-center gap-2 rounded-sm px-2.5 py-[7px] text-channel transition-all ${
         isHoveredDrop
           ? "animate-[dropTargetIn_0.18s_ease_both] bg-accent text-on-accent"
           : isActive
             ? "bg-accent-soft text-text-bright font-semibold"
             : dragActive
               ? "animate-[dropPulse_1.6s_ease-in-out_infinite] bg-accent-soft/30 text-text-secondary"
-              : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+              : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
       }`}
     >
       <span
-        className={`font-channel text-[16px] font-medium transition-colors ${
+        className={`font-channel text-channel font-medium transition-colors ${
           isHoveredDrop
             ? "text-on-accent"
             : isActive

@@ -78,7 +78,7 @@ const PresenceRow = memo(function PresenceRow({
 
   return (
     <div
-      className="group flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-[12px] transition-colors hover:bg-surface-hover"
+      className="group flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-member transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(
@@ -140,7 +140,7 @@ const ActiveRow = memo(function ActiveRow({
 
   return (
     <div
-      className="group flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-[12px] transition-colors hover:bg-surface-hover"
+      className="group flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-member transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(

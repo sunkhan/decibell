@@ -644,7 +644,7 @@ function AudioItem({
         </div>
         <div className="min-w-0 flex-1">
           <div
-            className="truncate text-[13px] font-medium text-text-primary"
+            className="truncate text-sender font-medium text-text-primary"
             title={attachment.filename}
           >
             {attachment.filename}

@@ -476,7 +476,7 @@ export default function ChatPanel() {
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-bg-mid">
-      <div className="flex h-12 items-center border-b border-border-divider px-4 text-sm font-semibold text-text-bright">
+      <div className="flex h-12 items-center border-b border-border-divider px-4 font-channel text-title font-emphasis tracking-title text-text-bright">
         <span className="mr-1.5 text-text-muted">#</span>
         {channelName}
       </div>

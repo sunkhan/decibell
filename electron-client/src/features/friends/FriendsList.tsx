@@ -106,7 +106,7 @@ export default function FriendsList() {
   return (
     <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-dark">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="font-display text-[16px] font-semibold text-text-bright">Friends</h2>
+        <h2 className="font-display text-title font-emphasis tracking-title text-text-bright">Friends</h2>
         <button
           onClick={() => setShowAdd(!showAdd)}
           className="rounded-sm px-2 py-1 font-channel text-[12px] font-medium text-accent-bright transition-colors hover:bg-accent-hover/15"

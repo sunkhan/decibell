@@ -58,7 +58,7 @@ export default function ConversationSidebar() {
       style={{ width }}
     >
       <div className="flex h-12 shrink-0 items-center border-b border-border px-4">
-        <h2 className="font-display text-[16px] font-semibold text-text-bright">
+        <h2 className="font-display text-title font-emphasis tracking-title text-text-bright">
           Direct Messages
         </h2>
       </div>
@@ -102,7 +102,7 @@ export default function ConversationSidebar() {
                   )}
                 </div>
                 <div className="min-w-0 flex-1 text-left">
-                  <div className="truncate font-channel text-[13px] font-medium">
+                  <div className="truncate font-channel text-member font-medium">
                     {conv.username}
                   </div>
                   {lastMsg && (

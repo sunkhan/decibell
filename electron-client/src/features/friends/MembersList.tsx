@@ -42,8 +42,10 @@ export default function MembersList() {
         />
       </div>
       <span
-        className={`truncate font-channel text-[13px] font-medium transition-colors ${
-          isOnline ? "text-text-secondary group-hover:text-text-primary" : "text-text-muted"
+        className={`truncate font-channel text-member transition-colors ${
+          isOnline
+            ? "font-medium text-text-secondary group-hover:text-text-primary"
+            : "font-normal text-text-muted"
         }`}
       >
         {username}
@@ -55,7 +57,7 @@ export default function MembersList() {
     <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-dark">
       <div className="flex-1 overflow-y-auto px-3 py-1">
         <div className="px-1 pt-3 pb-1">
-          <h3 className="font-channel text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+          <h3 className="font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted">
             Online — {online.length}
           </h3>
         </div>
@@ -64,7 +66,7 @@ export default function MembersList() {
         {offline.length > 0 && (
           <>
             <div className="px-1 pt-4 pb-1">
-              <h3 className="font-channel text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+              <h3 className="font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted">
                 Offline — {offline.length}
               </h3>
             </div>
@@ -89,7 +91,7 @@ export default function MembersList() {
             />
           ))}
         </div>
-        <span className="font-display text-[11px] font-medium uppercase tracking-[0.07em] text-text-muted">
+        <span className="font-mono text-[10px] font-emphasis uppercase tracking-wordmark text-text-muted">
           Decibell
         </span>
       </div>
