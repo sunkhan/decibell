@@ -25,4 +25,20 @@
     // Storage unavailable — fall through to the default.
   }
   document.documentElement.dataset.theme = theme;
+
+  // Same story for the appearance scales: applying them after mount
+  // would reflow the entire tree one frame in. Keys must match
+  // TEXT_SCALE_STORAGE_KEY / ROW_SCALE_STORAGE_KEY in uiStore.
+  function scale(key, min, max) {
+    try {
+      var n = parseFloat(localStorage.getItem(key));
+      if (n >= min && n <= max) return n;
+    } catch (e) {
+      // Storage unavailable — fall through to 1.
+    }
+    return 1;
+  }
+  var root = document.documentElement;
+  root.style.setProperty("--ui-text-scale", String(scale("decibell.textScale", 0.85, 1.25)));
+  root.style.setProperty("--ui-row-scale", String(scale("decibell.rowScale", 0.85, 1.3)));
 })();

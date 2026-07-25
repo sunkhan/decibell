@@ -28,6 +28,40 @@ export const DEFAULT_THEME: ThemeId = "graphite";
 /// cold start. Keep the key in sync with public/theme-boot.js.
 export const THEME_STORAGE_KEY = "decibell.theme";
 
+/// Text-size and list-density multipliers (Settings → Appearance).
+/// Both are plain scalars applied to the type scale and the list-row
+/// metrics in globals.css, so a change is one style write on <html>
+/// rather than a re-render.
+export const TEXT_SCALE_MIN = 0.85;
+export const TEXT_SCALE_MAX = 1.25;
+export const ROW_SCALE_MIN = 0.85;
+export const ROW_SCALE_MAX = 1.3;
+export const DEFAULT_TEXT_SCALE = 1;
+export const DEFAULT_ROW_SCALE = 1;
+
+export const TEXT_SCALE_STORAGE_KEY = "decibell.textScale";
+export const ROW_SCALE_STORAGE_KEY = "decibell.rowScale";
+
+/// Rounded to 2dp because the slider steps in 0.05 and float drift
+/// would otherwise write 1.0500000000000003 into the config.
+export function clampScale(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.round(Math.min(max, Math.max(min, value)) * 100) / 100;
+}
+
+export function applyUiScale(textScale: number, rowScale: number): void {
+  const root = document.documentElement;
+  root.style.setProperty("--ui-text-scale", String(textScale));
+  root.style.setProperty("--ui-row-scale", String(rowScale));
+  try {
+    localStorage.setItem(TEXT_SCALE_STORAGE_KEY, String(textScale));
+    localStorage.setItem(ROW_SCALE_STORAGE_KEY, String(rowScale));
+  } catch {
+    // Same trade-off as the theme mirror: the setting still applies
+    // this session, it just re-flashes the default on cold start.
+  }
+}
+
 export function applyTheme(theme: ThemeId): void {
   document.documentElement.dataset.theme = theme;
   try {
@@ -101,6 +135,10 @@ interface UiState {
   settingsTab: string;
   theme: ThemeId;
   setTheme: (theme: ThemeId) => void;
+  textScale: number;
+  rowScale: number;
+  setTextScale: (value: number) => void;
+  setRowScale: (value: number) => void;
   setInputDevice: (device: string | null) => void;
   setOutputDevice: (device: string | null) => void;
   setSeparateStreamOutput: (value: boolean) => void;
@@ -124,7 +162,7 @@ interface UiState {
   setCrashReportingInstallId: (v: string | null) => void;
 }
 
-export const useUiStore = create<UiState>((set) => ({
+export const useUiStore = create<UiState>((set, get) => ({
   activeModal: null,
   connectionStatus: "connected",
   activeView: "home",
@@ -179,6 +217,18 @@ export const useUiStore = create<UiState>((set) => ({
   setTheme: (theme) => {
     applyTheme(theme);
     set({ theme });
+  },
+  textScale: DEFAULT_TEXT_SCALE,
+  rowScale: DEFAULT_ROW_SCALE,
+  setTextScale: (value) => {
+    const textScale = clampScale(value, TEXT_SCALE_MIN, TEXT_SCALE_MAX, DEFAULT_TEXT_SCALE);
+    applyUiScale(textScale, get().rowScale);
+    set({ textScale });
+  },
+  setRowScale: (value) => {
+    const rowScale = clampScale(value, ROW_SCALE_MIN, ROW_SCALE_MAX, DEFAULT_ROW_SCALE);
+    applyUiScale(get().textScale, rowScale);
+    set({ rowScale });
   },
   setInputDevice: (device) => set({ inputDevice: device }),
   setOutputDevice: (device) => set({ outputDevice: device }),

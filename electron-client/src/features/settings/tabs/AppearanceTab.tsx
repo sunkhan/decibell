@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { useUiStore, type ThemeId } from "../../../stores/uiStore";
+import {
+  useUiStore,
+  TEXT_SCALE_MIN,
+  TEXT_SCALE_MAX,
+  ROW_SCALE_MIN,
+  ROW_SCALE_MAX,
+  DEFAULT_TEXT_SCALE,
+  DEFAULT_ROW_SCALE,
+  type ThemeId,
+} from "../../../stores/uiStore";
 import { saveSettings } from "../saveSettings";
+import { LetterAvatar } from "../../../components/LetterAvatar";
 
 /// Enough of each palette to draw its preview swatch. These duplicate
 /// the authoritative values in globals.css on purpose: a swatch has to
@@ -101,9 +111,103 @@ const THEMES: ThemeOption[] = [
   },
 ];
 
+const SAMPLE_ROWS = [
+  { name: "sunkhan", online: true },
+  { name: "nova", online: false },
+];
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+      {children}
+    </div>
+  );
+}
+
+/// One labelled slider. `value` is the live store value, so the preview
+/// under it re-renders on every drag tick — that *is* the feedback, the
+/// same way the theme cards repaint the modal.
+function ScaleSlider({
+  label,
+  minLabel,
+  maxLabel,
+  min,
+  max,
+  value,
+  defaultValue,
+  onChange,
+  onCommit,
+  children,
+}: {
+  label: string;
+  minLabel: string;
+  maxLabel: string;
+  min: number;
+  max: number;
+  value: number;
+  defaultValue: number;
+  onChange: (v: number) => void;
+  onCommit: () => void;
+  children: React.ReactNode;
+}) {
+  const isDefault = Math.abs(value - defaultValue) < 0.001;
+  return (
+    <div className="mt-6">
+      <div className="mb-2.5 flex items-baseline justify-between">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+          {label}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10.5px] tabular-nums text-text-muted">
+            {Math.round(value * 100)}%
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              onChange(defaultValue);
+              onCommit();
+            }}
+            disabled={isDefault}
+            className="rounded-sm px-1.5 py-0.5 text-[10.5px] font-medium text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary disabled:pointer-events-none disabled:opacity-0"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+      <div className="flex items-center gap-3">
+        <span className="shrink-0 text-[10.5px] text-text-muted">{minLabel}</span>
+        <input
+          type="range"
+          aria-label={label}
+          min={Math.round(min * 100)}
+          max={Math.round(max * 100)}
+          step={5}
+          value={Math.round(value * 100)}
+          onChange={(e) => onChange(Number(e.target.value) / 100)}
+          // Commit on release rather than per tick: saveSettings is
+          // debounced anyway, but this keeps the disk write to one per
+          // drag instead of one per pixel.
+          onMouseUp={onCommit}
+          onKeyUp={onCommit}
+          onTouchEnd={onCommit}
+          className="h-[4px] flex-1 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-light [&::-webkit-slider-thumb]:shadow-[0_0_6px_var(--color-accent-mid)]"
+        />
+        <span className="shrink-0 text-[10.5px] text-text-muted">{maxLabel}</span>
+      </div>
+      <div className="mt-3 overflow-hidden rounded-md border border-border-divider bg-bg-light px-3 py-2.5">
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export default function AppearanceTab() {
   const theme = useUiStore((s) => s.theme);
   const setTheme = useUiStore((s) => s.setTheme);
+  const textScale = useUiStore((s) => s.textScale);
+  const rowScale = useUiStore((s) => s.rowScale);
+  const setTextScale = useUiStore((s) => s.setTextScale);
+  const setRowScale = useUiStore((s) => s.setRowScale);
 
   const selectedIndex = Math.max(
     0,
@@ -154,9 +258,7 @@ export default function AppearanceTab() {
 
   return (
     <div>
-      <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-        Theme
-      </div>
+      <SectionLabel>Theme</SectionLabel>
       <div
         role="radiogroup"
         aria-label="Theme"
@@ -238,6 +340,74 @@ export default function AppearanceTab() {
           );
         })}
       </div>
+
+      <ScaleSlider
+        label="Text size"
+        minLabel="A"
+        maxLabel="A"
+        min={TEXT_SCALE_MIN}
+        max={TEXT_SCALE_MAX}
+        value={textScale}
+        defaultValue={DEFAULT_TEXT_SCALE}
+        onChange={setTextScale}
+        onCommit={saveSettings}
+      >
+        {/* Real roles, not lorem: the sample is built from the same
+            type tokens the app uses, so it scales exactly as the chat
+            will. */}
+        <div className="flex items-baseline gap-2">
+          <span className="font-channel text-sender font-emphasis text-text-primary">sunkhan</span>
+          <span className="font-mono text-meta tabular-nums text-text-muted">Today at 14:32</span>
+        </div>
+        <p className="mt-0.5 text-body leading-[1.55] text-text-primary">
+          The quick brown fox jumps over the lazy dog.
+        </p>
+      </ScaleSlider>
+
+      <ScaleSlider
+        label="List density"
+        minLabel="Compact"
+        maxLabel="Roomy"
+        min={ROW_SCALE_MIN}
+        max={ROW_SCALE_MAX}
+        value={rowScale}
+        defaultValue={DEFAULT_ROW_SCALE}
+        onChange={setRowScale}
+        onCommit={saveSettings}
+      >
+        {/* Mirrors a members-list block — same .list-row primitive and
+            the same container variables the real list publishes. */}
+        <div
+          className="-mx-1"
+          style={
+            {
+              "--list-row-pad-y": "7px",
+              "--list-row-pad-x": "8px",
+              "--list-row-gap": "10px",
+            } as React.CSSProperties
+          }
+        >
+          {SAMPLE_ROWS.map((row) => (
+            <div key={row.name} className="list-row flex items-center rounded-sm">
+              <div className="relative shrink-0">
+                <LetterAvatar username={row.name} size={34} />
+                <span
+                  className={`avatar-dot absolute -bottom-px -right-px rounded-full border-[2.5px] border-bg-light ${
+                    row.online ? "bg-success" : "bg-text-muted"
+                  }`}
+                />
+              </div>
+              <span
+                className={`truncate font-channel text-member ${
+                  row.online ? "font-medium text-text-secondary" : "font-normal text-text-muted"
+                }`}
+              >
+                {row.name}
+              </span>
+            </div>
+          ))}
+        </div>
+      </ScaleSlider>
     </div>
   );
 }

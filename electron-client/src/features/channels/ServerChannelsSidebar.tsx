@@ -191,7 +191,10 @@ export default function ServerChannelsSidebar() {
       </div>
 
       {/* Channel list */}
-      <div className="flex-1 overflow-y-auto px-2 py-2.5">
+      <div
+        className="flex-1 overflow-y-auto px-2 py-2.5"
+        style={{ "--list-row-pad-y": "7px", "--list-row-pad-x": "10px", "--list-row-gap": "8px" } as React.CSSProperties}
+      >
         {textChannels.length > 0 && (
           <div className="mb-4">
             <div
@@ -254,7 +257,7 @@ export default function ServerChannelsSidebar() {
                   <div key={ch.id}>
                     <button
                       onClick={() => handleVoiceChannelClick(ch.id)}
-                      className={`flex w-full items-center gap-2 rounded-sm px-2.5 py-[7px] text-channel transition-colors ${
+                      className={`list-row flex w-full items-center rounded-sm text-channel transition-colors ${
                         connectedChannelId === ch.id && activeView === "voice"
                           ? "bg-accent-soft text-text-bright font-semibold"
                           : connectedChannelId === ch.id
@@ -403,7 +406,7 @@ const TextChannelRow = memo(function TextChannelRow({
       data-drop-target={dropKey}
       data-server-id={serverId}
       data-channel-id={channelId}
-      className={`relative flex w-full items-center gap-2 rounded-sm px-2.5 py-[7px] text-channel transition-all ${
+      className={`list-row relative flex w-full items-center rounded-sm text-channel transition-all ${
         isHoveredDrop
           ? "animate-[dropTargetIn_0.18s_ease_both] bg-accent text-on-accent"
           : isActive

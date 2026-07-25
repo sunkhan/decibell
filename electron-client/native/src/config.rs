@@ -102,6 +102,14 @@ pub struct AppSettings {
     /// default if it doesn't recognise it.
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Appearance scales. 0 (the serde default for a missing field)
+    /// means "never set" and the client falls back to 1.0 — the same
+    /// convention media_audio_volume uses, without the Option wrapper,
+    /// because a scale of exactly zero is never a legal value anyway.
+    #[serde(default)]
+    pub text_scale: f64,
+    #[serde(default)]
+    pub list_density: f64,
 
     /// Crash reporting (Sentry) opt-out. Defaults to `true` (opt-out
     /// posture). Existing 0.6.5 configs without this field deserialize

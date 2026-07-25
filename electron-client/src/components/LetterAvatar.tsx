@@ -31,8 +31,8 @@ export function LetterAvatar({ username, size, className }: Props) {
     <div
       className={`flex shrink-0 items-center justify-center font-semibold ${className ?? ""}`}
       style={{
-        width: size,
-        height: size,
+        width: `calc(${size}px * var(--avatar-scale, 1))`,
+        height: `calc(${size}px * var(--avatar-scale, 1))`,
         borderRadius: AVATAR_RADIUS,
         // Per-theme initial colour: the light palettes keep white on
         // their darker fills, but the token is the contract, not white.
@@ -41,7 +41,7 @@ export function LetterAvatar({ username, size, className }: Props) {
         // a user's letter colour stays consistent across rendering
         // sites and across the load → fail-back transition.
         background: stringToGradient(username),
-        fontSize: Math.max(10, Math.floor(size * 0.42)),
+        fontSize: `calc(${Math.max(10, Math.floor(size * 0.42))}px * var(--avatar-scale, 1))`,
       }}
     >
       {initial}

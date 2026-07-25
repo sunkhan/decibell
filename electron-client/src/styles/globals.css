@@ -129,14 +129,14 @@
 
      One role per line of the design, not one per component — several
      components share `text-section`, and that's the point.           */
-  --text-title: var(--t-fs-title);        /* sidebar + chat headers   */
-  --text-body: var(--t-fs-body);          /* message prose            */
-  --text-sender: var(--t-fs-sender);      /* message author           */
-  --text-channel: var(--t-fs-channel);    /* channel rows             */
-  --text-member: var(--t-fs-member);      /* member + participant rows*/
-  --text-section: var(--t-fs-section);    /* uppercase group labels   */
-  --text-meta: var(--t-fs-meta);          /* timestamps, file meta    */
-  --text-micro: var(--t-fs-micro);        /* counts, transport times  */
+  --text-title: calc(var(--t-fs-title) * var(--ui-text-scale));        /* sidebar + chat headers   */
+  --text-body: calc(var(--t-fs-body) * var(--ui-text-scale));          /* message prose            */
+  --text-sender: calc(var(--t-fs-sender) * var(--ui-text-scale));      /* message author           */
+  --text-channel: calc(var(--t-fs-channel) * var(--ui-text-scale));    /* channel rows             */
+  --text-member: calc(var(--t-fs-member) * var(--ui-text-scale));      /* member + participant rows*/
+  --text-section: calc(var(--t-fs-section) * var(--ui-text-scale));    /* uppercase group labels   */
+  --text-meta: calc(var(--t-fs-meta) * var(--ui-text-scale));          /* timestamps, file meta    */
+  --text-micro: calc(var(--t-fs-micro) * var(--ui-text-scale));        /* counts, transport times  */
 
   --tracking-title: var(--t-ls-title);
   --tracking-section: var(--t-ls-section);
@@ -148,6 +148,14 @@
 }
 
 :root {
+  /* User-tunable scales (Settings → Appearance). Both default to 1 and
+     are overwritten as inline styles on <html> by uiStore.applyUiScale,
+     so they beat everything here. Kept as two knobs on purpose: text
+     size and list density are independent preferences — someone on a
+     4K panel may want larger type with the rows left tight. */
+  --ui-text-scale: 1;
+  --ui-row-scale: 1;
+
   /* Font stacks referenced by the palettes. */
   --font-stack-ui: "Inter Variable", "Inter", "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --font-stack-jetbrains: "JetBrains Mono", ui-monospace, monospace;
@@ -709,6 +717,30 @@
   --t-shadow-float: var(--tc-shadow-float);
   --t-shadow-ring: var(--tc-shadow-ring);
   --t-shadow-glow: var(--tc-shadow-glow);
+}
+
+/* A row in one of the scrollable lists — members, DM conversations,
+   text/voice channels. Owns its own padding and gap so the List
+   density setting has a single place to multiply, and publishes
+   --avatar-scale so the avatars inside grow with the row instead of
+   rattling around in it.
+
+   Base metrics come from the list container (--list-row-*), because
+   the three lists don't share them and a row shouldn't have to
+   restate its own geometry on every render. */
+.list-row {
+  --avatar-scale: var(--ui-row-scale);
+  padding-block: calc(var(--list-row-pad-y, 6px) * var(--ui-row-scale));
+  padding-inline: calc(var(--list-row-pad-x, 10px) * var(--ui-row-scale));
+  gap: calc(var(--list-row-gap, 10px) * var(--ui-row-scale));
+}
+
+/* Presence dot pinned to an avatar's corner. Tracks --avatar-scale so
+   it stays proportional instead of shrinking into the corner as the
+   avatar grows. */
+.avatar-dot {
+  width: calc(var(--avatar-dot-size, 11px) * var(--avatar-scale, 1));
+  height: calc(var(--avatar-dot-size, 11px) * var(--avatar-scale, 1));
 }
 
 /* The video attachment's meta bar reads its size/resume stamp in the

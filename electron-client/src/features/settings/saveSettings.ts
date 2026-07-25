@@ -67,6 +67,8 @@ function doSave(): void {
     stream_audio_bitrate_kbps: streamSettings.audioBitrateKbps,
     stream_enforced_codec: streamSettings.enforcedCodec,
     theme: ui.theme,
+    text_scale: ui.textScale,
+    list_density: ui.rowScale,
     crash_reporting_enabled: ui.crashReportingEnabled,
     crash_reporting_install_id: ui.crashReportingInstallId,
     crash_reporting_consent_shown: ui.crashReportingConsentShown,

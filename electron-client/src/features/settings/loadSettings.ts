@@ -9,7 +9,14 @@
 // into its own module here so main.tsx stays terse.
 
 import { invoke } from "../../lib/ipc";
-import { useUiStore, THEME_IDS, DEFAULT_THEME, type ThemeId } from "../../stores/uiStore";
+import {
+  useUiStore,
+  THEME_IDS,
+  DEFAULT_THEME,
+  DEFAULT_TEXT_SCALE,
+  DEFAULT_ROW_SCALE,
+  type ThemeId,
+} from "../../stores/uiStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
@@ -47,6 +54,8 @@ interface LoadedConfigShape {
     stream_audio_bitrate_kbps: number | null;
     stream_enforced_codec: number | null;
     theme: string;
+    text_scale: number;
+    list_density: number;
     crash_reporting_enabled: boolean;
     crash_reporting_install_id: string | null;
     crash_reporting_consent_shown: boolean;
@@ -74,6 +83,11 @@ export async function loadSettings(): Promise<void> {
     ? (settings.theme as ThemeId)
     : DEFAULT_THEME;
   useUiStore.getState().setTheme(savedTheme);
+  // 0 = field absent from an older config; the setters clamp anything
+  // out of range, so a hand-edited 9000 lands on the max rather than
+  // rendering the app at nine thousand percent.
+  useUiStore.getState().setTextScale(settings.text_scale || DEFAULT_TEXT_SCALE);
+  useUiStore.getState().setRowScale(settings.list_density || DEFAULT_ROW_SCALE);
 
   // Privacy
   useDmStore.getState().setFriendsOnlyDms(settings.friends_only_dms);

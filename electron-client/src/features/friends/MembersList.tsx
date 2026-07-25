@@ -23,7 +23,7 @@ export default function MembersList() {
   const renderRow = (username: string, isOnline: boolean) => (
     <div
       key={username}
-      className="group flex cursor-pointer items-center gap-2.5 rounded-sm px-2 py-[7px] transition-colors hover:bg-surface-hover"
+      className="list-row group flex cursor-pointer items-center rounded-sm transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(username, { x: rect.right + 8, y: rect.top }, activeServerId);
@@ -36,7 +36,7 @@ export default function MembersList() {
       <div className={`relative shrink-0 ${isOnline ? "" : "opacity-[0.62]"}`}>
         <UserAvatar username={username} size={34} />
         <div
-          className={`absolute -bottom-px -right-px h-[11px] w-[11px] rounded-full border-[2.5px] border-bg-tertiary ${
+          className={`absolute -bottom-px -right-px avatar-dot rounded-full border-[2.5px] border-bg-tertiary ${
             isOnline ? "bg-success" : "bg-text-muted"
           }`}
         />
@@ -55,7 +55,10 @@ export default function MembersList() {
 
   return (
     <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-dark">
-      <div className="flex-1 overflow-y-auto px-3 py-1">
+      <div
+        className="flex-1 overflow-y-auto px-3 py-1"
+        style={{ "--list-row-pad-y": "7px", "--list-row-pad-x": "8px", "--list-row-gap": "10px" } as React.CSSProperties}
+      >
         <div className="px-1 pt-3 pb-1">
           <h3 className="font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted">
             Online — {online.length}
