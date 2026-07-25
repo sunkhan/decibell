@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   useUiStore,
   TEXT_SCALE_MIN,
@@ -11,6 +11,9 @@ import {
 } from "../../../stores/uiStore";
 import { saveSettings } from "../saveSettings";
 import { LetterAvatar } from "../../../components/LetterAvatar";
+import { UserAvatar } from "../../../components/UserAvatar";
+import { useAuthStore } from "../../../stores/authStore";
+import { stringToColor } from "../../../utils/colors";
 
 /// Enough of each palette to draw its preview swatch. These duplicate
 /// the authoritative values in globals.css on purpose: a swatch has to
@@ -129,6 +132,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 /// same way the theme cards repaint the modal.
 function ScaleSlider({
   label,
+  readout,
   minLabel,
   maxLabel,
   min,
@@ -140,8 +144,12 @@ function ScaleSlider({
   children,
 }: {
   label: string;
-  minLabel: string;
-  maxLabel: string;
+  /// Rendered verbatim in the top-right. The two sliders measure
+  /// different things — one is a real font size, the other a density
+  /// multiplier — so neither owns a unit the component can assume.
+  readout: string;
+  minLabel: React.ReactNode;
+  maxLabel: React.ReactNode;
   min: number;
   max: number;
   value: number;
@@ -159,7 +167,7 @@ function ScaleSlider({
         </div>
         <div className="flex items-center gap-2">
           <span className="font-mono text-[10.5px] tabular-nums text-text-muted">
-            {Math.round(value * 100)}%
+            {readout}
           </span>
           <button
             type="button"
@@ -175,7 +183,7 @@ function ScaleSlider({
         </div>
       </div>
       <div className="flex items-center gap-3">
-        <span className="shrink-0 text-[10.5px] text-text-muted">{minLabel}</span>
+        <span className="w-12 shrink-0 text-[10.5px] text-text-muted">{minLabel}</span>
         <input
           type="range"
           aria-label={label}
@@ -192,7 +200,7 @@ function ScaleSlider({
           onTouchEnd={onCommit}
           className="h-[4px] flex-1 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-light [&::-webkit-slider-thumb]:shadow-[0_0_6px_var(--color-accent-mid)]"
         />
-        <span className="shrink-0 text-[10.5px] text-text-muted">{maxLabel}</span>
+        <span className="w-12 shrink-0 text-right text-[10.5px] text-text-muted">{maxLabel}</span>
       </div>
       <div className="mt-3 overflow-hidden rounded-md border border-border-divider bg-bg-light px-3 py-2.5">
         {children}
@@ -208,6 +216,21 @@ export default function AppearanceTab() {
   const rowScale = useUiStore((s) => s.rowScale);
   const setTextScale = useUiStore((s) => s.setTextScale);
   const setRowScale = useUiStore((s) => s.setRowScale);
+  const username = useAuthStore((s) => s.username);
+
+  // The slider is a multiplier, but users think in points, so the
+  // readout is the message body's actual rendered size. Measuring the
+  // sample beats deriving it: --text-body is per-theme (13.5px under
+  // graphite, 13px under console) and wrapped in a calc(), so reading
+  // the element is the only way to get a number that's true for the
+  // active theme without restating the scale here.
+  const sampleRef = useRef<HTMLParagraphElement | null>(null);
+  const [bodyPx, setBodyPx] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!sampleRef.current) return;
+    const px = parseFloat(getComputedStyle(sampleRef.current).fontSize);
+    setBodyPx(Number.isFinite(px) ? Math.round(px * 10) / 10 : null);
+  }, [textScale, theme]);
 
   const selectedIndex = Math.max(
     0,
@@ -343,8 +366,9 @@ export default function AppearanceTab() {
 
       <ScaleSlider
         label="Text size"
-        minLabel="A"
-        maxLabel="A"
+        readout={bodyPx === null ? "—" : `${bodyPx}px`}
+        minLabel={<span className="text-[10px]">A</span>}
+        maxLabel={<span className="text-[15px]">A</span>}
         min={TEXT_SCALE_MIN}
         max={TEXT_SCALE_MAX}
         value={textScale}
@@ -352,20 +376,42 @@ export default function AppearanceTab() {
         onChange={setTextScale}
         onCommit={saveSettings}
       >
-        {/* Real roles, not lorem: the sample is built from the same
-            type tokens the app uses, so it scales exactly as the chat
-            will. */}
-        <div className="flex items-baseline gap-2">
-          <span className="font-channel text-sender font-emphasis text-text-primary">sunkhan</span>
-          <span className="font-mono text-meta tabular-nums text-text-muted">Today at 14:32</span>
+        {/* A real message row, down to the avatar and the hashed name
+            colour — same roles, same tokens, same layout as
+            MessageBubble, so the sample scales exactly as the chat
+            will. Signed-in user's own identity, because a preview of
+            someone else's account reads as a bug. */}
+        <div className="flex gap-3">
+          {username ? (
+            <UserAvatar username={username} size={38} />
+          ) : (
+            <LetterAvatar username="?" size={38} />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline gap-2">
+              <span
+                className="font-channel text-sender font-emphasis"
+                style={{ color: stringToColor(username ?? "?") }}
+              >
+                {username ?? "You"}
+              </span>
+              <span className="font-mono text-meta font-normal tabular-nums text-text-muted">
+                Today at 14:32
+              </span>
+            </div>
+            <p
+              ref={sampleRef}
+              className="mt-0.5 text-body leading-[1.55] text-text-primary"
+            >
+              The quick brown fox jumps over the lazy dog.
+            </p>
+          </div>
         </div>
-        <p className="mt-0.5 text-body leading-[1.55] text-text-primary">
-          The quick brown fox jumps over the lazy dog.
-        </p>
       </ScaleSlider>
 
       <ScaleSlider
         label="List density"
+        readout={`${Math.round(rowScale * 100)}%`}
         minLabel="Compact"
         maxLabel="Roomy"
         min={ROW_SCALE_MIN}
