@@ -43,6 +43,8 @@
     return 0;
   }
   var root = document.documentElement;
+  // Left unset when nothing is stored, so globals.css's
+  // --ui-text-size-default supplies the shipped default.
   var textSize = num("decibell.textSizePx", 11, 17);
   if (textSize > 0) root.style.setProperty("--ui-text-size-n", String(textSize));
   root.style.setProperty("--ui-row-scale", String(num("decibell.rowScale", 0.85, 1.3) || 1));

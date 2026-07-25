@@ -159,14 +159,19 @@
      size and list density are independent preferences — someone on a
      4K panel may want larger type with the rows left tight. */
   /* The user picks an absolute body size in px; --ui-text-size-n is
-     that number, unitless, or unset for "whatever this theme's own
-     body size is". Everything else in the type scale is a multiple of
-     it, so the scale is the ratio between what they asked for and the
-     theme's natural body size — 13.5 under graphite, 13 under console.
-     Doing the division here rather than in JS means a theme switch
-     re-derives it for free and the pre-mount script doesn't need to
-     know either number. */
-  --ui-text-scale: calc(var(--ui-text-size-n, var(--t-fs-body-n)) / var(--t-fs-body-n));
+     that number, unitless. Everything else in the type scale is a
+     multiple of it, so the scale is the ratio between what they asked
+     for and the theme's natural body size — 13.5 under graphite, 13
+     under console. Doing the division here rather than in JS means a
+     theme switch re-derives it for free and the pre-mount script
+     doesn't need to know either number.
+
+     The fallback is the shipped default, so a first run with nothing
+     in localStorage paints at the right size instead of flashing the
+     palette's own body size. Keep it in step with
+     DEFAULT_TEXT_SIZE_PX in uiStore.ts. */
+  --ui-text-size-default: 14.5;
+  --ui-text-scale: calc(var(--ui-text-size-n, var(--ui-text-size-default)) / var(--t-fs-body-n));
   --ui-row-scale: 1;
 
   /* Font stacks referenced by the palettes. */

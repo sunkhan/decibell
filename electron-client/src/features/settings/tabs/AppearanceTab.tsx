@@ -380,9 +380,7 @@ export default function AppearanceTab() {
         min={TEXT_SIZE_MIN_PX}
         max={TEXT_SIZE_MAX_PX}
         step={TEXT_SIZE_STEP_PX}
-        // 0 means "theme default", which has no slider position of its
-        // own — park the thumb on whatever that theme actually renders.
-        value={textSizePx || bodyPx || TEXT_SIZE_MIN_PX}
+        value={textSizePx}
         rawValue={textSizePx}
         defaultValue={DEFAULT_TEXT_SIZE_PX}
         onChange={setTextSizePx}

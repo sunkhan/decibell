@@ -33,15 +33,15 @@ export const THEME_STORAGE_KEY = "decibell.theme";
 /// metrics in globals.css, so a change is one style write on <html>
 /// rather than a re-render.
 /// Text size is an absolute px value for the message body, stepped on
-/// a half-pixel grid so the readout never lands on 14.2px. 0 means
-/// "untouched" — the theme's own body size (13.5px graphite, 13px
-/// console), which is why the default isn't simply 13.5: forcing that
-/// number on `console*` would override a size its designer chose
-/// deliberately for a wider face.
+/// a half-pixel grid so the readout never lands on 14.2px. It is the
+/// same number in every theme — the rest of each palette's scale moves
+/// with it — so `console*` renders its body at 14.5px too, with its
+/// own ratios preserved around it, rather than the 13px it would use
+/// unscaled. Mirrored by --ui-text-size-default in globals.css.
 export const TEXT_SIZE_MIN_PX = 11;
 export const TEXT_SIZE_MAX_PX = 17;
 export const TEXT_SIZE_STEP_PX = 0.5;
-export const DEFAULT_TEXT_SIZE_PX = 0;
+export const DEFAULT_TEXT_SIZE_PX = 14.5;
 export const ROW_SCALE_MIN = 0.85;
 export const ROW_SCALE_MAX = 1.3;
 export const DEFAULT_ROW_SCALE = 1;
@@ -56,8 +56,8 @@ export function clampScale(value: number, min: number, max: number, fallback: nu
   return Math.round(Math.min(max, Math.max(min, value)) * 100) / 100;
 }
 
-/// 0 passes through untouched — it's the "use the theme's own size"
-/// sentinel, not a value to clamp up into range.
+/// 0 (and anything else out of range) falls back to the default —
+/// it's what serde writes for a config predating the field.
 export function clampTextSizePx(value: number): number {
   if (!Number.isFinite(value) || value <= 0) return DEFAULT_TEXT_SIZE_PX;
   const snapped = Math.round(value / TEXT_SIZE_STEP_PX) * TEXT_SIZE_STEP_PX;
@@ -66,14 +66,7 @@ export function clampTextSizePx(value: number): number {
 
 export function applyUiScale(textSizePx: number, rowScale: number): void {
   const root = document.documentElement;
-  // Unset rather than 0: globals.css falls back to the theme's own
-  // body size, so "default" follows the palette instead of pinning
-  // every theme to one number.
-  if (textSizePx > 0) {
-    root.style.setProperty("--ui-text-size-n", String(textSizePx));
-  } else {
-    root.style.removeProperty("--ui-text-size-n");
-  }
+  root.style.setProperty("--ui-text-size-n", String(textSizePx));
   root.style.setProperty("--ui-row-scale", String(rowScale));
   try {
     localStorage.setItem(TEXT_SIZE_STORAGE_KEY, String(textSizePx));
