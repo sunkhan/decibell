@@ -427,10 +427,16 @@ function VideoItem({
       style={{ width: box.width }}
       onContextMenu={onContextMenu}
     >
+      {/* w-full, not width: box.width — the card is border-box, so its
+          content area is box.width minus the 1px border on each side.
+          Pinning the media to box.width pushed it 2px past the card's
+          right edge and left the meta bar visibly short of the video
+          it belongs to. The card keeps the full box.width footprint,
+          same as a standalone image. */}
       <div
         ref={placeholderRef}
-        className="overflow-hidden rounded-t-lg bg-black"
-        style={{ width: box.width, height: box.height }}
+        className="w-full overflow-hidden rounded-t-lg bg-black"
+        style={{ height: box.height }}
       >
         {surface}
       </div>
