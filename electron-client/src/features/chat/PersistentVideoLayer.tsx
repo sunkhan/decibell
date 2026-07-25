@@ -661,10 +661,10 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
             <span className="select-none text-[11px] tabular-nums text-text-secondary">
               {fmt(time)} / {fmt(duration)}
             </span>
-            <span className="ml-auto truncate text-[11px] text-text-muted" title={active.filename}>
-              {active.filename}
-            </span>
-            <div className="flex items-center gap-1">
+            {/* No filename here: the attachment card carries it on its
+                own meta bar directly below the player, so repeating it
+                only ate the width the controls could use. */}
+            <div className="ml-auto flex items-center gap-1">
               <PlayerIconButton title={muted ? "Unmute" : "Mute"} onClick={toggleMute}>
                 {muted ? (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
