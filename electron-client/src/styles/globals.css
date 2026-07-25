@@ -138,6 +138,11 @@
   --text-meta: calc(var(--t-fs-meta) * var(--ui-text-scale));          /* timestamps, file meta    */
   --text-micro: calc(var(--t-fs-micro) * var(--ui-text-scale));        /* counts, transport times  */
 
+  /* Message-body leading. The design bundle asks for 1.55 (1.5 under
+     console); this runs tighter, closer to the ~1.375 chat clients
+     converge on. One token so it stays a single dial. */
+  --leading-body: var(--t-lh-body);
+
   --tracking-title: var(--t-ls-title);
   --tracking-section: var(--t-ls-section);
   --tracking-wordmark: var(--t-ls-wordmark);
@@ -267,6 +272,7 @@
   /* Type scale — graphite (Inter chrome, IBM Plex Mono metadata). */
   --t-fs-title: 14px;
   --t-fs-body-n: 13.5;
+  --t-lh-body: 1.4;
   --t-fs-body: 13.5px;
   --t-fs-sender: 13.5px;
   --t-fs-channel: 13.5px;
@@ -361,6 +367,7 @@
   /* Type scale — graphite (Inter chrome, IBM Plex Mono metadata). */
   --t-fs-title: 14px;
   --t-fs-body-n: 13.5;
+  --t-lh-body: 1.4;
   --t-fs-body: 13.5px;
   --t-fs-sender: 13.5px;
   --t-fs-channel: 13.5px;
@@ -458,6 +465,7 @@
      the uppercase labels open up to hold the same rhythm. */
   --t-fs-title: 13px;
   --t-fs-body-n: 13;
+  --t-lh-body: 1.4;
   --t-fs-body: 13px;
   --t-fs-sender: 12.5px;
   --t-fs-channel: 12.5px;
@@ -554,6 +562,7 @@
      the uppercase labels open up to hold the same rhythm. */
   --t-fs-title: 13px;
   --t-fs-body-n: 13;
+  --t-lh-body: 1.4;
   --t-fs-body: 13px;
   --t-fs-sender: 12.5px;
   --t-fs-channel: 12.5px;
@@ -783,9 +792,13 @@
     @apply bg-bg-primary text-text-primary font-sans antialiased;
     margin: 0;
     overflow: hidden;
-    /* DS v1 weight discipline: body 450, labels 500, emphasis 600.
-       The variable font makes 450 free. */
-    font-weight: 450;
+    /* DS v1 weight discipline was body 450, labels 500, emphasis 600.
+       Body drops to 400: at 450 Inter's already-generous caps and
+       advances read heavier than the chat clients people compare
+       against, and the design bundle specifies 400 for message bodies
+       anyway. Labels and emphasis are unchanged — they set their own
+       weight. */
+    font-weight: 400;
     letter-spacing: -0.01em;
     /* Inter typographic alternates: cv11 (single-storey a), ss01
        (open digits), ss03 (alt curly braces). Matches tauri-client

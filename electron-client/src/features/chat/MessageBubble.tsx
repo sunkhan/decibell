@@ -120,7 +120,7 @@ function MessageBubble({
         </div>
         <div className="select-text min-w-0 flex-1">
           {message.content && (
-            <p className="break-all text-body leading-snug text-text-primary [overflow-wrap:anywhere]">
+            <p className="break-all text-body leading-body text-text-primary [overflow-wrap:anywhere]">
               <MessageText content={message.content} />
             </p>
           )}
@@ -185,7 +185,7 @@ function MessageBubble({
           </span>
         </div>
         {message.content && (
-          <p className="mt-0.5 break-all text-body leading-[1.55] text-text-primary [overflow-wrap:anywhere]">
+          <p className="mt-0.5 break-all text-body leading-body text-text-primary [overflow-wrap:anywhere]">
             <MessageText content={message.content} />
           </p>
         )}

@@ -413,7 +413,7 @@ export default function AppearanceTab() {
             </div>
             <p
               ref={sampleRef}
-              className="mt-0.5 text-body leading-[1.55] text-text-primary"
+              className="mt-0.5 text-body leading-body text-text-primary"
             >
               The quick brown fox jumps over the lazy dog.
             </p>
