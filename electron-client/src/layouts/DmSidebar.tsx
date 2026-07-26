@@ -1,5 +1,5 @@
 import { useUiStore } from "../stores/uiStore";
-import { useDmStore } from "../stores/dmStore";
+import { useDmStore, conversationActivityTime } from "../stores/dmStore";
 import { useFriendsStore } from "../stores/friendsStore";
 import { useChatStore } from "../stores/chatStore";
 import { UserAvatar } from "../components/UserAvatar";
@@ -20,7 +20,7 @@ export default function DmSidebar() {
   const onlineUsers = useChatStore((s) => s.onlineUsers);
 
   const sortedConversations = Object.values(conversations).sort(
-    (a, b) => b.lastMessageTime - a.lastMessageTime,
+    (a, b) => conversationActivityTime(b) - conversationActivityTime(a),
   );
 
   const handleDmClick = (username: string) => {

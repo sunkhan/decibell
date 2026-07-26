@@ -164,6 +164,9 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
     openContextMenu(username, { x: Math.max(8, r.right - 220), y: r.bottom + 6 });
   };
 
+  // Only an accepted friend has a conversation to open.
+  const canMessage = status === "online" || status === "offline";
+
   let actions: React.ReactNode;
   // Requests keep their buttons visible: something awaiting a decision
   // shouldn't be hidden behind a hover.
@@ -199,6 +202,14 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
       className="list-row group flex cursor-pointer items-center rounded-md transition-colors hover:bg-surface-hover focus-visible:shadow-ring focus-visible:outline-none"
       tabIndex={0}
       onClick={(e) => {
+        // A friend row is a shortcut into the conversation — same as the
+        // Message button, which stays as the visible affordance. Rows
+        // you can't message (a request either way, or someone blocked)
+        // fall back to the profile popup, since there's nothing to open.
+        if (canMessage) {
+          openMessage();
+          return;
+        }
         const r = e.currentTarget.getBoundingClientRect();
         openProfilePopup(username, { x: r.left + 40, y: r.top });
       }}
