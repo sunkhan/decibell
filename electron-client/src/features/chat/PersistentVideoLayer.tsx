@@ -96,6 +96,12 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  // Mirrors the `fullscreen` state declared further down, so the scroll
+  // handler — which is set up before it and closes over this effect's
+  // scope — can bail out without re-subscribing on every toggle. In
+  // fullscreen the wrapper is React-owned (inset:0) and must not be
+  // repositioned from a scroll.
+  const fullscreenRef = useRef(false);
 
   const [pos, setPos] = useState<{ left: number; top: number; width: number; height: number } | null>(
     null,
@@ -132,32 +138,70 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
       scrollParent = scrollParent.parentElement;
     }
 
-    const update = () => {
-      const r = hostElement.getBoundingClientRect();
-      setPos({ left: r.left, top: r.top, width: r.width, height: r.height });
-      if (scrollParent) {
-        const sr = scrollParent.getBoundingClientRect();
-        setClipRect({ top: sr.top, bottom: sr.bottom });
+    // Write geometry straight to the node. Going through React state
+    // for this cost a full render per scroll frame *and* landed the new
+    // position one frame late, so the video visibly slid against the
+    // list while scrolling. Chromium dispatches scroll before paint, so
+    // a synchronous style write here lands in the same frame.
+    //
+    // Deliberately does not touch anything else on the wrapper — the
+    // opacity/held-geometry dance below is load-bearing for the media
+    // pipeline (see the comment above) and stays React-owned.
+    const paint = (r: DOMRect, sr: DOMRect | null) => {
+      const el = wrapperRef.current;
+      if (!el || fullscreenRef.current) return;
+      el.style.left = `${r.left}px`;
+      el.style.top = `${r.top}px`;
+      el.style.width = `${r.width}px`;
+      el.style.height = `${r.height}px`;
+      if (sr) {
+        const topInset = Math.max(0, sr.top - r.top);
+        const bottomInset = Math.max(0, r.top + r.height - sr.bottom);
+        el.style.clipPath =
+          topInset > 0 || bottomInset > 0
+            ? `inset(${topInset}px 0 ${bottomInset}px 0)`
+            : "";
       } else {
-        setClipRect(null);
+        el.style.clipPath = "";
       }
+    };
+
+    const commit = (r: DOMRect, sr: DOMRect | null) => {
+      setPos({ left: r.left, top: r.top, width: r.width, height: r.height });
+      setClipRect(sr ? { top: sr.top, bottom: sr.bottom } : null);
+    };
+
+    const measure = (): [DOMRect, DOMRect | null] => [
+      hostElement.getBoundingClientRect(),
+      scrollParent ? scrollParent.getBoundingClientRect() : null,
+    ];
+
+    const update = () => {
+      const [r, sr] = measure();
+      paint(r, sr);
+      commit(r, sr);
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(hostElement);
     if (scrollParent) ro.observe(scrollParent);
     let frame = 0;
-    const onScrollOrResize = () => {
+    const onScroll = () => {
+      const [r, sr] = measure();
+      // Paint now so there is no lag; let React converge on the next
+      // frame with the same numbers, so a render landing mid-scroll
+      // can't reinstate a stale position.
+      paint(r, sr);
       cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(update);
+      frame = requestAnimationFrame(() => commit(r, sr));
     };
-    window.addEventListener("scroll", onScrollOrResize, true);
-    window.addEventListener("resize", onScrollOrResize);
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("resize", update);
     return () => {
       ro.disconnect();
       cancelAnimationFrame(frame);
-      window.removeEventListener("scroll", onScrollOrResize, true);
-      window.removeEventListener("resize", onScrollOrResize);
+      window.removeEventListener("scroll", onScroll, { capture: true });
+      window.removeEventListener("resize", update);
     };
   }, [hostElement]);
 
@@ -171,6 +215,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
   const [scrubbing, setScrubbing] = useState(false);
   const [hover, setHover] = useState(false);
   const [fullscreen, setFullscreenState] = useState(false);
+  fullscreenRef.current = fullscreen;
   const ownsWindowFullscreen = useRef(false);
   const [idle, setIdle] = useState(false);
   const idleTimerRef = useRef<number | null>(null);

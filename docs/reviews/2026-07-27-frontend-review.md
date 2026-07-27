@@ -1,5 +1,12 @@
 # Frontend review — chat scroll jank & general audit (2026-07-27)
 
+> **Status (2026-07-27):** B1–B7 fixed, O1/O3/O4 done. **O2 investigated
+> and deliberately closed** — measured payoff is ~26 ms of cold start and
+> every way of collecting it costs more than it returns; see the item for
+> numbers so it doesn't get re-opened. B6's fix is sound and builds clean
+> but was **not verified against a real playing video** — worth a manual
+> check while scrolling a channel with a video mid-playback.
+
 Review of `electron-client/src` (renderer only). Started from a reported
 symptom — *"small jumps when attachments scroll into view, and they
 sometimes glitch in for a fraction of a second"* — then widened to a
@@ -19,7 +26,7 @@ Follows the numbering convention of `2026-06-11-client-code-review.md`:
 Two separate causes, which is why it presents as two different
 artifacts (a jump *and* a flash).
 
-### B1 — History pagination has no scroll anchor `⚠ highest impact`
+### B1 — History pagination has no scroll anchor `✓ FIXED`
 
 `ChatPanel.tsx:494` and `DmChatPanel.tsx:389` both render `<Virtuoso>`
 without `firstItemIndex`, while `startReached` prepends a page of older
@@ -35,7 +42,7 @@ histories jump furthest because their rows are tallest.
 **Fix:** track a `firstItemIndex` that decrements by the number of
 prepended messages, and pass it to both panels.
 
-### B2 — No `computeItemKey`, so prepending remounts every visible row
+### B2 — No `computeItemKey`, so prepending remounts every visible row `✓ FIXED`
 
 Neither panel passes `computeItemKey`, so Virtuoso falls back to index
 keys. Combined with B1, a prepend changes the key of every mounted row,
@@ -52,7 +59,7 @@ carry for exactly this purpose (`types/index.ts:225,236`), so the pair
 covers both states; the index tail is only a guard against a real
 message arriving with neither.
 
-### B3 — `loading="lazy"` inside a virtualized list `⚠ this is the flash`
+### B3 — `loading="lazy"` inside a virtualized list `✓ FIXED`
 
 `AttachmentList.tsx:251`. Virtuoso only mounts rows that are already at
 or near the viewport, so by the time the `<img>` exists it is about to
@@ -65,7 +72,7 @@ doing, and it costs a visible pop.
 
 **Fix:** drop `loading="lazy"`, add `decoding="async"`. Pairs with B4.
 
-### B4 — Rows mount exactly at the viewport edge
+### B4 — Rows mount exactly at the viewport edge `✓ FIXED`
 
 No `increaseViewportBy` on either `<Virtuoso>`. Any post-mount settle —
 image decode, poster frame arriving, an attachment resizing — happens
@@ -75,7 +82,7 @@ and scrolls in already correct.
 **Fix:** `increaseViewportBy={{ top: 600, bottom: 600 }}` (roughly two
 tall rows).
 
-### B5 — Every channel's first paint sizes attachments twice
+### B5 — Every channel's first paint sizes attachments twice `✓ FIXED`
 
 `chatStore.chatViewSize` starts `null` (`chatStore.ts:270`) and is only
 seeded inside a `useEffect` (`ChatPanel.tsx:73-91`), which runs *after*
@@ -91,7 +98,7 @@ Visible on channel open and on every channel switch — the `key=` on
 container the parent already knows the width of, so the first render is
 the correct one.
 
-### B6 — The persistent video trails the list while scrolling
+### B6 — The persistent video trails the list while scrolling `✓ FIXED (unverified)`
 
 `PersistentVideoLayer.tsx:149-155` repositions its `position: fixed`
 `<video>` from a scroll listener via `requestAnimationFrame`. The
@@ -111,7 +118,7 @@ duration of a fling.
 
 ## Other bugs
 
-### B7 — `listen()` unsubscribe race in `AppLayout`
+### B7 — `listen()` unsubscribe race in `AppLayout` `✓ FIXED`
 
 `AppLayout.tsx:41-53`:
 
@@ -133,7 +140,7 @@ site that got it wrong.
 
 ## Optimizations
 
-### O1 — One global counter re-renders every mounted video
+### O1 — One global counter re-renders every mounted video `✓ FIXED`
 
 `AttachmentList.tsx:323`: every `VideoItem` subscribes to
 `useVideoCacheVersionStore((s) => s.version)`, a single global integer
@@ -143,18 +150,52 @@ poster re-renders every video attachment on screen.
 **Fix:** key the subscription by attachment id, or move the poster into
 the per-attachment cache entry the component already reads.
 
-### O2 — Renderer ships as one 9.4 MB chunk
+### O2 — Renderer ships as one 9.4 MB chunk `✗ NOT WORTH FIXING`
 
-`index-*.js` is **9,366 kB** (1,811 kB gzip) and Vite warns on every
-build. Carried over from the June review as O6, still open. Emoji data
-(`@emoji-mart/data`, the Twemoji SVG map) and `lucide-react` are the
-obvious split candidates — none of it is needed for first paint or the
-login screen.
+**Investigated 2026-07-27 and closed deliberately — do not re-open
+without new numbers.**
 
-**Fix:** `manualChunks` for the emoji payload, dynamic `import()` for
-the picker and the settings modal.
+`index-*.js` is 9,366 kB (1,811 kB gzip), and `src/components/emoji/
+twemoji-data.json` is **8.02 MB of it** — emitted as raw JS string
+literals, not `JSON.parse`, and statically imported by both
+`Twemoji.tsx` and `RichInput.tsx`, so it is fully evaluated at boot.
 
-### O3 — Two store reads per attachment for one value
+That sounds severe. It isn't. Measured by `require()`ing an equivalent
+module in **fresh processes** (the earlier `JSON.parse` and `vm.Script`
+timings were both misleading — V8 defers work in the latter):
+
+| | cold load |
+| --- | --- |
+| empty module | 0.2–0.3 ms |
+| the emoji payload | **25.5 / 27.5 / 26.2 ms** |
+
+So the entire prize is **~26 ms of cold start**, plus ~20 MB of heap.
+
+There is no cheap way to collect it:
+
+- **Shrinking the payload doesn't work.** It's already tight — zero
+  whitespace to collapse, and hoisting the `<svg …>` opening tag that
+  97% of entries share saves 0.21 MB of 7.77 MB. The rest is genuine
+  path data.
+- **`manualChunks` alone buys nothing.** A separate chunk that is still
+  statically imported still parses at startup. It only helps caching,
+  which is irrelevant behind `file://`.
+- **Lazy-loading costs more than it saves.** The map is consumed
+  synchronously during render, so deferring it means falling back to
+  native glyphs until it lands — a visible emoji flash on cold start
+  for anyone with auto-login, which is precisely the class of artifact
+  B3 was raised to remove. Trading a guaranteed flash for 26 ms nobody
+  perceives is a bad deal.
+
+Also worth noting the 8 MB is a *deliberate* trade documented at the
+top of `Twemoji.tsx`: it replaced `<img src=…>` emoji, which retained
+50–80 MB of Chromium image cache. Undoing it to save 26 ms would cost
+far more memory than it returns.
+
+**Verdict:** leave it. Silence the Vite warning with
+`build.chunkSizeWarningLimit` if the noise bothers anyone.
+
+### O3 — Two store reads per attachment for one value `✓ FIXED`
 
 `AttachmentList.tsx:182-183` and `277-278` each subscribe to
 `chatViewSize.width` and `.height` separately, so every attachment holds
@@ -165,7 +206,7 @@ sub-pixel changes during a window drag.
 **Fix:** one selector returning a stable memoized pair, and round the
 observed size before storing it so sub-pixel noise doesn't publish.
 
-### O4 — `useStreamThumbnails` re-subscribes on stream count changes
+### O4 — `useStreamThumbnails` re-subscribes on stream count changes `✓ FIXED`
 
 `useStreamThumbnails.ts:51` deps on `[activeStreams.length]`, tearing
 down and re-establishing the IPC subscription whenever a stream starts
