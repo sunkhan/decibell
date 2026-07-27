@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useVirtuosoPrepend } from "./useVirtuosoPrepend";
+import { prefetchAround } from "./attachmentPrefetch";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
 import { useChatStore } from "../../stores/chatStore";
@@ -533,7 +534,23 @@ export default function ChatPanel() {
             increaseViewportBy={{ top: 600, bottom: 600 }}
             startReached={handleStartReached}
             rangeChanged={(range) => {
-              topIndexRef.current = range.startIndex;
+              // Absolute, like itemContent's — rebase before it is used
+              // as a position in `messages`. Storing it raw meant the
+              // saved scroll position was ~1e6 and the restore clamp
+              // rejected it, so every channel switch landed at the
+              // bottom.
+              const start = range.startIndex - firstItemIndex;
+              const end = range.endIndex - firstItemIndex;
+              topIndexRef.current = start;
+              // Warm the previews either side of the window so a row's
+              // image is already cached by the time it mounts.
+              prefetchAround(
+                messages,
+                start,
+                end,
+                activeServerId,
+                useChatStore.getState().chatViewSize,
+              );
             }}
             atBottomStateChange={(atBottom) => {
               atBottomRef.current = atBottom;

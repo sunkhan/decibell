@@ -15,6 +15,7 @@ import {
   GRID_MAX_WIDTH_PX,
   GRID_MIN_WIDTH_PX,
 } from "./attachmentSizing";
+import { previewUrlFor } from "./attachmentPrefetch";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { useActiveAudioStore } from "../../stores/activeAudioStore";
@@ -186,19 +187,10 @@ function ImageItem({
 
   const box = reserveBox(attachment, chatViewSize);
 
-  // Server-thumbnail picker: choose the right pre-generated size based
-  // on the cell's display long edge × DPR. Cheap, re-evaluated each
-  // render. Slight oversizing is preferable to undersizing.
-  const targetPx =
-    box.width > 0
-      ? Math.round(Math.max(box.width, box.height) * (window.devicePixelRatio || 1))
-      : 640;
-  const pickedThumb = pickThumbnailSize(attachment.thumbnailSizesMask, targetPx);
-  const thumbUrl =
-    pickedThumb !== null && attachment.thumbnailSizeBytes > 0
-      ? buildAttachmentUrl(serverId, attachment, { thumb: true, size: pickedThumb })
-      : null;
-  const previewSrc: string = thumbUrl ?? fullUrl;
+  // Same helper the prefetcher uses, so the URL warmed ahead of the
+  // viewport is byte-for-byte the one requested here — a mismatch would
+  // double the requests and still miss the cache.
+  const previewSrc: string = previewUrlFor(attachment, serverId, chatViewSize) ?? fullUrl;
 
   // Grid mode: parent owns the size (h-full w-full), cards round at
   // the grid container, cropped with object-cover to align with

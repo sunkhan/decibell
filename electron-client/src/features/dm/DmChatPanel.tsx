@@ -415,7 +415,8 @@ export default function DmChatPanel() {
           increaseViewportBy={{ top: 600, bottom: 600 }}
           startReached={handleStartReached}
           rangeChanged={(range) => {
-            topIndexRef.current = range.startIndex;
+            // Absolute — see ChatPanel.
+            topIndexRef.current = range.startIndex - firstItemIndex;
           }}
           atBottomStateChange={(atBottom) => {
             atBottomRef.current = atBottom;

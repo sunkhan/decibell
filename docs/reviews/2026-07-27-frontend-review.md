@@ -8,7 +8,7 @@
 > Attachments were also still flashing after B3/B4 — the remaining cause
 > was main-process, not renderer: **B9**.
 >
-> **Status (2026-07-27):** B1–B9 fixed, O1/O3/O4 done. **O2 investigated
+> **Status (2026-07-27):** B1–B10 fixed, O1/O3/O4 done. **O2 investigated
 > and deliberately closed** — measured payoff is ~26 ms of cold start and
 > every way of collecting it costs more than it returns; see the item for
 > numbers so it doesn't get re-opened. B6's fix is sound and builds clean
@@ -164,16 +164,40 @@ the same sender each rendered a full avatar row.
 against a seeded set: same sender +30s and +2m group, different sender
 doesn't, same sender +12m doesn't, `isLast` true only on the last row.
 
+`rangeChanged` has the same basis — verified, it reports
+`startIndex: 1000150` for `data[150]`. Both panels stored that raw in
+`topIndexRef` as the saved scroll position, and the restore path clamps
+with `if (saved.topIndex > last) return last`, so a ~1e6 value was
+silently rejected and **every channel switch landed at the bottom**
+instead of where you left off. Rebased alongside the grouping fix.
+
+`initialTopMostItemIndex` is *not* absolute — it stays an index into
+`data`. Verified: passing 150 lands on `data[150]`.
+
 **Lesson for next time:** `firstItemIndex` silently changes the meaning
-of every other index-taking prop. Anything deriving state from
-`itemContent`'s index has to be audited when it's introduced.
+of some index-carrying props (`itemContent`, `rangeChanged`) but not
+others (`initialTopMostItemIndex`). Every one has to be checked
+individually when it's introduced — the types don't distinguish them.
 
-### B9 — Attachment responses aren't cacheable `✓ FIXED`
+### B9 — Attachment responses aren't cacheable `✓ FIXED (but not the cause)`
 
-B3 and B4 fixed the *first* appearance of an image, but scrolling a row
-out and back in still flashed.
+> **Correction (same day):** the reasoning below was wrong about *why*
+> this mattered, and the fix is smaller than claimed. Measured in
+> Electron: warm 8 URLs with `new Image()`, then mount `<img>` for the
+> same URLs, and count protocol-handler hits.
+>
+> | | hits after warm | after mounting | extra |
+> | --- | --- | --- | --- |
+> | no `Cache-Control` | 8 | 8 | **0** |
+> | with `Cache-Control` | 8 | 8 | **0** |
+>
+> Chromium's in-page memory cache already answers a remount regardless
+> of headers, so a row scrolling back into view was never re-fetching
+> within a session. The header is still correct and still worth having —
+> it earns a *disk* cache hit across app restarts — but it did not fix
+> the reported flash. **B10 is what fixes that.**
 
-The cause is in main, not the renderer:
+The original reasoning, kept for the record:
 `electron/main/protocol.ts` returned the upstream response verbatim, so
 caching was entirely at the community server's discretion. With no
 `Cache-Control` on that response Chromium caches nothing, and since
@@ -190,6 +214,42 @@ wrong.
 Also gated the two per-request `console.log`s behind `!app.isPackaged`:
 a fast scroll fires one pair per attachment and main-process stdout
 writes are synchronous.
+
+### B10 — The first view of an image always flashes `✓ FIXED`
+
+The residual symptom after B3/B4/B9: scrolling into a message whose
+image hasn't been fetched yet shows an empty box for a frame or two.
+
+Virtualization makes this structural. The `<img>` cannot exist before
+its row mounts, so the fetch cannot start before then either.
+`increaseViewportBy` mounts rows 600px early, but at any real scroll
+speed that is a fraction of a second of lead — not enough for a round
+trip.
+
+Measured, with a handler given a 40 ms delay to stand in for a real
+request:
+
+| | paints synchronously on mount |
+| --- | --- |
+| cold — no prefetch | **false** — empty box for a frame |
+| warmed via `new Image()` first | **true** — paints in the same frame |
+
+**Fixed** by decoupling the fetch from the mount.
+`attachmentPrefetch.ts` warms the previews for messages ±15 either side
+of the visible range, driven off `rangeChanged`, so the bytes are in
+cache before the row exists and the image paints in the frame it mounts.
+
+The URL it warms comes from a `previewUrlFor()` helper now shared with
+`ImageItem` — a prefetch that picked a different thumbnail size than
+the component requests would be worse than none, doubling requests and
+still missing.
+
+**What Discord does that we can't, yet:** its attachment payload carries
+a ~30-byte thumbhash, so the box shows a blurred preview instantly with
+zero requests, covering even the case where the prefetch hasn't landed
+(a fling past 15 messages, or the very first screen of a channel). That
+needs a protocol + server change. Prefetching is the part that was ours
+to fix; a placeholder hash is the remaining gap.
 
 ---
 
