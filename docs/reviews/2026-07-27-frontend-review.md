@@ -1,6 +1,14 @@
 # Frontend review — chat scroll jank & general audit (2026-07-27)
 
-> **Status (2026-07-27):** B1–B7 fixed, O1/O3/O4 done. **O2 investigated
+> **Follow-up (2026-07-27, same day):** the B1 fix shipped a regression —
+> `firstItemIndex` makes Virtuoso pass `itemContent` an *absolute* index
+> (starting at firstItemIndex, verified: 1000000 for `data[0]`), so every
+> `messages[index - 1]` lookup went out of bounds and message grouping
+> stopped working entirely. Rebased in both panels. Added as **B8** below.
+> Attachments were also still flashing after B3/B4 — the remaining cause
+> was main-process, not renderer: **B9**.
+>
+> **Status (2026-07-27):** B1–B9 fixed, O1/O3/O4 done. **O2 investigated
 > and deliberately closed** — measured payoff is ~26 ms of cold start and
 > every way of collecting it costs more than it returns; see the item for
 > numbers so it doesn't get re-opened. B6's fix is sound and builds clean
@@ -135,6 +143,53 @@ attaches a second one and `update_status` is handled twice.
 `useChatEvents.ts:100` and `useDmEvents.ts:107` already use the correct
 form (`unlistenPromise.then((fn) => fn())`) — `AppLayout` is the only
 site that got it wrong.
+
+### B8 — `firstItemIndex` makes `itemContent`'s index absolute `✓ FIXED`
+
+Introduced by the B1 fix, caught in review the same day.
+
+With `firstItemIndex` set, react-virtuoso passes `itemContent` the
+absolute index — it starts at `firstItemIndex`, not 0. Verified
+directly: `data[0]` arrives as `index === 1000000`.
+
+Both panels used that index to reach into the array
+(`messages[index - 1]` for grouping, `index === messages.length - 1`
+for `isLast`). Every lookup was ~1e6 out of bounds and returned
+`undefined`, so `shouldGroup` hit its `if (!prev) return false` guard on
+every row and **nothing grouped any more** — consecutive messages from
+the same sender each rendered a full avatar row.
+
+**Fixed:** rebase once at the top of `itemContent`
+(`const i = index - firstItemIndex`) and index with that. Verified
+against a seeded set: same sender +30s and +2m group, different sender
+doesn't, same sender +12m doesn't, `isLast` true only on the last row.
+
+**Lesson for next time:** `firstItemIndex` silently changes the meaning
+of every other index-taking prop. Anything deriving state from
+`itemContent`'s index has to be audited when it's introduced.
+
+### B9 — Attachment responses aren't cacheable `✓ FIXED`
+
+B3 and B4 fixed the *first* appearance of an image, but scrolling a row
+out and back in still flashed.
+
+The cause is in main, not the renderer:
+`electron/main/protocol.ts` returned the upstream response verbatim, so
+caching was entirely at the community server's discretion. With no
+`Cache-Control` on that response Chromium caches nothing, and since
+virtualization recreates the `<img>` on every remount, each scroll-back
+was a fresh HTTPS round-trip with an empty box until it landed.
+
+Attachment bytes are immutable — the id is server-assigned and unique,
+and thumbnail variants carry their size in the query string — so the
+handler now sets `Cache-Control: private, max-age=31536000, immutable`
+when the server didn't specify one. Applied only to 200 responses; a
+206 is a range slice and caching those under a single key would be
+wrong.
+
+Also gated the two per-request `console.log`s behind `!app.isPackaged`:
+a fast scroll fires one pair per attachment and main-process stdout
+writes are synchronous.
 
 ---
 

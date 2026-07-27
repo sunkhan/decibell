@@ -538,15 +538,22 @@ export default function ChatPanel() {
             atBottomStateChange={(atBottom) => {
               atBottomRef.current = atBottom;
             }}
-            itemContent={(index, message) => (
+            itemContent={(index, message) => {
+              // firstItemIndex makes `index` absolute (it starts at
+              // firstItemIndex, not 0), so it has to be rebased before
+              // it can index `messages`. Without this every lookup was
+              // out of bounds: grouping saw no previous message and
+              // nothing ever grouped.
+              const i = index - firstItemIndex;
+              return (
               <MessageBubble
                 message={message}
                 grouped={shouldGroup(
-                  index > 0 ? messages[index - 1] : undefined,
+                  i > 0 ? messages[i - 1] : undefined,
                   message,
                 )}
                 serverId={activeServerId}
-                isLast={index === messages.length - 1}
+                isLast={i === messages.length - 1}
                 // Align avatar's left edge with the input bar card's
                 // left edge: outer wrapper `px-3` = 12px from chat
                 // panel's left. The card's rounded border starts there.
@@ -558,7 +565,8 @@ export default function ChatPanel() {
                 }
                 onDelete={requestDeleteChannelMessage}
               />
-            )}
+              );
+            }}
             className="flex-1"
           />
         )}

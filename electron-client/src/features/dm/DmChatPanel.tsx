@@ -420,7 +420,9 @@ export default function DmChatPanel() {
           atBottomStateChange={(atBottom) => {
             atBottomRef.current = atBottom;
           }}
-          itemContent={(i, msg) => {
+          itemContent={(absoluteIndex, msg) => {
+            // See ChatPanel: firstItemIndex makes this index absolute.
+            const i = absoluteIndex - firstItemIndex;
             const isError =
               msg.sender === localUsername &&
               ERROR_MESSAGES.includes(msg.content);
