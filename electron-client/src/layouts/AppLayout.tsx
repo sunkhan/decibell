@@ -37,19 +37,20 @@ export default function AppLayout() {
       );
     });
 
-    let unlistenFn: (() => void) | null = null;
-    listen<UpdateEventPayload>("update_status", (event) => {
+    // Hold the promise, not the resolved function: unmounting before
+    // listen() settles used to leave `unlistenFn` null, so the cleanup
+    // no-opped and the listener leaked — a remount then handled every
+    // update_status twice. Same form useChatEvents/useDmEvents use.
+    const unlisten = listen<UpdateEventPayload>("update_status", (event) => {
       const p = event.payload;
       useUpdateStore.getState().setFromEvent(
         p.status,
         p.mode,
         p.currentVersion,
       );
-    }).then((u) => {
-      unlistenFn = u;
     });
     return () => {
-      if (unlistenFn) unlistenFn();
+      unlisten.then((fn) => fn()).catch(() => {});
     };
   }, []);
 

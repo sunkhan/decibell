@@ -126,7 +126,7 @@ export function setVideoPoster(
   // Bump the reactivity store so any VideoPlayer placeholder
   // currently mounted for this attachment re-renders and picks up
   // the new poster.
-  useVideoCacheVersionStore.getState().bump();
+  useVideoCacheVersionStore.getState().bump(attachmentId);
 }
 
 // Watch for channel switches and clear the previous channel's cache.

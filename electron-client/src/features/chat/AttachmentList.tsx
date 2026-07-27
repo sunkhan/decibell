@@ -176,16 +176,14 @@ function ImageItem({
   const open = useImageViewerStore((s) => s.open);
   // Read live chat viewport so the sqrt-scaled cap reflects the
   // current panel size — narrow side panels render compact previews,
-  // wide layouts get larger ones, smoothly. Subscribe to the literal
-  // width/height numbers so we don't churn on unrelated chatStore
-  // changes; the object reference would change every store update.
-  const viewW = useChatStore((s) => s.chatViewSize?.width ?? 0);
-  const viewH = useChatStore((s) => s.chatViewSize?.height ?? 0);
+  // wide layouts get larger ones, smoothly. One subscription: the
+  // stored object is only ever replaced by setChatViewSize, so its
+  // reference is already stable across unrelated chatStore updates.
+  const chatViewSize = useChatStore((s) => s.chatViewSize);
 
   const fullUrl = buildAttachmentUrl(serverId, attachment);
   if (!fullUrl) return null;
 
-  const chatViewSize = viewW > 0 && viewH > 0 ? { width: viewW, height: viewH } : null;
   const box = reserveBox(attachment, chatViewSize);
 
   // Server-thumbnail picker: choose the right pre-generated size based
@@ -280,9 +278,7 @@ function VideoItem({
   const placeholderRef = useRef<HTMLDivElement | null>(null);
   // Sqrt-scaled reserve box, same helper as ImageItem so a video and
   // image of the same dimensions get the same standalone box.
-  const viewW = useChatStore((s) => s.chatViewSize?.width ?? 0);
-  const viewH = useChatStore((s) => s.chatViewSize?.height ?? 0);
-  const chatViewSize = viewW > 0 && viewH > 0 ? { width: viewW, height: viewH } : null;
+  const chatViewSize = useChatStore((s) => s.chatViewSize);
   const box = reserveBox(attachment, chatViewSize);
 
   // Am I the active video right now? If so, register my placeholder
@@ -324,9 +320,10 @@ function VideoItem({
     });
   };
 
-  // Subscribe to the cache version store so we re-render when
-  // PersistentVideoLayer captures a poster frame for any attachment.
-  useVideoCacheVersionStore((s) => s.version);
+  // Re-render when PersistentVideoLayer captures a poster frame for
+  // *this* attachment. Scoped by id so one capture doesn't re-render
+  // every video on screen.
+  useVideoCacheVersionStore((s) => s.versions[String(attachment.id)] ?? 0);
   const liveCached = getCachedVideo(channelId, attachment.id);
   const livePoster = liveCached?.posterUrl ?? null;
   const lastTime = liveCached?.lastTime ?? 0;
