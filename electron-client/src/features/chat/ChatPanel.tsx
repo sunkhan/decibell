@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { useVirtuosoPrepend } from "./useVirtuosoPrepend";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
 import { useChatStore } from "../../stores/chatStore";
@@ -65,25 +66,38 @@ export default function ChatPanel() {
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
 
+  // Stable per-message identity, shared by computeItemKey and the
+  // prepend tracker so the two agree on what "the same message" is.
+  // Optimistic bubbles have id 0 and carry a client nonce instead.
+  const messageKey = useCallback(
+    (m: { id: number; nonce?: string }) => (m.id > 0 ? m.id : m.nonce ?? ""),
+    [],
+  );
+
   // Track the chat viewport size and publish it to the store so
   // AttachmentList can scale image/video previews proportionally to
   // the available space (sqrt-based, see attachmentSizing.ts). On
   // unmount we clear the size so the helpers fall back to fixed
   // defaults instead of using a stale dimension.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = chatViewRef.current;
     if (!el) return;
     const setSize = useChatStore.getState().setChatViewSize;
+    // Round before publishing: the observer fires on sub-pixel
+    // changes while a window is dragged, and every attachment on
+    // screen recomputes its box off this value.
+    const publish = (w: number, h: number) =>
+      setSize({ width: Math.round(w), height: Math.round(h) });
     const observer = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
-      setSize({ width: rect.width, height: rect.height });
+      publish(rect.width, rect.height);
     });
     observer.observe(el);
     // Seed an initial value before the first observer fire — useful
     // for the synchronous first render of attachments below.
     const rect = el.getBoundingClientRect();
-    setSize({ width: rect.width, height: rect.height });
+    publish(rect.width, rect.height);
     return () => {
       observer.disconnect();
       setSize(null);
@@ -122,6 +136,9 @@ export default function ChatPanel() {
   // before activeChannelId flips.
   const topIndexRef = useRef(0);
   const atBottomRef = useRef(true);
+
+  // Keeps the viewport anchored when older history pages in at the top.
+  const firstItemIndex = useVirtuosoPrepend(messages, messageKey, activeChannelId);
 
   // Compute Virtuoso's initialTopMostItemIndex from the channel's
   // saved scroll position. This is the *only* mechanism we use to
@@ -499,6 +516,8 @@ export default function ChatPanel() {
             key={activeChannelId ?? "none"}
             ref={virtuosoRef}
             data={messages}
+            firstItemIndex={firstItemIndex}
+            computeItemKey={(index, m) => messageKey(m) || `i:${index}`}
             initialTopMostItemIndex={initialIndex}
             followOutput="smooth"
             // Discord-style: when total content height < viewport,
@@ -507,6 +526,11 @@ export default function ChatPanel() {
             // Only affects the few-messages case; long histories are
             // unchanged.
             alignToBottom={true}
+            // Mount rows well before they reach the edge, so anything
+            // that settles after mount — an image decoding, a poster
+            // frame landing — happens off-screen and the row scrolls in
+            // already correct.
+            increaseViewportBy={{ top: 600, bottom: 600 }}
             startReached={handleStartReached}
             rangeChanged={(range) => {
               topIndexRef.current = range.startIndex;

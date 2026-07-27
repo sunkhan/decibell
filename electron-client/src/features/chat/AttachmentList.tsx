@@ -248,7 +248,13 @@ function ImageItem({
         src={previewSrc}
         alt={attachment.filename}
         className={imgClass}
-        loading="lazy"
+        // Not loading="lazy": Virtuoso already only mounts rows at or
+        // near the viewport, so lazy adds no saving and defers the
+        // fetch until the row is *already visible* — the image then
+        // pops in a beat after it scrolls in. Eager + async decode lets
+        // it be ready by the time it arrives (see increaseViewportBy
+        // on the Virtuoso instances).
+        decoding="async"
         draggable={false}
       />
     </button>

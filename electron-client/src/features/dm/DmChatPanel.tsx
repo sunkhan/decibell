@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Virtuoso } from "react-virtuoso";
+import { useVirtuosoPrepend } from "../chat/useVirtuosoPrepend";
 import { invoke } from "../../lib/ipc";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
@@ -121,6 +122,11 @@ export default function DmChatPanel() {
   // appear for those, which is correct (nothing to delete).
   // Memoized: this used to rebuild (and re-allocate) the whole array
   // on every render — keystrokes included — not just message changes.
+  // DmMessage has no nonce, so an unsent bubble has no stable identity
+  // of its own; computeItemKey falls back to the index for those. They
+  // only ever sit at the tail, so a prepend can't shuffle them.
+  const messageKey = useCallback((m: { id: number }) => (m.id > 0 ? m.id : ""), []);
+
   const bubbleMessages = useMemo(
     () =>
       messages.map((m) => ({
@@ -305,6 +311,9 @@ export default function DmChatPanel() {
   // atBottom: user was caught up — land them at LAST so newer messages
   // received while away are visible. Otherwise restore the saved
   // topmost index. Defensive clamps against eviction.
+  // Keeps the viewport anchored when older history pages in at the top.
+  const firstItemIndex = useVirtuosoPrepend(bubbleMessages, messageKey, activeDmUser);
+
   const initialIndex = (() => {
     const last = Math.max(0, bubbleMessages.length - 1);
     if (!activeDmUser) return last;
@@ -394,11 +403,16 @@ export default function DmChatPanel() {
           key={activeDmUser}
           className="flex-1 pr-4"
           data={bubbleMessages}
+          firstItemIndex={firstItemIndex}
+          computeItemKey={(index, m) => messageKey(m) || `i:${index}`}
           initialTopMostItemIndex={initialIndex}
           followOutput="smooth"
           // Discord-style: stack messages from the bottom up against
           // the input bar when total content height is below viewport.
           alignToBottom={true}
+          // Same rationale as ChatPanel: settle off-screen so rows
+          // scroll in already correct.
+          increaseViewportBy={{ top: 600, bottom: 600 }}
           startReached={handleStartReached}
           rangeChanged={(range) => {
             topIndexRef.current = range.startIndex;
