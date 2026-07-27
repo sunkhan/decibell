@@ -8,7 +8,7 @@
 > Attachments were also still flashing after B3/B4 — the remaining cause
 > was main-process, not renderer: **B9**.
 >
-> **Status (2026-07-27):** B1–B10 fixed, O1/O3/O4 done. **O2 investigated
+> **Status (2026-07-27):** B1–B11 done, O1/O3/O4 done. **O2 investigated
 > and deliberately closed** — measured payoff is ~26 ms of cold start and
 > every way of collecting it costs more than it returns; see the item for
 > numbers so it doesn't get re-opened. B6's fix is sound and builds clean
@@ -244,12 +244,47 @@ The URL it warms comes from a `previewUrlFor()` helper now shared with
 the component requests would be worse than none, doubling requests and
 still missing.
 
-**What Discord does that we can't, yet:** its attachment payload carries
-a ~30-byte thumbhash, so the box shows a blurred preview instantly with
-zero requests, covering even the case where the prefetch hasn't landed
-(a fling past 15 messages, or the very first screen of a channel). That
-needs a protocol + server change. Prefetching is the part that was ours
-to fix; a placeholder hash is the remaining gap.
+**B11 closes the remaining gap.** Prefetching can't cover the first
+screen of a channel or a fling that outruns the window; a placeholder
+does, because it needs no request at all.
+
+### B11 — ThumbHash placeholders `✓ IMPLEMENTED (server side uncompiled)`
+
+The structural fix, and what Discord actually does: ship a ~25-byte
+blurred preview *inside the attachment metadata*, so the box is never
+empty regardless of what the network is doing. Prefetching races the
+fetch; this removes the race.
+
+Carried as a base64 `string` on `Attachment` rather than `bytes`, so it
+stays opaque the whole way — the community server and the native client
+move it as a plain string with no codec dependency, and only the
+renderer decodes it. ~34 bytes on the wire instead of 25, which is not
+worth a base64 implementation in two more languages.
+
+Encoding is free: the uploader already decodes the bitmap to generate
+thumbnails, so the hash comes off the same pixels. The blur is painted
+as the wrapper's `background-image`, so the `<img>` simply draws over
+it — no swap, no fade, nothing to time wrong.
+
+**Verified** end to end in the renderer: a 400×260 test scene encodes to
+28 base64 chars and decodes to a recognisable blur of the same image.
+
+**Two caveats:**
+
+1. **The C++ server changes are uncompiled.** There's no `cmake` on this
+   machine. The DB layer, the `/attachments/init` parsing and both
+   proto-fill sites are written to the existing patterns, and `protoc`
+   validates the schema, but the server needs a real build.
+2. **It only applies to new uploads.** The hash is computed client-side
+   at upload time, so attachments already in a channel have no
+   placeholder and keep the old flat fill. Backfilling would need image
+   decoding in the C++ server, which is a much larger change than this
+   was.
+
+While wiring the DB column I also found that the `attachments_v4`
+rebuild enumerates its columns explicitly, so it would have silently
+dropped `placeholder` for anyone still on a pre-v4 schema — the exact
+hazard its own comment warns about. Added there too.
 
 ---
 

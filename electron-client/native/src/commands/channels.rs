@@ -200,6 +200,7 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
                 thumbnail_size_bytes: 0,
                 thumbnail_sizes_mask: 0,
                 duration_ms: 0,
+                placeholder: String::new(),
             })
             .collect();
 

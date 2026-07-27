@@ -313,7 +313,7 @@ private:
     }
 
     void do_init_with_body() {
-        std::string filename, mime, channel_id;
+        std::string filename, mime, channel_id, placeholder;
         int64_t size = 0;
         int32_t width = 0, height = 0, duration_ms = 0;
         try {
@@ -330,6 +330,13 @@ private:
             // Audio + video duration in ms, read at upload time client-side.
             // Drives "0:00 / 3:45" labels before the file is downloaded.
             duration_ms = j.value("durationMs", 0);
+            // Opaque base64 ThumbHash the uploader computed from the
+            // same bitmap it derives thumbnails from. Never decoded
+            // here — stored and echoed so viewers can paint a blurred
+            // preview with no extra request. Bounded because it's
+            // client-supplied; a real hash is ~34 chars.
+            placeholder = j.value("placeholder", std::string());
+            if (placeholder.size() > 128) placeholder.clear();
         } catch (...) { send_error(400, "Bad Request"); return; }
 
         if (channel_id.empty() || filename.empty() || size <= 0) {
@@ -357,7 +364,7 @@ private:
 
         const int64_t new_id = db_.insert_pending_attachment(
             channel_id, kind, filename, mime, size, /*storage_path*/ "", username_,
-            /*position*/ 0, width, height, duration_ms);
+            /*position*/ 0, width, height, duration_ms, placeholder);
         if (new_id == 0) {
             std::cerr << "[AttachmentHttp] init: insert_pending_attachment "
                          "returned 0 (see [DB] log for SQLite error)\n";

@@ -331,6 +331,10 @@ pub struct AttachmentPayload {
     pub thumbnail_sizes_mask: u32,
     /// Audio + video duration in ms; 0 unknown.
     pub duration_ms: u32,
+    /// base64 ThumbHash placeholder (~25 bytes decoded). Empty when the
+    /// attachment predates the field or isn't an image/video. Opaque
+    /// here — only the renderer decodes it.
+    pub placeholder: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

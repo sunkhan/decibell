@@ -749,6 +749,7 @@ private:
                         pa->set_thumbnail_sizes_mask(
                             static_cast<uint32_t>(row.thumbnail_sizes_mask));
                         pa->set_duration_ms(static_cast<uint32_t>(row.duration_ms));
+                        pa->set_placeholder(row.placeholder);
                     }
                 }
             } else {
@@ -821,6 +822,7 @@ private:
                         proto_a->set_thumbnail_sizes_mask(
                             static_cast<uint32_t>(a->thumbnail_sizes_mask));
                         proto_a->set_duration_ms(static_cast<uint32_t>(a->duration_ms));
+                        proto_a->set_placeholder(a->placeholder);
                     }
                 }
             }

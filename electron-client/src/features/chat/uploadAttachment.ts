@@ -27,6 +27,7 @@ import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import { toast } from "../../stores/toastStore";
 import type { AttachmentKind } from "../../types";
 import type { ChunkSource } from "./chunkSource";
+import { encodeThumbHash } from "./thumbhash";
 
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
@@ -195,6 +196,9 @@ async function probeMetadata(
   /// `source.url` directly so we don't allocate a second URL handle.
   previewUrl: string | null;
   frameBlob?: Blob;
+  /// base64 ThumbHash of the image (or the captured video poster).
+  /// "" when unavailable — always cosmetic, never fatal.
+  placeholder?: string;
 }> {
   if (kind === "image") {
     try {
@@ -214,11 +218,21 @@ async function probeMetadata(
         5000,
         "image probe timed out",
       );
+      // Hash the same pixels the viewer will eventually see. Fetching
+      // source.url re-reads from Chromium's blob/file store, not the
+      // network, and the decode is capped at 100px a side.
+      let placeholder = "";
+      try {
+        placeholder = await encodeThumbHash(await (await fetch(source.url)).blob());
+      } catch {
+        // Non-fatal: the attachment just ships without a placeholder.
+      }
       return {
         width: img.naturalWidth,
         height: img.naturalHeight,
         durationMs: 0,
         previewUrl: source.url,
+        placeholder,
       };
     } catch {
       return { width: 0, height: 0, durationMs: 0, previewUrl: null };
@@ -289,6 +303,7 @@ async function probeMetadata(
         durationMs: finiteDurationMs(durationSec),
         previewUrl: source.url,
         frameBlob,
+        placeholder: frameBlob ? await encodeThumbHash(frameBlob) : "",
       };
     } catch {
       return { width: 0, height: 0, durationMs: 0, previewUrl: null };
@@ -403,6 +418,7 @@ export async function queueUpload(args: QueueArgs): Promise<void> {
     width: meta.width,
     height: meta.height,
     durationMs: meta.durationMs,
+    placeholder: meta.placeholder ?? "",
     source,
     // probeMetadata.frameBlob (video poster) is captured into a
     // module-scoped cache below — it's needed at upload-finish time
@@ -432,7 +448,8 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
   const store = useAttachmentsStore.getState();
   const pending = store.pendings[pendingId];
   if (!pending) throw new Error(`unknown pendingId: ${pendingId}`);
-  const { serverId, channelId, source, abortController, width, height, durationMs } = pending;
+  const { serverId, channelId, source, abortController, width, height, durationMs, placeholder } =
+    pending;
   const kind = pending.kind;
   // Mark as uploading so the chat-side BubbleInflightAttachments
   // switches from the queued chip to the live progress bar.
@@ -451,6 +468,9 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
         width,
         height,
         durationMs,
+        // base64 ThumbHash. The server stores and echoes the bytes
+        // without interpreting them.
+        placeholder,
       }),
     });
     if (!initResult.ok) {

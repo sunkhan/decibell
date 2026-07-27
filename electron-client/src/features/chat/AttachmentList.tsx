@@ -16,6 +16,7 @@ import {
   GRID_MIN_WIDTH_PX,
 } from "./attachmentSizing";
 import { previewUrlFor } from "./attachmentPrefetch";
+import { thumbHashToDataUrl } from "./thumbhash";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { useActiveAudioStore } from "../../stores/activeAudioStore";
@@ -196,12 +197,19 @@ function ImageItem({
   // the grid container, cropped with object-cover to align with
   // adjacent cells. Standalone mode: reserve the sqrt-scaled box and
   // use object-contain to preserve the full image.
+  // The ThumbHash blur sits on the wrapper's background, so it is
+  // painted the instant the row mounts — before the <img> has bytes.
+  // The image draws over it and the blur is simply never seen again;
+  // no swap, no fade, nothing to time wrong. Falls back to the flat
+  // surface fill when the attachment has no hash.
+  const blurUrl = thumbHashToDataUrl(attachment.placeholder);
   const wrapperClass = fillCell
-    ? "block h-full w-full cursor-pointer overflow-hidden bg-bg-secondary"
-    : "block cursor-pointer overflow-hidden rounded-lg border border-border bg-bg-secondary";
-  const wrapperStyle: React.CSSProperties | undefined = fillCell
-    ? undefined
-    : { width: box.width, height: box.height };
+    ? "block h-full w-full cursor-pointer overflow-hidden bg-bg-secondary bg-cover bg-center"
+    : "block cursor-pointer overflow-hidden rounded-lg border border-border bg-bg-secondary bg-cover bg-center";
+  const wrapperStyle: React.CSSProperties = {
+    ...(fillCell ? {} : { width: box.width, height: box.height }),
+    ...(blurUrl ? { backgroundImage: `url(${blurUrl})` } : {}),
+  };
   const imgClass = fillCell ? "h-full w-full object-cover" : "h-full w-full object-contain";
 
   return (
