@@ -110,9 +110,16 @@
   --shadow-ring: var(--t-shadow-ring);
   --shadow-glow: var(--t-shadow-glow);
 
-  /* Hover/state transitions default. Transform/layout transitions
-     should opt into duration-150 explicitly. */
-  --default-transition-duration: 100ms;
+  /* Hover/state transitions are instant.
+     This was 100ms, which reads as lag on any dense list: sweep the
+     cursor down the members panel and half a dozen rows sit mid-fade
+     at once, so the highlight smears along behind the pointer instead
+     of tracking it. Hover feedback wants to be immediate — it's
+     answering "where am I", not performing.
+     Deliberate motion opts in and is unaffected: the theme swap and
+     tile lifts at duration-150, modals at duration-300, plus every
+     keyframe animation below. */
+  --default-transition-duration: 0ms;
 
   --font-sans: var(--t-font-ui);
   --font-mono: var(--t-font-meta);
