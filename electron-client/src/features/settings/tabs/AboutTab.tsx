@@ -146,7 +146,7 @@ function PrimaryButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className="rounded-sm bg-accent px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+      className="rounded-sm bg-accent px-3 py-1.5 text-[12px] font-semibold text-on-accent transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
     >
       {children}
     </button>

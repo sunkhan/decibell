@@ -36,6 +36,7 @@ function mapAttachment(
     thumbnailSizeBytes: a.thumbnailSizeBytes ?? 0,
     thumbnailSizesMask: a.thumbnailSizesMask ?? 0,
     durationMs: a.durationMs ?? 0,
+    placeholder: a.placeholder ?? "",
   };
 }
 

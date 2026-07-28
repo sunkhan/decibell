@@ -94,6 +94,23 @@ pub struct AppSettings {
     /// at runtime if the saved codec isn't in the user's encodeCaps.
     pub stream_enforced_codec: Option<u8>,
 
+    /// Selected UI palette: one of `graphite`, `graphite-light`,
+    /// `console`, `console-light`, `console-split`. Stored as a plain
+    /// string rather than an enum so an unknown value from a newer
+    /// build round-trips instead of failing the whole deserialise; the
+    /// client whitelist-checks it on load and falls back to the
+    /// default if it doesn't recognise it.
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Message-body font size in px, or 0 for "use the theme's own".
+    /// 0 doubles as the serde default for a config written before this
+    /// field existed, which is exactly the behaviour we want there.
+    #[serde(default)]
+    pub text_size_px: f64,
+    /// List-row scale multiplier. 0 = never set; client falls back to 1.
+    #[serde(default)]
+    pub list_density: f64,
+
     /// Crash reporting (Sentry) opt-out. Defaults to `true` (opt-out
     /// posture). Existing 0.6.5 configs without this field deserialize
     /// to the default via #[serde(default = "default_true")], so users
@@ -115,6 +132,10 @@ pub struct AppSettings {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_theme() -> String {
+    "graphite".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

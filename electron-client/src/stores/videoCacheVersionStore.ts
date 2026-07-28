@@ -2,15 +2,23 @@ import { create } from "zustand";
 
 // Tiny reactivity bridge for the (otherwise plain) videoPlaybackState
 // map. Bumped whenever an entry changes in a way the placeholder UI
-// needs to react to (poster captured, etc.). VideoPlayer subscribes to
-// `version` so a bump triggers a re-render and it picks up the new
-// poster / playback position from the cache on the next render.
+// needs to react to (poster captured, etc.). A placeholder subscribes
+// to its own attachment's counter and re-reads the cache on the next
+// render.
+//
+// Keyed per attachment rather than one global integer: as a single
+// counter, capturing a poster for one video re-rendered every video
+// attachment mounted anywhere in the list.
 interface State {
-  version: number;
-  bump: () => void;
+  versions: Record<string, number>;
+  bump: (attachmentId: string | number) => void;
 }
 
 export const useVideoCacheVersionStore = create<State>((set) => ({
-  version: 0,
-  bump: () => set((s) => ({ version: s.version + 1 })),
+  versions: {},
+  bump: (attachmentId) =>
+    set((s) => {
+      const key = String(attachmentId);
+      return { versions: { ...s.versions, [key]: (s.versions[key] ?? 0) + 1 } };
+    }),
 }));

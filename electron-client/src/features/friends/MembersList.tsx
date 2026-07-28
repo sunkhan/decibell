@@ -23,7 +23,7 @@ export default function MembersList() {
   const renderRow = (username: string, isOnline: boolean) => (
     <div
       key={username}
-      className="group flex cursor-pointer items-center gap-2.5 rounded-sm px-2 py-[7px] transition-colors hover:bg-surface-hover"
+      className="list-row group flex cursor-pointer items-center rounded-sm transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(username, { x: rect.right + 8, y: rect.top }, activeServerId);
@@ -33,17 +33,19 @@ export default function MembersList() {
         openContextMenu(username, { x: e.clientX, y: e.clientY });
       }}
     >
-      <div className={`relative shrink-0 ${isOnline ? "" : "opacity-50"}`}>
+      <div className={`relative shrink-0 ${isOnline ? "" : "opacity-[0.62]"}`}>
         <UserAvatar username={username} size={34} />
         <div
-          className={`absolute -bottom-px -right-px h-[11px] w-[11px] rounded-full border-[2.5px] border-bg-tertiary ${
+          className={`absolute -bottom-px -right-px avatar-dot rounded-full border-[2.5px] border-bg-tertiary ${
             isOnline ? "bg-success" : "bg-text-muted"
           }`}
         />
       </div>
       <span
-        className={`truncate font-channel text-[13px] font-medium transition-colors ${
-          isOnline ? "text-text-secondary group-hover:text-text-primary" : "text-text-muted"
+        className={`truncate font-channel text-member transition-colors ${
+          isOnline
+            ? "font-medium text-text-secondary group-hover:text-text-primary"
+            : "font-normal text-text-muted"
         }`}
       >
         {username}
@@ -53,9 +55,12 @@ export default function MembersList() {
 
   return (
     <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-dark">
-      <div className="flex-1 overflow-y-auto px-3 py-1">
+      <div
+        className="flex-1 overflow-y-auto px-3 py-1"
+        style={{ "--list-row-pad-y": "7px", "--list-row-pad-x": "8px", "--list-row-gap": "10px" } as React.CSSProperties}
+      >
         <div className="px-1 pt-3 pb-1">
-          <h3 className="font-channel text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+          <h3 className="font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted">
             Online — {online.length}
           </h3>
         </div>
@@ -64,7 +69,7 @@ export default function MembersList() {
         {offline.length > 0 && (
           <>
             <div className="px-1 pt-4 pb-1">
-              <h3 className="font-channel text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+              <h3 className="font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted">
                 Offline — {offline.length}
               </h3>
             </div>
@@ -89,7 +94,7 @@ export default function MembersList() {
             />
           ))}
         </div>
-        <span className="font-display text-[11px] font-medium uppercase tracking-[0.07em] text-text-faint opacity-50">
+        <span className="font-mono text-[10px] font-emphasis uppercase tracking-wordmark text-text-muted">
           Decibell
         </span>
       </div>

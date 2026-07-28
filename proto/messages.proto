@@ -503,6 +503,27 @@ message Attachment {
   // UIs can show "0:00 / 3:45" before the file is downloaded. 0 =
   // unknown (legacy row, non-media kind, or extraction failed).
   uint32 duration_ms = 15;
+  // ThumbHash placeholder for image/video attachments — ~25 opaque
+  // bytes the uploader computes from the same decoded bitmap it makes
+  // thumbnails from, shipped in /attachments/init. The server never
+  // interprets it; it stores and echoes the blob.
+  //
+  // Lets a viewer paint a blurred preview of the image with *zero*
+  // requests, so a message scrolling into view is never an empty box.
+  // Prefetching (client-side) covers rows near the viewport; this
+  // covers the cases it can't — the first screen of a channel, and a
+  // fling that outruns the prefetch window.
+  //
+  // Empty = unavailable: a pre-thumbhash upload, a non-image kind, or
+  // an encoder failure. Clients fall back to a flat surface fill.
+  //
+  // Carried as base64 rather than `bytes` so it stays opaque the whole
+  // way: the community server and the native client both move it as a
+  // plain string with no codec dependency, and only the renderer — the
+  // one place that decodes it — needs to know the format. ~34 bytes on
+  // the wire instead of 25, which is not worth a base64 implementation
+  // in two more languages.
+  string placeholder = 16;
 }
 
 message ChannelHistoryRequest {

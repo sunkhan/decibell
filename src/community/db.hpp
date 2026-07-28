@@ -81,6 +81,10 @@ struct DbAttachment {
     // Duration in milliseconds for audio/video attachments; 0 unknown.
     // Populated from the uploader's /init metadata.
     int32_t duration_ms = 0;
+    // base64 ThumbHash supplied by the uploader in /init. Opaque to the
+    // server — stored and echoed verbatim, never decoded here. Empty for
+    // non-image kinds and pre-thumbhash uploads.
+    std::string placeholder;
 };
 
 // Returned from prune_attachments so the server can broadcast tombstone
@@ -217,7 +221,8 @@ public:
                                       int32_t position,
                                       int32_t width,
                                       int32_t height,
-                                      int32_t duration_ms);
+                                      int32_t duration_ms,
+                                      const std::string& placeholder);
     std::optional<DbAttachment> get_attachment(int64_t attachment_id) const;
     // Set/overwrite the storage_path for an attachment. Used at upload init:
     // we need the row's autoincrement id to build the final path, so the

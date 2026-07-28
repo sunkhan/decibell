@@ -22,6 +22,25 @@ interface DmConversation {
   /// `false` means "messages[] is purely from live events; no
   /// server hydration yet". Drives the on-mount fetch decision.
   historyLoaded: boolean;
+  /// When this conversation entry first appeared locally. Only used to
+  /// order a conversation that has no messages yet — see
+  /// conversationActivityTime.
+  createdAt: number;
+}
+
+/// Sidebar ordering key. A conversation you just opened with someone
+/// you've never messaged has lastMessageTime 0, which sorted it to the
+/// bottom of the list — the opposite of what opening it implies. Empty
+/// conversations fall back to when they appeared, so a fresh one lands
+/// at the top and then ages naturally as other conversations get
+/// messages. `||` rather than Math.max on purpose: lastMessageTime is
+/// non-zero exactly when there are messages, so a real conversation
+/// never sorts by the moment its entry happened to be created.
+export function conversationActivityTime(c: {
+  lastMessageTime: number;
+  createdAt: number;
+}): number {
+  return c.lastMessageTime || c.createdAt;
 }
 
 interface ConversationPreviewInput {
@@ -88,6 +107,7 @@ function emptyConversation(username: string): DmConversation {
     lastReadId: 0,
     hasMoreHistory: false,
     historyLoaded: false,
+    createdAt: Date.now(),
   };
 }
 
@@ -190,6 +210,9 @@ export const useDmStore = create<DmState>((set, get) => ({
           // server's flag).
           hasMoreHistory: true,
           historyLoaded: existing?.historyLoaded ?? false,
+          // Hydrated conversations always carry a real last message, so
+          // this is never consulted — 0 keeps it out of the way.
+          createdAt: existing?.createdAt ?? 0,
         };
       }
       return { conversations: next };

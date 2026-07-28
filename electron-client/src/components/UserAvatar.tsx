@@ -11,7 +11,7 @@
 
 import { useEffect } from "react";
 import { useAvatarStore } from "../stores/avatarStore";
-import { LetterAvatar, avatarRadius } from "./LetterAvatar";
+import { LetterAvatar, AVATAR_RADIUS } from "./LetterAvatar";
 
 interface Props {
   username: string;
@@ -37,7 +37,11 @@ export function UserAvatar({ username, size, className }: Props) {
         src={entry.blobUrl}
         alt={username}
         className={`shrink-0 object-cover ${className ?? ""}`}
-        style={{ width: size, height: size, borderRadius: avatarRadius(size) }}
+        style={{
+          width: `calc(${size}px * var(--avatar-scale, 1))`,
+          height: `calc(${size}px * var(--avatar-scale, 1))`,
+          borderRadius: AVATAR_RADIUS,
+        }}
         draggable={false}
       />
     );

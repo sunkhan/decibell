@@ -15,6 +15,8 @@ import {
   GRID_MAX_WIDTH_PX,
   GRID_MIN_WIDTH_PX,
 } from "./attachmentSizing";
+import { previewUrlFor } from "./attachmentPrefetch";
+import { thumbHashToDataUrl } from "./thumbhash";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { useActiveAudioStore } from "../../stores/activeAudioStore";
@@ -176,42 +178,38 @@ function ImageItem({
   const open = useImageViewerStore((s) => s.open);
   // Read live chat viewport so the sqrt-scaled cap reflects the
   // current panel size — narrow side panels render compact previews,
-  // wide layouts get larger ones, smoothly. Subscribe to the literal
-  // width/height numbers so we don't churn on unrelated chatStore
-  // changes; the object reference would change every store update.
-  const viewW = useChatStore((s) => s.chatViewSize?.width ?? 0);
-  const viewH = useChatStore((s) => s.chatViewSize?.height ?? 0);
+  // wide layouts get larger ones, smoothly. One subscription: the
+  // stored object is only ever replaced by setChatViewSize, so its
+  // reference is already stable across unrelated chatStore updates.
+  const chatViewSize = useChatStore((s) => s.chatViewSize);
 
   const fullUrl = buildAttachmentUrl(serverId, attachment);
   if (!fullUrl) return null;
 
-  const chatViewSize = viewW > 0 && viewH > 0 ? { width: viewW, height: viewH } : null;
   const box = reserveBox(attachment, chatViewSize);
 
-  // Server-thumbnail picker: choose the right pre-generated size based
-  // on the cell's display long edge × DPR. Cheap, re-evaluated each
-  // render. Slight oversizing is preferable to undersizing.
-  const targetPx =
-    box.width > 0
-      ? Math.round(Math.max(box.width, box.height) * (window.devicePixelRatio || 1))
-      : 640;
-  const pickedThumb = pickThumbnailSize(attachment.thumbnailSizesMask, targetPx);
-  const thumbUrl =
-    pickedThumb !== null && attachment.thumbnailSizeBytes > 0
-      ? buildAttachmentUrl(serverId, attachment, { thumb: true, size: pickedThumb })
-      : null;
-  const previewSrc: string = thumbUrl ?? fullUrl;
+  // Same helper the prefetcher uses, so the URL warmed ahead of the
+  // viewport is byte-for-byte the one requested here — a mismatch would
+  // double the requests and still miss the cache.
+  const previewSrc: string = previewUrlFor(attachment, serverId, chatViewSize) ?? fullUrl;
 
   // Grid mode: parent owns the size (h-full w-full), cards round at
   // the grid container, cropped with object-cover to align with
   // adjacent cells. Standalone mode: reserve the sqrt-scaled box and
   // use object-contain to preserve the full image.
+  // The ThumbHash blur sits on the wrapper's background, so it is
+  // painted the instant the row mounts — before the <img> has bytes.
+  // The image draws over it and the blur is simply never seen again;
+  // no swap, no fade, nothing to time wrong. Falls back to the flat
+  // surface fill when the attachment has no hash.
+  const blurUrl = thumbHashToDataUrl(attachment.placeholder);
   const wrapperClass = fillCell
-    ? "block h-full w-full cursor-pointer overflow-hidden bg-bg-secondary"
-    : "block cursor-pointer overflow-hidden rounded-lg border border-border bg-bg-secondary";
-  const wrapperStyle: React.CSSProperties | undefined = fillCell
-    ? undefined
-    : { width: box.width, height: box.height };
+    ? "block h-full w-full cursor-pointer overflow-hidden bg-bg-secondary bg-cover bg-center"
+    : "block cursor-pointer overflow-hidden rounded-lg border border-border bg-bg-secondary bg-cover bg-center";
+  const wrapperStyle: React.CSSProperties = {
+    ...(fillCell ? {} : { width: box.width, height: box.height }),
+    ...(blurUrl ? { backgroundImage: `url(${blurUrl})` } : {}),
+  };
   const imgClass = fillCell ? "h-full w-full object-cover" : "h-full w-full object-contain";
 
   return (
@@ -248,7 +246,13 @@ function ImageItem({
         src={previewSrc}
         alt={attachment.filename}
         className={imgClass}
-        loading="lazy"
+        // Not loading="lazy": Virtuoso already only mounts rows at or
+        // near the viewport, so lazy adds no saving and defers the
+        // fetch until the row is *already visible* — the image then
+        // pops in a beat after it scrolls in. Eager + async decode lets
+        // it be ready by the time it arrives (see increaseViewportBy
+        // on the Virtuoso instances).
+        decoding="async"
         draggable={false}
       />
     </button>
@@ -274,9 +278,7 @@ function VideoItem({
   const placeholderRef = useRef<HTMLDivElement | null>(null);
   // Sqrt-scaled reserve box, same helper as ImageItem so a video and
   // image of the same dimensions get the same standalone box.
-  const viewW = useChatStore((s) => s.chatViewSize?.width ?? 0);
-  const viewH = useChatStore((s) => s.chatViewSize?.height ?? 0);
-  const chatViewSize = viewW > 0 && viewH > 0 ? { width: viewW, height: viewH } : null;
+  const chatViewSize = useChatStore((s) => s.chatViewSize);
   const box = reserveBox(attachment, chatViewSize);
 
   // Am I the active video right now? If so, register my placeholder
@@ -318,9 +320,10 @@ function VideoItem({
     });
   };
 
-  // Subscribe to the cache version store so we re-render when
-  // PersistentVideoLayer captures a poster frame for any attachment.
-  useVideoCacheVersionStore((s) => s.version);
+  // Re-render when PersistentVideoLayer captures a poster frame for
+  // *this* attachment. Scoped by id so one capture doesn't re-render
+  // every video on screen.
+  useVideoCacheVersionStore((s) => s.versions[String(attachment.id)] ?? 0);
   const liveCached = getCachedVideo(channelId, attachment.id);
   const livePoster = liveCached?.posterUrl ?? null;
   const lastTime = liveCached?.lastTime ?? 0;
@@ -352,56 +355,102 @@ function VideoItem({
   // Standalone mode: reserve the sqrt-scaled box and round here.
   // PersistentVideoLayer reads the placeholderRef's bounding rect via
   // ResizeObserver, so it picks up either box correctly.
-  const wrapperClass = fillCell
-    ? "h-full w-full overflow-hidden bg-bg-darkest"
-    : "mt-2 overflow-hidden rounded-lg border border-border bg-bg-darkest";
-  const wrapperStyle: React.CSSProperties | undefined = fillCell
-    ? undefined
-    : { width: box.width, height: box.height };
+  const onContextMenu = (e: React.MouseEvent) => {
+    if (!serverId) return;
+    e.preventDefault();
+    useImageContextMenuStore.getState().show({
+      x: e.clientX,
+      y: e.clientY,
+      serverId,
+      attachmentId: Number(attachment.id),
+      filename: attachment.filename,
+      mime: attachment.mime,
+      kind: "video",
+    });
+  };
 
+  const metaRight = resumeStamp
+    ? `Paused at ${resumeStamp}`
+    : formatFileSize(attachment.sizeBytes);
+
+  // The poster/play surface. In both modes this is what
+  // PersistentVideoLayer overlays its <video> on, so it is always the
+  // element `placeholderRef` points at — never a card wrapper that
+  // includes the meta bar, or the video would cover the bar.
+  const surface = (
+    <button
+      onClick={onPlay}
+      disabled={isActive}
+      title={attachment.filename}
+      className="group relative flex h-full w-full cursor-pointer items-center justify-center bg-black bg-cover bg-center disabled:cursor-default"
+      style={posterUrl ? { backgroundImage: `url(${posterUrl})` } : undefined}
+    >
+      {posterUrl && (
+        <div className="pointer-events-none absolute inset-0 bg-black/30" />
+      )}
+      {!isActive && (
+        <div className="relative flex h-12 w-12 items-center justify-center rounded-lg bg-accent transition-all group-hover:scale-110 group-hover:bg-accent-hover">
+          <svg className="h-7 w-7 text-on-accent" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        </div>
+      )}
+      {/* Grid cells are too tight to give the filename its own row, so
+          they keep the scrim treatment. Standalone videos get the
+          solid bar below instead. */}
+      {fillCell && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-3.5 pb-2.5 pt-10 text-[11px]">
+          <span className="min-w-0 truncate text-text-secondary">{attachment.filename}</span>
+          <span className="shrink-0 tabular-nums text-text-muted">{metaRight}</span>
+        </div>
+      )}
+    </button>
+  );
+
+  if (fillCell) {
+    return (
+      <div
+        ref={placeholderRef}
+        className="h-full w-full overflow-hidden bg-black"
+        onContextMenu={onContextMenu}
+      >
+        {surface}
+      </div>
+    );
+  }
+
+  // Standalone card: video on top, opaque meta bar underneath. The
+  // card must NOT clip its overflow — PersistentVideoLayer walks up
+  // from the host's parent looking for the scroll container, and an
+  // overflow-hidden card would masquerade as one, clipping the video
+  // to itself instead of to the chat viewport.
   return (
     <div
-      ref={placeholderRef}
-      className={wrapperClass}
-      style={wrapperStyle}
-      onContextMenu={(e) => {
-        if (!serverId) return;
-        e.preventDefault();
-        useImageContextMenuStore.getState().show({
-          x: e.clientX,
-          y: e.clientY,
-          serverId,
-          attachmentId: Number(attachment.id),
-          filename: attachment.filename,
-          mime: attachment.mime,
-          kind: "video",
-        });
-      }}
+      className="mt-2 rounded-lg border border-border bg-bg-light shadow-raised"
+      style={{ width: box.width }}
+      onContextMenu={onContextMenu}
     >
-      <button
-        onClick={onPlay}
-        disabled={isActive}
-        title={attachment.filename}
-        className="group relative flex h-full w-full cursor-pointer items-center justify-center bg-bg-darkest bg-cover bg-center disabled:cursor-default"
-        style={posterUrl ? { backgroundImage: `url(${posterUrl})` } : undefined}
+      {/* w-full, not width: box.width — the card is border-box, so its
+          content area is box.width minus the 1px border on each side.
+          Pinning the media to box.width pushed it 2px past the card's
+          right edge and left the meta bar visibly short of the video
+          it belongs to. The card keeps the full box.width footprint,
+          same as a standalone image. */}
+      <div
+        ref={placeholderRef}
+        className="w-full overflow-hidden rounded-t-lg bg-black"
+        style={{ height: box.height }}
       >
-        {posterUrl && (
-          <div className="pointer-events-none absolute inset-0 bg-black/30" />
-        )}
-        {!isActive && (
-          <div className="relative flex h-12 w-12 items-center justify-center rounded-lg bg-accent transition-all group-hover:scale-110 group-hover:bg-accent-hover group-">
-            <svg className="h-7 w-7 text-white" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          </div>
-        )}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-3.5 pb-2.5 pt-10 text-[11px]">
-          <span className="truncate text-text-secondary">{attachment.filename}</span>
-          <span className="shrink-0 tabular-nums text-text-muted">
-            {resumeStamp ? `Paused at ${resumeStamp}` : formatFileSize(attachment.sizeBytes)}
-          </span>
-        </div>
-      </button>
+        {surface}
+      </div>
+      <div className="flex items-center justify-between gap-3 px-[11px] py-2 font-mono text-[10.5px]">
+        <span className="min-w-0 truncate text-text-muted" title={attachment.filename}>
+          {attachment.filename}
+        </span>
+        <span className="video-meta-size shrink-0 tabular-nums text-text-muted">
+          {metaRight}
+        </span>
+      </div>
     </div>
   );
 }
@@ -598,12 +647,12 @@ function AudioItem({
         </div>
         <div className="min-w-0 flex-1">
           <div
-            className="truncate text-[13px] font-medium text-text-primary"
+            className="truncate text-sender font-medium text-text-primary"
             title={attachment.filename}
           >
             {attachment.filename}
           </div>
-          <div className="text-[11px] text-text-muted">
+          <div className="font-mono text-[10.5px] text-text-muted">
             {attachment.durationMs > 0 && `${formatDuration(attachment.durationMs)} · `}
             {formatFileSize(attachment.sizeBytes)}
           </div>
@@ -626,7 +675,7 @@ function AudioItem({
         <button
           onClick={onPlay}
           disabled={!!error}
-          className="flex h-8 w-10 shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-hover hover:scale-105 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-8 w-10 shrink-0 items-center justify-center rounded-md bg-accent text-on-accent transition-all hover:bg-accent-hover hover:scale-105 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
           title={playing ? "Pause" : "Play"}
         >
           {error ? (
@@ -656,12 +705,12 @@ function AudioItem({
             style={{ width: `${progress}%` }}
           />
           <div
-            className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-light opacity-0 shadow-[0_0_6px_rgba(69,150,255,0.3)] transition-opacity group-hover:opacity-100"
+            className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-light opacity-0 shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)] transition-opacity group-hover:opacity-100"
             style={{ left: `${progress}%` }}
           />
         </div>
 
-        <span className="shrink-0 select-none text-[11px] tabular-nums text-text-secondary">
+        <span className="shrink-0 select-none font-mono text-[10px] tabular-nums text-text-muted">
           {fmt(time)} / {fmt(displayDuration)}
         </span>
 

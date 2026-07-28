@@ -251,7 +251,7 @@ export function ServerPictureCropperModal({
           <button
             onClick={handleSave}
             disabled={uploading || !imgLoaded}
-            className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
+            className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
           >
             {uploading ? "Saving…" : "Save"}
           </button>

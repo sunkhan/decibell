@@ -3,99 +3,800 @@
    ═══════════════════════════════════════ */
 
 @import "@fontsource-variable/inter/index.css";
-@import "@fontsource-variable/outfit/index.css";
-
-@font-face {
-  font-family: "JetBrains Mono";
-  src: url("/fonts/JetBrainsMono-Regular.ttf") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-}
-
-@font-face {
-  font-family: "JetBrains Mono";
-  src: url("/fonts/JetBrainsMono-Medium.ttf") format("truetype");
-  font-weight: 500;
-  font-style: normal;
-}
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+/* JetBrains Mono comes from npm rather than the two local .ttf files
+ * tauri-client vendored, because those only covered 400 and 500. The
+ * console themes set almost all of their chrome in mono and lean on
+ * 600/700 for names and headers — against a 400/500-only family
+ * Chromium synthesises those, which smears the glyphs at 10-12px. */
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
+@import "@fontsource/jetbrains-mono/700.css";
 
 @import "tailwindcss";
 
+/* ═══════════════════════════════════════════════════════════════════
+   TOKEN ARCHITECTURE
+   ═══════════════════════════════════════════════════════════════════
+
+   Two layers:
+
+     --t-*      the active theme's raw palette. Swapped wholesale by
+                `document.documentElement.dataset.theme` (see the
+                :root[data-theme=…] blocks below).
+     --color-*  the DS token names every component already uses. They
+                never hold a literal — each one points at a --t-* role.
+
+   Because Tailwind v4 compiles @theme entries to plain custom
+   properties, flipping the data-theme attribute re-paints the entire
+   app with no React re-render and no class churn.
+
+   Role vocabulary (unchanged from DS v1, now theme-agnostic):
+     chrome   (titlebar, server bar, DM rail)  → darkest / titlebar / dmbar / primary
+     sidebar  (channel + member sidebars)      → dark / secondary / tertiary
+     content  (chat / main viewport)           → mid
+     raised   (cards, composer, popovers)      → light
+     high     (hover on raised)                → lighter
+     surface  (pressed / selected fills)       → surface
+     input    (text fields)                    → input
+
+   `bg-tertiary` MUST equal the member-list background: MembersList
+   draws its status-dot ring with border-bg-tertiary and any mismatch
+   shows up as a halo. Same reason bg-secondary tracks the sidebar.  */
+
 @theme {
-  /* ─── Decibell DS v1 ───
-     Surface ramp — one scale, six roles. Legacy token names are kept
-     so existing classes resolve; the *values* now map onto the roles:
-       chrome   (titlebar, server bar, DM rail)  → darkest / titlebar / dmbar
-       sidebar  (channel + member sidebars)      → dark
-       content  (chat / main viewport)           → mid
-       raised   (cards, composer, popovers)      → light
-       high     (hover on raised)                → lighter / surface
-       input    (text fields)                    → input / primary       */
-  --color-bg-darkest: #0b0d12;
-  --color-bg-dark: #10141c;
-  --color-bg-mid: #151a25;
-  --color-bg-light: #1d2433;
-  --color-bg-lighter: #273043;
-  --color-bg-surface: #2d374e;
+  --color-bg-darkest: var(--t-chrome);
+  --color-bg-dark: var(--t-sidebar);
+  --color-bg-mid: var(--t-content);
+  --color-bg-light: var(--t-raised);
+  --color-bg-lighter: var(--t-high);
+  --color-bg-surface: var(--t-surface);
 
-  --color-bg-titlebar: #0b0d12;
-  --color-bg-primary: #0f131c;
-  --color-bg-secondary: #161b27;
-  --color-bg-tertiary: #1b2130;
-  --color-bg-input: #11151f;
-  --color-bg-dmbar: #0b0d12;
-  /* Borders carry a faint blue tint so raised surfaces separate
-     without going lighter. */
-  --color-border: rgba(167, 184, 224, 0.09);
-  --color-border-divider: rgba(167, 184, 224, 0.05);
+  --color-bg-titlebar: var(--t-chrome);
+  --color-bg-primary: var(--t-chrome);
+  --color-bg-secondary: var(--t-sidebar);
+  --color-bg-tertiary: var(--t-sidebar);
+  --color-bg-input: var(--t-input);
+  --color-bg-dmbar: var(--t-chrome);
 
-  --color-accent: #4596ff;
-  --color-accent-bright: #79b4ff;
-  --color-accent-hover: #3282ef;
-  --color-accent-pressed: #2569cd;
-  --color-accent-soft: rgba(69, 150, 255, 0.12);
-  --color-accent-mid: rgba(69, 150, 255, 0.20);
+  --color-border: var(--t-border);
+  --color-border-divider: var(--t-divider);
 
-  --color-success: #45c46a;
-  --color-warning: #dca64a;
-  --color-error: #f2655c;
-  --color-danger: #f2655c;
+  --color-accent: var(--t-accent);
+  --color-accent-bright: var(--t-accent-bright);
+  --color-accent-hover: var(--t-accent-hover);
+  --color-accent-pressed: var(--t-accent-pressed);
+  --color-accent-soft: var(--t-accent-soft);
+  --color-accent-mid: var(--t-accent-mid);
+  /* Foreground for filled-accent surfaces (send button, play button,
+     active tile, toggle knobs). White everywhere except `console`,
+     whose mint accent needs near-black on top of it. */
+  --color-on-accent: var(--t-on-accent);
 
-  /* Text ramp — secondary/muted lifted ~1.3× vs the old values so
-     11–12px metadata stays above ~4.5:1 contrast on raised surfaces. */
-  --color-text-primary: #d9e1ee;
-  --color-text-bright: #f3f6fb;
-  --color-text-secondary: #94a2ba;
-  --color-text-muted: #6b7890;
-  --color-text-faint: #45526a;
+  --color-success: var(--t-success);
+  --color-warning: var(--t-warning);
+  --color-error: var(--t-error);
+  --color-danger: var(--t-error);
 
-  --color-surface-hover: rgba(167, 184, 224, 0.06);
-  --color-surface-active: rgba(167, 184, 224, 0.10);
+  --color-text-primary: var(--t-text-primary);
+  --color-text-bright: var(--t-text-bright);
+  --color-text-secondary: var(--t-text-secondary);
+  --color-text-muted: var(--t-text-muted);
+  --color-text-faint: var(--t-text-faint);
+
+  --color-surface-hover: var(--t-surface-hover);
+  --color-surface-active: var(--t-surface-active);
+  /* Message-row hover. A white wash on dark themes, a black one on
+     light — a single token so MessageBubble stays theme-blind. */
+  --color-row-hover: var(--t-row-hover);
 
   /* Radius scale: sm (rows, chips) · md (buttons, inputs, tiles,
-     avatars) · lg (cards, popovers, composer) · xl (modals). */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 20px;
+     avatars) · lg (cards, popovers, composer) · xl (modals).
+     `graphite*` is a 6/10/12/20 scale, `console*` a tight 3/4/4/8. */
+  --radius-sm: var(--t-radius-sm);
+  --radius-md: var(--t-radius-md);
+  --radius-lg: var(--t-radius-lg);
+  --radius-xl: var(--t-radius-xl);
 
   /* Elevation — three tokens + one focus ring. Use these instead of
-     ad-hoc shadow-[…] stacks. */
-  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.4);
-  --shadow-float: 0 8px 24px rgb(0 0 0 / 0.38), 0 0 0 1px rgb(167 184 224 / 0.07);
-  --shadow-modal: 0 24px 64px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(167 184 224 / 0.08);
-  --shadow-ring: 0 0 0 2px var(--color-accent-soft);
+     ad-hoc shadow-[…] stacks. Light themes carry an inset hairline in
+     --shadow-raised because a border alone doesn't separate white
+     cards from a near-white canvas. */
+  --shadow-raised: var(--t-shadow-raised);
+  --shadow-float: var(--t-shadow-float);
+  --shadow-modal: var(--t-shadow-modal);
+  --shadow-ring: var(--t-shadow-ring);
+  --shadow-glow: var(--t-shadow-glow);
 
-  /* Hover/state transitions default. Transform/layout transitions
-     should opt into duration-150 explicitly. */
-  --default-transition-duration: 100ms;
+  /* Hover/state transitions are instant.
+     This was 100ms, which reads as lag on any dense list: sweep the
+     cursor down the members panel and half a dozen rows sit mid-fade
+     at once, so the highlight smears along behind the pointer instead
+     of tracking it. Hover feedback wants to be immediate — it's
+     answering "where am I", not performing.
+     Deliberate motion opts in and is unaffected: the theme swap and
+     tile lifts at duration-150, modals at duration-300, plus every
+     keyframe animation below. */
+  --default-transition-duration: 0ms;
 
-  --font-sans: "Inter Variable", "Inter", "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  /* DM Sans retired — channel/list text is Inter like the rest of the
-     UI. Token kept so font-channel classes stay valid. */
-  --font-channel: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Outfit Variable", "Outfit", "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--t-font-ui);
+  --font-mono: var(--t-font-meta);
+  --font-channel: var(--t-font-channel);
+  --font-display: var(--t-font-display);
+
+  /* ─── Type scale ───
+     Per-theme, because the two families don't share a size. `console*`
+     set nearly all chrome in JetBrains Mono, which runs wider than
+     Inter at the same size, so every role steps down ~0.5–1px and the
+     uppercase labels open up to compensate. Sizes are the mock's, read
+     off the design bundle 1:1 (its 238px sidebar ≈ the app's 240px
+     default, so the artboard is not scaled).
+
+     One role per line of the design, not one per component — several
+     components share `text-section`, and that's the point.           */
+  --text-title: calc(var(--t-fs-title) * var(--ui-text-scale));        /* sidebar + chat headers   */
+  --text-body: calc(var(--t-fs-body) * var(--ui-text-scale));          /* message prose            */
+  --text-sender: calc(var(--t-fs-sender) * var(--ui-text-scale));      /* message author           */
+  --text-channel: calc(var(--t-fs-channel) * var(--ui-text-scale));    /* channel rows             */
+  --text-member: calc(var(--t-fs-member) * var(--ui-text-scale));      /* member + participant rows*/
+  --text-section: calc(var(--t-fs-section) * var(--ui-text-scale));    /* uppercase group labels   */
+  --text-meta: calc(var(--t-fs-meta) * var(--ui-text-scale));          /* timestamps, file meta    */
+  --text-micro: calc(var(--t-fs-micro) * var(--ui-text-scale));        /* counts, transport times  */
+
+  /* Message-body leading. The design bundle asks for 1.55 (1.5 under
+     console); this runs tighter, closer to the ~1.375 chat clients
+     converge on. One token so it stays a single dial. */
+  --leading-body: var(--t-lh-body);
+
+  --tracking-title: var(--t-ls-title);
+  --tracking-section: var(--t-ls-section);
+  --tracking-wordmark: var(--t-ls-wordmark);
+
+  /* `graphite*` 600 / `console*` 700 — mono reads lighter at the same
+     weight, so the console family leans on the next step up. */
+  --font-weight-emphasis: var(--t-fw-emphasis);
+}
+
+:root {
+  /* User-tunable scales (Settings → Appearance). Both default to 1 and
+     are overwritten as inline styles on <html> by uiStore.applyUiScale,
+     so they beat everything here. Kept as two knobs on purpose: text
+     size and list density are independent preferences — someone on a
+     4K panel may want larger type with the rows left tight. */
+  /* The user picks an absolute body size in px; --ui-text-size-n is
+     that number, unitless. Everything else in the type scale is a
+     multiple of it, so the scale is the ratio between what they asked
+     for and the theme's natural body size — 13.5 under graphite, 13
+     under console. Doing the division here rather than in JS means a
+     theme switch re-derives it for free and the pre-mount script
+     doesn't need to know either number.
+
+     The fallback is the shipped default, so a first run with nothing
+     in localStorage paints at the right size instead of flashing the
+     palette's own body size. Keep it in step with
+     DEFAULT_TEXT_SIZE_PX in uiStore.ts. */
+  --ui-text-size-default: 14.5;
+  --ui-text-scale: calc(var(--ui-text-size-n, var(--ui-text-size-default)) / var(--t-fs-body-n));
+  --ui-row-scale: 1;
+
+  /* Font stacks referenced by the palettes. */
+  --font-stack-ui: "Inter Variable", "Inter", "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-stack-jetbrains: "JetBrains Mono", ui-monospace, monospace;
+  --font-stack-plex: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* Identity ramp — avatar fills and sender-name colours, indexed by
+     the same hash in utils/colors.ts. `av` is a fill (always paired
+     with --color-av-fg), `name` is 15px text on the content surface,
+     so the two ramps are graded independently. Declared here rather
+     than in @theme because nothing consumes them as a utility class —
+     they're read straight out of inline styles — and Tailwind prunes
+     theme variables it can't see a use for. */
+  --color-av-fg: var(--t-av-fg);
+  --color-av-1: var(--t-av-1);
+  --color-av-2: var(--t-av-2);
+  --color-av-3: var(--t-av-3);
+  --color-av-4: var(--t-av-4);
+  --color-av-5: var(--t-av-5);
+  --color-av-6: var(--t-av-6);
+  --color-av-7: var(--t-av-7);
+  --color-av-8: var(--t-av-8);
+  --color-name-1: var(--t-name-1);
+  --color-name-2: var(--t-name-2);
+  --color-name-3: var(--t-name-3);
+  --color-name-4: var(--t-name-4);
+  --color-name-5: var(--t-name-5);
+  --color-name-6: var(--t-name-6);
+  --color-name-7: var(--t-name-7);
+  --color-name-8: var(--t-name-8);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   THEME PALETTES
+   ═══════════════════════════════════════════════════════════════════
+
+   Foreground contrast rule (non-negotiable): 11–12px metadata must
+   clear ~4.5:1 on the surface it sits on. The light ramps below are
+   *corrected*, not mechanically inverted — inverting the dark muted
+   ramp lands around 2.4–2.9:1. Do not "simplify" them back.
+
+   text-faint is reserved for non-textual use (inactive dots,
+   dividers). Any text that used to reach for it — the DECIBELL
+   wordmark, the composer placeholder — uses text-muted instead,
+   which is why the two are equal in several themes.                */
+
+/* ─── graphite (dark) — default ─────────────────────────────────── */
+:root,
+:root[data-theme="graphite"] {
+  --t-chrome: #0e1116;
+  --t-sidebar: #14181f;
+  --t-content: #191e26;
+  --t-raised: #222834;
+  --t-high: #2b3240;
+  --t-surface: #333b4c;
+  --t-input: #14181f;
+
+  --t-border: rgba(255, 255, 255, 0.07);
+  --t-divider: rgba(255, 255, 255, 0.05);
+  --t-surface-hover: rgba(255, 255, 255, 0.045);
+  --t-surface-active: rgba(255, 255, 255, 0.08);
+  --t-row-hover: rgba(255, 255, 255, 0.015);
+
+  --t-accent: #4f8cff;
+  --t-accent-bright: #8fb4ff;
+  --t-accent-hover: #3d7bef;
+  --t-accent-pressed: #2f66cf;
+  --t-accent-soft: rgba(79, 140, 255, 0.13);
+  --t-accent-mid: rgba(79, 140, 255, 0.20);
+  --t-on-accent: #ffffff;
+
+  --t-success: #4ec97a;
+  --t-warning: #dca64a;
+  --t-error: #f2655c;
+
+  --t-text-primary: #e4e8ef;
+  --t-text-bright: #f2f5f9;
+  --t-text-secondary: #98a2b3;
+  --t-text-muted: #8792a5;
+  --t-text-faint: #8792a5;
+
+  --t-radius-sm: 6px;
+  --t-radius-md: 10px;
+  --t-radius-lg: 12px;
+  --t-radius-xl: 20px;
+
+  --t-shadow-raised: 0 1px 2px rgb(0 0 0 / 0.4);
+  --t-shadow-float: 0 8px 24px rgb(0 0 0 / 0.38), 0 0 0 1px rgb(255 255 255 / 0.06);
+  --t-shadow-modal: 0 24px 64px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(255 255 255 / 0.07);
+  --t-shadow-ring: 0 0 0 2px var(--color-accent-soft);
+  --t-shadow-glow: 0 0 8px rgba(79, 140, 255, 0.55);
+
+  --t-scrollbar: rgba(255, 255, 255, 0.08);
+  --t-scrollbar-hover: rgba(255, 255, 255, 0.14);
+
+  --t-font-ui: var(--font-stack-ui);
+  --t-font-meta: var(--font-stack-plex);
+  --t-font-channel: var(--font-stack-ui);
+  --t-font-display: var(--font-stack-ui);
+
+
+  /* Type scale — graphite (Inter chrome, IBM Plex Mono metadata). */
+  --t-fs-title: 14px;
+  --t-fs-body-n: 13.5;
+  --t-lh-body: 1.4;
+  --t-fs-body: 13.5px;
+  --t-fs-sender: 13.5px;
+  --t-fs-channel: 13.5px;
+  --t-fs-member: 13px;
+  --t-fs-section: 10px;
+  --t-fs-meta: 10.5px;
+  --t-fs-micro: 10px;
+  --t-ls-title: -0.02em;
+  --t-ls-section: 0.12em;
+  --t-ls-wordmark: 0.14em;
+  --t-fw-emphasis: 600;
+
+  /* DS v1 squircle: a ratio, so every avatar size reads as the same
+     shape. Percentage radii resolve against the box, and avatars are
+     square, so 26% is the old size x 0.26 with no JS. */
+  --radius-avatar: 26%;
+
+  --t-av-fg: #ffffff;
+  --t-av-1: #4f8cff;
+  --t-av-2: #d97b32;
+  --t-av-3: #8f5fe0;
+  --t-av-4: #35a85e;
+  --t-av-5: #c08a1c;
+  --t-av-6: #d9463c;
+  --t-av-7: #c94ecf;
+  --t-av-8: #4b8fd6;
+  --t-name-1: #8fb4ff;
+  --t-name-2: #e0a476;
+  --t-name-3: #bfa0f0;
+  --t-name-4: #86c99a;
+  --t-name-5: #d9bd77;
+  --t-name-6: #e08a8a;
+  --t-name-7: #d9a0e8;
+  --t-name-8: #9ec8f0;
+}
+
+/* ─── graphite-light ────────────────────────────────────────────── */
+:root[data-theme="graphite-light"] {
+  --t-chrome: #eceef2;
+  --t-sidebar: #f4f5f8;
+  --t-content: #fbfbfd;
+  --t-raised: #ffffff;
+  --t-high: #f1f3f6;
+  --t-surface: #e7eaef;
+  --t-input: #ffffff;
+
+  --t-border: rgba(15, 20, 30, 0.09);
+  --t-divider: rgba(15, 20, 30, 0.07);
+  --t-surface-hover: rgba(15, 20, 30, 0.04);
+  --t-surface-active: rgba(15, 20, 30, 0.07);
+  --t-row-hover: rgba(15, 20, 30, 0.02);
+
+  --t-accent: #2f6fe0;
+  --t-accent-bright: #1f57bd;
+  --t-accent-hover: #2864cf;
+  --t-accent-pressed: #1f52ab;
+  --t-accent-soft: rgba(47, 111, 224, 0.11);
+  --t-accent-mid: rgba(47, 111, 224, 0.18);
+  --t-on-accent: #ffffff;
+
+  --t-success: #22a75a;
+  --t-warning: #b07d1e;
+  --t-error: #d54238;
+
+  --t-text-primary: #171b22;
+  --t-text-bright: #12161d;
+  --t-text-secondary: #5b6474;
+  --t-text-muted: #5f6877;
+  --t-text-faint: #5f6877;
+
+  --t-radius-sm: 6px;
+  --t-radius-md: 10px;
+  --t-radius-lg: 12px;
+  --t-radius-xl: 20px;
+
+  --t-shadow-raised: 0 1px 3px rgba(15, 20, 30, 0.10), inset 0 0 0 1px rgba(15, 20, 30, 0.07);
+  --t-shadow-float: 0 8px 24px rgba(15, 20, 30, 0.14), 0 0 0 1px rgba(15, 20, 30, 0.08);
+  --t-shadow-modal: 0 24px 64px rgba(15, 20, 30, 0.22), 0 0 0 1px rgba(15, 20, 30, 0.10);
+  /* accent-soft at .11 is too faint to read as focus on paper. */
+  --t-shadow-ring: 0 0 0 2px rgba(47, 111, 224, 0.22);
+  --t-shadow-glow: 0 0 0 3px rgba(47, 111, 224, 0.18);
+
+  --t-scrollbar: rgba(15, 20, 30, 0.16);
+  --t-scrollbar-hover: rgba(15, 20, 30, 0.28);
+
+  --t-font-ui: var(--font-stack-ui);
+  --t-font-meta: var(--font-stack-plex);
+  --t-font-channel: var(--font-stack-ui);
+  --t-font-display: var(--font-stack-ui);
+
+
+  /* Type scale — graphite (Inter chrome, IBM Plex Mono metadata). */
+  --t-fs-title: 14px;
+  --t-fs-body-n: 13.5;
+  --t-lh-body: 1.4;
+  --t-fs-body: 13.5px;
+  --t-fs-sender: 13.5px;
+  --t-fs-channel: 13.5px;
+  --t-fs-member: 13px;
+  --t-fs-section: 10px;
+  --t-fs-meta: 10.5px;
+  --t-fs-micro: 10px;
+  --t-ls-title: -0.02em;
+  --t-ls-section: 0.12em;
+  --t-ls-wordmark: 0.14em;
+  --t-fw-emphasis: 600;
+
+  /* DS v1 squircle: a ratio, so every avatar size reads as the same
+     shape. Percentage radii resolve against the box, and avatars are
+     square, so 26% is the old size x 0.26 with no JS. */
+  --radius-avatar: 26%;
+
+  --t-av-fg: #ffffff;
+  --t-av-1: #93a0b3;
+  --t-av-2: #2f6fe0;
+  --t-av-3: #7a4fd0;
+  --t-av-4: #5c8a6b;
+  --t-av-5: #a4707f;
+  --t-av-6: #b08a3c;
+  --t-av-7: #8f4f9e;
+  --t-av-8: #3f7fa8;
+  --t-name-1: #2f6fe0;
+  --t-name-2: #9a5a1e;
+  --t-name-3: #6a3fb0;
+  --t-name-4: #256b42;
+  --t-name-5: #7d5f10;
+  --t-name-6: #b03a32;
+  --t-name-7: #93359e;
+  --t-name-8: #275f96;
+}
+
+/* ─── console (dark) ────────────────────────────────────────────── */
+:root[data-theme="console"] {
+  --t-chrome: #07080a;
+  --t-sidebar: #0c0e11;
+  --t-content: #101215;
+  --t-raised: #17191b;
+  --t-high: #1e2124;
+  --t-surface: #23272a;
+  --t-input: #0c0e11;
+
+  --t-border: rgba(255, 255, 255, 0.07);
+  --t-divider: rgba(255, 255, 255, 0.06);
+  --t-surface-hover: rgba(255, 255, 255, 0.03);
+  --t-surface-active: rgba(255, 255, 255, 0.06);
+  --t-row-hover: rgba(255, 255, 255, 0.02);
+
+  --t-accent: #7ef0a8;
+  --t-accent-bright: #a8f7c4;
+  --t-accent-hover: #66e094;
+  --t-accent-pressed: #4fcd80;
+  --t-accent-soft: rgba(126, 240, 168, 0.10);
+  --t-accent-mid: rgba(126, 240, 168, 0.25);
+  --t-on-accent: #07120c;
+
+  --t-success: #7ef0a8;
+  --t-warning: #dca64a;
+  --t-error: #f0786e;
+
+  --t-text-primary: #dfe4e2;
+  --t-text-bright: #eef4f1;
+  --t-text-secondary: #8b958f;
+  --t-text-muted: #869089;
+  --t-text-faint: #7f8a84;
+
+  --t-radius-sm: 3px;
+  --t-radius-md: 4px;
+  --t-radius-lg: 4px;
+  --t-radius-xl: 8px;
+
+  --t-shadow-raised: 0 1px 2px rgb(0 0 0 / 0.5);
+  --t-shadow-float: 0 8px 24px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(255 255 255 / 0.07);
+  --t-shadow-modal: 0 24px 64px rgb(0 0 0 / 0.6), 0 0 0 1px rgb(255 255 255 / 0.08);
+  --t-shadow-ring: 0 0 0 2px var(--color-accent-mid);
+  --t-shadow-glow: 0 0 8px #7ef0a8;
+
+  --t-scrollbar: rgba(255, 255, 255, 0.08);
+  --t-scrollbar-hover: rgba(255, 255, 255, 0.14);
+
+  /* Mono chrome: channel names, member names, timestamps, section
+     labels and headings are JetBrains Mono; only message bodies and
+     other running prose stay Inter. */
+  --t-font-ui: var(--font-stack-ui);
+  --t-font-meta: var(--font-stack-jetbrains);
+  --t-font-channel: var(--font-stack-jetbrains);
+  --t-font-display: var(--font-stack-jetbrains);
+
+
+  /* Type scale — console. Mono runs wide, so each role steps down and
+     the uppercase labels open up to hold the same rhythm. */
+  --t-fs-title: 13px;
+  --t-fs-body-n: 13;
+  --t-lh-body: 1.4;
+  --t-fs-body: 13px;
+  --t-fs-sender: 12.5px;
+  --t-fs-channel: 12.5px;
+  --t-fs-member: 12px;
+  --t-fs-section: 9.5px;
+  --t-fs-meta: 10px;
+  --t-fs-micro: 9.5px;
+  --t-ls-title: 0em;
+  --t-ls-section: 0.16em;
+  --t-ls-wordmark: 0.2em;
+  --t-fw-emphasis: 700;
+
+  /* Flat corners at every size — the squircle ratio would round a
+     64px profile avatar to 17px and break out of its 8px ring. */
+  --radius-avatar: var(--t-radius-md);
+
+  --t-av-fg: #ffffff;
+  --t-av-1: #2f6b4c;
+  --t-av-2: #6b5a2f;
+  --t-av-3: #4b4472;
+  --t-av-4: #2f6b58;
+  --t-av-5: #6b5f2f;
+  --t-av-6: #8a4a44;
+  --t-av-7: #6b3f66;
+  --t-av-8: #34586b;
+  --t-name-1: #a8f7c4;
+  --t-name-2: #d8c39a;
+  --t-name-3: #bdb4dc;
+  --t-name-4: #9fd9b4;
+  --t-name-5: #d5cf9a;
+  --t-name-6: #e6a09a;
+  --t-name-7: #d3aacf;
+  --t-name-8: #a8c6d8;
+}
+
+/* ─── console-light ─────────────────────────────────────────────── */
+:root[data-theme="console-light"],
+:root[data-theme="console-split"] {
+  --t-chrome: #e7eae8;
+  --t-sidebar: #eff1ef;
+  --t-content: #f9faf9;
+  --t-raised: #ffffff;
+  --t-high: #d5dcd8;
+  --t-surface: #e9ebe9;
+  --t-input: #eff1ef;
+
+  --t-border: rgba(10, 25, 18, 0.11);
+  --t-divider: rgba(10, 25, 18, 0.10);
+  --t-surface-hover: rgba(10, 25, 18, 0.045);
+  --t-surface-active: rgba(10, 25, 18, 0.08);
+  --t-row-hover: rgba(10, 25, 18, 0.02);
+
+  --t-accent: #0f7a45;
+  --t-accent-bright: #0b6238;
+  --t-accent-hover: #0d6b3c;
+  --t-accent-pressed: #0a5730;
+  --t-accent-soft: rgba(15, 122, 69, 0.09);
+  --t-accent-mid: rgba(15, 122, 69, 0.25);
+  --t-on-accent: #ffffff;
+
+  --t-success: #0f7a45;
+  --t-warning: #b07d1e;
+  --t-error: #c8493d;
+
+  --t-text-primary: #161c19;
+  --t-text-bright: #0c1310;
+  --t-text-secondary: #5a665f;
+  --t-text-muted: #5c6863;
+  --t-text-faint: #616d67;
+
+  --t-radius-sm: 3px;
+  --t-radius-md: 4px;
+  --t-radius-lg: 4px;
+  --t-radius-xl: 8px;
+
+  --t-shadow-raised: 0 1px 3px rgba(10, 25, 18, 0.10), inset 0 0 0 1px rgba(10, 25, 18, 0.08);
+  --t-shadow-float: 0 8px 24px rgba(10, 25, 18, 0.14), 0 0 0 1px rgba(10, 25, 18, 0.09);
+  --t-shadow-modal: 0 24px 64px rgba(10, 25, 18, 0.22), 0 0 0 1px rgba(10, 25, 18, 0.11);
+  --t-shadow-ring: 0 0 0 2px rgba(15, 122, 69, 0.22);
+  /* The mint glow doesn't survive on paper — a tight ring reads as
+     "active" where a bloom just muddies. */
+  --t-shadow-glow: 0 0 0 3px rgba(15, 122, 69, 0.16);
+
+  --t-scrollbar: rgba(10, 25, 18, 0.16);
+  --t-scrollbar-hover: rgba(10, 25, 18, 0.28);
+
+  --t-font-ui: var(--font-stack-ui);
+  --t-font-meta: var(--font-stack-jetbrains);
+  --t-font-channel: var(--font-stack-jetbrains);
+  --t-font-display: var(--font-stack-jetbrains);
+
+
+  /* Type scale — console. Mono runs wide, so each role steps down and
+     the uppercase labels open up to hold the same rhythm. */
+  --t-fs-title: 13px;
+  --t-fs-body-n: 13;
+  --t-lh-body: 1.4;
+  --t-fs-body: 13px;
+  --t-fs-sender: 12.5px;
+  --t-fs-channel: 12.5px;
+  --t-fs-member: 12px;
+  --t-fs-section: 9.5px;
+  --t-fs-meta: 10px;
+  --t-fs-micro: 9.5px;
+  --t-ls-title: 0em;
+  --t-ls-section: 0.16em;
+  --t-ls-wordmark: 0.2em;
+  --t-fw-emphasis: 700;
+
+  /* Flat corners at every size — the squircle ratio would round a
+     64px profile avatar to 17px and break out of its 8px ring. */
+  --radius-avatar: var(--t-radius-md);
+
+  --t-av-fg: #ffffff;
+  --t-av-1: #3f4a45;
+  --t-av-2: #0f7a45;
+  --t-av-3: #443a72;
+  --t-av-4: #2b6b47;
+  --t-av-5: #78384e;
+  --t-av-6: #655519;
+  --t-av-7: #6b3f66;
+  --t-av-8: #2f5f7a;
+  --t-name-1: #0f7a45;
+  --t-name-2: #7a5a1e;
+  --t-name-3: #4b4483;
+  --t-name-4: #2b6b47;
+  --t-name-5: #6b5a17;
+  --t-name-6: #a8453b;
+  --t-name-7: #7d3a70;
+  --t-name-8: #2f5f7a;
+}
+
+/* ─── console-split ─────────────────────────────────────────────────
+   Not a third palette: `console` chrome around a `console-light`
+   canvas. The block above already gave it the light content ramp;
+   here we publish the dark chrome ramp under --tc-*, which
+   .chrome-scope (below) picks up.                                   */
+:root[data-theme="console-split"] {
+  --tc-chrome: #07080a;
+  --tc-sidebar: #0c0e11;
+  --tc-content: #101215;
+  --tc-raised: #17191b;
+  --tc-high: #1e2124;
+  --tc-surface: #23272a;
+  --tc-input: #0c0e11;
+
+  --tc-border: rgba(255, 255, 255, 0.07);
+  --tc-divider: rgba(255, 255, 255, 0.06);
+  --tc-surface-hover: rgba(255, 255, 255, 0.03);
+  --tc-surface-active: rgba(255, 255, 255, 0.06);
+  --tc-row-hover: rgba(255, 255, 255, 0.02);
+
+  --tc-accent: #7ef0a8;
+  --tc-accent-bright: #a8f7c4;
+  --tc-accent-hover: #66e094;
+  --tc-accent-pressed: #4fcd80;
+  --tc-accent-soft: rgba(126, 240, 168, 0.10);
+  --tc-accent-mid: rgba(126, 240, 168, 0.25);
+  --tc-on-accent: #07120c;
+
+  --tc-success: #7ef0a8;
+  --tc-warning: #dca64a;
+  --tc-error: #f0786e;
+
+  --tc-text-primary: #dfe4e2;
+  --tc-text-bright: #eef4f1;
+  --tc-text-secondary: #8b958f;
+  --tc-text-muted: #869089;
+  --tc-text-faint: #7f8a84;
+
+  --tc-shadow-raised: 0 1px 2px rgb(0 0 0 / 0.5);
+  --tc-shadow-float: 0 8px 24px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(255 255 255 / 0.07);
+  --tc-shadow-ring: 0 0 0 2px rgba(126, 240, 168, 0.25);
+  --tc-shadow-glow: 0 0 8px #7ef0a8;
+
+  --tc-av-fg: #ffffff;
+  --tc-av-1: #2f6b4c;
+  --tc-av-2: #6b5a2f;
+  --tc-av-3: #4b4472;
+  --tc-av-4: #2f6b58;
+  --tc-av-5: #6b5f2f;
+  --tc-av-6: #8a4a44;
+  --tc-av-7: #6b3f66;
+  --tc-av-8: #34586b;
+  --tc-name-1: #a8f7c4;
+  --tc-name-2: #d8c39a;
+  --tc-name-3: #bdb4dc;
+  --tc-name-4: #9fd9b4;
+  --tc-name-5: #d5cf9a;
+  --tc-name-6: #e6a09a;
+  --tc-name-7: #d3aacf;
+  --tc-name-8: #a8c6d8;
+}
+
+/* ─── Chrome scope ──────────────────────────────────────────────────
+   @theme's --color-* assignments are substituted once, at :root, so
+   re-declaring --t-* further down the tree would do nothing. Split
+   themes therefore re-resolve the --color-* layer itself on the
+   chrome subtree, reading the chrome palette with the content palette
+   as fallback. Themes that publish no --tc-* fall through to exactly
+   the values they already had, so this class is inert in the other
+   four themes.                                                       */
+.chrome-scope {
+  --color-bg-darkest: var(--tc-chrome, var(--t-chrome));
+  --color-bg-dark: var(--tc-sidebar, var(--t-sidebar));
+  --color-bg-mid: var(--tc-content, var(--t-content));
+  --color-bg-light: var(--tc-raised, var(--t-raised));
+  --color-bg-lighter: var(--tc-high, var(--t-high));
+  --color-bg-surface: var(--tc-surface, var(--t-surface));
+  --color-bg-titlebar: var(--tc-chrome, var(--t-chrome));
+  --color-bg-primary: var(--tc-chrome, var(--t-chrome));
+  --color-bg-secondary: var(--tc-sidebar, var(--t-sidebar));
+  --color-bg-tertiary: var(--tc-sidebar, var(--t-sidebar));
+  --color-bg-input: var(--tc-input, var(--t-input));
+  --color-bg-dmbar: var(--tc-chrome, var(--t-chrome));
+
+  --color-border: var(--tc-border, var(--t-border));
+  --color-border-divider: var(--tc-divider, var(--t-divider));
+
+  --color-accent: var(--tc-accent, var(--t-accent));
+  --color-accent-bright: var(--tc-accent-bright, var(--t-accent-bright));
+  --color-accent-hover: var(--tc-accent-hover, var(--t-accent-hover));
+  --color-accent-pressed: var(--tc-accent-pressed, var(--t-accent-pressed));
+  --color-accent-soft: var(--tc-accent-soft, var(--t-accent-soft));
+  --color-accent-mid: var(--tc-accent-mid, var(--t-accent-mid));
+  --color-on-accent: var(--tc-on-accent, var(--t-on-accent));
+
+  --color-success: var(--tc-success, var(--t-success));
+  --color-warning: var(--tc-warning, var(--t-warning));
+  --color-error: var(--tc-error, var(--t-error));
+  --color-danger: var(--tc-error, var(--t-error));
+
+  --color-text-primary: var(--tc-text-primary, var(--t-text-primary));
+  --color-text-bright: var(--tc-text-bright, var(--t-text-bright));
+  --color-text-secondary: var(--tc-text-secondary, var(--t-text-secondary));
+  --color-text-muted: var(--tc-text-muted, var(--t-text-muted));
+  --color-text-faint: var(--tc-text-faint, var(--t-text-faint));
+
+  --color-surface-hover: var(--tc-surface-hover, var(--t-surface-hover));
+  --color-surface-active: var(--tc-surface-active, var(--t-surface-active));
+  --color-row-hover: var(--tc-row-hover, var(--t-row-hover));
+
+  --color-av-fg: var(--tc-av-fg, var(--t-av-fg));
+  --color-av-1: var(--tc-av-1, var(--t-av-1));
+  --color-av-2: var(--tc-av-2, var(--t-av-2));
+  --color-av-3: var(--tc-av-3, var(--t-av-3));
+  --color-av-4: var(--tc-av-4, var(--t-av-4));
+  --color-av-5: var(--tc-av-5, var(--t-av-5));
+  --color-av-6: var(--tc-av-6, var(--t-av-6));
+  --color-av-7: var(--tc-av-7, var(--t-av-7));
+  --color-av-8: var(--tc-av-8, var(--t-av-8));
+  --color-name-1: var(--tc-name-1, var(--t-name-1));
+  --color-name-2: var(--tc-name-2, var(--t-name-2));
+  --color-name-3: var(--tc-name-3, var(--t-name-3));
+  --color-name-4: var(--tc-name-4, var(--t-name-4));
+  --color-name-5: var(--tc-name-5, var(--t-name-5));
+  --color-name-6: var(--tc-name-6, var(--t-name-6));
+  --color-name-7: var(--tc-name-7, var(--t-name-7));
+  --color-name-8: var(--tc-name-8, var(--t-name-8));
+}
+
+/* Shadows are the one family Tailwind resolves statically: the
+   shadow-* utilities compile to `--tw-shadow: var(--t-shadow-…)` and
+   never touch the --shadow-* layer, so an override has to land on the
+   palette variable itself. That rules out the `var(--tc-x, var(--t-x))`
+   fallback used above — a custom property may not reference itself —
+   so the swap is scoped to the one theme that needs it. */
+:root[data-theme="console-split"] .chrome-scope {
+  --t-shadow-raised: var(--tc-shadow-raised);
+  --t-shadow-float: var(--tc-shadow-float);
+  --t-shadow-ring: var(--tc-shadow-ring);
+  --t-shadow-glow: var(--tc-shadow-glow);
+}
+
+/* A row in one of the scrollable lists — members, DM conversations,
+   text/voice channels. Owns its own padding and gap so the List
+   density setting has a single place to multiply, and publishes
+   --avatar-scale so the avatars inside grow with the row instead of
+   rattling around in it.
+
+   Base metrics come from the list container (--list-row-*), because
+   the three lists don't share them and a row shouldn't have to
+   restate its own geometry on every render. */
+.list-row {
+  --avatar-scale: var(--ui-row-scale);
+  padding-block: calc(var(--list-row-pad-y, 6px) * var(--ui-row-scale));
+  padding-inline: calc(var(--list-row-pad-x, 10px) * var(--ui-row-scale));
+  gap: calc(var(--list-row-gap, 10px) * var(--ui-row-scale));
+}
+
+/* Presence dot pinned to an avatar's corner. Tracks --avatar-scale so
+   it stays proportional instead of shrinking into the corner as the
+   avatar grows. */
+.avatar-dot {
+  width: calc(var(--avatar-dot-size, 11px) * var(--avatar-scale, 1));
+  height: calc(var(--avatar-dot-size, 11px) * var(--avatar-scale, 1));
+}
+
+/* The video attachment's meta bar reads its size/resume stamp in the
+   signal accent under the console themes and in plain muted under the
+   graphite ones — the one place the two families diverge by role
+   rather than by value, so it can't come from a shared token. */
+:root[data-theme^="console"] .video-meta-size {
+  color: var(--color-accent);
+}
+
+/* The theme-preview swatches in Settings → Appearance render one card
+   per theme, each showing *its own* palette rather than the active
+   one. Same trick as .chrome-scope: re-resolve the --color-* layer
+   from the --p-* palette the card sets inline. */
+.theme-preview {
+  --color-bg-darkest: var(--p-chrome);
+  --color-bg-dark: var(--p-sidebar);
+  --color-bg-mid: var(--p-content);
+  --color-bg-light: var(--p-raised, var(--p-content));
+  --color-accent: var(--p-accent);
+  --color-border-divider: var(--p-divider);
+  --color-text-secondary: var(--p-text-secondary);
+  --color-text-muted: var(--p-text-muted);
 }
 
 @layer base {
@@ -103,9 +804,13 @@
     @apply bg-bg-primary text-text-primary font-sans antialiased;
     margin: 0;
     overflow: hidden;
-    /* DS v1 weight discipline: body 450, labels 500, emphasis 600.
-       The variable font makes 450 free. */
-    font-weight: 450;
+    /* DS v1 weight discipline was body 450, labels 500, emphasis 600.
+       Body drops to 400: at 450 Inter's already-generous caps and
+       advances read heavier than the chat clients people compare
+       against, and the design bundle specifies 400 for message bodies
+       anyway. Labels and emphasis are unchanged — they set their own
+       weight. */
+    font-weight: 400;
     letter-spacing: -0.01em;
     /* Inter typographic alternates: cv11 (single-storey a), ss01
        (open digits), ss03 (alt curly braces). Matches tauri-client
@@ -119,7 +824,7 @@
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+    scrollbar-color: var(--t-scrollbar) transparent;
   }
 
   ::-webkit-scrollbar {
@@ -131,12 +836,12 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--t-scrollbar);
     border-radius: 3px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.14);
+    background: var(--t-scrollbar-hover);
   }
 }
 
@@ -152,14 +857,15 @@ input, textarea, [contenteditable], .select-text, .select-text * {
 }
 
 /* Style browser-native password field indicators to match accent color. */
-input[type="password"]::-ms-reveal {
-  filter: invert(48%) sepia(79%) saturate(2476%) hue-rotate(203deg) brightness(100%) contrast(98%);
-}
+input[type="password"]::-ms-reveal,
 input[type="password"]::-webkit-caps-lock-indicator {
   filter: invert(48%) sepia(79%) saturate(2476%) hue-rotate(203deg) brightness(100%) contrast(98%);
 }
 
-/* Custom range slider — accent-coloured thumb on a flat track. */
+/* Custom range slider — accent-coloured thumb on a flat track. The
+ * ring around the thumb has to match whatever surface the slider was
+ * dropped onto, so hosts set --slider-ring; the fallback covers the
+ * common case of a slider on a raised card. */
 .custom-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -167,7 +873,7 @@ input[type="password"]::-webkit-caps-lock-indicator {
   height: 14px;
   border-radius: 50%;
   background: var(--color-accent);
-  border: 2px solid var(--color-bg-primary);
+  border: 2px solid var(--slider-ring, var(--color-bg-light));
   cursor: pointer;
 }
 .custom-slider::-moz-range-thumb {
@@ -175,7 +881,7 @@ input[type="password"]::-webkit-caps-lock-indicator {
   height: 14px;
   border-radius: 50%;
   background: var(--color-accent);
-  border: 2px solid var(--color-bg-primary);
+  border: 2px solid var(--slider-ring, var(--color-bg-light));
   cursor: pointer;
 }
 
@@ -212,17 +918,19 @@ html, body, #root {
 
 /* Drop-target "available" state — slow accent glow on every droppable
  * surface while a file drag is in flight. Animates only box-shadow so
- * it's GPU-composited (no layout/paint hit). */
+ * it's GPU-composited (no layout/paint hit). Mixed off --color-accent
+ * rather than a literal blue so the glow follows the theme instead of
+ * staying blue under the mint palettes. */
 @keyframes dropPulse {
   0%, 100% {
     box-shadow:
-      0 0 0 1px rgba(69, 150, 255, 0.32),
-      0 0 14px 0 rgba(69, 150, 255, 0.10);
+      0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent),
+      0 0 14px 0 color-mix(in srgb, var(--color-accent) 10%, transparent);
   }
   50% {
     box-shadow:
-      0 0 0 1.5px rgba(69, 150, 255, 0.60),
-      0 0 22px 4px rgba(69, 150, 255, 0.22);
+      0 0 0 1.5px color-mix(in srgb, var(--color-accent) 60%, transparent),
+      0 0 22px 4px color-mix(in srgb, var(--color-accent) 22%, transparent);
   }
 }
 
@@ -267,11 +975,14 @@ html, body, #root {
   cursor: text;
 }
 
+/* text-muted, never text-faint: the composer placeholder is the
+ * weakest contrast link in every theme and faint drops it below the
+ * 4.5:1 floor on the light canvases. */
 .rich-input[data-empty="true"]::before {
   content: attr(data-placeholder);
-  color: var(--color-text-faint);
+  color: var(--color-text-muted);
   font-family: var(--font-channel);
-  font-size: 14px;
+  font-size: var(--text-channel);
   font-weight: 400;
   pointer-events: none;
 }

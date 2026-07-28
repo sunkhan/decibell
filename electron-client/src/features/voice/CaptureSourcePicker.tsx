@@ -39,7 +39,7 @@ function SegmentedControl<T extends string | number>({
           onClick={() => onChange(opt.value)}
           className={`flex-1 rounded-sm px-3 py-[7px] text-[11px] font-semibold transition-all ${
             value === opt.value
-              ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(69,150,255,0.1)]"
+              ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_10%,transparent)]"
               : "text-text-muted hover:text-text-secondary"
           }`}
         >
@@ -330,7 +330,7 @@ export default function CaptureSourcePicker({
                   }}
                   className={`flex flex-1 flex-col items-center rounded-sm px-2 py-[7px] transition-all ${
                     streamSettings.quality === opt.key
-                      ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(69,150,255,0.1)]"
+                      ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_10%,transparent)]"
                       : "text-text-muted hover:text-text-secondary"
                   }`}
                 >
@@ -340,7 +340,7 @@ export default function CaptureSourcePicker({
                       className={`text-[10px] ${
                         streamSettings.quality === opt.key
                           ? "text-accent/60"
-                          : "text-text-faint"
+                          : "text-text-muted"
                       }`}
                     >
                       {opt.sub}
@@ -363,7 +363,7 @@ export default function CaptureSourcePicker({
                       videoBitrateKbps: Number(e.target.value),
                     })
                   }
-                  className="h-[6px] flex-1 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[16px] [&::-webkit-slider-thumb]:w-[16px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-mid [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(69,150,255,0.3)]"
+                  className="h-[6px] flex-1 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[16px] [&::-webkit-slider-thumb]:w-[16px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-mid [&::-webkit-slider-thumb]:shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
                 />
                 <span className="w-[60px] shrink-0 whitespace-nowrap text-right text-[11px] font-medium tabular-nums text-text-secondary">
                   {streamSettings.videoBitrateKbps >= 1000
@@ -400,14 +400,14 @@ export default function CaptureSourcePicker({
                 }
                 className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
                   streamSettings.shareAudio
-                    ? "border-accent bg-accent shadow-[0_0_8px_rgba(69,150,255,0.22)]"
+                    ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
                     : "border-border bg-bg-lighter"
                 }`}
               >
                 <div
                   className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
                     streamSettings.shareAudio
-                      ? "translate-x-[18px] bg-white"
+                      ? "translate-x-[18px] bg-on-accent"
                       : "translate-x-[3px] bg-text-muted"
                   }`}
                 />
@@ -428,14 +428,14 @@ export default function CaptureSourcePicker({
                 }
                 className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
                   streamSettings.includeCursor
-                    ? "border-accent bg-accent shadow-[0_0_8px_rgba(69,150,255,0.22)]"
+                    ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
                     : "border-border bg-bg-lighter"
                 }`}
               >
                 <div
                   className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
                     streamSettings.includeCursor
-                      ? "translate-x-[18px] bg-white"
+                      ? "translate-x-[18px] bg-on-accent"
                       : "translate-x-[3px] bg-text-muted"
                   }`}
                 />
@@ -446,7 +446,7 @@ export default function CaptureSourcePicker({
           <button
             onClick={handleGoLive}
             disabled={starting || (NEEDS_CUSTOM_PICKER && !pickedSourceId)}
-            className="rounded-md bg-accent px-7 py-2.5 text-[13px] font-semibold text-white transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50 disabled:shadow-none"
+            className="rounded-md bg-accent px-7 py-2.5 text-[13px] font-semibold text-on-accent transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50 disabled:shadow-none"
           >
             {starting ? "Starting..." : "Go Live"}
           </button>
@@ -523,7 +523,7 @@ function SourceGrid({
             onClick={() => setTab(t.value)}
             className={`flex-1 rounded-sm px-3 py-[7px] text-[11px] font-semibold transition-all ${
               tab === t.value
-                ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_rgba(69,150,255,0.1)]"
+                ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_10%,transparent)]"
                 : "text-text-muted hover:text-text-secondary"
             }`}
           >
@@ -551,7 +551,7 @@ function SourceGrid({
                 onClick={() => onPick(s.id)}
                 className={`group flex flex-col overflow-hidden rounded-md border bg-bg-darkest transition-all ${
                   picked
-                    ? "border-accent shadow-[0_0_0_1px_rgba(69,150,255,0.4)]"
+                    ? "border-accent shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-accent)_40%,transparent)]"
                     : "border-border hover:border-border-hover"
                 }`}
               >

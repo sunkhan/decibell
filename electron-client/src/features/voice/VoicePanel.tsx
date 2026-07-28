@@ -507,7 +507,7 @@ const ParticipantCard = memo(function ParticipantCard({
 
   return (
     <div
-      className="flex cursor-pointer flex-col items-center gap-2.5 rounded-lg px-5 py-4 transition-all hover:bg-white/[0.035]"
+      className="flex cursor-pointer flex-col items-center gap-2.5 rounded-lg px-5 py-4 transition-all hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(

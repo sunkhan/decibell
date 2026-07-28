@@ -37,11 +37,11 @@ function Titlebar() {
     <div
       data-tauri-drag-region
       onDoubleClick={() => { win.toggleMaximize().catch(() => {}); }}
-      className="relative flex h-8 shrink-0 select-none items-center justify-center border-b border-border bg-bg-titlebar"
+      className="chrome-scope relative flex h-8 shrink-0 select-none items-center justify-center border-b border-border bg-bg-titlebar"
     >
       <span
         data-tauri-drag-region
-        className="pointer-events-none text-[12px] font-medium text-text-secondary"
+        className="pointer-events-none font-channel text-[12px] font-medium text-text-secondary"
       >
         {title}
       </span>
@@ -85,7 +85,7 @@ function TitleButton({ onClick, label, danger, children }: {
       aria-label={label}
       title={label}
       className={`flex h-full w-11 items-center justify-center text-text-secondary transition-colors ${
-        danger ? "hover:bg-error hover:text-white" : "hover:bg-white/[0.08] hover:text-text-primary"
+        danger ? "hover:bg-error hover:text-white" : "hover:bg-surface-active hover:text-text-primary"
       }`}
     >
       {children}

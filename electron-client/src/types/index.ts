@@ -218,6 +218,11 @@ export interface Attachment {
   thumbnailSizeBytes: number;
   thumbnailSizesMask: number;
   durationMs: number;
+  /// base64 ThumbHash — ~25 bytes decoding to a blurred preview of the
+  /// image. Painted under the <img> so a row that scrolls in before its
+  /// bytes arrive shows the picture's colours rather than an empty box.
+  /// "" for audio/documents, and for uploads that predate the field.
+  placeholder: string;
 }
 
 export interface Message {
@@ -345,4 +350,6 @@ interface WireAttachment {
   thumbnailSizeBytes: number;
   thumbnailSizesMask: number;
   durationMs: number;
+  /// base64 ThumbHash; absent on servers that predate the field.
+  placeholder?: string;
 }

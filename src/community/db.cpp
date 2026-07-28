@@ -269,6 +269,7 @@ void CommunityDb::migrate_to_v2_() {
         { "thumbnail_sizes_mask",
                            "thumbnail_sizes_mask INTEGER NOT NULL DEFAULT 0" },
         { "duration_ms",   "duration_ms INTEGER NOT NULL DEFAULT 0" },
+        { "placeholder",   "placeholder TEXT NOT NULL DEFAULT ''" },
     };
     for (const auto& c : attach_cols) {
         if (!column_exists(db_, "attachments", c.name)) {
@@ -393,19 +394,20 @@ void CommunityDb::migrate_to_v2_() {
                      "  height INTEGER NOT NULL DEFAULT 0,"
                      "  thumbnail_size_bytes INTEGER NOT NULL DEFAULT 0,"
                      "  thumbnail_sizes_mask INTEGER NOT NULL DEFAULT 0,"
-                     "  duration_ms INTEGER NOT NULL DEFAULT 0"
+                     "  duration_ms INTEGER NOT NULL DEFAULT 0,"
+                     "  placeholder TEXT NOT NULL DEFAULT ''"
                      ");") &&
                 must("INSERT INTO attachments_v4 "
                      "  (id, message_id, kind, filename, mime, size_bytes, "
                      "   storage_path, position, created_at, purged_at, "
                      "   upload_status, expected_size, uploader, channel_id, "
                      "   width, height, thumbnail_size_bytes, thumbnail_sizes_mask, "
-                     "   duration_ms) "
+                     "   duration_ms, placeholder) "
                      "SELECT id, message_id, kind, filename, mime, size_bytes, "
                      "       storage_path, position, created_at, purged_at, "
                      "       upload_status, expected_size, uploader, channel_id, "
                      "       width, height, thumbnail_size_bytes, thumbnail_sizes_mask, "
-                     "       duration_ms "
+                     "       duration_ms, placeholder "
                      "FROM attachments;") &&
                 must("DROP TABLE attachments;") &&
                 must("ALTER TABLE attachments_v4 RENAME TO attachments;");
@@ -958,7 +960,8 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
         "SELECT id, message_id, kind, filename, mime, size_bytes, "
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
         "  upload_status, expected_size, uploader, width, height, "
-        "  thumbnail_size_bytes, thumbnail_sizes_mask, duration_ms "
+        "  thumbnail_size_bytes, thumbnail_sizes_mask, duration_ms, "
+        "  COALESCE(placeholder, '') "
         "FROM attachments WHERE message_id IN (" + placeholders + ") "
         "  AND upload_status = 'ready' "
         "ORDER BY message_id ASC, position ASC;";
@@ -989,6 +992,7 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
         a.thumbnail_size_bytes = q.col_int64(15);
         a.thumbnail_sizes_mask = q.col_int(16);
         a.duration_ms = q.col_int(17);
+        a.placeholder = q.col_text(18);
         out.push_back(std::move(a));
     }
     return out;
@@ -1004,14 +1008,15 @@ int64_t CommunityDb::insert_pending_attachment(const std::string& channel_id,
                                                int32_t position,
                                                int32_t width,
                                                int32_t height,
-                                               int32_t duration_ms) {
+                                               int32_t duration_ms,
+                                               const std::string& placeholder) {
     std::lock_guard<std::mutex> lock(mutex_);
     Stmt q(db_,
         "INSERT INTO attachments("
         "  message_id, kind, filename, mime, size_bytes, storage_path, "
         "  position, created_at, purged_at, upload_status, expected_size, "
-        "  uploader, channel_id, width, height, duration_ms"
-        ") VALUES(0, ?, ?, ?, 0, ?, ?, ?, 0, 'uploading', ?, ?, ?, ?, ?, ?);");
+        "  uploader, channel_id, width, height, duration_ms, placeholder"
+        ") VALUES(0, ?, ?, ?, 0, ?, ?, ?, 0, 'uploading', ?, ?, ?, ?, ?, ?, ?);");
     if (!q.s) {
         std::cerr << "[DB] insert_pending_attachment prepare failed: "
                   << sqlite3_errmsg(db_) << "\n";
@@ -1036,6 +1041,9 @@ int64_t CommunityDb::insert_pending_attachment(const std::string& channel_id,
     // Clamp duration to non-negative; we don't cap an upper bound — even
     // a 24-hour audio attachment fits comfortably in int32 ms.
     q.bind_int(12, duration_ms < 0 ? 0 : duration_ms);
+    // Opaque base64 blob. Length-capped so a malicious client can't use
+    // it as unbounded storage — a real ThumbHash is ~34 base64 chars.
+    q.bind_text(13, placeholder.size() > 128 ? std::string() : placeholder);
     int rc = q.step();
     if (rc != SQLITE_DONE) {
         std::cerr << "[DB] insert_pending_attachment step failed (rc=" << rc
@@ -1051,7 +1059,8 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
         "SELECT id, message_id, kind, filename, mime, size_bytes, "
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
         "  upload_status, expected_size, uploader, channel_id, width, height, "
-        "  thumbnail_size_bytes, thumbnail_sizes_mask, duration_ms "
+        "  thumbnail_size_bytes, thumbnail_sizes_mask, duration_ms, "
+        "  COALESCE(placeholder, '') "
         "FROM attachments WHERE id=?;");
     if (!q.s) return std::nullopt;
     q.bind_int64(1, attachment_id);
@@ -1075,6 +1084,7 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
     a.thumbnail_size_bytes = q.col_int64(16);
     a.thumbnail_sizes_mask = q.col_int(17);
     a.duration_ms = q.col_int(18);
+    a.placeholder = q.col_text(19);
     return a;
 }
 

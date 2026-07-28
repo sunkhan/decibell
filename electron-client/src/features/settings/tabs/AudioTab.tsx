@@ -318,7 +318,7 @@ function VoiceThresholdBar() {
           className="absolute top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 items-center justify-center"
           style={{ left: `${thresholdPercent}%` }}
         >
-          <div className="h-[18px] w-[18px] rounded-full border-2 border-accent bg-bg-mid shadow-[0_0_8px_rgba(69,150,255,0.35)]" />
+          <div className="h-[18px] w-[18px] rounded-full border-2 border-accent bg-bg-mid shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_35%,transparent)]" />
         </div>
       </div>
 
@@ -346,14 +346,14 @@ function ToggleSwitch({ label, description, enabled, onToggle }: {
         onClick={onToggle}
         className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
           enabled
-            ? "border-accent bg-accent shadow-[0_0_8px_rgba(69,150,255,0.22)]"
+            ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
             : "border-border bg-bg-lighter"
         }`}
       >
         <div
           className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
             enabled
-              ? "translate-x-[18px] bg-white"
+              ? "translate-x-[18px] bg-on-accent"
               : "translate-x-[3px] bg-text-muted"
           }`}
         />

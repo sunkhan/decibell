@@ -96,6 +96,12 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  // Mirrors the `fullscreen` state declared further down, so the scroll
+  // handler — which is set up before it and closes over this effect's
+  // scope — can bail out without re-subscribing on every toggle. In
+  // fullscreen the wrapper is React-owned (inset:0) and must not be
+  // repositioned from a scroll.
+  const fullscreenRef = useRef(false);
 
   const [pos, setPos] = useState<{ left: number; top: number; width: number; height: number } | null>(
     null,
@@ -132,32 +138,70 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
       scrollParent = scrollParent.parentElement;
     }
 
-    const update = () => {
-      const r = hostElement.getBoundingClientRect();
-      setPos({ left: r.left, top: r.top, width: r.width, height: r.height });
-      if (scrollParent) {
-        const sr = scrollParent.getBoundingClientRect();
-        setClipRect({ top: sr.top, bottom: sr.bottom });
+    // Write geometry straight to the node. Going through React state
+    // for this cost a full render per scroll frame *and* landed the new
+    // position one frame late, so the video visibly slid against the
+    // list while scrolling. Chromium dispatches scroll before paint, so
+    // a synchronous style write here lands in the same frame.
+    //
+    // Deliberately does not touch anything else on the wrapper — the
+    // opacity/held-geometry dance below is load-bearing for the media
+    // pipeline (see the comment above) and stays React-owned.
+    const paint = (r: DOMRect, sr: DOMRect | null) => {
+      const el = wrapperRef.current;
+      if (!el || fullscreenRef.current) return;
+      el.style.left = `${r.left}px`;
+      el.style.top = `${r.top}px`;
+      el.style.width = `${r.width}px`;
+      el.style.height = `${r.height}px`;
+      if (sr) {
+        const topInset = Math.max(0, sr.top - r.top);
+        const bottomInset = Math.max(0, r.top + r.height - sr.bottom);
+        el.style.clipPath =
+          topInset > 0 || bottomInset > 0
+            ? `inset(${topInset}px 0 ${bottomInset}px 0)`
+            : "";
       } else {
-        setClipRect(null);
+        el.style.clipPath = "";
       }
+    };
+
+    const commit = (r: DOMRect, sr: DOMRect | null) => {
+      setPos({ left: r.left, top: r.top, width: r.width, height: r.height });
+      setClipRect(sr ? { top: sr.top, bottom: sr.bottom } : null);
+    };
+
+    const measure = (): [DOMRect, DOMRect | null] => [
+      hostElement.getBoundingClientRect(),
+      scrollParent ? scrollParent.getBoundingClientRect() : null,
+    ];
+
+    const update = () => {
+      const [r, sr] = measure();
+      paint(r, sr);
+      commit(r, sr);
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(hostElement);
     if (scrollParent) ro.observe(scrollParent);
     let frame = 0;
-    const onScrollOrResize = () => {
+    const onScroll = () => {
+      const [r, sr] = measure();
+      // Paint now so there is no lag; let React converge on the next
+      // frame with the same numbers, so a render landing mid-scroll
+      // can't reinstate a stale position.
+      paint(r, sr);
       cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(update);
+      frame = requestAnimationFrame(() => commit(r, sr));
     };
-    window.addEventListener("scroll", onScrollOrResize, true);
-    window.addEventListener("resize", onScrollOrResize);
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("resize", update);
     return () => {
       ro.disconnect();
       cancelAnimationFrame(frame);
-      window.removeEventListener("scroll", onScrollOrResize, true);
-      window.removeEventListener("resize", onScrollOrResize);
+      window.removeEventListener("scroll", onScroll, { capture: true });
+      window.removeEventListener("resize", update);
     };
   }, [hostElement]);
 
@@ -171,6 +215,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
   const [scrubbing, setScrubbing] = useState(false);
   const [hover, setHover] = useState(false);
   const [fullscreen, setFullscreenState] = useState(false);
+  fullscreenRef.current = fullscreen;
   const ownsWindowFullscreen = useRef(false);
   const [idle, setIdle] = useState(false);
   const idleTimerRef = useRef<number | null>(null);
@@ -565,7 +610,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
   return (
     <div
       ref={wrapperRef}
-      className={`flex items-center justify-center overflow-hidden bg-bg-darkest outline-none ${
+      className={`flex items-center justify-center overflow-hidden bg-black outline-none ${
         fullscreen ? "" : "rounded-lg border border-border"
       } ${cursorHidden ? "cursor-none" : ""}`}
       style={wrapperStyle}
@@ -592,7 +637,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
         // resume point. Letting the browser's autoplay race that effect
         // caused playback to start at 0 before the seek committed.
         onClick={handleSingleClick}
-        className={`h-full w-full ${cursorHidden ? "cursor-none" : "cursor-pointer"} bg-bg-darkest object-contain`}
+        className={`h-full w-full ${cursorHidden ? "cursor-none" : "cursor-pointer"} bg-black object-contain`}
       />
 
       {/* Top-right download button — fullscreen only. */}
@@ -609,7 +654,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
               handleDownload();
             }}
             title="Download"
-            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-sm bg-bg-darkest/85 text-white/85 backdrop-blur-md transition-colors hover:bg-bg-darkest hover:text-white"
+            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-sm bg-black/70 text-white/85 backdrop-blur-md transition-colors hover:bg-black/85 hover:text-white"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -639,7 +684,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
               style={{ width: `${progress}%` }}
             />
             <div
-              className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-darkest opacity-0 shadow-[0_0_6px_rgba(69,150,255,0.3)] transition-opacity group-hover:opacity-100"
+              className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-black opacity-0 shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)] transition-opacity group-hover:opacity-100"
               style={{ left: `${progress}%` }}
             />
           </div>
@@ -661,10 +706,10 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
             <span className="select-none text-[11px] tabular-nums text-text-secondary">
               {fmt(time)} / {fmt(duration)}
             </span>
-            <span className="ml-auto truncate text-[11px] text-text-muted" title={active.filename}>
-              {active.filename}
-            </span>
-            <div className="flex items-center gap-1">
+            {/* No filename here: the attachment card carries it on its
+                own meta bar directly below the player, so repeating it
+                only ate the width the controls could use. */}
+            <div className="ml-auto flex items-center gap-1">
               <PlayerIconButton title={muted ? "Unmute" : "Mute"} onClick={toggleMute}>
                 {muted ? (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -691,7 +736,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
                   style={{ width: `${(muted ? 0 : volume) * 100}%` }}
                 />
                 <div
-                  className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-bg-darkest opacity-0 shadow-[0_0_6px_rgba(69,150,255,0.3)] transition-opacity group-hover:opacity-100"
+                  className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent bg-black opacity-0 shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)] transition-opacity group-hover:opacity-100"
                   style={{ left: `${(muted ? 0 : volume) * 100}%` }}
                 />
               </div>

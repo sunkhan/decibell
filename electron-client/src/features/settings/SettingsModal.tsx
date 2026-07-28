@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom";
 import { useUiStore } from "../../stores/uiStore";
 import AccountTab from "./tabs/AccountTab";
+import AppearanceTab from "./tabs/AppearanceTab";
 import PrivacyTab from "./tabs/PrivacyTab";
 import AudioTab from "./tabs/AudioTab";
 import NetworkTab from "./tabs/NetworkTab";
@@ -19,6 +20,17 @@ const TABS = [
       </svg>
     ),
     component: AccountTab,
+  },
+  {
+    id: "appearance",
+    label: "Appearance",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 3a9 9 0 0 0 0 18 4.5 4.5 0 0 0 0-9 4.5 4.5 0 0 1 0-9z" />
+      </svg>
+    ),
+    component: AppearanceTab,
   },
   {
     id: "privacy",

@@ -6,6 +6,7 @@ import ServerBrowseView from "../features/servers/ServerBrowseView";
 import ChannelSidebar from "../features/channels/ChannelSidebar";
 import ChatPanel from "../features/chat/ChatPanel";
 import FriendsList from "../features/friends/FriendsList";
+import FriendsPage from "../features/friends/FriendsPage";
 import MembersList from "../features/friends/MembersList";
 import VoicePanel from "../features/voice/VoicePanel";
 import UserPanel from "../features/channels/UserPanel";
@@ -93,7 +94,12 @@ export default function MainLayout() {
                 floating UserPanel anchored bottom-left over them.
                 Browse view above renders only DmSidebar — no
                 ChannelSidebar — to match tauri-client. */}
-            <div className="relative flex shrink-0">
+            {/* chrome-scope: in `console-split` this whole group —
+                DM rail, channel sidebar, floating user/voice panel —
+                paints from the dark `console` palette while the chat
+                canvas beside it stays on `console-light`. Inert in
+                the other four themes. */}
+            <div className="chrome-scope relative flex shrink-0">
               <DmSidebar />
               <ChannelSidebar />
               <div className="absolute bottom-2 left-2 right-2 z-20">
@@ -108,12 +114,10 @@ export default function MainLayout() {
                 {dmFriendsPanelVisible && <FriendsList />}
               </>
             ) : activeView === "home" ? (
-              <>
-                <div className="flex flex-1 items-center justify-center bg-bg-mid text-sm text-text-muted">
-                  Pick a server from the bar above, or browse to join one.
-                </div>
-                <FriendsList />
-              </>
+              // Home gives everything right of the DM list to Friends.
+              // FriendsList — the 260px rail — stays for the `dm` view,
+              // where it sits beside an open conversation.
+              <FriendsPage />
             ) : (
               <>
                 <ChatPanel />

@@ -147,7 +147,7 @@ export default function UserPanel() {
             Update ready
             {updateStatus.state === "downloaded" ? ` — ${updateStatus.version}` : ""}
           </span>
-          <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.05em]">
+          <span className="shrink-0 font-mono text-micro font-semibold uppercase tracking-[0.1em]">
             Restart
           </span>
         </button>
@@ -158,7 +158,7 @@ export default function UserPanel() {
             <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
             <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
           </svg>
-          <span className="font-display text-[13px] font-semibold text-text-primary">{channelName}</span>
+          <span className="font-display text-member font-emphasis text-text-primary">{channelName}</span>
           {activeStreams.length > 0 && (
             <span className="rounded-sm bg-accent/[0.12] px-1.5 py-0.5 text-[10px] font-semibold text-accent">
               {activeStreams.length} stream{activeStreams.length > 1 ? "s" : ""}
@@ -228,7 +228,7 @@ export default function UserPanel() {
           <UserAvatar username={username} size={36} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate font-channel text-[13px] font-semibold text-text-bright">
+          <div className="truncate font-channel text-member font-emphasis text-text-bright">
             {username}
           </div>
         </div>

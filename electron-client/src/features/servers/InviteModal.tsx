@@ -198,7 +198,7 @@ export default function InviteModal() {
                 <select
                   value={expirySec}
                   onChange={(e) => setExpirySec(parseInt(e.target.value, 10))}
-                  className="w-full appearance-none rounded-md border border-border bg-bg-lighter px-3 py-2.5 pr-9 text-[13px] text-text-primary outline-none transition-all hover:border-white/[0.1] focus:border-accent focus:shadow-ring"
+                  className="w-full appearance-none rounded-md border border-border bg-bg-lighter px-3 py-2.5 pr-9 text-[13px] text-text-primary outline-none transition-all hover:border-text-faint focus:border-accent focus:shadow-ring"
                 >
                   {EXPIRY_OPTIONS.map((opt) => (
                     <option key={opt.seconds} value={opt.seconds} className="bg-bg-lighter">
@@ -229,7 +229,7 @@ export default function InviteModal() {
                     className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-sm transition-all ${
                       maxUsesUnlimited
                         ? "border-accent bg-accent"
-                        : "border-[1.5px] border-white/[0.12] bg-transparent"
+                        : "border-[1.5px] border-border bg-transparent"
                     }`}
                   >
                     <svg
@@ -285,7 +285,7 @@ export default function InviteModal() {
                       }}
                       placeholder="10"
                       autoFocus
-                      className="h-full min-w-0 flex-1 bg-transparent px-3 text-[13px] text-text-primary outline-none placeholder:text-text-faint"
+                      className="h-full min-w-0 flex-1 bg-transparent px-3 text-[13px] text-text-primary outline-none placeholder:text-text-muted"
                     />
                     <div className="flex h-full shrink-0 flex-col border-l border-border-divider">
                       <button
@@ -310,7 +310,7 @@ export default function InviteModal() {
           <button
             onClick={handleCreate}
             disabled={creating || !maxUsesValid}
-            className="w-full rounded-md bg-accent py-[11px] text-[13px] font-semibold text-white transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50 disabled:shadow-none"
+            className="w-full rounded-md bg-accent py-[11px] text-[13px] font-semibold text-on-accent transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50 disabled:shadow-none"
           >
             {creating ? "Creating..." : "Create Invite"}
           </button>

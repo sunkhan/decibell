@@ -141,17 +141,42 @@ export function registerAttachmentProtocol(): void {
         const v = req.headers.get(name);
         if (v) upstreamHeaders[name] = v;
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[attachment] GET ${upstream}${upstreamHeaders.range ? ` ${upstreamHeaders.range}` : ""}`,
-      );
+      if (!app.isPackaged) {
+        // Dev only: a fast scroll through an image-heavy channel fires
+        // one of these per attachment, and main-process stdout writes
+        // are synchronous.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[attachment] GET ${upstream}${upstreamHeaders.range ? ` ${upstreamHeaders.range}` : ""}`,
+        );
+      }
       const resp = await net.fetch(upstream, {
         method: "GET",
         headers: upstreamHeaders,
       });
-      // eslint-disable-next-line no-console
-      console.log(`[attachment] → ${resp.status} ${resp.statusText}`);
-      return resp;
+      // Attachment bytes are immutable: the id is server-assigned and
+      // unique, and thumbnail variants carry their size in the query
+      // string, so a given URL always resolves to the same bytes.
+      //
+      // Without this the response is whatever the community server
+      // sent, and if that omits Cache-Control then Chromium re-fetches
+      // over HTTPS every time a row scrolls back into view — the
+      // <img> is recreated on remount and shows an empty box until the
+      // round-trip lands. That is the residual flash left after the
+      // renderer-side fixes (B3/B4).
+      //
+      // Only applied to successful, non-partial responses: a 206 is a
+      // range slice and caching those under one key would be wrong.
+      const cacheable = resp.status === 200;
+      const headers = new Headers(resp.headers);
+      if (cacheable && !headers.has("cache-control")) {
+        headers.set("Cache-Control", "private, max-age=31536000, immutable");
+      }
+      return new Response(resp.body, {
+        status: resp.status,
+        statusText: resp.statusText,
+        headers,
+      });
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error(`[attachment] error: ${(e as Error).message}`);

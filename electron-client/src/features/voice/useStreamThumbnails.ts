@@ -22,10 +22,7 @@ import { useVoiceStore } from "../../stores/voiceStore";
  * none of the transcoding.
  */
 export function useStreamThumbnails() {
-  const activeStreams = useVoiceStore((s) => s.activeStreams);
-
   useEffect(() => {
-    if (activeStreams.length === 0) return;
 
     const unsubscribe = window.decibell.streamThumbnails.subscribe((thumb) => {
       const state = useVoiceStore.getState();
@@ -48,5 +45,9 @@ export function useStreamThumbnails() {
     return () => {
       unsubscribe();
     };
-  }, [activeStreams.length]);
+    // Subscribe once for the app's lifetime. The callback already
+    // reads fresh state via getState() and early-returns when the
+    // stream is gone, so keying this on the stream count only tore the
+    // subscription down and rebuilt it every time one started.
+  }, []);
 }

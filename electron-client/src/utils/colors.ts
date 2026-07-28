@@ -1,32 +1,35 @@
-const AVATAR_COLORS = [
-  "#4596ff", "#f0883e", "#a371f7", "#3fb950",
-  "#d29922", "#f85149", "#e879f9", "#79c0ff",
-];
+// Per-user identity colours.
+//
+// The ramps themselves live in globals.css as --color-av-* (avatar
+// fills, always paired with --color-av-fg) and --color-name-* (sender
+// names, graded for 15px text on that theme's content surface). Both
+// are re-declared per theme, so an identity keeps its *slot* across a
+// theme switch while the actual hue follows the palette — the mint
+// themes would otherwise be speckled with GitHub-blue avatars.
+//
+// Both generators hash identically and index the same 8 slots, so a
+// user's avatar fill and their name colour never drift apart.
 
-const GRADIENT_PAIRS: [string, string][] = [
-  ["#4596ff", "#2569cd"],
-  ["#f0883e", "#da6d25"],
-  ["#a371f7", "#8957e5"],
-  ["#3fb950", "#238636"],
-  ["#d29922", "#b37a15"],
-  ["#f85149", "#da3633"],
-  ["#e879f9", "#c840e0"],
-  ["#79c0ff", "#4596ff"],
-];
+const RAMP_SIZE = 8;
 
-export function stringToColor(str: string): string {
+function rampIndex(str: string): number {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     hash = str.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+  return (Math.abs(hash) % RAMP_SIZE) + 1;
 }
 
+/// Sender-name colour. Returns a `var()` reference, so it is only
+/// valid in a style position (inline style, CSS property) — not as a
+/// value you can parse or compare.
+export function stringToColor(str: string): string {
+  return `var(--color-name-${rampIndex(str)})`;
+}
+
+/// Avatar fill. The darker stop is derived rather than stored so the
+/// ramp stays one value per slot per theme.
 export function stringToGradient(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = str.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const [from, to] = GRADIENT_PAIRS[Math.abs(hash) % GRADIENT_PAIRS.length];
-  return `linear-gradient(135deg, ${from}, ${to})`;
+  const base = `var(--color-av-${rampIndex(str)})`;
+  return `linear-gradient(135deg, ${base}, color-mix(in srgb, ${base} 72%, #000))`;
 }

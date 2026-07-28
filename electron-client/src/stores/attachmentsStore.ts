@@ -55,6 +55,9 @@ export interface PendingAttachment {
   height: number;
   /// Audio + video duration in ms; 0 unknown.
   durationMs: number;
+  /// base64 ThumbHash for image/video, "" when unavailable. Sent in
+  /// /attachments/init and echoed back on the finished Attachment.
+  placeholder: string;
   /// The streaming source the upload loop reads from. Held on the
   /// pending entry so handleSend can call startQueuedUpload without
   /// the caller (file picker / drag-drop / paste) having to keep its

@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { useVirtuosoPrepend } from "./useVirtuosoPrepend";
+import { prefetchAround } from "./attachmentPrefetch";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
 import { useChatStore } from "../../stores/chatStore";
@@ -65,25 +67,38 @@ export default function ChatPanel() {
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
 
+  // Stable per-message identity, shared by computeItemKey and the
+  // prepend tracker so the two agree on what "the same message" is.
+  // Optimistic bubbles have id 0 and carry a client nonce instead.
+  const messageKey = useCallback(
+    (m: { id: number; nonce?: string }) => (m.id > 0 ? m.id : m.nonce ?? ""),
+    [],
+  );
+
   // Track the chat viewport size and publish it to the store so
   // AttachmentList can scale image/video previews proportionally to
   // the available space (sqrt-based, see attachmentSizing.ts). On
   // unmount we clear the size so the helpers fall back to fixed
   // defaults instead of using a stale dimension.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = chatViewRef.current;
     if (!el) return;
     const setSize = useChatStore.getState().setChatViewSize;
+    // Round before publishing: the observer fires on sub-pixel
+    // changes while a window is dragged, and every attachment on
+    // screen recomputes its box off this value.
+    const publish = (w: number, h: number) =>
+      setSize({ width: Math.round(w), height: Math.round(h) });
     const observer = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
-      setSize({ width: rect.width, height: rect.height });
+      publish(rect.width, rect.height);
     });
     observer.observe(el);
     // Seed an initial value before the first observer fire — useful
     // for the synchronous first render of attachments below.
     const rect = el.getBoundingClientRect();
-    setSize({ width: rect.width, height: rect.height });
+    publish(rect.width, rect.height);
     return () => {
       observer.disconnect();
       setSize(null);
@@ -122,6 +137,9 @@ export default function ChatPanel() {
   // before activeChannelId flips.
   const topIndexRef = useRef(0);
   const atBottomRef = useRef(true);
+
+  // Keeps the viewport anchored when older history pages in at the top.
+  const firstItemIndex = useVirtuosoPrepend(messages, messageKey, activeChannelId);
 
   // Compute Virtuoso's initialTopMostItemIndex from the channel's
   // saved scroll position. This is the *only* mechanism we use to
@@ -476,7 +494,7 @@ export default function ChatPanel() {
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-bg-mid">
-      <div className="flex h-12 items-center border-b border-border-divider px-4 text-sm font-semibold text-text-bright">
+      <div className="flex h-12 items-center border-b border-border-divider px-4 font-channel text-title font-emphasis tracking-title text-text-bright">
         <span className="mr-1.5 text-text-muted">#</span>
         {channelName}
       </div>
@@ -499,6 +517,8 @@ export default function ChatPanel() {
             key={activeChannelId ?? "none"}
             ref={virtuosoRef}
             data={messages}
+            firstItemIndex={firstItemIndex}
+            computeItemKey={(index, m) => messageKey(m) || `i:${index}`}
             initialTopMostItemIndex={initialIndex}
             followOutput="smooth"
             // Discord-style: when total content height < viewport,
@@ -507,22 +527,50 @@ export default function ChatPanel() {
             // Only affects the few-messages case; long histories are
             // unchanged.
             alignToBottom={true}
+            // Mount rows well before they reach the edge, so anything
+            // that settles after mount — an image decoding, a poster
+            // frame landing — happens off-screen and the row scrolls in
+            // already correct.
+            increaseViewportBy={{ top: 600, bottom: 600 }}
             startReached={handleStartReached}
             rangeChanged={(range) => {
-              topIndexRef.current = range.startIndex;
+              // Absolute, like itemContent's — rebase before it is used
+              // as a position in `messages`. Storing it raw meant the
+              // saved scroll position was ~1e6 and the restore clamp
+              // rejected it, so every channel switch landed at the
+              // bottom.
+              const start = range.startIndex - firstItemIndex;
+              const end = range.endIndex - firstItemIndex;
+              topIndexRef.current = start;
+              // Warm the previews either side of the window so a row's
+              // image is already cached by the time it mounts.
+              prefetchAround(
+                messages,
+                start,
+                end,
+                activeServerId,
+                useChatStore.getState().chatViewSize,
+              );
             }}
             atBottomStateChange={(atBottom) => {
               atBottomRef.current = atBottom;
             }}
-            itemContent={(index, message) => (
+            itemContent={(index, message) => {
+              // firstItemIndex makes `index` absolute (it starts at
+              // firstItemIndex, not 0), so it has to be rebased before
+              // it can index `messages`. Without this every lookup was
+              // out of bounds: grouping saw no previous message and
+              // nothing ever grouped.
+              const i = index - firstItemIndex;
+              return (
               <MessageBubble
                 message={message}
                 grouped={shouldGroup(
-                  index > 0 ? messages[index - 1] : undefined,
+                  i > 0 ? messages[i - 1] : undefined,
                   message,
                 )}
                 serverId={activeServerId}
-                isLast={index === messages.length - 1}
+                isLast={i === messages.length - 1}
                 // Align avatar's left edge with the input bar card's
                 // left edge: outer wrapper `px-3` = 12px from chat
                 // panel's left. The card's rounded border starts there.
@@ -534,7 +582,8 @@ export default function ChatPanel() {
                 }
                 onDelete={requestDeleteChannelMessage}
               />
-            )}
+              );
+            }}
             className="flex-1"
           />
         )}
@@ -633,7 +682,7 @@ export default function ChatPanel() {
               <button
                 onClick={handleSend}
                 disabled={!draft.trim() && !hasLivePendings}
-                className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-on-accent transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                 title="Send"
               >
                 <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">

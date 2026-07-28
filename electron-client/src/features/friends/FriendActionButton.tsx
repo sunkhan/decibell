@@ -45,7 +45,7 @@ export default function FriendActionButton({
     accent: "bg-accent hover:bg-accent-hover",
     success: "bg-success hover:bg-success/80",
     error: "bg-error hover:bg-error/80",
-    muted: "bg-bg-tertiary hover:bg-white/10",
+    muted: "bg-bg-tertiary hover:bg-surface-active",
   }[variant];
 
   return (
