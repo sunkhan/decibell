@@ -183,15 +183,22 @@ function ImageItem({
   // reference is already stable across unrelated chatStore updates.
   const chatViewSize = useChatStore((s) => s.chatViewSize);
 
+  // NOT an early return. buildAttachmentUrl yields null whenever the
+  // server's attachment config hasn't landed yet (fresh connection,
+  // reconnect) — and rendering nothing in that window collapsed the row
+  // to zero height, then popped it back to full size once the config
+  // arrived. That is a layout jump entirely separate from image
+  // loading, and it also meant the placeholder had nothing to paint on.
+  // The box is reserved from the attachment's own dimensions, so it can
+  // hold its space and show the blur with no URL at all.
   const fullUrl = buildAttachmentUrl(serverId, attachment);
-  if (!fullUrl) return null;
 
   const box = reserveBox(attachment, chatViewSize);
 
   // Same helper the prefetcher uses, so the URL warmed ahead of the
   // viewport is byte-for-byte the one requested here — a mismatch would
   // double the requests and still miss the cache.
-  const previewSrc: string = previewUrlFor(attachment, serverId, chatViewSize) ?? fullUrl;
+  const previewSrc = previewUrlFor(attachment, serverId, chatViewSize) ?? fullUrl;
 
   // Grid mode: parent owns the size (h-full w-full), cards round at
   // the grid container, cropped with object-cover to align with
@@ -216,6 +223,7 @@ function ImageItem({
     <button
       type="button"
       onClick={() =>
+        fullUrl &&
         open({
           url: fullUrl,
           filename: attachment.filename,
@@ -242,6 +250,7 @@ function ImageItem({
       className={wrapperClass}
       style={wrapperStyle}
     >
+      {previewSrc && (
       <img
         src={previewSrc}
         alt={attachment.filename}
@@ -255,6 +264,7 @@ function ImageItem({
         decoding="async"
         draggable={false}
       />
+      )}
     </button>
   );
 }
@@ -341,6 +351,10 @@ function VideoItem({
       ? buildAttachmentUrl(serverId, attachment, { thumb: true, size: thumbSize })
       : null;
   const posterUrl = livePoster ?? serverThumb;
+  // Same placeholder treatment as ImageItem — a video's poster is
+  // fetched exactly like an image and pops in the same way. Painted
+  // under the poster so it's only ever seen before one exists.
+  const blurUrl = thumbHashToDataUrl(attachment.placeholder);
 
   const fmtTime = (s: number) => {
     if (!isFinite(s) || s <= 0) return null;
@@ -383,7 +397,13 @@ function VideoItem({
       disabled={isActive}
       title={attachment.filename}
       className="group relative flex h-full w-full cursor-pointer items-center justify-center bg-black bg-cover bg-center disabled:cursor-default"
-      style={posterUrl ? { backgroundImage: `url(${posterUrl})` } : undefined}
+      style={
+        posterUrl
+          ? { backgroundImage: `url(${posterUrl})` }
+          : blurUrl
+            ? { backgroundImage: `url(${blurUrl})` }
+            : undefined
+      }
     >
       {posterUrl && (
         <div className="pointer-events-none absolute inset-0 bg-black/30" />
