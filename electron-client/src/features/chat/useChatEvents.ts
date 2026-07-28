@@ -17,42 +17,9 @@ function normalizeKind(kind: string): AttachmentKind {
   return "document";
 }
 
-/// TEMPORARY diagnostic (dev builds only) for the ThumbHash rollout.
-/// Distinguishes the three ways a placeholder can fail to appear:
-///   key absent      → the native .node is stale (the Rust payload
-///                     struct predates the field). Rebuild with
-///                     `npm run build:native:debug`.
-///   key present, "" → the server has no hash for this row: either the
-///                     uploader didn't compute one, or the community
-///                     server didn't store/echo it.
-///   key present, 28 → everything upstream works; the problem is
-///                     downstream in rendering.
-/// Remove once the rollout is confirmed.
-let loggedAttachmentShape = false;
-function logAttachmentShape(a: Record<string, unknown>): void {
-  if (loggedAttachmentShape || !import.meta.env.DEV) return;
-  loggedAttachmentShape = true;
-  const has = Object.prototype.hasOwnProperty.call(a, "placeholder");
-  const val = a.placeholder;
-  // eslint-disable-next-line no-console
-  console.log(
-    `[thumbhash] first attachment received — key present: ${has}; ` +
-      `length: ${typeof val === "string" ? val.length : "n/a"}; ` +
-      `verdict: ${
-        !has
-          ? "STALE NATIVE MODULE — rebuild native"
-          : typeof val === "string" && val.length > 0
-            ? "OK, hash arrived"
-            : "SERVER HAS NO HASH for this attachment"
-      }`,
-    a,
-  );
-}
-
 function mapAttachment(
   a: MessageReceivedPayload["attachments"][number],
 ): Attachment {
-  logAttachmentShape(a as unknown as Record<string, unknown>);
   return {
     id: a.id,
     messageId: a.messageId,
