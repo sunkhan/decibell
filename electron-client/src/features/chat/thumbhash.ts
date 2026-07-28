@@ -47,30 +47,63 @@ function fromBase64(b64: string): Uint8Array | null {
 }
 
 /**
- * Encode a blob (still image, or a captured video poster frame) to a
- * base64 ThumbHash. Returns "" on any failure — a missing placeholder
- * is a cosmetic downgrade, never a reason to fail an upload.
+ * Encode anything the canvas can draw — a decoded `<img>`, an
+ * ImageBitmap, a canvas — to a base64 ThumbHash.
+ *
+ * Takes a drawable rather than a Blob on purpose. The first version
+ * took a Blob and callers reached it via `fetch(source.url)`, which is
+ * governed by `connect-src` in index.html's CSP — and that list has no
+ * `blob:` entry, so every pasted or dragged image failed the fetch and
+ * silently produced no hash. Nothing needed fetching: the upload path
+ * has already decoded the image to read its dimensions.
+ *
+ * Returns "" on failure — a missing placeholder is a cosmetic
+ * downgrade, never a reason to fail an upload — but says why in dev,
+ * because a silent "" here is exactly what made this hard to find.
  */
-export async function encodeThumbHash(blob: Blob): Promise<string> {
+export async function encodeThumbHash(
+  source: CanvasImageSource,
+  naturalWidth: number,
+  naturalHeight: number,
+): Promise<string> {
   try {
-    const bitmap = await createImageBitmap(blob);
+    if (naturalWidth <= 0 || naturalHeight <= 0) return "";
     const scale = Math.min(
       1,
-      ENCODE_MAX_EDGE / Math.max(bitmap.width, bitmap.height),
+      ENCODE_MAX_EDGE / Math.max(naturalWidth, naturalHeight),
     );
-    const w = Math.max(1, Math.round(bitmap.width * scale));
-    const h = Math.max(1, Math.round(bitmap.height * scale));
+    const w = Math.max(1, Math.round(naturalWidth * scale));
+    const h = Math.max(1, Math.round(naturalHeight * scale));
     const canvas = new OffscreenCanvas(w, h);
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) {
-      bitmap.close();
-      return "";
-    }
-    ctx.drawImage(bitmap, 0, 0, w, h);
-    bitmap.close();
+    if (!ctx) return "";
+    ctx.drawImage(source, 0, 0, w, h);
     const { data } = ctx.getImageData(0, 0, w, h);
     return toBase64(rgbaToThumbHash(w, h, data));
-  } catch {
+  } catch (e) {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.warn("[thumbhash] encode failed:", e);
+    }
+    return "";
+  }
+}
+
+/// Convenience for callers that only hold bytes (the video poster
+/// frame, which is produced as a Blob by canvas.convertToBlob).
+/// createImageBitmap on a Blob object never touches the network, so
+/// this is not subject to the CSP problem described above.
+export async function encodeThumbHashFromBlob(blob: Blob): Promise<string> {
+  try {
+    const bitmap = await createImageBitmap(blob);
+    const out = await encodeThumbHash(bitmap, bitmap.width, bitmap.height);
+    bitmap.close();
+    return out;
+  } catch (e) {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.warn("[thumbhash] encode-from-blob failed:", e);
+    }
     return "";
   }
 }

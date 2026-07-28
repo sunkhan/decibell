@@ -27,7 +27,7 @@ import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import { toast } from "../../stores/toastStore";
 import type { AttachmentKind } from "../../types";
 import type { ChunkSource } from "./chunkSource";
-import { encodeThumbHash } from "./thumbhash";
+import { encodeThumbHash, encodeThumbHashFromBlob } from "./thumbhash";
 
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
@@ -218,15 +218,15 @@ async function probeMetadata(
         5000,
         "image probe timed out",
       );
-      // Hash the same pixels the viewer will eventually see. Fetching
-      // source.url re-reads from Chromium's blob/file store, not the
-      // network, and the decode is capped at 100px a side.
-      let placeholder = "";
-      try {
-        placeholder = await encodeThumbHash(await (await fetch(source.url)).blob());
-      } catch {
-        // Non-fatal: the attachment just ships without a placeholder.
-      }
+      // Hash straight off the element we just decoded. The previous
+      // version re-fetched source.url, which CSP blocks for blob: URLs
+      // (paste / drag-without-path) — so those silently shipped with no
+      // placeholder at all.
+      const placeholder = await encodeThumbHash(
+        img,
+        img.naturalWidth,
+        img.naturalHeight,
+      );
       return {
         width: img.naturalWidth,
         height: img.naturalHeight,
@@ -303,7 +303,7 @@ async function probeMetadata(
         durationMs: finiteDurationMs(durationSec),
         previewUrl: source.url,
         frameBlob,
-        placeholder: frameBlob ? await encodeThumbHash(frameBlob) : "",
+        placeholder: frameBlob ? await encodeThumbHashFromBlob(frameBlob) : "",
       };
     } catch {
       return { width: 0, height: 0, durationMs: 0, previewUrl: null };
