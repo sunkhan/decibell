@@ -47,13 +47,29 @@ The migration is sequenced into PRs. Status as of this hand-off:
 | PR7a | Streaming foundation — native code in place | ✅ done |
 | PR7b | Cross-platform + GPU + extra codecs (wlr-screencopy, DMA-BUF, Windows captures) | ✅ done |
 | PR7c | Per-stream Buffer TSFN for encoded frames (binary IPC) | ✅ done |
-| **PR8** | **Move video encode renderer-side via WebCodecs** | 🔄 **in progress** |
+| PR8 | Move video encode renderer-side via WebCodecs | ✅ done |
 
-Migration is feature-complete from a code-port standpoint. Remaining
-items beyond PR8 are polish/distribution: settings persistence + modal
-UI, PersistentVideoLayer/PersistentAudioLayer, ImageContextMenu,
-channel management UI, electron-builder packaging, electron-updater
-wiring, deep-link handler.
+The migration is complete and shipping — Electron is the client, and
+`tauri-client/` is legacy (unmaintained; changes here are not ported).
+Everything listed as "remaining" in the PR8-era version of this section
+has since landed: settings persistence + modal, the persistent
+video/audio layers, image context menu, channel management,
+electron-builder packaging, electron-updater, and the deep-link handler.
+
+**Sections 3–6 below are PR8 history.** They remain accurate about the
+streaming architecture and its gotchas, which is why they're kept — but
+read them as "how streaming got here", not as current open work.
+
+### Shipped since PR8 (see git log for detail)
+
+| Release | Scope |
+|---------|-------|
+| 0.6.x | persistent DMs, message deletion, custom avatars + server pictures, auto-rejoin, crash reporting (Sentry), AUR packaging |
+| **0.6.10** | **five-palette theme system + Appearance settings tab; Friends home screen; chat-scroll fixes; ThumbHash attachment placeholders** |
+
+0.6.10 is the current release. Its client-side design notes live in
+`docs/reviews/2026-07-27-frontend-review.md`, which is also the handoff
+for the one piece of open work — see §7.
 
 ---
 
@@ -269,6 +285,40 @@ output. (See `feedback_napi_cli_version.md` in auto-memory.)
 
 ---
 
+### 5.8 react-virtuoso `firstItemIndex` rewrites other props
+
+Both message panels set `firstItemIndex` so paging older history in at
+the top doesn't jump the viewport. It silently changes what other props
+mean, and inconsistently — all three verified by experiment:
+
+| prop | basis with `firstItemIndex` set |
+|------|--------------------------------|
+| `itemContent(index, …)` | **absolute** — `data[0]` arrives as `1000000` |
+| `rangeChanged({startIndex})` | **absolute** — `data[150]` reports `1000150` |
+| `initialTopMostItemIndex` | **data-relative** — 150 still means `data[150]` |
+
+Anything using those indices to reach into the array must rebase first
+(`const i = index - firstItemIndex`). Getting it wrong typechecks fine
+and fails quietly: it broke message grouping outright (every
+`messages[i-1]` was ~1e6 out of bounds, so `shouldGroup` always saw
+`undefined`) and made every channel switch restore to the bottom.
+
+### 5.9 `fetch()` in the renderer is CSP-bound; `blob:` is not allowed
+
+`index.html`'s `connect-src` lists `decibell-file:` but **not** `blob:`.
+So `fetch()` works on a file picked from disk and fails on one that was
+pasted or dragged — those become `blob:` URLs. This bit the ThumbHash
+encoder, which fetched the source to re-decode it and silently produced
+nothing for pasted images.
+
+Drawing an image to a canvas taints nothing here (verified for both
+`blob:` and custom-scheme sources), so prefer reading pixels off an
+already-decoded `<img>` over re-fetching bytes. If you genuinely need
+the bytes of a `blob:` URL, widen the CSP deliberately rather than
+letting the failure fall into a catch block.
+
+---
+
 ## 6. How to test from a fresh checkout
 
 ```bash
@@ -312,39 +362,58 @@ to start the server; ask them rather than guessing.
 
 ## 7. Suggested next steps in priority order
 
-1. **Smoke-test the boot path on KDE Plasma.** Confirm
-   `setDisplayMediaRequestHandler` triggers KDE's xdg-desktop-portal
-   dialog cleanly (it should — KDE's portal is mature; Niri's was
-   problematic).
-2. **Verify H.264 end-to-end.** Pick H.264_HW or H.264_SW, 1280×720@30
-   or 1920×1080@30. Confirm the watcher actually sees video. This is
-   the smallest test that exercises encode → wire → decode in PR8's
-   architecture. Failure modes to expect:
-   - Frames flow but watcher spins → check `decibell:stream_frame` IPC
-     in the watcher's preload + `StreamVideoPlayer.tsx`'s
-     `subscribe(cb)` callback.
-   - `WIRE_DESCRIPTION_MAGIC` mismatch — H.264 in Annex B doesn't use
-     the magic prefix; verify `streaming.rs::send_video_frame` is
-     gating the prefix on `args.codec == 3 || args.codec == 4`.
-3. **Address AV1 1080p60.** The simplest fix is an auto-downgrade-to-H.264
-   fallback in StreamCapture's encoder-error path, mirroring the
-   existing prefer-hardware → prefer-software pattern. The harder fix
-   is the resolution-dropdown becoming codec-aware.
-4. **Plan C codec negotiation moving renderer-side.** The LCD picker
-   should now move into the renderer where it has both watcher decode
-   caps (via `voice_caps_cache` events) and the local encoder's
-   `VideoEncoder.configure()` reconfigure hook. Currently the streamer
-   uses the codec they selected at start; auto-downgrading when a
-   low-cap watcher joins is deferred.
-5. **Settings persistence + modal UI** — the codec toggles, voice
-   thresholds, etc. live in stores but don't persist across restarts.
-6. **electron-builder packaging** — `electron-builder.yml` exists but
-   end-to-end packaging (AppImage / .deb / .exe / .dmg) hasn't been
-   exercised.
+**The one live thread: the attachment scroll glitch.** Start by reading
+`docs/reviews/2026-07-27-frontend-review.md` — its header is written as
+a handoff for exactly this, listing what is fixed *and verified*, what
+has been **ruled out with measurements** (don't redo those), and the
+suspects worth measuring next.
+
+Short version: a long series of fixes landed in 0.6.10 — pagination
+anchoring, eager image fetch, viewport overscan, single-pass sizing,
+preview prefetch, and ThumbHash placeholders — and the user still
+reports glitching. Everything so far targeted *the image being absent*.
+If it survives on freshly-uploaded attachments that carry a placeholder,
+the symptom is probably something else (row height changing after mount
+is the leading suspect) and it needs a real frame trace, which has never
+been captured.
+
+Also open, lower priority:
+
+1. **B6 is unverified** — the persistent video overlay's scroll
+   positioning was rewritten but never tested against real playback.
+2. **The ThumbHash server code shipped compiled but barely exercised.**
+   It works end to end (confirmed live), but only new uploads carry a
+   hash; anything uploaded before 0.6.10 stays blank forever. A backfill
+   would need image decoding in the C++ server.
+3. **Plan C codec negotiation renderer-side** (PR8-era, still deferred) —
+   auto-downgrading the codec when a low-cap watcher joins.
+4. **AV1 1080p60** — auto-downgrade-to-H.264 in StreamCapture's
+   encoder-error path.
 
 ---
 
 ## 8. Files you'll touch most
+
+### Chat rendering + scroll (the live work — see §7)
+| File | Role |
+|------|------|
+| `src/features/chat/ChatPanel.tsx` | channel Virtuoso host: pagination, viewport size, prefetch |
+| `src/features/dm/DmChatPanel.tsx` | the DM equivalent; same Virtuoso contract |
+| `src/features/chat/useVirtuosoPrepend.ts` | derives `firstItemIndex` from prepend deltas |
+| `src/features/chat/AttachmentList.tsx` | image/video/audio/document rendering; reserve boxes |
+| `src/features/chat/attachmentSizing.ts` | sqrt-scaled preview boxes + grid geometry |
+| `src/features/chat/attachmentPrefetch.ts` | warms previews ±15 messages off `rangeChanged` |
+| `src/features/chat/thumbhash.ts` | placeholder encode (upload) / decode (render) |
+| `src/features/chat/PersistentVideoLayer.tsx` | the fixed-position video overlaid on its placeholder |
+
+### Theming
+| File | Role |
+|------|------|
+| `src/styles/globals.css` | the whole token system: `--t-*` palettes, type scale, `.chrome-scope` |
+| `src/stores/uiStore.ts` | `theme`, `textSizePx`, `rowScale` + the `data-theme` plumbing |
+| `src/features/settings/tabs/AppearanceTab.tsx` | palette picker + the two scale sliders |
+| `public/theme-boot.js` | pre-mount theme/scale application (separate file: CSP) |
+
 
 ### Streaming send-side
 
@@ -391,31 +460,47 @@ to start the server; ask them rather than guessing.
 
 ---
 
-## 9. Recent commits (last 5)
+## 9. Recent commits
 
 ```
-524c95c feat(electron-client): WIP migration from Tauri to Electron + napi-rs
-e997421 fix(linux): MSE QuotaExceededError recovery + blob URL leak
-5deb041 feat(community): add second default voice channel
-3cfdabd release: v0.5.7
-62d2864 fix(linux): gap-free fMP4 timeline — fixes permanent MSE freezes
+06c519a aur: bump decibell-bin to 0.6.10
+444f0e6 chore: 0.6.10
+42f14a3 chore(chat): drop the ThumbHash rollout probe
+c212e9d fix(attachments): compute the ThumbHash without re-fetching the source
+e8ebcd2 chore(chat): temporary dev-only probe for the ThumbHash rollout
+a823ccf fix(chat): reserve the image box before its URL exists; blur on video too
+3088247 Merge ui-rework: theme system, Friends home screen, chat scroll fixes
+2bb690c feat(attachments): ThumbHash placeholders so a row is never an empty box
 ```
 
-Everything through `524c95c` is on `origin/main`. The `electron-client/`
-directory is one giant commit — split into multiple PRs in the original
-plan but pushed as one for the dev-machine reformat.
+`main` is the working branch; `ui-rework` was merged and deleted in
+0.6.10. Releases are tagged `ev*` (the `v*` namespace fires the dead
+tauri workflow). The AUR package (`aur/`) is bumped *after* a release
+builds, because makepkg needs the published `.pacman`.
 
 ---
 
 ## 10. To start a new conversation
 
-When you come back, say something like:
+For the open scroll-glitch work:
 
-> Read `electron-client/HANDOFF.md` and pick up where we left off. We
-> just reformatted to KDE Plasma. Start with smoke-testing the boot
-> path and then the H.264 end-to-end stream test.
+> Read `electron-client/HANDOFF.md` and
+> `docs/reviews/2026-07-27-frontend-review.md`. I want to fix the
+> attachment scrolling glitch. Start from the "Where to look next"
+> list — everything before it is already done and verified, so don't
+> redo it.
 
-The new model should also load the auto-memory at
-`~/.claude/projects/-home-sun-Desktop-decibell-decibell/memory/MEMORY.md`
-automatically — but tell it to **also read this file** since the memory
-is condensed and this has the full step-by-step.
+For anything else, this file plus the auto-memory at
+`~/.claude/projects/-home-sun-Desktop-decibell/memory/MEMORY.md` is the
+right starting pair. The memory is condensed; this has the detail.
+
+Two things worth saying out loud to a fresh session, because both cost
+real time this round:
+
+- **Verify library behaviour by experiment, not by reading.**
+  `firstItemIndex` silently changes what `itemContent` and
+  `rangeChanged` mean but not `initialTopMostItemIndex`; that broke
+  message grouping and scroll restore in ways that typecheck cleanly.
+- **Don't let failures be silent.** A cosmetic fallback that swallows
+  its cause (the ThumbHash encoder returning `""`) turned a one-line CSP
+  problem into three debugging rounds.

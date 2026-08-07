@@ -1,19 +1,65 @@
 # Frontend review — chat scroll jank & general audit (2026-07-27)
 
-> **Follow-up (2026-07-27, same day):** the B1 fix shipped a regression —
-> `firstItemIndex` makes Virtuoso pass `itemContent` an *absolute* index
-> (starting at firstItemIndex, verified: 1000000 for `data[0]`), so every
-> `messages[index - 1]` lookup went out of bounds and message grouping
-> stopped working entirely. Rebased in both panels. Added as **B8** below.
-> Attachments were also still flashing after B3/B4 — the remaining cause
-> was main-process, not renderer: **B9**.
+> ## Read this first if you're picking up the scroll-glitch work
 >
-> **Status (2026-07-27):** B1–B11 done, O1/O3/O4 done. **O2 investigated
-> and deliberately closed** — measured payoff is ~26 ms of cold start and
-> every way of collecting it costs more than it returns; see the item for
-> numbers so it doesn't get re-opened. B6's fix is sound and builds clean
-> but was **not verified against a real playing video** — worth a manual
-> check while scrolling a channel with a video mid-playback.
+> **Shipped in 0.6.10. B1–B11 fixed, O1/O3/O4 done, O2 closed
+> deliberately. The user reports the glitch is still present** — that is
+> the open thread.
+>
+> ### What is fixed and *verified*, so don't re-investigate it
+>
+> | | evidence |
+> | --- | --- |
+> | history pagination no longer jumps | `firstItemIndex` + stable keys; hook driven through a scripted prepend sequence |
+> | images don't defer their fetch | `loading="lazy"` removed |
+> | rows settle off-screen | `increaseViewportBy` 600px both panels |
+> | attachments size once, not twice | viewport seeded in `useLayoutEffect` |
+> | previews are warmed ahead of the viewport | `attachmentPrefetch.ts`, ±15 messages off `rangeChanged` |
+> | a warmed image paints in its mount frame | measured: cold `complete=false`, warmed `complete=true` |
+> | image rows hold their box before a URL exists | they used to render `null` → zero height → pop |
+> | ThumbHash placeholders reach the renderer | confirmed live: 28-char hash on new uploads |
+>
+> ### Ruled out with measurements — don't repeat these
+>
+> - **HTTP caching was never the cause.** Warm 8 URLs, mount `<img>` for
+>   them: **0** extra protocol hits with *or* without `Cache-Control`.
+>   Chromium's in-page memory cache already answers a remount. The header
+>   added in B9 is still correct for disk cache across restarts, but it
+>   fixed nothing here.
+> - **Bundle size is not a startup problem.** The 8 MB emoji payload
+>   costs ~26 ms measured in fresh processes. See O2 before reopening.
+>
+> ### Where to look next
+>
+> Everything above targets *the image being absent*. If the glitch
+> survives on freshly-uploaded attachments that carry a placeholder, the
+> symptom is probably **not** the empty box — suspects worth measuring:
+>
+> 1. **Row height changing after mount.** Instrument
+>    `MessageBubble`/`AttachmentList` with a `ResizeObserver` and log any
+>    height delta after first paint. Virtuoso re-measures and corrects
+>    scroll on every one.
+> 2. **`reserveBox` when `attachment.width/height` are 0.** Falls back to
+>    260×180 (`attachmentSizing.ts`) — if real dimensions arrive later,
+>    every such row resizes.
+> 3. **B6 was never verified against real playback** — the persistent
+>    video overlay. If the glitch involves video specifically, start there.
+> 4. **Capture a real trace.** No frame timings have ever been recorded
+>    for this. A scripted scroll + Chromium tracing would say whether
+>    frames are being dropped at all, which nothing so far establishes.
+>
+> ### Two traps this work already fell into
+>
+> - **`firstItemIndex` silently changes what other props mean.**
+>   `itemContent` and `rangeChanged` become *absolute* (they start at
+>   `firstItemIndex`); `initialTopMostItemIndex` does **not**. All three
+>   verified by experiment. Getting this wrong broke message grouping and
+>   scroll restore, silently, in ways that typecheck fine. See B8.
+> - **Silent catch blocks cost three debugging rounds.** ThumbHash came
+>   out empty for every pasted image because `fetch(blob:…)` is blocked by
+>   `connect-src` and the encoder swallowed the rejection. It logs in dev
+>   now. Prefer a dev-visible failure to a cosmetic fallback that hides
+>   the cause.
 
 Review of `electron-client/src` (renderer only). Started from a reported
 symptom — *"small jumps when attachments scroll into view, and they
@@ -285,6 +331,29 @@ While wiring the DB column I also found that the `attachments_v4`
 rebuild enumerates its columns explicitly, so it would have silently
 dropped `placeholder` for anyone still on a pre-v4 schema — the exact
 hazard its own comment warns about. Added there too.
+
+**Postscript — the implementation shipped broken and why.** The hash was
+empty for every *pasted or dragged* image. `probeMetadata` computed it
+from `fetch(source.url)`, and `fetch` is governed by `connect-src`,
+which lists `decibell-file:` but **not** `blob:` — so files picked from
+disk worked and pasted ones silently didn't. Measured under that CSP:
+
+| | |
+| --- | --- |
+| draw custom-scheme `<img>` → canvas | CLEAN |
+| fetch `decibell-file:` | ALLOWED |
+| draw `blob:` `<img>` → canvas | CLEAN |
+| fetch `blob:` | **BLOCKED** |
+
+Since drawing taints nothing, the encoder now reads pixels straight off
+the `<img>` the upload path already decoded — no fetch, one less decode,
+and no reason to widen the CSP.
+
+Diagnosing it took a temporary probe that reported whether the field was
+*absent* (stale native module), *present but empty* (nothing stored), or
+*populated*. That three-way split found it in one round after three
+rounds of fruitless code reading. Worth repeating for any
+cross-stack field that arrives empty.
 
 ---
 
