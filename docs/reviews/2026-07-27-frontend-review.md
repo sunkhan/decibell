@@ -6,6 +6,13 @@
 > deliberately. The user reports the glitch is still present** — that is
 > the open thread.
 >
+> **2026-08-15 round: see the section of that date at the bottom.** It
+> closes suspect #2 by argument, lands the decode-side fixes B12–B14
+> (user-verified: drastic reduction), ships the suspect-#1
+> instrumentation this header asks for — which then **caught suspect #1
+> live** (B15, the page-boundary group-flip) — and fixes it with eager
+> pagination.
+>
 > ### What is fixed and *verified*, so don't re-investigate it
 >
 > | | evidence |
@@ -476,3 +483,116 @@ change, since `firstItemIndex` without stable keys still remounts rows.
 B5 is independent and only affects channel-open. B6 is cosmetic and only
 while a video plays. B7 is a two-line correctness fix. O1–O4 are
 non-urgent.
+
+---
+
+## 2026-08-15 round — decode-side fixes + instrumentation
+
+Everything before this section targeted *the fetch* (bytes absent when
+the row mounts). This round's code reading found the layer nobody had
+looked at: **the decode**. Warm bytes still leave a decode to pay at
+first paint, and `decoding="async"` — added in B3 — *guarantees* the
+row paints before its pixels, one frame minimum, on every mount, cached
+or not. That is a per-mount pop that survives every fetch-side fix, and
+it matches the reported symptom ("attachments glitch into view while
+scrolling") better than the empty-box theory did.
+
+> **Verified by the user same day:** the glitch is *drastically reduced*
+> after B12–B14. Small imperfections remain — see "Still open" below for
+> the candidate mechanisms and what observation distinguishes them.
+
+### Landed (typecheck + Vite build clean, user-verified live)
+
+- **B12 — prefetch now pre-decodes.** `attachmentPrefetch.ts::warm`
+  calls `img.decode()` on the detached warm image, so the decode lands
+  in Chromium's decoded-image cache before the row exists, not in the
+  row's first paint frame.
+- **B13 — thumbnails present atomically.** `ImageItem` uses
+  `decoding="sync"` for thumbnail variants (bounded ≤1280px, pre-decoded
+  by B12, so sync cost is ~0 warm / a few ms cold) and keeps `"async"`
+  only for full-size fallbacks, where a multi-MB original could block
+  the scroll frame >100ms.
+- **B14 — `memo(MessageBubble)` was defeated.** Both panels re-created
+  their `onDelete` handler every render; it's a MessageBubble prop, so
+  every panel render (each keystroke, each history-page prepend)
+  re-rendered every visible bubble — a long frame exactly at the
+  prepend moment mid-scroll. `useCallback` in `ChatPanel` and
+  `DmChatPanel`; the handlers read active channel/peer from the store
+  at call time so their identity never churns.
+- **Suspect #1 instrumentation shipped** — `devRowHeightAudit.ts`,
+  wired into MessageBubble's root (dev builds only). Any post-mount
+  height settle logs `[row-audit] message <id>: height A → B`. One
+  scroll session in dev now settles the "row height changes after
+  mount" hypothesis with data.
+
+### Closed by argument (verified against store code)
+
+- **Suspect #2 (`reserveBox` 260×180 fallback) can't resize a mounted
+  row.** `chatStore`'s `mergeMessage`/`prependHistory` never mutate or
+  replace an existing message's object, so an attachment's
+  width/height can't "arrive later" within a mounted row's life. The
+  fallback box is constant for the attachment's lifetime; wrong-size,
+  possibly, but stable.
+
+### B15 — Page-boundary group-flip resize `✓ FIXED (user-verified same day: glitch gone)`
+
+**The audit caught it same day.** The user's dev session logged exactly
+one line:
+
+```
+[row-audit] message 1596: height 165.0 → 142.1 after first paint (Δ-22.9px)
+```
+
+Mechanism, confirmed against the code: the **oldest loaded message**
+renders ungrouped — `shouldGroup` sees no predecessor — with the full
+avatar/header row. When the next history page prepends, the same sender
+usually continues above it, so the row re-renders *grouped* and shrinks
+by the ~23px header (pt-2.5 + sender line vs py-px: matches Δ-22.9
+exactly). `startReached` fires at the rendered edge, so this resize
+landed precisely where the user was looking — once per 50-message page,
+matching the "small imperfections" cadence. The flip itself is correct
+data; the bug was *where* it happened.
+
+**Fix:** eager pagination. Both panels now request the next page from
+`rangeChanged` when the rendered window's top comes within
+`HISTORY_EAGER_THRESHOLD` (25) messages of the boundary, so the flip
+resolves on an unmounted or far-off-screen row where Virtuoso's
+anchoring absorbs it. `startReached` remains as the forced fallback
+(flings, lost responses) and keeps its retry semantics. The eager path
+dedupes per boundary via `lastRequestedBeforeIdRef` because the history
+response arrives via event, not the invoke promise — the in-flight
+guard alone would re-request the same page in that gap. The audit now
+tags settles ON-SCREEN vs off-screen; post-fix, boundary flips should
+only ever log off-screen.
+
+### Still open, in order
+
+Suspect #1 (row height changing after mount) is **confirmed and has a
+concrete instance fixed (B15)**. Remaining candidates for anything that
+survives the B15 re-test:
+
+1. **Re-run the audit.** Any remaining `ON-SCREEN` settle is the next
+   B15-class bug; `off-screen` lines are benign by construction.
+2. **Virtuoso height-estimation corrections** on the first upward pass
+   over never-measured rows (~44px text vs 180–460px attachment rows;
+   the size cache also dies with each channel-switch remount).
+   *Signature: imperfections only on the first pass over a region;
+   re-scrolling the same region is clean.* Confirmed from the
+   installed 4.18.6 source this round: `rangeChanged` maps
+   `listState.items` — the **rendered** range, `increaseViewportBy`
+   included on both edges — so the saved scroll position already sits
+   ~600px above the true viewport top, and raising the overscan
+   blind widens that restore error. (`overscan` in contrast applies
+   *directionally*, main = scroll direction.) The clean path is
+   `getState()`/`restoreStateFrom` — pixel-exact restore that also
+   revives measured sizes across the channel-switch remount — but the
+   snapshot's size ranges are absolute-indexed, so it requires
+   persisting `firstItemIndex` per channel instead of resetting to
+   1e6 in `useVirtuosoPrepend`. Experiment first: paging, eviction,
+   and messages-arriving-while-away all interact with it.
+3. **Flings outrunning the prefetch window.** ±15 messages of lead
+   evaporates on a fast fling; those images pop with only the blur /
+   flat fill behind them. *Signature: imperfections only at high
+   scroll velocity, and only on rows entering cold.*
+4. **B6 remains unverified** against real video playback. *Signature:
+   imperfections track the currently-playing video only.*

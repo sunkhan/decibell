@@ -73,11 +73,18 @@ function warm(url: string): void {
     }
   }
   warmed.add(url);
-  // A detached Image is enough to populate the HTTP cache; it is never
-  // added to the DOM and drops out of scope once the load settles.
+  // A detached Image populates the HTTP cache, but bytes alone still
+  // leave a decode to pay at first paint — and the mounted <img> is
+  // decoding="async", which paints the row first and the pixels a
+  // frame or two later. That residual pop survives every fetch-side
+  // fix. decode() pays the decode here, off the critical frame, so
+  // the mounted <img> hits Chromium's decoded-image cache and paints
+  // in the same frame as its row.
   const img = new Image();
-  img.decoding = "async";
   img.src = url;
+  img.decode().catch(() => {
+    // Fetch/decode failures surface on the mounted <img>, not here.
+  });
 }
 
 /**

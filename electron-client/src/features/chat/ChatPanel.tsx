@@ -21,6 +21,13 @@ import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModa
 import { useCanDeleteOthers } from "../servers/useCanDeleteOthers";
 import type { Message } from "../../types";
 
+// How close (in messages) the rendered window's top edge may get to the
+// oldest loaded message before the next history page is requested.
+// Half a page: deep enough that the page-boundary group-flip (see
+// maybeLoadOlderHistory) resolves off-screen at normal scroll speeds,
+// shallow enough that idling at the bottom never pages.
+const HISTORY_EAGER_THRESHOLD = 25;
+
 function generateNonce(): string {
   return `n-${Date.now()}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
 }
@@ -63,6 +70,12 @@ export default function ChatPanel() {
   const claimedPendingsRef = useRef<Set<string>>(new Set());
   // Single-flight guard for scroll-up history pagination.
   const loadMoreInFlightRef = useRef(false);
+  // The beforeId of the last eager page request. The response arrives
+  // via the channel_history_received event, not the invoke promise, so
+  // the in-flight guard alone can't stop the threshold trigger from
+  // re-requesting the same page in the window between invoke resolving
+  // and the data landing.
+  const lastRequestedBeforeIdRef = useRef(0);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
@@ -218,28 +231,45 @@ export default function ChatPanel() {
     setDraft(stored);
   }, [activeChannelId]);
 
-  // Scroll-up paginator: Virtuoso fires startReached near the top of the
-  // list. Fetch the next older page when the server says there's more and
-  // no fetch is already in flight. Without this, channel chat dead-ended
-  // at the first 50 messages even though the store/protocol already
-  // support paging (DmChatPanel does the same).
-  const handleStartReached = () => {
+  // Scroll-up paginator. Two triggers share this: Virtuoso's
+  // startReached (the hard edge, `force` — keeps its retry semantics
+  // if a response is ever lost) and an eager threshold off rangeChanged
+  // (`!force`, deduped per page boundary via lastRequestedBeforeIdRef).
+  //
+  // The eager trigger exists because of a measured glitch (row-audit,
+  // 2026-08-15): the oldest loaded message renders ungrouped — it has
+  // no known predecessor — and when the next page prepends, the same
+  // sender usually continues above it, so it re-renders grouped and
+  // shrinks by the ~23px header. Paging at the startReached edge put
+  // that resize exactly at the viewport edge the user was looking at;
+  // paging ~25 messages early puts it on a row that is unmounted or
+  // far off-screen, where Virtuoso's anchoring absorbs it invisibly.
+  const maybeLoadOlderHistory = (force: boolean) => {
     if (!activeServerId || !activeChannelId) return;
     const chat = useChatStore.getState();
     if (!chat.hasMoreHistory[activeChannelId]) return;
     if (loadMoreInFlightRef.current) return;
-    loadMoreInFlightRef.current = true;
     // messages are sorted by id ascending, so the first real-id entry is
     // the oldest loaded message.
     const list = chat.messagesByChannel[activeChannelId] ?? [];
     const oldest = list.find((m: { id: number }) => m.id > 0);
+    const beforeId = oldest?.id ?? 0;
+    if (!force && beforeId !== 0 && beforeId === lastRequestedBeforeIdRef.current) {
+      return;
+    }
+    loadMoreInFlightRef.current = true;
+    lastRequestedBeforeIdRef.current = beforeId;
     invoke("request_channel_history", {
       serverId: activeServerId,
       channelId: activeChannelId,
-      beforeId: oldest?.id ?? 0,
+      beforeId,
       limit: 50,
     })
-      .catch((err) => console.error("request_channel_history (more):", err))
+      .catch((err) => {
+        console.error("request_channel_history (more):", err);
+        // Allow the eager path to retry this boundary after a failure.
+        lastRequestedBeforeIdRef.current = 0;
+      })
       .finally(() => {
         loadMoreInFlightRef.current = false;
       });
@@ -430,7 +460,13 @@ export default function ChatPanel() {
   // if no `channel_message_delete_responded` event arrives by then —
   // useServerEvents handles success (clear pending) and failure
   // (restore via mergeMessage + toast.error).
-  const handleDeleteChannelMessage = (message: Message) => {
+  // useCallback on the delete pair keeps their identity stable across
+  // renders. `onDelete` is a MessageBubble prop, and memo(MessageBubble)
+  // compares props by reference — a fresh closure here re-rendered every
+  // visible bubble on every panel render (each keystroke, each history
+  // prepend), which is a long frame exactly when the user is scrolling.
+  const handleDeleteChannelMessage = useCallback((message: Message) => {
+    const { activeServerId, activeChannelId } = useChatStore.getState();
     if (!activeServerId || !activeChannelId || typeof message.id !== "number") return;
     const serverId = activeServerId;
     const channelId = activeChannelId;
@@ -460,21 +496,21 @@ export default function ChatPanel() {
         );
       }
     }, 5000);
-  };
+  }, []);
 
-  const requestDeleteChannelMessage = (
-    message: Message,
-    options?: { skipConfirm?: boolean },
-  ) => {
-    if (typeof message.id !== "number" || message.id <= 0) return;
-    if (options?.skipConfirm) {
-      // Shift+click: power-user path. Delete immediately, no modal.
-      handleDeleteChannelMessage(message);
-      return;
-    }
-    setPendingDeleteTarget(message);
-    openModal("delete-message-confirm");
-  };
+  const requestDeleteChannelMessage = useCallback(
+    (message: Message, options?: { skipConfirm?: boolean }) => {
+      if (typeof message.id !== "number" || message.id <= 0) return;
+      if (options?.skipConfirm) {
+        // Shift+click: power-user path. Delete immediately, no modal.
+        handleDeleteChannelMessage(message);
+        return;
+      }
+      setPendingDeleteTarget(message);
+      openModal("delete-message-confirm");
+    },
+    [handleDeleteChannelMessage, openModal],
+  );
 
   if (!activeServerId) {
     return (
@@ -532,7 +568,7 @@ export default function ChatPanel() {
             // frame landing — happens off-screen and the row scrolls in
             // already correct.
             increaseViewportBy={{ top: 600, bottom: 600 }}
-            startReached={handleStartReached}
+            startReached={() => maybeLoadOlderHistory(true)}
             rangeChanged={(range) => {
               // Absolute, like itemContent's — rebase before it is used
               // as a position in `messages`. Storing it raw meant the
@@ -551,6 +587,12 @@ export default function ChatPanel() {
                 activeServerId,
                 useChatStore.getState().chatViewSize,
               );
+              // Eager pagination: fetch the next page while the
+              // boundary row is still far from the viewport, so its
+              // group-flip resize (see maybeLoadOlderHistory) happens
+              // off-screen. Small channels eagerly load exactly one
+              // extra page on open, then the guard stops it.
+              if (start < HISTORY_EAGER_THRESHOLD) maybeLoadOlderHistory(false);
             }}
             atBottomStateChange={(atBottom) => {
               atBottomRef.current = atBottom;

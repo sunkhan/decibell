@@ -26,6 +26,10 @@ const ERROR_MESSAGES = [
   "This user only accepts direct messages from users in their friends list.",
 ];
 
+// Keep in sync with ChatPanel's HISTORY_EAGER_THRESHOLD — same
+// rationale, documented there.
+const HISTORY_EAGER_THRESHOLD = 25;
+
 export default function DmChatPanel() {
   const activeDmUser = useDmStore((s) => s.activeDmUser);
   const conversations = useDmStore((s) => s.conversations);
@@ -60,14 +64,23 @@ export default function DmChatPanel() {
   // Single-flight guard for the scroll-up paginator so rapid scroll
   // doesn't fire parallel page loads.
   const loadMoreInFlightRef = useRef(false);
+  // Boundary dedup for the eager pagination trigger — the history
+  // response arrives via event, not the invoke promise, so the
+  // in-flight guard alone can't stop a re-request of the same page.
+  const lastRequestedBeforeIdRef = useRef(0);
 
   // Fire the delete flow for a DM message. Optimistic: snapshot
   // into pendingDmDeletions, remove from the view, fire the native
   // command, and start a 5-second watchdog. useDmEvents handles
   // success/failure acks.
-  const handleDeleteDmMessage = (message: DmMessage) => {
-    if (!activeDmUser || typeof message.id !== "number") return;
-    const peer = activeDmUser;
+  // useCallback for the same reason as ChatPanel's delete pair: the
+  // handler is a MessageBubble prop, and a fresh closure per render
+  // defeats memo(MessageBubble) — every keystroke re-rendered every
+  // visible bubble. Peer is read from the store at call time so the
+  // callback identity doesn't churn on conversation switches either.
+  const handleDeleteDmMessage = useCallback((message: DmMessage) => {
+    const peer = useDmStore.getState().activeDmUser;
+    if (!peer || typeof message.id !== "number") return;
     const messageId = message.id;
 
     useDmStore.getState().snapshotAndRemoveDm(peer, messageId);
@@ -90,25 +103,25 @@ export default function DmChatPanel() {
         );
       }
     }, 5000);
-  };
+  }, []);
 
-  const requestDeleteDmMessage = (
-    message: Message,
-    options?: { skipConfirm?: boolean },
-  ) => {
-    if (typeof message.id !== "number" || message.id <= 0) return;
-    // Message and DmMessage are structurally compatible for what we
-    // need (id, sender, content, timestamp). Cast to DmMessage for
-    // the local state — MessageBubble passes a Message at the prop
-    // boundary; underneath it's the same object.
-    if (options?.skipConfirm) {
-      // Shift+click: power-user path. Delete immediately, no modal.
-      handleDeleteDmMessage(message as DmMessage);
-      return;
-    }
-    setPendingDeleteTarget(message as DmMessage);
-    openModal("delete-message-confirm");
-  };
+  const requestDeleteDmMessage = useCallback(
+    (message: Message, options?: { skipConfirm?: boolean }) => {
+      if (typeof message.id !== "number" || message.id <= 0) return;
+      // Message and DmMessage are structurally compatible for what we
+      // need (id, sender, content, timestamp). Cast to DmMessage for
+      // the local state — MessageBubble passes a Message at the prop
+      // boundary; underneath it's the same object.
+      if (options?.skipConfirm) {
+        // Shift+click: power-user path. Delete immediately, no modal.
+        handleDeleteDmMessage(message as DmMessage);
+        return;
+      }
+      setPendingDeleteTarget(message as DmMessage);
+      openModal("delete-message-confirm");
+    },
+    [handleDeleteDmMessage, openModal],
+  );
 
   const conversation = activeDmUser
     ? conversations[activeDmUser]
@@ -171,26 +184,35 @@ export default function DmChatPanel() {
     }).catch(console.error);
   }, [activeDmUser]);
 
-  // Scroll-up paginator. Virtuoso fires this when the user scrolls
-  // to the top of the list (typically a few items before the first).
-  // Single-flight via the ref so a rapid range update doesn't fire
-  // parallel page loads.
-  const handleStartReached = () => {
+  // Scroll-up paginator — same two-trigger shape as ChatPanel's
+  // maybeLoadOlderHistory (see the comment there for the measured
+  // group-flip rationale): startReached is the forced hard edge,
+  // rangeChanged fires the eager threshold so the page-boundary
+  // group-flip resize resolves off-screen.
+  const maybeLoadOlderHistory = (force: boolean) => {
     if (!activeDmUser) return;
     const conv = useDmStore.getState().conversations[activeDmUser];
     if (!conv?.hasMoreHistory) return;
     if (loadMoreInFlightRef.current) return;
-    loadMoreInFlightRef.current = true;
     const oldest = conv.messages.find(
       (m): m is typeof m & { id: number } => typeof m.id === "number" && m.id > 0,
     );
     const beforeId = oldest?.id ?? 0;
+    if (!force && beforeId !== 0 && beforeId === lastRequestedBeforeIdRef.current) {
+      return;
+    }
+    loadMoreInFlightRef.current = true;
+    lastRequestedBeforeIdRef.current = beforeId;
     invoke("request_dm_history", {
       peer: activeDmUser,
       beforeId,
       limit: 50,
     })
-      .catch(console.error)
+      .catch((err) => {
+        console.error(err);
+        // Allow the eager path to retry this boundary after a failure.
+        lastRequestedBeforeIdRef.current = 0;
+      })
       .finally(() => {
         loadMoreInFlightRef.current = false;
       });
@@ -413,10 +435,13 @@ export default function DmChatPanel() {
           // Same rationale as ChatPanel: settle off-screen so rows
           // scroll in already correct.
           increaseViewportBy={{ top: 600, bottom: 600 }}
-          startReached={handleStartReached}
+          startReached={() => maybeLoadOlderHistory(true)}
           rangeChanged={(range) => {
             // Absolute — see ChatPanel.
-            topIndexRef.current = range.startIndex - firstItemIndex;
+            const start = range.startIndex - firstItemIndex;
+            topIndexRef.current = start;
+            // Eager pagination — see ChatPanel's rangeChanged.
+            if (start < HISTORY_EAGER_THRESHOLD) maybeLoadOlderHistory(false);
           }}
           atBottomStateChange={(atBottom) => {
             atBottomRef.current = atBottom;

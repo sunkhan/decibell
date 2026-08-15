@@ -200,6 +200,11 @@ function ImageItem({
   // double the requests and still miss the cache.
   const previewSrc = previewUrlFor(attachment, serverId, chatViewSize) ?? fullUrl;
 
+  // previewUrlFor falls back to the full-content URL when the server
+  // has no thumbnail variant for this attachment; anything else is a
+  // bounded (≤1280px) thumb whose decode is a few ms at most.
+  const isThumbVariant = previewSrc !== null && previewSrc !== fullUrl;
+
   // Grid mode: parent owns the size (h-full w-full), cards round at
   // the grid container, cropped with object-cover to align with
   // adjacent cells. Standalone mode: reserve the sqrt-scaled box and
@@ -258,10 +263,18 @@ function ImageItem({
         // Not loading="lazy": Virtuoso already only mounts rows at or
         // near the viewport, so lazy adds no saving and defers the
         // fetch until the row is *already visible* — the image then
-        // pops in a beat after it scrolls in. Eager + async decode lets
-        // it be ready by the time it arrives (see increaseViewportBy
+        // pops in a beat after it scrolls in (see increaseViewportBy
         // on the Virtuoso instances).
-        decoding="async"
+        //
+        // decoding: "sync" for thumbnail variants so the image is
+        // presented atomically with its row — "async" guarantees the
+        // row paints before the pixels, i.e. a visible pop on every
+        // mount even when the bytes are cached. Thumbs are bounded
+        // (≤1280px), and the prefetcher pre-decodes them, so the sync
+        // cost is ~0 warm and a few ms cold. Full-size fallbacks keep
+        // "async": a multi-MB original can take >100ms to decode and
+        // must not block the scroll frame.
+        decoding={isThumbVariant ? "sync" : "async"}
         draggable={false}
       />
       )}

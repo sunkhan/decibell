@@ -6,6 +6,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import MessageText from "./MessageText";
 import AttachmentList from "./AttachmentList";
 import BubbleInflightAttachments from "./BubbleInflightAttachments";
+import { useRowHeightAudit } from "./devRowHeightAudit";
 
 function parseTimestamp(ts: string): Date {
   const asEpoch = parseInt(ts, 10);
@@ -87,6 +88,9 @@ function MessageBubble({
 }: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
+  // Dev-only: log any post-mount height settle (Virtuoso corrects the
+  // scroll on each one, so these are candidate scroll-glitch causes).
+  const auditRef = useRowHeightAudit(message.id > 0 ? message.id : message.nonce ?? "?");
 
   // Shared sender-popup handlers used by both the avatar and the
   // username — clicking either opens the profile popup at the
@@ -107,6 +111,7 @@ function MessageBubble({
   if (grouped) {
     return (
       <div
+        ref={auditRef}
         className="group relative flex gap-3 rounded-lg py-px pr-2 hover:bg-row-hover"
         style={{ paddingLeft }}
       >
@@ -157,6 +162,7 @@ function MessageBubble({
 
   return (
     <div
+      ref={auditRef}
       className={`group relative flex gap-3 rounded-lg pr-2 pt-2.5 pb-0.5 hover:bg-row-hover${
         isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""
       }`}

@@ -303,6 +303,17 @@ and fails quietly: it broke message grouping outright (every
 `messages[i-1]` was ~1e6 out of bounds, so `shouldGroup` always saw
 `undefined`) and made every channel switch restore to the bottom.
 
+Two more facts, verified against the installed 4.18.6 source
+(2026-08-15, see the review doc's section of that date):
+
+- `rangeChanged` reports the **rendered** range, `increaseViewportBy`
+  included on both edges — so a scroll position saved from its
+  `startIndex` sits ~overscan-height *above* the true viewport top.
+  Widening `increaseViewportBy` widens that restore error.
+- The separate `overscan` prop is **directional**: `{main, reverse}`
+  applies `main` in the current scroll direction, unlike
+  `increaseViewportBy` which is fixed top/bottom.
+
 ### 5.9 `fetch()` in the renderer is CSP-bound; `blob:` is not allowed
 
 `index.html`'s `connect-src` lists `decibell-file:` but **not** `blob:`.
@@ -368,14 +379,17 @@ a handoff for exactly this, listing what is fixed *and verified*, what
 has been **ruled out with measurements** (don't redo those), and the
 suspects worth measuring next.
 
-Short version: a long series of fixes landed in 0.6.10 — pagination
-anchoring, eager image fetch, viewport overscan, single-pass sizing,
-preview prefetch, and ThumbHash placeholders — and the user still
-reports glitching. Everything so far targeted *the image being absent*.
-If it survives on freshly-uploaded attachments that carry a placeholder,
-the symptom is probably something else (row height changing after mount
-is the leading suspect) and it needs a real frame trace, which has never
-been captured.
+Short version: the 0.6.10 fixes all targeted *the fetch* (image bytes
+absent at mount). The 2026-08-15 round found the actual dominant cause
+one layer down — *the decode*: `decoding="async"` guarantees a
+one-frame pop on every mount even for cached images. Pre-decoding in
+the prefetcher + `decoding="sync"` for thumbnails + un-defeating
+`memo(MessageBubble)` reduced the glitch drastically (user-verified
+live). Small imperfections remain; the review doc's 2026-08-15 section
+lists the four candidate mechanisms and the observable signature that
+distinguishes each. A dev-only row-height audit
+(`src/features/chat/devRowHeightAudit.ts`) now logs any post-mount
+height settle to settle the oldest hypothesis with data.
 
 Also open, lower priority:
 
