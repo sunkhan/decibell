@@ -65,11 +65,12 @@ read them as "how streaming got here", not as current open work.
 | Release | Scope |
 |---------|-------|
 | 0.6.x | persistent DMs, message deletion, custom avatars + server pictures, auto-rejoin, crash reporting (Sentry), AUR packaging |
-| **0.6.10** | **five-palette theme system + Appearance settings tab; Friends home screen; chat-scroll fixes; ThumbHash attachment placeholders** |
+| 0.6.10 | five-palette theme system + Appearance settings tab; Friends home screen; chat-scroll fixes; ThumbHash attachment placeholders |
+| **0.6.11** | **attachment scroll glitch fixed for real (decode-side, B12–B15); streaming fix round — per-sender wire receiver, stream-audio A/V sync, Windows/AMD fallback + escape hatch, 120fps codec levels, fresh-launch watch-lock fix** |
 
-0.6.10 is the current release. Its client-side design notes live in
-`docs/reviews/2026-07-27-frontend-review.md`, which is also the handoff
-for the one piece of open work — see §7.
+0.6.11 is the current release. The scroll work is documented in
+`docs/reviews/2026-07-27-frontend-review.md`, the streaming round in
+`docs/reviews/2026-08-15-streaming-review.md` — see §7.
 
 ---
 
