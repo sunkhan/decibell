@@ -30,23 +30,16 @@ interface StreamFrame {
 /// the Electron port. The Linux MseStreamVideoPlayer (fMP4 + WebKitGTK
 /// MSE) is gone for good — Chromium WebCodecs handles every codec we
 /// care about with consistent per-frame semantics.
+// Defensive: on some Castlabs Electron 33 / Windows configurations the
+// `VideoDecoder` global isn't exposed (Media Foundation init fails
+// partway and Chromium drops the WebCodecs API surface). Module-level
+// constant: it can't change within a process lifetime, and hoisting it
+// lets the component keep an unconditional hook order (the old early
+// return sat above the hooks — stable in practice, still a
+// rules-of-hooks violation).
+const DECODER_AVAILABLE = typeof VideoDecoder !== "undefined";
+
 export default function StreamVideoPlayer({ streamerUsername, className }: Props) {
-  // Defensive: on some Castlabs Electron 33 / Windows configurations
-  // the `VideoDecoder` global isn't exposed (Media Foundation init
-  // fails partway and Chromium drops the WebCodecs API surface).
-  // Without this guard the bare `new VideoDecoder(...)` reference
-  // below throws a ReferenceError that unwinds the React tree and
-  // blanks the whole app. Render a small fallback instead so the rest
-  // of the UI survives.
-  if (typeof VideoDecoder === "undefined") {
-    return (
-      <div
-        className={`flex h-full w-full items-center justify-center bg-bg-darkest text-center text-[12px] text-text-muted ${className ?? ""}`}
-      >
-        Stream preview unavailable on this system
-      </div>
-    );
-  }
   const ownUsername = useAuthStore((s) => s.username);
   const isOwnStream = ownUsername !== null && streamerUsername === ownUsername;
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -54,11 +47,35 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const descriptionRef = useRef<ArrayBuffer | null>(null);
   const needsKeyframeRef = useRef(true);
+  const lastKeyframeRequestRef = useRef(0);
   const [hasFirstFrame, setHasFirstFrame] = useState(false);
 
   // Active codec for the stream. Updated when stream_frame events
   // carry a different codec byte mid-stream (Plan C codec swap).
   const activeCodecRef = useRef<VideoCodec>(VideoCodec.H264_HW);
+
+  // Ask the streamer for a fresh IDR, throttled to 1/s. Renderer-side
+  // frame drops (decoder-queue backpressure, decoder errors, frames
+  // shed by the bounded native→JS queue) leave holes the native PLI
+  // machinery can't see — it only fires on *reassembly* gaps — so
+  // without this, a renderer drop froze the picture until the next
+  // natural GOP keyframe. Route by path: remote streams get the
+  // wire-level UdpKeyframeRequest; own-stream native self-preview
+  // signals the native encoder; own-stream renderer encode is direct.
+  const requestKeyframe = useCallback(() => {
+    const now = performance.now();
+    if (now - lastKeyframeRequestRef.current < 1000) return;
+    lastKeyframeRequestRef.current = now;
+    if (!isOwnStream) {
+      invoke("request_stream_keyframe", { username: streamerUsername }).catch(
+        () => {},
+      );
+    } else if (isNativeEncodeActive()) {
+      invoke("force_keyframe", {}).catch(() => {});
+    } else {
+      activeStreamCapture()?.forceKeyframe();
+    }
+  }, [isOwnStream, streamerUsername]);
 
   const configureDecoder = useCallback(
     (decoder: VideoDecoder, description?: ArrayBuffer) => {
@@ -104,11 +121,11 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     (e: DOMException) => {
       console.error("[StreamVideoPlayer] Decoder error:", e);
       needsKeyframeRef.current = true;
-      // No need to ask for a keyframe here: video_recv_thread sends a
-      // PLI on the media socket whenever it can't reassemble cleanly,
-      // and the streamer's renderer turns that into VideoEncoder.encode
-      // with keyFrame: true via the keyframe_requested listener in
-      // useVoiceEvents. Just reconfigure the decoder and wait.
+      // A decoder error usually means a broken reference chain — a
+      // dropped delta somewhere the native PLI machinery couldn't see.
+      // Reconfigure AND ask for a keyframe; waiting for the natural
+      // GOP boundary froze the picture for seconds.
+      requestKeyframe();
       if (decoderRef.current && decoderRef.current.state !== "closed") {
         decoderRef.current.reset();
         configureDecoder(
@@ -117,17 +134,16 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         );
       }
     },
-    [configureDecoder],
+    [configureDecoder, requestKeyframe],
   );
 
   useEffect(() => {
+    if (!DECODER_AVAILABLE) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     ctxRef.current = canvas.getContext("2d");
 
-    let firstRemoteTs = -1;
-    let firstLocalTs = -1;
     let firstFrameSignalled = false;
     let dimsLogged = false;
 
@@ -137,30 +153,35 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         output: (frame: VideoFrame) => {
           const ctx = ctxRef.current;
           if (ctx && canvas) {
-            // Use codedWidth/codedHeight rather than displayWidth/displayHeight.
-            // Chromium's WebCodecs HEVC implementation reports displayWidth =
-            // coded / SubWidthC for streams with no conformance window —
-            // half the actual picture size. Use visibleRect as the source
-            // rect and scale up to codedWidth × codedHeight. For H.264 / AV1
-            // the visible region equals the coded region, so this is a no-op.
-            const codedW = frame.codedWidth;
-            const codedH = frame.codedHeight;
+            // Canvas is sized to the *visible* rect, and the visible
+            // region is drawn 1:1 into it.
+            //
+            // Not displayWidth/displayHeight: Chromium's WebCodecs HEVC
+            // implementation reports displayWidth = coded / SubWidthC
+            // for streams with no conformance window — half the actual
+            // picture. Not codedWidth/codedHeight either: stretching
+            // visible → coded distorted legitimately-cropped streams
+            // (1080p HEVC coded as 1920×1088 gained an 8px vertical
+            // stretch). visibleRect is correct in both cases — it
+            // equals coded when there's no crop, including the buggy-
+            // display HEVC case, and equals the true picture when
+            // there is one.
             const vr = frame.visibleRect;
             const srcX = vr ? vr.x : 0;
             const srcY = vr ? vr.y : 0;
-            const srcW = vr ? vr.width : codedW;
-            const srcH = vr ? vr.height : codedH;
+            const srcW = vr ? vr.width : frame.codedWidth;
+            const srcH = vr ? vr.height : frame.codedHeight;
             if (
               !dimsLogged ||
-              canvas.width !== codedW ||
-              canvas.height !== codedH
+              canvas.width !== srcW ||
+              canvas.height !== srcH
             ) {
               console.log(
                 "[StreamVideoPlayer] frame dims",
                 "coded=",
-                codedW,
+                frame.codedWidth,
                 "x",
-                codedH,
+                frame.codedHeight,
                 "display=",
                 frame.displayWidth,
                 "x",
@@ -171,32 +192,14 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
                 srcW,
                 "x",
                 srcH,
-                "canvas was",
-                canvas.width,
-                "x",
-                canvas.height,
-                "rect",
-                canvas.getBoundingClientRect().width.toFixed(0),
-                "x",
-                canvas.getBoundingClientRect().height.toFixed(0),
               );
               dimsLogged = true;
             }
-            if (canvas.width !== codedW || canvas.height !== codedH) {
-              canvas.width = codedW;
-              canvas.height = codedH;
+            if (canvas.width !== srcW || canvas.height !== srcH) {
+              canvas.width = srcW;
+              canvas.height = srcH;
             }
-            ctx.drawImage(
-              frame,
-              srcX,
-              srcY,
-              srcW,
-              srcH,
-              0,
-              0,
-              codedW,
-              codedH,
-            );
+            ctx.drawImage(frame, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
           }
           frame.close();
           if (!firstFrameSignalled) {
@@ -245,8 +248,6 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         // description branch below will reconfigure a second time.
         decoder.reset();
         configureDecoder(decoder);
-        firstRemoteTs = -1;
-        firstLocalTs = -1;
       }
 
       if (keyframe && description && !descriptionRef.current) {
@@ -258,44 +259,33 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         decoder.reset();
         configureDecoder(decoder, descCopy.buffer);
         needsKeyframeRef.current = false;
-        firstRemoteTs = -1;
-        firstLocalTs = -1;
       }
 
       if (needsKeyframeRef.current && !keyframe) return;
       if (keyframe) needsKeyframeRef.current = false;
 
-      const nowUs = performance.now() * 1000;
-
-      if (firstRemoteTs < 0) {
-        firstRemoteTs = timestamp;
-        firstLocalTs = nowUs;
-      }
-
-      const expectedLocalTs = firstLocalTs + (timestamp - firstRemoteTs);
-      const lagUs = nowUs - expectedLocalTs;
-
-      // If the decoder queue is backing up, drop non-keyframes to catch up.
+      // Backpressure: if the decoder queue is backing up, drop deltas
+      // and gate on the next keyframe (a dropped delta breaks the
+      // reference chain — decoding past it smears until an IDR).
+      //
+      // This queue check is the only pacing left. The old wall-clock
+      // "lag" logic compared arrival time against timestamps the
+      // receive thread synthesizes as frame_id × 33.3ms — a hardcoded
+      // 30fps clock. Any stream effectively below 30fps (damage-driven
+      // window capture of static content, encoder drops) fell "behind"
+      // that fictional schedule at ~33ms per frame, and once past
+      // 500ms the player dropped every delta: the watcher degraded to
+      // a keyframe-per-GOP slideshow exactly when the content was
+      // static. Above 30fps the check never engaged at all. Real
+      // stalls are now handled where they occur: the native→JS queue
+      // is bounded (drops shed load before latency accumulates) and
+      // the decoder queue check here covers decode overload.
       if (decoder.decodeQueueSize > 3 && !keyframe) {
-        // Re-arm the keyframe gate: dropping a delta leaves a hole in the
-        // reference chain, so subsequent deltas would smear/blocky until
-        // the next IDR. Skip them (via the needsKeyframeRef gate above)
-        // until a keyframe arrives.
         needsKeyframeRef.current = true;
+        // The hole this drop leaves is invisible to the native PLI
+        // machinery — ask the streamer for a fresh IDR (throttled).
+        requestKeyframe();
         return;
-      }
-
-      // If this frame is more than 500ms behind wall-clock, drop it
-      // (unless it's a keyframe — we need those to keep decoding).
-      if (lagUs > 500_000 && !keyframe) {
-        needsKeyframeRef.current = true;
-        return;
-      }
-
-      // Re-sync the clock baseline if we're more than 2s behind.
-      if (lagUs > 2_000_000 && keyframe) {
-        firstRemoteTs = timestamp;
-        firstLocalTs = nowUs;
       }
 
       try {
@@ -357,13 +347,10 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
           );
         },
       );
-      // Wire-side mid-stream join also wants a keyframe, but that's a
-      // separate UDP roundtrip to the streamer (no renderer command
-      // for it yet — video_recv_thread's natural PLI mechanism only
-      // fires once it detects gaps). When the second-machine E2E test
-      // confirms watcher behaviour, we'll either expose a
-      // request_keyframe command on native or let the natural PLI
-      // delay stand.
+      // Wire-side mid-stream join keyframe request (B4) is still
+      // deliberately deferred, but the command for it now exists —
+      // `request_stream_keyframe`, used by requestKeyframe() above for
+      // drop recovery. Landing B4 is one call here when subscribing.
       //
       // Native self-preview (Windows + Linux) takes the wire-shaped path
       // too (isOwnStream && isNative falls into this branch). For that we
@@ -384,7 +371,17 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       descriptionRef.current = null;
       setHasFirstFrame(false);
     };
-  }, [streamerUsername, isOwnStream, handleDecoderError, configureDecoder]);
+  }, [streamerUsername, isOwnStream, handleDecoderError, configureDecoder, requestKeyframe]);
+
+  if (!DECODER_AVAILABLE) {
+    return (
+      <div
+        className={`flex h-full w-full items-center justify-center bg-bg-darkest text-center text-[12px] text-text-muted ${className ?? ""}`}
+      >
+        Stream preview unavailable on this system
+      </div>
+    );
+  }
 
   return (
     <div className="relative h-full w-full">

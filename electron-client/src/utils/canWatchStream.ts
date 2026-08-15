@@ -12,6 +12,14 @@ export function canWatchStream(
   stream: StreamInfo,
   localDecodeCaps: CodecCapability[],
 ): { canWatch: boolean; reason?: string } {
+  // Empty caps mean "not loaded yet", never "nothing supported":
+  // probeDecoders unconditionally appends the H.264 fallback (spec
+  // §3.3), so a real capability list always has at least one entry.
+  // Fail open — wrongly locking a watchable stream is the worse
+  // failure, and an actual decode problem still surfaces at play time.
+  if (localDecodeCaps.length === 0) {
+    return { canWatch: true };
+  }
   const has = (codec: VideoCodec) =>
     codec === VideoCodec.UNKNOWN || localDecodeCaps.some((c) => c.codec === codec);
 

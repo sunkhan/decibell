@@ -66,8 +66,15 @@ static STREAM_BUS: OnceLock<StreamBus> = OnceLock::new();
 /// `{ username, codec, keyframe, timestamp, data: Uint8Array,
 ///    description: Uint8Array | null }`.
 pub fn install_stream_bus(callback: JsFunction) -> Result<()> {
+    // Bounded queue. With the previous unbounded queue (0), NonBlocking
+    // could never report saturation — the drop counter below was dead
+    // code, and a busy renderer buffered encoded frames in main-process
+    // memory without limit, turning a stall into permanent added stream
+    // latency. 8 frames ≈ 130ms at 60fps: enough to ride out a GC pause,
+    // small enough that a real stall sheds frames and stays live. The
+    // decoder's keyframe gate recovers from any dropped delta.
     let tsfn: StreamBus = callback.create_threadsafe_function(
-        0,
+        8,
         |ctx: ThreadSafeCallContext<StreamFrame>| -> Result<Vec<JsUnknown>> {
             let env = &ctx.env;
             let mut obj = env.create_object()?;

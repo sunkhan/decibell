@@ -16,7 +16,10 @@ import { invoke } from "../../../lib/ipc";
 import { VideoCodec } from "../../../types";
 import { toast } from "../../../stores/toastStore";
 import { videoCodecHumanName } from "../../../utils/codecMap";
-import { isNativeEncodeActive } from "../../../utils/encoderProbe";
+import {
+  isNativeEncodeActive,
+  markNativeEncodeFailed,
+} from "../../../utils/encoderProbe";
 
 /// Frame shape emitted to local self-preview subscribers. Matches the
 /// wire `StreamFrame` shape minus `username` — local frames have only
@@ -107,7 +110,6 @@ export class StreamCapture {
   private codec: VideoCodec;
   private opts: StreamCaptureOptions;
   private wantKeyframe = true;
-  private frameCounter = 0;
   private stopping = false;
   /// True once start() took the native (start_screen_share) branch —
   /// Windows always, Linux when a HW encoder was probed. Drives stop() to
@@ -158,28 +160,53 @@ export class StreamCapture {
       if (isWindows && !this.opts.sourceId) {
         throw new Error("sourceId required on Windows");
       }
-      await invoke("start_screen_share", {
-        serverId: this.opts.serverId,
-        channelId: this.opts.channelId,
-        sourceId: this.opts.sourceId,
-        fps: this.opts.fps,
-        width: this.opts.width,
-        height: this.opts.height,
-        videoBitrateKbps: this.opts.bitrateKbps,
-        shareAudio: this.opts.shareAudio,
-        audioBitrateKbps: this.opts.audioBitrateKbps,
-        initialCodec: this.codec,
-        enforcedCodec: this.codec,
-        // Linux opt-in flag that routes start_screen_share to the native
-        // PipeWire/portal capture + FFmpeg encode path. Ignored on
-        // Windows (always native).
-        nativeEncode: !isWindows,
-        includeCursor: this.opts.includeCursor,
-      });
-      console.log(
-        `[StreamCapture/native] pipeline started at ${this.opts.width}x${this.opts.height}@${this.opts.fps} (codec=${this.codec}, platform=${window.decibell.platform})`,
-      );
-      return { width: this.opts.width, height: this.opts.height };
+      try {
+        await invoke("start_screen_share", {
+          serverId: this.opts.serverId,
+          channelId: this.opts.channelId,
+          sourceId: this.opts.sourceId,
+          fps: this.opts.fps,
+          width: this.opts.width,
+          height: this.opts.height,
+          videoBitrateKbps: this.opts.bitrateKbps,
+          shareAudio: this.opts.shareAudio,
+          audioBitrateKbps: this.opts.audioBitrateKbps,
+          initialCodec: this.codec,
+          enforcedCodec: this.codec,
+          // True = native owns capture + encode (Windows WGC/FFmpeg,
+          // Linux PipeWire/FFmpeg). The renderer WebCodecs fallback
+          // below re-invokes via CaptureSourcePicker with false.
+          nativeEncode: true,
+          includeCursor: this.opts.includeCursor,
+        });
+        console.log(
+          `[StreamCapture/native] pipeline started at ${this.opts.width}x${this.opts.height}@${this.opts.fps} (codec=${this.codec}, platform=${window.decibell.platform})`,
+        );
+        return { width: this.opts.width, height: this.opts.height };
+      } catch (e) {
+        // Native pipeline failed to start (encoder open, capture init,
+        // no HW encoder on this GPU/driver…). Fall back to the renderer
+        // WebCodecs path instead of failing Go Live outright — OpenH264
+        // software encode exists everywhere in this castlabs build.
+        // markNativeEncodeFailed flips isNativeEncodeActive() for the
+        // session so CaptureSourcePicker's signalling branch and the
+        // player's self-preview path agree on the active pipeline.
+        console.error(
+          "[StreamCapture] native pipeline failed; falling back to WebCodecs:",
+          e,
+        );
+        markNativeEncodeFailed();
+        this.usedNative = false;
+        if (this.codec === VideoCodec.H265) {
+          // WebCodecs HEVC encode needs platform support that is
+          // usually absent; H.264 always has the OpenH264 floor.
+          this.codec = VideoCodec.H264_HW;
+        }
+        toast.warning(
+          "GPU streaming pipeline unavailable",
+          "Falling back to software encoding. Stream audio may be unavailable.",
+        );
+      }
     }
 
     // Pre-stash the chosen source id so the main-process
@@ -258,7 +285,30 @@ export class StreamCapture {
     const processor = new Processor({ track });
     this.reader = processor.readable.getReader();
 
-    const firstRead = await this.reader.read();
+    // The first read gets a hard timeout: a fully-occluded or minimized
+    // window on some compositors never produces a frame, and awaiting it
+    // forever left Go Live stuck with no error and the capture running.
+    let firstFrameTimer: number | undefined;
+    const firstFrameTimeout = new Promise<never>((_, reject) => {
+      firstFrameTimer = window.setTimeout(
+        () =>
+          reject(
+            new Error(
+              "Capture produced no frames within 5s — the selected window may be minimized or protected",
+            ),
+          ),
+        5000,
+      );
+    });
+    let firstRead: ReadableStreamReadResult<VideoFrame>;
+    try {
+      firstRead = await Promise.race([this.reader.read(), firstFrameTimeout]);
+    } catch (e) {
+      void this.stop();
+      throw e;
+    } finally {
+      window.clearTimeout(firstFrameTimer);
+    }
     if (firstRead.done || !firstRead.value) {
       throw new Error("Capture track produced no frames");
     }
@@ -500,7 +550,6 @@ export class StreamCapture {
     } finally {
       firstFrame.close();
     }
-    this.frameCounter += 1;
 
     void this.pumpLoop();
 
@@ -550,7 +599,6 @@ export class StreamCapture {
         } finally {
           frame.close();
         }
-        this.frameCounter += 1;
         const now = Date.now();
         if (now - lastReportAt > 5000) {
           console.log(
@@ -710,7 +758,10 @@ export class StreamCapture {
     // external stop callers (UserPanel / VoicePanel / leave handler /
     // onCaptureEnded) invoking it too is harmless.
     if (this.usedNative) {
-      invoke("stop_screen_share", {
+      // Awaited so a caller sequencing stop→start (settings change →
+      // restart) can't have this stop land after — and tear down — the
+      // next session's start_screen_share.
+      await invoke("stop_screen_share", {
         serverId: this.opts.serverId,
         channelId: this.opts.channelId,
       }).catch(() => {});
@@ -745,9 +796,14 @@ export class StreamCapture {
 // instance through the component tree.
 let active: StreamCapture | null = null;
 
-export function startActiveStream(opts: StreamCaptureOptions): StreamCapture {
+export async function startActiveStream(
+  opts: StreamCaptureOptions,
+): Promise<StreamCapture> {
   if (active) {
-    void active.stop();
+    // Await the old session's teardown. Fire-and-forget here let the old
+    // stop_screen_share race the new start_screen_share and, when it
+    // landed second, tear down the session that had just started.
+    await active.stop().catch(() => {});
   }
   active = new StreamCapture(opts);
   return active;
@@ -833,36 +889,55 @@ function webCodecsStringForCodec(
       void fps;
       return "av01.0.08M.08";
     }
-    case VideoCodec.H265:
-      // HEVC Main profile. Level encoded as `L{level*30}`: L93=3.1,
-      // L120=4.0, L150=5.0, L153=5.1, L156=5.2.
-      if (width * height >= 3840 * 2160 && fps > 30) return "hvc1.1.6.L156.B0";
-      if (width * height >= 3840 * 2160) return "hvc1.1.6.L153.B0";
-      if (width * height >= 2560 * 1440) return "hvc1.1.6.L150.B0";
-      if (width * height >= 1920 * 1080 && fps > 30) return "hvc1.1.6.L153.B0";
-      if (width * height >= 1920 * 1080) return "hvc1.1.6.L123.B0"; // 4.1
-      return "hvc1.1.6.L93.B0"; // 3.1 — 720p
+    case VideoCodec.H265: {
+      // HEVC Main profile, level from the spec's Table A.8 limits:
+      // pick the smallest level whose MaxLumaPs (picture size) AND
+      // MaxLumaSr (samples/second) both hold. The old fps>30 split
+      // under-declared throughput-heavy combos — 720p60 already
+      // exceeded L3.1's MaxLumaSr, and every 120fps mode was wrong.
+      // Level string is `L{level*30}`.
+      const lumaPs = width * height;
+      const lumaSr = lumaPs * fps;
+      const hevcLevels: { name: string; maxPs: number; maxSr: number }[] = [
+        { name: "L93.B0", maxPs: 983_040, maxSr: 33_177_600 }, // 3.1
+        { name: "L120.B0", maxPs: 2_228_224, maxSr: 66_846_720 }, // 4.0
+        { name: "L123.B0", maxPs: 2_228_224, maxSr: 133_693_440 }, // 4.1
+        { name: "L150.B0", maxPs: 8_912_896, maxSr: 534_773_760 }, // 5.0
+        { name: "L153.B0", maxPs: 8_912_896, maxSr: 1_069_547_520 }, // 5.1
+        { name: "L156.B0", maxPs: 8_912_896, maxSr: 2_139_095_040 }, // 5.2
+      ];
+      const hevcPick =
+        hevcLevels.find((l) => lumaPs <= l.maxPs && lumaSr <= l.maxSr) ??
+        hevcLevels[hevcLevels.length - 1];
+      return `hvc1.1.6.${hevcPick.name}`;
+    }
     case VideoCodec.H264_HW:
     case VideoCodec.H264_SW:
     default: {
-      // H.264 High Profile (`6400`) + level. The level digit is hex
-      // so 0x28=40=Level 4.0, 0x2A=42=Level 4.2, 0x32=50=Level 5.0,
-      // 0x34=52=Level 5.2.
-      //   - Level 3.1: 720p30
-      //   - Level 3.2: 720p60
-      //   - Level 4.0: 1080p30
-      //   - Level 4.2: 1080p60
-      //   - Level 5.0: 1440p30
-      //   - Level 5.1: 4K30
-      //   - Level 5.2: 4K60
-      if (width * height >= 3840 * 2160 && fps > 30) return "avc1.640034"; // 5.2
-      if (width * height >= 3840 * 2160) return "avc1.640033"; // 5.1
-      if (width * height >= 2560 * 1440 && fps > 30) return "avc1.640033"; // 5.1
-      if (width * height >= 2560 * 1440) return "avc1.640032"; // 5.0
-      if (width * height >= 1920 * 1080 && fps > 30) return "avc1.64002A"; // 4.2
-      if (width * height >= 1920 * 1080) return "avc1.640028"; // 4.0
-      if (width * height >= 1280 * 720 && fps > 30) return "avc1.640020"; // 3.2 (was 0x21 — invalid level_idc)
-      return "avc1.64001F"; // 3.1 — 720p
+      // H.264 High Profile (`6400`) + level_idc in hex, from the
+      // spec's Table A-1: smallest level whose MaxFS (frame size in
+      // macroblocks) AND MaxMBPS (macroblocks/second) both hold.
+      // Replaces the fps>30 split, which picked levels valid at 60fps
+      // but under the throughput limit at 120fps (720p120 declared
+      // L3.2 needing L4.2; 1080p120 declared L4.2 needing L5.1;
+      // 1440p120 declared L5.1 needing L5.2) — and per §5.3 of the
+      // handoff, an under-declared level fails isConfigSupported at
+      // the real resolution, killing Go Live.
+      const mbs = Math.ceil(width / 16) * Math.ceil(height / 16);
+      const mbps = mbs * fps;
+      const avcLevels: { idc: string; maxFs: number; maxMbps: number }[] = [
+        { idc: "1F", maxFs: 3_600, maxMbps: 108_000 }, // 3.1
+        { idc: "20", maxFs: 5_120, maxMbps: 216_000 }, // 3.2
+        { idc: "28", maxFs: 8_192, maxMbps: 245_760 }, // 4.0
+        { idc: "2A", maxFs: 8_704, maxMbps: 522_240 }, // 4.2
+        { idc: "32", maxFs: 22_080, maxMbps: 589_824 }, // 5.0
+        { idc: "33", maxFs: 36_864, maxMbps: 983_040 }, // 5.1
+        { idc: "34", maxFs: 36_864, maxMbps: 2_073_600 }, // 5.2
+      ];
+      const avcPick =
+        avcLevels.find((l) => mbs <= l.maxFs && mbps <= l.maxMbps) ??
+        avcLevels[avcLevels.length - 1]; // 4K120 exceeds 5.2 — clamp, caps never offer it
+      return `avc1.6400${avcPick.idc}`;
     }
   }
 }

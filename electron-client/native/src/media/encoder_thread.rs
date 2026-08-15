@@ -84,12 +84,40 @@ impl EncoderThread {
         let thread = std::thread::Builder::new()
             .name("decibell-encoder".to_string())
             .spawn(move || {
-                run_encode_loop(&mut encoder, &mut thumb, rx, &cfg, &stop_t);
-                // Drain remaining packets on stop.
-                let _ = encoder.drain();
-                let _ = encoder.for_each_packet(|data, is_key, _pts| {
-                    cfg.video_sender.send_frame(cfg.codec_wire_byte, is_key, data);
-                });
+                // catch_unwind: a panic anywhere in the encode loop
+                // (FFmpeg binding, D3D11 interop, driver quirk) must
+                // not silently kill this thread while the app keeps
+                // claiming to stream. Contained, logged, and surfaced
+                // to the renderer below.
+                let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_encode_loop(&mut encoder, &mut thumb, rx, &cfg, &stop_t);
+                }))
+                .is_err();
+                if panicked {
+                    log::error!("[encoder] encode loop panicked — stream is dead");
+                }
+                if !panicked {
+                    // Drain remaining packets on stop. Skipped after a
+                    // panic — the encoder state is unknown.
+                    let _ = encoder.drain();
+                    let _ = encoder.for_each_packet(|data, is_key, _pts| {
+                        cfg.video_sender.send_frame(cfg.codec_wire_byte, is_key, data);
+                    });
+                }
+                // Abnormal exit (panic, send_bgra error, capture channel
+                // gone) while nobody asked us to stop: tell the renderer
+                // so it can tear the stream state down + toast instead
+                // of showing a live "Streaming" indicator over nothing.
+                if !stop_t.load(Ordering::Relaxed) {
+                    events::send(
+                        "native_stream_failed",
+                        serde_json::Value::String(if panicked {
+                            "encoder panicked".to_string()
+                        } else {
+                            "encoder stopped unexpectedly".to_string()
+                        }),
+                    );
+                }
             })
             .map_err(|e| format!("spawn encoder thread: {e}"))?;
 

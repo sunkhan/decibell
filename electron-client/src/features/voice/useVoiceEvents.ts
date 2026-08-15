@@ -12,7 +12,7 @@ import {
 import { playSound } from "../../utils/sounds";
 import { buildCodecToast } from "../../utils/codecToasts";
 import { getCurrentWindow } from "../../lib/window";
-import { activeStreamCapture } from "./streaming/StreamCapture";
+import { activeStreamCapture, stopActiveStream } from "./streaming/StreamCapture";
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { toast } from "../../stores/toastStore";
 
@@ -315,6 +315,24 @@ export function useVoiceEvents() {
           isLocalUserStreamer,
         );
         if (built) toast.info("Codec changed", built.text);
+      }),
+    );
+
+    promises.push(
+      listen<string>("native_stream_failed", (event) => {
+        // The native encoder thread died mid-stream (panic, encoder
+        // error, capture channel gone). Without this the UI kept
+        // advertising a live stream over nothing. stopActiveStream()
+        // drives stop_screen_share with the session's own
+        // server/channel ids and clears voice state here.
+        console.error("[voice] native stream failed:", event.payload);
+        useVoiceStore.getState().setIsStreaming(false);
+        stopActiveStream().catch(() => {});
+        playSound("stream_stop");
+        toast.error(
+          "Stream stopped",
+          "The native encoder failed. Try again — if it keeps failing, streaming will use software encoding.",
+        );
       }),
     );
 

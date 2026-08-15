@@ -116,8 +116,16 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
         // owning capture (getDisplayMedia) and encode (WebCodecs) and
         // pumps frames via send_video_frame; nothing native-side to do
         // beyond constructing VideoEngine.
+        //
+        // native_encode=false is now honoured on Windows too: the
+        // renderer's WebCodecs fallback (native start failed, or the
+        // `decibell.win_native_encode` opt-out) drives capture + encode
+        // itself and only needs the announcement + VideoEngine sender.
+        // Stream audio currently only exists on the native path, so the
+        // fallback streams without audio — degradation, not a blocker.
+        // None defaults to true so older callers keep the native path.
         #[cfg(target_os = "windows")]
-        {
+        if args.native_encode.unwrap_or(true) {
             let source_id = args.source_id.as_deref().ok_or_else(|| {
                 napi::Error::from_reason("source_id required on Windows")
             })?;
@@ -461,8 +469,14 @@ pub fn send_video_frame(args: SendVideoFrameArgs) -> napi::Result<()> {
         //
         // Sync rather than async — no .await anywhere in the body,
         // so napi-rs doesn't spawn a task per frame.
-        let sender = video_pipeline::current_frame_sink()
-            .ok_or_else(|| napi::Error::from_reason("Not currently streaming"))?;
+        //
+        // A cleared sink is a benign race, not an error: stop_screen_share
+        // clears the slot while the renderer's encoder is still draining
+        // its last chunks, and the old rejection logged one console error
+        // per in-flight frame at up to 60/s.
+        let Some(sender) = video_pipeline::current_frame_sink() else {
+            return Ok(());
+        };
 
         let data: &[u8] = args.data.as_ref();
 
@@ -879,6 +893,35 @@ pub async fn force_keyframe() -> napi::Result<()> {
             engine.request_keyframe();
         }
     }
+    Ok(())
+}
+
+#[napi(object)]
+pub struct RequestStreamKeyframeArgs {
+    /// Username of the streamer whose next frame should be an IDR.
+    pub username: String,
+}
+
+/// Watcher-side keyframe request: send a UdpKeyframeRequest (PLI) to
+/// the named streamer over the media socket. The receive thread fires
+/// these automatically on reassembly gaps, but the *renderer* also
+/// drops frames (decoder-queue backpressure, decoder errors) that
+/// native can't see — this command lets it re-request a keyframe
+/// instead of freezing until the next natural IDR. Callers throttle.
+#[napi]
+pub async fn request_stream_keyframe(args: RequestStreamKeyframeArgs) -> napi::Result<()> {
+    use crate::media::video_packet::UdpKeyframeRequest;
+    let (socket, sender_id) = {
+        let state_arc = state::shared();
+        let guard = state_arc.lock().await;
+        match guard.voice_engine.as_ref() {
+            Some(v) => (v.media_socket(), v.sender_id().to_string()),
+            // Not in voice — nothing to request from; benign no-op.
+            None => return Ok(()),
+        }
+    };
+    let pli = UdpKeyframeRequest::new(&sender_id, &args.username);
+    let _ = socket.send(&pli.to_bytes());
     Ok(())
 }
 

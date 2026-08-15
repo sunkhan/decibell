@@ -392,9 +392,6 @@ fn run_video_recv_thread(
     use video_receiver::VideoReceiver;
 
     let mut video_receiver = VideoReceiver::new();
-    let mut video_streamer_username: Option<String> = None;
-    let mut last_pli_time = Instant::now() - Duration::from_secs(10);
-    let mut has_received_keyframe = false;
     let mut video_frames_received: u64 = 0;
     let mut last_maintenance = Instant::now();
 
@@ -454,29 +451,21 @@ fn run_video_recv_thread(
 
                 if packet_type == video_packet::PACKET_TYPE_VIDEO {
                     if let Some(pkt) = UdpVideoPacket::from_bytes(&recv_buf[..n]) {
-                        // Alloc-free fast path: only build a String when
-                        // the streamer actually changes, not per packet
-                        // (~2000/sec at 1080p60).
-                        match &video_streamer_username {
-                            Some(u) if pkt.sender_username_matches(u) => {}
-                            _ => {
-                                has_received_keyframe = false;
-                                video_streamer_username = Some(pkt.sender_username());
-                            }
-                        }
-                        if let Some(frame) = video_receiver.process_packet(&pkt) {
+                        // The receiver keys every piece of state by
+                        // sender, so concurrent streams reassemble
+                        // independently and frames come back already
+                        // in delivery order per streamer.
+                        for frame in video_receiver.process_packet(&pkt) {
                             video_frames_received += 1;
                             if frame.is_keyframe || video_frames_received % 300 == 1 {
                                 log::debug!(
-                                    "[video-recv] Frame {} reassembled: {} bytes, keyframe={} (total={})",
+                                    "[video-recv] Frame {} from '{}': {} bytes, keyframe={} (total={})",
                                     frame.frame_id,
+                                    frame.streamer_username,
                                     frame.data.len(),
                                     frame.is_keyframe,
                                     video_frames_received
                                 );
-                            }
-                            if frame.is_keyframe {
-                                has_received_keyframe = true;
                             }
                             emit_frame(frame);
                         }
@@ -498,15 +487,13 @@ fn run_video_recv_thread(
                             );
                             pkt
                         };
-                        if let Some(frame) = video_receiver.process_fec_packet(&fec_pkt) {
+                        for frame in video_receiver.process_fec_packet(&fec_pkt) {
                             video_frames_received += 1;
                             log::debug!(
-                                "[video-recv] Frame {} completed via FEC: {} bytes, keyframe={}",
-                                frame.frame_id, frame.data.len(), frame.is_keyframe
+                                "[video-recv] Frame {} from '{}' completed via FEC: {} bytes, keyframe={}",
+                                frame.frame_id, frame.streamer_username,
+                                frame.data.len(), frame.is_keyframe
                             );
-                            if frame.is_keyframe {
-                                has_received_keyframe = true;
-                            }
                             emit_frame(frame);
                         }
                     }
@@ -540,27 +527,23 @@ fn run_video_recv_thread(
             last_media_ping = Instant::now();
         }
 
-        if last_maintenance.elapsed() > Duration::from_millis(100) {
-            if let Some(ref target) = video_streamer_username {
-                let (nacks, need_pli) = video_receiver.check_missing();
-                for (frame_id, missing) in &nacks {
-                    let nack_pkt = UdpNackPacket::new(&sender_id, target, *frame_id, missing);
-                    let _ = socket.send(&nack_pkt.to_bytes());
-                }
-                let pli_interval = if has_received_keyframe {
-                    Duration::from_secs(1)
-                } else {
-                    Duration::from_millis(500)
-                };
-                if need_pli && last_pli_time.elapsed() > pli_interval {
-                    log::info!(
-                        "[video-recv] Sending keyframe request (PLI) to '{}' (has_keyframe={})",
-                        target, has_received_keyframe
-                    );
-                    let pli_pkt = UdpKeyframeRequest::new(&sender_id, target);
-                    let _ = socket.send(&pli_pkt.to_bytes());
-                    last_pli_time = Instant::now();
-                }
+        // 25ms cadence (was 100ms): with a 50ms NACK timeout, a 100ms
+        // poll put retransmit requests 100–150ms behind the loss; 25ms
+        // reacts within ~75ms at negligible cost (the loop already
+        // wakes every 5ms on the socket read timeout).
+        if last_maintenance.elapsed() > Duration::from_millis(25) {
+            let (nacks, pli_targets) = video_receiver.check_missing();
+            for nack in &nacks {
+                let nack_pkt =
+                    UdpNackPacket::new(&sender_id, &nack.target, nack.frame_id, &nack.missing);
+                let _ = socket.send(&nack_pkt.to_bytes());
+            }
+            // PLI throttling is per sender inside check_missing; every
+            // name returned is due a keyframe request now.
+            for target in &pli_targets {
+                log::info!("[video-recv] Sending keyframe request (PLI) to '{}'", target);
+                let pli_pkt = UdpKeyframeRequest::new(&sender_id, target);
+                let _ = socket.send(&pli_pkt.to_bytes());
             }
             video_receiver.cleanup_stale();
             last_maintenance = Instant::now();

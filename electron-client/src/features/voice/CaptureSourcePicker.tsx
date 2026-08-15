@@ -121,7 +121,7 @@ export default function CaptureSourcePicker({
       // payload reflect reality even when the user picked "Source"
       // and we couldn't predict it. If the user cancels the OS
       // dialog, getDisplayMedia rejects and we never bother native.
-      const stream = startActiveStream({
+      const stream = await startActiveStream({
         codec,
         width: dims.width,
         height: dims.height,
@@ -173,6 +173,10 @@ export default function CaptureSourcePicker({
             audioBitrateKbps: streamSettings.audioBitrateKbps,
             initialCodec: codec,
             enforcedCodec: streamSettings.enforcedCodec || 0,
+            // Explicit false: the renderer owns capture + encode on this
+            // branch. Windows honours this now (WebCodecs fallback) —
+            // omitting it defaults to the native pipeline there.
+            nativeEncode: false,
             includeCursor: streamSettings.includeCursor,
           });
         } catch (e) {

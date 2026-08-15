@@ -72,21 +72,45 @@ function linuxNativeEncodeEnabled(): boolean {
 let nativeEncodeActive = false;
 
 /// Whether the native FFmpeg encode pipeline owns this session (vs the
-/// renderer's WebCodecs path). Reflects the most recent probeEncoders().
+/// renderer's WebCodecs path). Reflects the most recent probeEncoders(),
+/// minus any runtime failure recorded via markNativeEncodeFailed().
 export function isNativeEncodeActive(): boolean {
   return nativeEncodeActive;
+}
+
+/// Called by StreamCapture when the native pipeline failed to start and
+/// it fell back to WebCodecs. Every consumer of isNativeEncodeActive()
+/// (signalling branch, self-preview path, keyframe routing) must agree
+/// on the active pipeline, so the flag flips session-wide. A later
+/// probeEncoders() (reconnect, settings change) may re-enable it.
+export function markNativeEncodeFailed(): void {
+  nativeEncodeActive = false;
+}
+
+// Windows native-encode opt-out, mirroring the Linux key below. Escape
+// hatch for machines where the native FFmpeg/D3D11 pipeline misbehaves
+// (crashes inside GPU driver code can't be caught in-process): set to
+// "0" in devtools and the client streams via WebCodecs/OpenH264.
+const WIN_NATIVE_KEY = "decibell.win_native_encode";
+function winNativeEncodeEnabled(): boolean {
+  return localStorage.getItem(WIN_NATIVE_KEY) !== "0";
 }
 
 export async function probeEncoders(force = false): Promise<CodecCapability[]> {
   const platform = typeof window !== "undefined" ? window.decibell?.platform : undefined;
 
-  // Windows: always native. Chromium's WebCodecs encoder factory caps at
-  // 30 fps in this Castlabs build, so its `isConfigSupported` results are
-  // misleading (claims HW support at 720p30 but won't allocate 1080p60).
-  // Native FFmpeg talks directly to NVENC/AMF/QSV and reports the truth.
-  if (platform === "win32") {
+  // Windows: native by default. Chromium's WebCodecs encoder factory caps
+  // at 30 fps in this Castlabs build, so its `isConfigSupported` results
+  // are misleading (claims HW support at 720p30 but won't allocate
+  // 1080p60). Native FFmpeg talks directly to NVENC/AMF/QSV and reports
+  // the truth. The localStorage opt-out falls through to WebCodecs for
+  // machines where the native pipeline misbehaves.
+  if (platform === "win32" && winNativeEncodeEnabled()) {
     nativeEncodeActive = true;
     return await probeNativeEncoders(force);
+  }
+  if (platform === "win32") {
+    console.log("[encoderProbe] win native encode disabled via localStorage — using WebCodecs");
   }
 
   // Linux: native is opt-in and only taken if a hardware encoder is

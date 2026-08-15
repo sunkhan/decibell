@@ -6,6 +6,7 @@ import { probeDecoders } from "./utils/decoderProbe";
 import { probeEncoders } from "./utils/encoderProbe";
 import { loadSettings } from "./features/settings/loadSettings";
 import { flushSaveSettings } from "./features/settings/saveSettings";
+import { useCodecSettingsStore } from "./stores/codecSettingsStore";
 import { initRendererSentry } from "./lib/sentry";
 import "./styles/globals.css";
 
@@ -35,14 +36,30 @@ loadSettings().catch((e) =>
 // PR8: encoder probe runs renderer-side now (Chromium WebCodecs.VideoEncoder)
 // instead of native FFmpeg. Both cached in localStorage; user can refresh
 // via Settings → Codecs.
-probeDecoders().then((decoderCaps) => {
-  invoke("set_decoder_caps", { decoderCaps }).catch((e) =>
-    console.warn("[caps] failed to ship decoder caps to native:", e),
-  );
+//
+// Once both probes have shipped, hydrate codecSettingsStore from native.
+// The store used to be loaded only when the Settings → Codecs tab
+// mounted, but VoicePanel/UserProfilePopup gate stream-watching on its
+// decodeCaps — so on a fresh launch every stream showed as locked
+// ("hardware doesn't support this codec") until the user happened to
+// open that tab. Sequencing matters: load() reads caps back from
+// native, so it must run after both probes have shipped theirs.
+Promise.allSettled([
+  probeDecoders().then((decoderCaps) =>
+    invoke("set_decoder_caps", { decoderCaps }),
+  ),
+  probeEncoders(),
+]).then((results) => {
+  for (const r of results) {
+    if (r.status === "rejected") {
+      console.warn("[caps] boot probe/ship failed:", r.reason);
+    }
+  }
+  useCodecSettingsStore
+    .getState()
+    .load()
+    .catch((e) => console.warn("[caps] codec settings load failed:", e));
 });
-probeEncoders().catch((e) =>
-  console.warn("[caps] encoder probe failed:", e),
-);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
