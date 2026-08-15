@@ -12,7 +12,6 @@ use std::time::Instant;
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
 use rubato::{Resampler, SincFixedOut};
 
-#[cfg(target_os = "linux")]
 use super::audio_device::make_sinc_resampler;
 use super::codec::{OpusDecoder, StereoOpusDecoder, FRAME_SIZE, SAMPLE_RATE};
 use super::jitter::JitterBuffer;
