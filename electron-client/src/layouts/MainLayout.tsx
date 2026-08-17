@@ -15,7 +15,6 @@ import ImageViewer from "../features/chat/ImageViewer";
 import SettingsModal from "../features/settings/SettingsModal";
 import ImageContextMenu from "../components/ImageContextMenu";
 import MembershipRevokedToast from "../features/servers/MembershipRevokedToast";
-import MembersAdminPanel from "../features/servers/MembersAdminPanel";
 import ChannelSettingsModal from "../features/servers/ChannelSettingsModal";
 import InviteModal from "../features/servers/InviteModal";
 import DeepLinkJoinModal from "../features/servers/DeepLinkJoinModal";
@@ -134,7 +133,6 @@ export default function MainLayout() {
       <SettingsModal />
       <ImageContextMenu />
       <MembershipRevokedToast />
-      <MembersAdminPanel />
       <ChannelSettingsModal />
       <InviteModal />
       <DeepLinkJoinModal />

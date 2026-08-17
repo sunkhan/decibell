@@ -3,20 +3,18 @@ interface ServerActionsDropdownProps {
   canInvite: boolean;
   /// MANAGE_CHANNELS (or owner) + an active text channel is selected.
   canEditChannel: boolean;
-  onMembers: () => void;
   onInvites: () => void;
   onChannelSettings: () => void;
   onDisconnect: () => void;
-  /// Only present when the local user can edit server-wide settings
-  /// (MANAGE_SERVER or owner). Drives visibility of the
-  /// "Server Settings" dropdown entry.
-  onServerSettings?: () => void;
+  /// Opens the unified server-settings screen (Overview / Members /
+  /// Roles / Bans). Visible to everyone — the tabs inside gate
+  /// themselves by permission.
+  onServerSettings: () => void;
 }
 
 export default function ServerActionsDropdown({
   canInvite,
   canEditChannel,
-  onMembers,
   onInvites,
   onChannelSettings,
   onDisconnect,
@@ -25,16 +23,14 @@ export default function ServerActionsDropdown({
   return (
     <div className="absolute left-2 right-2 top-full z-30 mt-1.5 animate-[dropIn_0.18s_ease] rounded-md border border-border bg-bg-light p-[5px] shadow-float">
       <button
-        onClick={onMembers}
+        onClick={onServerSettings}
         className="group flex w-full items-center gap-2.5 rounded-sm px-2.5 py-[9px] text-[13px] text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-text-muted transition-colors group-hover:text-text-secondary">
-          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-          <circle cx="9" cy="7" r="4" />
-          <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <path d="M3 9h18M9 3v18" />
         </svg>
-        Members
+        Server Settings
       </button>
       {canInvite && (
         <button
@@ -58,18 +54,6 @@ export default function ServerActionsDropdown({
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
           Channel settings
-        </button>
-      )}
-      {onServerSettings && (
-        <button
-          onClick={onServerSettings}
-          className="group flex w-full items-center gap-2.5 rounded-sm px-2.5 py-[9px] text-[13px] text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-text-muted transition-colors group-hover:text-text-secondary">
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <path d="M3 9h18M9 3v18" />
-          </svg>
-          Server settings
         </button>
       )}
       <div className="mx-1.5 my-1 h-px bg-border-divider" />

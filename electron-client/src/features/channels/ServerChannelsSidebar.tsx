@@ -8,7 +8,6 @@ import VoiceParticipantList from "../voice/VoiceParticipantList";
 import ServerActionsDropdown from "../servers/ServerActionsDropdown";
 import ServerSettingsModal from "../servers/ServerSettingsModal";
 import LeaveServerConfirmModal from "../../components/LeaveServerConfirmModal";
-import { useCanEditServerSettings } from "../servers/useCanEditServerSettings";
 import { PERM, usePermission } from "../servers/permissions";
 import CreateChannelModal from "./CreateChannelModal";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
@@ -78,7 +77,6 @@ export default function ServerChannelsSidebar() {
       servers.find((s) => s.id === activeServerId)?.name,
     [activeServerId, serverMeta, servers],
   );
-  const canEditServerSettings = useCanEditServerSettings(activeServerId);
   const canInvite = usePermission(activeServerId, PERM.MANAGE_INVITES);
   const canManageChannels = usePermission(activeServerId, PERM.MANAGE_CHANNELS);
   const activeModal = useUiStore((s) => s.activeModal);
@@ -151,10 +149,6 @@ export default function ServerChannelsSidebar() {
               !!activeChannelId &&
               channels.find((c) => c.id === activeChannelId)?.type === "text"
             }
-            onMembers={() => {
-              setShowServerMenu(false);
-              useUiStore.getState().openModal("members-manage");
-            }}
             onInvites={() => {
               setShowServerMenu(false);
               useUiStore.getState().openModal("invite-manage");
@@ -163,14 +157,10 @@ export default function ServerChannelsSidebar() {
               setShowServerMenu(false);
               useUiStore.getState().openModal("channel-settings");
             }}
-            onServerSettings={
-              canEditServerSettings
-                ? () => {
-                    setShowServerMenu(false);
-                    useUiStore.getState().openModal("server-settings");
-                  }
-                : undefined
-            }
+            onServerSettings={() => {
+              setShowServerMenu(false);
+              useUiStore.getState().openModal("server-settings");
+            }}
             onDisconnect={() => {
               setShowServerMenu(false);
               if (!activeServerId) return;
