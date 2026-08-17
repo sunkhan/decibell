@@ -27,6 +27,7 @@ fn channel_info_payload(c: ChannelInfo) -> events::ChannelInfoPayload {
         r#type: match channel_info::Type::try_from(c.r#type) {
             Ok(channel_info::Type::Text) => "text",
             Ok(channel_info::Type::Voice) => "voice",
+            Ok(channel_info::Type::Category) => "category",
             Err(_) => "unknown",
         }
         .to_string(),
@@ -393,22 +394,7 @@ impl CommunityClient {
                     let channels: Vec<events::ChannelInfoPayload> = resp
                         .channels
                         .into_iter()
-                        .map(|c| events::ChannelInfoPayload {
-                            id: c.id,
-                            name: c.name,
-                            r#type: match channel_info::Type::try_from(c.r#type) {
-                                Ok(channel_info::Type::Text) => "text",
-                                Ok(channel_info::Type::Voice) => "voice",
-                                Err(_) => "unknown",
-                            }
-                            .to_string(),
-                            voice_bitrate_kbps: c.voice_bitrate_kbps,
-                            retention_days_text: c.retention_days_text,
-                            retention_days_image: c.retention_days_image,
-                            retention_days_video: c.retention_days_video,
-                            retention_days_document: c.retention_days_document,
-                            retention_days_audio: c.retention_days_audio,
-                        })
+                        .map(channel_info_payload)
                         .collect();
                     if resp.success {
                         // Cache attachment endpoint on the client so

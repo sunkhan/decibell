@@ -108,6 +108,9 @@ export default function ChannelSettingsModal() {
   // Mirrors the server-side gates: retention/rename/delete/wipe are all
   // MANAGE_CHANNELS (owner implicitly included).
   const canManage = usePermission(activeServerId, PERM.MANAGE_CHANNELS);
+  // Categories are grouping headers: no messages → no retention, no
+  // wipe. Just rename + delete.
+  const isCategory = channel?.type === "category";
   // The landing channel after auth must always exist — the server
   // refuses to delete the last text channel, so hide the button too.
   const isLastTextChannel =
@@ -202,6 +205,7 @@ export default function ChannelSettingsModal() {
 
   const retentionDirty =
     !!channel &&
+    !isCategory &&
     (draft.retentionDaysText !== channel.retentionDaysText ||
       draft.retentionDaysImage !== channel.retentionDaysImage ||
       draft.retentionDaysVideo !== channel.retentionDaysVideo ||
@@ -293,10 +297,10 @@ export default function ChannelSettingsModal() {
         <div className="flex shrink-0 items-center justify-between border-b border-border-divider px-6 py-5">
           <div className="min-w-0">
             <h2 className="font-display text-[18px] font-semibold text-text-primary">
-              Channel settings
+              {isCategory ? "Category settings" : "Channel settings"}
             </h2>
             <p className="truncate text-[12px] text-text-muted">
-              #{channel.name}
+              {isCategory ? channel.name : `#${channel.name}`}
             </p>
           </div>
           <button
@@ -325,6 +329,7 @@ export default function ChannelSettingsModal() {
             </div>
           )}
 
+          {!isCategory && (<>
           <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
             Retention
           </div>
@@ -366,6 +371,7 @@ export default function ChannelSettingsModal() {
               onChange={(v) => setField("retentionDaysAudio", v)}
             />
           </div>
+          </>)}
 
           {error && (
             <p className="mt-3 text-[12px] text-error">{error}</p>
@@ -381,6 +387,7 @@ export default function ChannelSettingsModal() {
               <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-error">
                 Danger zone
               </div>
+              {!isCategory && (
               <div className="rounded-md border border-error/25 bg-error/5 p-3">
                 <div className="flex items-start gap-3">
                   <div className="min-w-0 flex-1">
@@ -443,17 +450,19 @@ export default function ChannelSettingsModal() {
                   </div>
                 )}
               </div>
+              )}
 
               {!isLastTextChannel && (
                 <div className="mt-3 rounded-md border border-error/25 bg-error/5 p-3">
                   <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="text-[13px] font-medium text-text-primary">
-                        Delete channel
+                        {isCategory ? "Delete category" : "Delete channel"}
                       </div>
                       <p className="mt-0.5 text-[12px] leading-[1.55] text-text-muted">
-                        Removes #{channel.name} along with every message and
-                        attachment in it. Cannot be undone.
+                        {isCategory
+                          ? `Removes the ${channel.name} category. Its channels stay and move up to the group above.`
+                          : `Removes #${channel.name} along with every message and attachment in it. Cannot be undone.`}
                         {channel.type === "voice" &&
                           " The channel must be empty first."}
                       </p>

@@ -265,10 +265,14 @@ pub async fn delete_channel_message(args: DeleteChannelMessageArgs) -> napi::Res
 pub struct CreateChannelArgs {
     pub server_id: String,
     pub name: String,
-    /// "text" | "voice"
+    /// "text" | "voice" | "category"
     pub channel_type: String,
     /// Voice channels only. 0 = client default.
     pub voice_bitrate_kbps: i32,
+    /// Category to create the channel inside (end of its block).
+    /// None/empty = end of the uncategorized area. Ignored for
+    /// categories, which always append at the very end.
+    pub category_id: Option<String>,
 }
 
 #[napi]
@@ -278,11 +282,12 @@ pub async fn create_channel(args: CreateChannelArgs) -> napi::Result<()> {
         name,
         channel_type,
         voice_bitrate_kbps,
+        category_id,
     } = args;
-    let r#type = if channel_type == "voice" {
-        channel_info::Type::Voice
-    } else {
-        channel_info::Type::Text
+    let r#type = match channel_type.as_str() {
+        "voice" => channel_info::Type::Voice,
+        "category" => channel_info::Type::Category,
+        _ => channel_info::Type::Text,
     };
     send_for_server(
         &server_id,
@@ -291,7 +296,31 @@ pub async fn create_channel(args: CreateChannelArgs) -> napi::Result<()> {
             name,
             r#type: r#type as i32,
             voice_bitrate_kbps,
+            category_id: category_id.unwrap_or_default(),
         }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct ReorderChannelsArgs {
+    pub server_id: String,
+    /// The complete new sidebar order (channels + categories). Must
+    /// exactly match the server's current channel set or the reorder
+    /// is rejected wholesale.
+    pub channel_ids: Vec<String>,
+}
+
+#[napi]
+pub async fn reorder_channels(args: ReorderChannelsArgs) -> napi::Result<()> {
+    let ReorderChannelsArgs {
+        server_id,
+        channel_ids,
+    } = args;
+    send_for_server(
+        &server_id,
+        packet::Type::ChannelReorderReq,
+        packet::Payload::ChannelReorderReq(ChannelReorderRequest { channel_ids }),
     )
     .await
 }

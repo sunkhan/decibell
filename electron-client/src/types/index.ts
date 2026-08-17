@@ -269,7 +269,11 @@ export interface Message {
 export interface ChannelInfo {
   id: string;
   name: string;
-  type: "text" | "voice" | "unknown";
+  /// "category" rows are grouping headers living in the same ordered
+  /// list (Discord's flat model): a channel belongs to the nearest
+  /// category above it; channels before the first category are
+  /// uncategorized.
+  type: "text" | "voice" | "category" | "unknown";
   voiceBitrateKbps: number;
   retentionDaysText: number;
   retentionDaysImage: number;

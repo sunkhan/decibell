@@ -346,7 +346,12 @@ private:
             send_error(413, "Payload Too Large"); return;
         }
         if (!db_.is_member(username_))      { send_error(403, "Forbidden"); return; }
-        if (!db_.get_channel(channel_id))   { send_error(404, "Not Found"); return; }
+        // Category headers carry no messages — nothing can bind an
+        // attachment uploaded against one, so refuse at init.
+        auto target_channel = db_.get_channel(channel_id);
+        if (!target_channel || target_channel->type == 2) {
+            send_error(404, "Not Found"); return;
+        }
 
         const std::string safe_name = sanitize_filename(filename);
         const int kind = kind_from_mime(mime);

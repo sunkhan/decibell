@@ -115,12 +115,28 @@ export declare function deleteChannelMessage(args: DeleteChannelMessageArgs): Pr
 export interface CreateChannelArgs {
   serverId: string
   name: string
-  /** "text" | "voice" */
+  /** "text" | "voice" | "category" */
   channelType: string
   /** Voice channels only. 0 = client default. */
   voiceBitrateKbps: number
+  /**
+   * Category to create the channel inside (end of its block).
+   * None/empty = end of the uncategorized area. Ignored for
+   * categories, which always append at the very end.
+   */
+  categoryId?: string
 }
 export declare function createChannel(args: CreateChannelArgs): Promise<void>
+export interface ReorderChannelsArgs {
+  serverId: string
+  /**
+   * The complete new sidebar order (channels + categories). Must
+   * exactly match the server's current channel set or the reorder
+   * is rejected wholesale.
+   */
+  channelIds: Array<string>
+}
+export declare function reorderChannels(args: ReorderChannelsArgs): Promise<void>
 export interface RenameChannelArgs {
   serverId: string
   channelId: string

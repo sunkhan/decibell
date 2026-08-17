@@ -3,24 +3,35 @@ import { invoke } from "../../lib/ipc";
 import { toast } from "../../stores/toastStore";
 import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 
-/// Small create dialog opened from the sidebar section-header "+"
-/// buttons (MANAGE_CHANNELS only — the button is permission-gated).
-/// The server slugs the name into the channel id; success confirms
-/// itself via the channel_list_updated push, denials via the global
+/// Create dialog for channels AND categories, opened from the
+/// category-header "+" and the channel-list context menu
+/// (MANAGE_CHANNELS only — every entry point is permission-gated).
+/// The server slugs the name into the id; success confirms itself via
+/// the channel_list_updated push, denials via the global
 /// channel_action_responded toast.
 export default function CreateChannelModal({
   serverId,
   channelType,
+  categoryId,
+  allowTypeChoice = false,
   onClose,
 }: {
   serverId: string;
-  channelType: "text" | "voice";
+  channelType: "text" | "voice" | "category";
+  /// Category to create the channel inside (end of its block).
+  /// Undefined = end of the uncategorized area.
+  categoryId?: string;
+  /// Show a Text/Voice toggle (used by the category-header "+", where
+  /// the kind isn't implied by the entry point).
+  allowTypeChoice?: boolean;
   onClose: () => void;
 }) {
   useEscapeToClose(onClose, true);
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [type, setType] = useState<"text" | "voice" | "category">(channelType);
 
+  const isCategory = type === "category";
   const canCreate = name.trim().length > 0 && !creating;
 
   const handleCreate = async () => {
@@ -30,8 +41,9 @@ export default function CreateChannelModal({
       await invoke("create_channel", {
         serverId,
         name: name.trim(),
-        channelType,
+        channelType: type,
         voiceBitrateKbps: 0,
+        categoryId: isCategory ? undefined : categoryId,
       });
       onClose();
     } catch (err) {
@@ -50,13 +62,32 @@ export default function CreateChannelModal({
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="mb-1 font-display text-[18px] font-semibold text-text-primary">
-          Create {channelType} channel
+          {isCategory ? "Create category" : `Create ${type} channel`}
         </h2>
         <p className="mb-4 text-[12px] leading-[1.55] text-text-muted">
-          {channelType === "text"
-            ? "A new place for messages. The channel id is derived from the name."
-            : "A new place to talk. The channel id is derived from the name."}
+          {isCategory
+            ? "A collapsible group for channels. Drag channels into it to organize the sidebar."
+            : type === "text"
+              ? "A new place for messages. The channel id is derived from the name."
+              : "A new place to talk. The channel id is derived from the name."}
         </p>
+        {allowTypeChoice && !isCategory && (
+          <div className="mb-4 flex gap-1 rounded-md bg-bg-light p-1">
+            {(["text", "voice"] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setType(t)}
+                className={`flex-1 cursor-pointer rounded-sm py-1.5 text-[12px] font-medium capitalize transition-colors ${
+                  type === t
+                    ? "bg-accent-soft text-accent-bright"
+                    : "text-text-muted hover:text-text-secondary"
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        )}
         <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
           Name
         </label>
@@ -68,20 +99,22 @@ export default function CreateChannelModal({
             if (e.key === "Enter") handleCreate();
           }}
           maxLength={64}
-          placeholder={channelType === "text" ? "bug-reports" : "Game Night"}
+          placeholder={
+            isCategory ? "Gaming" : type === "text" ? "bug-reports" : "Game Night"
+          }
           className="w-full rounded-md border border-border bg-bg-light px-3 py-2 text-[13px] text-text-primary outline-none transition-colors focus:border-accent"
         />
         <div className="mt-5 flex gap-2.5">
           <button
             onClick={onClose}
-            className="flex-1 rounded-md bg-bg-light py-2.5 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter"
+            className="flex-1 cursor-pointer rounded-md bg-bg-light py-2.5 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter"
           >
             Cancel
           </button>
           <button
             onClick={handleCreate}
             disabled={!canCreate}
-            className="flex-1 rounded-md bg-accent py-2.5 text-[13px] font-semibold text-on-accent transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50"
+            className="flex-1 cursor-pointer rounded-md bg-accent py-2.5 text-[13px] font-semibold text-on-accent transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50"
           >
             {creating ? "Creating..." : "Create"}
           </button>

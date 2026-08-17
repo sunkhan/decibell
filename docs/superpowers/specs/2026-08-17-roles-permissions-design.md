@@ -134,6 +134,35 @@ channel can reuse the slug). All gated by MANAGE_CHANNELS.
   `ChannelSettingsModal` (whole modal now MANAGE_CHANNELS-gated instead
   of owner-gated).
 
+## Categories + drag-reorder (same 2026-08-17 pass)
+
+Discord's flat sidebar model: `ChannelInfo.Type` gains `CATEGORY = 2` —
+categories are rows in the same ordered `channels` table/list. A
+channel's category is **implicit**: the nearest CATEGORY row above it
+in position order; channels before the first category are
+uncategorized (the header-less area pinned at the top). Categories
+can't nest, carry no messages (CHANNEL_MSG + attachment-init reject
+them), and reuse the whole channel CRUD surface (create/rename/delete;
+deleting one lets its channels reflow to the block above).
+
+- `ChannelCreateRequest.category_id`: "" = end of the uncategorized
+  area; a category id = end of that category's block. Creation
+  renumbers positions densely (position gaps from deletes otherwise
+  corrupt index-based placement — caught by e2e).
+- `CHANNEL_REORDER_REQ` (type 102): the client sends the complete new
+  flat order after a drag; the server validates the id set matches
+  exactly (concurrent create/delete ⇒ clean rejection + resync push),
+  rewrites positions 0..N-1 transactionally, broadcasts
+  `CHANNEL_LIST_UPDATE`. MANAGE_CHANNELS.
+- Client: sidebar renders the flat grouped list with collapsible
+  category headers (hover "+" creates inside the category); HTML5
+  drag-reorder with an insertion indicator — categories move with
+  their whole child block and snap to block boundaries so they never
+  nest or capture the top uncategorized area; right-click context menu
+  (MANAGE_CHANNELS) on rows (settings/delete) and on empty space
+  (create text/voice/category). Optimistic reorder, server broadcast
+  confirms.
+
 ## Nicknames (same 2026-08-17 pass)
 
 `SET_NICKNAME_REQ` (type 101) → `MOD_ACTION_RES` with

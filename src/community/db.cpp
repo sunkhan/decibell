@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iostream>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1242,8 +1243,9 @@ std::string slugify_channel_name(const std::string& name) {
 
 std::optional<DbChannel> CommunityDb::create_channel(const std::string& name,
                                                      int32_t type,
-                                                     int32_t voice_bitrate_kbps) {
-    if (name.empty() || (type != 0 && type != 1)) return std::nullopt;
+                                                     int32_t voice_bitrate_kbps,
+                                                     const std::string& category_id) {
+    if (name.empty() || (type != 0 && type != 1 && type != 2)) return std::nullopt;
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Unique id: the slug, or slug-2, slug-3... on collision.
@@ -1257,30 +1259,117 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& name,
         id = base + "-" + std::to_string(suffix);
     }
 
-    int32_t position = 0;
+    // Compute the insertion INDEX in the ordered list (see the header
+    // comment). Deletions leave gaps in the stored positions, so index
+    // space and position space diverge — the insert below renumbers
+    // every row densely (0..N) rather than shifting stored positions,
+    // which healed a bug where "append at end" landed mid-list after a
+    // delete.
+    struct Row { std::string id; int32_t type; };
+    std::vector<Row> rows;
     {
-        Stmt q(db_, "SELECT COALESCE(MAX(position), -1) + 1 FROM channels;");
-        if (q.s && q.step() == SQLITE_ROW) position = q.col_int(0);
+        Stmt q(db_,
+            "SELECT id, type FROM channels ORDER BY position ASC, id ASC;");
+        if (!q.s) return std::nullopt;
+        while (q.step() == SQLITE_ROW) {
+            rows.push_back({ q.col_text(0), q.col_int(1) });
+        }
     }
 
-    Stmt ins(db_,
-        "INSERT INTO channels(id, name, type, position, voice_bitrate_kbps) "
-        "VALUES(?, ?, ?, ?, ?);");
-    if (!ins.s) return std::nullopt;
-    ins.bind_text(1, id);
-    ins.bind_text(2, name);
-    ins.bind_int(3, type);
-    ins.bind_int(4, position);
-    ins.bind_int(5, type == 1 ? voice_bitrate_kbps : 0);
-    if (ins.step() != SQLITE_DONE) return std::nullopt;
+    size_t idx = rows.size();  // default: very end
+    if (type != 2) {
+        if (category_id.empty()) {
+            // End of the uncategorized area = first CATEGORY row.
+            for (size_t i = 0; i < rows.size(); ++i) {
+                if (rows[i].type == 2) { idx = i; break; }
+            }
+        } else {
+            // End of the target category's block = the next CATEGORY
+            // row after it.
+            bool found = false;
+            idx = rows.size();
+            for (size_t i = 0; i < rows.size(); ++i) {
+                if (!found) {
+                    if (rows[i].id == category_id && rows[i].type == 2) {
+                        found = true;
+                    }
+                } else if (rows[i].type == 2) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (!found) return std::nullopt;  // unknown category
+        }
+    }
+
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    bool ok = true;
+    // Dense renumber around the insertion point: rows before idx keep
+    // 0..idx-1, rows from idx on move to idx+1.., the new row takes idx.
+    for (size_t i = 0; i < rows.size() && ok; ++i) {
+        Stmt upd(db_, "UPDATE channels SET position=? WHERE id=?;");
+        ok = upd.s != nullptr;
+        if (ok) {
+            upd.bind_int(1, static_cast<int32_t>(i < idx ? i : i + 1));
+            upd.bind_text(2, rows[i].id);
+            ok = upd.step() == SQLITE_DONE;
+        }
+    }
+    if (ok) {
+        Stmt ins(db_,
+            "INSERT INTO channels(id, name, type, position, voice_bitrate_kbps) "
+            "VALUES(?, ?, ?, ?, ?);");
+        ok = ins.s != nullptr;
+        if (ok) {
+            ins.bind_text(1, id);
+            ins.bind_text(2, name);
+            ins.bind_int(3, type);
+            ins.bind_int(4, static_cast<int32_t>(idx));
+            ins.bind_int(5, type == 1 ? voice_bitrate_kbps : 0);
+            ok = ins.step() == SQLITE_DONE;
+        }
+    }
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    if (!ok) return std::nullopt;
 
     DbChannel c;
     c.id = id;
     c.name = name;
     c.type = type;
-    c.position = position;
+    c.position = static_cast<int32_t>(idx);
     c.voice_bitrate_kbps = type == 1 ? voice_bitrate_kbps : 0;
     return c;
+}
+
+bool CommunityDb::reorder_channels(const std::vector<std::string>& ordered_ids) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // The requested set must exactly match the table — same count, no
+    // unknowns, no duplicates — so a reorder raced by a create/delete
+    // fails whole instead of scrambling positions.
+    {
+        std::set<std::string> requested(ordered_ids.begin(), ordered_ids.end());
+        if (requested.size() != ordered_ids.size()) return false;
+        std::set<std::string> current;
+        Stmt q(db_, "SELECT id FROM channels;");
+        if (!q.s) return false;
+        while (q.step() == SQLITE_ROW) current.insert(q.col_text(0));
+        if (current != requested) return false;
+    }
+
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    bool ok = true;
+    for (size_t i = 0; i < ordered_ids.size() && ok; ++i) {
+        Stmt upd(db_, "UPDATE channels SET position=? WHERE id=?;");
+        ok = upd.s != nullptr;
+        if (ok) {
+            upd.bind_int(1, static_cast<int32_t>(i));
+            upd.bind_text(2, ordered_ids[i]);
+            ok = upd.step() == SQLITE_DONE;
+        }
+    }
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    return ok;
 }
 
 bool CommunityDb::rename_channel(const std::string& channel_id,

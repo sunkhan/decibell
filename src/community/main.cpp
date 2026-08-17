@@ -91,12 +91,20 @@ void fill_role_info(chatproj::RoleInfo* info, const chatproj::DbRole& r) {
     info->set_is_default(r.is_default);
 }
 
+/// DbChannel.type → wire enum (0 text, 1 voice, 2 category).
+chatproj::ChannelInfo::Type channel_type_to_proto(int32_t type) {
+    switch (type) {
+        case 1: return chatproj::ChannelInfo::VOICE;
+        case 2: return chatproj::ChannelInfo::CATEGORY;
+        default: return chatproj::ChannelInfo::TEXT;
+    }
+}
+
 /// Copies a DbChannel into a ChannelInfo.
 void fill_channel_info(chatproj::ChannelInfo* info, const chatproj::DbChannel& ch) {
     info->set_id(ch.id);
     info->set_name(ch.name);
-    info->set_type(ch.type == 1 ? chatproj::ChannelInfo::VOICE
-                                : chatproj::ChannelInfo::TEXT);
+    info->set_type(channel_type_to_proto(ch.type));
     info->set_voice_bitrate_kbps(ch.voice_bitrate_kbps);
     info->set_retention_days_text(ch.retention_days_text);
     info->set_retention_days_image(ch.retention_days_image);
@@ -846,14 +854,19 @@ private:
             auto* msg = routed.mutable_channel_msg();
             msg->set_sender(username_); // Enforce identity
 
-            // The channel must exist. Otherwise any member can persist
-            // rows under arbitrary channel ids that no retention sweep,
-            // wipe, or history fetch would ever visit.
-            if (auto* db = manager_.db();
-                !db || !db->get_channel(msg->channel_id())) {
-                std::cout << "[Community] Dropped CHANNEL_MSG from " << username_
-                          << " to unknown channel '" << msg->channel_id() << "'\n";
-                return;
+            // The channel must exist and not be a category header.
+            // Otherwise any member can persist rows under arbitrary (or
+            // message-less) channel ids that no retention sweep, wipe,
+            // or history fetch would ever visit.
+            {
+                std::optional<chatproj::DbChannel> ch;
+                if (auto* db = manager_.db()) ch = db->get_channel(msg->channel_id());
+                if (!ch || ch->type == 2) {
+                    std::cout << "[Community] Dropped CHANNEL_MSG from " << username_
+                              << " to unknown/category channel '"
+                              << msg->channel_id() << "'\n";
+                    return;
+                }
             }
             // Size cap — the 2 MB frame cap alone would let one message
             // carry ~2 MB of text, persisted and fanned out to every
@@ -1048,9 +1061,7 @@ private:
                     auto* info = res->mutable_channel();
                     info->set_id(ch->id);
                     info->set_name(ch->name);
-                    info->set_type(ch->type == 1
-                                    ? chatproj::ChannelInfo::VOICE
-                                    : chatproj::ChannelInfo::TEXT);
+                    info->set_type(channel_type_to_proto(ch->type));
                     info->set_voice_bitrate_kbps(ch->voice_bitrate_kbps);
                     info->set_retention_days_text(ch->retention_days_text);
                     info->set_retention_days_image(ch->retention_days_image);
@@ -1772,12 +1783,24 @@ private:
             std::string name = req.name();
             if (name.size() > 64) name.resize(64);
             if (name.empty()) { fail("Channel name can't be empty."); return; }
-            const int32_t type =
-                req.type() == chatproj::ChannelInfo::VOICE ? 1 : 0;
+            int32_t type = 0;
+            if (req.type() == chatproj::ChannelInfo::VOICE) type = 1;
+            else if (req.type() == chatproj::ChannelInfo::CATEGORY) type = 2;
             int32_t bitrate = req.voice_bitrate_kbps();
             if (bitrate < 0) bitrate = 0;
             if (bitrate > 512) bitrate = 512;
-            auto created = db->create_channel(name, type, bitrate);
+            // Placement target must be a real category when given
+            // (create_channel re-checks under its lock; this gives the
+            // clearer error message).
+            if (type != 2 && !req.category_id().empty()) {
+                auto cat = db->get_channel(req.category_id());
+                if (!cat || cat->type != 2) {
+                    fail("Unknown category.");
+                    return;
+                }
+            }
+            auto created = db->create_channel(name, type, bitrate,
+                                              type == 2 ? "" : req.category_id());
             if (!created) { fail("Failed to create channel."); return; }
             res->set_success(true);
             fill_channel_info(res->mutable_channel(), *created);
@@ -1909,6 +1932,38 @@ private:
                 manager_.broadcast_members();
             }
         }
+
+        // --- CHANNEL: REORDER (drag-and-drop, full new order) ---
+        else if (packet.type() == chatproj::Packet::CHANNEL_REORDER_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.channel_reorder_req();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::CHANNEL_ACTION_RES);
+            auto* res = p.mutable_channel_action_res();
+            res->set_action("reorder");
+            auto fail = [&](const char* msg) {
+                res->set_success(false);
+                res->set_message(msg);
+                send_packet(p);
+            };
+            if (!db) { fail("Server misconfigured."); return; }
+            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
+                fail("You don't have permission to manage channels.");
+                return;
+            }
+            std::vector<std::string> ordered(req.channel_ids().begin(),
+                                             req.channel_ids().end());
+            if (!db->reorder_channels(ordered)) {
+                // Set mismatch usually means a concurrent create/delete —
+                // the follow-up broadcast below resyncs the client.
+                fail("Reorder rejected — channel list changed, try again.");
+                manager_.broadcast_channels();
+                return;
+            }
+            res->set_success(true);
+            send_packet(p);
+            manager_.broadcast_channels();
+        }
     }
 
     // Helper used by moderation paths to send a short response (KICK/BAN/LEAVE
@@ -1950,9 +2005,7 @@ private:
                     auto* info = res->add_channels();
                     info->set_id(ch.id);
                     info->set_name(ch.name);
-                    info->set_type(ch.type == 1
-                                   ? chatproj::ChannelInfo::VOICE
-                                   : chatproj::ChannelInfo::TEXT);
+                    info->set_type(channel_type_to_proto(ch.type));
                     info->set_voice_bitrate_kbps(ch.voice_bitrate_kbps);
                     info->set_retention_days_text(ch.retention_days_text);
                     info->set_retention_days_image(ch.retention_days_image);

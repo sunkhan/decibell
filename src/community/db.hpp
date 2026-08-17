@@ -260,14 +260,27 @@ public:
     // --- channels ---
     std::vector<DbChannel> list_channels() const;
 
-    // Creates a channel at the end of the list (position = max+1). The
-    // id is a filesystem-safe slug of the name, made unique with a
-    // numeric suffix on collision (it doubles as the attachment
-    // directory name and is immutable after creation). Returns the
-    // created row, or nullopt on invalid name / DB error.
+    // Creates a channel/category. The id is a filesystem-safe slug of
+    // the name, made unique with a numeric suffix on collision (it
+    // doubles as the attachment directory name and is immutable after
+    // creation).
+    //
+    // Placement (positions stay dense, later rows shift):
+    //  - type CATEGORY (2): always appended at the very end.
+    //  - channel with category_id "": end of the uncategorized area
+    //    (just before the first CATEGORY row, or list end if none).
+    //  - channel with a category_id: end of that category's block
+    //    (just before the next CATEGORY row after it, or list end).
+    // Returns the created row, or nullopt on invalid input / unknown
+    // category / DB error.
     std::optional<DbChannel> create_channel(const std::string& name,
                                             int32_t type,
-                                            int32_t voice_bitrate_kbps);
+                                            int32_t voice_bitrate_kbps,
+                                            const std::string& category_id);
+    // Rewrites positions to match `ordered_ids` (0..N-1) in one
+    // transaction. Fails without touching anything unless the id set
+    // exactly matches the current channels table.
+    bool reorder_channels(const std::vector<std::string>& ordered_ids);
     // Display-name change only — the id/slug stays. False if the
     // channel doesn't exist or the name is empty.
     bool rename_channel(const std::string& channel_id,

@@ -176,6 +176,9 @@ message Packet {
     CHANNEL_LIST_UPDATE = 100;  // community→all members: full channel list push
     SET_NICKNAME_REQ    = 101;  // client→community (self, or MANAGE_NICKNAMES);
                                 // response via MOD_ACTION_RES action="nickname"
+    CHANNEL_REORDER_REQ = 102;  // client→community (MANAGE_CHANNELS):
+                                // full new order after a drag; response via
+                                // CHANNEL_ACTION_RES action="reorder"
   }
 
   Type type = 1;
@@ -314,6 +317,7 @@ message Packet {
     ChannelActionResponse channel_action_res  = 101;
     ChannelListUpdate     channel_list_update = 102;
     SetNicknameRequest    set_nickname_req    = 103;
+    ChannelReorderRequest channel_reorder_req = 104;
   }
 }
 
@@ -438,7 +442,12 @@ message FriendListRes {
 message ChannelInfo {
   string id = 1;
   string name = 2;
-  enum Type { TEXT = 0; VOICE = 1; }
+  // CATEGORY rows are grouping headers living in the same ordered list
+  // as channels (Discord's flat model): a channel's category is the
+  // nearest CATEGORY row above it in position order; channels before
+  // the first category are uncategorized. Categories can't nest, carry
+  // no messages, and ignore the retention/bitrate fields.
+  enum Type { TEXT = 0; VOICE = 1; CATEGORY = 2; }
   Type type = 3;
   // Opus bitrate (kbps) for voice channels. 0 / unset means "use client default".
   int32 voice_bitrate_kbps = 4;
@@ -577,6 +586,11 @@ message ChannelCreateRequest {
   ChannelInfo.Type type = 2;
   // Voice channels only. 0 = "use client default".
   int32 voice_bitrate_kbps = 3;
+  // Where the new channel lands: the id of an existing CATEGORY row to
+  // append inside (end of its block), or "" to append at the end of
+  // the uncategorized area (before the first category). Ignored when
+  // creating a category — categories always append at the very end.
+  string category_id = 4;
 }
 
 message ChannelDeleteRequest {
@@ -603,6 +617,16 @@ message ChannelActionResponse {
 // channels that disappeared).
 message ChannelListUpdate {
   repeated ChannelInfo channels = 1;
+}
+
+// The complete new sidebar order (channels + categories, one flat
+// list) after a drag-reorder. The id set must exactly match the
+// server's current channel set — the server rewrites positions 0..N-1
+// in one transaction and pushes CHANNEL_LIST_UPDATE, so a concurrent
+// create/delete makes the reorder fail cleanly instead of silently
+// dropping rows.
+message ChannelReorderRequest {
+  repeated string channel_ids = 1;
 }
 
 // Sets (or clears, with an empty nickname) a member's display nickname.
