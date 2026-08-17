@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { login, register, logout, uploadAvatar, fetchAvatar, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, deleteChannelMessage, createChannel, reorderChannels, renameChannel, deleteChannel, listMembers, kickMember, banMember, leaveServer, createInvite, listInvites, revokeInvite, listRoles, createRole, updateRole, deleteRole, setMemberRoles, unbanMember, setNickname, requestDmConversations, requestDmHistory, markDmRead, deleteDmMessage, requestFriendList, sendFriendAction, sendPrivateMessage, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, requestDropMembership, updateServerPicture, fetchServerPicture, loadConfig, saveSettings, setDmPrivacy, setTransferLimits, listAudioDevices, startScreenShare, stopScreenShare, sendVideoFrame, watchStream, stopWatching, fetchStreamThumbnail, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, probeNativeEncoders, forceKeyframe, requestStreamKeyframe, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, init, shutdown, ping, pingAsync } = nativeBinding
+const { login, register, logout, uploadAvatar, fetchAvatar, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, deleteChannelMessage, createChannel, reorderChannels, renameChannel, deleteChannel, listMembers, kickMember, banMember, leaveServer, createInvite, listInvites, revokeInvite, listRoles, createRole, updateRole, deleteRole, setMemberRoles, unbanMember, setNickname, requestDmConversations, requestDmHistory, markDmRead, deleteDmMessage, requestFriendList, sendFriendAction, sendPrivateMessage, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, requestDropMembership, updateServerPicture, fetchServerPicture, loadConfig, saveSettings, setDmPrivacy, setTransferLimits, listAudioDevices, startScreenShare, stopScreenShare, sendVideoFrame, watchStream, stopWatching, fetchStreamThumbnail, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, probeNativeEncoders, forceKeyframe, requestStreamKeyframe, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setVoiceBitrate, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, init, shutdown, ping, pingAsync } = nativeBinding
 
 module.exports.login = login
 module.exports.register = register
@@ -382,6 +382,7 @@ module.exports.leaveVoiceChannel = leaveVoiceChannel
 module.exports.setVoiceMute = setVoiceMute
 module.exports.setVoiceDeafen = setVoiceDeafen
 module.exports.setVoiceThreshold = setVoiceThreshold
+module.exports.setVoiceBitrate = setVoiceBitrate
 module.exports.setStreamVolume = setStreamVolume
 module.exports.setStreamStereo = setStreamStereo
 module.exports.setUserVolume = setUserVolume

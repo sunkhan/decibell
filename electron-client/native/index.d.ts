@@ -659,6 +659,16 @@ export interface SetVoiceThresholdArgs {
   thresholdDb: number
 }
 export declare function setVoiceThreshold(args: SetVoiceThresholdArgs): Promise<void>
+export interface SetVoiceBitrateArgs {
+  /**
+   * Channel bitrate in kbps; 0 = client default. Called by the
+   * renderer when the connected channel's bitrate changes mid-call
+   * (channel_updated broadcast) so the running encoder adapts
+   * without a rejoin.
+   */
+  bitrateKbps: number
+}
+export declare function setVoiceBitrate(args: SetVoiceBitrateArgs): Promise<void>
 export interface SetStreamVolumeArgs {
   volume: number
 }

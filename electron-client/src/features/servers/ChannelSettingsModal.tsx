@@ -419,8 +419,8 @@ export default function ChannelSettingsModal() {
                 </div>
               </div>
               <p className="mt-2 text-[12px] leading-[1.5] text-text-muted">
-                Applies when members next join the channel — anyone already
-                connected keeps their current bitrate until they rejoin.
+                Applies immediately — connected members' encoders retune in
+                place. Members on older clients pick it up when they rejoin.
               </p>
             </div>
           )}

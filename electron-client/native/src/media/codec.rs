@@ -54,6 +54,15 @@ impl OpusEncoder {
         let silence = [0i16; FRAME_SIZE];
         self.encode(&silence, output)
     }
+
+    /// Live bitrate change (OPUS_SET_BITRATE) — Opus applies it from the
+    /// next encoded frame, no encoder restart needed. Used when an admin
+    /// edits the channel bitrate while people are connected.
+    pub fn set_bitrate(&mut self, bitrate_bps: i32) {
+        let _ = self
+            .encoder
+            .set_bitrate(audiopus::Bitrate::BitsPerSecond(bitrate_bps));
+    }
 }
 
 pub struct StereoOpusEncoder {

@@ -299,6 +299,11 @@ impl VoiceEngine {
         let _ = self.control_tx.send(ControlMessage::SetVoiceThreshold(db));
     }
 
+    /// Live Opus bitrate change (bps) on the running pipeline.
+    pub fn set_voice_bitrate(&self, bps: i32) {
+        let _ = self.control_tx.send(ControlMessage::SetVoiceBitrate(bps));
+    }
+
     pub fn set_stream_volume(&self, volume: f32) {
         let _ = self.control_tx.send(ControlMessage::SetStreamVolume(volume));
     }

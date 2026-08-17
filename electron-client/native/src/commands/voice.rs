@@ -382,6 +382,32 @@ pub async fn set_voice_threshold(args: SetVoiceThresholdArgs) -> napi::Result<()
 }
 
 #[napi(object)]
+pub struct SetVoiceBitrateArgs {
+    /// Channel bitrate in kbps; 0 = client default. Called by the
+    /// renderer when the connected channel's bitrate changes mid-call
+    /// (channel_updated broadcast) so the running encoder adapts
+    /// without a rejoin.
+    pub bitrate_kbps: i32,
+}
+
+#[napi]
+pub async fn set_voice_bitrate(args: SetVoiceBitrateArgs) -> napi::Result<()> {
+    let bps = if args.bitrate_kbps > 0 {
+        args.bitrate_kbps * 1000
+    } else {
+        crate::media::codec::OpusEncoder::DEFAULT_BITRATE_BPS
+    };
+    let state_arc = state::shared();
+    let s = state_arc.lock().await;
+    if let Some(ref engine) = s.voice_engine {
+        engine.set_voice_bitrate(bps);
+        Ok(())
+    } else {
+        Err(napi::Error::from_reason("Not in a voice channel"))
+    }
+}
+
+#[napi(object)]
 pub struct SetStreamVolumeArgs {
     pub volume: f64,
 }

@@ -29,6 +29,9 @@ pub enum ControlMessage {
     SetMute(bool),
     SetDeafen(bool),
     SetVoiceThreshold(f32), // dB threshold (-60 to 0); below this, send silence
+    /// Live Opus bitrate change in bps (admin edited the channel's
+    /// bitrate mid-call). Applies from the next encoded frame.
+    SetVoiceBitrate(i32),
     SetStreamVolume(f32),   // 0.0 to 1.0 — viewer-side stream audio volume
     SetStreamStereo(bool),  // true = preserve L/R stereo in stream audio
     SetUserVolume(String, f32), // username, linear gain (dB-converted on frontend)
@@ -88,7 +91,7 @@ pub fn run_audio_pipeline(
     // The audio loop uses channel-based recv (non-blocking try_recv).
 
     // ── Opus encoder ──────────────────────────────────────────────────────────
-    let encoder = match OpusEncoder::new(voice_bitrate_bps) {
+    let mut encoder = match OpusEncoder::new(voice_bitrate_bps) {
         Ok(e) => e,
         Err(e) => {
             let _ = event_tx.send(VoiceEvent::Error(format!(
@@ -370,6 +373,10 @@ pub fn run_audio_pipeline(
                 }
                 Ok(ControlMessage::SetVoiceThreshold(db)) => {
                     voice_threshold_db = db;
+                }
+                Ok(ControlMessage::SetVoiceBitrate(bps)) => {
+                    log::info!("[pipeline] Live voice bitrate change: {} bps", bps);
+                    encoder.set_bitrate(bps);
                 }
                 Ok(ControlMessage::SetStreamVolume(v)) => {
                     stream_volume = v.clamp(0.0, 1.0);

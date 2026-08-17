@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { invoke, listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useVoiceStore } from "../../stores/voiceStore";
 import { toast } from "../../stores/toastStore";
 import type { CommunityServer } from "../../types";
 
@@ -425,7 +426,25 @@ export function useServerEvents() {
       (event) => {
         const { serverId, success, channel } = event.payload;
         if (success && channel) {
+          const prev = useChatStore
+            .getState()
+            .channelsByServer[serverId]?.find((c) => c.id === channel.id);
           useChatStore.getState().upsertChannel(serverId, channel);
+          // Live bitrate: if an admin changed the bitrate of the voice
+          // channel we're currently connected to, retune the running
+          // Opus encoder in place — no rejoin needed. (Members on
+          // older clients pick it up on their next join.)
+          const voice = useVoiceStore.getState();
+          if (
+            channel.type === "voice" &&
+            voice.connectedServerId === serverId &&
+            voice.connectedChannelId === channel.id &&
+            prev?.voiceBitrateKbps !== channel.voiceBitrateKbps
+          ) {
+            invoke("set_voice_bitrate", {
+              bitrateKbps: channel.voiceBitrateKbps,
+            }).catch(console.error);
+          }
         }
       },
     );
