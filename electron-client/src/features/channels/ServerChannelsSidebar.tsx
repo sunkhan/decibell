@@ -201,7 +201,8 @@ export default function ServerChannelsSidebar() {
     // Categories can't nest: snap a category's drop point forward to
     // the next block boundary so it never lands inside another block
     // (and never captures the top uncategorized area).
-    if (channels.find((c) => c.id === dragId)?.type === "category" && before !== "END") {
+    const draggedType = channels.find((c) => c.id === dragId)?.type;
+    if (draggedType === "category" && before !== "END") {
       const idx = orderedIds.indexOf(before);
       let snapped: string | "END" = "END";
       for (let i = idx; i >= 0 && i < channels.length; i++) {
@@ -211,6 +212,54 @@ export default function ServerChannelsSidebar() {
         }
       }
       before = snapped;
+    } else if (draggedType === "text" || draggedType === "voice") {
+      // Discord invariant: text channels sit above voice channels
+      // within every group. Positions that would violate it get no
+      // indicator and are not droppable (the server normalizes any
+      // order it stores as a backstop).
+      const rest = channels.filter((c) => c.id !== dragId);
+      const i =
+        before === "END" ? rest.length : rest.findIndex((x) => x.id === before);
+      if (i === -1) {
+        setDropBefore(null);
+        return;
+      }
+      let gStart = 0;
+      for (let j = i - 1; j >= 0; j--) {
+        if (rest[j].type === "category") {
+          gStart = j + 1;
+          break;
+        }
+      }
+      let gEnd = rest.length;
+      for (let j = i; j < rest.length; j++) {
+        if (rest[j].type === "category") {
+          gEnd = j;
+          break;
+        }
+      }
+      let valid = true;
+      if (draggedType === "text") {
+        // A voice channel above the insertion point breaks the rule.
+        for (let j = gStart; j < i; j++) {
+          if (rest[j].type === "voice") {
+            valid = false;
+            break;
+          }
+        }
+      } else {
+        // A text channel below the insertion point breaks the rule.
+        for (let j = i; j < gEnd; j++) {
+          if (rest[j].type === "text") {
+            valid = false;
+            break;
+          }
+        }
+      }
+      if (!valid) {
+        setDropBefore(null);
+        return;
+      }
     }
     setDropBefore(before);
   };
@@ -365,7 +414,7 @@ export default function ServerChannelsSidebar() {
         {/* Uncategorized area (no header, always at the top) */}
         {activeServerId &&
           grouped.lead.map((ch) => (
-            <div key={ch.id}>
+            <div key={ch.id} className="relative">
               {dragId && dropBefore === ch.id && <DropLine />}
               {ch.type === "voice" ? (
                 <VoiceRow
@@ -392,7 +441,7 @@ export default function ServerChannelsSidebar() {
           grouped.blocks.map(({ category, children }) => {
             const collapsed = collapsedCategories.has(category.id);
             return (
-              <div key={category.id} className="mt-3 first:mt-0">
+              <div key={category.id} className="relative mt-3 first:mt-0">
                 {dragId && dropBefore === category.id && <DropLine />}
                 <div
                   data-reorder-id={category.id}
@@ -437,7 +486,7 @@ export default function ServerChannelsSidebar() {
                 </div>
                 {!collapsed &&
                   children.map((ch) => (
-                    <div key={ch.id}>
+                    <div key={ch.id} className="relative">
                       {dragId && dropBefore === ch.id && <DropLine />}
                       {ch.type === "voice" ? (
                         <VoiceRow
@@ -462,7 +511,9 @@ export default function ServerChannelsSidebar() {
             );
           })}
 
-        {dragId && dropBefore === "END" && <DropLine />}
+        <div className="relative">
+          {dragId && dropBefore === "END" && <DropLine />}
+        </div>
 
         {channels.length === 0 && (
           <p className="px-2 text-xs text-text-muted">No channels</p>
@@ -790,10 +841,15 @@ const TextChannelRow = memo(function TextChannelRow({
   );
 });
 
-/// 2px accent insertion indicator shown between rows during a
-/// drag-reorder.
+/// 2px accent insertion indicator shown during a drag-reorder.
+/// Absolutely positioned at the top edge of the row it precedes (its
+/// parent wrapper is `relative`) so appearing/moving never shifts the
+/// rows themselves — the earlier in-flow version made the list jump
+/// while hovering between candidate positions.
 function DropLine() {
-  return <div className="mx-1.5 my-0.5 h-0.5 rounded-full bg-accent" />;
+  return (
+    <div className="pointer-events-none absolute inset-x-1.5 -top-[1px] z-10 h-0.5 rounded-full bg-accent" />
+  );
 }
 
 function ContextMenuItem({

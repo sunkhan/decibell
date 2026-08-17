@@ -279,7 +279,8 @@ public:
                                             const std::string& category_id);
     // Rewrites positions to match `ordered_ids` (0..N-1) in one
     // transaction. Fails without touching anything unless the id set
-    // exactly matches the current channels table.
+    // exactly matches the current channels table. The stored order is
+    // then normalized (text above voice within each group).
     bool reorder_channels(const std::vector<std::string>& ordered_ids);
     // Display-name change only — the id/slug stays. False if the
     // channel doesn't exist or the name is empty.
@@ -453,6 +454,12 @@ private:
     void init_schema_();
     void migrate_to_v2_();
     void migrate_to_v5_roles_();
+    // Enforces the display invariant "text channels above voice
+    // channels within each group" (the uncategorized area and every
+    // category block), preserving relative order within each kind, and
+    // rewrites positions densely (0..N-1). Runs its own transaction;
+    // caller holds mutex_ and must NOT be inside a transaction.
+    void normalize_channel_order_();
     // Unlocked internals shared by the public role API (mutex_ held by caller).
     std::optional<DbRole> get_role_unlocked_(int64_t role_id) const;
     int32_t max_role_position_unlocked_() const;

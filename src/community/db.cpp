@@ -112,6 +112,8 @@ bool CommunityDb::open(const std::string& path,
     // Always run after seed: catches existing DBs that pre-date any new
     // default channels added to the canonical seed set.
     ensure_default_channels_();
+    // Existing DBs may pre-date the text-above-voice ordering invariant.
+    normalize_channel_order_();
     return true;
 }
 
@@ -1331,6 +1333,7 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& name,
     }
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
     if (!ok) return std::nullopt;
+    normalize_channel_order_();
 
     DbChannel c;
     c.id = id;
@@ -1339,6 +1342,55 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& name,
     c.position = static_cast<int32_t>(idx);
     c.voice_bitrate_kbps = type == 1 ? voice_bitrate_kbps : 0;
     return c;
+}
+
+void CommunityDb::normalize_channel_order_() {
+    struct Row { std::string id; int32_t type; };
+    std::vector<Row> rows;
+    {
+        Stmt q(db_,
+            "SELECT id, type FROM channels ORDER BY position ASC, id ASC;");
+        if (!q.s) return;
+        while (q.step() == SQLITE_ROW) {
+            rows.push_back({ q.col_text(0), q.col_int(1) });
+        }
+    }
+
+    // Rebuild the order group by group: text channels first, then
+    // voice, each keeping their relative order; category headers
+    // delimit the groups and stay where they are.
+    std::vector<std::string> out;
+    out.reserve(rows.size());
+    auto flush_group = [&](size_t start, size_t end) {
+        for (size_t j = start; j < end; ++j) {
+            if (rows[j].type == 0) out.push_back(rows[j].id);
+        }
+        for (size_t j = start; j < end; ++j) {
+            if (rows[j].type != 0 && rows[j].type != 2) out.push_back(rows[j].id);
+        }
+    };
+    size_t group_start = 0;
+    for (size_t j = 0; j < rows.size(); ++j) {
+        if (rows[j].type == 2) {
+            flush_group(group_start, j);
+            out.push_back(rows[j].id);
+            group_start = j + 1;
+        }
+    }
+    flush_group(group_start, rows.size());
+
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    bool ok = true;
+    for (size_t i = 0; i < out.size() && ok; ++i) {
+        Stmt upd(db_, "UPDATE channels SET position=? WHERE id=?;");
+        ok = upd.s != nullptr;
+        if (ok) {
+            upd.bind_int(1, static_cast<int32_t>(i));
+            upd.bind_text(2, out[i]);
+            ok = upd.step() == SQLITE_DONE;
+        }
+    }
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
 }
 
 bool CommunityDb::reorder_channels(const std::vector<std::string>& ordered_ids) {
@@ -1369,6 +1421,7 @@ bool CommunityDb::reorder_channels(const std::vector<std::string>& ordered_ids) 
         }
     }
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    if (ok) normalize_channel_order_();
     return ok;
 }
 
@@ -1448,6 +1501,7 @@ std::optional<CommunityDb::WipeChannelResult> CommunityDb::delete_channel(
     }
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
     if (!ok) return std::nullopt;
+    normalize_channel_order_();
     return out;
 }
 
