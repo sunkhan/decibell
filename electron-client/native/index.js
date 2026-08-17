@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { login, register, logout, uploadAvatar, fetchAvatar, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, deleteChannelMessage, listMembers, kickMember, banMember, leaveServer, createInvite, listInvites, revokeInvite, requestDmConversations, requestDmHistory, markDmRead, deleteDmMessage, requestFriendList, sendFriendAction, sendPrivateMessage, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, requestDropMembership, updateServerPicture, fetchServerPicture, loadConfig, saveSettings, setDmPrivacy, setTransferLimits, listAudioDevices, startScreenShare, stopScreenShare, sendVideoFrame, watchStream, stopWatching, fetchStreamThumbnail, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, probeNativeEncoders, forceKeyframe, requestStreamKeyframe, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, init, shutdown, ping, pingAsync } = nativeBinding
+const { login, register, logout, uploadAvatar, fetchAvatar, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, deleteChannelMessage, createChannel, renameChannel, deleteChannel, listMembers, kickMember, banMember, leaveServer, createInvite, listInvites, revokeInvite, listRoles, createRole, updateRole, deleteRole, setMemberRoles, unbanMember, setNickname, requestDmConversations, requestDmHistory, markDmRead, deleteDmMessage, requestFriendList, sendFriendAction, sendPrivateMessage, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, requestDropMembership, updateServerPicture, fetchServerPicture, loadConfig, saveSettings, setDmPrivacy, setTransferLimits, listAudioDevices, startScreenShare, stopScreenShare, sendVideoFrame, watchStream, stopWatching, fetchStreamThumbnail, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, probeNativeEncoders, forceKeyframe, requestStreamKeyframe, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, init, shutdown, ping, pingAsync } = nativeBinding
 
 module.exports.login = login
 module.exports.register = register
@@ -322,6 +322,9 @@ module.exports.wipeChannelHistory = wipeChannelHistory
 module.exports.updateChannelRetention = updateChannelRetention
 module.exports.sendChannelMessage = sendChannelMessage
 module.exports.deleteChannelMessage = deleteChannelMessage
+module.exports.createChannel = createChannel
+module.exports.renameChannel = renameChannel
+module.exports.deleteChannel = deleteChannel
 module.exports.listMembers = listMembers
 module.exports.kickMember = kickMember
 module.exports.banMember = banMember
@@ -329,6 +332,13 @@ module.exports.leaveServer = leaveServer
 module.exports.createInvite = createInvite
 module.exports.listInvites = listInvites
 module.exports.revokeInvite = revokeInvite
+module.exports.listRoles = listRoles
+module.exports.createRole = createRole
+module.exports.updateRole = updateRole
+module.exports.deleteRole = deleteRole
+module.exports.setMemberRoles = setMemberRoles
+module.exports.unbanMember = unbanMember
+module.exports.setNickname = setNickname
 module.exports.requestDmConversations = requestDmConversations
 module.exports.requestDmHistory = requestDmHistory
 module.exports.markDmRead = markDmRead

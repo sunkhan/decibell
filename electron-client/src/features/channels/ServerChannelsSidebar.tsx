@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useMemo, memo } from "react";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
-import { useAuthStore } from "../../stores/authStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import VoiceParticipantList from "../voice/VoiceParticipantList";
@@ -10,6 +9,8 @@ import ServerActionsDropdown from "../servers/ServerActionsDropdown";
 import ServerSettingsModal from "../servers/ServerSettingsModal";
 import LeaveServerConfirmModal from "../../components/LeaveServerConfirmModal";
 import { useCanEditServerSettings } from "../servers/useCanEditServerSettings";
+import { PERM, usePermission } from "../servers/permissions";
+import CreateChannelModal from "./CreateChannelModal";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { useSidebarResize } from "./useSidebarResize";
 
@@ -25,7 +26,6 @@ export default function ServerChannelsSidebar() {
   const activeChannelId = useChatStore((s) => s.activeChannelId);
   const channelsByServer = useChatStore((s) => s.channelsByServer);
   const servers = useChatStore((s) => s.servers);
-  const serverOwner = useChatStore((s) => s.serverOwner);
   const serverMeta = useChatStore((s) => s.serverMeta);
   const setActiveChannel = useChatStore((s) => s.setActiveChannel);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
@@ -34,10 +34,12 @@ export default function ServerChannelsSidebar() {
   // Drag/drop state lives inside TextChannelRow now — each row owns
   // its own per-row dragHoveredKey and dragActive subscriptions so
   // parent re-renders don't ripple through every channel.
-  const currentUser = useAuthStore((s) => s.username);
 
   const [textCollapsed, setTextCollapsed] = useState(false);
   const [voiceCollapsed, setVoiceCollapsed] = useState(false);
+  const [createChannelType, setCreateChannelType] = useState<
+    "text" | "voice" | null
+  >(null);
   const [showServerMenu, setShowServerMenu] = useState(false);
   const [leavePending, setLeavePending] = useState<{ id: string; name: string } | null>(null);
   const serverMenuRef = useRef<HTMLDivElement>(null);
@@ -76,14 +78,9 @@ export default function ServerChannelsSidebar() {
       servers.find((s) => s.id === activeServerId)?.name,
     [activeServerId, serverMeta, servers],
   );
-  const isOwner = useMemo(
-    () =>
-      !!activeServerId &&
-      !!currentUser &&
-      serverOwner[activeServerId] === currentUser,
-    [activeServerId, currentUser, serverOwner],
-  );
   const canEditServerSettings = useCanEditServerSettings(activeServerId);
+  const canInvite = usePermission(activeServerId, PERM.MANAGE_INVITES);
+  const canManageChannels = usePermission(activeServerId, PERM.MANAGE_CHANNELS);
   const activeModal = useUiStore((s) => s.activeModal);
 
   // Text channel click handler lives inside TextChannelRow now (it
@@ -148,9 +145,9 @@ export default function ServerChannelsSidebar() {
 
         {showServerMenu && activeServerId && (
           <ServerActionsDropdown
-            isOwner={isOwner}
+            canInvite={canInvite}
             canEditChannel={
-              isOwner &&
+              canManageChannels &&
               !!activeChannelId &&
               channels.find((c) => c.id === activeChannelId)?.type === "text"
             }
@@ -195,7 +192,7 @@ export default function ServerChannelsSidebar() {
         className="flex-1 overflow-y-auto px-2 py-2.5"
         style={{ "--list-row-pad-y": "7px", "--list-row-pad-x": "10px", "--list-row-gap": "8px" } as React.CSSProperties}
       >
-        {textChannels.length > 0 && (
+        {(textChannels.length > 0 || canManageChannels) && (
           <div className="mb-4">
             <div
               className="group mb-1 flex cursor-pointer select-none items-center gap-1 px-2"
@@ -215,6 +212,21 @@ export default function ServerChannelsSidebar() {
               <h3 className="font-channel font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted transition-colors group-hover:text-text-secondary">
                 Text Channels
               </h3>
+              {canManageChannels && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCreateChannelType("text");
+                  }}
+                  title="Create text channel"
+                  className="ml-auto flex h-4 w-4 items-center justify-center rounded-sm text-text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-text-primary group-hover:opacity-100"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                </button>
+              )}
             </div>
             {!textCollapsed &&
               activeServerId &&
@@ -229,7 +241,7 @@ export default function ServerChannelsSidebar() {
           </div>
         )}
 
-        {voiceChannels.length > 0 && (
+        {(voiceChannels.length > 0 || canManageChannels) && (
           <div>
             <div
               className="group mb-1 flex cursor-pointer select-none items-center gap-1 px-2"
@@ -249,6 +261,21 @@ export default function ServerChannelsSidebar() {
               <h3 className="font-channel font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted transition-colors group-hover:text-text-secondary">
                 Voice Channels
               </h3>
+              {canManageChannels && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCreateChannelType("voice");
+                  }}
+                  title="Create voice channel"
+                  className="ml-auto flex h-4 w-4 items-center justify-center rounded-sm text-text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-text-primary group-hover:opacity-100"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                </button>
+              )}
             </div>
             {!voiceCollapsed &&
               voiceChannels.map((ch) => {
@@ -325,6 +352,13 @@ export default function ServerChannelsSidebar() {
             setActiveView("home");
             setLeavePending(null);
           }}
+        />
+      )}
+      {createChannelType && activeServerId && (
+        <CreateChannelModal
+          serverId={activeServerId}
+          channelType={createChannelType}
+          onClose={() => setCreateChannelType(null)}
         />
       )}
     </div>

@@ -161,3 +161,156 @@ pub async fn revoke_invite(args: RevokeInviteArgs) -> napi::Result<()> {
     )
     .await
 }
+
+// ── Roles + permissions ──────────────────────────────────────────
+//
+// Results land as `role_action_responded`; the authoritative state
+// follows as pushed `role_list_received` / `member_list_received`
+// broadcasts. Permission bitfields ride as i64 — every defined bit is
+// far below 2^53 so JS numbers round-trip losslessly.
+
+#[napi(object)]
+pub struct ListRolesArgs {
+    pub server_id: String,
+}
+
+#[napi]
+pub async fn list_roles(args: ListRolesArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::RoleListReq,
+        packet::Payload::RoleListReq(RoleListRequest {}),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct CreateRoleArgs {
+    pub server_id: String,
+    pub name: String,
+    /// 0xRRGGBB; 0 = default color.
+    pub color: u32,
+    pub permissions: i64,
+}
+
+#[napi]
+pub async fn create_role(args: CreateRoleArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::RoleCreateReq,
+        packet::Payload::RoleCreateReq(RoleCreateRequest {
+            name: args.name,
+            color: args.color,
+            permissions: args.permissions.max(0) as u64,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct UpdateRoleArgs {
+    pub server_id: String,
+    pub role_id: i64,
+    pub name: String,
+    pub color: u32,
+    pub permissions: i64,
+    pub position: i32,
+}
+
+#[napi]
+pub async fn update_role(args: UpdateRoleArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::RoleUpdateReq,
+        packet::Payload::RoleUpdateReq(RoleUpdateRequest {
+            role_id: args.role_id,
+            name: args.name,
+            color: args.color,
+            permissions: args.permissions.max(0) as u64,
+            position: args.position,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct DeleteRoleArgs {
+    pub server_id: String,
+    pub role_id: i64,
+}
+
+#[napi]
+pub async fn delete_role(args: DeleteRoleArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::RoleDeleteReq,
+        packet::Payload::RoleDeleteReq(RoleDeleteRequest {
+            role_id: args.role_id,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct SetMemberRolesArgs {
+    pub server_id: String,
+    pub username: String,
+    /// The member's full desired role set (default role implicit).
+    pub role_ids: Vec<i64>,
+}
+
+#[napi]
+pub async fn set_member_roles(args: SetMemberRolesArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::MemberRolesUpdateReq,
+        packet::Payload::MemberRolesUpdateReq(MemberRolesUpdateRequest {
+            username: args.username,
+            role_ids: args.role_ids,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct UnbanMemberArgs {
+    pub server_id: String,
+    pub username: String,
+}
+
+#[napi]
+pub async fn unban_member(args: UnbanMemberArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::UnbanMemberReq,
+        packet::Payload::UnbanMemberReq(UnbanMemberRequest {
+            username: args.username,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct SetNicknameArgs {
+    pub server_id: String,
+    /// Target member — may be the local user (self-changes are always
+    /// allowed; others need MANAGE_NICKNAMES + a strictly higher role).
+    pub username: String,
+    /// Empty clears the nickname.
+    pub nickname: String,
+}
+
+#[napi]
+pub async fn set_nickname(args: SetNicknameArgs) -> napi::Result<()> {
+    let SetNicknameArgs {
+        server_id,
+        username,
+        nickname,
+    } = args;
+    send_for_server(
+        &server_id,
+        packet::Type::SetNicknameReq,
+        packet::Payload::SetNicknameReq(SetNicknameRequest { username, nickname }),
+    )
+    .await
+}

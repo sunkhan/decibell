@@ -214,6 +214,10 @@ pub const FRIEND_ACTION_RESPONDED: &str = "friend_action_responded";
 pub const MEMBER_LIST_RECEIVED: &str = "member_list_received";
 pub const MOD_ACTION_RESPONDED: &str = "mod_action_responded";
 pub const MEMBERSHIP_REVOKED: &str = "membership_revoked";
+pub const ROLE_LIST_RECEIVED: &str = "role_list_received";
+pub const ROLE_ACTION_RESPONDED: &str = "role_action_responded";
+pub const CHANNEL_LIST_UPDATED: &str = "channel_list_updated";
+pub const CHANNEL_ACTION_RESPONDED: &str = "channel_action_responded";
 pub const INVITE_LIST_RECEIVED: &str = "invite_list_received";
 pub const INVITE_CREATE_RESPONDED: &str = "invite_create_responded";
 pub const INVITE_REVOKE_RESPONDED: &str = "invite_revoke_responded";
@@ -368,6 +372,10 @@ pub struct ChannelMessagePayload {
 pub struct MessageReceivedPayload {
     /// Channel id for channel messages, "dm" for direct messages.
     pub context: String,
+    /// Community server id for channel messages; empty for DMs. The
+    /// renderer namespaces its per-channel cache with it — channel ids
+    /// alone collide across servers (every server has a "general").
+    pub server_id: String,
     pub sender: String,
     /// Populated for DMs, empty for channel messages.
     pub recipient: String,
@@ -403,6 +411,34 @@ pub struct ChannelUpdatedPayload {
     pub success: bool,
     pub message: String,
     pub channel: Option<ChannelInfoPayload>,
+}
+
+/// Full ordered channel list, pushed by the server after any channel
+/// create / rename / delete. Clients replace their local list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelListUpdatedPayload {
+    pub server_id: String,
+    pub channels: Vec<ChannelInfoPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelActionRespondedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    /// "create" | "rename" | "delete"
+    pub action: String,
+    pub channel: Option<ChannelInfoPayload>,
+}
+
+pub fn emit_channel_list_updated(payload: ChannelListUpdatedPayload) {
+    send(CHANNEL_LIST_UPDATED, payload);
+}
+
+pub fn emit_channel_action_responded(payload: ChannelActionRespondedPayload) {
+    send(CHANNEL_ACTION_RESPONDED, payload);
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -581,6 +617,9 @@ pub struct MemberInfoPayload {
     pub nickname: String,
     pub is_owner: bool,
     pub is_online: bool,
+    /// Ids of the member's assigned roles (default `everyone` implicit).
+    /// Resolve against `role_list_received` for names/colors/permissions.
+    pub role_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -611,6 +650,52 @@ pub struct MembershipRevokedPayload {
     pub action: String,
     pub reason: String,
     pub actor: String,
+}
+
+// ── Roles + permissions ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleInfoPayload {
+    pub id: i64,
+    pub name: String,
+    /// 0xRRGGBB; 0 = default color.
+    pub color: u32,
+    /// Dense hierarchy position; higher = more senior; 0 = `everyone`.
+    pub position: i32,
+    /// chatproj::Permission bitfield. All defined bits sit far below
+    /// 2^53, so a plain JS number round-trips losslessly.
+    pub permissions: u64,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleListReceivedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    /// Most-senior first (position DESC); `everyone` last.
+    pub roles: Vec<RoleInfoPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleActionRespondedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    /// "create" | "update" | "delete" | "assign"
+    pub action: String,
+    pub role: Option<RoleInfoPayload>,
+}
+
+pub fn emit_role_list_received(payload: RoleListReceivedPayload) {
+    send(ROLE_LIST_RECEIVED, payload);
+}
+
+pub fn emit_role_action_responded(payload: RoleActionRespondedPayload) {
+    send(ROLE_ACTION_RESPONDED, payload);
 }
 
 pub fn emit_member_list_received(payload: MemberListReceivedPayload) {

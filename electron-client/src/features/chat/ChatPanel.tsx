@@ -8,9 +8,12 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import { useDraftsStore } from "../../stores/draftsStore";
+import { channelKey } from "../../lib/channelKey";
 import { toast } from "../../stores/toastStore";
 import MessageBubble, { shouldGroup } from "./MessageBubble";
 import PendingAttachmentsRow from "./PendingAttachmentsRow";
+import MessagePreview from "./MessagePreview";
+import RichComposer from "./RichComposer";
 import EmojiPicker from "./EmojiPicker";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 import { pickFiles } from "./filePicker";
@@ -121,8 +124,14 @@ export default function ChatPanel() {
   const channels = activeServerId ? channelsByServer[activeServerId] ?? [] : [];
   const channel = channels.find((c) => c.id === activeChannelId) ?? null;
   const channelName = channel?.name ?? activeChannelId ?? null;
-  const messages = activeChannelId ? messagesByChannel[activeChannelId] ?? [] : [];
-  const loading = activeChannelId ? historyLoading[activeChannelId] === true : false;
+  // Composite cache key — per-channel maps are namespaced by server
+  // (bare channel ids collide: every server has a "general").
+  const activeKey =
+    activeServerId && activeChannelId
+      ? channelKey(activeServerId, activeChannelId)
+      : null;
+  const messages = activeKey ? messagesByChannel[activeKey] ?? [] : [];
+  const loading = activeKey ? historyLoading[activeKey] === true : false;
   const dropHoveredHere = dragHoveredKey === "active-input";
 
   // Live "are there any non-failed pendings for this channel" — drives
@@ -152,7 +161,7 @@ export default function ChatPanel() {
   const atBottomRef = useRef(true);
 
   // Keeps the viewport anchored when older history pages in at the top.
-  const firstItemIndex = useVirtuosoPrepend(messages, messageKey, activeChannelId);
+  const firstItemIndex = useVirtuosoPrepend(messages, messageKey, activeKey);
 
   // Compute Virtuoso's initialTopMostItemIndex from the channel's
   // saved scroll position. This is the *only* mechanism we use to
@@ -165,9 +174,9 @@ export default function ChatPanel() {
   const initialIndex = (() => {
     if (messages.length === 0) return 0;
     const last = messages.length - 1;
-    if (!activeChannelId) return last;
+    if (!activeKey) return last;
     const saved =
-      useChatStore.getState().scrollPositionsByChannel[activeChannelId];
+      useChatStore.getState().scrollPositionsByChannel[activeKey];
     // atBottom: user was caught up — land them at LAST so any messages
     // arrived during the absence are visible.
     if (!saved || saved.atBottom) return last;
@@ -182,15 +191,21 @@ export default function ChatPanel() {
   // fires on full unmount (e.g. switching to DM view) so the position
   // survives view switches and we can restore on return.
   useEffect(() => {
+    const serverId = activeServerId;
     const channelId = activeChannelId;
     return () => {
-      if (channelId) {
+      if (serverId && channelId) {
         useChatStore
           .getState()
-          .setScrollPosition(channelId, topIndexRef.current, atBottomRef.current);
+          .setScrollPosition(
+            serverId,
+            channelId,
+            topIndexRef.current,
+            atBottomRef.current,
+          );
       }
     };
-  }, [activeChannelId]);
+  }, [activeServerId, activeChannelId]);
 
   // Fetch channel history the first time we land on a channel — covers
   // every entry path (sidebar click, server-tab auto-select, browse-view
@@ -203,19 +218,22 @@ export default function ChatPanel() {
   // effect-fire time.
   useEffect(() => {
     if (!activeServerId || !activeChannelId) return;
+    const serverId = activeServerId;
+    const chId = activeChannelId;
+    const key = channelKey(serverId, chId);
     const chat = useChatStore.getState();
-    if (chat.historyFetched[activeChannelId] || chat.historyLoading[activeChannelId]) {
+    if (chat.historyFetched[key] || chat.historyLoading[key]) {
       return;
     }
-    chat.setHistoryLoading(activeChannelId, true);
+    chat.setHistoryLoading(serverId, chId, true);
     invoke("request_channel_history", {
-      serverId: activeServerId,
-      channelId: activeChannelId,
+      serverId,
+      channelId: chId,
       beforeId: 0,
       limit: 50,
     }).catch((err) => {
       console.error("request_channel_history:", err);
-      useChatStore.getState().setHistoryLoading(activeChannelId, false);
+      useChatStore.getState().setHistoryLoading(serverId, chId, false);
     });
   }, [activeServerId, activeChannelId]);
 
@@ -224,12 +242,13 @@ export default function ChatPanel() {
   // previous channel's text — which could then be sent to the wrong
   // channel.
   useEffect(() => {
-    const stored = activeChannelId
-      ? useDraftsStore.getState().channelDrafts[activeChannelId] ?? ""
-      : "";
+    const stored =
+      activeServerId && activeChannelId
+        ? useDraftsStore.getState().getChannelDraft(activeServerId, activeChannelId)
+        : "";
     editorRef.current?.setValue(stored);
     setDraft(stored);
-  }, [activeChannelId]);
+  }, [activeServerId, activeChannelId]);
 
   // Scroll-up paginator. Two triggers share this: Virtuoso's
   // startReached (the hard edge, `force` — keeps its retry semantics
@@ -245,13 +264,13 @@ export default function ChatPanel() {
   // paging ~25 messages early puts it on a row that is unmounted or
   // far off-screen, where Virtuoso's anchoring absorbs it invisibly.
   const maybeLoadOlderHistory = (force: boolean) => {
-    if (!activeServerId || !activeChannelId) return;
+    if (!activeServerId || !activeChannelId || !activeKey) return;
     const chat = useChatStore.getState();
-    if (!chat.hasMoreHistory[activeChannelId]) return;
+    if (!chat.hasMoreHistory[activeKey]) return;
     if (loadMoreInFlightRef.current) return;
     // messages are sorted by id ascending, so the first real-id entry is
     // the oldest loaded message.
-    const list = chat.messagesByChannel[activeChannelId] ?? [];
+    const list = chat.messagesByChannel[activeKey] ?? [];
     const oldest = list.find((m: { id: number }) => m.id > 0);
     const beforeId = oldest?.id ?? 0;
     if (!force && beforeId !== 0 && beforeId === lastRequestedBeforeIdRef.current) {
@@ -341,7 +360,7 @@ export default function ChatPanel() {
     const channelId = activeChannelId;
 
     const nonce = generateNonce();
-    useChatStore.getState().addMessage({
+    useChatStore.getState().addMessage(serverId, {
       id: 0,
       channelId,
       sender: username,
@@ -353,7 +372,7 @@ export default function ChatPanel() {
     });
     editorRef.current?.clear();
     setDraft("");
-    useDraftsStore.getState().clearChannelDraft(channelId);
+    useDraftsStore.getState().clearChannelDraft(serverId, channelId);
 
     // Kick off the actual byte transfer for every queued attachment.
     // queueUpload registered them with status "queued" at file-pick /
@@ -399,7 +418,7 @@ export default function ChatPanel() {
     // Drop the optimistic bubble and surface the failure rather than
     // firing an empty message at the server.
     if (!content && attachmentIds.length === 0) {
-      useChatStore.getState().removeMessageByNonce(channelId, nonce);
+      useChatStore.getState().removeMessageByNonce(serverId, channelId, nonce);
       if (pendingIds.length > 0) toast.error("Attachment upload failed");
       for (const id of pendingIds) {
         useAttachmentsStore.getState().removePending(id);
@@ -435,17 +454,28 @@ export default function ChatPanel() {
       // Never delivered — drop the phantom "sent" bubble and let the user
       // retry with their text restored (queued attachments stay for the
       // retry). Previously this left an undeletable id-0 bubble forever.
-      useChatStore.getState().removeMessageByNonce(channelId, nonce);
+      useChatStore.getState().removeMessageByNonce(serverId, channelId, nonce);
       toast.error("Failed to send message");
       if (content) {
         setDraft(content);
         editorRef.current?.setValue(content);
-        useDraftsStore.getState().setChannelDraft(channelId, content);
+        useDraftsStore.getState().setChannelDraft(serverId, channelId, content);
       }
     } finally {
       releaseClaims();
     }
   };
+
+  // Append a composer-built snippet (```lang fence / $$math$$) to the
+  // draft. setValue drives RichInput's onChange, so the draft state,
+  // drafts store, and the live send-preview all update through the
+  // normal pipeline.
+  const insertSnippet = useCallback((snippet: string) => {
+    const cur = editorRef.current?.getValue() ?? "";
+    const sep = cur.length > 0 && !cur.endsWith("\n") ? "\n" : "";
+    editorRef.current?.focus();
+    editorRef.current?.setValue(cur + sep + snippet);
+  }, []);
 
   // Suppress the input wrapper's default drop-handling so dragged
   // files don't appear as a path string in the message input —
@@ -472,12 +502,12 @@ export default function ChatPanel() {
     const channelId = activeChannelId;
     const messageId = message.id;
 
-    useChatStore.getState().snapshotAndRemove(channelId, messageId);
+    useChatStore.getState().snapshotAndRemove(serverId, channelId, messageId);
 
     invoke("delete_channel_message", { serverId, channelId, messageId }).catch(
       (err) => {
         console.error("delete_channel_message:", err);
-        useChatStore.getState().restorePendingDeletion(channelId, messageId);
+        useChatStore.getState().restorePendingDeletion(serverId, channelId, messageId);
         toast.error("Failed to delete message", "Please try again.");
       },
     );
@@ -487,9 +517,9 @@ export default function ChatPanel() {
     window.setTimeout(() => {
       const stillPending = useChatStore
         .getState()
-        .pendingDeletions[channelId]?.has(messageId);
+        .pendingDeletions[channelKey(serverId, channelId)]?.has(messageId);
       if (stillPending) {
-        useChatStore.getState().restorePendingDeletion(channelId, messageId);
+        useChatStore.getState().restorePendingDeletion(serverId, channelId, messageId);
         toast.error(
           "Delete timed out",
           "Couldn't reach the server. Please try again.",
@@ -550,7 +580,7 @@ export default function ChatPanel() {
             // so initialTopMostItemIndex applies fresh — without the
             // key, Virtuoso reuses its instance across data swaps and
             // ignores any change to the initial-position prop.
-            key={activeChannelId ?? "none"}
+            key={activeKey ?? "none"}
             ref={virtuosoRef}
             data={messages}
             firstItemIndex={firstItemIndex}
@@ -647,6 +677,7 @@ export default function ChatPanel() {
                 : "border-border"
           }`}
         >
+          <MessagePreview draft={draft} />
           <PendingAttachmentsRow />
           <div className="flex items-center gap-2.5">
             {dropHoveredHere && (
@@ -681,10 +712,10 @@ export default function ChatPanel() {
               ref={editorRef}
               onChange={(value) => {
                 setDraft(value);
-                if (activeChannelId)
+                if (activeServerId && activeChannelId)
                   useDraftsStore
                     .getState()
-                    .setChannelDraft(activeChannelId, value);
+                    .setChannelDraft(activeServerId, activeChannelId, value);
               }}
               onEnter={handleSend}
               placeholder={`Message #${channelName ?? "channel"}`}
@@ -692,6 +723,7 @@ export default function ChatPanel() {
               className="flex-1 bg-transparent text-sm leading-snug text-text-primary"
             />
             <div className="flex shrink-0 self-end gap-1">
+              <RichComposer onInsert={insertSnippet} />
               <div className="relative">
                 <button
                   ref={emojiTriggerRef}

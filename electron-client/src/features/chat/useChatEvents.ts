@@ -47,8 +47,12 @@ export function useChatEvents() {
     const unlistenMsg = listen<MessageReceivedPayload>("message_received", (event) => {
       const p = event.payload;
       if (p.context === "dm") return;
+      // serverId namespaces the per-channel cache — without it a
+      // channel message can't be attributed to a server (shouldn't
+      // happen: the community router always stamps it).
+      if (!p.serverId) return;
 
-      useChatStore.getState().addMessage({
+      useChatStore.getState().addMessage(p.serverId, {
         id: p.id,
         sender: p.sender,
         content: p.content,
@@ -62,8 +66,9 @@ export function useChatEvents() {
     const unlistenHistory = listen<ChannelHistoryReceivedPayload>(
       "channel_history_received",
       (event) => {
-        const { channelId, messages, hasMore } = event.payload;
+        const { serverId, channelId, messages, hasMore } = event.payload;
         useChatStore.getState().prependHistory(
+          serverId,
           channelId,
           messages.map((m) => ({
             id: m.id,
@@ -76,8 +81,8 @@ export function useChatEvents() {
           })),
           hasMore,
         );
-        useChatStore.getState().setHistoryLoading(channelId, false);
-        useChatStore.getState().markHistoryFetched(channelId);
+        useChatStore.getState().setHistoryLoading(serverId, channelId, false);
+        useChatStore.getState().markHistoryFetched(serverId, channelId);
       },
     );
 
@@ -86,12 +91,18 @@ export function useChatEvents() {
       (event) => {
         useChatStore
           .getState()
-          .applyChannelPruned(event.payload.channelId, event.payload.deletedMessageIds);
+          .applyChannelPruned(
+            event.payload.serverId,
+            event.payload.channelId,
+            event.payload.deletedMessageIds,
+          );
       },
     );
 
     const unlistenWiped = listen<ChannelWipedPayload>("channel_wiped", (event) => {
-      useChatStore.getState().applyChannelWiped(event.payload.channelId);
+      useChatStore
+        .getState()
+        .applyChannelWiped(event.payload.serverId, event.payload.channelId);
     });
 
     return () => {

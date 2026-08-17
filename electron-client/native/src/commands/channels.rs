@@ -255,3 +255,85 @@ pub async fn delete_channel_message(args: DeleteChannelMessageArgs) -> napi::Res
     )
     .await
 }
+
+// ── Channel management (MANAGE_CHANNELS) ─────────────────────────
+//
+// Results land as `channel_action_responded`; the authoritative list
+// follows as a pushed `channel_list_updated` broadcast.
+
+#[napi(object)]
+pub struct CreateChannelArgs {
+    pub server_id: String,
+    pub name: String,
+    /// "text" | "voice"
+    pub channel_type: String,
+    /// Voice channels only. 0 = client default.
+    pub voice_bitrate_kbps: i32,
+}
+
+#[napi]
+pub async fn create_channel(args: CreateChannelArgs) -> napi::Result<()> {
+    let CreateChannelArgs {
+        server_id,
+        name,
+        channel_type,
+        voice_bitrate_kbps,
+    } = args;
+    let r#type = if channel_type == "voice" {
+        channel_info::Type::Voice
+    } else {
+        channel_info::Type::Text
+    };
+    send_for_server(
+        &server_id,
+        packet::Type::ChannelCreateReq,
+        packet::Payload::ChannelCreateReq(ChannelCreateRequest {
+            name,
+            r#type: r#type as i32,
+            voice_bitrate_kbps,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct RenameChannelArgs {
+    pub server_id: String,
+    pub channel_id: String,
+    pub name: String,
+}
+
+#[napi]
+pub async fn rename_channel(args: RenameChannelArgs) -> napi::Result<()> {
+    let RenameChannelArgs {
+        server_id,
+        channel_id,
+        name,
+    } = args;
+    send_for_server(
+        &server_id,
+        packet::Type::ChannelRenameReq,
+        packet::Payload::ChannelRenameReq(ChannelRenameRequest { channel_id, name }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct DeleteChannelArgs {
+    pub server_id: String,
+    pub channel_id: String,
+}
+
+#[napi]
+pub async fn delete_channel(args: DeleteChannelArgs) -> napi::Result<()> {
+    let DeleteChannelArgs {
+        server_id,
+        channel_id,
+    } = args;
+    send_for_server(
+        &server_id,
+        packet::Type::ChannelDeleteReq,
+        packet::Payload::ChannelDeleteReq(ChannelDeleteRequest { channel_id }),
+    )
+    .await
+}

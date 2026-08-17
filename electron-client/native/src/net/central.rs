@@ -334,6 +334,7 @@ impl CentralClient {
                 Some(packet::Payload::DirectMsg(msg)) => {
                     events::emit_message_received(events::MessageReceivedPayload {
                         context: "dm".to_string(),
+                        server_id: String::new(),
                         sender: msg.sender,
                         recipient: msg.recipient,
                         content: msg.content,

@@ -1,18 +1,20 @@
 interface ServerActionsDropdownProps {
-  isOwner: boolean;
-  canEditChannel: boolean; // owner + an active text channel is selected
+  /// MANAGE_INVITES (or owner) — drives the Invites entry.
+  canInvite: boolean;
+  /// MANAGE_CHANNELS (or owner) + an active text channel is selected.
+  canEditChannel: boolean;
   onMembers: () => void;
   onInvites: () => void;
   onChannelSettings: () => void;
   onDisconnect: () => void;
   /// Only present when the local user can edit server-wide settings
-  /// (owner today, role-extensible later). Drives visibility of the
-  /// new "Server Settings" dropdown entry.
+  /// (MANAGE_SERVER or owner). Drives visibility of the
+  /// "Server Settings" dropdown entry.
   onServerSettings?: () => void;
 }
 
 export default function ServerActionsDropdown({
-  isOwner,
+  canInvite,
   canEditChannel,
   onMembers,
   onInvites,
@@ -34,7 +36,7 @@ export default function ServerActionsDropdown({
         </svg>
         Members
       </button>
-      {isOwner && (
+      {canInvite && (
         <button
           onClick={onInvites}
           className="group flex w-full items-center gap-2.5 rounded-sm px-2.5 py-[9px] text-[13px] text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"

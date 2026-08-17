@@ -1,18 +1,12 @@
-import { useChatStore } from "../../stores/chatStore";
-import { useAuthStore } from "../../stores/authStore";
+import { PERM, usePermission } from "./permissions";
 
 /// Returns true if the local user is allowed to edit server-wide
-/// settings for the given server. Today: owner-only. When roles
-/// ship, this extends to:
-///   || hasRolePermission(serverId, "EDIT_SERVER_SETTINGS").
+/// settings (name/description/picture) for the given server: the
+/// owner, or any role holding MANAGE_SERVER. Mirrors the server-side
+/// gate on UPDATE_SERVER_PICTURE_REQ.
 ///
 /// Returns false if serverId is null (e.g. user is on the home or DM
 /// view, not viewing a specific server).
 export function useCanEditServerSettings(serverId: string | null): boolean {
-  const localUsername = useAuthStore((s) => s.username);
-  const owner = useChatStore((s) =>
-    serverId ? s.serverOwner[serverId] : undefined,
-  );
-  if (!serverId || !localUsername || !owner) return false;
-  return owner === localUsername;
+  return usePermission(serverId, PERM.MANAGE_SERVER);
 }

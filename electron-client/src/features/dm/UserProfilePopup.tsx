@@ -33,6 +33,16 @@ export default function UserProfilePopup() {
   const currentUsername = useAuthStore((s) => s.username);
   const friends = useFriendsStore((s) => s.friends);
   const onlineUsers = useChatStore((s) => s.onlineUsers);
+  // Server roles for the Roles row: resolve the member's role_ids
+  // against the server's role list. Both empty on legacy servers.
+  const serverRoles = useChatStore((s) =>
+    serverId ? s.rolesByServer[serverId] : undefined,
+  );
+  const memberEntry = useChatStore((s) =>
+    serverId && username
+      ? s.membersByServer[serverId]?.find((m) => m.username === username)
+      : undefined,
+  );
 
   // Live-stream popup integration: read the stream's location (if
   // any), pull the decode caps for the codec gate, and look up the
@@ -342,8 +352,10 @@ export default function UserProfilePopup() {
           );
         })()}
 
-        {/* Roles row — server context only, hard-coded to "Member" until
-            server-side role data lands. */}
+        {/* Roles row — server context only. Resolves the member's
+            role_ids against the server role list; falls back to a
+            plain "Member" chip when they hold no roles (or the server
+            predates roles). */}
         {serverId && (
           <>
             <div className="mx-4 my-3 h-px bg-border-divider" />
@@ -352,10 +364,43 @@ export default function UserProfilePopup() {
                 Roles
               </div>
               <div className="flex flex-wrap gap-1.5">
-                <span className="inline-flex items-center gap-[5px] rounded-sm border border-border-divider bg-bg-lighter px-2 py-[3px] text-[11px] font-medium text-text-secondary">
-                  <span className="h-2 w-2 rounded-full bg-accent-bright" />
-                  Member
-                </span>
+                {(() => {
+                  const chips = (memberEntry?.roleIds ?? [])
+                    .map((id) => serverRoles?.find((r) => r.id === id))
+                    .filter((r): r is NonNullable<typeof r> => !!r);
+                  return (
+                    <>
+                      {memberEntry?.isOwner && (
+                        <span className="inline-flex items-center gap-[5px] rounded-sm border border-border-divider bg-bg-lighter px-2 py-[3px] text-[11px] font-medium text-text-secondary">
+                          <span className="h-2 w-2 rounded-full bg-warning" />
+                          Owner
+                        </span>
+                      )}
+                      {chips.map((r) => (
+                        <span
+                          key={r.id}
+                          className="inline-flex items-center gap-[5px] rounded-sm border border-border-divider bg-bg-lighter px-2 py-[3px] text-[11px] font-medium text-text-secondary"
+                        >
+                          <span
+                            className="h-2 w-2 rounded-full"
+                            style={{
+                              backgroundColor: r.color
+                                ? `#${r.color.toString(16).padStart(6, "0")}`
+                                : "var(--color-text-muted)",
+                            }}
+                          />
+                          {r.name}
+                        </span>
+                      ))}
+                      {!memberEntry?.isOwner && chips.length === 0 && (
+                        <span className="inline-flex items-center gap-[5px] rounded-sm border border-border-divider bg-bg-lighter px-2 py-[3px] text-[11px] font-medium text-text-secondary">
+                          <span className="h-2 w-2 rounded-full bg-accent-bright" />
+                          Member
+                        </span>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
           </>

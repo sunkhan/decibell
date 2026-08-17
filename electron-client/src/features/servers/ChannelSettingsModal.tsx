@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke, listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
-import { useAuthStore } from "../../stores/authStore";
 import { toast } from "../../stores/toastStore";
 import { useEscapeToClose } from "../../hooks/useEscapeToClose";
+import { PERM, usePermission } from "./permissions";
 import type { ChannelInfo } from "../../types";
 
 type RetentionField =
@@ -97,16 +97,24 @@ export default function ChannelSettingsModal() {
   const activeServerId = useChatStore((s) => s.activeServerId);
   const activeChannelId = useChatStore((s) => s.activeChannelId);
   const channelsByServer = useChatStore((s) => s.channelsByServer);
-  const serverOwner = useChatStore((s) => s.serverOwner);
-  const currentUser = useAuthStore((s) => s.username);
 
   const channel: ChannelInfo | undefined = useMemo(() => {
     if (!activeServerId || !activeChannelId) return undefined;
     return channelsByServer[activeServerId]?.find((c) => c.id === activeChannelId);
   }, [activeServerId, activeChannelId, channelsByServer]);
 
-  const isOwner =
-    !!activeServerId && !!currentUser && serverOwner[activeServerId] === currentUser;
+  // Mirrors the server-side gates: retention/rename/delete/wipe are all
+  // MANAGE_CHANNELS (owner implicitly included).
+  const canManage = usePermission(activeServerId, PERM.MANAGE_CHANNELS);
+  // The landing channel after auth must always exist — the server
+  // refuses to delete the last text channel, so hide the button too.
+  const isLastTextChannel =
+    !!channel &&
+    channel.type === "text" &&
+    (activeServerId
+      ? (channelsByServer[activeServerId] ?? []).filter((c) => c.type === "text")
+          .length <= 1
+      : false);
 
   const [draft, setDraft] = useState<Record<RetentionField, number>>({
     retentionDaysText: 0,
@@ -117,9 +125,13 @@ export default function ChannelSettingsModal() {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nameDraft, setNameDraft] = useState("");
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
   const [wipeConfirmText, setWipeConfirmText] = useState("");
   const [wiping, setWiping] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   // Reset draft whenever the modal opens or the underlying channel changes.
   useEffect(() => {
@@ -131,9 +143,12 @@ export default function ChannelSettingsModal() {
       retentionDaysDocument: presetValue(channel.retentionDaysDocument),
       retentionDaysAudio: presetValue(channel.retentionDaysAudio),
     });
+    setNameDraft(channel.name);
     setError(null);
     setWipeConfirmOpen(false);
     setWipeConfirmText("");
+    setDeleteConfirmOpen(false);
+    setDeleteConfirmText("");
   }, [activeModal, channel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Surface the server's CHANNEL_WIPE_RES as a toast. The CHANNEL_WIPED
@@ -174,28 +189,40 @@ export default function ChannelSettingsModal() {
     setDraft((d) => ({ ...d, [field]: value }));
   };
 
-  const dirty =
+  const retentionDirty =
     !!channel &&
     (draft.retentionDaysText !== channel.retentionDaysText ||
       draft.retentionDaysImage !== channel.retentionDaysImage ||
       draft.retentionDaysVideo !== channel.retentionDaysVideo ||
       draft.retentionDaysDocument !== channel.retentionDaysDocument ||
       draft.retentionDaysAudio !== channel.retentionDaysAudio);
+  const nameDirty =
+    !!channel && nameDraft.trim().length > 0 && nameDraft.trim() !== channel.name;
+  const dirty = retentionDirty || nameDirty;
 
   const handleSave = async () => {
-    if (!isOwner) return;
+    if (!canManage) return;
     setSaving(true);
     setError(null);
     try {
-      await invoke("update_channel_retention", {
-        serverId: activeServerId,
-        channelId: channel.id,
-        retentionDaysText: draft.retentionDaysText,
-        retentionDaysImage: draft.retentionDaysImage,
-        retentionDaysVideo: draft.retentionDaysVideo,
-        retentionDaysDocument: draft.retentionDaysDocument,
-        retentionDaysAudio: draft.retentionDaysAudio,
-      });
+      if (nameDirty) {
+        await invoke("rename_channel", {
+          serverId: activeServerId,
+          channelId: channel.id,
+          name: nameDraft.trim(),
+        });
+      }
+      if (retentionDirty) {
+        await invoke("update_channel_retention", {
+          serverId: activeServerId,
+          channelId: channel.id,
+          retentionDaysText: draft.retentionDaysText,
+          retentionDaysImage: draft.retentionDaysImage,
+          retentionDaysVideo: draft.retentionDaysVideo,
+          retentionDaysDocument: draft.retentionDaysDocument,
+          retentionDaysAudio: draft.retentionDaysAudio,
+        });
+      }
       closeModal();
     } catch (err) {
       setError(String(err));
@@ -204,8 +231,27 @@ export default function ChannelSettingsModal() {
     }
   };
 
+  const handleDelete = async () => {
+    if (!canManage || deleting) return;
+    if (deleteConfirmText !== channel.name) return;
+    setDeleting(true);
+    try {
+      await invoke("delete_channel", {
+        serverId: activeServerId,
+        channelId: channel.id,
+      });
+      // Success confirmation is the CHANNEL_LIST_UPDATE broadcast (the
+      // sidebar re-renders and the active channel switches); denials
+      // surface via the global channel_action_responded toast.
+      closeModal();
+    } catch (err) {
+      setDeleting(false);
+      toast.error("Delete failed", String(err));
+    }
+  };
+
   const handleWipe = async () => {
-    if (!isOwner || wiping) return;
+    if (!canManage || wiping) return;
     if (wipeConfirmText !== channel.name) return;
     setWiping(true);
     try {
@@ -228,7 +274,7 @@ export default function ChannelSettingsModal() {
       onClick={closeModal}
     >
       <div
-        className="flex w-full max-w-[480px] animate-[cardIn_0.25s_ease] flex-col overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal"
+        className="flex max-h-[85vh] w-full max-w-[480px] animate-[cardIn_0.25s_ease] flex-col overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-border-divider px-6 py-5">
@@ -251,7 +297,21 @@ export default function ChannelSettingsModal() {
           </button>
         </div>
 
-        <div className="flex-1 px-6 py-5">
+        <div className="flex-1 overflow-y-auto px-6 py-5 scrollbar-thin">
+          {canManage && (
+            <div className="mb-5">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                Channel name
+              </div>
+              <input
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                maxLength={64}
+                className="w-full rounded-md border border-border bg-bg-light px-3 py-2 text-[13px] text-text-primary outline-none transition-colors focus:border-accent"
+              />
+            </div>
+          )}
+
           <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
             Retention
           </div>
@@ -297,13 +357,13 @@ export default function ChannelSettingsModal() {
           {error && (
             <p className="mt-3 text-[12px] text-error">{error}</p>
           )}
-          {!isOwner && (
+          {!canManage && (
             <p className="mt-3 text-[12px] text-text-muted">
-              Only the server owner can edit these.
+              You need the Manage Channels permission to edit these.
             </p>
           )}
 
-          {isOwner && (
+          {canManage && (
             <div className="mt-6">
               <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-error">
                 Danger zone
@@ -370,6 +430,72 @@ export default function ChannelSettingsModal() {
                   </div>
                 )}
               </div>
+
+              {!isLastTextChannel && (
+                <div className="mt-3 rounded-md border border-error/25 bg-error/5 p-3">
+                  <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-medium text-text-primary">
+                        Delete channel
+                      </div>
+                      <p className="mt-0.5 text-[12px] leading-[1.55] text-text-muted">
+                        Removes #{channel.name} along with every message and
+                        attachment in it. Cannot be undone.
+                        {channel.type === "voice" &&
+                          " The channel must be empty first."}
+                      </p>
+                    </div>
+                    {!deleteConfirmOpen && (
+                      <button
+                        onClick={() => setDeleteConfirmOpen(true)}
+                        className="shrink-0 rounded-sm border border-error/40 bg-error/10 px-3 py-1.5 text-[12px] font-semibold text-error transition-colors hover:border-error/70 hover:bg-error/20"
+                      >
+                        Delete…
+                      </button>
+                    )}
+                  </div>
+
+                  {deleteConfirmOpen && (
+                    <div className="mt-3 border-t border-error/20 pt-3">
+                      <label className="mb-1.5 block text-[11px] text-text-muted">
+                        Type <span className="font-mono text-text-primary">{channel.name}</span> to confirm:
+                      </label>
+                      <input
+                        autoFocus
+                        type="text"
+                        value={deleteConfirmText}
+                        onChange={(e) => setDeleteConfirmText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && deleteConfirmText === channel.name && !deleting) {
+                            handleDelete();
+                          }
+                        }}
+                        placeholder={channel.name}
+                        className="w-full rounded-sm border border-border bg-bg-lighter px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-error"
+                      />
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          onClick={() => {
+                            setDeleteConfirmOpen(false);
+                            setDeleteConfirmText("");
+                          }}
+                          disabled={deleting}
+                          className="flex-1 rounded-sm bg-bg-light py-1.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-lighter disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleDelete}
+                          disabled={deleting || deleteConfirmText !== channel.name}
+                          className="flex-1 rounded-sm bg-error py-1.5 text-[12px] font-semibold text-white transition-all hover:bg-error/85 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {deleting ? "Deleting…" : "Delete channel"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -383,7 +509,7 @@ export default function ChannelSettingsModal() {
           </button>
           <button
             onClick={handleSave}
-            disabled={saving || !dirty || !isOwner}
+            disabled={saving || !dirty || !canManage}
             className="flex-1 rounded-md bg-accent py-2.5 text-[13px] font-semibold text-on-accent transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50"
           >
             {saving ? "Saving..." : "Save"}

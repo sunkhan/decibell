@@ -20,6 +20,25 @@ use crate::state::AppState;
 
 /// Map a wire-format Attachment to the bus-side AttachmentPayload.
 /// Handles the protobuf enum → string conversion for `kind`.
+fn channel_info_payload(c: ChannelInfo) -> events::ChannelInfoPayload {
+    events::ChannelInfoPayload {
+        id: c.id,
+        name: c.name,
+        r#type: match channel_info::Type::try_from(c.r#type) {
+            Ok(channel_info::Type::Text) => "text",
+            Ok(channel_info::Type::Voice) => "voice",
+            Err(_) => "unknown",
+        }
+        .to_string(),
+        voice_bitrate_kbps: c.voice_bitrate_kbps,
+        retention_days_text: c.retention_days_text,
+        retention_days_image: c.retention_days_image,
+        retention_days_video: c.retention_days_video,
+        retention_days_document: c.retention_days_document,
+        retention_days_audio: c.retention_days_audio,
+    }
+}
+
 fn map_attachment(a: Attachment) -> events::AttachmentPayload {
     events::AttachmentPayload {
         id: a.id,
@@ -422,6 +441,7 @@ impl CommunityClient {
                     let attachments = msg.attachments.into_iter().map(map_attachment).collect();
                     events::emit_message_received(events::MessageReceivedPayload {
                         context,
+                        server_id: server_id.clone(),
                         sender: msg.sender,
                         recipient: String::new(),
                         content: msg.content,
@@ -572,6 +592,7 @@ impl CommunityClient {
                             nickname: m.nickname,
                             is_owner: m.is_owner,
                             is_online: m.is_online,
+                            role_ids: m.role_ids,
                         })
                         .collect();
                     events::emit_member_list_received(events::MemberListReceivedPayload {
@@ -589,6 +610,43 @@ impl CommunityClient {
                         message: resp.message,
                         username: resp.username,
                         action: resp.action,
+                    });
+                }
+                Some(packet::Payload::RoleListRes(resp)) => {
+                    let roles = resp
+                        .roles
+                        .into_iter()
+                        .map(|r| events::RoleInfoPayload {
+                            id: r.id,
+                            name: r.name,
+                            color: r.color,
+                            position: r.position,
+                            permissions: r.permissions,
+                            is_default: r.is_default,
+                        })
+                        .collect();
+                    events::emit_role_list_received(events::RoleListReceivedPayload {
+                        server_id: server_id.clone(),
+                        success: resp.success,
+                        message: resp.message,
+                        roles,
+                    });
+                }
+                Some(packet::Payload::RoleActionRes(resp)) => {
+                    let role = resp.role.map(|r| events::RoleInfoPayload {
+                        id: r.id,
+                        name: r.name,
+                        color: r.color,
+                        position: r.position,
+                        permissions: r.permissions,
+                        is_default: r.is_default,
+                    });
+                    events::emit_role_action_responded(events::RoleActionRespondedPayload {
+                        server_id: server_id.clone(),
+                        success: resp.success,
+                        message: resp.message,
+                        action: resp.action,
+                        role,
                     });
                 }
                 Some(packet::Payload::MembershipRevoked(rev)) => {
@@ -744,27 +802,35 @@ impl CommunityClient {
                     let _ = s.watcher_event_tx.send(evt);
                 }
                 Some(packet::Payload::ChannelUpdateRes(resp)) => {
-                    let channel = resp.channel.map(|c| events::ChannelInfoPayload {
-                        id: c.id,
-                        name: c.name,
-                        r#type: match channel_info::Type::try_from(c.r#type) {
-                            Ok(channel_info::Type::Text) => "text",
-                            Ok(channel_info::Type::Voice) => "voice",
-                            Err(_) => "unknown",
-                        }
-                        .to_string(),
-                        voice_bitrate_kbps: c.voice_bitrate_kbps,
-                        retention_days_text: c.retention_days_text,
-                        retention_days_image: c.retention_days_image,
-                        retention_days_video: c.retention_days_video,
-                        retention_days_document: c.retention_days_document,
-                        retention_days_audio: c.retention_days_audio,
-                    });
+                    let channel = resp.channel.map(channel_info_payload);
                     events::emit_channel_updated(events::ChannelUpdatedPayload {
                         server_id: server_id.clone(),
                         success: resp.success,
                         message: resp.message,
                         channel,
+                    });
+                }
+                Some(packet::Payload::ChannelActionRes(resp)) => {
+                    let channel = resp.channel.map(channel_info_payload);
+                    events::emit_channel_action_responded(
+                        events::ChannelActionRespondedPayload {
+                            server_id: server_id.clone(),
+                            success: resp.success,
+                            message: resp.message,
+                            action: resp.action,
+                            channel,
+                        },
+                    );
+                }
+                Some(packet::Payload::ChannelListUpdate(update)) => {
+                    let channels = update
+                        .channels
+                        .into_iter()
+                        .map(channel_info_payload)
+                        .collect();
+                    events::emit_channel_list_updated(events::ChannelListUpdatedPayload {
+                        server_id: server_id.clone(),
+                        channels,
                     });
                 }
                 _ => {

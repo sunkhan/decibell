@@ -12,10 +12,12 @@ interface AttachmentTargetResult {
   maxAttachmentBytes: number;
 }
 import type {
+  ChannelInfo,
   ChannelUpdatedPayload,
   ConnectionEventPayload,
   CommunityAuthRespondedPayload,
   ServerMember,
+  ServerRole,
 } from "../../types";
 
 interface MemberListReceivedPayload {
@@ -39,6 +41,34 @@ interface MembershipRevokedPayload {
   action: string;
   reason: string;
   actor: string;
+}
+
+interface RoleListReceivedPayload {
+  serverId: string;
+  success: boolean;
+  message: string;
+  roles: ServerRole[];
+}
+
+interface ChannelListUpdatedPayload {
+  serverId: string;
+  channels: ChannelInfo[];
+}
+
+interface ChannelActionRespondedPayload {
+  serverId: string;
+  success: boolean;
+  message: string;
+  action: string;
+  channel?: ChannelInfo;
+}
+
+interface RoleActionRespondedPayload {
+  serverId: string;
+  success: boolean;
+  message: string;
+  action: string;
+  role?: ServerRole;
 }
 
 interface MembershipsReceivedPayload {
@@ -198,6 +228,73 @@ export function useServerEvents() {
       },
     );
 
+    const unlistenChannelList = listen<ChannelListUpdatedPayload>(
+      "channel_list_updated",
+      (event) => {
+        const { serverId, channels } = event.payload;
+        const chat = useChatStore.getState();
+        const prev = chat.channelsByServer[serverId] ?? [];
+        const nextIds = new Set(channels.map((c) => c.id));
+        // Drop cached state for channels that no longer exist — a
+        // future channel could reuse the same slug and must refetch
+        // instead of inheriting stale history.
+        for (const ch of prev) {
+          if (!nextIds.has(ch.id)) chat.purgeChannelState(serverId, ch.id);
+        }
+        chat.setChannelsForServer(serverId, channels);
+        // If the active channel vanished, land on the first text channel.
+        if (
+          chat.activeServerId === serverId &&
+          chat.activeChannelId &&
+          !nextIds.has(chat.activeChannelId)
+        ) {
+          const firstText = channels.find((c) => c.type === "text");
+          chat.setActiveChannel(firstText ? firstText.id : null);
+        }
+      },
+    );
+
+    const unlistenChannelAction = listen<ChannelActionRespondedPayload>(
+      "channel_action_responded",
+      (event) => {
+        const { serverId, success, action, channel } = event.payload;
+        if (!success) {
+          toast.error(event.payload.message || "Channel action failed");
+          return;
+        }
+        // Jump straight into a channel you just created (the list push
+        // that follows fills in the sidebar entry).
+        if (action === "create" && channel && channel.type === "text") {
+          const chat = useChatStore.getState();
+          if (chat.activeServerId === serverId) {
+            chat.setActiveChannel(channel.id);
+          }
+        }
+      },
+    );
+
+    const unlistenRoleList = listen<RoleListReceivedPayload>(
+      "role_list_received",
+      (event) => {
+        const { serverId, success, roles } = event.payload;
+        if (success) {
+          useChatStore.getState().setRolesForServer(serverId, roles);
+        }
+      },
+    );
+
+    const unlistenRoleAction = listen<RoleActionRespondedPayload>(
+      "role_action_responded",
+      (event) => {
+        // Successful actions confirm themselves via the pushed
+        // role_list_received / member_list_received broadcasts — only
+        // denials need surfacing.
+        if (!event.payload.success) {
+          toast.error(event.payload.message || "Role action failed");
+        }
+      },
+    );
+
     const unlistenMod = listen<ModActionRespondedPayload>(
       "mod_action_responded",
       (event) => {
@@ -345,7 +442,7 @@ export function useServerEvents() {
       if (!p.success) {
         // Server rejected (403/404). Restore the bubble + surface
         // the server's reason as a toast.
-        chat.restorePendingDeletion(p.channelId, p.messageId);
+        chat.restorePendingDeletion(p.serverId, p.channelId, p.messageId);
         toast.error(
           "Couldn't delete message",
           p.message || "Server rejected the request.",
@@ -354,7 +451,7 @@ export function useServerEvents() {
       }
       // Success: clear the pending entry. The broadcast (or already-
       // optimistic-remove) keeps the bubble gone.
-      chat.clearPendingDeletion(p.channelId, p.messageId);
+      chat.clearPendingDeletion(p.serverId, p.channelId, p.messageId);
     });
 
     const unlistenChannelDeleted = listen<{
@@ -364,13 +461,13 @@ export function useServerEvents() {
       deletedAt: number;
       deletedBy: string;
     }>("channel_message_deleted", (event) => {
-      const { channelId, messageId } = event.payload;
+      const { serverId, channelId, messageId } = event.payload;
       const chat = useChatStore.getState();
       // Idempotent: removeMessage on an already-gone id is a no-op.
       // Same handler for "my delete succeeded" (already removed
       // optimistically) and "someone else deleted this message".
-      chat.removeMessage(channelId, messageId);
-      chat.clearPendingDeletion(channelId, messageId);
+      chat.removeMessage(serverId, channelId, messageId);
+      chat.clearPendingDeletion(serverId, channelId, messageId);
     });
 
     const unlistenServerPictureUpdateRes = listen<{
@@ -427,6 +524,10 @@ export function useServerEvents() {
       unlistenRestored.then((fn) => fn());
       unlistenChannelUpdated.then((fn) => fn());
       unlistenMembers.then((fn) => fn());
+      unlistenChannelList.then((fn) => fn());
+      unlistenChannelAction.then((fn) => fn());
+      unlistenRoleList.then((fn) => fn());
+      unlistenRoleAction.then((fn) => fn());
       unlistenMod.then((fn) => fn());
       unlistenRevoked.then((fn) => fn());
       unlistenInviteList.then((fn) => fn());

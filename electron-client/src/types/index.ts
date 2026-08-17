@@ -66,6 +66,26 @@ export interface ServerMember {
   nickname: string;
   isOwner: boolean;
   isOnline: boolean;
+  /// Ids of the member's assigned roles (the default `everyone` role is
+  /// implicit and never listed). Resolve against the server's role list
+  /// for names/colors/permissions. Empty on legacy servers.
+  roleIds: number[];
+}
+
+/// A community-server role, mirrored from RoleInfo on the wire. Roles
+/// arrive most-senior-first (position DESC) with `everyone` last.
+export interface ServerRole {
+  id: number;
+  name: string;
+  /// 0xRRGGBB display color; 0 = default (no color).
+  color: number;
+  /// Dense hierarchy position; higher = more senior; 0 = `everyone`.
+  position: number;
+  /// Bitfield of PERM values — see features/servers/permissions.ts.
+  permissions: number;
+  /// The seeded `everyone` role: undeletable, position 0, implicit on
+  /// every member; only its permissions are editable.
+  isDefault: boolean;
 }
 
 export interface ServerInvite {
@@ -280,6 +300,10 @@ export interface ConnectionEventPayload {
 
 export interface MessageReceivedPayload {
   context: string;
+  /// The community server this channel message belongs to; empty for
+  /// DMs (context === "dm"). Required to namespace the per-channel
+  /// message cache — channel ids alone collide across servers.
+  serverId: string;
   sender: string;
   recipient: string;
   content: string;

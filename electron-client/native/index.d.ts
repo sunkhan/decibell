@@ -112,6 +112,26 @@ export interface DeleteChannelMessageArgs {
  * Server-side handler enforces self-or-can_delete_others.
  */
 export declare function deleteChannelMessage(args: DeleteChannelMessageArgs): Promise<void>
+export interface CreateChannelArgs {
+  serverId: string
+  name: string
+  /** "text" | "voice" */
+  channelType: string
+  /** Voice channels only. 0 = client default. */
+  voiceBitrateKbps: number
+}
+export declare function createChannel(args: CreateChannelArgs): Promise<void>
+export interface RenameChannelArgs {
+  serverId: string
+  channelId: string
+  name: string
+}
+export declare function renameChannel(args: RenameChannelArgs): Promise<void>
+export interface DeleteChannelArgs {
+  serverId: string
+  channelId: string
+}
+export declare function deleteChannel(args: DeleteChannelArgs): Promise<void>
 export interface ListMembersArgs {
   serverId: string
 }
@@ -149,6 +169,55 @@ export interface RevokeInviteArgs {
   code: string
 }
 export declare function revokeInvite(args: RevokeInviteArgs): Promise<void>
+export interface ListRolesArgs {
+  serverId: string
+}
+export declare function listRoles(args: ListRolesArgs): Promise<void>
+export interface CreateRoleArgs {
+  serverId: string
+  name: string
+  /** 0xRRGGBB; 0 = default color. */
+  color: number
+  permissions: number
+}
+export declare function createRole(args: CreateRoleArgs): Promise<void>
+export interface UpdateRoleArgs {
+  serverId: string
+  roleId: number
+  name: string
+  color: number
+  permissions: number
+  position: number
+}
+export declare function updateRole(args: UpdateRoleArgs): Promise<void>
+export interface DeleteRoleArgs {
+  serverId: string
+  roleId: number
+}
+export declare function deleteRole(args: DeleteRoleArgs): Promise<void>
+export interface SetMemberRolesArgs {
+  serverId: string
+  username: string
+  /** The member's full desired role set (default role implicit). */
+  roleIds: Array<number>
+}
+export declare function setMemberRoles(args: SetMemberRolesArgs): Promise<void>
+export interface UnbanMemberArgs {
+  serverId: string
+  username: string
+}
+export declare function unbanMember(args: UnbanMemberArgs): Promise<void>
+export interface SetNicknameArgs {
+  serverId: string
+  /**
+   * Target member — may be the local user (self-changes are always
+   * allowed; others need MANAGE_NICKNAMES + a strictly higher role).
+   */
+  username: string
+  /** Empty clears the nickname. */
+  nickname: string
+}
+export declare function setNickname(args: SetNicknameArgs): Promise<void>
 export declare function requestDmConversations(): Promise<void>
 export interface RequestDmHistoryArgs {
   peer: string

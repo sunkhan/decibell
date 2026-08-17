@@ -6,8 +6,10 @@ import type {
   PendingInvite,
   ServerInvite,
   ServerMember,
+  ServerRole,
 } from "../types";
 import { useUiStore } from "./uiStore";
+import { channelKey, type ChannelKey } from "../lib/channelKey";
 
 // PR4 chatStore — text channels, messages, history paging, optimistic
 // bubbles. Members/bans/invites are deferred to later PRs. The LRU
@@ -16,6 +18,10 @@ import { useUiStore } from "./uiStore";
 // tail beyond `useUiStore.channelCacheSize` to keep RAM bounded.
 // `enforceChannelCacheSize` runs the same prune on demand (called from
 // NetworkTab when the user lowers the cap mid-session).
+//
+// Every per-channel map is keyed by ChannelKey (serverId + channelId)
+// — bare channel ids collide across servers (each has a "general").
+// Actions take serverId + channelId explicitly and compose internally.
 
 interface ChatState {
   // Connection state
@@ -43,6 +49,10 @@ interface ChatState {
   serverOwner: Record<string, string>;
   membersByServer: Record<string, ServerMember[]>;
   bansByServer: Record<string, string[]>;
+  /// Per-server role list, most-senior-first, `everyone` last. Absent /
+  /// empty for legacy servers that predate roles — permission hooks
+  /// fall back to owner-only gating in that case.
+  rolesByServer: Record<string, ServerRole[]>;
   invitesByServer: Record<string, ServerInvite[]>;
   pendingInvite: PendingInvite | null;
   /// Attachment HTTP endpoint advertised by each connected server.
@@ -52,17 +62,17 @@ interface ChatState {
 
   // Channel + message state
   channelsByServer: Record<string, ChannelInfo[]>;
-  messagesByChannel: Record<string, Message[]>;
+  messagesByChannel: Record<ChannelKey, Message[]>;
   /// Per-channel snapshot of messages that have been optimistically
   /// removed but whose server delete-ack hasn't landed yet. On
   /// rejection (channel_message_delete_responded with success=false)
   /// or watchdog timeout, the snapshot is re-inserted via
-  /// mergeMessage + a toast is surfaced. Keyed by channelId →
+  /// mergeMessage + a toast is surfaced. Keyed by ChannelKey →
   /// (messageId → Message).
-  pendingDeletions: Record<string, Map<number, Message>>;
-  hasMoreHistory: Record<string, boolean>;
-  historyLoading: Record<string, boolean>;
-  historyFetched: Record<string, boolean>;
+  pendingDeletions: Record<ChannelKey, Map<number, Message>>;
+  hasMoreHistory: Record<ChannelKey, boolean>;
+  historyLoading: Record<ChannelKey, boolean>;
+  historyFetched: Record<ChannelKey, boolean>;
   /// Per-channel saved scroll position so re-entering a still-cached
   /// channel restores the user to roughly where they left off (Discord-
   /// style). `topIndex` is the topmost-visible Virtuoso item index;
@@ -70,7 +80,7 @@ interface ChatState {
   /// (in which case we restore by scrolling to LAST so new messages
   /// arrived during the absence are visible). Pruned alongside
   /// messagesByChannel via the LRU eviction in setActiveChannel.
-  scrollPositionsByChannel: Record<string, { topIndex: number; atBottom: boolean }>;
+  scrollPositionsByChannel: Record<ChannelKey, { topIndex: number; atBottom: boolean }>;
   /// Live dimensions of the chat panel's viewport. Updated by ChatPanel
   /// via a ResizeObserver. Read by AttachmentList's sqrt-based sizing
   /// so image/video previews scale proportionally to the available
@@ -82,7 +92,7 @@ interface ChatState {
   /// most recently visited, tail is the least. Channels beyond
   /// `useUiStore.channelCacheSize` get evicted from every per-channel
   /// map below on the next setActiveChannel or enforceChannelCacheSize.
-  channelAccessOrder: string[];
+  channelAccessOrder: ChannelKey[];
 
   // Mutators
   setServers: (servers: CommunityServer[]) => void;
@@ -116,6 +126,7 @@ interface ChatState {
   ) => void;
   setServerOwner: (serverId: string, owner: string) => void;
   setMembersForServer: (serverId: string, members: ServerMember[], bans: string[]) => void;
+  setRolesForServer: (serverId: string, roles: ServerRole[]) => void;
   setInvitesForServer: (serverId: string, invites: ServerInvite[]) => void;
   upsertInvite: (serverId: string, invite: ServerInvite) => void;
   removeInvite: (serverId: string, code: string) => void;
@@ -126,35 +137,58 @@ interface ChatState {
     maxBytes: number,
   ) => void;
   resetForLogout: () => void;
-  addMessage: (message: Message) => void;
-  prependHistory: (channelId: string, messages: Message[], hasMore: boolean) => void;
-  setHistoryLoading: (channelId: string, loading: boolean) => void;
-  markHistoryFetched: (channelId: string) => void;
-  applyChannelPruned: (channelId: string, deletedMessageIds: number[]) => void;
-  applyChannelWiped: (channelId: string) => void;
+  addMessage: (serverId: string, message: Message) => void;
+  prependHistory: (
+    serverId: string,
+    channelId: string,
+    messages: Message[],
+    hasMore: boolean,
+  ) => void;
+  setHistoryLoading: (serverId: string, channelId: string, loading: boolean) => void;
+  markHistoryFetched: (serverId: string, channelId: string) => void;
+  applyChannelPruned: (
+    serverId: string,
+    channelId: string,
+    deletedMessageIds: number[],
+  ) => void;
+  applyChannelWiped: (serverId: string, channelId: string) => void;
+  /// Drops every per-channel cache entry for a channel that no longer
+  /// exists (deleted server-side). Unlike applyChannelWiped this removes
+  /// the keys entirely, so a future channel reusing the same slug
+  /// refetches history instead of inheriting stale state.
+  purgeChannelState: (serverId: string, channelId: string) => void;
   /// Per-message delete: remove from a channel's visible message list.
   /// Idempotent. Same handler runs for "my delete succeeded" and
   /// "someone else deleted this message".
-  removeMessage: (channelId: string, messageId: number) => void;
+  removeMessage: (serverId: string, channelId: string, messageId: number) => void;
   /// Remove an optimistic (id === 0) message by its nonce. Used when a
   /// send is abandoned (nothing left to send after all uploads failed) or
   /// the send call rejects, so the placeholder bubble doesn't linger
   /// forever unreconciled.
-  removeMessageByNonce: (channelId: string, nonce: string) => void;
+  removeMessageByNonce: (serverId: string, channelId: string, nonce: string) => void;
   /// Snapshot a message into pendingDeletions, then remove it from
   /// the visible list. Returns the snapshot so the caller knows the
   /// optimistic remove actually happened.
-  snapshotAndRemove: (channelId: string, messageId: number) => Message | undefined;
+  snapshotAndRemove: (
+    serverId: string,
+    channelId: string,
+    messageId: number,
+  ) => Message | undefined;
   /// Re-insert a previously-snapshotted message back into the array
   /// (sorted by id via existing mergeMessage). Also clears the
   /// pending entry. No-op if no matching snapshot exists.
-  restorePendingDeletion: (channelId: string, messageId: number) => void;
+  restorePendingDeletion: (serverId: string, channelId: string, messageId: number) => void;
   /// Drop the pending snapshot (called on success-ack or matching
   /// broadcast). No-op if no matching snapshot exists.
-  clearPendingDeletion: (channelId: string, messageId: number) => void;
+  clearPendingDeletion: (serverId: string, channelId: string, messageId: number) => void;
   /// Capture the user's current scroll position for a channel — called
   /// from ChatPanel on Virtuoso range/atBottom events.
-  setScrollPosition: (channelId: string, topIndex: number, atBottom: boolean) => void;
+  setScrollPosition: (
+    serverId: string,
+    channelId: string,
+    topIndex: number,
+    atBottom: boolean,
+  ) => void;
   /// Update the live chat viewport dimensions. Called from ChatPanel's
   /// ResizeObserver. Pass `null` on unmount so AttachmentList's sizing
   /// helpers fall back to their fixed defaults.
@@ -257,6 +291,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   serverOwner: {},
   membersByServer: {},
   bansByServer: {},
+  rolesByServer: {},
   invitesByServer: {},
   pendingInvite: null,
   serverAttachmentConfig: {},
@@ -276,11 +311,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setActiveChannel: (channelId) =>
     set((state) => {
       if (!channelId) return { activeChannelId: null };
+      // LRU bookkeeping keys on serverId+channelId; callers set the
+      // active server before activating one of its channels (ServerBar
+      // does, and every event handler checks activeServerId first).
+      if (!state.activeServerId) return { activeChannelId: channelId };
+      const key = channelKey(state.activeServerId, channelId);
       const cap = Math.max(1, useUiStore.getState().channelCacheSize || 10);
       // Move the activated channel to the front of the access order.
       const reordered = [
-        channelId,
-        ...state.channelAccessOrder.filter((id) => id !== channelId),
+        key,
+        ...state.channelAccessOrder.filter((k) => k !== key),
       ];
       if (reordered.length <= cap) {
         return { activeChannelId: channelId, channelAccessOrder: reordered };
@@ -288,11 +328,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Over the cap — drop the tail and prune every cached slice for
       // channels that fell off.
       const keep = reordered.slice(0, cap);
-      const keepSet = new Set(keep);
-      const filter = <T,>(rec: Record<string, T>): Record<string, T> =>
+      const keepSet = new Set<string>(keep);
+      const filter = <T,>(rec: Record<ChannelKey, T>): Record<ChannelKey, T> =>
         Object.fromEntries(
-          Object.entries(rec).filter(([id]) => keepSet.has(id)),
-        );
+          Object.entries(rec).filter(([k]) => keepSet.has(k)),
+        ) as Record<ChannelKey, T>;
       return {
         activeChannelId: channelId,
         channelAccessOrder: keep,
@@ -389,6 +429,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       bansByServer: { ...state.bansByServer, [serverId]: bans },
     })),
 
+  setRolesForServer: (serverId, roles) =>
+    set((state) => ({
+      rolesByServer: { ...state.rolesByServer, [serverId]: roles },
+    })),
+
   setInvitesForServer: (serverId, invites) =>
     set((state) => ({
       invitesByServer: { ...state.invitesByServer, [serverId]: invites },
@@ -427,20 +472,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
     })),
 
-  addMessage: (message) =>
-    set((state) => ({
-      messagesByChannel: {
-        ...state.messagesByChannel,
-        [message.channelId]: mergeMessage(
-          state.messagesByChannel[message.channelId] ?? [],
-          message,
-        ),
-      },
-    })),
-
-  prependHistory: (channelId, messages, hasMore) =>
+  addMessage: (serverId, message) =>
     set((state) => {
-      const existing = state.messagesByChannel[channelId] ?? [];
+      const key = channelKey(serverId, message.channelId);
+      return {
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [key]: mergeMessage(state.messagesByChannel[key] ?? [], message),
+        },
+      };
+    }),
+
+  prependHistory: (serverId, channelId, messages, hasMore) =>
+    set((state) => {
+      const key = channelKey(serverId, channelId);
+      const existing = state.messagesByChannel[key] ?? [];
       // History batch may overlap with already-loaded live messages —
       // dedup by real id (id=0 entries are optimistic, not in history).
       const existingIds = new Set(existing.filter((m) => m.id !== 0).map((m) => m.id));
@@ -452,126 +498,159 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         messagesByChannel: {
           ...state.messagesByChannel,
-          [channelId]: [...withId, ...ephemeral],
+          [key]: [...withId, ...ephemeral],
         },
-        hasMoreHistory: { ...state.hasMoreHistory, [channelId]: hasMore },
+        hasMoreHistory: { ...state.hasMoreHistory, [key]: hasMore },
       };
     }),
 
-  setHistoryLoading: (channelId, loading) =>
+  setHistoryLoading: (serverId, channelId, loading) =>
     set((state) => ({
-      historyLoading: { ...state.historyLoading, [channelId]: loading },
+      historyLoading: {
+        ...state.historyLoading,
+        [channelKey(serverId, channelId)]: loading,
+      },
     })),
 
-  markHistoryFetched: (channelId) =>
+  markHistoryFetched: (serverId, channelId) =>
     set((state) => ({
-      historyFetched: { ...state.historyFetched, [channelId]: true },
+      historyFetched: {
+        ...state.historyFetched,
+        [channelKey(serverId, channelId)]: true,
+      },
     })),
 
-  applyChannelPruned: (channelId, deletedMessageIds) =>
+  applyChannelPruned: (serverId, channelId, deletedMessageIds) =>
     set((state) => {
-      const existing = state.messagesByChannel[channelId] ?? [];
+      const key = channelKey(serverId, channelId);
+      const existing = state.messagesByChannel[key] ?? [];
       const deletedSet = new Set(deletedMessageIds);
       const next = existing.filter((m) => m.id === 0 || !deletedSet.has(m.id));
       return {
-        messagesByChannel: { ...state.messagesByChannel, [channelId]: next },
+        messagesByChannel: { ...state.messagesByChannel, [key]: next },
       };
     }),
 
-  applyChannelWiped: (channelId) =>
-    set((state) => ({
-      messagesByChannel: { ...state.messagesByChannel, [channelId]: [] },
-      hasMoreHistory: { ...state.hasMoreHistory, [channelId]: false },
-      historyFetched: { ...state.historyFetched, [channelId]: true },
-    })),
-
-  removeMessage: (channelId, messageId) =>
+  applyChannelWiped: (serverId, channelId) =>
     set((state) => {
-      const list = state.messagesByChannel[channelId];
+      const key = channelKey(serverId, channelId);
+      return {
+        messagesByChannel: { ...state.messagesByChannel, [key]: [] },
+        hasMoreHistory: { ...state.hasMoreHistory, [key]: false },
+        historyFetched: { ...state.historyFetched, [key]: true },
+      };
+    }),
+
+  purgeChannelState: (serverId, channelId) =>
+    set((state) => {
+      const key = channelKey(serverId, channelId);
+      const drop = <T,>(rec: Record<ChannelKey, T>): Record<ChannelKey, T> => {
+        if (!(key in rec)) return rec;
+        const next = { ...rec };
+        delete next[key];
+        return next;
+      };
+      return {
+        messagesByChannel: drop(state.messagesByChannel),
+        hasMoreHistory: drop(state.hasMoreHistory),
+        historyLoading: drop(state.historyLoading),
+        historyFetched: drop(state.historyFetched),
+        scrollPositionsByChannel: drop(state.scrollPositionsByChannel),
+      };
+    }),
+
+  removeMessage: (serverId, channelId, messageId) =>
+    set((state) => {
+      const key = channelKey(serverId, channelId);
+      const list = state.messagesByChannel[key];
       if (!list) return {};
       const next = list.filter((m) => m.id !== messageId);
       if (next.length === list.length) return {};
       return {
         messagesByChannel: {
           ...state.messagesByChannel,
-          [channelId]: next,
+          [key]: next,
         },
       };
     }),
 
-  removeMessageByNonce: (channelId, nonce) =>
+  removeMessageByNonce: (serverId, channelId, nonce) =>
     set((state) => {
-      const list = state.messagesByChannel[channelId];
+      const key = channelKey(serverId, channelId);
+      const list = state.messagesByChannel[key];
       if (!list) return {};
       const next = list.filter((m) => !(m.id === 0 && m.nonce === nonce));
       if (next.length === list.length) return {};
       return {
         messagesByChannel: {
           ...state.messagesByChannel,
-          [channelId]: next,
+          [key]: next,
         },
       };
     }),
 
-  snapshotAndRemove: (channelId, messageId) => {
+  snapshotAndRemove: (serverId, channelId, messageId) => {
+    const key = channelKey(serverId, channelId);
     const state = get();
-    const list = state.messagesByChannel[channelId];
+    const list = state.messagesByChannel[key];
     if (!list) return undefined;
     const snap = list.find((m) => m.id === messageId);
     if (!snap) return undefined;
     set((s) => {
-      const bucket = s.pendingDeletions[channelId] ?? new Map<number, Message>();
+      const bucket = s.pendingDeletions[key] ?? new Map<number, Message>();
       const next = new Map(bucket);
       next.set(messageId, snap);
       return {
         pendingDeletions: {
           ...s.pendingDeletions,
-          [channelId]: next,
+          [key]: next,
         },
         messagesByChannel: {
           ...s.messagesByChannel,
-          [channelId]: list.filter((m) => m.id !== messageId),
+          [key]: list.filter((m) => m.id !== messageId),
         },
       };
     });
     return snap;
   },
 
-  restorePendingDeletion: (channelId, messageId) =>
+  restorePendingDeletion: (serverId, channelId, messageId) =>
     set((state) => {
-      const bucket = state.pendingDeletions[channelId];
+      const key = channelKey(serverId, channelId);
+      const bucket = state.pendingDeletions[key];
       const snap = bucket?.get(messageId);
       if (!snap) return {};
-      const existing = state.messagesByChannel[channelId] ?? [];
+      const existing = state.messagesByChannel[key] ?? [];
       const merged = mergeMessage(existing, snap);
       const nextBucket = new Map(bucket);
       nextBucket.delete(messageId);
       const nextPending = { ...state.pendingDeletions };
       if (nextBucket.size === 0) {
-        delete nextPending[channelId];
+        delete nextPending[key];
       } else {
-        nextPending[channelId] = nextBucket;
+        nextPending[key] = nextBucket;
       }
       return {
         messagesByChannel: {
           ...state.messagesByChannel,
-          [channelId]: merged,
+          [key]: merged,
         },
         pendingDeletions: nextPending,
       };
     }),
 
-  clearPendingDeletion: (channelId, messageId) =>
+  clearPendingDeletion: (serverId, channelId, messageId) =>
     set((state) => {
-      const bucket = state.pendingDeletions[channelId];
+      const key = channelKey(serverId, channelId);
+      const bucket = state.pendingDeletions[key];
       if (!bucket || !bucket.has(messageId)) return {};
       const nextBucket = new Map(bucket);
       nextBucket.delete(messageId);
       const nextPending = { ...state.pendingDeletions };
       if (nextBucket.size === 0) {
-        delete nextPending[channelId];
+        delete nextPending[key];
       } else {
-        nextPending[channelId] = nextBucket;
+        nextPending[key] = nextBucket;
       }
       return { pendingDeletions: nextPending };
     }),
@@ -590,6 +669,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       serverOwner: {},
       membersByServer: {},
       bansByServer: {},
+      rolesByServer: {},
       serverAttachmentConfig: {},
       channelsByServer: {},
       messagesByChannel: {},
@@ -611,15 +691,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // the top `cap` of the access order (defensive — shouldn't
       // happen since setActiveChannel reorders).
       const keep = state.channelAccessOrder.slice(0, cap);
-      if (state.activeChannelId && !keep.includes(state.activeChannelId)) {
-        keep.pop();
-        keep.unshift(state.activeChannelId);
+      if (state.activeServerId && state.activeChannelId) {
+        const activeKey = channelKey(state.activeServerId, state.activeChannelId);
+        if (!keep.includes(activeKey)) {
+          keep.pop();
+          keep.unshift(activeKey);
+        }
       }
-      const keepSet = new Set(keep);
-      const filter = <T,>(rec: Record<string, T>): Record<string, T> =>
+      const keepSet = new Set<string>(keep);
+      const filter = <T,>(rec: Record<ChannelKey, T>): Record<ChannelKey, T> =>
         Object.fromEntries(
-          Object.entries(rec).filter(([id]) => keepSet.has(id)),
-        );
+          Object.entries(rec).filter(([k]) => keepSet.has(k)),
+        ) as Record<ChannelKey, T>;
       return {
         channelAccessOrder: keep,
         messagesByChannel: filter(state.messagesByChannel),
@@ -630,11 +713,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     }),
 
-  setScrollPosition: (channelId, topIndex, atBottom) =>
+  setScrollPosition: (serverId, channelId, topIndex, atBottom) =>
     set((state) => ({
       scrollPositionsByChannel: {
         ...state.scrollPositionsByChannel,
-        [channelId]: { topIndex, atBottom },
+        [channelKey(serverId, channelId)]: { topIndex, atBottom },
       },
     })),
 
