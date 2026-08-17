@@ -299,7 +299,7 @@ export default function ChannelSettingsModal() {
       onClick={closeModal}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-[480px] animate-[cardIn_0.25s_ease] flex-col overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal"
+        className="flex max-h-[85vh] w-full max-w-[560px] animate-[cardIn_0.25s_ease] flex-col overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-border-divider px-6 py-5">
@@ -342,36 +342,47 @@ export default function ChannelSettingsModal() {
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                 Voice bitrate
               </div>
-              <div className="flex items-center gap-3 rounded-md border border-border-divider bg-bg-light px-3 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13px] font-medium text-text-primary">
-                    Opus bitrate
+              <div className="rounded-md border border-border-divider bg-bg-light px-4 py-3">
+                <div className="mb-2.5 flex items-center justify-between">
+                  <div>
+                    <div className="text-[13px] font-medium text-text-primary">
+                      Opus bitrate
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-text-muted">
+                      Higher sounds better, uses more bandwidth per speaker
+                    </div>
                   </div>
-                  <div className="mt-0.5 text-[11px] text-text-muted">
-                    Higher sounds better, uses more bandwidth per speaker
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-sm bg-bg-lighter px-2 py-1 font-mono text-[12px] font-medium text-text-primary">
+                      {bitrateDraft === 0
+                        ? "Default (64 kbps)"
+                        : `${bitrateDraft} kbps`}
+                    </span>
+                    {bitrateDraft !== 0 && (
+                      <button
+                        onClick={() => setBitrateDraft(0)}
+                        className="text-[11px] font-medium text-text-muted transition-colors hover:text-accent-bright"
+                      >
+                        Reset
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div className="relative shrink-0">
-                  <select
-                    value={String(bitrateDraft)}
-                    onChange={(e) => setBitrateDraft(parseInt(e.target.value, 10))}
-                    className="appearance-none rounded-sm border border-border bg-bg-lighter px-3 py-1.5 pr-8 text-[12px] text-text-primary outline-none transition-all hover:border-text-faint focus:border-accent"
-                  >
-                    <option value="0">Default</option>
-                    {[32, 48, 64, 96, 128, 192, 256, 320].map((k) => (
-                      <option key={k} value={String(k)}>
-                        {k} kbps
-                      </option>
-                    ))}
-                    {![0, 32, 48, 64, 96, 128, 192, 256, 320].includes(bitrateDraft) && (
-                      <option value={String(bitrateDraft)}>{bitrateDraft} kbps</option>
-                    )}
-                  </select>
-                  <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-text-muted">
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                      <path d="M6 9l6 6 6-6" />
-                    </svg>
-                  </div>
+                <input
+                  type="range"
+                  min={16}
+                  max={320}
+                  step={8}
+                  // 0 = "client default" — park the thumb at the default's
+                  // effective value (64); the first drag sets an explicit
+                  // bitrate, Reset returns to 0.
+                  value={bitrateDraft === 0 ? 64 : bitrateDraft}
+                  onChange={(e) => setBitrateDraft(Number(e.target.value))}
+                  className="h-[4px] w-full cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-light [&::-webkit-slider-thumb]:shadow-[0_0_6px_var(--color-accent-mid)]"
+                />
+                <div className="mt-1 flex justify-between text-[10px] text-text-muted">
+                  <span>16 kbps</span>
+                  <span>320 kbps</span>
                 </div>
               </div>
               <p className="mt-2 text-[12px] leading-[1.5] text-text-muted">

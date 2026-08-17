@@ -800,6 +800,16 @@
 }
 
 @layer base {
+  /* Tailwind v4's preflight resets buttons to cursor: default (v3 used
+     pointer). Every interactive control in this app expects pointer, so
+     restore it globally — including the span[role="button"] pattern the
+     sidebar gears use — rather than sprinkling cursor-pointer per
+     button and inevitably missing some. */
+  button:not(:disabled),
+  [role="button"] {
+    cursor: pointer;
+  }
+
   body {
     @apply bg-bg-primary text-text-primary font-sans antialiased;
     margin: 0;
