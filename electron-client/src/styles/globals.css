@@ -1016,3 +1016,70 @@ html, body, #root {
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
+
+/* ── Rich text: syntax highlighting + math ─────────────────────────
+   Token colors for fenced code blocks (lowlight/highlight.js scope
+   classes under .rich-codeblock). Mapped onto the palette variables
+   rather than a stock hljs theme so code follows all five themes —
+   every var referenced here is emitted by Tailwind because utilities
+   elsewhere already use it (the @theme pruning gotcha). */
+
+.rich-codeblock .hljs-keyword,
+.rich-codeblock .hljs-built_in,
+.rich-codeblock .hljs-literal,
+.rich-codeblock .hljs-doctag,
+.rich-codeblock .hljs-meta {
+  color: var(--color-accent-bright);
+}
+
+.rich-codeblock .hljs-title,
+.rich-codeblock .hljs-name,
+.rich-codeblock .hljs-section,
+.rich-codeblock .hljs-type,
+.rich-codeblock .hljs-selector-tag {
+  color: var(--color-accent);
+}
+
+.rich-codeblock .hljs-string,
+.rich-codeblock .hljs-regexp,
+.rich-codeblock .hljs-quote,
+.rich-codeblock .hljs-addition {
+  color: var(--color-success);
+}
+
+.rich-codeblock .hljs-number,
+.rich-codeblock .hljs-symbol,
+.rich-codeblock .hljs-attr,
+.rich-codeblock .hljs-attribute,
+.rich-codeblock .hljs-variable,
+.rich-codeblock .hljs-template-variable,
+.rich-codeblock .hljs-selector-class,
+.rich-codeblock .hljs-selector-id {
+  color: var(--color-warning);
+}
+
+.rich-codeblock .hljs-comment {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.rich-codeblock .hljs-deletion {
+  color: var(--color-error);
+}
+
+.rich-codeblock .hljs-operator,
+.rich-codeblock .hljs-punctuation {
+  color: var(--color-text-secondary);
+}
+
+/* KaTeX: keep display math left-aligned like a chat message rather
+   than page-centered, and let long equations scroll inside their own
+   box instead of widening the bubble (the same overflow rule the
+   design system applies to wide tables). */
+.rich-math-display .katex-display {
+  margin: 0;
+  text-align: left;
+}
+.rich-math-display .katex-display > .katex {
+  text-align: left;
+}

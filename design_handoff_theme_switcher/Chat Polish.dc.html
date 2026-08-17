@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><meta name="design_doc_mode" content="canvas"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"><style>body{margin:0;background:#e9e7e2;font-family:Inter,system-ui,sans-serif}a{color:#2a78d6}a:hover{color:#1b5fb0}.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}.dv-tname{font:600 13px/1.2 Inter,system-ui,sans-serif;color:#1a1a1a}.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start}.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11.5px/1.3 Inter,system-ui,sans-serif;color:rgba(0,0,0,.55)}.dv-card{max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.08);border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.10);overflow:hidden}.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}.dv-next{margin:22px 0 0;font:12px/1.6 Inter,system-ui,sans-serif;color:rgba(0,0,0,.5)}@keyframes waveBar{0%,100%{transform:scaleY(.3)}50%{transform:scaleY(1)}}</style></helmet>
+
+<section class="dv-turn" id="t2">
+<div class="dv-thd"><a class="dv-tid" href="#t2">2</a><span class="dv-tname">Light theme for <a class="dv-oid" href="#1c">1c</a></span></div>
+<div class="dv-opts">
+<div class="dv-opt" id="2a">
+<div class="dv-olabel"><a class="dv-oid" href="#2a">2a</a>Light <a class="dv-oid" href="#1c">1c</a> — paper canvas, ink mono, mint compressed to a deep signal green so it holds contrast on white.</div>
+<div class="dv-card" style="width:1120px">
+<div style="display:flex;flex-direction:column;height:664px;background:#f9faf9;color:#161c19;font-family:Inter,system-ui,sans-serif">
+
+<div style="display:flex;align-items:center;justify-content:center;position:relative;height:30px;flex:none;background:#e7eae8;border-bottom:1px solid rgba(10,25,18,.11)">
+<span style="font:500 10.5px 'JetBrains Mono',monospace;letter-spacing:.14em;color:#5a665f">DAILYGAMING</span>
+<div style="position:absolute;right:0;top:0;display:flex;height:100%">
+<div style="width:38px;display:grid;place-items:center;color:#55615c;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="12" x2="20" y2="12"></line></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#55615c;font-size:9px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4.5" y="4.5" width="15" height="15" rx="1.5"></rect></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#55615c;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5l14 14"></path><path d="M19 5L5 19"></path></svg></div>
+</div>
+</div>
+
+<div style="display:flex;align-items:center;gap:8px;height:56px;flex:none;padding:0 10px;background:#e7eae8;border-bottom:1px solid rgba(10,25,18,.11)">
+<div style="width:34px;height:34px;border-radius:4px;background:#ffffff;display:grid;place-items:center;color:#5a665f;font-size:14px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path></svg></div>
+<div style="display:flex;align-items:center;gap:9px;height:38px;padding:0 12px 0 5px;border-radius:4px;background:#ffffff;box-shadow:inset 0 0 0 1px rgba(15,122,69,.34)">
+<div style="width:28px;height:28px;border-radius:3px;background:repeating-linear-gradient(135deg,#dfe3e1 0 6px,#e9ebe9 6px 12px)"></div>
+<span style="font:600 11px 'JetBrains Mono',monospace;letter-spacing:.06em;color:#0c1310">DAILYGAMING</span>
+<div style="width:5px;height:5px;border-radius:50%;background:#0f7a45;box-shadow:0 0 0 3px rgba(15,122,69,.16)"></div>
+</div>
+<div style="width:34px;height:34px;border-radius:4px;background:#eff1ef;box-shadow:inset 0 0 0 1px rgba(10,25,18,.13);display:grid;place-items:center;color:#55615c;font-size:15px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+</div>
+
+<div style="display:flex;flex:1;min-height:0">
+
+<div style="width:64px;flex:none;display:flex;flex-direction:column;align-items:center;gap:7px;padding:9px 0;background:#e7eae8;border-right:1px solid rgba(10,25,18,.11)">
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:4px;background:#ddd6f6;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#443a72">X</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#0f7a45;border:2.5px solid #e7eae8"></div></div>
+<div style="width:36px;height:36px;border-radius:4px;background:#d5dcd8;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#3f4a45">F</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:4px;background:#0f7a45;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#eafff2">B</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#0f7a45;border:2.5px solid #e7eae8"></div></div>
+<div style="width:36px;height:36px;border-radius:4px;background:#d5dcd8;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#3f4a45">R</div>
+<div style="width:36px;height:36px;border-radius:4px;background:#d5dcd8;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#3f4a45">S</div>
+<div style="width:36px;height:36px;border-radius:4px;background:#f3dce4;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#78384e">W</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:4px;background:#0f7a45;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#eafff2">R</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#0f7a45;border:2.5px solid #e7eae8"></div></div>
+<div style="width:36px;height:36px;border-radius:4px;background:#efe9cf;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#655519">G</div>
+</div>
+
+<div style="position:relative;width:238px;flex:none;display:flex;flex-direction:column;background:#eff1ef;border-right:1px solid rgba(10,25,18,.11)">
+<div style="display:flex;align-items:center;justify-content:space-between;height:44px;flex:none;padding:0 12px 0 13px;border-bottom:1px solid rgba(10,25,18,.11)">
+<div style="display:flex;align-items:center;gap:6px"><span style="font:700 12px 'JetBrains Mono',monospace;letter-spacing:.02em;color:#0c1310">DailyGaming</span><span style="color:#55615c;font-size:9px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"></path></svg></span></div>
+<span style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#0f7a45;background:rgba(15,122,69,.1);padding:4px 6px;border-radius:3px">PUBLIC</span>
+</div>
+<div style="flex:1;padding:10px 6px;display:flex;flex-direction:column;gap:1px">
+<div style="padding:7px 8px 5px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#5c6863">TEXT</div>
+<div style="display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:3px;background:#ffffff;box-shadow:inset 2px 0 0 #0f7a45"><span style="font:400 12px 'JetBrains Mono',monospace;color:#0f7a45">#</span><span style="font:600 12.5px 'JetBrains Mono',monospace;color:#0c1310">general</span></div>
+<div style="display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:3px"><span style="font:400 12px 'JetBrains Mono',monospace;color:#5c6863">#</span><span style="font:400 12.5px 'JetBrains Mono',monospace;color:#5a665f">announcements</span></div>
+<div style="padding:14px 8px 5px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#5c6863">VOICE</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border-radius:3px;background:rgba(10,25,18,.045)"><div style="display:flex;align-items:center;gap:7px"><span style="color:#0f7a45;font-size:10px">&#9679;</span><span style="font:600 12.5px 'JetBrains Mono',monospace;color:#161c19">Voice Lounge</span></div><span style="font:400 9px 'JetBrains Mono',monospace;color:#5c6863">2/8</span></div>
+<div style="display:flex;align-items:center;gap:7px;padding:3px 8px 3px 24px"><div style="width:19px;height:19px;border-radius:3px;background:#f3dce4;display:grid;place-items:center;font:600 8.5px 'JetBrains Mono',monospace;color:#78384e">V</div><span style="font:400 11.5px 'JetBrains Mono',monospace;color:#5a665f">vika</span></div>
+<div style="display:flex;align-items:center;gap:7px;padding:3px 8px 3px 24px"><div style="width:19px;height:19px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;font:600 8.5px 'JetBrains Mono',monospace;color:#3f4a45">S</div><span style="font:400 11.5px 'JetBrains Mono',monospace;color:#5a665f">sunkhan</span><div style="display:flex;align-items:flex-end;gap:1.5px;height:9px"><div style="width:2px;height:8px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1s ease-in-out infinite"></div><div style="width:2px;height:8px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1s ease-in-out .2s infinite"></div><div style="width:2px;height:8px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1s ease-in-out .4s infinite"></div></div></div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border-radius:3px"><div style="display:flex;align-items:center;gap:7px"><span style="color:#66726c;font-size:10px">&#9679;</span><span style="font:400 12.5px 'JetBrains Mono',monospace;color:#5a665f">Voice Lounge 2</span></div><span style="font:400 9px 'JetBrains Mono',monospace;color:#66726c">0/8</span></div>
+</div>
+<sc-if value="{{ showVoiceOverlay }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;left:6px;right:6px;bottom:6px;border-radius:4px;background:#ffffff;box-shadow:inset 0 0 0 1px rgba(15,122,69,.22),0 -8px 24px rgba(10,25,18,.12);overflow:hidden">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 11px 7px">
+<div style="display:flex;align-items:center;gap:7px"><div style="width:6px;height:6px;border-radius:50%;background:#0f7a45;box-shadow:0 0 0 3px rgba(15,122,69,.16)"></div><span style="font:600 11px 'JetBrains Mono',monospace;color:#0c1310">VOICE LOUNGE</span></div>
+<span style="font:500 10px 'JetBrains Mono',monospace;color:#0f7a45">15ms</span>
+</div>
+<div style="margin:0 11px 9px;height:28px;border-radius:3px;background:rgba(15,122,69,.1);box-shadow:inset 0 0 0 1px rgba(15,122,69,.3);display:flex;align-items:center;justify-content:center;gap:7px;color:#0f7a45;font:600 10.5px 'JetBrains Mono',monospace;letter-spacing:.1em"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"></rect><path d="M8 21h8"></path></svg> STREAM</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 9px;background:#eff1ef;border-top:1px solid rgba(10,25,18,.10)">
+<div style="display:flex;align-items:center;gap:8px"><div style="width:24px;height:24px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;font:600 10px 'JetBrains Mono',monospace;color:#3f4a45">S</div><span style="font:500 11.5px 'JetBrains Mono',monospace;color:#161c19">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:3px">
+<div style="width:23px;height:23px;border-radius:3px;background:rgba(200,73,61,.12);display:grid;place-items:center;color:#c8493d;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path></svg></div>
+<div style="width:23px;height:23px;border-radius:3px;display:grid;place-items:center;color:#5a665f;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line></svg></div>
+<div style="width:23px;height:23px;border-radius:3px;display:grid;place-items:center;color:#5a665f;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"></path></svg></div>
+<div style="width:23px;height:23px;border-radius:3px;display:grid;place-items:center;color:#5a665f;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V10a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></div>
+</div>
+</div>
+</div>
+</sc-if>
+</div>
+
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#f9faf9">
+<div style="display:flex;align-items:center;justify-content:space-between;height:44px;flex:none;padding:0 16px;border-bottom:1px solid rgba(10,25,18,.11)">
+<div style="display:flex;align-items:center;gap:7px"><span style="font:400 13px 'JetBrains Mono',monospace;color:#5c6863">#</span><span style="font:700 13px 'JetBrains Mono',monospace;color:#0c1310">general</span></div>
+<span style="font:400 9.5px 'JetBrains Mono',monospace;letter-spacing:.1em;color:#66726c">13 MEMBERS</span>
+</div>
+<div style="flex:1;min-height:0;padding:12px 16px 6px;display:flex;flex-direction:column;justify-content:flex-end;gap:10px">
+<div style="width:400px;flex:none;border-radius:4px;overflow:hidden;background:#ffffff;box-shadow:inset 0 0 0 1px rgba(10,25,18,.11)">
+<div style="height:192px;background:repeating-linear-gradient(135deg,#e4e8e6 0 9px,#eceeec 9px 18px);display:grid;place-items:center">
+<div style="width:42px;height:42px;border-radius:4px;background:#0f7a45;display:grid;place-items:center;color:#ffffff;font-size:13px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;font:400 10px 'JetBrains Mono',monospace;color:#55615c"><span>video-attachment.mp4</span><span style="color:#0f7a45">2.0 MB</span></div>
+</div>
+<div style="display:flex;gap:11px;flex:none">
+<div style="width:34px;height:34px;flex:none;border-radius:4px;background:#d5dcd8;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#3f4a45">F</div>
+<div><div style="display:flex;align-items:baseline;gap:8px"><span style="font:700 12.5px 'JetBrains Mono',monospace;color:#b0453b">Fiary</span><span style="font:400 10px 'JetBrains Mono',monospace;color:#616d67">21:49</span></div><div style="margin-top:2px;font-size:13px;line-height:1.5;color:#161c19">sa</div></div>
+</div>
+<div style="display:flex;gap:11px;flex:none">
+<div style="width:34px;height:34px;flex:none;border-radius:4px;background:#d5dcd8;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#3f4a45">S</div>
+<div><div style="display:flex;align-items:baseline;gap:8px"><span style="font:700 12.5px 'JetBrains Mono',monospace;color:#0f7a45">sunkhan</span><span style="font:400 10px 'JetBrains Mono',monospace;color:#616d67">12:54</span></div><div style="margin-top:2px;font-size:13px;line-height:1.5;color:#161c19">aasdas</div></div>
+</div>
+<div style="display:flex;gap:11px;flex:none">
+<div style="width:34px;height:34px;flex:none;border-radius:4px;background:#d5dcd8;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#3f4a45">S</div>
+<div style="flex:1;min-width:0"><div style="display:flex;align-items:baseline;gap:8px"><span style="font:700 12.5px 'JetBrains Mono',monospace;color:#0f7a45">sunkhan</span><span style="font:400 10px 'JetBrains Mono',monospace;color:#616d67">20:15</span></div>
+<div style="margin-top:6px;display:flex;align-items:center;gap:10px;width:390px;padding:10px;border-radius:4px;background:#ffffff;box-shadow:inset 0 0 0 1px rgba(10,25,18,.11)">
+<div style="width:34px;height:34px;flex:none;border-radius:3px;background:rgba(15,122,69,.1);display:flex;align-items:flex-end;justify-content:center;gap:2px;padding-bottom:10px">
+<div style="width:2.5px;height:8px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.1s ease-in-out infinite"></div>
+<div style="width:2.5px;height:8px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .18s infinite"></div>
+<div style="width:2.5px;height:8px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .36s infinite"></div>
+</div>
+<div style="flex:1;min-width:0">
+<div style="display:flex;align-items:center;gap:8px"><div style="font:500 11.5px 'JetBrains Mono',monospace;color:#0c1310;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">the-movie-reze-arc-turkish-co&#8230;</div><div title="Download" style="width:20px;height:20px;flex:none;border-radius:4px;display:grid;place-items:center;color:#55615c"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3.5v11"></path><path d="M7.5 10.5l4.5 4.5 4.5-4.5"></path><path d="M4.5 20h15"></path></svg></div></div>
+<div style="margin-top:3px;font:400 9.5px 'JetBrains Mono',monospace;color:#55615c">3:58 &#183; 3.6 MB</div>
+<div style="margin-top:7px;display:flex;align-items:center;gap:9px">
+<div style="width:22px;height:22px;border-radius:3px;background:#0f7a45;display:grid;place-items:center;color:#ffffff;font-size:9px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+<div style="flex:1;height:2px;background:rgba(10,25,18,.14)"></div>
+<span style="font:400 9.5px 'JetBrains Mono',monospace;color:#55615c">0:00 / 3:57</span>
+<div style="width:15px;height:15px;flex:none;display:grid;place-items:center;color:#55615c"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path></svg></div><div title="Volume" style="position:relative;width:46px;flex:none;height:2px;border-radius:1px;background:rgba(10,25,18,.14)"><div style="position:absolute;left:0;top:0;bottom:0;width:62%;border-radius:1px;background:#0f7a45"></div><div style="position:absolute;left:62%;top:50%;width:8px;height:8px;margin:-4px 0 0 -4px;border-radius:50%;background:#0f7a45"></div></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div style="flex:none;padding:6px 16px 14px">
+<div style="display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:4px;background:#eff1ef;box-shadow:inset 0 0 0 1px rgba(10,25,18,.14)">
+<div style="width:22px;height:22px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;color:#5a665f;font-size:12px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+<span style="flex:1;font:400 12.5px 'JetBrains Mono',monospace;color:#616d67">message #general</span>
+<span style="color:#55615c;font-size:13px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9.5"></circle><path d="M8.5 14.5s1.4 1.8 3.5 1.8 3.5-1.8 3.5-1.8"></path><line x1="9.2" y1="9.5" x2="9.21" y2="9.5"></line><line x1="14.8" y1="9.5" x2="14.81" y2="9.5"></line></svg></span>
+<div style="width:28px;height:28px;border-radius:3px;background:#0f7a45;display:grid;place-items:center;color:#ffffff;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2.5 11 13"></path><path d="M21.5 2.5l-6.7 19-3.8-8.5-8.5-3.8z"></path></svg></div>
+</div>
+</div>
+</div>
+
+<sc-if value="{{ showMemberList }}" hint-placeholder-val="{{ true }}">
+<div style="width:246px;flex:none;display:flex;flex-direction:column;background:#eff1ef;border-left:1px solid rgba(10,25,18,.11)">
+<div style="flex:1;min-height:0;padding:12px 8px;display:flex;flex-direction:column">
+<div style="padding:2px 8px 6px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#5c6863">ONLINE &#8212; 2</div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:3px;background:rgba(10,25,18,.045)"><div style="position:relative"><div style="width:28px;height:28px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#3f4a45">S</div><div style="position:absolute;right:-1px;bottom:-1px;width:8px;height:8px;border-radius:50%;background:#0f7a45;border:2.5px solid #eff1ef"></div></div><span style="font:500 12px 'JetBrains Mono',monospace;color:#0c1310">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:3px"><div style="position:relative"><div style="width:28px;height:28px;border-radius:3px;background:#f3dce4;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#78384e">V</div><div style="position:absolute;right:-1px;bottom:-1px;width:8px;height:8px;border-radius:50%;background:#0f7a45;border:2.5px solid #eff1ef"></div></div><span style="font:500 12px 'JetBrains Mono',monospace;color:#5a665f">vika</span></div>
+<div style="padding:14px 8px 6px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#5c6863">OFFLINE &#8212; 11</div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#0f7a45;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#eafff2">B</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">battleocelot</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#3f4a45">B</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">berkayacan</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#efe9cf;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#655519">E</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">emreaydn</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#3f4a45">F</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">Fiary</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#ddd6f6;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#443a72">Q</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">qoptery</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#3f4a45">R</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">Rankhan</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#0f7a45;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#eafff2">R</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">Rankhan2</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#f3dce4;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#78384e">W</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">Whatzzapp</span></div>
+</div>
+<div style="flex:none;display:flex;align-items:center;gap:8px;padding:0 14px 13px">
+<div style="display:flex;align-items:flex-end;gap:2px;height:13px;opacity:.5">
+<div style="width:3px;height:11px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.2s ease-in-out infinite"></div>
+<div style="width:3px;height:11px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .15s infinite"></div>
+<div style="width:3px;height:11px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .3s infinite"></div>
+<div style="width:3px;height:11px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .45s infinite"></div>
+<div style="width:3px;height:11px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .6s infinite"></div>
+</div>
+<span style="font:700 10px 'JetBrains Mono',monospace;letter-spacing:.2em;color:#616d67">DECIBELL</span>
+</div>
+</div>
+</sc-if>
+
+</div>
+</div>
+</div>
+</div>
+<div class="dv-opt" id="2b">
+<div class="dv-olabel"><a class="dv-oid" href="#2b">2b</a>Split chrome — <a class="dv-oid" href="#1c">1c</a>’s dark rails kept, light message canvas. Same app in either theme.</div>
+<div class="dv-card" style="width:1120px">
+<div style="display:flex;flex-direction:column;height:664px;background:#101215;color:#dfe4e2;font-family:Inter,system-ui,sans-serif">
+
+<div style="display:flex;align-items:center;justify-content:center;position:relative;height:30px;flex:none;background:#07080a;border-bottom:1px solid rgba(255,255,255,.07)">
+<span style="font:500 10.5px 'JetBrains Mono',monospace;letter-spacing:.14em;color:#8b958f">DAILYGAMING</span>
+<div style="position:absolute;right:0;top:0;display:flex;height:100%">
+<div style="width:38px;display:grid;place-items:center;color:#869089;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="12" x2="20" y2="12"></line></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#869089;font-size:9px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4.5" y="4.5" width="15" height="15" rx="1.5"></rect></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#869089;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5l14 14"></path><path d="M19 5L5 19"></path></svg></div>
+</div>
+</div>
+
+<div style="display:flex;align-items:center;gap:8px;height:56px;flex:none;padding:0 10px;background:#07080a;border-bottom:1px solid rgba(255,255,255,.07)">
+<div style="width:34px;height:34px;border-radius:4px;background:#17191b;display:grid;place-items:center;color:#8b958f;font-size:14px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path></svg></div>
+<div style="display:flex;align-items:center;gap:9px;height:38px;padding:0 12px 0 5px;border-radius:4px;background:#17191b;box-shadow:inset 0 0 0 1px rgba(126,240,168,.34)">
+<div style="width:28px;height:28px;border-radius:3px;background:repeating-linear-gradient(135deg,#1c1f22 0 6px,#23272a 6px 12px)"></div>
+<span style="font:600 11px 'JetBrains Mono',monospace;letter-spacing:.06em;color:#e8efeb">DAILYGAMING</span>
+<div style="width:5px;height:5px;border-radius:50%;background:#7ef0a8;box-shadow:0 0 8px #7ef0a8"></div>
+</div>
+<div style="width:34px;height:34px;border-radius:4px;background:#0d0f10;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);display:grid;place-items:center;color:#869089;font-size:15px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+</div>
+
+<div style="display:flex;flex:1;min-height:0">
+
+<div style="width:64px;flex:none;display:flex;flex-direction:column;align-items:center;gap:7px;padding:9px 0;background:#07080a;border-right:1px solid rgba(255,255,255,.07)">
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:4px;background:#2a2340;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#c9bdf5">X</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#7ef0a8;border:2.5px solid #07080a"></div></div>
+<div style="width:36px;height:36px;border-radius:4px;background:#1e2124;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#c5cdc9">F</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:4px;background:#123a2a;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#7ef0a8">B</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#7ef0a8;border:2.5px solid #07080a"></div></div>
+<div style="width:36px;height:36px;border-radius:4px;background:#1e2124;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#c5cdc9">R</div>
+<div style="width:36px;height:36px;border-radius:4px;background:#1e2124;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#c5cdc9">S</div>
+<div style="width:36px;height:36px;border-radius:4px;background:#33222a;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#f0c9d6">W</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:4px;background:#123a2a;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#7ef0a8">R</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#7ef0a8;border:2.5px solid #07080a"></div></div>
+<div style="width:36px;height:36px;border-radius:4px;background:#34301c;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#eee4b6">G</div>
+</div>
+
+<div style="position:relative;width:238px;flex:none;display:flex;flex-direction:column;background:#0c0e11;border-right:1px solid rgba(255,255,255,.07)">
+<div style="display:flex;align-items:center;justify-content:space-between;height:44px;flex:none;padding:0 12px 0 13px;border-bottom:1px solid rgba(255,255,255,.07)">
+<div style="display:flex;align-items:center;gap:6px"><span style="font:700 12px 'JetBrains Mono',monospace;letter-spacing:.02em;color:#eef4f1">DailyGaming</span><span style="color:#869089;font-size:9px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"></path></svg></span></div>
+<span style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#7ef0a8;background:rgba(126,240,168,.1);padding:4px 6px;border-radius:3px">PUBLIC</span>
+</div>
+<div style="flex:1;padding:10px 6px;display:flex;flex-direction:column;gap:1px">
+<div style="padding:7px 8px 5px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#7f8a84">TEXT</div>
+<div style="display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:3px;background:#17191b;box-shadow:inset 2px 0 0 #7ef0a8"><span style="font:400 12px 'JetBrains Mono',monospace;color:#7ef0a8">#</span><span style="font:600 12.5px 'JetBrains Mono',monospace;color:#eef4f1">general</span></div>
+<div style="display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:3px"><span style="font:400 12px 'JetBrains Mono',monospace;color:#7f8a84">#</span><span style="font:400 12.5px 'JetBrains Mono',monospace;color:#8b958f">announcements</span></div>
+<div style="padding:14px 8px 5px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#7f8a84">VOICE</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border-radius:3px;background:rgba(255,255,255,.03)"><div style="display:flex;align-items:center;gap:7px"><span style="color:#7ef0a8;font-size:10px">&#9679;</span><span style="font:600 12.5px 'JetBrains Mono',monospace;color:#dfe4e2">Voice Lounge</span></div><span style="font:400 9px 'JetBrains Mono',monospace;color:#7f8a84">2/8</span></div>
+<div style="display:flex;align-items:center;gap:7px;padding:3px 8px 3px 24px"><div style="width:19px;height:19px;border-radius:3px;background:#33222a;display:grid;place-items:center;font:600 8.5px 'JetBrains Mono',monospace;color:#f0c9d6">V</div><span style="font:400 11.5px 'JetBrains Mono',monospace;color:#8b958f">vika</span></div>
+<div style="display:flex;align-items:center;gap:7px;padding:3px 8px 3px 24px"><div style="width:19px;height:19px;border-radius:3px;background:#1e2124;display:grid;place-items:center;font:600 8.5px 'JetBrains Mono',monospace;color:#c5cdc9">S</div><span style="font:400 11.5px 'JetBrains Mono',monospace;color:#8b958f">sunkhan</span><div style="display:flex;align-items:flex-end;gap:1.5px;height:9px"><div style="width:2px;height:8px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1s ease-in-out infinite"></div><div style="width:2px;height:8px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1s ease-in-out .2s infinite"></div><div style="width:2px;height:8px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1s ease-in-out .4s infinite"></div></div></div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border-radius:3px"><div style="display:flex;align-items:center;gap:7px"><span style="color:#6f7a74;font-size:10px">&#9679;</span><span style="font:400 12.5px 'JetBrains Mono',monospace;color:#8b958f">Voice Lounge 2</span></div><span style="font:400 9px 'JetBrains Mono',monospace;color:#6f7a74">0/8</span></div>
+</div>
+<sc-if value="{{ showVoiceOverlay }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;left:6px;right:6px;bottom:6px;border-radius:4px;background:#17191b;box-shadow:inset 0 0 0 1px rgba(126,240,168,.22),0 -8px 24px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 11px 7px">
+<div style="display:flex;align-items:center;gap:7px"><div style="width:6px;height:6px;border-radius:50%;background:#7ef0a8;box-shadow:0 0 8px #7ef0a8"></div><span style="font:600 11px 'JetBrains Mono',monospace;color:#eef4f1">VOICE LOUNGE</span></div>
+<span style="font:500 10px 'JetBrains Mono',monospace;color:#7ef0a8">15ms</span>
+</div>
+<div style="margin:0 11px 9px;height:28px;border-radius:3px;background:rgba(126,240,168,.1);box-shadow:inset 0 0 0 1px rgba(126,240,168,.3);display:flex;align-items:center;justify-content:center;gap:7px;color:#7ef0a8;font:600 10.5px 'JetBrains Mono',monospace;letter-spacing:.1em"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"></rect><path d="M8 21h8"></path></svg> STREAM</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 9px;background:#0c0e11;border-top:1px solid rgba(255,255,255,.06)">
+<div style="display:flex;align-items:center;gap:8px"><div style="width:24px;height:24px;border-radius:3px;background:#1e2124;display:grid;place-items:center;font:600 10px 'JetBrains Mono',monospace;color:#c5cdc9">S</div><span style="font:500 11.5px 'JetBrains Mono',monospace;color:#dfe4e2">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:3px">
+<div style="width:23px;height:23px;border-radius:3px;background:rgba(240,120,110,.12);display:grid;place-items:center;color:#f0786e;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path></svg></div>
+<div style="width:23px;height:23px;border-radius:3px;display:grid;place-items:center;color:#8b958f;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line></svg></div>
+<div style="width:23px;height:23px;border-radius:3px;display:grid;place-items:center;color:#8b958f;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"></path></svg></div>
+<div style="width:23px;height:23px;border-radius:3px;display:grid;place-items:center;color:#8b958f;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V10a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></div>
+</div>
+</div>
+</div>
+</sc-if>
+</div>
+
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#f9faf9">
+<div style="display:flex;align-items:center;justify-content:space-between;height:44px;flex:none;padding:0 16px;border-bottom:1px solid rgba(10,25,18,.11)">
+<div style="display:flex;align-items:center;gap:7px"><span style="font:400 13px 'JetBrains Mono',monospace;color:#5c6863">#</span><span style="font:700 13px 'JetBrains Mono',monospace;color:#0c1310">general</span></div>
+<span style="font:400 9.5px 'JetBrains Mono',monospace;letter-spacing:.1em;color:#66726c">13 MEMBERS</span>
+</div>
+<div style="flex:1;min-height:0;padding:12px 16px 6px;display:flex;flex-direction:column;justify-content:flex-end;gap:10px">
+<div style="width:400px;flex:none;border-radius:4px;overflow:hidden;background:#ffffff;box-shadow:inset 0 0 0 1px rgba(10,25,18,.11)">
+<div style="height:192px;background:repeating-linear-gradient(135deg,#e4e8e6 0 9px,#eceeec 9px 18px);display:grid;place-items:center">
+<div style="width:42px;height:42px;border-radius:4px;background:#0f7a45;display:grid;place-items:center;color:#ffffff;font-size:13px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;font:400 10px 'JetBrains Mono',monospace;color:#55615c"><span>video-attachment.mp4</span><span style="color:#0f7a45">2.0 MB</span></div>
+</div>
+<div style="display:flex;gap:11px;flex:none">
+<div style="width:34px;height:34px;flex:none;border-radius:4px;background:#d5dcd8;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#3f4a45">F</div>
+<div><div style="display:flex;align-items:baseline;gap:8px"><span style="font:700 12.5px 'JetBrains Mono',monospace;color:#b0453b">Fiary</span><span style="font:400 10px 'JetBrains Mono',monospace;color:#616d67">21:49</span></div><div style="margin-top:2px;font-size:13px;line-height:1.5;color:#161c19">sa</div></div>
+</div>
+<div style="display:flex;gap:11px;flex:none">
+<div style="width:34px;height:34px;flex:none;border-radius:4px;background:#d5dcd8;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#3f4a45">S</div>
+<div><div style="display:flex;align-items:baseline;gap:8px"><span style="font:700 12.5px 'JetBrains Mono',monospace;color:#0f7a45">sunkhan</span><span style="font:400 10px 'JetBrains Mono',monospace;color:#616d67">12:54</span></div><div style="margin-top:2px;font-size:13px;line-height:1.5;color:#161c19">aasdas</div></div>
+</div>
+<div style="display:flex;gap:11px;flex:none">
+<div style="width:34px;height:34px;flex:none;border-radius:4px;background:#d5dcd8;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#3f4a45">S</div>
+<div style="flex:1;min-width:0"><div style="display:flex;align-items:baseline;gap:8px"><span style="font:700 12.5px 'JetBrains Mono',monospace;color:#0f7a45">sunkhan</span><span style="font:400 10px 'JetBrains Mono',monospace;color:#616d67">20:15</span></div>
+<div style="margin-top:6px;display:flex;align-items:center;gap:10px;width:390px;padding:10px;border-radius:4px;background:#ffffff;box-shadow:inset 0 0 0 1px rgba(10,25,18,.11)">
+<div style="width:34px;height:34px;flex:none;border-radius:3px;background:rgba(15,122,69,.1);display:flex;align-items:flex-end;justify-content:center;gap:2px;padding-bottom:10px">
+<div style="width:2.5px;height:8px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.1s ease-in-out infinite"></div>
+<div style="width:2.5px;height:8px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .18s infinite"></div>
+<div style="width:2.5px;height:8px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .36s infinite"></div>
+</div>
+<div style="flex:1;min-width:0">
+<div style="display:flex;align-items:center;gap:8px"><div style="font:500 11.5px 'JetBrains Mono',monospace;color:#0c1310;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">the-movie-reze-arc-turkish-co&#8230;</div><div title="Download" style="width:20px;height:20px;flex:none;border-radius:4px;display:grid;place-items:center;color:#55615c"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3.5v11"></path><path d="M7.5 10.5l4.5 4.5 4.5-4.5"></path><path d="M4.5 20h15"></path></svg></div></div>
+<div style="margin-top:3px;font:400 9.5px 'JetBrains Mono',monospace;color:#55615c">3:58 &#183; 3.6 MB</div>
+<div style="margin-top:7px;display:flex;align-items:center;gap:9px">
+<div style="width:22px;height:22px;border-radius:3px;background:#0f7a45;display:grid;place-items:center;color:#ffffff;font-size:9px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+<div style="flex:1;height:2px;background:rgba(10,25,18,.14)"></div>
+<span style="font:400 9.5px 'JetBrains Mono',monospace;color:#55615c">0:00 / 3:57</span>
+<div style="width:15px;height:15px;flex:none;display:grid;place-items:center;color:#55615c"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path></svg></div><div title="Volume" style="position:relative;width:46px;flex:none;height:2px;border-radius:1px;background:rgba(10,25,18,.14)"><div style="position:absolute;left:0;top:0;bottom:0;width:62%;border-radius:1px;background:#0f7a45"></div><div style="position:absolute;left:62%;top:50%;width:8px;height:8px;margin:-4px 0 0 -4px;border-radius:50%;background:#0f7a45"></div></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div style="flex:none;padding:6px 16px 14px">
+<div style="display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:4px;background:#eff1ef;box-shadow:inset 0 0 0 1px rgba(10,25,18,.14)">
+<div style="width:22px;height:22px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;color:#5a665f;font-size:12px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+<span style="flex:1;font:400 12.5px 'JetBrains Mono',monospace;color:#616d67">message #general</span>
+<span style="color:#55615c;font-size:13px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9.5"></circle><path d="M8.5 14.5s1.4 1.8 3.5 1.8 3.5-1.8 3.5-1.8"></path><line x1="9.2" y1="9.5" x2="9.21" y2="9.5"></line><line x1="14.8" y1="9.5" x2="14.81" y2="9.5"></line></svg></span>
+<div style="width:28px;height:28px;border-radius:3px;background:#0f7a45;display:grid;place-items:center;color:#ffffff;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2.5 11 13"></path><path d="M21.5 2.5l-6.7 19-3.8-8.5-8.5-3.8z"></path></svg></div>
+</div>
+</div>
+</div>
+
+<sc-if value="{{ showMemberList }}" hint-placeholder-val="{{ true }}">
+<div style="width:246px;flex:none;display:flex;flex-direction:column;background:#eff1ef;border-left:1px solid rgba(10,25,18,.11)">
+<div style="flex:1;min-height:0;padding:12px 8px;display:flex;flex-direction:column">
+<div style="padding:2px 8px 6px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#5c6863">ONLINE &#8212; 2</div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:3px;background:rgba(10,25,18,.045)"><div style="position:relative"><div style="width:28px;height:28px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#3f4a45">S</div><div style="position:absolute;right:-1px;bottom:-1px;width:8px;height:8px;border-radius:50%;background:#0f7a45;border:2.5px solid #eff1ef"></div></div><span style="font:500 12px 'JetBrains Mono',monospace;color:#0c1310">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:3px"><div style="position:relative"><div style="width:28px;height:28px;border-radius:3px;background:#f3dce4;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#78384e">V</div><div style="position:absolute;right:-1px;bottom:-1px;width:8px;height:8px;border-radius:50%;background:#0f7a45;border:2.5px solid #eff1ef"></div></div><span style="font:500 12px 'JetBrains Mono',monospace;color:#5a665f">vika</span></div>
+<div style="padding:14px 8px 6px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#5c6863">OFFLINE &#8212; 11</div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#0f7a45;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#eafff2">B</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">battleocelot</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#3f4a45">B</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">berkayacan</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#efe9cf;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#655519">E</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">emreaydn</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#3f4a45">F</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">Fiary</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#ddd6f6;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#443a72">Q</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">qoptery</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#d5dcd8;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#3f4a45">R</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">Rankhan</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#0f7a45;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#eafff2">R</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">Rankhan2</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#f3dce4;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#78384e">W</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#5a665f">Whatzzapp</span></div>
+</div>
+<div style="flex:none;display:flex;align-items:center;gap:8px;padding:0 14px 13px">
+<div style="display:flex;align-items:flex-end;gap:2px;height:13px;opacity:.5">
+<div style="width:3px;height:11px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.2s ease-in-out infinite"></div>
+<div style="width:3px;height:11px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .15s infinite"></div>
+<div style="width:3px;height:11px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .3s infinite"></div>
+<div style="width:3px;height:11px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .45s infinite"></div>
+<div style="width:3px;height:11px;background:#0f7a45;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .6s infinite"></div>
+</div>
+<span style="font:700 10px 'JetBrains Mono',monospace;letter-spacing:.2em;color:#616d67">DECIBELL</span>
+</div>
+</div>
+</sc-if>
+
+</div>
+</div>
+</div>
+</div>
+</div>
+<p class="dv-next">Try next: "go with <a class="dv-oid" href="#2a">2a</a>, warm the paper up" · "make <a class="dv-oid" href="#2b">2b</a> the light default" · "apply <a class="dv-oid" href="#1c">1c</a> + <a class="dv-oid" href="#2a">2a</a> to settings, DMs and the voice call view"</p>
+</section>
+
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Three palette + type directions on your existing layout</span></div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="1a">
+<div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Cleaned up — cool graphite ramp, one blue, mono metadata. Same DNA, less mud.</div>
+<div class="dv-card" style="width:1120px">
+<div style="display:flex;flex-direction:column;height:664px;background:#191e26;color:#e4e8ef;font-family:Inter,system-ui,sans-serif;font-weight:450;letter-spacing:-.01em">
+
+<div style="display:flex;align-items:center;justify-content:center;position:relative;height:30px;flex:none;background:#0e1116;border-bottom:1px solid rgba(255,255,255,.06)">
+<span style="font-size:11.5px;font-weight:500;color:#98a2b3;letter-spacing:.01em">DailyGaming</span>
+<div style="position:absolute;right:0;top:0;display:flex;height:100%">
+<div style="width:38px;display:grid;place-items:center;color:#8792a5;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="12" x2="20" y2="12"></line></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#8792a5;font-size:9px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4.5" y="4.5" width="15" height="15" rx="1.5"></rect></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#8792a5;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5l14 14"></path><path d="M19 5L5 19"></path></svg></div>
+</div>
+</div>
+
+<div style="display:flex;align-items:center;gap:10px;height:56px;flex:none;padding:0 12px;background:#0e1116;border-bottom:1px solid rgba(255,255,255,.06)">
+<div style="width:34px;height:34px;border-radius:10px;background:#222834;display:grid;place-items:center;color:#98a2b3;font-size:14px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path></svg></div>
+<div style="display:flex;align-items:center;gap:9px;height:40px;padding:0 12px 0 6px;border-radius:11px;background:rgba(79,140,255,.13);box-shadow:inset 0 0 0 1px rgba(79,140,255,.35)">
+<div style="width:28px;height:28px;border-radius:8px;background:repeating-linear-gradient(135deg,#2b3140 0 6px,#333b4c 6px 12px)"></div>
+<span style="font-size:12.5px;font-weight:600;color:#e4e8ef">DailyGaming</span>
+</div>
+<div style="width:34px;height:34px;border-radius:10px;background:rgba(255,255,255,.04);display:grid;place-items:center;color:#8792a5;font-size:15px;font-weight:400"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+</div>
+
+<div style="display:flex;flex:1;min-height:0">
+
+<div style="width:64px;flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0;background:#0e1116;border-right:1px solid rgba(255,255,255,.05)">
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:11px;background:#7a4fd0;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">X</div><div style="position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#4ec97a;border:2.5px solid #0e1116"></div></div>
+<div style="width:36px;height:36px;border-radius:11px;background:#4a5568;display:grid;place-items:center;font-size:13px;font-weight:600;color:#dbe2ec">F</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:11px;background:#2f6fe0;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">B</div><div style="position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#4ec97a;border:2.5px solid #0e1116"></div></div>
+<div style="width:36px;height:36px;border-radius:11px;background:#3f5a4a;display:grid;place-items:center;font-size:13px;font-weight:600;color:#d5e6da">R</div>
+<div style="width:36px;height:36px;border-radius:11px;background:#4a5568;display:grid;place-items:center;font-size:13px;font-weight:600;color:#dbe2ec">S</div>
+<div style="width:36px;height:36px;border-radius:11px;background:#6b4a55;display:grid;place-items:center;font-size:13px;font-weight:600;color:#f0dce2">W</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:11px;background:#2f6fe0;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">R</div><div style="position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#4ec97a;border:2.5px solid #0e1116"></div></div>
+<div style="width:36px;height:36px;border-radius:11px;background:#8a6a2f;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fdf1d8">G</div>
+</div>
+
+<div style="position:relative;width:238px;flex:none;display:flex;flex-direction:column;background:#14181f;border-right:1px solid rgba(255,255,255,.05)">
+<div style="display:flex;align-items:center;justify-content:space-between;height:46px;flex:none;padding:0 12px 0 14px;border-bottom:1px solid rgba(255,255,255,.05)">
+<div style="display:flex;align-items:center;gap:6px"><span style="font-size:14px;font-weight:600;color:#f2f5f9;letter-spacing:-.02em">DailyGaming</span><span style="color:#8792a5;font-size:9px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"></path></svg></span></div>
+<span style="font:500 9px/1 'IBM Plex Mono',monospace;letter-spacing:.1em;color:#4ec97a;background:rgba(78,201,122,.12);padding:5px 7px;border-radius:5px">PUBLIC</span>
+</div>
+<div style="flex:1;padding:12px 8px;display:flex;flex-direction:column;gap:2px">
+<div style="padding:8px 8px 5px;font:500 10px/1 'IBM Plex Mono',monospace;letter-spacing:.12em;color:#8792a5">TEXT CHANNELS</div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;background:rgba(79,140,255,.13)"><span style="color:#4f8cff;font-size:14px;font-weight:500">#</span><span style="font-size:13.5px;font-weight:600;color:#f2f5f9">general</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px"><span style="color:#8792a5;font-size:14px;font-weight:400">#</span><span style="font-size:13.5px;color:#98a2b3">announcements</span></div>
+<div style="padding:16px 8px 5px;font:500 10px/1 'IBM Plex Mono',monospace;letter-spacing:.12em;color:#8792a5">VOICE CHANNELS</div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;background:rgba(255,255,255,.035)"><span style="color:#4ec97a;font-size:11px">&#9679;</span><span style="font-size:13.5px;font-weight:600;color:#e4e8ef">Voice Lounge</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:4px 9px 4px 26px"><div style="width:20px;height:20px;border-radius:6px;background:#6b4a55;display:grid;place-items:center;font-size:9px;font-weight:600;color:#f0dce2">V</div><span style="font-size:12.5px;color:#98a2b3">vika</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:4px 9px 4px 26px"><div style="width:20px;height:20px;border-radius:6px;background:#4a5568;display:grid;place-items:center;font-size:9px;font-weight:600;color:#dbe2ec">S</div><span style="font-size:12.5px;color:#98a2b3">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px"><span style="color:#8792a5;font-size:11px">&#9679;</span><span style="font-size:13.5px;color:#98a2b3">Voice Lounge 2</span></div>
+</div>
+<sc-if value="{{ showVoiceOverlay }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;left:8px;right:8px;bottom:8px;border-radius:12px;background:#222834;box-shadow:0 8px 24px rgba(0,0,0,.4),inset 0 0 0 1px rgba(255,255,255,.06);overflow:hidden">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px 8px">
+<div style="display:flex;align-items:center;gap:7px"><span style="color:#4ec97a;font-size:10px">&#9679;</span><span style="font-size:12px;font-weight:600;color:#e4e8ef">Voice Lounge</span></div>
+<span style="font:500 10px 'IBM Plex Mono',monospace;color:#4ec97a">15ms</span>
+</div>
+<div style="margin:0 12px 10px;height:30px;border-radius:8px;background:rgba(79,140,255,.14);display:flex;align-items:center;justify-content:center;gap:7px;color:#8fb4ff;font-size:11.5px;font-weight:600"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"></rect><path d="M8 21h8"></path></svg> Stream</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 10px;background:rgba(0,0,0,.22);border-top:1px solid rgba(255,255,255,.05)">
+<div style="display:flex;align-items:center;gap:8px"><div style="width:26px;height:26px;border-radius:8px;background:#4a5568;display:grid;place-items:center;font-size:11px;font-weight:600;color:#dbe2ec">S</div><span style="font-size:12px;font-weight:600;color:#e4e8ef">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:4px">
+<div style="width:24px;height:24px;border-radius:7px;background:rgba(242,101,92,.14);display:grid;place-items:center;color:#f2655c;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path></svg></div>
+<div style="width:24px;height:24px;border-radius:7px;display:grid;place-items:center;color:#98a2b3;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line></svg></div>
+<div style="width:24px;height:24px;border-radius:7px;display:grid;place-items:center;color:#98a2b3;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"></path></svg></div>
+<div style="width:24px;height:24px;border-radius:7px;display:grid;place-items:center;color:#98a2b3;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V10a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></div>
+</div>
+</div>
+</div>
+</sc-if>
+</div>
+
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#191e26">
+<div style="display:flex;align-items:center;gap:7px;height:46px;flex:none;padding:0 18px;border-bottom:1px solid rgba(255,255,255,.06)">
+<span style="color:#8792a5;font-size:15px">#</span><span style="font-size:14px;font-weight:600;color:#f2f5f9;letter-spacing:-.01em">general</span>
+</div>
+<div style="flex:1;min-height:0;padding:14px 18px 6px;display:flex;flex-direction:column;justify-content:flex-end;gap:12px">
+<div style="width:404px;flex:none;border-radius:12px;overflow:hidden;background:#222834;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)">
+<div style="height:180px;background:repeating-linear-gradient(135deg,#1d222b 0 9px,#232936 9px 18px);display:grid;place-items:center">
+<div style="width:44px;height:44px;border-radius:50%;background:rgba(79,140,255,.9);display:grid;place-items:center;color:#fff;font-size:14px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 11px;font:400 10.5px 'IBM Plex Mono',monospace;color:#8792a5"><span>video-attachment.mp4</span><span>2.0 MB</span></div>
+</div>
+<div style="display:flex;gap:12px;flex:none">
+<div style="width:36px;height:36px;flex:none;border-radius:11px;background:#4a5568;display:grid;place-items:center;font-size:13px;font-weight:600;color:#dbe2ec">F</div>
+<div style="min-width:0"><div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13.5px;font-weight:600;color:#e08a8a">Fiary</span><span style="font:400 10.5px 'IBM Plex Mono',monospace;color:#8792a5">7/1/2026, 09:49 PM</span></div><div style="margin-top:2px;font-size:13.5px;line-height:1.55;color:#e4e8ef">sa</div></div>
+</div>
+<div style="display:flex;gap:12px;flex:none">
+<div style="width:36px;height:36px;flex:none;border-radius:11px;background:#4a5568;display:grid;place-items:center;font-size:13px;font-weight:600;color:#dbe2ec">S</div>
+<div style="min-width:0"><div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13.5px;font-weight:600;color:#8fb4ff">sunkhan</span><span style="font:400 10.5px 'IBM Plex Mono',monospace;color:#8792a5">7/3/2026, 12:54 PM</span></div><div style="margin-top:2px;font-size:13.5px;line-height:1.55;color:#e4e8ef">aasdas</div></div>
+</div>
+<div style="display:flex;gap:12px;flex:none">
+<div style="width:36px;height:36px;flex:none;border-radius:11px;background:#4a5568;display:grid;place-items:center;font-size:13px;font-weight:600;color:#dbe2ec">S</div>
+<div style="min-width:0;flex:1"><div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13.5px;font-weight:600;color:#8fb4ff">sunkhan</span><span style="font:400 10.5px 'IBM Plex Mono',monospace;color:#8792a5">Yesterday, 08:15 PM</span></div>
+<div style="margin-top:7px;display:flex;align-items:center;gap:11px;width:394px;padding:11px;border-radius:12px;background:#222834;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)">
+<div style="width:36px;height:36px;flex:none;border-radius:9px;background:rgba(79,140,255,.14);display:flex;align-items:flex-end;justify-content:center;gap:2px;padding-bottom:11px">
+<div style="width:2.5px;height:8px;border-radius:2px;background:#4f8cff;transform-origin:bottom;animation:waveBar 1.1s ease-in-out infinite"></div>
+<div style="width:2.5px;height:8px;border-radius:2px;background:#4f8cff;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .18s infinite"></div>
+<div style="width:2.5px;height:8px;border-radius:2px;background:#4f8cff;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .36s infinite"></div>
+</div>
+<div style="flex:1;min-width:0">
+<div style="display:flex;align-items:center;gap:8px"><div style="font-size:12.5px;font-weight:500;color:#e4e8ef;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">the-movie-reze-arc-turkish-co&#8230;</div><div title="Download" style="width:20px;height:20px;flex:none;border-radius:7px;display:grid;place-items:center;color:#8792a5"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3.5v11"></path><path d="M7.5 10.5l4.5 4.5 4.5-4.5"></path><path d="M4.5 20h15"></path></svg></div></div>
+<div style="margin-top:3px;font:400 10.5px 'IBM Plex Mono',monospace;color:#8792a5">3:58 &#183; 3.6 MB</div>
+<div style="margin-top:8px;display:flex;align-items:center;gap:9px">
+<div style="width:24px;height:24px;border-radius:50%;background:#4f8cff;display:grid;place-items:center;color:#fff;font-size:9px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+<div style="flex:1;height:3px;border-radius:2px;background:rgba(255,255,255,.1)"></div>
+<span style="font:400 10px 'IBM Plex Mono',monospace;color:#8792a5">0:00</span>
+<div style="width:15px;height:15px;flex:none;display:grid;place-items:center;color:#8792a5"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path></svg></div><div title="Volume" style="position:relative;width:46px;flex:none;height:3px;border-radius:2px;background:rgba(255,255,255,.1)"><div style="position:absolute;left:0;top:0;bottom:0;width:62%;border-radius:2px;background:#4f8cff"></div><div style="position:absolute;left:62%;top:50%;width:8px;height:8px;margin:-4px 0 0 -4px;border-radius:50%;background:#4f8cff"></div></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div style="flex:none;padding:8px 18px 16px">
+<div style="display:flex;align-items:center;gap:12px;height:46px;padding:0 12px;border-radius:12px;background:#222834;box-shadow:inset 0 0 0 1px rgba(255,255,255,.07)">
+<div style="width:24px;height:24px;border-radius:50%;background:rgba(255,255,255,.07);display:grid;place-items:center;color:#98a2b3;font-size:13px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+<span style="flex:1;font-size:13.5px;color:#8792a5">Message #general</span>
+<span style="color:#8792a5;font-size:14px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9.5"></circle><path d="M8.5 14.5s1.4 1.8 3.5 1.8 3.5-1.8 3.5-1.8"></path><line x1="9.2" y1="9.5" x2="9.21" y2="9.5"></line><line x1="14.8" y1="9.5" x2="14.81" y2="9.5"></line></svg></span>
+<div style="width:30px;height:30px;border-radius:9px;background:#4f8cff;display:grid;place-items:center;color:#fff;font-size:12px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2.5 11 13"></path><path d="M21.5 2.5l-6.7 19-3.8-8.5-8.5-3.8z"></path></svg></div>
+</div>
+</div>
+</div>
+
+<sc-if value="{{ showMemberList }}" hint-placeholder-val="{{ true }}">
+<div style="width:246px;flex:none;display:flex;flex-direction:column;background:#14181f;border-left:1px solid rgba(255,255,255,.05)">
+<div style="flex:1;min-height:0;padding:14px 10px;display:flex;flex-direction:column;gap:1px">
+<div style="padding:2px 8px 7px;font:500 10px/1 'IBM Plex Mono',monospace;letter-spacing:.12em;color:#8792a5">ONLINE &#8212; 2</div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;background:rgba(255,255,255,.035)"><div style="position:relative"><div style="width:30px;height:30px;border-radius:10px;background:#4a5568;display:grid;place-items:center;font-size:12px;font-weight:600;color:#dbe2ec">S</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#4ec97a;border:2.5px solid #14181f"></div></div><span style="font-size:13px;font-weight:500;color:#e4e8ef">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px"><div style="position:relative"><div style="width:30px;height:30px;border-radius:10px;background:#6b4a55;display:grid;place-items:center;font-size:12px;font-weight:600;color:#f0dce2">V</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#4ec97a;border:2.5px solid #14181f"></div></div><span style="font-size:13px;font-weight:500;color:#98a2b3">vika</span></div>
+<div style="padding:16px 8px 7px;font:500 10px/1 'IBM Plex Mono',monospace;letter-spacing:.12em;color:#8792a5">OFFLINE &#8212; 11</div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#2f6fe0;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">B</div><span style="font-size:13px;color:#98a2b3">battleocelot</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#4a5568;display:grid;place-items:center;font-size:12px;font-weight:600;color:#dbe2ec">B</div><span style="font-size:13px;color:#98a2b3">berkayacan</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#8a6a2f;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fdf1d8">E</div><span style="font-size:13px;color:#98a2b3">emreaydn</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#4a5568;display:grid;place-items:center;font-size:12px;font-weight:600;color:#dbe2ec">F</div><span style="font-size:13px;color:#98a2b3">Fiary</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#7a4fd0;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">Q</div><span style="font-size:13px;color:#98a2b3">qoptery</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#3f5a4a;display:grid;place-items:center;font-size:12px;font-weight:600;color:#d5e6da">R</div><span style="font-size:13px;color:#98a2b3">Rankhan</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#2f6fe0;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">R</div><span style="font-size:13px;color:#98a2b3">Rankhan2</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#6b4a55;display:grid;place-items:center;font-size:12px;font-weight:600;color:#f0dce2">W</div><span style="font-size:13px;color:#98a2b3">Whatzzapp</span></div>
+</div>
+<div style="flex:none;display:flex;align-items:center;gap:8px;padding:0 14px 14px">
+<div style="display:flex;align-items:flex-end;gap:2px;height:14px;opacity:.35">
+<div style="width:3px;height:12px;border-radius:2px;background:#4f8cff;transform-origin:bottom;animation:waveBar 1.2s ease-in-out infinite"></div>
+<div style="width:3px;height:12px;border-radius:2px;background:#4f8cff;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .15s infinite"></div>
+<div style="width:3px;height:12px;border-radius:2px;background:#4f8cff;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .3s infinite"></div>
+<div style="width:3px;height:12px;border-radius:2px;background:#4f8cff;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .45s infinite"></div>
+<div style="width:3px;height:12px;border-radius:2px;background:#4f8cff;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .6s infinite"></div>
+</div>
+<span style="font:600 10px 'IBM Plex Mono',monospace;letter-spacing:.14em;color:#8792a5">DECIBELL</span>
+</div>
+</div>
+</sc-if>
+
+</div>
+</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1b">
+<div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Warm editorial — graphite-brown surfaces, amber accent, serif display, hairline dividers.</div>
+<div class="dv-card" style="width:1120px">
+<div style="display:flex;flex-direction:column;height:664px;background:#211d17;color:#efe7db;font-family:'IBM Plex Sans',system-ui,sans-serif">
+
+<div style="display:flex;align-items:center;justify-content:center;position:relative;height:30px;flex:none;background:#15130f;border-bottom:1px solid rgba(240,225,200,.09)">
+<span style="font-family:'Instrument Serif',Georgia,serif;font-size:14px;color:#a99b88;letter-spacing:.01em">DailyGaming</span>
+<div style="position:absolute;right:0;top:0;display:flex;height:100%">
+<div style="width:38px;display:grid;place-items:center;color:#9a8d7c;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="12" x2="20" y2="12"></line></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#9a8d7c;font-size:9px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4.5" y="4.5" width="15" height="15" rx="1.5"></rect></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#9a8d7c;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5l14 14"></path><path d="M19 5L5 19"></path></svg></div>
+</div>
+</div>
+
+<div style="display:flex;align-items:center;gap:10px;height:56px;flex:none;padding:0 12px;background:#15130f;border-bottom:1px solid rgba(240,225,200,.09)">
+<div style="width:34px;height:34px;border-radius:6px;border:1px solid rgba(240,225,200,.12);display:grid;place-items:center;color:#a99b88;font-size:14px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path></svg></div>
+<div style="display:flex;align-items:center;gap:9px;height:40px;padding:0 12px 0 6px;border-radius:6px;background:rgba(226,163,79,.10);border:1px solid rgba(226,163,79,.42)">
+<div style="width:28px;height:28px;border-radius:4px;background:repeating-linear-gradient(135deg,#312a21 0 6px,#3b3227 6px 12px)"></div>
+<span style="font-family:'Instrument Serif',Georgia,serif;font-size:15px;color:#f6efe4">DailyGaming</span>
+</div>
+<div style="width:34px;height:34px;border-radius:6px;border:1px dashed rgba(240,225,200,.16);display:grid;place-items:center;color:#9a8d7c;font-size:15px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+</div>
+
+<div style="display:flex;flex:1;min-height:0">
+
+<div style="width:64px;flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0;background:#15130f;border-right:1px solid rgba(240,225,200,.08)">
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:6px;background:#4a3a5c;display:grid;place-items:center;font-size:13px;font-weight:600;color:#efe0f7">X</div><div style="position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#8bb26a;border:2.5px solid #15130f"></div></div>
+<div style="width:36px;height:36px;border-radius:6px;background:#3d3730;display:grid;place-items:center;font-size:13px;font-weight:600;color:#e4dbcd">F</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:6px;background:#e2a34f;display:grid;place-items:center;font-size:13px;font-weight:700;color:#241c10">B</div><div style="position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#8bb26a;border:2.5px solid #15130f"></div></div>
+<div style="width:36px;height:36px;border-radius:6px;background:#39463a;display:grid;place-items:center;font-size:13px;font-weight:600;color:#dcead9">R</div>
+<div style="width:36px;height:36px;border-radius:6px;background:#3d3730;display:grid;place-items:center;font-size:13px;font-weight:600;color:#e4dbcd">S</div>
+<div style="width:36px;height:36px;border-radius:6px;background:#5c3f3f;display:grid;place-items:center;font-size:13px;font-weight:600;color:#f5dede">W</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:6px;background:#e2a34f;display:grid;place-items:center;font-size:13px;font-weight:700;color:#241c10">R</div><div style="position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#8bb26a;border:2.5px solid #15130f"></div></div>
+<div style="width:36px;height:36px;border-radius:6px;background:#6b5426;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fbeed3">G</div>
+</div>
+
+<div style="position:relative;width:238px;flex:none;display:flex;flex-direction:column;background:#1b1813;border-right:1px solid rgba(240,225,200,.08)">
+<div style="display:flex;align-items:center;justify-content:space-between;height:46px;flex:none;padding:0 12px 0 14px;border-bottom:1px solid rgba(240,225,200,.08)">
+<div style="display:flex;align-items:center;gap:6px"><span style="font-family:'Instrument Serif',Georgia,serif;font-size:18px;color:#f6efe4">DailyGaming</span><span style="color:#9a8d7c;font-size:9px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"></path></svg></span></div>
+<span style="font:500 9px/1 'IBM Plex Mono',monospace;letter-spacing:.1em;color:#e2a34f;border:1px solid rgba(226,163,79,.4);padding:4px 6px;border-radius:4px">PUBLIC</span>
+</div>
+<div style="flex:1;padding:12px 8px;display:flex;flex-direction:column;gap:1px">
+<div style="padding:8px 8px 6px;font:600 9.5px/1 'IBM Plex Sans',sans-serif;letter-spacing:.16em;color:#9a8d7c">TEXT CHANNELS</div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:5px;background:rgba(226,163,79,.11);box-shadow:inset 2px 0 0 #e2a34f"><span style="color:#e2a34f;font-size:14px">#</span><span style="font-size:13.5px;font-weight:600;color:#f6efe4">general</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:5px"><span style="color:#9a8d7c;font-size:14px">#</span><span style="font-size:13.5px;color:#a99b88">announcements</span></div>
+<div style="padding:16px 8px 6px;font:600 9.5px/1 'IBM Plex Sans',sans-serif;letter-spacing:.16em;color:#9a8d7c">VOICE CHANNELS</div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:5px;background:rgba(240,225,200,.045)"><span style="color:#8bb26a;font-size:11px">&#9679;</span><span style="font-size:13.5px;font-weight:600;color:#efe7db">Voice Lounge</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:4px 9px 4px 26px"><div style="width:20px;height:20px;border-radius:4px;background:#5c3f3f;display:grid;place-items:center;font-size:9px;font-weight:600;color:#f5dede">V</div><span style="font-size:12.5px;color:#a99b88">vika</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:4px 9px 4px 26px"><div style="width:20px;height:20px;border-radius:4px;background:#3d3730;display:grid;place-items:center;font-size:9px;font-weight:600;color:#e4dbcd">S</div><span style="font-size:12.5px;color:#a99b88">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:5px"><span style="color:#9a8d7c;font-size:11px">&#9679;</span><span style="font-size:13.5px;color:#a99b88">Voice Lounge 2</span></div>
+</div>
+<sc-if value="{{ showVoiceOverlay }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;left:8px;right:8px;bottom:8px;border-radius:8px;background:#2b251d;border:1px solid rgba(240,225,200,.13);overflow:hidden">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px 8px">
+<div style="display:flex;align-items:center;gap:7px"><span style="color:#8bb26a;font-size:10px">&#9679;</span><span style="font-size:12px;font-weight:600;color:#efe7db">Voice Lounge</span></div>
+<span style="font:500 10px 'IBM Plex Mono',monospace;color:#8bb26a">15ms</span>
+</div>
+<div style="margin:0 12px 10px;height:30px;border-radius:6px;border:1px solid rgba(226,163,79,.45);color:#e2a34f;display:flex;align-items:center;justify-content:center;gap:7px;font-size:11.5px;font-weight:600"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"></rect><path d="M8 21h8"></path></svg> Stream</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 10px;background:rgba(0,0,0,.2);border-top:1px solid rgba(240,225,200,.08)">
+<div style="display:flex;align-items:center;gap:8px"><div style="width:26px;height:26px;border-radius:5px;background:#3d3730;display:grid;place-items:center;font-size:11px;font-weight:600;color:#e4dbcd">S</div><span style="font-size:12px;font-weight:600;color:#efe7db">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:4px">
+<div style="width:24px;height:24px;border-radius:5px;display:grid;place-items:center;color:#d4776b;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path></svg></div>
+<div style="width:24px;height:24px;border-radius:5px;display:grid;place-items:center;color:#a99b88;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line></svg></div>
+<div style="width:24px;height:24px;border-radius:5px;display:grid;place-items:center;color:#a99b88;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"></path></svg></div>
+<div style="width:24px;height:24px;border-radius:5px;display:grid;place-items:center;color:#a99b88;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V10a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></div>
+</div>
+</div>
+</div>
+</sc-if>
+</div>
+
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#211d17">
+<div style="display:flex;align-items:center;gap:7px;height:46px;flex:none;padding:0 18px;border-bottom:1px solid rgba(240,225,200,.09)">
+<span style="color:#9a8d7c;font-size:15px">#</span><span style="font-family:'Instrument Serif',Georgia,serif;font-size:18px;color:#f6efe4">general</span>
+</div>
+<div style="flex:1;min-height:0;padding:14px 18px 6px;display:flex;flex-direction:column;justify-content:flex-end;gap:13px">
+<div style="width:404px;flex:none;border-radius:8px;overflow:hidden;border:1px solid rgba(240,225,200,.12)">
+<div style="height:180px;background:repeating-linear-gradient(135deg,#282219 0 9px,#2f2820 9px 18px);display:grid;place-items:center">
+<div style="width:44px;height:44px;border-radius:50%;background:#e2a34f;display:grid;place-items:center;color:#241c10;font-size:14px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 11px;background:#2b251d;font:400 10.5px 'IBM Plex Mono',monospace;color:#8d8172"><span>video-attachment.mp4</span><span>2.0 MB</span></div>
+</div>
+<div style="display:flex;gap:12px;flex:none">
+<div style="width:36px;height:36px;flex:none;border-radius:6px;background:#3d3730;display:grid;place-items:center;font-size:13px;font-weight:600;color:#e4dbcd">F</div>
+<div><div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13.5px;font-weight:600;color:#d98f7a">Fiary</span><span style="font:400 10.5px 'IBM Plex Mono',monospace;color:#9a8d7c">7/1/2026, 09:49 PM</span></div><div style="margin-top:2px;font-size:13.5px;line-height:1.6;color:#e6ddd0">sa</div></div>
+</div>
+<div style="display:flex;gap:12px;flex:none">
+<div style="width:36px;height:36px;flex:none;border-radius:6px;background:#3d3730;display:grid;place-items:center;font-size:13px;font-weight:600;color:#e4dbcd">S</div>
+<div><div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13.5px;font-weight:600;color:#e2a34f">sunkhan</span><span style="font:400 10.5px 'IBM Plex Mono',monospace;color:#9a8d7c">7/3/2026, 12:54 PM</span></div><div style="margin-top:2px;font-size:13.5px;line-height:1.6;color:#e6ddd0">aasdas</div></div>
+</div>
+<div style="display:flex;gap:12px;flex:none">
+<div style="width:36px;height:36px;flex:none;border-radius:6px;background:#3d3730;display:grid;place-items:center;font-size:13px;font-weight:600;color:#e4dbcd">S</div>
+<div style="flex:1;min-width:0"><div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13.5px;font-weight:600;color:#e2a34f">sunkhan</span><span style="font:400 10.5px 'IBM Plex Mono',monospace;color:#9a8d7c">Yesterday, 08:15 PM</span></div>
+<div style="margin-top:7px;display:flex;align-items:center;gap:11px;width:394px;padding:11px;border-radius:8px;background:#2b251d;border:1px solid rgba(240,225,200,.11)">
+<div style="width:36px;height:36px;flex:none;border-radius:6px;background:rgba(226,163,79,.13);display:flex;align-items:flex-end;justify-content:center;gap:2px;padding-bottom:11px">
+<div style="width:2.5px;height:8px;border-radius:2px;background:#e2a34f;transform-origin:bottom;animation:waveBar 1.1s ease-in-out infinite"></div>
+<div style="width:2.5px;height:8px;border-radius:2px;background:#e2a34f;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .18s infinite"></div>
+<div style="width:2.5px;height:8px;border-radius:2px;background:#e2a34f;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .36s infinite"></div>
+</div>
+<div style="flex:1;min-width:0">
+<div style="display:flex;align-items:center;gap:8px"><div style="font-size:12.5px;font-weight:500;color:#efe7db;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">the-movie-reze-arc-turkish-co&#8230;</div><div title="Download" style="width:20px;height:20px;flex:none;border-radius:7px;display:grid;place-items:center;color:#8d8172"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3.5v11"></path><path d="M7.5 10.5l4.5 4.5 4.5-4.5"></path><path d="M4.5 20h15"></path></svg></div></div>
+<div style="margin-top:3px;font:400 10.5px 'IBM Plex Mono',monospace;color:#8d8172">3:58 &#183; 3.6 MB</div>
+<div style="margin-top:8px;display:flex;align-items:center;gap:9px">
+<div style="width:24px;height:24px;border-radius:50%;background:#e2a34f;display:grid;place-items:center;color:#241c10;font-size:9px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+<div style="flex:1;height:2px;background:rgba(240,225,200,.14)"></div>
+<span style="font:400 10px 'IBM Plex Mono',monospace;color:#8d8172">0:00</span>
+<div style="width:15px;height:15px;flex:none;display:grid;place-items:center;color:#8d8172"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path></svg></div><div title="Volume" style="position:relative;width:46px;flex:none;height:2px;border-radius:1px;background:rgba(240,225,200,.14)"><div style="position:absolute;left:0;top:0;bottom:0;width:62%;border-radius:1px;background:#e2a34f"></div><div style="position:absolute;left:62%;top:50%;width:8px;height:8px;margin:-4px 0 0 -4px;border-radius:50%;background:#e2a34f"></div></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div style="flex:none;padding:8px 18px 16px">
+<div style="display:flex;align-items:center;gap:12px;height:46px;padding:0 12px;border-radius:8px;background:#1b1813;border:1px solid rgba(240,225,200,.14)">
+<div style="width:24px;height:24px;border-radius:50%;border:1px solid rgba(240,225,200,.16);display:grid;place-items:center;color:#a99b88;font-size:13px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+<span style="flex:1;font-size:13.5px;color:#9a8d7c">Message #general</span>
+<span style="color:#9a8d7c;font-size:14px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9.5"></circle><path d="M8.5 14.5s1.4 1.8 3.5 1.8 3.5-1.8 3.5-1.8"></path><line x1="9.2" y1="9.5" x2="9.21" y2="9.5"></line><line x1="14.8" y1="9.5" x2="14.81" y2="9.5"></line></svg></span>
+<div style="width:30px;height:30px;border-radius:6px;background:#e2a34f;display:grid;place-items:center;color:#241c10;font-size:12px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2.5 11 13"></path><path d="M21.5 2.5l-6.7 19-3.8-8.5-8.5-3.8z"></path></svg></div>
+</div>
+</div>
+</div>
+
+<sc-if value="{{ showMemberList }}" hint-placeholder-val="{{ true }}">
+<div style="width:246px;flex:none;display:flex;flex-direction:column;background:#1b1813;border-left:1px solid rgba(240,225,200,.08)">
+<div style="flex:1;min-height:0;padding:14px 10px;display:flex;flex-direction:column;gap:1px">
+<div style="padding:2px 8px 8px;font:600 9.5px/1 'IBM Plex Sans',sans-serif;letter-spacing:.16em;color:#9a8d7c">ONLINE &#8212; 2</div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:5px;background:rgba(240,225,200,.045)"><div style="position:relative"><div style="width:30px;height:30px;border-radius:5px;background:#3d3730;display:grid;place-items:center;font-size:12px;font-weight:600;color:#e4dbcd">S</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#8bb26a;border:2.5px solid #1b1813"></div></div><span style="font-size:13px;font-weight:500;color:#efe7db">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:5px"><div style="position:relative"><div style="width:30px;height:30px;border-radius:5px;background:#5c3f3f;display:grid;place-items:center;font-size:12px;font-weight:600;color:#f5dede">V</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#8bb26a;border:2.5px solid #1b1813"></div></div><span style="font-size:13px;font-weight:500;color:#a99b88">vika</span></div>
+<div style="padding:16px 8px 8px;font:600 9.5px/1 'IBM Plex Sans',sans-serif;letter-spacing:.16em;color:#9a8d7c">OFFLINE &#8212; 11</div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:5px;background:#e2a34f;display:grid;place-items:center;font-size:12px;font-weight:700;color:#241c10">B</div><span style="font-size:13px;color:#a99b88">battleocelot</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:5px;background:#3d3730;display:grid;place-items:center;font-size:12px;font-weight:600;color:#e4dbcd">B</div><span style="font-size:13px;color:#a99b88">berkayacan</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:5px;background:#6b5426;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fbeed3">E</div><span style="font-size:13px;color:#a99b88">emreaydn</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:5px;background:#3d3730;display:grid;place-items:center;font-size:12px;font-weight:600;color:#e4dbcd">F</div><span style="font-size:13px;color:#a99b88">Fiary</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:5px;background:#4a3a5c;display:grid;place-items:center;font-size:12px;font-weight:600;color:#efe0f7">Q</div><span style="font-size:13px;color:#a99b88">qoptery</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:5px;background:#39463a;display:grid;place-items:center;font-size:12px;font-weight:600;color:#dcead9">R</div><span style="font-size:13px;color:#a99b88">Rankhan</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:5px;background:#e2a34f;display:grid;place-items:center;font-size:12px;font-weight:700;color:#241c10">R</div><span style="font-size:13px;color:#a99b88">Rankhan2</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:5px;background:#5c3f3f;display:grid;place-items:center;font-size:12px;font-weight:600;color:#f5dede">W</div><span style="font-size:13px;color:#a99b88">Whatzzapp</span></div>
+</div>
+<div style="flex:none;display:flex;align-items:center;gap:8px;padding:0 14px 14px">
+<div style="display:flex;align-items:flex-end;gap:2px;height:14px;opacity:.4">
+<div style="width:3px;height:12px;border-radius:1px;background:#e2a34f;transform-origin:bottom;animation:waveBar 1.2s ease-in-out infinite"></div>
+<div style="width:3px;height:12px;border-radius:1px;background:#e2a34f;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .15s infinite"></div>
+<div style="width:3px;height:12px;border-radius:1px;background:#e2a34f;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .3s infinite"></div>
+<div style="width:3px;height:12px;border-radius:1px;background:#e2a34f;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .45s infinite"></div>
+<div style="width:3px;height:12px;border-radius:1px;background:#e2a34f;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .6s infinite"></div>
+</div>
+<span style="font-family:'Instrument Serif',Georgia,serif;font-size:13px;letter-spacing:.06em;color:#8d8172">Decibell</span>
+</div>
+</div>
+</sc-if>
+
+</div>
+</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1c">
+<div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Signal console — near-black, mint signal accent, mono chrome, dense rows, 4px radii.</div>
+<div class="dv-card" style="width:1120px">
+<div style="display:flex;flex-direction:column;height:664px;background:#101215;color:#dfe4e2;font-family:Inter,system-ui,sans-serif">
+
+<div style="display:flex;align-items:center;justify-content:center;position:relative;height:30px;flex:none;background:#07080a;border-bottom:1px solid rgba(255,255,255,.07)">
+<span style="font:500 10.5px 'JetBrains Mono',monospace;letter-spacing:.14em;color:#8b958f">DAILYGAMING</span>
+<div style="position:absolute;right:0;top:0;display:flex;height:100%">
+<div style="width:38px;display:grid;place-items:center;color:#869089;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="12" x2="20" y2="12"></line></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#869089;font-size:9px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4.5" y="4.5" width="15" height="15" rx="1.5"></rect></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#869089;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5l14 14"></path><path d="M19 5L5 19"></path></svg></div>
+</div>
+</div>
+
+<div style="display:flex;align-items:center;gap:8px;height:56px;flex:none;padding:0 10px;background:#07080a;border-bottom:1px solid rgba(255,255,255,.07)">
+<div style="width:34px;height:34px;border-radius:4px;background:#17191b;display:grid;place-items:center;color:#8b958f;font-size:14px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path></svg></div>
+<div style="display:flex;align-items:center;gap:9px;height:38px;padding:0 12px 0 5px;border-radius:4px;background:#17191b;box-shadow:inset 0 0 0 1px rgba(126,240,168,.34)">
+<div style="width:28px;height:28px;border-radius:3px;background:repeating-linear-gradient(135deg,#1c1f22 0 6px,#23272a 6px 12px)"></div>
+<span style="font:600 11px 'JetBrains Mono',monospace;letter-spacing:.06em;color:#e8efeb">DAILYGAMING</span>
+<div style="width:5px;height:5px;border-radius:50%;background:#7ef0a8;box-shadow:0 0 8px #7ef0a8"></div>
+</div>
+<div style="width:34px;height:34px;border-radius:4px;background:#0d0f10;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);display:grid;place-items:center;color:#869089;font-size:15px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+</div>
+
+<div style="display:flex;flex:1;min-height:0">
+
+<div style="width:64px;flex:none;display:flex;flex-direction:column;align-items:center;gap:7px;padding:9px 0;background:#07080a;border-right:1px solid rgba(255,255,255,.07)">
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:4px;background:#2a2340;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#c9bdf5">X</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#7ef0a8;border:2.5px solid #07080a"></div></div>
+<div style="width:36px;height:36px;border-radius:4px;background:#1e2124;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#c5cdc9">F</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:4px;background:#123a2a;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#7ef0a8">B</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#7ef0a8;border:2.5px solid #07080a"></div></div>
+<div style="width:36px;height:36px;border-radius:4px;background:#1e2124;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#c5cdc9">R</div>
+<div style="width:36px;height:36px;border-radius:4px;background:#1e2124;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#c5cdc9">S</div>
+<div style="width:36px;height:36px;border-radius:4px;background:#33222a;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#f0c9d6">W</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:4px;background:#123a2a;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#7ef0a8">R</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#7ef0a8;border:2.5px solid #07080a"></div></div>
+<div style="width:36px;height:36px;border-radius:4px;background:#34301c;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#eee4b6">G</div>
+</div>
+
+<div style="position:relative;width:238px;flex:none;display:flex;flex-direction:column;background:#0c0e11;border-right:1px solid rgba(255,255,255,.07)">
+<div style="display:flex;align-items:center;justify-content:space-between;height:44px;flex:none;padding:0 12px 0 13px;border-bottom:1px solid rgba(255,255,255,.07)">
+<div style="display:flex;align-items:center;gap:6px"><span style="font:700 12px 'JetBrains Mono',monospace;letter-spacing:.02em;color:#eef4f1">DailyGaming</span><span style="color:#869089;font-size:9px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"></path></svg></span></div>
+<span style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#7ef0a8;background:rgba(126,240,168,.1);padding:4px 6px;border-radius:3px">PUBLIC</span>
+</div>
+<div style="flex:1;padding:10px 6px;display:flex;flex-direction:column;gap:1px">
+<div style="padding:7px 8px 5px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#7f8a84">TEXT</div>
+<div style="display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:3px;background:#17191b;box-shadow:inset 2px 0 0 #7ef0a8"><span style="font:400 12px 'JetBrains Mono',monospace;color:#7ef0a8">#</span><span style="font:600 12.5px 'JetBrains Mono',monospace;color:#eef4f1">general</span></div>
+<div style="display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:3px"><span style="font:400 12px 'JetBrains Mono',monospace;color:#7f8a84">#</span><span style="font:400 12.5px 'JetBrains Mono',monospace;color:#8b958f">announcements</span></div>
+<div style="padding:14px 8px 5px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#7f8a84">VOICE</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border-radius:3px;background:rgba(255,255,255,.03)"><div style="display:flex;align-items:center;gap:7px"><span style="color:#7ef0a8;font-size:10px">&#9679;</span><span style="font:600 12.5px 'JetBrains Mono',monospace;color:#dfe4e2">Voice Lounge</span></div><span style="font:400 9px 'JetBrains Mono',monospace;color:#7f8a84">2/8</span></div>
+<div style="display:flex;align-items:center;gap:7px;padding:3px 8px 3px 24px"><div style="width:19px;height:19px;border-radius:3px;background:#33222a;display:grid;place-items:center;font:600 8.5px 'JetBrains Mono',monospace;color:#f0c9d6">V</div><span style="font:400 11.5px 'JetBrains Mono',monospace;color:#8b958f">vika</span></div>
+<div style="display:flex;align-items:center;gap:7px;padding:3px 8px 3px 24px"><div style="width:19px;height:19px;border-radius:3px;background:#1e2124;display:grid;place-items:center;font:600 8.5px 'JetBrains Mono',monospace;color:#c5cdc9">S</div><span style="font:400 11.5px 'JetBrains Mono',monospace;color:#8b958f">sunkhan</span><div style="display:flex;align-items:flex-end;gap:1.5px;height:9px"><div style="width:2px;height:8px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1s ease-in-out infinite"></div><div style="width:2px;height:8px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1s ease-in-out .2s infinite"></div><div style="width:2px;height:8px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1s ease-in-out .4s infinite"></div></div></div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border-radius:3px"><div style="display:flex;align-items:center;gap:7px"><span style="color:#6f7a74;font-size:10px">&#9679;</span><span style="font:400 12.5px 'JetBrains Mono',monospace;color:#8b958f">Voice Lounge 2</span></div><span style="font:400 9px 'JetBrains Mono',monospace;color:#6f7a74">0/8</span></div>
+</div>
+<sc-if value="{{ showVoiceOverlay }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;left:6px;right:6px;bottom:6px;border-radius:4px;background:#17191b;box-shadow:inset 0 0 0 1px rgba(126,240,168,.22),0 -8px 24px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 11px 7px">
+<div style="display:flex;align-items:center;gap:7px"><div style="width:6px;height:6px;border-radius:50%;background:#7ef0a8;box-shadow:0 0 8px #7ef0a8"></div><span style="font:600 11px 'JetBrains Mono',monospace;color:#eef4f1">VOICE LOUNGE</span></div>
+<span style="font:500 10px 'JetBrains Mono',monospace;color:#7ef0a8">15ms</span>
+</div>
+<div style="margin:0 11px 9px;height:28px;border-radius:3px;background:rgba(126,240,168,.1);box-shadow:inset 0 0 0 1px rgba(126,240,168,.3);display:flex;align-items:center;justify-content:center;gap:7px;color:#7ef0a8;font:600 10.5px 'JetBrains Mono',monospace;letter-spacing:.1em"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"></rect><path d="M8 21h8"></path></svg> STREAM</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 9px;background:#0c0e11;border-top:1px solid rgba(255,255,255,.06)">
+<div style="display:flex;align-items:center;gap:8px"><div style="width:24px;height:24px;border-radius:3px;background:#1e2124;display:grid;place-items:center;font:600 10px 'JetBrains Mono',monospace;color:#c5cdc9">S</div><span style="font:500 11.5px 'JetBrains Mono',monospace;color:#dfe4e2">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:3px">
+<div style="width:23px;height:23px;border-radius:3px;background:rgba(240,120,110,.12);display:grid;place-items:center;color:#f0786e;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path></svg></div>
+<div style="width:23px;height:23px;border-radius:3px;display:grid;place-items:center;color:#8b958f;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line></svg></div>
+<div style="width:23px;height:23px;border-radius:3px;display:grid;place-items:center;color:#8b958f;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"></path></svg></div>
+<div style="width:23px;height:23px;border-radius:3px;display:grid;place-items:center;color:#8b958f;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V10a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></div>
+</div>
+</div>
+</div>
+</sc-if>
+</div>
+
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#101215">
+<div style="display:flex;align-items:center;justify-content:space-between;height:44px;flex:none;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.07)">
+<div style="display:flex;align-items:center;gap:7px"><span style="font:400 13px 'JetBrains Mono',monospace;color:#7f8a84">#</span><span style="font:700 13px 'JetBrains Mono',monospace;color:#eef4f1">general</span></div>
+<span style="font:400 9.5px 'JetBrains Mono',monospace;letter-spacing:.1em;color:#6f7a74">13 MEMBERS</span>
+</div>
+<div style="flex:1;min-height:0;padding:12px 16px 6px;display:flex;flex-direction:column;justify-content:flex-end;gap:10px">
+<div style="width:400px;flex:none;border-radius:4px;overflow:hidden;background:#17191b;box-shadow:inset 0 0 0 1px rgba(255,255,255,.07)">
+<div style="height:192px;background:repeating-linear-gradient(135deg,#14171a 0 9px,#1a1e21 9px 18px);display:grid;place-items:center">
+<div style="width:42px;height:42px;border-radius:4px;background:#7ef0a8;display:grid;place-items:center;color:#07120c;font-size:13px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;font:400 10px 'JetBrains Mono',monospace;color:#869089"><span>video-attachment.mp4</span><span style="color:#7ef0a8">2.0 MB</span></div>
+</div>
+<div style="display:flex;gap:11px;flex:none">
+<div style="width:34px;height:34px;flex:none;border-radius:4px;background:#1e2124;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#c5cdc9">F</div>
+<div><div style="display:flex;align-items:baseline;gap:8px"><span style="font:700 12.5px 'JetBrains Mono',monospace;color:#f0a8a0">Fiary</span><span style="font:400 10px 'JetBrains Mono',monospace;color:#7a857f">21:49</span></div><div style="margin-top:2px;font-size:13px;line-height:1.5;color:#dfe4e2">sa</div></div>
+</div>
+<div style="display:flex;gap:11px;flex:none">
+<div style="width:34px;height:34px;flex:none;border-radius:4px;background:#1e2124;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#c5cdc9">S</div>
+<div><div style="display:flex;align-items:baseline;gap:8px"><span style="font:700 12.5px 'JetBrains Mono',monospace;color:#7ef0a8">sunkhan</span><span style="font:400 10px 'JetBrains Mono',monospace;color:#7a857f">12:54</span></div><div style="margin-top:2px;font-size:13px;line-height:1.5;color:#dfe4e2">aasdas</div></div>
+</div>
+<div style="display:flex;gap:11px;flex:none">
+<div style="width:34px;height:34px;flex:none;border-radius:4px;background:#1e2124;display:grid;place-items:center;font:600 12px 'JetBrains Mono',monospace;color:#c5cdc9">S</div>
+<div style="flex:1;min-width:0"><div style="display:flex;align-items:baseline;gap:8px"><span style="font:700 12.5px 'JetBrains Mono',monospace;color:#7ef0a8">sunkhan</span><span style="font:400 10px 'JetBrains Mono',monospace;color:#7a857f">20:15</span></div>
+<div style="margin-top:6px;display:flex;align-items:center;gap:10px;width:390px;padding:10px;border-radius:4px;background:#17191b;box-shadow:inset 0 0 0 1px rgba(255,255,255,.07)">
+<div style="width:34px;height:34px;flex:none;border-radius:3px;background:rgba(126,240,168,.1);display:flex;align-items:flex-end;justify-content:center;gap:2px;padding-bottom:10px">
+<div style="width:2.5px;height:8px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1.1s ease-in-out infinite"></div>
+<div style="width:2.5px;height:8px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .18s infinite"></div>
+<div style="width:2.5px;height:8px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .36s infinite"></div>
+</div>
+<div style="flex:1;min-width:0">
+<div style="display:flex;align-items:center;gap:8px"><div style="font:500 11.5px 'JetBrains Mono',monospace;color:#eef4f1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">the-movie-reze-arc-turkish-co&#8230;</div><div title="Download" style="width:20px;height:20px;flex:none;border-radius:4px;display:grid;place-items:center;color:#869089"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3.5v11"></path><path d="M7.5 10.5l4.5 4.5 4.5-4.5"></path><path d="M4.5 20h15"></path></svg></div></div>
+<div style="margin-top:3px;font:400 9.5px 'JetBrains Mono',monospace;color:#869089">3:58 &#183; 3.6 MB</div>
+<div style="margin-top:7px;display:flex;align-items:center;gap:9px">
+<div style="width:22px;height:22px;border-radius:3px;background:#7ef0a8;display:grid;place-items:center;color:#07120c;font-size:9px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+<div style="flex:1;height:2px;background:rgba(255,255,255,.09)"></div>
+<span style="font:400 9.5px 'JetBrains Mono',monospace;color:#869089">0:00 / 3:57</span>
+<div style="width:15px;height:15px;flex:none;display:grid;place-items:center;color:#869089"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path></svg></div><div title="Volume" style="position:relative;width:46px;flex:none;height:2px;border-radius:1px;background:rgba(255,255,255,.09)"><div style="position:absolute;left:0;top:0;bottom:0;width:62%;border-radius:1px;background:#7ef0a8"></div><div style="position:absolute;left:62%;top:50%;width:8px;height:8px;margin:-4px 0 0 -4px;border-radius:50%;background:#7ef0a8"></div></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div style="flex:none;padding:6px 16px 14px">
+<div style="display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:4px;background:#0c0e11;box-shadow:inset 0 0 0 1px rgba(255,255,255,.09)">
+<div style="width:22px;height:22px;border-radius:3px;background:#1e2124;display:grid;place-items:center;color:#8b958f;font-size:12px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+<span style="flex:1;font:400 12.5px 'JetBrains Mono',monospace;color:#7a857f">message #general</span>
+<span style="color:#869089;font-size:13px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9.5"></circle><path d="M8.5 14.5s1.4 1.8 3.5 1.8 3.5-1.8 3.5-1.8"></path><line x1="9.2" y1="9.5" x2="9.21" y2="9.5"></line><line x1="14.8" y1="9.5" x2="14.81" y2="9.5"></line></svg></span>
+<div style="width:28px;height:28px;border-radius:3px;background:#7ef0a8;display:grid;place-items:center;color:#07120c;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2.5 11 13"></path><path d="M21.5 2.5l-6.7 19-3.8-8.5-8.5-3.8z"></path></svg></div>
+</div>
+</div>
+</div>
+
+<sc-if value="{{ showMemberList }}" hint-placeholder-val="{{ true }}">
+<div style="width:246px;flex:none;display:flex;flex-direction:column;background:#0c0e11;border-left:1px solid rgba(255,255,255,.07)">
+<div style="flex:1;min-height:0;padding:12px 8px;display:flex;flex-direction:column">
+<div style="padding:2px 8px 6px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#7f8a84">ONLINE &#8212; 2</div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:3px;background:rgba(255,255,255,.03)"><div style="position:relative"><div style="width:28px;height:28px;border-radius:3px;background:#1e2124;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#c5cdc9">S</div><div style="position:absolute;right:-1px;bottom:-1px;width:8px;height:8px;border-radius:50%;background:#7ef0a8;border:2.5px solid #0c0e11"></div></div><span style="font:500 12px 'JetBrains Mono',monospace;color:#eef4f1">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:3px"><div style="position:relative"><div style="width:28px;height:28px;border-radius:3px;background:#33222a;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#f0c9d6">V</div><div style="position:absolute;right:-1px;bottom:-1px;width:8px;height:8px;border-radius:50%;background:#7ef0a8;border:2.5px solid #0c0e11"></div></div><span style="font:500 12px 'JetBrains Mono',monospace;color:#8b958f">vika</span></div>
+<div style="padding:14px 8px 6px;font:500 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.16em;color:#7f8a84">OFFLINE &#8212; 11</div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#123a2a;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#7ef0a8">B</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#8b958f">battleocelot</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#1e2124;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#c5cdc9">B</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#8b958f">berkayacan</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#34301c;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#eee4b6">E</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#8b958f">emreaydn</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#1e2124;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#c5cdc9">F</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#8b958f">Fiary</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#2a2340;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#c9bdf5">Q</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#8b958f">qoptery</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#1e2124;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#c5cdc9">R</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#8b958f">Rankhan</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#123a2a;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#7ef0a8">R</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#8b958f">Rankhan2</span></div>
+<div style="display:flex;align-items:center;gap:9px;padding:5px 8px"><div style="opacity:.62;width:28px;height:28px;border-radius:3px;background:#33222a;display:grid;place-items:center;font:600 11px 'JetBrains Mono',monospace;color:#f0c9d6">W</div><span style="font:400 12px 'JetBrains Mono',monospace;color:#8b958f">Whatzzapp</span></div>
+</div>
+<div style="flex:none;display:flex;align-items:center;gap:8px;padding:0 14px 13px">
+<div style="display:flex;align-items:flex-end;gap:2px;height:13px;opacity:.5">
+<div style="width:3px;height:11px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1.2s ease-in-out infinite"></div>
+<div style="width:3px;height:11px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .15s infinite"></div>
+<div style="width:3px;height:11px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .3s infinite"></div>
+<div style="width:3px;height:11px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .45s infinite"></div>
+<div style="width:3px;height:11px;background:#7ef0a8;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .6s infinite"></div>
+</div>
+<span style="font:700 10px 'JetBrains Mono',monospace;letter-spacing:.2em;color:#7a857f">DECIBELL</span>
+</div>
+</div>
+</sc-if>
+
+</div>
+</div>
+</div>
+</div>
+
+<sc-if value="{{ showLightPreview }}" hint-placeholder-val="{{ true }}">
+<div class="dv-opt" id="1d">
+<div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Light theme of <a class="dv-oid" href="#1a">1a</a> — same ramp inverted, accent darkened for contrast on white.</div>
+<div class="dv-card" style="width:1120px">
+<div style="display:flex;flex-direction:column;height:664px;background:#fbfbfd;color:#171b22;font-family:Inter,system-ui,sans-serif;font-weight:450;letter-spacing:-.01em">
+
+<div style="display:flex;align-items:center;justify-content:center;position:relative;height:30px;flex:none;background:#eceef2;border-bottom:1px solid rgba(15,20,30,.09)">
+<span style="font-size:11.5px;font-weight:500;color:#5b6474">DailyGaming</span>
+<div style="position:absolute;right:0;top:0;display:flex;height:100%">
+<div style="width:38px;display:grid;place-items:center;color:#5f6877;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="12" x2="20" y2="12"></line></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#5f6877;font-size:9px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4.5" y="4.5" width="15" height="15" rx="1.5"></rect></svg></div>
+<div style="width:38px;display:grid;place-items:center;color:#5f6877;font-size:11px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5l14 14"></path><path d="M19 5L5 19"></path></svg></div>
+</div>
+</div>
+
+<div style="display:flex;align-items:center;gap:10px;height:56px;flex:none;padding:0 12px;background:#eceef2;border-bottom:1px solid rgba(15,20,30,.09)">
+<div style="width:34px;height:34px;border-radius:10px;background:#fff;box-shadow:0 1px 2px rgba(15,20,30,.1);display:grid;place-items:center;color:#5b6474;font-size:14px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path></svg></div>
+<div style="display:flex;align-items:center;gap:9px;height:40px;padding:0 12px 0 6px;border-radius:11px;background:#fff;box-shadow:0 1px 3px rgba(15,20,30,.12),inset 0 0 0 1px rgba(47,111,224,.35)">
+<div style="width:28px;height:28px;border-radius:8px;background:repeating-linear-gradient(135deg,#dfe3ea 0 6px,#e9ecf1 6px 12px)"></div>
+<span style="font-size:12.5px;font-weight:600;color:#171b22">DailyGaming</span>
+</div>
+<div style="width:34px;height:34px;border-radius:10px;background:rgba(15,20,30,.05);display:grid;place-items:center;color:#5f6877;font-size:15px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+</div>
+
+<div style="display:flex;flex:1;min-height:0">
+
+<div style="width:64px;flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0;background:#eceef2;border-right:1px solid rgba(15,20,30,.07)">
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:11px;background:#7a4fd0;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">X</div><div style="position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#22a75a;border:2.5px solid #eceef2"></div></div>
+<div style="width:36px;height:36px;border-radius:11px;background:#93a0b3;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">F</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:11px;background:#2f6fe0;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">B</div><div style="position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#22a75a;border:2.5px solid #eceef2"></div></div>
+<div style="width:36px;height:36px;border-radius:11px;background:#5c8a6b;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">R</div>
+<div style="width:36px;height:36px;border-radius:11px;background:#93a0b3;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">S</div>
+<div style="width:36px;height:36px;border-radius:11px;background:#a4707f;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">W</div>
+<div style="position:relative"><div style="width:36px;height:36px;border-radius:11px;background:#2f6fe0;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">R</div><div style="position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#22a75a;border:2.5px solid #eceef2"></div></div>
+<div style="width:36px;height:36px;border-radius:11px;background:#b08a3c;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">G</div>
+</div>
+
+<div style="position:relative;width:238px;flex:none;display:flex;flex-direction:column;background:#f4f5f8;border-right:1px solid rgba(15,20,30,.07)">
+<div style="display:flex;align-items:center;justify-content:space-between;height:46px;flex:none;padding:0 12px 0 14px;border-bottom:1px solid rgba(15,20,30,.07)">
+<div style="display:flex;align-items:center;gap:6px"><span style="font-size:14px;font-weight:600;color:#12161d;letter-spacing:-.02em">DailyGaming</span><span style="color:#5f6877;font-size:9px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"></path></svg></span></div>
+<span style="font:500 9px/1 'IBM Plex Mono',monospace;letter-spacing:.1em;color:#177a45;background:rgba(34,167,90,.12);padding:5px 7px;border-radius:5px">PUBLIC</span>
+</div>
+<div style="flex:1;padding:12px 8px;display:flex;flex-direction:column;gap:2px">
+<div style="padding:8px 8px 5px;font:500 10px/1 'IBM Plex Mono',monospace;letter-spacing:.12em;color:#5f6877">TEXT CHANNELS</div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;background:rgba(47,111,224,.11)"><span style="color:#2f6fe0;font-size:14px;font-weight:500">#</span><span style="font-size:13.5px;font-weight:600;color:#12161d">general</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px"><span style="color:#5f6877;font-size:14px">#</span><span style="font-size:13.5px;color:#5b6474">announcements</span></div>
+<div style="padding:16px 8px 5px;font:500 10px/1 'IBM Plex Mono',monospace;letter-spacing:.12em;color:#5f6877">VOICE CHANNELS</div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;background:rgba(15,20,30,.04)"><span style="color:#22a75a;font-size:11px">&#9679;</span><span style="font-size:13.5px;font-weight:600;color:#171b22">Voice Lounge</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:4px 9px 4px 26px"><div style="width:20px;height:20px;border-radius:6px;background:#a4707f;display:grid;place-items:center;font-size:9px;font-weight:600;color:#fff">V</div><span style="font-size:12.5px;color:#5b6474">vika</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:4px 9px 4px 26px"><div style="width:20px;height:20px;border-radius:6px;background:#93a0b3;display:grid;place-items:center;font-size:9px;font-weight:600;color:#fff">S</div><span style="font-size:12.5px;color:#5b6474">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px"><span style="color:#7d8695;font-size:11px">&#9679;</span><span style="font-size:13.5px;color:#5b6474">Voice Lounge 2</span></div>
+</div>
+<sc-if value="{{ showVoiceOverlay }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;left:8px;right:8px;bottom:8px;border-radius:12px;background:#fff;box-shadow:0 8px 24px rgba(15,20,30,.14),inset 0 0 0 1px rgba(15,20,30,.08);overflow:hidden">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px 8px">
+<div style="display:flex;align-items:center;gap:7px"><span style="color:#22a75a;font-size:10px">&#9679;</span><span style="font-size:12px;font-weight:600;color:#171b22">Voice Lounge</span></div>
+<span style="font:500 10px 'IBM Plex Mono',monospace;color:#177a45">15ms</span>
+</div>
+<div style="margin:0 12px 10px;height:30px;border-radius:8px;background:rgba(47,111,224,.1);display:flex;align-items:center;justify-content:center;gap:7px;color:#2f6fe0;font-size:11.5px;font-weight:600"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"></rect><path d="M8 21h8"></path></svg> Stream</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 10px;background:#f4f5f8;border-top:1px solid rgba(15,20,30,.07)">
+<div style="display:flex;align-items:center;gap:8px"><div style="width:26px;height:26px;border-radius:8px;background:#93a0b3;display:grid;place-items:center;font-size:11px;font-weight:600;color:#fff">S</div><span style="font-size:12px;font-weight:600;color:#171b22">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:4px">
+<div style="width:24px;height:24px;border-radius:7px;background:rgba(213,66,56,.1);display:grid;place-items:center;color:#d54238;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path></svg></div>
+<div style="width:24px;height:24px;border-radius:7px;display:grid;place-items:center;color:#5b6474;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line></svg></div>
+<div style="width:24px;height:24px;border-radius:7px;display:grid;place-items:center;color:#5b6474;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"></path></svg></div>
+<div style="width:24px;height:24px;border-radius:7px;display:grid;place-items:center;color:#5b6474;font-size:11px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V10a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></div>
+</div>
+</div>
+</div>
+</sc-if>
+</div>
+
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#fbfbfd">
+<div style="display:flex;align-items:center;gap:7px;height:46px;flex:none;padding:0 18px;border-bottom:1px solid rgba(15,20,30,.08)">
+<span style="color:#5f6877;font-size:15px">#</span><span style="font-size:14px;font-weight:600;color:#12161d;letter-spacing:-.01em">general</span>
+</div>
+<div style="flex:1;min-height:0;padding:14px 18px 6px;display:flex;flex-direction:column;justify-content:flex-end;gap:12px">
+<div style="width:404px;flex:none;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 1px 3px rgba(15,20,30,.1),inset 0 0 0 1px rgba(15,20,30,.07)">
+<div style="height:180px;background:repeating-linear-gradient(135deg,#e7eaef 0 9px,#eef0f4 9px 18px);display:grid;place-items:center">
+<div style="width:44px;height:44px;border-radius:50%;background:#2f6fe0;display:grid;place-items:center;color:#fff;font-size:14px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 11px;font:400 10.5px 'IBM Plex Mono',monospace;color:#5f6877"><span>video-attachment.mp4</span><span>2.0 MB</span></div>
+</div>
+<div style="display:flex;gap:12px;flex:none">
+<div style="width:36px;height:36px;flex:none;border-radius:11px;background:#93a0b3;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">F</div>
+<div><div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13.5px;font-weight:600;color:#b8453c">Fiary</span><span style="font:400 10.5px 'IBM Plex Mono',monospace;color:#5f6877">7/1/2026, 09:49 PM</span></div><div style="margin-top:2px;font-size:13.5px;line-height:1.55;color:#2a303b">sa</div></div>
+</div>
+<div style="display:flex;gap:12px;flex:none">
+<div style="width:36px;height:36px;flex:none;border-radius:11px;background:#93a0b3;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">S</div>
+<div><div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13.5px;font-weight:600;color:#2f6fe0">sunkhan</span><span style="font:400 10.5px 'IBM Plex Mono',monospace;color:#5f6877">7/3/2026, 12:54 PM</span></div><div style="margin-top:2px;font-size:13.5px;line-height:1.55;color:#2a303b">aasdas</div></div>
+</div>
+<div style="display:flex;gap:12px;flex:none">
+<div style="width:36px;height:36px;flex:none;border-radius:11px;background:#93a0b3;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff">S</div>
+<div style="flex:1;min-width:0"><div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13.5px;font-weight:600;color:#2f6fe0">sunkhan</span><span style="font:400 10.5px 'IBM Plex Mono',monospace;color:#5f6877">Yesterday, 08:15 PM</span></div>
+<div style="margin-top:7px;display:flex;align-items:center;gap:11px;width:394px;padding:11px;border-radius:12px;background:#fff;box-shadow:0 1px 3px rgba(15,20,30,.1),inset 0 0 0 1px rgba(15,20,30,.07)">
+<div style="width:36px;height:36px;flex:none;border-radius:9px;background:rgba(47,111,224,.1);display:flex;align-items:flex-end;justify-content:center;gap:2px;padding-bottom:11px">
+<div style="width:2.5px;height:8px;border-radius:2px;background:#2f6fe0;transform-origin:bottom;animation:waveBar 1.1s ease-in-out infinite"></div>
+<div style="width:2.5px;height:8px;border-radius:2px;background:#2f6fe0;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .18s infinite"></div>
+<div style="width:2.5px;height:8px;border-radius:2px;background:#2f6fe0;transform-origin:bottom;animation:waveBar 1.1s ease-in-out .36s infinite"></div>
+</div>
+<div style="flex:1;min-width:0">
+<div style="display:flex;align-items:center;gap:8px"><div style="font-size:12.5px;font-weight:500;color:#171b22;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">the-movie-reze-arc-turkish-co&#8230;</div><div title="Download" style="width:20px;height:20px;flex:none;border-radius:7px;display:grid;place-items:center;color:#5f6877"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3.5v11"></path><path d="M7.5 10.5l4.5 4.5 4.5-4.5"></path><path d="M4.5 20h15"></path></svg></div></div>
+<div style="margin-top:3px;font:400 10.5px 'IBM Plex Mono',monospace;color:#5f6877">3:58 &#183; 3.6 MB</div>
+<div style="margin-top:8px;display:flex;align-items:center;gap:9px">
+<div style="width:24px;height:24px;border-radius:50%;background:#2f6fe0;display:grid;place-items:center;color:#fff;font-size:9px"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 21 12.2 6 21.4"></polygon></svg></div>
+<div style="flex:1;height:3px;border-radius:2px;background:rgba(15,20,30,.1)"></div>
+<span style="font:400 10px 'IBM Plex Mono',monospace;color:#5f6877">0:00</span>
+<div style="width:15px;height:15px;flex:none;display:grid;place-items:center;color:#5f6877"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path></svg></div><div title="Volume" style="position:relative;width:46px;flex:none;height:3px;border-radius:2px;background:rgba(15,20,30,.1)"><div style="position:absolute;left:0;top:0;bottom:0;width:62%;border-radius:2px;background:#2f6fe0"></div><div style="position:absolute;left:62%;top:50%;width:8px;height:8px;margin:-4px 0 0 -4px;border-radius:50%;background:#2f6fe0"></div></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div style="flex:none;padding:8px 18px 16px">
+<div style="display:flex;align-items:center;gap:12px;height:46px;padding:0 12px;border-radius:12px;background:#fff;box-shadow:0 1px 3px rgba(15,20,30,.1),inset 0 0 0 1px rgba(15,20,30,.09)">
+<div style="width:24px;height:24px;border-radius:50%;background:rgba(15,20,30,.06);display:grid;place-items:center;color:#5b6474;font-size:13px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5.5v13"></path><path d="M5.5 12h13"></path></svg></div>
+<span style="flex:1;font-size:13.5px;color:#5f6877">Message #general</span>
+<span style="color:#5f6877;font-size:14px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9.5"></circle><path d="M8.5 14.5s1.4 1.8 3.5 1.8 3.5-1.8 3.5-1.8"></path><line x1="9.2" y1="9.5" x2="9.21" y2="9.5"></line><line x1="14.8" y1="9.5" x2="14.81" y2="9.5"></line></svg></span>
+<div style="width:30px;height:30px;border-radius:9px;background:#2f6fe0;display:grid;place-items:center;color:#fff;font-size:12px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2.5 11 13"></path><path d="M21.5 2.5l-6.7 19-3.8-8.5-8.5-3.8z"></path></svg></div>
+</div>
+</div>
+</div>
+
+<sc-if value="{{ showMemberList }}" hint-placeholder-val="{{ true }}">
+<div style="width:246px;flex:none;display:flex;flex-direction:column;background:#f4f5f8;border-left:1px solid rgba(15,20,30,.07)">
+<div style="flex:1;min-height:0;padding:14px 10px;display:flex;flex-direction:column;gap:1px">
+<div style="padding:2px 8px 7px;font:500 10px/1 'IBM Plex Mono',monospace;letter-spacing:.12em;color:#5f6877">ONLINE &#8212; 2</div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;background:rgba(15,20,30,.04)"><div style="position:relative"><div style="width:30px;height:30px;border-radius:10px;background:#93a0b3;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">S</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#22a75a;border:2.5px solid #f4f5f8"></div></div><span style="font-size:13px;font-weight:500;color:#171b22">sunkhan</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px"><div style="position:relative"><div style="width:30px;height:30px;border-radius:10px;background:#a4707f;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">V</div><div style="position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;background:#22a75a;border:2.5px solid #f4f5f8"></div></div><span style="font-size:13px;font-weight:500;color:#5b6474">vika</span></div>
+<div style="padding:16px 8px 7px;font:500 10px/1 'IBM Plex Mono',monospace;letter-spacing:.12em;color:#5f6877">OFFLINE &#8212; 11</div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#2f6fe0;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">B</div><span style="font-size:13px;color:#5b6474">battleocelot</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#93a0b3;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">B</div><span style="font-size:13px;color:#5b6474">berkayacan</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#b08a3c;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">E</div><span style="font-size:13px;color:#5b6474">emreaydn</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#93a0b3;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">F</div><span style="font-size:13px;color:#5b6474">Fiary</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#7a4fd0;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">Q</div><span style="font-size:13px;color:#5b6474">qoptery</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#5c8a6b;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">R</div><span style="font-size:13px;color:#5b6474">Rankhan</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#2f6fe0;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">R</div><span style="font-size:13px;color:#5b6474">Rankhan2</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:6px 8px"><div style="opacity:.62;width:30px;height:30px;border-radius:10px;background:#a4707f;display:grid;place-items:center;font-size:12px;font-weight:600;color:#fff">W</div><span style="font-size:13px;color:#5b6474">Whatzzapp</span></div>
+</div>
+<div style="flex:none;display:flex;align-items:center;gap:8px;padding:0 14px 14px">
+<div style="display:flex;align-items:flex-end;gap:2px;height:14px;opacity:.45">
+<div style="width:3px;height:12px;border-radius:2px;background:#2f6fe0;transform-origin:bottom;animation:waveBar 1.2s ease-in-out infinite"></div>
+<div style="width:3px;height:12px;border-radius:2px;background:#2f6fe0;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .15s infinite"></div>
+<div style="width:3px;height:12px;border-radius:2px;background:#2f6fe0;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .3s infinite"></div>
+<div style="width:3px;height:12px;border-radius:2px;background:#2f6fe0;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .45s infinite"></div>
+<div style="width:3px;height:12px;border-radius:2px;background:#2f6fe0;transform-origin:bottom;animation:waveBar 1.2s ease-in-out .6s infinite"></div>
+</div>
+<span style="font:600 10px 'IBM Plex Mono',monospace;letter-spacing:.14em;color:#5f6877">DECIBELL</span>
+</div>
+</div>
+</sc-if>
+
+</div>
+</div>
+</div>
+</div>
+</sc-if>
+
+</div>
+<p class="dv-next">Try next: "take <a class="dv-oid" href="#1a">1a</a> but the mono metadata from <a class="dv-oid" href="#1c">1c</a>" &#183; "push <a class="dv-oid" href="#1b">1b</a> further, more contrast" &#183; "apply <a class="dv-oid" href="#1c">1c</a> to settings, DMs and the voice call view"</p>
+</section>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;showMemberList&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Preview&quot;},&quot;showVoiceOverlay&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Preview&quot;},&quot;showLightPreview&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Preview&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      showMemberList: this.props.showMemberList ?? true,
+      showVoiceOverlay: this.props.showVoiceOverlay ?? true,
+      showLightPreview: this.props.showLightPreview ?? true,
+    };
+  }
+}
+</script>
+</body>
+</html>

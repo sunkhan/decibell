@@ -124,10 +124,13 @@ function MessageBubble({
           </span>
         </div>
         <div className="select-text min-w-0 flex-1">
+          {/* div, not p: rich text renders block children (pre code
+              blocks, display math) and a block inside <p> is invalid
+              HTML — the browser force-closes the paragraph around it. */}
           {message.content && (
-            <p className="break-all text-body leading-body text-text-primary [overflow-wrap:anywhere]">
+            <div className="whitespace-pre-wrap break-all text-body leading-body text-text-primary [overflow-wrap:anywhere]">
               <MessageText content={message.content} />
-            </p>
+            </div>
           )}
           <AttachmentList attachments={message.attachments} serverId={serverId ?? null} />
           {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
@@ -190,10 +193,11 @@ function MessageBubble({
             {formatTimestamp(message.timestamp)}
           </span>
         </div>
+        {/* div, not p — see the grouped branch above. */}
         {message.content && (
-          <p className="mt-0.5 break-all text-body leading-body text-text-primary [overflow-wrap:anywhere]">
+          <div className="mt-0.5 whitespace-pre-wrap break-all text-body leading-body text-text-primary [overflow-wrap:anywhere]">
             <MessageText content={message.content} />
-          </p>
+          </div>
         )}
         <AttachmentList attachments={message.attachments} serverId={serverId ?? null} />
         {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (

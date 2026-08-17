@@ -3,6 +3,9 @@ import data from "@emoji-mart/data";
 import emojiRegex from "emoji-regex";
 import Twemoji from "../../components/emoji/Twemoji";
 import EmojiInfoPopover from "./EmojiInfoPopover";
+import { parseRichText, isPlainText, type RichNode } from "./richText";
+import CodeBlock from "./CodeBlock";
+import MathTex from "./MathTex";
 
 // Lazily build a shortcode → native-unicode map from the emoji-mart dataset.
 // Same dataset the Picker uses, so `:smile:` here always resolves to the
@@ -85,50 +88,150 @@ export default function MessageText({ content, emojiSize, preview }: MessageText
     [],
   );
 
+  // Tokenize one plain-text run: shortcode expansion + Twemoji
+  // replacement, exactly the pre-rich-text pipeline. Rich formatting
+  // applies this per text leaf so emoji keep working inside emphasis
+  // spans (but never inside code or math, which are verbatim).
+  const emojiTokens = useCallback(
+    (
+      text: string,
+      size: number,
+      keyBase: string,
+    ): { tokens: (string | JSX.Element)[]; matchCount: number; remainder: string } => {
+      const expanded = expandShortcodes(text);
+      const matches = Array.from(expanded.matchAll(emojiRegex())).map((m) => ({
+        index: m.index ?? 0,
+        text: m[0],
+      }));
+      let remainder = expanded;
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const m = matches[i];
+        remainder =
+          remainder.slice(0, m.index) + remainder.slice(m.index + m.text.length);
+      }
+      const out: (string | JSX.Element)[] = [];
+      let last = 0;
+      for (const m of matches) {
+        if (m.index > last) out.push(expanded.slice(last, m.index));
+        out.push(
+          <Twemoji
+            key={`${keyBase}-${m.index}-${m.text}`}
+            emoji={m.text}
+            size={size}
+            onClick={preview ? undefined : (e) => handleEmojiClick(e, m.text)}
+          />,
+        );
+        last = m.index + m.text.length;
+      }
+      if (last < expanded.length) out.push(expanded.slice(last));
+      return { tokens: out, matchCount: matches.length, remainder };
+    },
+    [handleEmojiClick, preview],
+  );
+
   const tokens = useMemo<(string | JSX.Element)[]>(() => {
-    const expanded = expandShortcodes(content);
-    const matches = Array.from(expanded.matchAll(emojiRegex())).map((m) => ({
-      index: m.index ?? 0,
-      text: m[0],
-    }));
-
-    let remainder = expanded;
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const m = matches[i];
-      remainder =
-        remainder.slice(0, m.index) + remainder.slice(m.index + m.text.length);
+    // Preview mode (DM sidebar rows): no rich formatting — a code
+    // block or display math inside a 14px single-line preview would
+    // wreck the row, and showing the literal markers there matches
+    // what the message "is". Emoji keep a constant inline size.
+    if (preview) {
+      const size = emojiSize !== undefined ? emojiSize : INLINE_EMOJI_SIZE;
+      return emojiTokens(content, size, "p").tokens;
     }
-    const emojiOnly = matches.length > 0 && remainder.trim().length === 0;
 
-    // Preview mode keeps a constant inline size — the sidebar row's
-    // line-height stays predictable and emoji-only DMs don't blow up
-    // to 56px in a 14px-tall preview row.
-    const size =
-      emojiSize !== undefined
-        ? emojiSize
-        : preview
-          ? INLINE_EMOJI_SIZE
-          : emojiOnly
-            ? jumboSizeFor(matches.length)
-            : INLINE_EMOJI_SIZE;
+    const nodes = parseRichText(content);
 
-    const out: (string | JSX.Element)[] = [];
-    let last = 0;
-    for (const m of matches) {
-      if (m.index > last) out.push(expanded.slice(last, m.index));
-      out.push(
-        <Twemoji
-          key={`${m.index}-${m.text}`}
-          emoji={m.text}
-          size={size}
-          onClick={preview ? undefined : (e) => handleEmojiClick(e, m.text)}
-        />,
+    // Unformatted message: the original path, jumbo sizing included.
+    if (isPlainText(nodes) || nodes.length === 0) {
+      const { tokens: out, matchCount, remainder } = emojiTokens(
+        content,
+        INLINE_EMOJI_SIZE,
+        "t",
       );
-      last = m.index + m.text.length;
+      const emojiOnly = matchCount > 0 && remainder.trim().length === 0;
+      const size =
+        emojiSize !== undefined
+          ? emojiSize
+          : emojiOnly
+            ? jumboSizeFor(matchCount)
+            : INLINE_EMOJI_SIZE;
+      if (size === INLINE_EMOJI_SIZE) return out;
+      return emojiTokens(content, size, "t").tokens;
     }
-    if (last < expanded.length) out.push(expanded.slice(last));
-    return out;
-  }, [content, emojiSize, handleEmojiClick, preview]);
+
+    // Formatted message: map the rich-text nodes to elements, emoji-
+    // tokenizing every text leaf. Expensive nodes (code blocks, math)
+    // are capped per message so a pathological paste can't queue
+    // dozens of KaTeX/highlight runs; overflow renders as inline code.
+    const budget = { expensive: 10 };
+    const size = emojiSize !== undefined ? emojiSize : INLINE_EMOJI_SIZE;
+    const renderNodes = (
+      list: RichNode[],
+      keyBase: string,
+    ): (string | JSX.Element)[] => {
+      const out: (string | JSX.Element)[] = [];
+      list.forEach((node, i) => {
+        const key = `${keyBase}-${i}`;
+        switch (node.kind) {
+          case "text":
+            out.push(...emojiTokens(node.text, size, key).tokens);
+            break;
+          case "bold":
+            out.push(<strong key={key}>{renderNodes(node.children, key)}</strong>);
+            break;
+          case "italic":
+            out.push(<em key={key}>{renderNodes(node.children, key)}</em>);
+            break;
+          case "underline":
+            out.push(<u key={key}>{renderNodes(node.children, key)}</u>);
+            break;
+          case "strike":
+            out.push(<s key={key}>{renderNodes(node.children, key)}</s>);
+            break;
+          case "code":
+            out.push(
+              <code
+                key={key}
+                className="box-decoration-clone rounded-sm bg-bg-darkest px-1.5 py-0.5 font-mono text-[0.85em]"
+              >
+                {node.text}
+              </code>,
+            );
+            break;
+          case "codeblock":
+            if (budget.expensive-- > 0) {
+              out.push(<CodeBlock key={key} lang={node.lang} text={node.text} />);
+            } else {
+              out.push(
+                <code
+                  key={key}
+                  className="box-decoration-clone rounded-sm bg-bg-darkest px-1.5 py-0.5 font-mono text-[0.85em]"
+                >
+                  {node.text}
+                </code>,
+              );
+            }
+            break;
+          case "math":
+            if (budget.expensive-- > 0) {
+              out.push(<MathTex key={key} tex={node.tex} display={node.display} />);
+            } else {
+              out.push(
+                <code
+                  key={key}
+                  className="box-decoration-clone rounded-sm bg-bg-darkest px-1.5 py-0.5 font-mono text-[0.85em]"
+                >
+                  {node.tex}
+                </code>,
+              );
+            }
+            break;
+        }
+      });
+      return out;
+    };
+    return renderNodes(nodes, "r");
+  }, [content, emojiSize, emojiTokens, preview]);
 
   const shortcode = popover ? getNativeToIdMap().get(popover.emoji) ?? null : null;
 

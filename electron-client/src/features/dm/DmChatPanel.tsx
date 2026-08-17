@@ -12,6 +12,8 @@ import { toast } from "../../stores/toastStore";
 import { stringToColor } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import MessageBubble, { shouldGroup } from "../chat/MessageBubble";
+import MessagePreview from "../chat/MessagePreview";
+import RichComposer from "../chat/RichComposer";
 import EmojiPicker from "../chat/EmojiPicker";
 import ErrorCard from "../../components/ErrorCard";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
@@ -315,6 +317,14 @@ export default function DmChatPanel() {
     }
   };
 
+  // See ChatPanel.insertSnippet — same contract.
+  const insertSnippet = useCallback((snippet: string) => {
+    const cur = editorRef.current?.getValue() ?? "";
+    const sep = cur.length > 0 && !cur.endsWith("\n") ? "\n" : "";
+    editorRef.current?.focus();
+    editorRef.current?.setValue(cur + sep + snippet);
+  }, []);
+
   const insertEmoji = (emoji: string) => {
     editorRef.current?.insertEmoji(emoji);
   };
@@ -498,7 +508,9 @@ export default function DmChatPanel() {
       {/* Input bar — py-2 gives an 8px gap above the bar, matching
           ChatPanel's spacing. */}
       <div className="px-3 py-2">
-        <div className="flex min-h-[54px] items-center gap-2.5 rounded-lg border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-ring">
+        <div className="relative flex min-h-[54px] flex-col gap-2.5 rounded-lg border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-ring">
+          <MessagePreview draft={input} />
+          <div className="flex items-center gap-2.5">
           <RichInput
             ref={editorRef}
             onChange={handleInputChange}
@@ -516,6 +528,7 @@ export default function DmChatPanel() {
               so they slide together when the textarea grows
               multi-line. */}
           <div className="flex shrink-0 self-end gap-1">
+            <RichComposer onInsert={insertSnippet} />
             <div className="relative">
               <button
                 ref={emojiTriggerRef}
@@ -548,6 +561,7 @@ export default function DmChatPanel() {
                 <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
               </svg>
             </button>
+          </div>
           </div>
         </div>
       </div>

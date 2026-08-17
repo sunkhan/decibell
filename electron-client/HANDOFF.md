@@ -419,6 +419,11 @@ Also open, lower priority:
 | `src/features/chat/attachmentSizing.ts` | sqrt-scaled preview boxes + grid geometry |
 | `src/features/chat/attachmentPrefetch.ts` | warms previews ±15 messages off `rangeChanged` |
 | `src/features/chat/thumbhash.ts` | placeholder encode (upload) / decode (render) |
+| `src/features/chat/richText.ts` | dependency-free marker parser (Discord conventions + $TeX$); cached per content string |
+| `src/features/chat/CodeBlock.tsx` | lowlight/highlight.js fenced-block renderer — 27 registered grammars, HAST→React (no innerHTML), token colors from the palette vars in globals.css |
+| `src/features/chat/MathTex.tsx` | KaTeX renderer (throwOnError:false, trust:false, expansion caps); the renderer's one sanctioned dangerouslySetInnerHTML |
+| `src/features/chat/MessagePreview.tsx` | live send-preview in both input cards — appears only when the draft parses as formatted; renders through MessageText for fidelity |
+| `src/features/chat/RichComposer.tsx` | code/math composer panels (button beside emoji picker) — textarea with Tab indent + auto-indent, live KaTeX preview; inserts marker syntax into the draft |
 | `src/features/chat/PersistentVideoLayer.tsx` | the fixed-position video overlaid on its placeholder |
 
 ### Theming

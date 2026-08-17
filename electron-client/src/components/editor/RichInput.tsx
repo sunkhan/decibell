@@ -286,6 +286,17 @@ function tokenize(root: HTMLElement): boolean {
   return changed;
 }
 
+// True when the text contains an unclosed ``` fence. While one is
+// open, plain Enter continues the code block instead of sending —
+// typing multi-line code shouldn't require Shift on every line
+// (Discord behaves the same). Non-overlapping count: an odd number of
+// ``` markers means a fence is open. Escapes are ignored here; a
+// message that deliberately escapes fence markers is rare enough that
+// "Enter adds a line, send with the fence closed" is acceptable.
+function hasOpenCodeFence(text: string): boolean {
+  return (text.split("```").length - 1) % 2 === 1;
+}
+
 function serialize(root: HTMLElement): string {
   let out = "";
   (function walk(node: Node) {
@@ -393,8 +404,24 @@ const RichInput = forwardRef<RichInputHandle, RichInputProps>(function RichInput
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
+      // Clear any stale Enter-send flag. On Chromium the handled Enter's
+      // preventDefault means its beforeinput never fires, so the flag
+      // set below used to stay armed and beforeinput swallowed the NEXT
+      // line break instead — the first Shift+Enter after every send
+      // silently did nothing. keydown always precedes beforeinput for
+      // the same keystroke, so clearing here keeps the webkit-gtk
+      // double-fire protection intact while un-arming stale state.
+      enterHandledRef.current = false;
       if (e.key === "Enter" && !e.shiftKey && !composingRef.current) {
         e.preventDefault();
+        const el = editorRef.current;
+        if (el && hasOpenCodeFence(serialize(el))) {
+          // Inside an unclosed ``` fence: continue the block. This
+          // inserts the same <br> Shift+Enter produces and dispatches
+          // an input event, so tokenize/onChange run normally.
+          document.execCommand("insertLineBreak");
+          return;
+        }
         enterHandledRef.current = true;
         onEnter?.();
         return;

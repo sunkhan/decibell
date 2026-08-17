@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decibell — DS v2 Proposal</title>
+<style>
+/* ══════════════ Fonts (loaded from the repo, same files the app ships) ══════════════ */
+@font-face {
+  font-family: "Inter Variable";
+  src: url("../../electron-client/node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
+  font-weight: 100 900; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Outfit Variable";
+  src: url("../../electron-client/node_modules/@fontsource-variable/outfit/files/outfit-latin-wght-normal.woff2") format("woff2-variations");
+  font-weight: 100 900; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("../../electron-client/public/fonts/JetBrainsMono-Regular.ttf") format("truetype");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ══════════════════════════════════════════════════════════════════
+   TOKEN SETS — the entire A/B. Identical markup below; only these
+   custom properties change between v1 and v2.
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ─── DS v1 — what ships today ─── */
+[data-ds="v1"] {
+  --canvas:#0f131c; --s0:#0b0d12; --s1:#10141c; --s2:#151a25;
+  --s3:#1d2433;     --s4:#273043; --s5:#2d374e; --sunken:#11151f;
+  --titlebar:#0b0d12;
+
+  --border:rgba(167,184,224,.09);
+  --border-subtle:rgba(167,184,224,.05);
+  --border-strong:rgba(167,184,224,.09);
+
+  --accent:#4596ff; --accent-bright:#79b4ff; --accent-hover:#3282ef;
+  --accent-soft:rgba(69,150,255,.12); --accent-mid:rgba(69,150,255,.20);
+  --accent-strong:rgba(69,150,255,.20); --on-accent:#fff;
+
+  /* v1 has no dedicated live signal — streaming borrows the accent. */
+  --live:#4596ff; --live-bright:#79b4ff;
+  --live-soft:rgba(69,150,255,.12); --live-mid:rgba(69,150,255,.20);
+
+  --success:#45c46a; --warning:#dca64a; --error:#f2655c;
+  --success-soft:rgba(69,196,106,.15);
+
+  --t-bright:#f3f6fb; --t-primary:#d9e1ee; --t-secondary:#94a2ba;
+  --t-muted:#6b7890;  --t-faint:#45526a;
+
+  --hover:rgba(167,184,224,.06); --active:rgba(167,184,224,.10);
+
+  --r-sm:6px; --r-md:10px; --r-lg:14px; --r-xl:20px;
+
+  --sh-raised:0 1px 2px rgb(0 0 0/.4);
+  --sh-float:0 8px 24px rgb(0 0 0/.38), 0 0 0 1px rgb(167 184 224/.07);
+  --sh-modal:0 24px 64px rgb(0 0 0/.5), 0 0 0 1px rgb(167 184 224/.08);
+  --lip:none;
+  --grad-accent:#4596ff;
+  --grad-live:#4596ff;
+  --grad-chrome:none;
+  --glow-accent:0 0 0 1.5px rgba(69,150,255,.6), 0 0 22px 4px rgba(69,150,255,.22);
+  --glow-live:0 0 0 1.5px rgba(69,150,255,.6), 0 0 22px 4px rgba(69,150,255,.22);
+}
+
+/* ─── DS v2 — proposed ─── */
+[data-ds="v2"] {
+  --canvas:#080a0f; --s0:#0c0f16; --s1:#111520; --s2:#161b27;
+  --s3:#1d2330;     --s4:#252d3d; --s5:#2f384c; --sunken:#0d1119;
+  --titlebar:#080a0f;
+
+  --border:rgba(167,184,224,.09);
+  --border-subtle:rgba(167,184,224,.05);
+  --border-strong:rgba(167,184,224,.15);
+
+  --accent:#4596ff; --accent-bright:#7db3ff; --accent-hover:#3282ef;
+  --accent-soft:rgba(69,150,255,.12); --accent-mid:rgba(69,150,255,.22);
+  --accent-strong:rgba(69,150,255,.34); --on-accent:#f4f9ff;
+
+  /* Streaming gets its own hue — never confused with selection or error. */
+  --live:#a465ff; --live-bright:#c194ff;
+  --live-soft:rgba(164,101,255,.12); --live-mid:rgba(164,101,255,.22);
+
+  --success:#45c46a; --warning:#dca64a; --error:#f2655c;
+  --success-soft:rgba(69,196,106,.12);
+
+  --t-bright:#f3f6fb; --t-primary:#d9e1ee; --t-secondary:#94a2ba;
+  --t-muted:#6b7890;  --t-faint:#45526a;
+
+  --hover:rgba(167,184,224,.06); --active:rgba(167,184,224,.10);
+
+  --r-sm:6px; --r-md:10px; --r-lg:14px; --r-xl:20px;
+
+  --sh-raised:0 1px 2px rgb(0 0 0/.35);
+  --sh-float:0 2px 6px -1px rgb(0 0 0/.3), 0 8px 24px -4px rgb(0 0 0/.45), 0 0 0 1px rgb(167 184 224/.08);
+  --sh-modal:0 4px 12px -2px rgb(0 0 0/.4), 0 32px 72px -12px rgb(0 0 0/.6), 0 0 0 1px rgb(167 184 224/.09);
+  --lip:inset 0 1px 0 0 rgb(255 255 255/.045);
+  --grad-accent:linear-gradient(135deg,#5aa4ff 0%,#3577e0 100%);
+  --grad-live:linear-gradient(135deg,#b47cff 0%,#8a45f0 100%);
+  --grad-chrome:linear-gradient(180deg,rgba(255,255,255,.028) 0%,rgba(255,255,255,0) 42%);
+  --glow-accent:0 0 0 1px rgb(69 150 255/.5), 0 0 20px -2px rgb(69 150 255/.38);
+  --glow-live:0 0 0 1px rgb(164 101 255/.5), 0 0 20px -2px rgb(164 101 255/.38);
+}
+
+/* ══════════════ Page chrome (not part of the design system) ══════════════ */
+html { background:#05060a; }
+body {
+  font-family:"Inter Variable", system-ui, sans-serif;
+  font-weight:450; letter-spacing:-.01em;
+  font-feature-settings:"cv11","ss01","ss03";
+  color:#c7d0de; padding-bottom:140px;
+  -webkit-font-smoothing:antialiased;
+}
+.bar {
+  position:sticky; top:0; z-index:60;
+  display:flex; align-items:center; gap:20px; flex-wrap:wrap;
+  padding:13px 26px;
+  background:rgba(8,10,15,.88); backdrop-filter:blur(14px) saturate(1.4);
+  border-bottom:1px solid rgba(167,184,224,.09);
+}
+.bar h1 { font-family:"Outfit Variable"; font-size:15px; font-weight:600; color:#f0f4fa; letter-spacing:-.015em; }
+.bar h1 span { color:#4596ff; }
+.seg { display:flex; gap:3px; padding:3px; background:rgba(167,184,224,.06); border-radius:9px; }
+.seg button {
+  font:600 12px "Inter Variable"; color:#94a2ba; background:none; border:none;
+  border-radius:6px; padding:6px 15px; cursor:pointer; transition:all 120ms cubic-bezier(.2,0,0,1);
+  letter-spacing:.01em;
+}
+.seg button:hover { color:#d9e1ee; }
+.seg button.on { color:#fff; background:#3577e0; box-shadow:0 1px 2px rgb(0 0 0/.35); }
+.bar .hint { margin-left:auto; font-size:11.5px; color:#5d6a82; }
+kbd {
+  font:600 10.5px "Inter Variable"; color:#94a2ba; background:rgba(167,184,224,.09);
+  border-radius:4px; padding:2.5px 6px; border:1px solid rgba(167,184,224,.09);
+}
+
+main { max-width:1560px; margin:0 auto; padding:0 26px; }
+section { margin-top:64px; }
+.shead { display:flex; align-items:baseline; gap:14px; margin-bottom:6px; }
+.shead h2 { font-family:"Outfit Variable"; font-size:21px; font-weight:600; color:#eef2f8; letter-spacing:-.02em; }
+.shead .num { font:600 11px "JetBrains Mono", monospace; color:#3d7fe8; letter-spacing:.08em; }
+.sub { font-size:13.5px; line-height:1.62; color:#8896ae; max-width:74ch; margin-bottom:24px; }
+.sub b { color:#c7d0de; font-weight:600; }
+.sub code { font-family:"JetBrains Mono", monospace; font-size:12px; color:#7db3ff; background:rgba(69,150,255,.1); padding:1px 5px; border-radius:4px; }
+
+.note {
+  border-left:2px solid #3577e0; padding:2px 0 2px 15px; margin:20px 0;
+  font-size:13px; line-height:1.65; color:#8896ae; max-width:80ch;
+}
+.note b { color:#d9e1ee; font-weight:600; }
+.note.warn { border-color:#dca64a; }
+
+/* ══════════════ APP MOCKUP — real structure, real proportions ══════════════ */
+.stage {
+  border-radius:12px; overflow:hidden;
+  box-shadow:0 30px 80px -20px rgb(0 0 0/.7), 0 0 0 1px rgba(167,184,224,.08);
+}
+.app {
+  display:flex; flex-direction:column; height:620px;
+  background:var(--canvas); color:var(--t-primary);
+  font-size:13px;
+}
+
+/* — titlebar — */
+.tb {
+  height:32px; flex-shrink:0; display:flex; align-items:center; justify-content:center;
+  position:relative; background:var(--titlebar); border-bottom:1px solid var(--border);
+}
+.tb .t { font-size:12px; font-weight:500; color:var(--t-secondary); }
+.tb .wc { position:absolute; right:0; top:0; height:100%; display:flex; }
+.tb .wc i {
+  width:44px; height:100%; display:grid; place-items:center; font-style:normal;
+  color:var(--t-secondary); font-size:11px;
+}
+.tb .wc i:last-child:hover { background:var(--error); color:#fff; }
+.tb .wc i:hover { background:var(--hover); }
+
+/* — server bar — */
+.sb {
+  height:58px; flex-shrink:0; display:flex; align-items:center; position:relative;
+  background:var(--s0); background-image:var(--grad-chrome); box-shadow:var(--lip);
+}
+.sb::after {
+  content:""; position:absolute; bottom:0; left:68px; right:0;
+  border-bottom:1px solid var(--border);
+}
+.sb .home-col { width:68px; flex-shrink:0; display:grid; place-items:center; }
+.homebtn {
+  width:40px; height:40px; border-radius:var(--r-sm); display:grid; place-items:center;
+  background:var(--active); color:var(--t-secondary); border:none; cursor:pointer;
+  transition:all 150ms cubic-bezier(.2,0,0,1);
+}
+[data-ds="v2"] .homebtn { border-radius:var(--r-md); }
+.homebtn.on {
+  background:var(--grad-accent); background-color:var(--accent); color:var(--on-accent);
+}
+[data-ds="v1"] .homebtn.on { box-shadow:0 0 0 2px var(--accent); }
+[data-ds="v2"] .homebtn.on { box-shadow:var(--glow-accent); }
+.sb .vr { width:1px; height:28px; background:var(--border-subtle); flex-shrink:0; }
+.sb .tabs { flex:1; display:flex; align-items:center; gap:8px; padding:0 8px; }
+
+.tile {
+  position:relative; width:150px; height:38px; flex-shrink:0; border-radius:var(--r-md);
+  display:flex; align-items:center; gap:8px; padding:0 12px;
+  font-size:13px; font-weight:600; cursor:pointer; border:none;
+  color:var(--t-secondary); background:transparent;
+  transition:all 150ms cubic-bezier(.2,0,0,1);
+}
+.tile:hover { background:var(--hover); color:var(--t-primary); transform:translateY(-1px); }
+.tile .mono {
+  width:20px; height:20px; border-radius:var(--r-sm); flex-shrink:0;
+  display:grid; place-items:center; font-size:11px; font-weight:600; color:#fff;
+}
+.tile.on { color:var(--accent-bright); background:var(--accent-mid); }
+[data-ds="v2"] .tile.on {
+  color:var(--t-bright);
+  background:linear-gradient(180deg, rgba(69,150,255,.26) 0%, rgba(69,150,255,.13) 100%);
+  box-shadow:var(--lip);
+}
+/* v1 active marker: 3px stub under the tile. v2: full-width underline glow. */
+.tile .mark { position:absolute; left:50%; transform:translateX(-50%); bottom:-9px; height:3px; width:20px; border-radius:2px 2px 0 0; background:var(--accent); }
+[data-ds="v2"] .tile .mark { width:100%; left:0; transform:none; bottom:-10px; height:2px; border-radius:2px 2px 0 0; background:var(--grad-accent); background-color:var(--accent); box-shadow:0 -3px 12px -1px rgba(69,150,255,.55); }
+.tile .glow { position:absolute; inset:0; border-radius:var(--r-md); pointer-events:none; box-shadow:var(--glow-accent); animation:breathe 2.4s ease-in-out infinite; }
+@keyframes breathe { 0%,100%{opacity:.4} 50%{opacity:1} }
+
+.addbtn {
+  width:38px; height:38px; border-radius:var(--r-md); flex-shrink:0; cursor:pointer;
+  display:grid; place-items:center; background:none;
+  border:1.5px dashed var(--t-muted); color:var(--t-muted);
+  transition:all 150ms cubic-bezier(.2,0,0,1);
+}
+.addbtn:hover { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+[data-ds="v2"] .addbtn { border-style:solid; border-color:var(--border-strong); }
+[data-ds="v2"] .addbtn:hover { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+
+/* — body row — */
+.body { flex:1; display:flex; min-height:0; }
+
+/* — DM rail — */
+.dm {
+  width:68px; flex-shrink:0; background:var(--s0); background-image:var(--grad-chrome);
+  box-shadow:var(--lip); position:relative;
+  display:flex; flex-direction:column; align-items:center; gap:7px; padding:8px 0;
+}
+.dm::after { content:""; position:absolute; right:0; top:0; bottom:0; width:1px; background:var(--border); }
+.dm .av { position:relative; cursor:pointer; transition:transform 150ms cubic-bezier(.2,0,0,1); }
+.dm .av:hover { transform:translateY(-2px); }
+.av-img {
+  width:38px; height:38px; border-radius:10px; display:grid; place-items:center;
+  font-size:14px; font-weight:600; color:#fff;
+}
+.dm .av.on .av-img { box-shadow:0 0 0 2px var(--accent); }
+[data-ds="v2"] .dm .av.on .av-img { box-shadow:0 0 0 2px var(--accent), var(--glow-accent); }
+.dot {
+  position:absolute; right:-1px; bottom:-1px; width:12px; height:12px; border-radius:99px;
+  border:2.5px solid var(--s0);
+}
+.badge {
+  position:absolute; top:-4px; right:-4px; min-width:18px; height:18px; padding:0 4px;
+  border-radius:99px; background:var(--error); color:#fff; border:2px solid var(--s0);
+  font-size:10px; font-weight:600; display:grid; place-items:center; font-variant-numeric:tabular-nums;
+}
+
+/* — channel sidebar — */
+.cs {
+  width:232px; flex-shrink:0; background:var(--s1); border-right:1px solid var(--border);
+  display:flex; flex-direction:column; position:relative;
+}
+.cs .hd {
+  height:48px; flex-shrink:0; display:flex; align-items:center; gap:8px; padding:0 16px;
+  border-bottom:1px solid var(--border);
+}
+.cs .hd .name { font-family:"Outfit Variable"; font-size:16px; font-weight:600; color:var(--t-bright); letter-spacing:-.01em; }
+.pill {
+  font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.07em;
+  padding:2px 6px; border-radius:var(--r-sm);
+  background:var(--success-soft); color:var(--success);
+}
+.cs .list { flex:1; overflow:hidden; padding:10px 8px; }
+.grp {
+  display:flex; align-items:center; gap:4px; padding:0 8px; margin-bottom:4px; margin-top:14px;
+  font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.07em; color:var(--t-muted);
+}
+.grp:first-child { margin-top:0; }
+.grp .caret { font-size:9px; }
+.row {
+  position:relative; display:flex; align-items:center; gap:8px; width:100%;
+  padding:7px 10px; border-radius:var(--r-sm); font-size:13px; font-weight:500;
+  color:var(--t-secondary); cursor:pointer; border:none; background:none;
+  transition:all 100ms cubic-bezier(.2,0,0,1); text-align:left;
+}
+.row:hover { background:var(--hover); color:var(--t-primary); }
+.row .hash { font-size:16px; font-weight:500; color:var(--t-muted); }
+.row.on { background:var(--accent-soft); color:var(--t-bright); font-weight:600; }
+.row.on .hash { color:var(--accent-bright); }
+/* v2 adds a left rail marker so the active row reads without relying on fill alone */
+[data-ds="v2"] .row.on::before {
+  content:""; position:absolute; left:-8px; top:50%; transform:translateY(-50%);
+  width:3px; height:18px; border-radius:0 3px 3px 0; background:var(--accent);
+  box-shadow:0 0 10px -1px var(--accent);
+}
+.row .ico { width:14px; height:14px; flex-shrink:0; color:var(--t-muted); }
+
+/* voice participants under a channel */
+.vp { padding:2px 0 2px 22px; display:flex; flex-direction:column; gap:1px; }
+.vp .p { display:flex; align-items:center; gap:7px; padding:3px 8px; border-radius:var(--r-sm); font-size:12.5px; color:var(--t-secondary); }
+.vp .p:hover { background:var(--hover); }
+.vp .p .a { width:20px; height:20px; border-radius:6px; display:grid; place-items:center; font-size:9.5px; font-weight:600; color:#fff; }
+.vp .p.speaking .a { box-shadow:0 0 0 2px var(--success); }
+.livechip {
+  margin-left:auto; font-size:9.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
+  padding:1.5px 5px; border-radius:4px;
+  background:var(--live-mid); color:var(--live-bright);
+}
+[data-ds="v2"] .livechip { background:var(--grad-live); color:#fff; box-shadow:0 0 12px -2px rgba(164,101,255,.6); }
+
+/* — user panel — */
+.up {
+  position:absolute; left:8px; right:8px; bottom:8px; z-index:5;
+  border-radius:var(--r-lg); padding:10px 12px;
+  background:var(--s3); border:1px solid var(--border); box-shadow:var(--sh-float);
+}
+[data-ds="v2"] .up { box-shadow:var(--sh-float), var(--lip); }
+.up .vc { display:flex; align-items:center; gap:6px; margin-bottom:8px; }
+.up .vc .cn { font-family:"Outfit Variable"; font-size:13px; font-weight:600; color:var(--t-primary); }
+.up .vc .ms { margin-left:auto; font-size:11px; font-weight:500; color:var(--success); font-variant-numeric:tabular-nums; }
+.streambtn {
+  height:32px; width:100%; margin-bottom:8px; border-radius:var(--r-md); cursor:pointer;
+  display:flex; align-items:center; justify-content:center; gap:6px;
+  font-size:12px; font-weight:500;
+  background:var(--accent-soft); border:1px solid var(--accent-mid); color:var(--accent);
+  transition:all 100ms cubic-bezier(.2,0,0,1);
+}
+.streambtn.live { background:var(--live-soft); border-color:var(--live-mid); color:var(--live-bright); }
+[data-ds="v2"] .streambtn.live { background:var(--grad-live); border-color:transparent; color:#fff; box-shadow:0 0 16px -4px rgba(164,101,255,.7); }
+.up .me { display:flex; align-items:center; gap:9px; }
+.up .me .nm { font-size:13px; font-weight:600; color:var(--t-bright); flex:1; min-width:0; }
+.iconbtn {
+  width:32px; height:32px; border-radius:var(--r-sm); display:grid; place-items:center;
+  color:var(--t-secondary); background:none; border:none; cursor:pointer;
+  transition:all 100ms cubic-bezier(.2,0,0,1);
+}
+.iconbtn:hover { background:var(--hover); color:var(--t-primary); }
+.iconbtn.danger { background:rgba(242,101,92,.15); color:var(--error); }
+
+/* — chat — */
+.chat { flex:1; display:flex; flex-direction:column; min-width:0; background:var(--s2); }
+.chat .hd {
+  height:48px; flex-shrink:0; display:flex; align-items:center; gap:10px; padding:0 18px;
+  border-bottom:1px solid var(--border);
+}
+[data-ds="v2"] .chat .hd { background:var(--s2); box-shadow:0 1px 0 0 var(--border-subtle); }
+.chat .hd .cn { font-size:15px; font-weight:600; color:var(--t-bright); }
+.chat .hd .topic { font-size:12px; color:var(--t-muted); padding-left:10px; border-left:1px solid var(--border); }
+.msgs { flex:1; overflow:hidden; padding:14px 8px 6px 14px; display:flex; flex-direction:column; gap:1px; }
+
+.msg { display:flex; gap:12px; padding:5px 8px 3px; border-radius:var(--r-lg); transition:background 100ms; }
+.msg:hover { background:rgba(255,255,255,.015); }
+[data-ds="v2"] .msg:hover { background:var(--hover); }
+.msg .gut { width:38px; flex-shrink:0; display:flex; justify-content:flex-end; }
+.msg .av2 { width:38px; height:38px; border-radius:10px; display:grid; place-items:center; font-size:14px; font-weight:600; color:#fff; flex-shrink:0; }
+.msg .bd { min-width:0; flex:1; }
+.msg .mh { display:flex; align-items:baseline; gap:8px; }
+.msg .who { font-size:14px; font-weight:600; }
+.msg .ts { font-size:11px; font-weight:500; color:var(--t-muted); font-variant-numeric:tabular-nums; }
+.msg .tx { font-size:14px; color:var(--t-primary); margin-top:2px; }
+[data-ds="v1"] .msg .tx { line-height:1.55; }
+[data-ds="v2"] .msg .tx { line-height:1.5; }
+.msg.cont .tx { margin-top:0; }
+.msg.cont .gut .ts { opacity:0; font-size:11px; }
+.msg:hover .gut .ts { opacity:1; }
+
+.composer { margin:6px 14px 14px; }
+.cbox {
+  display:flex; align-items:center; gap:10px; padding:11px 14px;
+  border-radius:var(--r-lg); background:var(--s3); border:1px solid var(--border);
+  font-size:14px; color:var(--t-faint);
+}
+[data-ds="v2"] .cbox { background:var(--sunken); border-color:var(--border-strong); box-shadow:inset 0 1px 2px rgb(0 0 0/.25); }
+.cbox .actions { margin-left:auto; display:flex; gap:4px; color:var(--t-muted); }
+
+/* — members — */
+.mem { width:212px; flex-shrink:0; background:var(--s1); border-left:1px solid var(--border); padding:12px 8px; }
+.mrow { display:flex; align-items:center; gap:9px; padding:5px 8px; border-radius:var(--r-sm); font-size:13px; color:var(--t-secondary); }
+.mrow:hover { background:var(--hover); }
+.mrow .a { width:28px; height:28px; border-radius:8px; display:grid; place-items:center; font-size:11px; font-weight:600; color:#fff; position:relative; }
+.mrow .a .dot { width:10px; height:10px; border-width:2px; border-color:var(--s1); }
+.mrow.off { opacity:.42; }
+
+/* ══════════════ Token plates ══════════════ */
+.plate { background:var(--s1); border:1px solid var(--border); border-radius:var(--r-lg); padding:20px; }
+.grid { display:grid; gap:14px; }
+.g2 { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.g3 { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.g4 { grid-template-columns:repeat(auto-fill,minmax(184px,1fr)); }
+
+.ramp { display:flex; border-radius:var(--r-md); overflow:hidden; box-shadow:0 0 0 1px var(--border); }
+.ramp div { flex:1; height:76px; display:flex; align-items:flex-end; justify-content:center; padding-bottom:7px; font:500 10px "JetBrains Mono",monospace; color:#8896ae; }
+
+.sw { border-radius:var(--r-md); padding:13px; box-shadow:0 0 0 1px var(--border); }
+.sw .nm { font-size:11.5px; font-weight:600; margin-bottom:3px; }
+.sw .hx { font:400 10.5px "JetBrains Mono",monospace; opacity:.75; }
+
+.elev { height:92px; border-radius:var(--r-lg); display:grid; place-items:center; font-size:11.5px; font-weight:500; color:var(--t-secondary); background:var(--s3); }
+
+.typerow { display:flex; align-items:baseline; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-subtle); }
+.typerow:last-child { border:none; }
+.typerow .lbl { width:200px; flex-shrink:0; font:400 11px "JetBrains Mono",monospace; color:#5d6a82; }
+.typerow .spec { margin-left:auto; font:400 10.5px "JetBrains Mono",monospace; color:#4a5568; white-space:nowrap; }
+
+table.cmp { width:100%; border-collapse:collapse; font-size:13px; }
+table.cmp th { text-align:left; padding:9px 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.07em; color:#5d6a82; border-bottom:1px solid rgba(167,184,224,.09); }
+table.cmp td { padding:11px 12px; border-bottom:1px solid rgba(167,184,224,.05); vertical-align:top; line-height:1.55; color:#8896ae; }
+table.cmp td:first-child { color:#d9e1ee; font-weight:500; width:210px; }
+table.cmp tr:last-child td { border:none; }
+
+.tag { display:inline-block; font:600 10px "Inter Variable"; text-transform:uppercase; letter-spacing:.07em; padding:2px 7px; border-radius:5px; }
+.tag.add { background:rgba(69,196,106,.14); color:#5fd183; }
+.tag.chg { background:rgba(69,150,255,.14); color:#7db3ff; }
+.tag.keep { background:rgba(167,184,224,.09); color:#94a2ba; }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <h1>Decibell <span>DS v2</span></h1>
+  <div class="seg" id="seg">
+    <button data-v="v1">v1 — shipping</button>
+    <button data-v="v2" class="on">v2 — proposed</button>
+  </div>
+  <div class="hint">Press <kbd>Space</kbd> to flip · every mockup below is the same markup, only tokens change</div>
+</div>
+
+<main>
+
+<!-- ═══════════════ 1. THE SHELL ═══════════════ -->
+<section>
+  <div class="shead"><span class="num">01</span><h2>The application shell</h2></div>
+  <p class="sub">
+    Real structure at real proportions — titlebar, server bar, DM rail, channel sidebar, chat, members,
+    and the floating user panel. Flip between v1 and v2 to see the delta. <b>The layout does not change.</b>
+    Everything you see differing is the token layer plus a handful of component-level treatments.
+  </p>
+
+  <div class="stage">
+    <div class="app" data-ds="v2" id="shell">
+      <!-- titlebar -->
+      <div class="tb">
+        <span class="t">Hyperbell</span>
+        <div class="wc"><i>—</i><i>▢</i><i>✕</i></div>
+      </div>
+
+      <!-- server bar -->
+      <div class="sb">
+        <div class="home-col">
+          <button class="homebtn on" title="Home">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l-9.5 8.5c-.3.27-.15.5.25.5H5v8a1 1 0 001 1h4v-5.5a1 1 0 011-1h2a1 1 0 011 1V21h4a1 1 0 001-1v-8h2.25c.4 0 .55-.23.25-.5L12 3z"/></svg>
+          </button>
+        </div>
+        <div class="vr"></div>
+        <div class="tabs">
+          <button class="tile on">
+            <span class="glow"></span>
+            <span class="mono" style="background:linear-gradient(135deg,#5aa4ff,#3577e0)">H</span>
+            <span>Hyperbell</span>
+            <span class="mark"></span>
+          </button>
+          <button class="tile">
+            <span class="mono" style="background:linear-gradient(135deg,#f0a13c,#d97528)">M</span>
+            <span>Mixdown</span>
+          </button>
+          <button class="tile">
+            <span class="mono" style="background:linear-gradient(135deg,#57cf88,#2fa163)">L</span>
+            <span>LAN Party</span>
+          </button>
+          <div class="vr" style="margin:0 4px"></div>
+          <button class="addbtn" title="Browse servers">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- body -->
+      <div class="body">
+        <!-- DM rail -->
+        <div class="dm">
+          <div class="av on">
+            <div class="av-img" style="background:linear-gradient(135deg,#8b7cf6,#6d4fe8)">K</div>
+            <span class="dot" style="background:var(--success)"></span>
+          </div>
+          <div class="av">
+            <div class="av-img" style="background:linear-gradient(135deg,#f0709a,#d64578)">R</div>
+            <span class="dot" style="background:var(--success)"></span>
+            <span class="badge">3</span>
+          </div>
+          <div class="av">
+            <div class="av-img" style="background:linear-gradient(135deg,#4dc4d6,#2b96a8)">T</div>
+            <span class="dot" style="background:var(--t-muted)"></span>
+          </div>
+        </div>
+
+        <!-- channel sidebar -->
+        <div class="cs">
+          <div class="hd">
+            <span class="name">Hyperbell</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--t-muted)"><polyline points="6 9 12 15 18 9"/></svg>
+            <span class="pill" style="margin-left:auto">Public</span>
+          </div>
+          <div class="list">
+            <div class="grp"><span class="caret">▼</span> Text Channels</div>
+            <button class="row on"><span class="hash">#</span> general</button>
+            <button class="row"><span class="hash">#</span> dev-log</button>
+            <button class="row"><span class="hash">#</span> releases</button>
+
+            <div class="grp"><span class="caret">▼</span> Voice Channels</div>
+            <button class="row">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+              Lounge
+            </button>
+            <div class="vp">
+              <div class="p speaking"><span class="a" style="background:linear-gradient(135deg,#8b7cf6,#6d4fe8)">K</span> kira</div>
+              <div class="p"><span class="a" style="background:linear-gradient(135deg,#f0709a,#d64578)">R</span> ren <span class="livechip">Live</span></div>
+            </div>
+            <button class="row">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+              AFK
+            </button>
+          </div>
+
+          <!-- user panel -->
+          <div class="up">
+            <div class="vc">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--t-muted)"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+              <span class="cn">Lounge</span>
+              <span class="ms">24ms</span>
+            </div>
+            <button class="streambtn live">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" stroke="none"/></svg>
+              Stop sharing
+            </button>
+            <div class="me">
+              <div class="av-img" style="width:34px;height:34px;border-radius:9px;font-size:13px;background:linear-gradient(135deg,#5aa4ff,#3577e0)">S</div>
+              <span class="nm">sunkhan</span>
+              <button class="iconbtn danger" title="Disconnect">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></svg>
+              </button>
+              <button class="iconbtn" title="Mute">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+              </button>
+              <button class="iconbtn" title="Settings">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- chat -->
+        <div class="chat">
+          <div class="hd">
+            <span class="hash" style="font-size:18px;color:var(--t-muted)">#</span>
+            <span class="cn">general</span>
+            <span class="topic">Decibell dev chatter — builds, bugs, bikeshedding</span>
+          </div>
+          <div class="msgs">
+            <div class="msg">
+              <div class="av2" style="background:linear-gradient(135deg,#8b7cf6,#6d4fe8)">K</div>
+              <div class="bd">
+                <div class="mh"><span class="who" style="color:#a78bfa">kira</span><span class="ts">14:02</span></div>
+                <div class="tx">pushed the NVENC path — encode thread is stable at 1440p60 now, no more stderr panics</div>
+              </div>
+            </div>
+            <div class="msg cont">
+              <div class="gut"><span class="ts">14:02</span></div>
+              <div class="bd"><div class="tx">still need to sort out the VAAPI fallback for the Intel boxes though</div></div>
+            </div>
+            <div class="msg">
+              <div class="av2" style="background:linear-gradient(135deg,#f0709a,#d64578)">R</div>
+              <div class="bd">
+                <div class="mh"><span class="who" style="color:#f472a6">ren</span><span class="ts">14:05</span></div>
+                <div class="tx">nice. I'm streaming the repro right now if you want to watch</div>
+              </div>
+            </div>
+            <div class="msg">
+              <div class="av2" style="background:linear-gradient(135deg,#5aa4ff,#3577e0)">S</div>
+              <div class="bd">
+                <div class="mh"><span class="who" style="color:#7db3ff">sunkhan</span><span class="ts">14:06</span></div>
+                <div class="tx">joining — give me a sec</div>
+              </div>
+            </div>
+          </div>
+          <div class="composer">
+            <div class="cbox">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--t-muted)"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <span>Message #general</span>
+              <div class="actions">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- members -->
+        <div class="mem">
+          <div class="grp" style="margin-top:0">Online — 3</div>
+          <div class="mrow"><span class="a" style="background:linear-gradient(135deg,#8b7cf6,#6d4fe8)">K<span class="dot" style="background:var(--success)"></span></span> kira</div>
+          <div class="mrow"><span class="a" style="background:linear-gradient(135deg,#f0709a,#d64578)">R<span class="dot" style="background:var(--success)"></span></span> ren</div>
+          <div class="mrow"><span class="a" style="background:linear-gradient(135deg,#5aa4ff,#3577e0)">S<span class="dot" style="background:var(--success)"></span></span> sunkhan</div>
+          <div class="grp">Offline — 2</div>
+          <div class="mrow off"><span class="a" style="background:linear-gradient(135deg,#4dc4d6,#2b96a8)">T<span class="dot" style="background:var(--t-muted)"></span></span> tam</div>
+          <div class="mrow off"><span class="a" style="background:linear-gradient(135deg,#f0a13c,#d97528)">M<span class="dot" style="background:var(--t-muted)"></span></span> mo</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>What actually changed.</b> The titlebar now sits at <code>--canvas</code> while the server bar sits at
+    <code>--surface-0</code>, so there is a visible seam instead of one unbroken slab. Chrome surfaces get a
+    <code>--gradient-chrome</code> wash and an inset top highlight (<code>--shadow-lip</code>) — that's the
+    "panel catching light from above" cue, and it costs nothing at runtime. The active channel row gains a
+    left rail marker so selection reads without relying on a fill wash alone. Streaming turns violet.
+  </div>
+  <div class="note warn">
+    <b>No <code>backdrop-filter</code> on any of this.</b> Real glass would force Chromium to snapshot what's
+    behind the bar every frame. The look here is a static gradient plus an inset highlight — rasterised once,
+    zero per-frame cost. Blur is reserved for transient layers (popovers, modals) that don't repaint underneath.
+  </div>
+</section>
+
+<!-- ═══════════════ 2. THE LIVE SIGNAL ═══════════════ -->
+<section>
+  <div class="shead"><span class="num">02</span><h2>Streaming gets its own colour</h2></div>
+  <p class="sub">
+    This is the most opinionated call in v2, so judge it hard. Today, "live" borrows the azure accent — which
+    means a stream tile that is <b>selected</b> and a stream tile that is <b>broadcasting</b> look the same.
+    Screensharing is the differentiating feature of this app; it should have its own signal. Red was
+    unavailable (error already owns it, and "you are live" is not a failure), so v2 uses violet — adjacent to
+    azure on the wheel, so it harmonises, but unmistakable at a glance.
+  </p>
+
+  <div class="grid g2">
+    <div class="plate" data-ds="v1" style="background:var(--s1)">
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:#5d6a82;margin-bottom:14px">v1 — live borrows the accent</div>
+      <div class="stagetile" style="border-radius:var(--r-md);overflow:hidden;background:var(--s3);box-shadow:0 0 0 1px var(--border)">
+        <div style="height:118px;background:linear-gradient(135deg,#1a2130,#232c3e);display:grid;place-items:center;position:relative">
+          <span style="position:absolute;top:9px;left:9px;font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 6px;border-radius:4px;background:var(--accent-mid);color:var(--accent-bright)">Live</span>
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#3d4a63" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <div style="padding:9px 11px;display:flex;align-items:center;gap:8px">
+          <span class="a" style="width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:9.5px;font-weight:600;color:#fff;background:linear-gradient(135deg,#f0709a,#d64578)">R</span>
+          <span style="font-size:12.5px;color:var(--t-primary)">ren</span>
+          <span style="margin-left:auto;font-size:10.5px;color:var(--t-muted);font-family:'JetBrains Mono',monospace">1440p60</span>
+        </div>
+      </div>
+      <div style="font-size:12px;line-height:1.6;color:#7b889f;margin-top:14px">Selected and broadcasting are the same blue. The badge competes with the active-channel wash and the connection-quality dot.</div>
+    </div>
+
+    <div class="plate" data-ds="v2" style="background:var(--s1)">
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:#5d6a82;margin-bottom:14px">v2 — dedicated violet signal</div>
+      <div class="stagetile" style="border-radius:var(--r-md);overflow:hidden;background:var(--s3);box-shadow:var(--glow-live)">
+        <div style="height:118px;background:linear-gradient(135deg,#1a2130,#232c3e);display:grid;place-items:center;position:relative">
+          <span style="position:absolute;top:9px;left:9px;font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 6px;border-radius:4px;background:var(--grad-live);color:#fff;box-shadow:0 0 12px -2px rgba(164,101,255,.6)">Live</span>
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#3d4a63" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <div style="padding:9px 11px;display:flex;align-items:center;gap:8px">
+          <span class="a" style="width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:9.5px;font-weight:600;color:#fff;background:linear-gradient(135deg,#f0709a,#d64578)">R</span>
+          <span style="font-size:12.5px;color:var(--t-primary)">ren</span>
+          <span style="margin-left:auto;font-size:10.5px;color:var(--live-bright);font-family:'JetBrains Mono',monospace">1440p60</span>
+        </div>
+      </div>
+      <div style="font-size:12px;line-height:1.6;color:#7b889f;margin-top:14px">Broadcasting is violet, selection stays azure, failure stays red. A tile can now be selected <i>and</i> live and you can read both states at once.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 3. SURFACES ═══════════════ -->
+<section>
+  <div class="shead"><span class="num">03</span><h2>Surfaces become an elevation model</h2></div>
+  <p class="sub">
+    v1 had six near-identical steps with names that described lightness (<code>darkest</code>, <code>mid</code>,
+    <code>lighter</code>) and three tokens that resolved to the same hex. v2 names them by <b>job</b> and binds
+    each level to a fill, an edge and a shadow that move together — so a surface can't be assembled wrong.
+  </p>
+
+  <div class="grid g2">
+    <div>
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:#5d6a82;margin-bottom:10px">v1 — lightness ramp</div>
+      <div class="ramp" data-ds="v1">
+        <div style="background:#0b0d12">0b0d12</div>
+        <div style="background:#10141c">10141c</div>
+        <div style="background:#151a25">151a25</div>
+        <div style="background:#1d2433">1d2433</div>
+        <div style="background:#273043">273043</div>
+        <div style="background:#2d374e">2d374e</div>
+      </div>
+      <div style="font-size:12px;color:#7b889f;margin-top:10px;line-height:1.6"><code style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#7db3ff">darkest</code>, <code style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#7db3ff">titlebar</code> and <code style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#7db3ff">dmbar</code> all resolved to <code style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#7db3ff">#0b0d12</code> — three names, one colour, no seam.</div>
+    </div>
+    <div>
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:#5d6a82;margin-bottom:10px">v2 — elevation model</div>
+      <div class="ramp" data-ds="v2">
+        <div style="background:#080a0f">canvas</div>
+        <div style="background:#0c0f16">chrome</div>
+        <div style="background:#111520">sidebar</div>
+        <div style="background:#161b27">content</div>
+        <div style="background:#1d2330">raised</div>
+        <div style="background:#252d3d">overlay</div>
+        <div style="background:#2f384c">highest</div>
+      </div>
+      <div style="font-size:12px;color:#7b889f;margin-top:10px;line-height:1.6">Seven levels, each with a role. Every v1 name stays aliased, so no existing class breaks — new work uses the role names.</div>
+    </div>
+  </div>
+
+  <div class="grid g4" style="margin-top:26px">
+    <div class="sw" style="background:#0d1119;color:#94a2ba"><div class="nm">surface-sunken</div><div class="hx">#0d1119 — inputs</div></div>
+    <div class="sw" style="background:#1d2330;color:#d9e1ee"><div class="nm">surface-3 / raised</div><div class="hx">#1d2330 — cards, composer</div></div>
+    <div class="sw" style="background:#252d3d;color:#d9e1ee"><div class="nm">surface-4 / overlay</div><div class="hx">#252d3d — popovers</div></div>
+    <div class="sw" style="background:#2f384c;color:#f3f6fb"><div class="nm">surface-5 / highest</div><div class="hx">#2f384c — overlay hover</div></div>
+  </div>
+
+  <div class="note">
+    <b>Inputs now sit below their container, not above it.</b> v1 put text fields at <code>#11151f</code>, lighter
+    than the sidebar behind them — a field looked like a raised card. v2 introduces <code>surface-sunken</code>
+    with an inset shadow so a field reads as a recess. It's a small thing that does a lot of work.
+  </div>
+</section>
+
+<!-- ═══════════════ 4. ACCENT SYSTEM ═══════════════ -->
+<section>
+  <div class="shead"><span class="num">04</span><h2>The accent becomes a system</h2></div>
+  <p class="sub">
+    Same azure — <code>#4596ff</code> is the brand and it stays. What changes is that it stops being a single
+    flat fill. v2 adds a gradient for hero surfaces, a glow for active/live states, three tint strengths
+    instead of two, and an explicit <code>--color-on-accent</code> so nobody has to guess at contrast.
+  </p>
+
+  <div class="grid g4">
+    <div class="sw" style="background:linear-gradient(135deg,#5aa4ff,#3577e0);color:#f4f9ff"><div class="nm">gradient-accent</div><div class="hx">#5aa4ff → #3577e0</div></div>
+    <div class="sw" style="background:#4596ff;color:#f4f9ff"><div class="nm">accent</div><div class="hx">#4596ff</div></div>
+    <div class="sw" style="background:#7db3ff;color:#0b0d12"><div class="nm">accent-bright</div><div class="hx">#7db3ff</div></div>
+    <div class="sw" style="background:rgba(69,150,255,.34);color:#d9e1ee"><div class="nm">accent-strong</div><div class="hx">34% — new in v2</div></div>
+    <div class="sw" style="background:rgba(69,150,255,.22);color:#d9e1ee"><div class="nm">accent-mid</div><div class="hx">22%</div></div>
+    <div class="sw" style="background:rgba(69,150,255,.12);color:#d9e1ee"><div class="nm">accent-soft</div><div class="hx">12%</div></div>
+    <div class="sw" style="background:linear-gradient(135deg,#b47cff,#8a45f0);color:#fff"><div class="nm">gradient-live</div><div class="hx">#b47cff → #8a45f0</div></div>
+    <div class="sw" style="background:#a465ff;color:#fff"><div class="nm">live</div><div class="hx">#a465ff — new in v2</div></div>
+  </div>
+
+  <div class="grid g3" style="margin-top:26px" data-ds="v2">
+    <div style="background:#161b27;border-radius:14px;padding:26px;display:grid;place-items:center;gap:16px">
+      <div style="width:52px;height:52px;border-radius:10px;background:linear-gradient(135deg,#5aa4ff,#3577e0);box-shadow:0 0 0 1px rgb(69 150 255/.5), 0 0 20px -2px rgb(69 150 255/.38)"></div>
+      <div style="font-size:11.5px;color:#7b889f">glow-accent — selection</div>
+    </div>
+    <div style="background:#161b27;border-radius:14px;padding:26px;display:grid;place-items:center;gap:16px">
+      <div style="width:52px;height:52px;border-radius:10px;background:linear-gradient(135deg,#b47cff,#8a45f0);box-shadow:0 0 0 1px rgb(164 101 255/.5), 0 0 20px -2px rgb(164 101 255/.38)"></div>
+      <div style="font-size:11.5px;color:#7b889f">glow-live — broadcasting</div>
+    </div>
+    <div style="background:#161b27;border-radius:14px;padding:26px;display:grid;place-items:center;gap:16px">
+      <div style="width:52px;height:52px;border-radius:10px;background:#45c46a;box-shadow:0 0 0 1px rgb(69 196 106/.5), 0 0 16px -3px rgb(69 196 106/.35)"></div>
+      <div style="font-size:11.5px;color:#7b889f">glow-success — speaking</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 5. ELEVATION ═══════════════ -->
+<section>
+  <div class="shead"><span class="num">05</span><h2>Elevation</h2></div>
+  <p class="sub">
+    v1's shadows were single soft blurs. v2 layers a tight contact shadow under a wide ambient one — that's the
+    difference between "floating" and "smudged" — and bakes the hairline ring in, so a floating surface never
+    needs a separate border class.
+  </p>
+  <div class="grid g3">
+    <div style="background:#161b27;border-radius:14px;padding:30px">
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:#5d6a82;margin-bottom:18px">v1</div>
+      <div style="height:80px;border-radius:14px;background:#1d2433;box-shadow:0 8px 24px rgb(0 0 0/.38), 0 0 0 1px rgb(167 184 224/.07);display:grid;place-items:center;font-size:12px;color:#94a2ba">shadow-float</div>
+    </div>
+    <div style="background:#161b27;border-radius:14px;padding:30px">
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:#5d6a82;margin-bottom:18px">v2</div>
+      <div style="height:80px;border-radius:14px;background:#1d2330;box-shadow:0 2px 6px -1px rgb(0 0 0/.3), 0 8px 24px -4px rgb(0 0 0/.45), 0 0 0 1px rgb(167 184 224/.08), inset 0 1px 0 0 rgb(255 255 255/.045);display:grid;place-items:center;font-size:12px;color:#94a2ba">shadow-float + lip</div>
+    </div>
+    <div style="background:#161b27;border-radius:14px;padding:30px">
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:#5d6a82;margin-bottom:18px">v2 — modal</div>
+      <div style="height:80px;border-radius:14px;background:#1d2330;box-shadow:0 4px 12px -2px rgb(0 0 0/.4), 0 32px 72px -12px rgb(0 0 0/.6), 0 0 0 1px rgb(167 184 224/.09), inset 0 1px 0 0 rgb(255 255 255/.045);display:grid;place-items:center;font-size:12px;color:#94a2ba">shadow-modal + lip</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 6. TYPE ═══════════════ -->
+<section>
+  <div class="shead"><span class="num">06</span><h2>Type gets semantic names</h2></div>
+  <p class="sub">
+    The sizes are the ones v1 settled on and they're right — this isn't a re-scaling. The problem is they're
+    written as <code>text-[13px]</code> in <b>296 places</b>, so a size carries a pixel count instead of an
+    intent. v2 adds named tokens with paired line-heights. Tailwind's own <code>text-xs</code>/<code>text-sm</code>
+    are left untouched, so none of the 57 existing named-size call sites shift.
+  </p>
+  <div class="plate">
+    <div class="typerow"><span class="lbl">text-micro</span><span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:#6b7890">Text Channels</span><span class="spec">11px / 1.36 · caps labels, badges, counters</span></div>
+    <div class="typerow"><span class="lbl">text-meta</span><span style="font-size:12px;color:#94a2ba;font-variant-numeric:tabular-nums">14:02 · 1440p60 · 24ms</span><span class="spec">12px / 1.4 · timestamps, metadata</span></div>
+    <div class="typerow"><span class="lbl">text-ui</span><span style="font-size:13px;font-weight:500;color:#d9e1ee"># general</span><span class="spec">13px / 1.42 · sidebar rows, buttons, tabs</span></div>
+    <div class="typerow"><span class="lbl">text-body</span><span style="font-size:14px;color:#d9e1ee">pushed the NVENC path — encode thread is stable</span><span class="spec">14px / 1.5 · messages, prose, inputs</span></div>
+    <div class="typerow"><span class="lbl">text-title</span><span style="font-size:16px;font-weight:600;color:#f3f6fb;font-family:'Outfit Variable'">Hyperbell</span><span class="spec">16px / 1.4 · panel headings</span></div>
+    <div class="typerow"><span class="lbl">text-head</span><span style="font-size:18px;font-weight:600;color:#f3f6fb;font-family:'Outfit Variable'">Settings</span><span class="spec">18px / 1.32 · modal titles</span></div>
+    <div class="typerow"><span class="lbl">text-display</span><span style="font-size:22px;font-weight:600;color:#f3f6fb;font-family:'Outfit Variable';letter-spacing:-.02em">Welcome back</span><span class="spec">22px / 1.25 · hero, empty states</span></div>
+  </div>
+</section>
+
+<!-- ═══════════════ 7. SUMMARY ═══════════════ -->
+<section>
+  <div class="shead"><span class="num">07</span><h2>What this costs</h2></div>
+  <p class="sub">
+    The layout is untouched, so regression risk is concentrated in the token layer — which every component
+    already reads through. Beyond tokens, the work is the cleanup v1 left behind.
+  </p>
+  <div class="plate">
+    <table class="cmp">
+      <tr><th>Item</th><th>Change</th></tr>
+      <tr><td><span class="tag chg">Change</span> Token layer</td><td>Rebuild <code>@theme</code> in <code>globals.css</code>. All v1 names stay aliased onto the new roles — no existing class stops resolving.</td></tr>
+      <tr><td><span class="tag add">Add</span> Live signal</td><td>New violet hue + gradient + glow for streaming states. Touches voice/stream components only.</td></tr>
+      <tr><td><span class="tag add">Add</span> Material utilities</td><td>Four <code>@utility</code> rules (chrome / raised / overlay / modal) that bind fill + edge + light so surfaces can't be assembled wrong.</td></tr>
+      <tr><td><span class="tag chg">Change</span> 61 off-token escapes</td><td>24 <code>shadow-[…]</code>, 24 <code>bg-white/x</code>, 13 <code>bg-black/x</code> already leaked past v1's discipline. Fold into token equivalents while restyling each surface.</td></tr>
+      <tr><td><span class="tag chg">Change</span> 122 inline SVGs</td><td>Across 37 files, with stroke widths of 1 / 1.1 / 2 / 2.5 and sizes 13–20. <code>lucide-react</code> is <i>already</i> a dependency, used in exactly one file. Consolidating fixes the iconography and cuts markup weight.</td></tr>
+      <tr><td><span class="tag add">Add</span> Focus ring</td><td>A real global <code>:focus-visible</code> treatment. Today two components call <code>focus:outline-none</code> with nothing in its place.</td></tr>
+      <tr><td><span class="tag add">Add</span> Reduced motion</td><td><code>prefers-reduced-motion</code> block — decorative loops stop, functional transitions collapse to near-instant.</td></tr>
+      <tr><td><span class="tag keep">Keep</span> Layout &amp; structure</td><td>No panel moves. No navigation model changes. Component trees are untouched except where a treatment demands a wrapper.</td></tr>
+      <tr><td><span class="tag keep">Keep</span> Perf discipline</td><td>v1's hard-won rules stay and get written into the token file: no <code>backdrop-filter</code> on always-visible chrome, animate <code>opacity</code>/<code>transform</code> only.</td></tr>
+    </table>
+  </div>
+</section>
+
+</main>
+
+<script>
+const seg = document.getElementById('seg');
+const setMode = (v) => {
+  document.getElementById('shell').setAttribute('data-ds', v);
+  [...seg.children].forEach(b => b.classList.toggle('on', b.dataset.v === v));
+};
+seg.addEventListener('click', e => { if (e.target.dataset.v) setMode(e.target.dataset.v); });
+addEventListener('keydown', e => {
+  if (e.code !== 'Space') return;
+  e.preventDefault();
+  setMode(document.getElementById('shell').getAttribute('data-ds') === 'v2' ? 'v1' : 'v2');
+});
+</script>
+</body>
+</html>
