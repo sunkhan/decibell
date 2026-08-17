@@ -135,7 +135,13 @@ export default function ChannelSettingsModal() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [deleting, setDeleting] = useState(false);
 
-  // Reset draft whenever the modal opens or the underlying channel changes.
+  // Reset draft whenever the modal opens or the underlying channel
+  // changes. This component stays mounted across open/close (it
+  // returns null when closed), so EVERY piece of transient state must
+  // be re-initialized here — the in-flight flags included: a
+  // successful delete closes the modal with `deleting` still true,
+  // which left the next channel's delete button stuck on "Deleting…"
+  // until an app restart.
   useEffect(() => {
     if (activeModal !== "channel-settings" || !channel) return;
     setDraft({
@@ -147,10 +153,13 @@ export default function ChannelSettingsModal() {
     });
     setNameDraft(channel.name);
     setError(null);
+    setSaving(false);
     setWipeConfirmOpen(false);
     setWipeConfirmText("");
+    setWiping(false);
     setDeleteConfirmOpen(false);
     setDeleteConfirmText("");
+    setDeleting(false);
   }, [activeModal, channel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Surface the server's CHANNEL_WIPE_RES as a toast. The CHANNEL_WIPED
@@ -244,7 +253,9 @@ export default function ChannelSettingsModal() {
       });
       // Success confirmation is the CHANNEL_LIST_UPDATE broadcast (the
       // sidebar re-renders and the active channel switches); denials
-      // surface via the global channel_action_responded toast.
+      // surface via the global channel_action_responded toast. Reset
+      // the flag before closing — this component survives the close.
+      setDeleting(false);
       closeModal();
     } catch (err) {
       setDeleting(false);
