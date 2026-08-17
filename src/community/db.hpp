@@ -4,6 +4,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct sqlite3;
@@ -103,6 +104,49 @@ struct DbBan {
     std::string reason;
 };
 
+// Mirrors chatproj::RoleInfo. `position` is a dense hierarchy index:
+// 0 is reserved for the default `everyone` role, real roles occupy 1..N
+// contiguously (create/delete/move keep them dense).
+struct DbRole {
+    int64_t id = 0;
+    std::string name;
+    uint32_t color = 0;        // 0xRRGGBB, 0 = no color
+    int32_t position = 0;
+    uint64_t permissions = 0;  // chatproj::Permission bitfield
+    bool is_default = false;
+};
+
+// Permission bits — mirror of chatproj::Permission (kept here so the DB
+// layer doesn't depend on the generated protobuf headers).
+namespace perms {
+constexpr uint64_t kAdministrator   = 1ull << 0;
+constexpr uint64_t kManageServer    = 1ull << 1;
+constexpr uint64_t kManageChannels  = 1ull << 2;
+constexpr uint64_t kManageRoles     = 1ull << 3;
+constexpr uint64_t kKickMembers     = 1ull << 4;
+constexpr uint64_t kBanMembers      = 1ull << 5;
+constexpr uint64_t kManageMessages  = 1ull << 6;
+constexpr uint64_t kManageInvites   = 1ull << 7;
+constexpr uint64_t kManageNicknames = 1ull << 8;
+constexpr uint64_t kSendMessages    = 1ull << 10;
+constexpr uint64_t kConnectVoice    = 1ull << 11;
+constexpr uint64_t kStream          = 1ull << 12;
+constexpr uint64_t kAll             = ~0ull;
+// Every currently-defined permission bit. Role create/update mask
+// client-supplied bitfields with this so undefined bits never reach the
+// DB — a new bit becomes storable exactly when a server build that
+// defines (and enforces) it ships. Keeps stored bitfields small enough
+// that JS clients can treat them as plain numbers, and stops a crafted
+// client from parking garbage in the high bits.
+constexpr uint64_t kKnownMask =
+    kAdministrator | kManageServer | kManageChannels | kManageRoles |
+    kKickMembers | kBanMembers | kManageMessages | kManageInvites |
+    kManageNicknames | kSendMessages | kConnectVoice | kStream;
+// What the seeded `everyone` role starts with: the reserved default-on
+// bits, so future enforcement of send/connect/stream needs no migration.
+constexpr uint64_t kDefaultEveryone = kSendMessages | kConnectVoice | kStream;
+} // namespace perms
+
 // Reason an invite cannot be redeemed.
 enum class InviteResult {
     Ok,
@@ -175,8 +219,67 @@ public:
                                const std::string& redeeming_user,
                                DbInvite* out_invite);
 
+    // --- roles + permissions ---
+    // Roles ordered most-senior first (position DESC, id ASC); the
+    // default `everyone` role (position 0) comes last.
+    std::vector<DbRole> list_roles() const;
+    std::optional<DbRole> get_role(int64_t role_id) const;
+    // Inserts at position 1 (just above `everyone`), shifting existing
+    // roles up. Returns the created role, or nullopt on failure.
+    std::optional<DbRole> create_role(const std::string& name,
+                                      uint32_t color,
+                                      uint64_t permissions);
+    // Full-snapshot update. For the default role only `permissions` is
+    // applied (name/color/position are fixed). `position` is clamped to
+    // [1, N] and the move keeps positions dense. Returns false if the
+    // role doesn't exist or on DB error.
+    bool update_role(int64_t role_id,
+                     const std::string& name,
+                     uint32_t color,
+                     uint64_t permissions,
+                     int32_t position);
+    // Refuses the default role. Cascades member_roles rows and closes
+    // the position gap. Returns false if missing/default/DB error.
+    bool delete_role(int64_t role_id);
+    // Assigned role ids for one member (default role not included).
+    std::vector<int64_t> get_member_role_ids(const std::string& username) const;
+    // username -> assigned role ids, for building member lists in one query.
+    std::vector<std::pair<std::string, int64_t>> list_all_member_roles() const;
+    // Replaces the member's role set. Caller validates hierarchy; this
+    // only checks that every id references an existing non-default role.
+    bool set_member_roles(const std::string& username,
+                          const std::vector<int64_t>& role_ids);
+    // OR of `everyone` + the member's roles. Owner → perms::kAll.
+    // A set kAdministrator bit expands to perms::kAll.
+    uint64_t effective_permissions(const std::string& username) const;
+    bool has_permission(const std::string& username, uint64_t perm) const;
+    // Hierarchy level: highest assigned role position (0 with no roles).
+    // Owner → INT32_MAX. Used for "can only act below yourself" checks.
+    int32_t member_level(const std::string& username) const;
+
     // --- channels ---
     std::vector<DbChannel> list_channels() const;
+
+    // Creates a channel at the end of the list (position = max+1). The
+    // id is a filesystem-safe slug of the name, made unique with a
+    // numeric suffix on collision (it doubles as the attachment
+    // directory name and is immutable after creation). Returns the
+    // created row, or nullopt on invalid name / DB error.
+    std::optional<DbChannel> create_channel(const std::string& name,
+                                            int32_t type,
+                                            int32_t voice_bitrate_kbps);
+    // Display-name change only — the id/slug stays. False if the
+    // channel doesn't exist or the name is empty.
+    bool rename_channel(const std::string& channel_id,
+                        const std::string& name);
+    // How many channels of `type` exist (0 text / 1 voice). Guards the
+    // "can't delete the last text channel" rule.
+    int64_t count_channels_of_type(int32_t type) const;
+    // delete_channel lives below WipeChannelResult's declaration.
+
+    // --- nicknames ---
+    // Sets (empty = clears) a member's nickname. False if not a member.
+    bool set_nickname(const std::string& username, const std::string& nickname);
 
     // Update all five retention values at once. Returns false if the channel
     // doesn't exist or on DB error. Negative values are clamped to 0.
@@ -256,11 +359,18 @@ public:
                                           int64_t message_id,
                                           const std::string& channel_id,
                                           const std::string& uploader);
-    // Pending attachments (message_id=0) older than `cutoff_ts` (created_at
-    // in unix seconds). Used by the retention sweep to clean up abandoned
-    // uploads. Returns the rows themselves so the caller can unlink .partial
-    // files before the rows are deleted.
-    std::vector<DbAttachment> list_stale_pending_attachments(int64_t cutoff_ts) const;
+    // Unbound attachments (message_id=0) the retention sweep should clean
+    // up, with a cutoff per lifecycle state (created_at in unix seconds):
+    //   - 'uploading' rows older than `uploading_cutoff_ts` — the client
+    //     crashed or gave up mid-upload;
+    //   - 'ready' rows older than `ready_cutoff_ts` — uploaded but never
+    //     referenced by a CHANNEL_MSG. Kept on a much longer leash than
+    //     uploading rows, because a finished upload may legitimately sit
+    //     in a compose box for a while before the message is sent.
+    // Returns the rows themselves so the caller can unlink the .partial /
+    // final files before the rows are deleted.
+    std::vector<DbAttachment> list_stale_pending_attachments(
+        int64_t uploading_cutoff_ts, int64_t ready_cutoff_ts) const;
     bool delete_attachment_row(int64_t attachment_id);
 
     // --- owner-initiated wipe ---
@@ -272,6 +382,12 @@ public:
         int64_t deleted_attachment_count = 0;
         std::vector<std::string> unlink_paths;
     };
+
+    // Wipes the channel's messages + attachments (same shape as
+    // wipe_channel) and removes the channel row, in one transaction.
+    // Returns the unlink list for filesystem cleanup; nullopt if the
+    // channel doesn't exist or on DB error.
+    std::optional<WipeChannelResult> delete_channel(const std::string& channel_id);
 
     // --- per-message delete ---
     // (see docs/superpowers/specs/2026-05-15-message-deletion-design.md)
@@ -323,6 +439,11 @@ public:
 private:
     void init_schema_();
     void migrate_to_v2_();
+    void migrate_to_v5_roles_();
+    // Unlocked internals shared by the public role API (mutex_ held by caller).
+    std::optional<DbRole> get_role_unlocked_(int64_t role_id) const;
+    int32_t max_role_position_unlocked_() const;
+    uint64_t effective_permissions_unlocked_(const std::string& username) const;
     void seed_if_empty_(const std::string& owner,
                         const std::string& name,
                         const std::string& desc);

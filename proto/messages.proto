@@ -153,6 +153,29 @@ message Packet {
     FETCH_SERVER_PICTURE_REQ  = 85;  // client→central (JWT)
     FETCH_SERVER_PICTURE_RES  = 86;  // central→requester
     SERVER_PICTURE_CHANGED    = 87;  // central→every online member
+
+    // --- Roles + permissions (community server) ---
+    // See docs/superpowers/specs/2026-08-17-roles-permissions-design.md
+    // and the Permission enum for the bitfield the role carries.
+    ROLE_LIST_REQ           = 88;  // client→community
+    ROLE_LIST_RES           = 89;  // community→client; pushed after auth and
+                                   // broadcast to everyone on any role change
+    ROLE_CREATE_REQ         = 90;  // client→community (MANAGE_ROLES)
+    ROLE_UPDATE_REQ         = 91;  // client→community (MANAGE_ROLES + hierarchy)
+    ROLE_DELETE_REQ         = 92;  // client→community (MANAGE_ROLES + hierarchy)
+    ROLE_ACTION_RES         = 93;  // community→requester: create/update/delete/assign result
+    MEMBER_ROLES_UPDATE_REQ = 94;  // client→community: replace a member's role set
+    UNBAN_MEMBER_REQ        = 95;  // client→community (BAN_MEMBERS); response via MOD_ACTION_RES
+
+    // --- Channel management + nicknames ---
+    // (MANAGE_CHANNELS / MANAGE_NICKNAMES; see the roles spec doc)
+    CHANNEL_CREATE_REQ  = 96;   // client→community (MANAGE_CHANNELS)
+    CHANNEL_DELETE_REQ  = 97;   // client→community (MANAGE_CHANNELS)
+    CHANNEL_RENAME_REQ  = 98;   // client→community (MANAGE_CHANNELS)
+    CHANNEL_ACTION_RES  = 99;   // community→requester: create/rename/delete result
+    CHANNEL_LIST_UPDATE = 100;  // community→all members: full channel list push
+    SET_NICKNAME_REQ    = 101;  // client→community (self, or MANAGE_NICKNAMES);
+                                // response via MOD_ACTION_RES action="nickname"
   }
 
   Type type = 1;
@@ -273,6 +296,24 @@ message Packet {
     FetchServerPictureReq  fetch_server_picture_req  = 87;
     FetchServerPictureRes  fetch_server_picture_res  = 88;
     ServerPictureChanged   server_picture_changed    = 89;
+
+    // --- Roles + permissions ---
+    RoleListRequest          role_list_req           = 90;
+    RoleListResponse         role_list_res           = 91;
+    RoleCreateRequest        role_create_req         = 92;
+    RoleUpdateRequest        role_update_req         = 93;
+    RoleDeleteRequest        role_delete_req         = 94;
+    RoleActionResponse       role_action_res         = 95;
+    MemberRolesUpdateRequest member_roles_update_req = 96;
+    UnbanMemberRequest       unban_member_req        = 97;
+
+    // --- Channel management + nicknames ---
+    ChannelCreateRequest  channel_create_req  = 98;
+    ChannelDeleteRequest  channel_delete_req  = 99;
+    ChannelRenameRequest  channel_rename_req  = 100;
+    ChannelActionResponse channel_action_res  = 101;
+    ChannelListUpdate     channel_list_update = 102;
+    SetNicknameRequest    set_nickname_req    = 103;
   }
 }
 
@@ -526,6 +567,53 @@ message Attachment {
   string placeholder = 16;
 }
 
+// --- Channel management ---
+// The channel `id` is a server-generated slug of the name (unique,
+// filesystem-safe — it doubles as the attachment directory name) and is
+// immutable; renames change only the display name.
+
+message ChannelCreateRequest {
+  string name = 1;
+  ChannelInfo.Type type = 2;
+  // Voice channels only. 0 = "use client default".
+  int32 voice_bitrate_kbps = 3;
+}
+
+message ChannelDeleteRequest {
+  string channel_id = 1;
+}
+
+message ChannelRenameRequest {
+  string channel_id = 1;
+  string name = 2;
+}
+
+message ChannelActionResponse {
+  bool success = 1;
+  string message = 2;
+  // "create" | "rename" | "delete"
+  string action = 3;
+  // Populated on successful create/rename.
+  ChannelInfo channel = 4;
+}
+
+// Full ordered channel list, pushed to every member after any create /
+// rename / delete so sidebars stay authoritative without a reconnect.
+// Clients replace their local list wholesale (and drop cached state for
+// channels that disappeared).
+message ChannelListUpdate {
+  repeated ChannelInfo channels = 1;
+}
+
+// Sets (or clears, with an empty nickname) a member's display nickname.
+// Self-changes are always allowed; changing someone else's requires
+// MANAGE_NICKNAMES and a strictly higher role. Result rides
+// MOD_ACTION_RES with action="nickname".
+message SetNicknameRequest {
+  string username = 1;
+  string nickname = 2;
+}
+
 message ChannelHistoryRequest {
   string channel_id = 1;
   // Return messages with id < before_id. 0 means "most recent".
@@ -744,6 +832,10 @@ message MemberInfo {
   string nickname = 3;
   bool is_owner = 4;
   bool is_online = 5;
+  // Ids of the roles assigned to this member (the default `everyone`
+  // role is implicit and never listed). Clients resolve them against
+  // RoleListResponse to compute display color and permissions.
+  repeated int64 role_ids = 6;
 }
 
 message MemberListRequest {}
@@ -753,6 +845,105 @@ message MemberListResponse {
   string message = 2;
   repeated MemberInfo members = 3;
   repeated string bans = 4;
+}
+
+// --- Roles + permissions ---
+// RoleInfo.permissions is an OR of these bit values. The values are part
+// of the wire contract — never renumber, only append new bits. Bits kept
+// below 2^53 so JavaScript clients can treat the field as a plain number.
+//
+// Semantics:
+//   PERM_ADMINISTRATOR grants everything below (but NOT hierarchy bypass:
+//   role management and kick/ban still require the actor's highest role
+//   to sit above the role/member being acted on; only the owner bypasses
+//   hierarchy).
+//   The three reserved bits are defined now so their values are stable,
+//   but the server does not enforce them yet — they default ON in the
+//   seeded `everyone` role so enforcement can ship later without a
+//   migration.
+enum Permission {
+  PERM_NONE             = 0;
+  PERM_ADMINISTRATOR    = 1;     // 1<<0  — all permissions
+  PERM_MANAGE_SERVER    = 2;     // 1<<1  — server name/description/picture
+  PERM_MANAGE_CHANNELS  = 4;     // 1<<2  — retention settings, wipe (create/delete later)
+  PERM_MANAGE_ROLES     = 8;     // 1<<3  — create/edit/delete/assign roles below own highest
+  PERM_KICK_MEMBERS     = 16;    // 1<<4
+  PERM_BAN_MEMBERS      = 32;    // 1<<5  — ban/unban + see the ban list
+  PERM_MANAGE_MESSAGES  = 64;    // 1<<6  — delete other members' messages
+  PERM_MANAGE_INVITES   = 128;   // 1<<7  — create/list/revoke invites
+  PERM_MANAGE_NICKNAMES = 256;   // 1<<8  — reserved (ships with nickname editing)
+  PERM_SEND_MESSAGES    = 1024;  // 1<<10 — reserved, default-on
+  PERM_CONNECT_VOICE    = 2048;  // 1<<11 — reserved, default-on
+  PERM_STREAM           = 4096;  // 1<<12 — reserved, default-on
+}
+
+message RoleInfo {
+  int64 id = 1;
+  string name = 2;
+  // 0xRRGGBB display color; 0 = default (no color).
+  uint32 color = 3;
+  // Dense hierarchy position, higher = more senior. 0 is reserved for
+  // the default `everyone` role; real roles occupy 1..N with no gaps.
+  int32 position = 4;
+  uint64 permissions = 5;
+  // True only for the seeded `everyone` role: undeletable, unmovable,
+  // implicit on every member; only its permissions can be edited.
+  bool is_default = 6;
+}
+
+message RoleListRequest {}
+
+message RoleListResponse {
+  bool success = 1;
+  string message = 2;
+  // Ordered most-senior first (position DESC); `everyone` last.
+  repeated RoleInfo roles = 3;
+}
+
+message RoleCreateRequest {
+  string name = 1;
+  uint32 color = 2;
+  uint64 permissions = 3;
+  // New roles are always inserted at position 1 (just above `everyone`);
+  // move them afterwards with RoleUpdateRequest.position.
+}
+
+// Full snapshot — the client sends every field (it has the current role
+// from RoleListResponse). position is clamped server-side to [1, N] and
+// to strictly below the actor's own highest role.
+message RoleUpdateRequest {
+  int64 role_id = 1;
+  string name = 2;
+  uint32 color = 3;
+  uint64 permissions = 4;
+  int32 position = 5;
+}
+
+message RoleDeleteRequest {
+  int64 role_id = 1;
+}
+
+message RoleActionResponse {
+  bool success = 1;
+  string message = 2;
+  // "create" | "update" | "delete" | "assign"
+  string action = 3;
+  // Populated on successful create/update so the requester can resolve
+  // the server-assigned id without waiting for the ROLE_LIST_RES push.
+  RoleInfo role = 4;
+}
+
+// Replaces the target member's entire role set (the default role is
+// implicit and must not be listed). Requires MANAGE_ROLES, and every
+// role being added or removed must sit strictly below the actor's
+// highest role.
+message MemberRolesUpdateRequest {
+  string username = 1;
+  repeated int64 role_ids = 2;
+}
+
+message UnbanMemberRequest {
+  string username = 1;
 }
 
 message KickMemberRequest {
@@ -771,7 +962,7 @@ message ModActionResponse {
   // Echo of the username that was acted upon, so the client can resolve
   // which request this response corresponds to.
   string username = 3;
-  // "kick" | "ban" | "leave"
+  // "kick" | "ban" | "unban" | "leave"
   string action = 4;
 }
 

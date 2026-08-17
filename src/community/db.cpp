@@ -157,6 +157,46 @@ void CommunityDb::init_schema_() {
 
     // --- v2 schema additions: persistent messages + per-channel retention ---
     migrate_to_v2_();
+
+    // --- v5: roles + permissions ---
+    migrate_to_v5_roles_();
+}
+
+void CommunityDb::migrate_to_v5_roles_() {
+    exec_sql(db_,
+        "CREATE TABLE IF NOT EXISTS roles ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name TEXT NOT NULL,"
+        "  color INTEGER NOT NULL DEFAULT 0,"
+        "  position INTEGER NOT NULL DEFAULT 0,"
+        "  permissions INTEGER NOT NULL DEFAULT 0,"
+        "  is_default INTEGER NOT NULL DEFAULT 0"
+        ");");
+    exec_sql(db_,
+        "CREATE TABLE IF NOT EXISTS member_roles ("
+        "  username TEXT NOT NULL,"
+        "  role_id INTEGER NOT NULL,"
+        "  PRIMARY KEY (username, role_id)"
+        ");");
+    exec_sql(db_,
+        "CREATE INDEX IF NOT EXISTS idx_member_roles_role "
+        "ON member_roles(role_id);");
+
+    // Seed the default `everyone` role exactly once. Position 0 is
+    // reserved for it; it's implicit on every member and undeletable.
+    {
+        Stmt check(db_, "SELECT COUNT(*) FROM roles WHERE is_default=1;");
+        if (check.s && check.step() == SQLITE_ROW && check.col_int(0) == 0) {
+            Stmt ins(db_,
+                "INSERT INTO roles(name, color, position, permissions, is_default) "
+                "VALUES('everyone', 0, 0, ?, 1);");
+            if (ins.s) {
+                ins.bind_int64(1, static_cast<int64_t>(perms::kDefaultEveryone));
+                ins.step();
+            }
+        }
+    }
+    set_meta_("schema_version", "5");
 }
 
 namespace {
@@ -444,9 +484,16 @@ void CommunityDb::migrate_to_v2_() {
 void CommunityDb::seed_if_empty_(const std::string& owner,
                                  const std::string& name,
                                  const std::string& desc) {
-    // Only seed if server_meta is empty — i.e. fresh DB file.
-    Stmt check(db_, "SELECT COUNT(*) FROM server_meta;");
-    if (check.s && check.step() == SQLITE_ROW && check.col_int(0) > 0) {
+    // Freshness is judged by the absence of the `owner` meta key — NOT by
+    // COUNT(*) on server_meta. init_schema_ runs before seeding and its
+    // migrations already stamp schema_version into server_meta, so a
+    // count-based check sees a "non-empty" table on a brand-new file and
+    // skips seeding entirely: the DB comes up ownerless, every owner-gated
+    // feature is dead, and the owner can't even join (membership requires
+    // an invite only the owner could create). This also repairs DBs
+    // created while that bug was live, the first time they boot with
+    // DECIBELL_OWNER_USERNAME set.
+    if (!get_meta_("owner").empty()) {
         // Existing DB — still refresh the current name/description to match
         // whatever the operator configured via env vars on this launch,
         // since that is authoritative. Owner is NOT overwritten; ownership
@@ -455,8 +502,14 @@ void CommunityDb::seed_if_empty_(const std::string& owner,
         set_meta_("server_description", desc);
         return;
     }
+    if (owner.empty()) {
+        // Nothing to seed with (main() normally refuses to start a fresh
+        // DB without an owner; this guards the repair path).
+        return;
+    }
 
-    set_meta_("schema_version", "1");
+    // schema_version is stamped by the migrations in init_schema_ —
+    // don't overwrite it here.
     set_meta_("owner", owner);
     set_meta_("server_name", name);
     set_meta_("server_description", desc);
@@ -580,10 +633,23 @@ bool CommunityDb::add_member(const std::string& username) {
 
 bool CommunityDb::remove_member(const std::string& username) {
     std::lock_guard<std::mutex> lock(mutex_);
-    Stmt q(db_, "DELETE FROM members WHERE username=?;");
-    if (!q.s) return false;
-    q.bind_text(1, username);
-    return q.step() == SQLITE_DONE;
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    // Role assignments don't survive leaving/kick — a rejoining member
+    // starts clean, matching Discord semantics.
+    {
+        Stmt q(db_, "DELETE FROM member_roles WHERE username=?;");
+        if (q.s) { q.bind_text(1, username); q.step(); }
+    }
+    bool was_member = false;
+    {
+        Stmt q(db_, "DELETE FROM members WHERE username=?;");
+        if (!q.s) { exec_sql(db_, "ROLLBACK;"); return false; }
+        q.bind_text(1, username);
+        if (q.step() != SQLITE_DONE) { exec_sql(db_, "ROLLBACK;"); return false; }
+        was_member = sqlite3_changes(db_) > 0;
+    }
+    exec_sql(db_, "COMMIT;");
+    return was_member;
 }
 
 std::vector<DbMember> CommunityDb::list_members() const {
@@ -615,8 +681,15 @@ bool CommunityDb::add_ban(const std::string& username,
                           const std::string& banned_by,
                           const std::string& reason) {
     std::lock_guard<std::mutex> lock(mutex_);
-    // Remove membership and insert ban atomically.
+    // Remove membership (and role assignments) and insert ban atomically.
     exec_sql(db_, "BEGIN IMMEDIATE;");
+    {
+        Stmt del(db_, "DELETE FROM member_roles WHERE username=?;");
+        if (del.s) {
+            del.bind_text(1, username);
+            del.step();
+        }
+    }
     {
         Stmt del(db_, "DELETE FROM members WHERE username=?;");
         if (del.s) {
@@ -662,6 +735,288 @@ std::vector<std::string> CommunityDb::list_bans() const {
         out.push_back(q.col_text(0));
     }
     return out;
+}
+
+// --- roles + permissions ---
+
+namespace {
+DbRole role_from_row(const Stmt& q) {
+    DbRole r;
+    r.id = q.col_int64(0);
+    r.name = q.col_text(1);
+    r.color = static_cast<uint32_t>(q.col_int64(2));
+    r.position = q.col_int(3);
+    r.permissions = static_cast<uint64_t>(q.col_int64(4));
+    r.is_default = q.col_int(5) != 0;
+    return r;
+}
+constexpr const char* kRoleCols =
+    "id, name, color, position, permissions, is_default";
+} // namespace
+
+std::vector<DbRole> CommunityDb::list_roles() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<DbRole> out;
+    Stmt q(db_,
+        "SELECT id, name, color, position, permissions, is_default "
+        "FROM roles ORDER BY position DESC, id ASC;");
+    if (!q.s) return out;
+    while (q.step() == SQLITE_ROW) out.push_back(role_from_row(q));
+    return out;
+}
+
+std::optional<DbRole> CommunityDb::get_role_unlocked_(int64_t role_id) const {
+    std::string sql = std::string("SELECT ") + kRoleCols +
+                      " FROM roles WHERE id=?;";
+    Stmt q(db_, sql.c_str());
+    if (!q.s) return std::nullopt;
+    q.bind_int64(1, role_id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return role_from_row(q);
+}
+
+std::optional<DbRole> CommunityDb::get_role(int64_t role_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return get_role_unlocked_(role_id);
+}
+
+int32_t CommunityDb::max_role_position_unlocked_() const {
+    Stmt q(db_, "SELECT COALESCE(MAX(position), 0) FROM roles;");
+    if (!q.s || q.step() != SQLITE_ROW) return 0;
+    return q.col_int(0);
+}
+
+std::optional<DbRole> CommunityDb::create_role(const std::string& name,
+                                               uint32_t color,
+                                               uint64_t permissions) {
+    if (name.empty()) return std::nullopt;
+    std::lock_guard<std::mutex> lock(mutex_);
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    // New roles land at position 1, directly above `everyone`; existing
+    // roles shift up one to stay dense.
+    exec_sql(db_, "UPDATE roles SET position = position + 1 WHERE is_default = 0;");
+    DbRole r;
+    r.name = name;
+    r.color = color;
+    r.position = 1;
+    r.permissions = permissions;
+    {
+        Stmt ins(db_,
+            "INSERT INTO roles(name, color, position, permissions, is_default) "
+            "VALUES(?, ?, 1, ?, 0);");
+        if (!ins.s) { exec_sql(db_, "ROLLBACK;"); return std::nullopt; }
+        ins.bind_text(1, name);
+        ins.bind_int64(2, static_cast<int64_t>(color));
+        ins.bind_int64(3, static_cast<int64_t>(permissions));
+        if (ins.step() != SQLITE_DONE) { exec_sql(db_, "ROLLBACK;"); return std::nullopt; }
+        r.id = sqlite3_last_insert_rowid(db_);
+    }
+    exec_sql(db_, "COMMIT;");
+    return r;
+}
+
+bool CommunityDb::update_role(int64_t role_id,
+                              const std::string& name,
+                              uint32_t color,
+                              uint64_t permissions,
+                              int32_t position) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto cur = get_role_unlocked_(role_id);
+    if (!cur) return false;
+
+    if (cur->is_default) {
+        // Only the permission bits of `everyone` are editable.
+        Stmt q(db_, "UPDATE roles SET permissions=? WHERE id=?;");
+        if (!q.s) return false;
+        q.bind_int64(1, static_cast<int64_t>(permissions));
+        q.bind_int64(2, role_id);
+        return q.step() == SQLITE_DONE;
+    }
+    if (name.empty()) return false;
+
+    // Clamp the requested position into the valid dense range [1, N].
+    const int32_t max_pos = max_role_position_unlocked_();
+    int32_t new_pos = position;
+    if (new_pos < 1) new_pos = 1;
+    if (new_pos > max_pos) new_pos = max_pos;
+
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    bool ok = true;
+    if (new_pos != cur->position) {
+        // Standard list-move: close the gap at the old slot, open one at
+        // the new slot. `everyone` (position 0) is never touched.
+        if (new_pos > cur->position) {
+            Stmt q(db_,
+                "UPDATE roles SET position = position - 1 "
+                "WHERE is_default = 0 AND position > ? AND position <= ?;");
+            ok = q.s != nullptr;
+            if (ok) {
+                q.bind_int(1, cur->position);
+                q.bind_int(2, new_pos);
+                ok = q.step() == SQLITE_DONE;
+            }
+        } else {
+            Stmt q(db_,
+                "UPDATE roles SET position = position + 1 "
+                "WHERE is_default = 0 AND position >= ? AND position < ?;");
+            ok = q.s != nullptr;
+            if (ok) {
+                q.bind_int(1, new_pos);
+                q.bind_int(2, cur->position);
+                ok = q.step() == SQLITE_DONE;
+            }
+        }
+    }
+    if (ok) {
+        Stmt q(db_,
+            "UPDATE roles SET name=?, color=?, permissions=?, position=? "
+            "WHERE id=?;");
+        ok = q.s != nullptr;
+        if (ok) {
+            q.bind_text(1, name);
+            q.bind_int64(2, static_cast<int64_t>(color));
+            q.bind_int64(3, static_cast<int64_t>(permissions));
+            q.bind_int(4, new_pos);
+            q.bind_int64(5, role_id);
+            ok = q.step() == SQLITE_DONE;
+        }
+    }
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    return ok;
+}
+
+bool CommunityDb::delete_role(int64_t role_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto cur = get_role_unlocked_(role_id);
+    if (!cur || cur->is_default) return false;
+
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    bool ok = true;
+    {
+        Stmt q(db_, "DELETE FROM member_roles WHERE role_id=?;");
+        ok = q.s != nullptr;
+        if (ok) { q.bind_int64(1, role_id); ok = q.step() == SQLITE_DONE; }
+    }
+    if (ok) {
+        Stmt q(db_, "DELETE FROM roles WHERE id=?;");
+        ok = q.s != nullptr;
+        if (ok) { q.bind_int64(1, role_id); ok = q.step() == SQLITE_DONE; }
+    }
+    if (ok) {
+        // Close the gap so positions stay dense.
+        Stmt q(db_,
+            "UPDATE roles SET position = position - 1 "
+            "WHERE is_default = 0 AND position > ?;");
+        ok = q.s != nullptr;
+        if (ok) { q.bind_int(1, cur->position); ok = q.step() == SQLITE_DONE; }
+    }
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    return ok;
+}
+
+std::vector<int64_t> CommunityDb::get_member_role_ids(const std::string& username) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<int64_t> out;
+    Stmt q(db_,
+        "SELECT mr.role_id FROM member_roles mr "
+        "JOIN roles r ON r.id = mr.role_id "
+        "WHERE mr.username=? ORDER BY r.position DESC;");
+    if (!q.s) return out;
+    q.bind_text(1, username);
+    while (q.step() == SQLITE_ROW) out.push_back(q.col_int64(0));
+    return out;
+}
+
+std::vector<std::pair<std::string, int64_t>> CommunityDb::list_all_member_roles() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::pair<std::string, int64_t>> out;
+    Stmt q(db_,
+        "SELECT mr.username, mr.role_id FROM member_roles mr "
+        "JOIN roles r ON r.id = mr.role_id "
+        "ORDER BY mr.username ASC, r.position DESC;");
+    if (!q.s) return out;
+    while (q.step() == SQLITE_ROW) {
+        out.emplace_back(q.col_text(0), q.col_int64(1));
+    }
+    return out;
+}
+
+bool CommunityDb::set_member_roles(const std::string& username,
+                                   const std::vector<int64_t>& role_ids) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Validate every id references an existing, non-default role before
+    // touching anything.
+    for (int64_t id : role_ids) {
+        auto r = get_role_unlocked_(id);
+        if (!r || r->is_default) return false;
+    }
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    bool ok = true;
+    {
+        Stmt q(db_, "DELETE FROM member_roles WHERE username=?;");
+        ok = q.s != nullptr;
+        if (ok) { q.bind_text(1, username); ok = q.step() == SQLITE_DONE; }
+    }
+    for (int64_t id : role_ids) {
+        if (!ok) break;
+        Stmt q(db_,
+            "INSERT OR IGNORE INTO member_roles(username, role_id) VALUES(?, ?);");
+        ok = q.s != nullptr;
+        if (ok) {
+            q.bind_text(1, username);
+            q.bind_int64(2, id);
+            ok = q.step() == SQLITE_DONE;
+        }
+    }
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    return ok;
+}
+
+uint64_t CommunityDb::effective_permissions_unlocked_(const std::string& username) const {
+    if (!username.empty() && get_meta_("owner") == username) return perms::kAll;
+    uint64_t p = 0;
+    // Base bits from `everyone` + OR of the member's assigned roles.
+    {
+        Stmt q(db_,
+            "SELECT permissions FROM roles WHERE is_default=1 "
+            "UNION ALL "
+            "SELECT r.permissions FROM roles r "
+            "JOIN member_roles mr ON mr.role_id = r.id "
+            "WHERE mr.username=?1;");
+        if (q.s) {
+            q.bind_text(1, username);
+            while (q.step() == SQLITE_ROW) {
+                p |= static_cast<uint64_t>(q.col_int64(0));
+            }
+        }
+    }
+    if (p & perms::kAdministrator) return perms::kAll;
+    return p;
+}
+
+uint64_t CommunityDb::effective_permissions(const std::string& username) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return effective_permissions_unlocked_(username);
+}
+
+bool CommunityDb::has_permission(const std::string& username, uint64_t perm) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return (effective_permissions_unlocked_(username) & perm) == perm;
+}
+
+int32_t CommunityDb::member_level(const std::string& username) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!username.empty() && get_meta_("owner") == username) {
+        return INT32_MAX;
+    }
+    Stmt q(db_,
+        "SELECT COALESCE(MAX(r.position), 0) FROM roles r "
+        "JOIN member_roles mr ON mr.role_id = r.id "
+        "WHERE mr.username=?;");
+    if (!q.s) return 0;
+    q.bind_text(1, username);
+    if (q.step() != SQLITE_ROW) return 0;
+    return q.col_int(0);
 }
 
 std::optional<DbInvite> CommunityDb::create_invite(const std::string& created_by,
@@ -855,6 +1210,167 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
     c.retention_days_document = q.col_int(8);
     c.retention_days_audio    = q.col_int(9);
     return c;
+}
+
+namespace {
+// Filesystem-safe slug for channel ids: lowercase alnum with single
+// dashes, trimmed, capped at 32 chars. The id doubles as the channel's
+// attachment directory name, so nothing outside [a-z0-9-] survives.
+std::string slugify_channel_name(const std::string& name) {
+    std::string out;
+    out.reserve(name.size());
+    bool last_dash = true;  // suppress a leading dash
+    for (char c : name) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if ((uc >= 'a' && uc <= 'z') || (uc >= '0' && uc <= '9')) {
+            out.push_back(static_cast<char>(uc));
+            last_dash = false;
+        } else if (uc >= 'A' && uc <= 'Z') {
+            out.push_back(static_cast<char>(uc - 'A' + 'a'));
+            last_dash = false;
+        } else if (!last_dash) {
+            out.push_back('-');
+            last_dash = true;
+        }
+        if (out.size() >= 32) break;
+    }
+    while (!out.empty() && out.back() == '-') out.pop_back();
+    if (out.empty()) out = "channel";
+    return out;
+}
+} // namespace
+
+std::optional<DbChannel> CommunityDb::create_channel(const std::string& name,
+                                                     int32_t type,
+                                                     int32_t voice_bitrate_kbps) {
+    if (name.empty() || (type != 0 && type != 1)) return std::nullopt;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Unique id: the slug, or slug-2, slug-3... on collision.
+    const std::string base = slugify_channel_name(name);
+    std::string id = base;
+    for (int suffix = 2; suffix < 1000; ++suffix) {
+        Stmt q(db_, "SELECT 1 FROM channels WHERE id=?;");
+        if (!q.s) return std::nullopt;
+        q.bind_text(1, id);
+        if (q.step() != SQLITE_ROW) break;
+        id = base + "-" + std::to_string(suffix);
+    }
+
+    int32_t position = 0;
+    {
+        Stmt q(db_, "SELECT COALESCE(MAX(position), -1) + 1 FROM channels;");
+        if (q.s && q.step() == SQLITE_ROW) position = q.col_int(0);
+    }
+
+    Stmt ins(db_,
+        "INSERT INTO channels(id, name, type, position, voice_bitrate_kbps) "
+        "VALUES(?, ?, ?, ?, ?);");
+    if (!ins.s) return std::nullopt;
+    ins.bind_text(1, id);
+    ins.bind_text(2, name);
+    ins.bind_int(3, type);
+    ins.bind_int(4, position);
+    ins.bind_int(5, type == 1 ? voice_bitrate_kbps : 0);
+    if (ins.step() != SQLITE_DONE) return std::nullopt;
+
+    DbChannel c;
+    c.id = id;
+    c.name = name;
+    c.type = type;
+    c.position = position;
+    c.voice_bitrate_kbps = type == 1 ? voice_bitrate_kbps : 0;
+    return c;
+}
+
+bool CommunityDb::rename_channel(const std::string& channel_id,
+                                 const std::string& name) {
+    if (name.empty()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "UPDATE channels SET name=? WHERE id=?;");
+    if (!q.s) return false;
+    q.bind_text(1, name);
+    q.bind_text(2, channel_id);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
+}
+
+int64_t CommunityDb::count_channels_of_type(int32_t type) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "SELECT COUNT(*) FROM channels WHERE type=?;");
+    if (!q.s) return 0;
+    q.bind_int(1, type);
+    if (q.step() != SQLITE_ROW) return 0;
+    return q.col_int64(0);
+}
+
+std::optional<CommunityDb::WipeChannelResult> CommunityDb::delete_channel(
+    const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    {
+        Stmt q(db_, "SELECT 1 FROM channels WHERE id=?;");
+        if (!q.s) return std::nullopt;
+        q.bind_text(1, channel_id);
+        if (q.step() != SQLITE_ROW) return std::nullopt;
+    }
+
+    WipeChannelResult out;
+    // Collect blob paths before the rows go (mirrors wipe_channel).
+    {
+        Stmt q(db_,
+            "SELECT COALESCE(storage_path, '') FROM attachments "
+            "WHERE channel_id=?;");
+        if (!q.s) return std::nullopt;
+        q.bind_text(1, channel_id);
+        while (q.step() == SQLITE_ROW) {
+            std::string p = q.col_text(0);
+            if (!p.empty()) out.unlink_paths.push_back(std::move(p));
+        }
+    }
+
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return std::nullopt;
+    bool ok = true;
+    {
+        Stmt del(db_, "DELETE FROM attachments WHERE channel_id=?;");
+        ok = del.s != nullptr;
+        if (ok) {
+            del.bind_text(1, channel_id);
+            ok = del.step() == SQLITE_DONE;
+            if (ok) out.deleted_attachment_count = sqlite3_changes(db_);
+        }
+    }
+    if (ok) {
+        // FTS5 mirror rows follow via the AFTER DELETE trigger.
+        Stmt del(db_, "DELETE FROM messages WHERE channel_id=?;");
+        ok = del.s != nullptr;
+        if (ok) {
+            del.bind_text(1, channel_id);
+            ok = del.step() == SQLITE_DONE;
+            if (ok) out.deleted_message_count = sqlite3_changes(db_);
+        }
+    }
+    if (ok) {
+        Stmt del(db_, "DELETE FROM channels WHERE id=?;");
+        ok = del.s != nullptr;
+        if (ok) {
+            del.bind_text(1, channel_id);
+            ok = del.step() == SQLITE_DONE;
+        }
+    }
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    if (!ok) return std::nullopt;
+    return out;
+}
+
+bool CommunityDb::set_nickname(const std::string& username,
+                               const std::string& nickname) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "UPDATE members SET nickname=? WHERE username=?;");
+    if (!q.s) return false;
+    q.bind_text(1, nickname);
+    q.bind_text(2, username);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
 }
 
 bool CommunityDb::update_channel_retention(const std::string& channel_id,
@@ -1231,16 +1747,22 @@ std::vector<int64_t> CommunityDb::bind_attachments(const std::vector<int64_t>& a
     return bound;
 }
 
-std::vector<DbAttachment> CommunityDb::list_stale_pending_attachments(int64_t cutoff_ts) const {
+std::vector<DbAttachment> CommunityDb::list_stale_pending_attachments(
+    int64_t uploading_cutoff_ts, int64_t ready_cutoff_ts) const {
     std::vector<DbAttachment> out;
     std::lock_guard<std::mutex> lock(mutex_);
+    // Anything not 'uploading' gets the longer ready-cutoff — a finished
+    // upload waiting in a compose box must not vanish after an hour.
     Stmt q(db_,
         "SELECT id, message_id, kind, filename, mime, size_bytes, "
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
         "  upload_status, expected_size, uploader, channel_id "
-        "FROM attachments WHERE message_id=0 AND created_at<?;");
+        "FROM attachments WHERE message_id=0 "
+        "  AND ((upload_status='uploading' AND created_at<?) "
+        "    OR (upload_status<>'uploading' AND created_at<?));");
     if (!q.s) return out;
-    q.bind_int64(1, cutoff_ts);
+    q.bind_int64(1, uploading_cutoff_ts);
+    q.bind_int64(2, ready_cutoff_ts);
     while (q.step() == SQLITE_ROW) {
         DbAttachment a;
         a.id = q.col_int64(0);
@@ -1396,9 +1918,8 @@ CommunityDb::DeleteMessageResult CommunityDb::delete_message(
 }
 
 bool CommunityDb::can_delete_others(const std::string& username) const {
-    // Today: owner-only. When roles ship, extend with:
-    //   || role_has_permission(username, "DELETE_MESSAGES")
-    return owner() == username;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return (effective_permissions_unlocked_(username) & perms::kManageMessages) != 0;
 }
 
 CommunityDb::PrunedTextResult CommunityDb::prune_text_messages(

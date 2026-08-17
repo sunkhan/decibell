@@ -58,6 +58,66 @@ std::string sha256_hex(const std::string& data) {
     }
     return out;
 }
+
+/// Builds a ROLE_LIST_RES packet from the current DB state. Pushed to a
+/// session after auth, sent on ROLE_LIST_REQ, and broadcast to every
+/// member whenever a role is created/updated/deleted.
+chatproj::Packet build_role_list_packet(chatproj::CommunityDb* db) {
+    chatproj::Packet p;
+    p.set_type(chatproj::Packet::ROLE_LIST_RES);
+    auto* res = p.mutable_role_list_res();
+    res->set_success(db != nullptr);
+    if (db) {
+        for (const auto& r : db->list_roles()) {
+            auto* info = res->add_roles();
+            info->set_id(r.id);
+            info->set_name(r.name);
+            info->set_color(r.color);
+            info->set_position(r.position);
+            info->set_permissions(r.permissions);
+            info->set_is_default(r.is_default);
+        }
+    }
+    return p;
+}
+
+/// Copies a DbRole into a RoleActionResponse's role field.
+void fill_role_info(chatproj::RoleInfo* info, const chatproj::DbRole& r) {
+    info->set_id(r.id);
+    info->set_name(r.name);
+    info->set_color(r.color);
+    info->set_position(r.position);
+    info->set_permissions(r.permissions);
+    info->set_is_default(r.is_default);
+}
+
+/// Copies a DbChannel into a ChannelInfo.
+void fill_channel_info(chatproj::ChannelInfo* info, const chatproj::DbChannel& ch) {
+    info->set_id(ch.id);
+    info->set_name(ch.name);
+    info->set_type(ch.type == 1 ? chatproj::ChannelInfo::VOICE
+                                : chatproj::ChannelInfo::TEXT);
+    info->set_voice_bitrate_kbps(ch.voice_bitrate_kbps);
+    info->set_retention_days_text(ch.retention_days_text);
+    info->set_retention_days_image(ch.retention_days_image);
+    info->set_retention_days_video(ch.retention_days_video);
+    info->set_retention_days_document(ch.retention_days_document);
+    info->set_retention_days_audio(ch.retention_days_audio);
+}
+
+/// Builds a CHANNEL_LIST_UPDATE packet with the full ordered channel
+/// list. Broadcast to every member after any create/rename/delete.
+chatproj::Packet build_channel_list_packet(chatproj::CommunityDb* db) {
+    chatproj::Packet p;
+    p.set_type(chatproj::Packet::CHANNEL_LIST_UPDATE);
+    auto* update = p.mutable_channel_list_update();
+    if (db) {
+        for (const auto& ch : db->list_channels()) {
+            fill_channel_info(update->add_channels(), ch);
+        }
+    }
+    return p;
+}
 } // namespace
 
 class Session;
@@ -75,9 +135,19 @@ public:
     void broadcast_to_members(const chatproj::Packet& packet);
     // Push a fresh MEMBER_LIST_RES to every authenticated session so their
     // members sidebar reflects joins, departures, kicks, bans, and online
-    // flips without having to re-open the server. The owner also receives
-    // the ban list; everyone else gets members-only.
+    // flips without having to re-open the server. Sessions whose user
+    // holds BAN_MEMBERS (or the owner) also receive the ban list;
+    // everyone else gets members-only.
     void broadcast_members();
+    // Push the full role list to every authenticated session. Fired on
+    // any role create/update/delete so hierarchy + colors stay live.
+    void broadcast_roles();
+    // Push the full channel list to every authenticated session. Fired
+    // on any channel create/rename/delete.
+    void broadcast_channels();
+    // True when any live session is currently in this voice channel.
+    // Guards channel deletion ("channel is in use").
+    bool voice_channel_occupied(const std::string& channel_id);
     // Runs one retention sweep across every channel in the DB — deletes
     // messages past `retention_days_text` and tombstones attachments past
     // their per-kind cutoff. Broadcasts a CHANNEL_PRUNED to every
@@ -98,6 +168,10 @@ public:
                       chatproj::VideoCodec chosen_codec, chatproj::VideoCodec enforced_codec);
     void stop_stream(std::shared_ptr<Session> session, const std::string& channel_id);
     void broadcast_stream_presence(const std::string& channel_id);
+    // True when `username` has a registered live stream in `channel_id`.
+    // Gates STREAM_THUMBNAIL_UPDATE so only actual streamers can push
+    // into the thumbnail cache / broadcast to the channel.
+    bool has_active_stream(const std::string& channel_id, const std::string& username);
 
     // On-demand thumbnail cache for the UserPopup live preview.
     // Written by update_thumbnail_cache() (called from the
@@ -298,10 +372,17 @@ public:
         if (overflow) {
             // Post the disconnect rather than calling leave() synchronously:
             // deliver() runs inside broadcast loops that iterate sessions_,
-            // and erasing here would invalidate the iterator.
+            // and erasing here would invalidate the iterator. Close the
+            // socket too — leave() only detaches the session from the
+            // manager, and without the close the slow reader stays
+            // connected as a zombie whose messages still get broadcast
+            // while its 1024-frame backlog stays pinned in memory.
             auto self = shared_from_this();
             boost::asio::post(socket_.lowest_layer().get_executor(),
-                              [this, self]() { manager_.leave(self); });
+                              [this, self]() {
+                                  manager_.leave(self);
+                                  close_connection();
+                              });
             return;
         }
 
@@ -335,6 +416,22 @@ public:
         boost::system::error_code ec;
         socket_.lowest_layer().cancel(ec);
         socket_.lowest_layer().close(ec);
+    }
+
+    // Gracefully end the session: stop re-arming the read loop, let any
+    // queued writes drain, then close. Used on protocol-level rejections
+    // (failed auth) where the peer should still receive the final
+    // response packet before the socket goes away. Without this, a
+    // rejected session's read loop stayed armed and the client could
+    // re-auth on the same socket into a half-registered zombie state.
+    void close_after_flush() {
+        closing_ = true;
+        bool pending;
+        {
+            std::lock_guard<std::mutex> lock(write_mutex_);
+            pending = !write_queue_.empty();
+        }
+        if (!pending) close_connection();
     }
 
     // Send a pre-built packet. Public so SessionManager can push notifications
@@ -371,6 +468,8 @@ private:
                     }
                     if (more_to_write) {
                         do_write();
+                    } else if (closing_) {
+                        close_connection();
                     }
                 } else {
                     manager_.leave(shared_from_this());
@@ -391,8 +490,11 @@ private:
                         // Drop the session instead of a bare `return`,
                         // which would leave the read loop dead but the
                         // socket open (and the session still receiving
-                        // broadcasts) until the stale sweep.
+                        // broadcasts) until the stale sweep. Close
+                        // explicitly — queued writes to a non-reading
+                        // peer would otherwise keep the session alive.
                         manager_.leave(shared_from_this());
+                        close_connection();
                         return;
                     }
                     inbound_body_.resize(length);
@@ -409,7 +511,9 @@ private:
             [this, self](boost::system::error_code ec, std::size_t) {
                 if (!ec) {
                     process_packet();
-                    do_read_header();
+                    // A rejected session (failed auth) sets closing_ —
+                    // don't re-arm the read loop for it.
+                    if (!closing_) do_read_header();
                 } else {
                     manager_.leave(shared_from_this());
                 }
@@ -422,6 +526,17 @@ private:
 
         // --- AUTHENTICATION + MEMBERSHIP GATE ---
         if (packet.type() == chatproj::Packet::COMMUNITY_AUTH_REQ) {
+            // One auth per connection. Re-running the flow on a live
+            // session would re-register a fresh udp_key without ever
+            // unregistering the old one (leaking index entries that pin
+            // the session), and lets a session swap identity mid-stream.
+            // No shipping client re-auths on the same socket — reconnects
+            // always open a new connection.
+            if (authenticated_) {
+                std::cout << "[Community] Ignoring repeat COMMUNITY_AUTH_REQ from "
+                          << username_ << "\n";
+                return;
+            }
             const auto& req = packet.community_auth_req();
             std::string token = req.jwt_token();
             std::string invite_code = req.invite_code();
@@ -439,6 +554,7 @@ private:
                 std::cout << "[Community] Auth failed (JWT): " << e.what() << "\n";
                 send_auth_response(false, "Invalid token.", "auth");
                 manager_.leave(shared_from_this());
+                close_after_flush();
                 return;
             }
 
@@ -447,6 +563,7 @@ private:
             if (!db) {
                 send_auth_response(false, "Server misconfigured.", "auth");
                 manager_.leave(shared_from_this());
+                close_after_flush();
                 return;
             }
 
@@ -454,6 +571,7 @@ private:
                 std::cout << "[Community] Blocked banned user: " << candidate_username << "\n";
                 send_auth_response(false, "You are banned from this server.", "banned");
                 manager_.leave(shared_from_this());
+                close_after_flush();
                 return;
             }
 
@@ -464,6 +582,7 @@ private:
                         "Membership required. An invite code is needed to join this server.",
                         "not_member");
                     manager_.leave(shared_from_this());
+                    close_after_flush();
                     return;
                 }
                 chatproj::DbInvite consumed;
@@ -473,6 +592,7 @@ private:
                         if (!db->add_member(candidate_username)) {
                             send_auth_response(false, "Failed to record membership.", "auth");
                             manager_.leave(shared_from_this());
+                            close_after_flush();
                             return;
                         }
                         std::cout << "[Community] " << candidate_username
@@ -485,6 +605,7 @@ private:
                     case chatproj::InviteResult::Banned:
                         send_auth_response(false, "You are banned from this server.", "banned");
                         manager_.leave(shared_from_this());
+                        close_after_flush();
                         return;
                     case chatproj::InviteResult::Unknown:
                     case chatproj::InviteResult::Expired:
@@ -494,6 +615,7 @@ private:
                             "Invite code is invalid, expired, or has been used up.",
                             "invalid_invite");
                         manager_.leave(shared_from_this());
+                        close_after_flush();
                         return;
                 }
             }
@@ -513,6 +635,9 @@ private:
 
             std::cout << "[Community] Authorized user: " << username_ << "\n";
             send_auth_response(true, "Authentication successful.", "");
+            // Push the role list up-front so the client can resolve
+            // member role_ids and gate its admin UI without a round trip.
+            send_packet(build_role_list_packet(manager_.db()));
             manager_.send_initial_voice_presences(shared_from_this());
             // Tell every existing member about the roster change. Covers both
             // a brand-new member (just added via invite redemption) and a
@@ -539,6 +664,16 @@ private:
         if (packet.type() == chatproj::Packet::JOIN_VOICE_REQ) {
             const auto& jvr = packet.join_voice_req();
             std::string target_channel = jvr.channel_id();
+            // Only real voice channels. Without this check any string
+            // becomes a key in voice_channels_ (unbounded map growth) and
+            // ghost channels leak into every member's presence snapshots.
+            std::optional<chatproj::DbChannel> ch;
+            if (auto* db = manager_.db()) ch = db->get_channel(target_channel);
+            if (!ch || ch->type != 1) {
+                std::cout << "[Community] Rejected JOIN_VOICE_REQ from " << username_
+                          << ": unknown or non-voice channel '" << target_channel << "'\n";
+                return;
+            }
             // Capture client capabilities (Plan A Group 7). Empty when sent
             // by a legacy client; treated downstream as "H.264 only".
             if (jvr.has_capabilities()) {
@@ -573,6 +708,15 @@ private:
         // --- START STREAM ---
         else if (packet.type() == chatproj::Packet::START_STREAM_REQ) {
             const auto& req = packet.start_stream_req();
+            // Streaming happens in the voice channel you're connected to —
+            // the client always sends its connected channel. Enforcing it
+            // here keeps active_streams_ free of arbitrary channel keys.
+            if (current_voice_channel_.empty() ||
+                req.channel_id() != current_voice_channel_) {
+                std::cout << "[Community] Rejected START_STREAM_REQ from " << username_
+                          << ": not in voice channel '" << req.channel_id() << "'\n";
+                return;
+            }
             // Codec defaults: legacy clients (pre-negotiation) leave both
             // chosen_codec and enforced_codec as CODEC_UNKNOWN. Treat
             // chosen_codec=UNKNOWN as H264_HW (the only codec they ever sent)
@@ -598,6 +742,14 @@ private:
         // --- WATCH STREAM ---
         else if (packet.type() == chatproj::Packet::WATCH_STREAM_REQ) {
             const auto& req = packet.watch_stream_req();
+            // Watching requires being in that voice channel (the client
+            // only offers watch buttons for the connected channel).
+            if (current_voice_channel_.empty() ||
+                req.channel_id() != current_voice_channel_) {
+                std::cout << "[Community] Rejected WATCH_STREAM_REQ from " << username_
+                          << ": not in voice channel '" << req.channel_id() << "'\n";
+                return;
+            }
             // Plan C: defensive — drop the request if the stream is
             // codec-locked and the watcher can't decode that codec.
             if (manager_.watcher_blocked_by_enforcement(
@@ -641,7 +793,8 @@ private:
             // TCP frame limit) into the per-username cache. Oversized
             // updates are dropped silently.
             constexpr size_t MAX_STREAM_THUMB_BYTES = 128 * 1024;
-            if (update->thumbnail_data().size() <= MAX_STREAM_THUMB_BYTES) {
+            if (update->thumbnail_data().size() <= MAX_STREAM_THUMB_BYTES &&
+                manager_.has_active_stream(update->channel_id(), username_)) {
                 update->set_owner_username(username_); // Enforce identity
                 std::string channel_id = update->channel_id();
                 // Stash a copy for on-demand popup fetches before the
@@ -692,6 +845,32 @@ private:
             chatproj::Packet routed = packet;
             auto* msg = routed.mutable_channel_msg();
             msg->set_sender(username_); // Enforce identity
+
+            // The channel must exist. Otherwise any member can persist
+            // rows under arbitrary channel ids that no retention sweep,
+            // wipe, or history fetch would ever visit.
+            if (auto* db = manager_.db();
+                !db || !db->get_channel(msg->channel_id())) {
+                std::cout << "[Community] Dropped CHANNEL_MSG from " << username_
+                          << " to unknown channel '" << msg->channel_id() << "'\n";
+                return;
+            }
+            // Size cap — the 2 MB frame cap alone would let one message
+            // carry ~2 MB of text, persisted and fanned out to every
+            // member. 64 KB is far above anything typed by hand and
+            // comfortably above big code-block pastes (the client has no
+            // composer limit yet, so the cap must not silently eat a
+            // legitimate paste). Empty messages (no text, no attachments)
+            // are dropped too.
+            constexpr size_t MAX_CHANNEL_MSG_BYTES = 64 * 1024;
+            if (msg->content().size() > MAX_CHANNEL_MSG_BYTES) {
+                std::cout << "[Community] Dropped oversized CHANNEL_MSG from "
+                          << username_ << " (" << msg->content().size() << " bytes)\n";
+                return;
+            }
+            if (msg->content().empty() && msg->attachments_size() == 0) {
+                return;
+            }
 
             // Persist before broadcast so the id we echo to clients matches
             // what history_res will return. Server stamps the authoritative
@@ -842,9 +1021,9 @@ private:
                 send_packet(p);
                 return;
             }
-            if (db->owner() != username_) {
+            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
                 res->set_success(false);
-                res->set_message("Only the server owner can edit channels.");
+                res->set_message("You don't have permission to edit channels.");
                 send_packet(p);
                 return;
             }
@@ -858,7 +1037,13 @@ private:
                 req.retention_days_audio());
             res->set_success(ok);
             res->set_message(ok ? "Channel updated." : "Channel not found.");
-            if (ok) {
+            if (!ok) {
+                // Failures go to the requester only — everyone else has
+                // nothing to refresh.
+                send_packet(p);
+                return;
+            }
+            {
                 if (auto ch = db->get_channel(req.channel_id())) {
                     auto* info = res->mutable_channel();
                     info->set_id(ch->id);
@@ -895,9 +1080,9 @@ private:
                 send_packet(rsp);
                 return;
             }
-            if (db->owner() != username_) {
+            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
                 res->set_success(false);
-                res->set_message("Only the server owner can wipe channel history.");
+                res->set_message("You don't have permission to wipe channel history.");
                 send_packet(rsp);
                 return;
             }
@@ -1047,9 +1232,9 @@ private:
                 send_packet(rsp);
                 return;
             }
-            if (db->owner() != username_) {
+            if (!db->has_permission(username_, chatproj::perms::kManageServer)) {
                 res->set_success(false);
-                res->set_message("Only the server owner can change the server picture.");
+                res->set_message("You don't have permission to change the server picture.");
                 send_packet(rsp);
                 return;
             }
@@ -1080,9 +1265,9 @@ private:
         else if (packet.type() == chatproj::Packet::INVITE_CREATE_REQ) {
             auto* db = manager_.db();
             if (!db) return;
-            if (db->owner() != username_) {
+            if (!db->has_permission(username_, chatproj::perms::kManageInvites)) {
                 send_simple_mod_res(chatproj::Packet::INVITE_CREATE_RES, false,
-                                    "Only the server owner can create invites.",
+                                    "You don't have permission to create invites.",
                                     "", "");
                 return;
             }
@@ -1124,9 +1309,9 @@ private:
                 send_packet(p);
                 return;
             }
-            if (db->owner() != username_) {
+            if (!db->has_permission(username_, chatproj::perms::kManageInvites)) {
                 res->set_success(false);
-                res->set_message("Only the server owner can list invites.");
+                res->set_message("You don't have permission to list invites.");
                 send_packet(p);
                 return;
             }
@@ -1157,9 +1342,9 @@ private:
                 send_packet(p);
                 return;
             }
-            if (db->owner() != username_) {
+            if (!db->has_permission(username_, chatproj::perms::kManageInvites)) {
                 res->set_success(false);
-                res->set_message("Only the server owner can revoke invites.");
+                res->set_message("You don't have permission to revoke invites.");
                 send_packet(p);
                 return;
             }
@@ -1187,6 +1372,10 @@ private:
             res->set_success(true);
             const std::string owner_name = db->owner();
             auto online_users = manager_.get_online_usernames();
+            std::unordered_map<std::string, std::vector<int64_t>> roles_by_user;
+            for (const auto& [user, role_id] : db->list_all_member_roles()) {
+                roles_by_user[user].push_back(role_id);
+            }
             for (const auto& m : db->list_members()) {
                 auto* info = res->add_members();
                 info->set_username(m.username);
@@ -1194,10 +1383,13 @@ private:
                 info->set_nickname(m.nickname);
                 info->set_is_owner(m.username == owner_name);
                 info->set_is_online(online_users.count(m.username) > 0);
+                if (auto it = roles_by_user.find(m.username); it != roles_by_user.end()) {
+                    for (int64_t rid : it->second) info->add_role_ids(rid);
+                }
             }
-            // Only the owner sees the ban list, since it reveals moderation
-            // history. Regular members just get the member roster.
-            if (username_ == owner_name) {
+            // The ban list reveals moderation history — only BAN_MEMBERS
+            // holders (and the owner, who holds everything) see it.
+            if (db->has_permission(username_, chatproj::perms::kBanMembers)) {
                 for (const auto& u : db->list_bans()) {
                     res->add_bans(u);
                 }
@@ -1212,9 +1404,9 @@ private:
             const std::string& target = packet.kick_member_req().username();
             const std::string& reason = packet.kick_member_req().reason();
             const std::string owner_name = db->owner();
-            if (username_ != owner_name) {
+            if (!db->has_permission(username_, chatproj::perms::kKickMembers)) {
                 send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "Only the server owner can kick members.",
+                                    "You don't have permission to kick members.",
                                     target, "kick");
                 return;
             }
@@ -1230,7 +1422,21 @@ private:
                                     target, "kick");
                 return;
             }
+            // Hierarchy: only members strictly below your own highest role
+            // can be kicked. Owner level is INT32_MAX, so the owner
+            // bypasses this and can never be outranked.
+            if (db->member_level(target) >= db->member_level(username_)) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "You can't kick a member with an equal or higher role.",
+                                    target, "kick");
+                return;
+            }
             bool removed = db->remove_member(target);
+            // Sync the revoke to central unconditionally — force_disconnect
+            // early-returns for offline targets, and leaving the central
+            // membership row behind would auto-rejoin the kicked user into
+            // a server that then rejects them. Idempotent on central.
+            manager_.sync_membership_revoke(target);
             // Even if they weren't in the members table, force-disconnect
             // any live session so the UI reflects the action.
             manager_.force_disconnect(target, "kick", reason, username_);
@@ -1246,9 +1452,9 @@ private:
             const std::string& target = packet.ban_member_req().username();
             const std::string& reason = packet.ban_member_req().reason();
             const std::string owner_name = db->owner();
-            if (username_ != owner_name) {
+            if (!db->has_permission(username_, chatproj::perms::kBanMembers)) {
                 send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "Only the server owner can ban members.",
+                                    "You don't have permission to ban members.",
                                     target, "ban");
                 return;
             }
@@ -1264,7 +1470,17 @@ private:
                                     target, "ban");
                 return;
             }
+            // Hierarchy: same rule as kick — only strictly-lower members.
+            if (db->member_level(target) >= db->member_level(username_)) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "You can't ban a member with an equal or higher role.",
+                                    target, "ban");
+                return;
+            }
             bool ok = db->add_ban(target, username_, reason);
+            // Unconditional for the same reason as the kick path: the
+            // target may be offline and force_disconnect would skip it.
+            manager_.sync_membership_revoke(target);
             manager_.force_disconnect(target, "ban", reason, username_);
             send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, ok,
                                 ok ? "Member banned." : "Ban failed.",
@@ -1282,12 +1498,416 @@ private:
                 return;
             }
             db->remove_member(username_);
+            manager_.sync_membership_revoke(username_);
             send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, true,
                                 "You have left the server.",
                                 username_, "leave");
             std::cout << "[Community] " << username_ << " left the server\n";
             // Give the write queue a tick to flush, then close.
             manager_.force_disconnect(username_, "leave", "", username_);
+        }
+
+        // --- UNBAN MEMBER ---
+        else if (packet.type() == chatproj::Packet::UNBAN_MEMBER_REQ) {
+            auto* db = manager_.db();
+            if (!db) return;
+            const std::string& target = packet.unban_member_req().username();
+            if (!db->has_permission(username_, chatproj::perms::kBanMembers)) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "You don't have permission to unban members.",
+                                    target, "unban");
+                return;
+            }
+            bool ok = db->remove_ban(target);
+            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, ok,
+                                ok ? "Member unbanned." : "User is not banned.",
+                                target, "unban");
+            if (ok) {
+                std::cout << "[Community] " << target << " unbanned by "
+                          << username_ << "\n";
+                // Refresh ban lists for every BAN_MEMBERS holder.
+                manager_.broadcast_members();
+            }
+        }
+
+        // --- ROLE: LIST ---
+        else if (packet.type() == chatproj::Packet::ROLE_LIST_REQ) {
+            send_packet(build_role_list_packet(manager_.db()));
+        }
+
+        // --- ROLE: CREATE ---
+        else if (packet.type() == chatproj::Packet::ROLE_CREATE_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.role_create_req();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::ROLE_ACTION_RES);
+            auto* res = p.mutable_role_action_res();
+            res->set_action("create");
+            if (!db) {
+                res->set_success(false);
+                res->set_message("Server misconfigured.");
+                send_packet(p);
+                return;
+            }
+            if (!db->has_permission(username_, chatproj::perms::kManageRoles)) {
+                res->set_success(false);
+                res->set_message("You don't have permission to manage roles.");
+                send_packet(p);
+                return;
+            }
+            // Drop bits this server build doesn't define — undefined
+            // bits must never reach the DB (see perms::kKnownMask).
+            const uint64_t requested_perms =
+                req.permissions() & chatproj::perms::kKnownMask;
+            // Escalation guard: a role can only carry bits its creator
+            // holds. (Owner holds everything, so this never blocks them.)
+            const uint64_t actor_perms = db->effective_permissions(username_);
+            if ((requested_perms & ~actor_perms) != 0) {
+                res->set_success(false);
+                res->set_message("You can't grant permissions you don't have.");
+                send_packet(p);
+                return;
+            }
+            std::string name = req.name();
+            if (name.size() > 64) name.resize(64);
+            if (name.empty()) {
+                res->set_success(false);
+                res->set_message("Role name can't be empty.");
+                send_packet(p);
+                return;
+            }
+            auto created = db->create_role(name, req.color() & 0xFFFFFF,
+                                           requested_perms);
+            if (!created) {
+                res->set_success(false);
+                res->set_message("Failed to create role.");
+                send_packet(p);
+                return;
+            }
+            res->set_success(true);
+            fill_role_info(res->mutable_role(), *created);
+            send_packet(p);
+            std::cout << "[Community] Role '" << created->name
+                      << "' created by " << username_ << "\n";
+            manager_.broadcast_roles();
+        }
+
+        // --- ROLE: UPDATE ---
+        else if (packet.type() == chatproj::Packet::ROLE_UPDATE_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.role_update_req();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::ROLE_ACTION_RES);
+            auto* res = p.mutable_role_action_res();
+            res->set_action("update");
+            auto fail = [&](const char* msg) {
+                res->set_success(false);
+                res->set_message(msg);
+                send_packet(p);
+            };
+            if (!db) { fail("Server misconfigured."); return; }
+            if (!db->has_permission(username_, chatproj::perms::kManageRoles)) {
+                fail("You don't have permission to manage roles.");
+                return;
+            }
+            auto role = db->get_role(req.role_id());
+            if (!role) { fail("Role not found."); return; }
+
+            const int32_t actor_level = db->member_level(username_);
+            if (!role->is_default) {
+                // Hierarchy: only roles strictly below your highest are
+                // editable, and they can't be moved to/above it either.
+                if (role->position >= actor_level) {
+                    fail("You can't manage a role at or above your highest role.");
+                    return;
+                }
+                if (req.position() >= actor_level) {
+                    fail("You can't move a role to or above your highest role.");
+                    return;
+                }
+            }
+            // Mask to defined bits (kKnownMask), then escalation-guard
+            // the CHANGED bits only — bits the role already carries that
+            // the actor doesn't hold may stay as-is, they just can't be
+            // toggled.
+            const uint64_t requested_perms =
+                req.permissions() & chatproj::perms::kKnownMask;
+            const uint64_t actor_perms = db->effective_permissions(username_);
+            if (((requested_perms ^ role->permissions) & ~actor_perms) != 0) {
+                fail("You can't change permissions you don't have.");
+                return;
+            }
+            std::string name = req.name();
+            if (name.size() > 64) name.resize(64);
+            if (!db->update_role(req.role_id(), name, req.color() & 0xFFFFFF,
+                                 requested_perms, req.position())) {
+                fail("Failed to update role.");
+                return;
+            }
+            res->set_success(true);
+            if (auto updated = db->get_role(req.role_id())) {
+                fill_role_info(res->mutable_role(), *updated);
+            }
+            send_packet(p);
+            manager_.broadcast_roles();
+        }
+
+        // --- ROLE: DELETE ---
+        else if (packet.type() == chatproj::Packet::ROLE_DELETE_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.role_delete_req();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::ROLE_ACTION_RES);
+            auto* res = p.mutable_role_action_res();
+            res->set_action("delete");
+            auto fail = [&](const char* msg) {
+                res->set_success(false);
+                res->set_message(msg);
+                send_packet(p);
+            };
+            if (!db) { fail("Server misconfigured."); return; }
+            if (!db->has_permission(username_, chatproj::perms::kManageRoles)) {
+                fail("You don't have permission to manage roles.");
+                return;
+            }
+            auto role = db->get_role(req.role_id());
+            if (!role) { fail("Role not found."); return; }
+            if (role->is_default) { fail("The default role can't be deleted."); return; }
+            if (role->position >= db->member_level(username_)) {
+                fail("You can't delete a role at or above your highest role.");
+                return;
+            }
+            if (!db->delete_role(req.role_id())) {
+                fail("Failed to delete role.");
+                return;
+            }
+            res->set_success(true);
+            send_packet(p);
+            std::cout << "[Community] Role '" << role->name
+                      << "' deleted by " << username_ << "\n";
+            manager_.broadcast_roles();
+            // Members holding the role lost it (cascade) — refresh rosters.
+            manager_.broadcast_members();
+        }
+
+        // --- MEMBER ROLES: UPDATE (replace a member's role set) ---
+        else if (packet.type() == chatproj::Packet::MEMBER_ROLES_UPDATE_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.member_roles_update_req();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::ROLE_ACTION_RES);
+            auto* res = p.mutable_role_action_res();
+            res->set_action("assign");
+            auto fail = [&](const char* msg) {
+                res->set_success(false);
+                res->set_message(msg);
+                send_packet(p);
+            };
+            if (!db) { fail("Server misconfigured."); return; }
+            if (!db->has_permission(username_, chatproj::perms::kManageRoles)) {
+                fail("You don't have permission to manage roles.");
+                return;
+            }
+            if (!db->is_member(req.username())) { fail("Not a member."); return; }
+
+            // Hierarchy applies to the DELTA: every role being added or
+            // removed must sit strictly below the actor's highest role.
+            // Roles above the actor that the target already holds are
+            // untouched by construction (they're in both sets or the
+            // request is rejected).
+            const int32_t actor_level = db->member_level(username_);
+            std::set<int64_t> current;
+            for (int64_t id : db->get_member_role_ids(req.username())) {
+                current.insert(id);
+            }
+            std::set<int64_t> requested;
+            for (int64_t id : req.role_ids()) requested.insert(id);
+
+            std::vector<int64_t> delta;
+            for (int64_t id : requested) {
+                if (current.count(id) == 0) delta.push_back(id);
+            }
+            for (int64_t id : current) {
+                if (requested.count(id) == 0) delta.push_back(id);
+            }
+            for (int64_t id : delta) {
+                auto role = db->get_role(id);
+                if (!role || role->is_default) { fail("Unknown role in request."); return; }
+                if (role->position >= actor_level) {
+                    fail("You can't assign or remove a role at or above your highest role.");
+                    return;
+                }
+            }
+            if (!db->set_member_roles(req.username(),
+                                      std::vector<int64_t>(requested.begin(),
+                                                           requested.end()))) {
+                fail("Failed to update member roles.");
+                return;
+            }
+            res->set_success(true);
+            send_packet(p);
+            // The refreshed roster (with role_ids) is the authoritative
+            // confirmation for every client, requester included.
+            manager_.broadcast_members();
+        }
+
+        // --- CHANNEL: CREATE ---
+        else if (packet.type() == chatproj::Packet::CHANNEL_CREATE_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.channel_create_req();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::CHANNEL_ACTION_RES);
+            auto* res = p.mutable_channel_action_res();
+            res->set_action("create");
+            auto fail = [&](const char* msg) {
+                res->set_success(false);
+                res->set_message(msg);
+                send_packet(p);
+            };
+            if (!db) { fail("Server misconfigured."); return; }
+            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
+                fail("You don't have permission to manage channels.");
+                return;
+            }
+            std::string name = req.name();
+            if (name.size() > 64) name.resize(64);
+            if (name.empty()) { fail("Channel name can't be empty."); return; }
+            const int32_t type =
+                req.type() == chatproj::ChannelInfo::VOICE ? 1 : 0;
+            int32_t bitrate = req.voice_bitrate_kbps();
+            if (bitrate < 0) bitrate = 0;
+            if (bitrate > 512) bitrate = 512;
+            auto created = db->create_channel(name, type, bitrate);
+            if (!created) { fail("Failed to create channel."); return; }
+            res->set_success(true);
+            fill_channel_info(res->mutable_channel(), *created);
+            send_packet(p);
+            std::cout << "[Community] Channel #" << created->id
+                      << " created by " << username_ << "\n";
+            manager_.broadcast_channels();
+        }
+
+        // --- CHANNEL: RENAME ---
+        else if (packet.type() == chatproj::Packet::CHANNEL_RENAME_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.channel_rename_req();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::CHANNEL_ACTION_RES);
+            auto* res = p.mutable_channel_action_res();
+            res->set_action("rename");
+            auto fail = [&](const char* msg) {
+                res->set_success(false);
+                res->set_message(msg);
+                send_packet(p);
+            };
+            if (!db) { fail("Server misconfigured."); return; }
+            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
+                fail("You don't have permission to manage channels.");
+                return;
+            }
+            std::string name = req.name();
+            if (name.size() > 64) name.resize(64);
+            if (name.empty()) { fail("Channel name can't be empty."); return; }
+            if (!db->rename_channel(req.channel_id(), name)) {
+                fail("Channel not found.");
+                return;
+            }
+            res->set_success(true);
+            if (auto ch = db->get_channel(req.channel_id())) {
+                fill_channel_info(res->mutable_channel(), *ch);
+            }
+            send_packet(p);
+            manager_.broadcast_channels();
+        }
+
+        // --- CHANNEL: DELETE ---
+        else if (packet.type() == chatproj::Packet::CHANNEL_DELETE_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.channel_delete_req();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::CHANNEL_ACTION_RES);
+            auto* res = p.mutable_channel_action_res();
+            res->set_action("delete");
+            auto fail = [&](const char* msg) {
+                res->set_success(false);
+                res->set_message(msg);
+                send_packet(p);
+            };
+            if (!db) { fail("Server misconfigured."); return; }
+            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
+                fail("You don't have permission to manage channels.");
+                return;
+            }
+            auto ch = db->get_channel(req.channel_id());
+            if (!ch) { fail("Channel not found."); return; }
+            // Clients assume at least one text channel exists (it's the
+            // landing channel after auth) — never delete the last one.
+            if (ch->type == 0 && db->count_channels_of_type(0) <= 1) {
+                fail("Can't delete the last text channel.");
+                return;
+            }
+            // A voice channel with people in it stays: deleting it under
+            // their feet would strand live audio sessions server-side.
+            if (ch->type == 1 && manager_.voice_channel_occupied(ch->id)) {
+                fail("Channel is in use — ask everyone to leave first.");
+                return;
+            }
+            auto wipe = db->delete_channel(req.channel_id());
+            if (!wipe) { fail("Failed to delete channel."); return; }
+            res->set_success(true);
+            send_packet(p);
+
+            // Blob cleanup — same sibling-variant pattern as CHANNEL_WIPE.
+            for (const auto& path : wipe->unlink_paths) {
+                std::error_code ec;
+                std::filesystem::remove(path, ec);
+                std::filesystem::remove(path + ".partial", ec);
+                std::filesystem::remove(path + ".thumb.jpg", ec);
+                std::filesystem::remove(path + ".thumb-320px.jpg", ec);
+                std::filesystem::remove(path + ".thumb-640px.jpg", ec);
+                std::filesystem::remove(path + ".thumb-1280px.jpg", ec);
+            }
+
+            std::cout << "[Community] Channel #" << req.channel_id()
+                      << " deleted by " << username_ << " ("
+                      << wipe->deleted_message_count << " messages, "
+                      << wipe->deleted_attachment_count << " attachments)\n";
+            manager_.broadcast_channels();
+        }
+
+        // --- SET NICKNAME ---
+        else if (packet.type() == chatproj::Packet::SET_NICKNAME_REQ) {
+            auto* db = manager_.db();
+            if (!db) return;
+            const auto& req = packet.set_nickname_req();
+            const std::string& target = req.username();
+            std::string nickname = req.nickname();
+            if (nickname.size() > 32) nickname.resize(32);
+
+            if (target != username_) {
+                // Changing someone else's nickname: MANAGE_NICKNAMES +
+                // strictly-higher role (owner bypasses via level).
+                if (!db->has_permission(username_, chatproj::perms::kManageNicknames)) {
+                    send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                        "You don't have permission to manage nicknames.",
+                                        target, "nickname");
+                    return;
+                }
+                if (db->member_level(target) >= db->member_level(username_)) {
+                    send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                        "You can't change the nickname of a member "
+                                        "with an equal or higher role.",
+                                        target, "nickname");
+                    return;
+                }
+            }
+            bool ok = db->set_nickname(target, nickname);
+            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, ok,
+                                ok ? "" : "Not a member.",
+                                target, "nickname");
+            if (ok) {
+                manager_.broadcast_members();
+            }
         }
     }
 
@@ -1370,6 +1990,10 @@ private:
 
     std::string jwt_secret_;
     bool authenticated_ = false;
+    // Set by close_after_flush(): the session has been rejected, the
+    // read loop must not re-arm, and the socket closes once the write
+    // queue drains.
+    bool closing_ = false;
     std::string username_;
     std::string token_;
     std::string udp_key_;
@@ -1414,23 +2038,41 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
             }
         }
         sessions_.erase(session);
-        for (auto& pair : voice_channels_) {
-            if (pair.second.erase(session) > 0) {
-                affected_voice_channels.push_back(pair.first);
+        const std::string username = session->get_username();
+        // Empty entries are pruned as we go — these maps are keyed by
+        // whatever channel ids sessions brought in, and entries that
+        // only ever get emptied (never erased) accumulate for the
+        // lifetime of the process.
+        for (auto it = voice_channels_.begin(); it != voice_channels_.end();) {
+            if (it->second.erase(session) > 0) {
+                affected_voice_channels.push_back(it->first);
             }
+            it = it->second.empty() ? voice_channels_.erase(it) : std::next(it);
         }
-        for (auto& pair : active_streams_) {
-            if (pair.second.erase(session->get_username()) > 0) {
-                affected_stream_channels.push_back(pair.first);
+        for (auto it = active_streams_.begin(); it != active_streams_.end();) {
+            if (it->second.erase(username) > 0) {
+                affected_stream_channels.push_back(it->first);
             }
+            it = it->second.empty() ? active_streams_.erase(it) : std::next(it);
         }
-        // Clean up any watcher entries for this session
-        for (auto& [ch_id, streamers] : stream_watchers_) {
-            for (auto& [streamer, watchers] : streamers) {
-                watchers.erase(session);
+        // Clean up watcher state in both directions: entries where this
+        // session watches someone, AND the watcher set of this session's
+        // own stream — a disconnected streamer's set would otherwise
+        // survive and resume relaying to stale watchers if they came
+        // back and streamed again (stop_stream clears it; leave didn't).
+        for (auto ch_it = stream_watchers_.begin(); ch_it != stream_watchers_.end();) {
+            auto& streamers = ch_it->second;
+            for (auto st_it = streamers.begin(); st_it != streamers.end();) {
+                st_it->second.erase(session);
+                if (st_it->first == username || st_it->second.empty()) {
+                    st_it = streamers.erase(st_it);
+                } else {
+                    ++st_it;
+                }
             }
+            ch_it = streamers.empty() ? stream_watchers_.erase(ch_it) : std::next(ch_it);
         }
-        std::cout << "[Community] Session " << session->get_username() << " left. Total: " << sessions_.size() << "\n";
+        std::cout << "[Community] Session " << username << " left. Total: " << sessions_.size() << "\n";
     }
     // Stream may have been active when this user dropped; clear the
     // popup-preview cache regardless. Idempotent on non-streamers.
@@ -1495,6 +2137,13 @@ void SessionManager::stop_stream(std::shared_ptr<Session> session, const std::st
     if (removed) {
         broadcast_stream_presence(channel_id);
     }
+}
+
+bool SessionManager::has_active_stream(const std::string& channel_id,
+                                       const std::string& username) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = active_streams_.find(channel_id);
+    return it != active_streams_.end() && it->second.count(username) > 0;
 }
 
 void SessionManager::broadcast_stream_presence(const std::string& channel_id) {
@@ -1565,13 +2214,19 @@ void SessionManager::join_voice_channel(std::shared_ptr<Session> session, const 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!old_channel.empty()) {
-            voice_channels_[old_channel].erase(session);
-            // Clean up watcher entries from old channel
+            if (auto vc_it = voice_channels_.find(old_channel); vc_it != voice_channels_.end()) {
+                vc_it->second.erase(session);
+                if (vc_it->second.empty()) voice_channels_.erase(vc_it);
+            }
+            // Clean up watcher entries from old channel (prune empties)
             auto ch_it = stream_watchers_.find(old_channel);
             if (ch_it != stream_watchers_.end()) {
-                for (auto& [streamer, watchers] : ch_it->second) {
-                    watchers.erase(session);
+                auto& streamers = ch_it->second;
+                for (auto st_it = streamers.begin(); st_it != streamers.end();) {
+                    st_it->second.erase(session);
+                    st_it = st_it->second.empty() ? streamers.erase(st_it) : std::next(st_it);
                 }
+                if (streamers.empty()) stream_watchers_.erase(ch_it);
             }
         }
         voice_channels_[new_channel].insert(session);
@@ -1591,15 +2246,21 @@ void SessionManager::leave_voice_channel(std::shared_ptr<Session> session, const
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!current_channel.empty()) {
-            voice_channels_[current_channel].erase(session);
+            if (auto vc_it = voice_channels_.find(current_channel); vc_it != voice_channels_.end()) {
+                vc_it->second.erase(session);
+                if (vc_it->second.empty()) voice_channels_.erase(vc_it);
+            }
             // Clean up any watcher entries for this session in this channel
             auto ch_it = stream_watchers_.find(current_channel);
             if (ch_it != stream_watchers_.end()) {
-                for (auto& [streamer, watchers] : ch_it->second) {
-                    if (watchers.erase(session) > 0) {
-                        streamers_to_notify.push_back(streamer);
+                auto& streamers = ch_it->second;
+                for (auto st_it = streamers.begin(); st_it != streamers.end();) {
+                    if (st_it->second.erase(session) > 0) {
+                        streamers_to_notify.push_back(st_it->first);
                     }
+                    st_it = st_it->second.empty() ? streamers.erase(st_it) : std::next(st_it);
                 }
+                if (streamers.empty()) stream_watchers_.erase(ch_it);
             }
         }
     }
@@ -1639,18 +2300,32 @@ void SessionManager::broadcast_members() {
     const std::string owner_name = db_->owner();
     auto members = db_->list_members();
     auto bans = db_->list_bans();
+    std::unordered_map<std::string, std::vector<int64_t>> roles_by_user;
+    for (const auto& [user, role_id] : db_->list_all_member_roles()) {
+        roles_by_user[user].push_back(role_id);
+    }
 
     // Compute online set + fan-out targets under session mutex.
     std::set<std::string> online;
-    std::vector<std::pair<std::shared_ptr<Session>, bool>> targets;
+    std::vector<std::pair<std::shared_ptr<Session>, std::string>> targets;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         targets.reserve(sessions_.size());
         for (const auto& s : sessions_) {
             if (s->is_authenticated() && !s->get_username().empty()) {
                 online.insert(s->get_username());
-                targets.emplace_back(s, s->get_username() == owner_name);
+                targets.emplace_back(s, s->get_username());
             }
+        }
+    }
+
+    // Ban-list visibility follows BAN_MEMBERS (owner holds every
+    // permission implicitly). Computed after releasing mutex_ — these
+    // are DB lookups.
+    std::set<std::string> sees_bans;
+    for (const auto& u : online) {
+        if (db_->has_permission(u, chatproj::perms::kBanMembers)) {
+            sees_bans.insert(u);
         }
     }
 
@@ -1677,6 +2352,9 @@ void SessionManager::broadcast_members() {
             info->set_nickname(m.nickname);
             info->set_is_owner(m.username == owner_name);
             info->set_is_online(online.count(m.username) > 0);
+            if (auto it = roles_by_user.find(m.username); it != roles_by_user.end()) {
+                for (int64_t rid : it->second) info->add_role_ids(rid);
+            }
         }
     }
 
@@ -1688,9 +2366,26 @@ void SessionManager::broadcast_members() {
     auto framed_no_bans = frame_pkt(pkt_no_bans);
     auto framed_with_bans = bans.empty() ? framed_no_bans : frame_pkt(pkt_with_bans);
 
-    for (const auto& [session, is_owner] : targets) {
-        session->deliver(is_owner ? framed_with_bans : framed_no_bans);
+    for (const auto& [session, user] : targets) {
+        session->deliver(sees_bans.count(user) > 0 ? framed_with_bans
+                                                   : framed_no_bans);
     }
+}
+
+void SessionManager::broadcast_roles() {
+    if (!db_) return;
+    broadcast_to_members(build_role_list_packet(db_));
+}
+
+void SessionManager::broadcast_channels() {
+    if (!db_) return;
+    broadcast_to_members(build_channel_list_packet(db_));
+}
+
+bool SessionManager::voice_channel_occupied(const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = voice_channels_.find(channel_id);
+    return it != voice_channels_.end() && !it->second.empty();
 }
 
 void SessionManager::run_retention_sweep() {
@@ -1746,14 +2441,17 @@ void SessionManager::run_retention_sweep() {
         }
     }
 
-    // Abandoned uploads — rows with message_id=0 still in 'uploading' status
-    // after more than an hour. A client that crashes, loses power, or just
-    // gives up will leave these behind; without this sweep they'd accumulate
-    // indefinitely along with their .partial blobs.
+    // Abandoned uploads — unbound rows (message_id=0). Two cutoffs:
+    // 'uploading' rows die after an hour (client crashed / gave up
+    // mid-upload), but 'ready' rows get a day — a finished upload can
+    // legitimately sit in a compose box for a while before the message
+    // referencing it is sent, and sweeping it early silently strips the
+    // attachment from that eventual message.
     {
-        constexpr int64_t kPendingTimeoutSeconds = 3600; // 1 hour
-        const int64_t pending_cutoff = now - kPendingTimeoutSeconds;
-        auto stale = db_->list_stale_pending_attachments(pending_cutoff);
+        constexpr int64_t kUploadingTimeoutSeconds = 3600;      // 1 hour
+        constexpr int64_t kReadyUnboundTimeoutSeconds = 86400;  // 24 hours
+        auto stale = db_->list_stale_pending_attachments(
+            now - kUploadingTimeoutSeconds, now - kReadyUnboundTimeoutSeconds);
         for (const auto& a : stale) {
             if (!a.storage_path.empty()) {
                 std::error_code ec;
@@ -2218,10 +2916,9 @@ void SessionManager::force_disconnect(const std::string& username,
     auto session = find_session_by_username(username);
     if (!session) return;
 
-    // Auto-rejoin: tell central this user is no longer a member so
-    // auto-rejoin doesn't surface a stale tile on their next login.
-    // Single chokepoint for all three removal paths: kick, ban, leave.
-    sync_membership_revoke(username);
+    // NOTE: the central membership revoke is NOT synced here — this
+    // early-returns for offline targets, so the kick/ban/leave handlers
+    // call sync_membership_revoke() themselves, unconditionally.
 
     // Best-effort notification before we close the socket. If the write is
     // already queued behind a slow client, the close below cancels it — the
@@ -2248,12 +2945,23 @@ void SessionManager::set_central_sync(const std::string& central_host, int centr
 }
 
 namespace {
-// One-shot TLS send of a framed packet to central. Blocks briefly; call from
-// a detached thread so packet-handler coroutines never stall.
+// One-shot TLS send of a framed packet to central. Blocks the calling
+// thread for at most kCentralSyncTimeout; call from a detached thread so
+// packet handlers never stall.
 //
-// If `read_response` is true and `out_response` is non-null, reads one framed
-// response packet from central with a short deadline before closing. Returns
-// true on success (or when no response was requested).
+// The whole exchange (resolve → connect → handshake → write → optional
+// framed response) runs as an async chain on a private io_context driven
+// by run_for(), so the timeout bounds every stage — including connect,
+// which a blocking implementation could hang on for minutes against a
+// SYN-blackholed host. (The previous version scheduled a deadline timer
+// on an io_context nobody ran, so its 2-second timeout could never fire
+// and a stalled central hung the calling thread forever.)
+//
+// If `read_response` is true and `out_response` is non-null, reads one
+// framed response packet from central before closing. Returns true on
+// success (or when no response was requested).
+constexpr auto kCentralSyncTimeout = std::chrono::seconds(5);
+
 bool send_to_central_blocking(const std::string& host, int port,
                               const std::vector<uint8_t>& framed,
                               bool read_response = false,
@@ -2264,52 +2972,65 @@ bool send_to_central_blocking(const std::string& host, int port,
         ctx.set_verify_mode(ssl::verify_none);
 
         tcp::resolver resolver(io);
-        auto endpoints = resolver.resolve(host, std::to_string(port));
+        ssl::stream<tcp::socket> ssl_socket(io, ctx);
 
-        tcp::socket raw_socket(io);
-        boost::asio::connect(raw_socket, endpoints);
-
-        ssl::stream<tcp::socket> ssl_socket(std::move(raw_socket), ctx);
-        ssl_socket.handshake(ssl::stream_base::client);
-
-        boost::asio::write(ssl_socket, boost::asio::buffer(framed));
-
-        if (!read_response || !out_response) {
-            ssl_socket.lowest_layer().close();
-            return true;
-        }
-
-        // Read one framed response with a 2-second deadline. Used by
-        // the heartbeat path to receive SERVER_HEARTBEAT_RES (the
-        // assigned community_servers.id).
-        boost::asio::steady_timer deadline(io);
-        deadline.expires_after(std::chrono::seconds(2));
-        bool timed_out = false;
-        deadline.async_wait([&](const boost::system::error_code& ec) {
-            if (!ec) {
-                timed_out = true;
-                boost::system::error_code ignore;
-                ssl_socket.lowest_layer().cancel(ignore);
-            }
-        });
-
+        bool completed = false;
         uint32_t len_be = 0;
-        boost::asio::read(ssl_socket, boost::asio::buffer(&len_be, 4));
-        deadline.cancel();
-        if (timed_out) {
-            ssl_socket.lowest_layer().close();
-            return false;
-        }
-        uint32_t len = ntohl(len_be);
-        if (len == 0 || len > (1u << 20)) {
-            ssl_socket.lowest_layer().close();
-            return false;
-        }
+        std::vector<uint8_t> body;
 
-        std::vector<uint8_t> body(len);
-        boost::asio::read(ssl_socket, boost::asio::buffer(body));
-        ssl_socket.lowest_layer().close();
-        return out_response->ParseFromArray(body.data(), static_cast<int>(body.size()));
+        // Nested async chain. Everything captured by reference outlives
+        // io.run_for() below; handlers that never run are destroyed with
+        // the io_context without touching the captures.
+        resolver.async_resolve(host, std::to_string(port),
+            [&](const boost::system::error_code& ec,
+                tcp::resolver::results_type endpoints) {
+                if (ec) return;
+                boost::asio::async_connect(ssl_socket.lowest_layer(), endpoints,
+                    [&](const boost::system::error_code& ec, const tcp::endpoint&) {
+                        if (ec) return;
+                        ssl_socket.async_handshake(ssl::stream_base::client,
+                            [&](const boost::system::error_code& ec) {
+                                if (ec) return;
+                                boost::asio::async_write(ssl_socket, boost::asio::buffer(framed),
+                                    [&](const boost::system::error_code& ec, std::size_t) {
+                                        if (ec) return;
+                                        if (!read_response || !out_response) {
+                                            completed = true;
+                                            return;
+                                        }
+                                        boost::asio::async_read(ssl_socket,
+                                            boost::asio::buffer(&len_be, 4),
+                                            [&](const boost::system::error_code& ec, std::size_t) {
+                                                if (ec) return;
+                                                const uint32_t len = ntohl(len_be);
+                                                if (len == 0 || len > (1u << 20)) return;
+                                                body.resize(len);
+                                                boost::asio::async_read(ssl_socket,
+                                                    boost::asio::buffer(body),
+                                                    [&](const boost::system::error_code& ec, std::size_t) {
+                                                        if (!ec) completed = true;
+                                                    });
+                                            });
+                                    });
+                            });
+                    });
+            });
+
+        io.run_for(kCentralSyncTimeout);
+
+        boost::system::error_code ignore;
+        ssl_socket.lowest_layer().close(ignore);
+
+        if (!completed) {
+            std::cerr << "[CentralSync] Timed out or failed talking to "
+                      << host << ":" << port << "\n";
+            return false;
+        }
+        if (read_response && out_response) {
+            return out_response->ParseFromArray(body.data(),
+                                                static_cast<int>(body.size()));
+        }
+        return true;
     } catch (const std::exception& e) {
         std::cerr << "[CentralSync] Failed: " << e.what() << "\n";
         return false;
@@ -2737,66 +3458,39 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
     packet.SerializeToString(&serialized);
     auto framed = chatproj::create_framed_packet(serialized);
 
-    // Connect to central over TLS, write the heartbeat, and read back
-    // SERVER_HEARTBEAT_RES carrying our central-assigned server_id.
-    try {
-        ssl::context ctx(ssl::context::tlsv12_client);
-        ctx.set_verify_mode(ssl::verify_none);
-
-        tcp::resolver resolver(io_context);
-        auto endpoints = resolver.resolve(central_host, std::to_string(central_port));
-
-        tcp::socket raw_socket(io_context);
-        boost::asio::connect(raw_socket, endpoints);
-
-        ssl::stream<tcp::socket> ssl_socket(std::move(raw_socket), ctx);
-        ssl_socket.handshake(ssl::stream_base::client);
-
-        boost::asio::write(ssl_socket, boost::asio::buffer(framed));
-
-        // Read one framed response with a 2-second deadline. If
-        // anything goes wrong, log + continue — heartbeat sync of
-        // metadata still succeeded, only the id-learn step failed.
-        boost::asio::steady_timer deadline(io_context);
-        deadline.expires_after(std::chrono::seconds(2));
-        bool timed_out = false;
-        deadline.async_wait([&](const boost::system::error_code& ec) {
-            if (!ec) {
-                timed_out = true;
-                boost::system::error_code ignore;
-                ssl_socket.lowest_layer().cancel(ignore);
-            }
-        });
-
-        uint32_t len_be = 0;
-        boost::asio::read(ssl_socket, boost::asio::buffer(&len_be, 4));
-        deadline.cancel();
-        if (!timed_out) {
-            uint32_t len = ntohl(len_be);
-            if (len > 0 && len <= (1u << 20)) {
-                std::vector<uint8_t> body(len);
-                boost::asio::read(ssl_socket, boost::asio::buffer(body));
-                chatproj::Packet resp;
-                if (resp.ParseFromArray(body.data(), static_cast<int>(body.size())) &&
-                    resp.type() == chatproj::Packet::SERVER_HEARTBEAT_RES) {
-                    int64_t id = resp.server_heartbeat_res().server_id();
-                    if (id > 0 && manager.server_id() != id) {
-                        manager.set_server_id(id);
-                        if (auto* db = manager.db()) {
-                            db->set_central_server_id(id);
-                        }
-                        std::cout << "[Heartbeat] Cached central server_id = "
-                                  << id << "\n";
-                    }
+    // Run the whole exchange on a detached thread. The previous inline
+    // version did blocking resolve/connect/handshake/read on the ONE
+    // io_context thread — which also relays every voice/video UDP packet
+    // — so a slow or blackholed central froze the entire server for
+    // however long the kernel took to give up on the connect. The read
+    // deadline it carried was inert for the same reason: the timer's
+    // handler needed the very thread that was blocked. The detached
+    // thread is bounded by kCentralSyncTimeout inside
+    // send_to_central_blocking, so threads can't pile up either.
+    // `manager` and its CommunityDb outlive io_context.run() in main(),
+    // so the reference captures are safe; server_id_ is atomic and the
+    // DB serializes internally.
+    std::thread([central_host, central_port, framed = std::move(framed), &manager]() {
+        chatproj::Packet resp;
+        if (!send_to_central_blocking(central_host, central_port, framed,
+                                      /*read_response=*/true, &resp)) {
+            std::cerr << "[Heartbeat] Failed to send\n";
+            return;
+        }
+        if (resp.type() == chatproj::Packet::SERVER_HEARTBEAT_RES) {
+            int64_t id = resp.server_heartbeat_res().server_id();
+            if (id > 0 && manager.server_id() != id) {
+                manager.set_server_id(id);
+                if (auto* db = manager.db()) {
+                    db->set_central_server_id(id);
                 }
+                std::cout << "[Heartbeat] Cached central server_id = "
+                          << id << "\n";
             }
         }
-        ssl_socket.lowest_layer().close();
-
-        std::cout << "[Heartbeat] Sent to central server (" << central_host << ":" << central_port << ")\n";
-    } catch (const std::exception& e) {
-        std::cerr << "[Heartbeat] Failed to send: " << e.what() << "\n";
-    }
+        std::cout << "[Heartbeat] Sent to central server (" << central_host
+                  << ":" << central_port << ")\n";
+    }).detach();
 
     // Schedule next heartbeat in 60 seconds
     timer.expires_after(std::chrono::seconds(60));
