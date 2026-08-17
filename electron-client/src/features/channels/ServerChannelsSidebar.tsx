@@ -22,7 +22,6 @@ export default function ServerChannelsSidebar() {
 
   const activeView = useUiStore((s) => s.activeView);
   const activeServerId = useChatStore((s) => s.activeServerId);
-  const activeChannelId = useChatStore((s) => s.activeChannelId);
   const channelsByServer = useChatStore((s) => s.channelsByServer);
   const servers = useChatStore((s) => s.servers);
   const serverMeta = useChatStore((s) => s.serverMeta);
@@ -109,7 +108,7 @@ export default function ServerChannelsSidebar() {
         <button
           onClick={() => activeServerId && setShowServerMenu((v) => !v)}
           disabled={!activeServerId}
-          className="flex flex-1 items-center gap-1.5 truncate text-left transition-colors disabled:cursor-default"
+          className="flex flex-1 cursor-pointer items-center gap-1.5 truncate text-left transition-colors disabled:cursor-default"
           title={activeServerId ? "Server options" : undefined}
         >
           <span className="truncate font-display text-title font-emphasis tracking-title text-text-bright">
@@ -144,18 +143,9 @@ export default function ServerChannelsSidebar() {
         {showServerMenu && activeServerId && (
           <ServerActionsDropdown
             canInvite={canInvite}
-            canEditChannel={
-              canManageChannels &&
-              !!activeChannelId &&
-              channels.find((c) => c.id === activeChannelId)?.type === "text"
-            }
             onInvites={() => {
               setShowServerMenu(false);
               useUiStore.getState().openModal("invite-manage");
-            }}
-            onChannelSettings={() => {
-              setShowServerMenu(false);
-              useUiStore.getState().openModal("channel-settings");
             }}
             onServerSettings={() => {
               setShowServerMenu(false);
@@ -209,7 +199,7 @@ export default function ServerChannelsSidebar() {
                     setCreateChannelType("text");
                   }}
                   title="Create text channel"
-                  className="ml-auto flex h-4 w-4 items-center justify-center rounded-sm text-text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-text-primary group-hover:opacity-100"
+                  className="ml-auto flex h-4 w-4 cursor-pointer items-center justify-center rounded-sm text-text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-text-primary group-hover:opacity-100"
                 >
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                     <line x1="12" y1="5" x2="12" y2="19" />
@@ -226,6 +216,7 @@ export default function ServerChannelsSidebar() {
                   serverId={activeServerId}
                   channelId={ch.id}
                   channelName={ch.name}
+                  canManage={canManageChannels}
                 />
               ))}
           </div>
@@ -258,7 +249,7 @@ export default function ServerChannelsSidebar() {
                     setCreateChannelType("voice");
                   }}
                   title="Create voice channel"
-                  className="ml-auto flex h-4 w-4 items-center justify-center rounded-sm text-text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-text-primary group-hover:opacity-100"
+                  className="ml-auto flex h-4 w-4 cursor-pointer items-center justify-center rounded-sm text-text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-text-primary group-hover:opacity-100"
                 >
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                     <line x1="12" y1="5" x2="12" y2="19" />
@@ -274,7 +265,7 @@ export default function ServerChannelsSidebar() {
                   <div key={ch.id}>
                     <button
                       onClick={() => handleVoiceChannelClick(ch.id)}
-                      className={`list-row flex w-full items-center rounded-sm text-channel transition-colors ${
+                      className={`list-row group flex w-full cursor-pointer items-center rounded-sm text-channel transition-colors ${
                         connectedChannelId === ch.id && activeView === "voice"
                           ? "bg-accent-soft text-text-bright font-semibold"
                           : connectedChannelId === ch.id
@@ -305,6 +296,26 @@ export default function ServerChannelsSidebar() {
                         <line x1="8" y1="23" x2="16" y2="23" />
                       </svg>
                       <span className="truncate font-channel">{ch.name}</span>
+                      {/* Settings gear — voice channels had no settings
+                          entry point at all before (the old dropdown
+                          item required an active TEXT channel). Opens
+                          rename / bitrate-relevant retention / delete. */}
+                      {canManageChannels && (
+                        <span
+                          role="button"
+                          title="Channel settings"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            useUiStore.getState().openChannelSettings(ch.id);
+                          }}
+                          className="ml-auto hidden shrink-0 cursor-pointer rounded-sm p-0.5 text-text-muted opacity-0 transition-all hover:text-text-primary group-hover:block group-hover:opacity-100"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="12" cy="12" r="3" />
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                          </svg>
+                        </span>
+                      )}
                     </button>
                     {connectedChannelId === ch.id ? (
                       <VoiceParticipantList />
@@ -375,12 +386,17 @@ interface TextChannelRowProps {
   serverId: string;
   channelId: string;
   channelName: string;
+  /// MANAGE_CHANNELS — shows the hover gear that opens this channel's
+  /// settings. Computed once in the parent so the memoized row doesn't
+  /// subscribe to the roles/members slices itself.
+  canManage: boolean;
 }
 
 const TextChannelRow = memo(function TextChannelRow({
   serverId,
   channelId,
   channelName,
+  canManage,
 }: TextChannelRowProps) {
   const dropKey = `channel:${serverId}:${channelId}`;
   // Per-row primitive selectors — each returns a boolean / number, so
@@ -430,7 +446,7 @@ const TextChannelRow = memo(function TextChannelRow({
       data-drop-target={dropKey}
       data-server-id={serverId}
       data-channel-id={channelId}
-      className={`list-row relative flex w-full items-center rounded-sm text-channel transition-all ${
+      className={`list-row group relative flex w-full cursor-pointer items-center rounded-sm text-channel transition-all ${
         isHoveredDrop
           ? "animate-[dropTargetIn_0.18s_ease_both] bg-accent text-on-accent"
           : isActive
@@ -454,6 +470,29 @@ const TextChannelRow = memo(function TextChannelRow({
         #
       </span>
       <span className="truncate font-channel">{channelName}</span>
+
+      {/* Settings gear — appears on row hover (Discord-style) for
+          MANAGE_CHANNELS holders and opens this channel's settings
+          without needing to activate the channel first. Rendered as a
+          span (a real <button> can't nest inside the row button).
+          Hidden while a file drag is in flight so it doesn't fight
+          the upload-target icon for the ml-auto slot. */}
+      {canManage && !dragActive && (
+        <span
+          role="button"
+          title="Channel settings"
+          onClick={(e) => {
+            e.stopPropagation();
+            useUiStore.getState().openChannelSettings(channelId);
+          }}
+          className="ml-auto hidden shrink-0 cursor-pointer rounded-sm p-0.5 text-text-muted opacity-0 transition-all hover:text-text-primary group-hover:block group-hover:opacity-100"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </span>
+      )}
 
       {/* Upload-target hint icon — appears at the end of every text
           channel row while a file drag is in flight, mirroring the

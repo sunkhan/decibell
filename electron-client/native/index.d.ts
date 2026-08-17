@@ -139,13 +139,19 @@ export declare function listMembers(args: ListMembersArgs): Promise<void>
 export interface KickMemberArgs {
   serverId: string
   username: string
-  reason: string
+  /**
+   * Optional — the UI doesn't collect a reason yet. A required
+   * String here made napi reject every kick with "Missing field
+   * 'reason'".
+   */
+  reason?: string
 }
 export declare function kickMember(args: KickMemberArgs): Promise<void>
 export interface BanMemberArgs {
   serverId: string
   username: string
-  reason: string
+  /** Optional — see KickMemberArgs. */
+  reason?: string
 }
 export declare function banMember(args: BanMemberArgs): Promise<void>
 export interface LeaveServerArgs {

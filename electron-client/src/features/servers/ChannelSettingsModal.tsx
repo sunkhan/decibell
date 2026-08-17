@@ -95,13 +95,15 @@ export default function ChannelSettingsModal() {
   const closeModal = useUiStore((s) => s.closeModal);
   useEscapeToClose(closeModal, activeModal === "channel-settings");
   const activeServerId = useChatStore((s) => s.activeServerId);
-  const activeChannelId = useChatStore((s) => s.activeChannelId);
+  // Explicit target set by the per-row gear icon — the channel no
+  // longer needs to be the active one.
+  const targetChannelId = useUiStore((s) => s.channelSettingsChannelId);
   const channelsByServer = useChatStore((s) => s.channelsByServer);
 
   const channel: ChannelInfo | undefined = useMemo(() => {
-    if (!activeServerId || !activeChannelId) return undefined;
-    return channelsByServer[activeServerId]?.find((c) => c.id === activeChannelId);
-  }, [activeServerId, activeChannelId, channelsByServer]);
+    if (!activeServerId || !targetChannelId) return undefined;
+    return channelsByServer[activeServerId]?.find((c) => c.id === targetChannelId);
+  }, [activeServerId, targetChannelId, channelsByServer]);
 
   // Mirrors the server-side gates: retention/rename/delete/wipe are all
   // MANAGE_CHANNELS (owner implicitly included).

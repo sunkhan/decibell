@@ -54,7 +54,10 @@ pub async fn list_members(args: ListMembersArgs) -> napi::Result<()> {
 pub struct KickMemberArgs {
     pub server_id: String,
     pub username: String,
-    pub reason: String,
+    /// Optional — the UI doesn't collect a reason yet. A required
+    /// String here made napi reject every kick with "Missing field
+    /// 'reason'".
+    pub reason: Option<String>,
 }
 
 #[napi]
@@ -67,7 +70,10 @@ pub async fn kick_member(args: KickMemberArgs) -> napi::Result<()> {
     send_for_server(
         &server_id,
         packet::Type::KickMemberReq,
-        packet::Payload::KickMemberReq(KickMemberRequest { username, reason }),
+        packet::Payload::KickMemberReq(KickMemberRequest {
+            username,
+            reason: reason.unwrap_or_default(),
+        }),
     )
     .await
 }
@@ -76,7 +82,8 @@ pub async fn kick_member(args: KickMemberArgs) -> napi::Result<()> {
 pub struct BanMemberArgs {
     pub server_id: String,
     pub username: String,
-    pub reason: String,
+    /// Optional — see KickMemberArgs.
+    pub reason: Option<String>,
 }
 
 #[napi]
@@ -89,7 +96,10 @@ pub async fn ban_member(args: BanMemberArgs) -> napi::Result<()> {
     send_for_server(
         &server_id,
         packet::Type::BanMemberReq,
-        packet::Payload::BanMemberReq(BanMemberRequest { username, reason }),
+        packet::Payload::BanMemberReq(BanMemberRequest {
+            username,
+            reason: reason.unwrap_or_default(),
+        }),
     )
     .await
 }

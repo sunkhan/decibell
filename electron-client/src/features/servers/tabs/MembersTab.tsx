@@ -51,7 +51,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
     setPendingAction(`kick:${username}`);
     setError(null);
     try {
-      await invoke("kick_member", { serverId, username });
+      await invoke("kick_member", { serverId, username, reason: "" });
     } catch (err) {
       setError(String(err));
     } finally {
@@ -64,7 +64,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
     setPendingAction(`ban:${username}`);
     setError(null);
     try {
-      await invoke("ban_member", { serverId, username });
+      await invoke("ban_member", { serverId, username, reason: "" });
     } catch (err) {
       setError(String(err));
     } finally {

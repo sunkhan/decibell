@@ -102,6 +102,11 @@ export interface MembershipRevocationNotice {
 
 interface UiState {
   activeModal: string | null;
+  /// Which channel the channel-settings modal targets. Set by the
+  /// per-row gear icon via openChannelSettings — the modal no longer
+  /// requires the channel to be the active one.
+  channelSettingsChannelId: string | null;
+  openChannelSettings: (channelId: string) => void;
   connectionStatus: "connected" | "reconnecting" | "disconnected";
   activeView: "home" | "server" | "browse" | "voice" | "dm";
   membersPanelVisible: boolean;
@@ -179,6 +184,7 @@ interface UiState {
 
 export const useUiStore = create<UiState>((set, get) => ({
   activeModal: null,
+  channelSettingsChannelId: null,
   connectionStatus: "connected",
   activeView: "home",
   membersPanelVisible: true,
@@ -254,6 +260,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   toggleDmFriendsPanel: () => set((state) => ({ dmFriendsPanelVisible: !state.dmFriendsPanelVisible })),
   openModal: (modalId) => set({ activeModal: modalId }),
   closeModal: () => set({ activeModal: null }),
+  openChannelSettings: (channelId) =>
+    set({ activeModal: "channel-settings", channelSettingsChannelId: channelId }),
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setActiveView: (view) => set({ activeView: view }),
   openProfilePopup: (username, anchor, serverId = null) =>
