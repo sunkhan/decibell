@@ -1048,6 +1048,15 @@ private:
                 req.retention_days_video(),
                 req.retention_days_document(),
                 req.retention_days_audio());
+            // Voice bitrate rides the same update when present (proto3
+            // optional — absent means "leave unchanged", so retention-only
+            // updates from older clients can't reset it). The DB setter
+            // only touches voice rows, so a stray value on a text channel
+            // is a no-op.
+            if (ok && req.has_voice_bitrate_kbps()) {
+                db->set_channel_voice_bitrate(req.channel_id(),
+                                              req.voice_bitrate_kbps());
+            }
             res->set_success(ok);
             res->set_message(ok ? "Channel updated." : "Channel not found.");
             if (!ok) {

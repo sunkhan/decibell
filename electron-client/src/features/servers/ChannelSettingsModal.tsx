@@ -111,6 +111,9 @@ export default function ChannelSettingsModal() {
   // Categories are grouping headers: no messages → no retention, no
   // wipe. Just rename + delete.
   const isCategory = channel?.type === "category";
+  // Voice channels get the bitrate control instead of retention/wipe —
+  // their content is live audio, not stored messages.
+  const isVoice = channel?.type === "voice";
   // The landing channel after auth must always exist — the server
   // refuses to delete the last text channel, so hide the button too.
   const isLastTextChannel =
@@ -131,6 +134,7 @@ export default function ChannelSettingsModal() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState("");
+  const [bitrateDraft, setBitrateDraft] = useState(0);
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
   const [wipeConfirmText, setWipeConfirmText] = useState("");
   const [wiping, setWiping] = useState(false);
@@ -155,6 +159,7 @@ export default function ChannelSettingsModal() {
       retentionDaysAudio: presetValue(channel.retentionDaysAudio),
     });
     setNameDraft(channel.name);
+    setBitrateDraft(channel.voiceBitrateKbps);
     setError(null);
     setSaving(false);
     setWipeConfirmOpen(false);
@@ -213,7 +218,8 @@ export default function ChannelSettingsModal() {
       draft.retentionDaysAudio !== channel.retentionDaysAudio);
   const nameDirty =
     !!channel && nameDraft.trim().length > 0 && nameDraft.trim() !== channel.name;
-  const dirty = retentionDirty || nameDirty;
+  const bitrateDirty = !!channel && isVoice && bitrateDraft !== channel.voiceBitrateKbps;
+  const dirty = retentionDirty || nameDirty || bitrateDirty;
 
   const handleSave = async () => {
     if (!canManage) return;
@@ -227,7 +233,7 @@ export default function ChannelSettingsModal() {
           name: nameDraft.trim(),
         });
       }
-      if (retentionDirty) {
+      if (retentionDirty || bitrateDirty) {
         await invoke("update_channel_retention", {
           serverId: activeServerId,
           channelId: channel.id,
@@ -236,6 +242,8 @@ export default function ChannelSettingsModal() {
           retentionDaysVideo: draft.retentionDaysVideo,
           retentionDaysDocument: draft.retentionDaysDocument,
           retentionDaysAudio: draft.retentionDaysAudio,
+          // Explicit presence on the wire: undefined = leave unchanged.
+          voiceBitrateKbps: isVoice ? bitrateDraft : undefined,
         });
       }
       closeModal();
@@ -329,7 +337,51 @@ export default function ChannelSettingsModal() {
             </div>
           )}
 
-          {!isCategory && (<>
+          {isVoice && (
+            <div className="mb-5">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                Voice bitrate
+              </div>
+              <div className="flex items-center gap-3 rounded-md border border-border-divider bg-bg-light px-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-medium text-text-primary">
+                    Opus bitrate
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-text-muted">
+                    Higher sounds better, uses more bandwidth per speaker
+                  </div>
+                </div>
+                <div className="relative shrink-0">
+                  <select
+                    value={String(bitrateDraft)}
+                    onChange={(e) => setBitrateDraft(parseInt(e.target.value, 10))}
+                    className="appearance-none rounded-sm border border-border bg-bg-lighter px-3 py-1.5 pr-8 text-[12px] text-text-primary outline-none transition-all hover:border-text-faint focus:border-accent"
+                  >
+                    <option value="0">Default</option>
+                    {[32, 48, 64, 96, 128, 192, 256, 320].map((k) => (
+                      <option key={k} value={String(k)}>
+                        {k} kbps
+                      </option>
+                    ))}
+                    {![0, 32, 48, 64, 96, 128, 192, 256, 320].includes(bitrateDraft) && (
+                      <option value={String(bitrateDraft)}>{bitrateDraft} kbps</option>
+                    )}
+                  </select>
+                  <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-text-muted">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                      <path d="M6 9l6 6 6-6" />
+                    </svg>
+                  </div>
+                </div>
+              </div>
+              <p className="mt-2 text-[12px] leading-[1.5] text-text-muted">
+                Applies when members next join the channel — anyone already
+                connected keeps their current bitrate until they rejoin.
+              </p>
+            </div>
+          )}
+
+          {!isCategory && !isVoice && (<>
           <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
             Retention
           </div>
@@ -387,7 +439,7 @@ export default function ChannelSettingsModal() {
               <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-error">
                 Danger zone
               </div>
-              {!isCategory && (
+              {!isCategory && !isVoice && (
               <div className="rounded-md border border-error/25 bg-error/5 p-3">
                 <div className="flex items-start gap-3">
                   <div className="min-w-0 flex-1">

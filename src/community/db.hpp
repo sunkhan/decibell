@@ -303,6 +303,10 @@ public:
                                   int32_t video_days,
                                   int32_t document_days,
                                   int32_t audio_days);
+    // Set a voice channel's Opus bitrate (kbps; 0 = client default).
+    // Clamped to [0, 512]. Returns false if the channel doesn't exist,
+    // isn't a voice channel, or on DB error.
+    bool set_channel_voice_bitrate(const std::string& channel_id, int32_t kbps);
     // Fetch a single channel with retention populated. nullopt if unknown.
     std::optional<DbChannel> get_channel(const std::string& channel_id) const;
 

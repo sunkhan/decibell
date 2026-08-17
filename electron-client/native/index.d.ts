@@ -74,10 +74,17 @@ export interface UpdateChannelRetentionArgs {
   retentionDaysVideo: number
   retentionDaysDocument: number
   retentionDaysAudio: number
+  /**
+   * Voice channels only: Opus bitrate in kbps, 0 = client default.
+   * None/undefined = leave unchanged (the wire field has explicit
+   * presence, so retention-only updates can't reset it).
+   */
+  voiceBitrateKbps?: number
 }
 /**
- * Owner-only retention edit. All five values are sent as a snapshot;
- * 0 means "keep forever".
+ * MANAGE_CHANNELS edit. All five retention values are sent as a
+ * snapshot; 0 means "keep forever". Voice bitrate rides along when
+ * provided.
  */
 export declare function updateChannelRetention(args: UpdateChannelRetentionArgs): Promise<void>
 export interface SendChannelMessageArgs {

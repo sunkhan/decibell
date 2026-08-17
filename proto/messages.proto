@@ -662,6 +662,12 @@ message ChannelUpdateRequest {
   int32 retention_days_video = 4;
   int32 retention_days_document = 5;
   int32 retention_days_audio = 6;
+  // Voice channels only: Opus bitrate in kbps, 0 = "use client
+  // default". `optional` for explicit presence — absent (older
+  // clients / text-channel updates) means "leave unchanged", so a
+  // retention-only update can never silently reset the bitrate.
+  // Applied by clients on their next voice join.
+  optional int32 voice_bitrate_kbps = 7;
 }
 
 message ChannelUpdateResponse {

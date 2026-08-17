@@ -101,10 +101,15 @@ pub struct UpdateChannelRetentionArgs {
     pub retention_days_video: i32,
     pub retention_days_document: i32,
     pub retention_days_audio: i32,
+    /// Voice channels only: Opus bitrate in kbps, 0 = client default.
+    /// None/undefined = leave unchanged (the wire field has explicit
+    /// presence, so retention-only updates can't reset it).
+    pub voice_bitrate_kbps: Option<i32>,
 }
 
-/// Owner-only retention edit. All five values are sent as a snapshot;
-/// 0 means "keep forever".
+/// MANAGE_CHANNELS edit. All five retention values are sent as a
+/// snapshot; 0 means "keep forever". Voice bitrate rides along when
+/// provided.
 #[napi]
 pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi::Result<()> {
     let UpdateChannelRetentionArgs {
@@ -115,6 +120,7 @@ pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi:
         retention_days_video,
         retention_days_document,
         retention_days_audio,
+        voice_bitrate_kbps,
     } = args;
     send_for_server(
         &server_id,
@@ -126,6 +132,7 @@ pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi:
             retention_days_video,
             retention_days_document,
             retention_days_audio,
+            voice_bitrate_kbps,
         }),
     )
     .await

@@ -1516,6 +1516,20 @@ bool CommunityDb::set_nickname(const std::string& username,
     return sqlite3_changes(db_) > 0;
 }
 
+bool CommunityDb::set_channel_voice_bitrate(const std::string& channel_id,
+                                            int32_t kbps) {
+    if (kbps < 0) kbps = 0;
+    if (kbps > 512) kbps = 512;
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_,
+        "UPDATE channels SET voice_bitrate_kbps=? WHERE id=? AND type=1;");
+    if (!q.s) return false;
+    q.bind_int(1, kbps);
+    q.bind_text(2, channel_id);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
+}
+
 bool CommunityDb::update_channel_retention(const std::string& channel_id,
                                            int32_t text_days,
                                            int32_t image_days,
