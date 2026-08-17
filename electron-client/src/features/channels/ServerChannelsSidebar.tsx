@@ -763,7 +763,7 @@ const TextChannelRow = memo(function TextChannelRow({
       }`}
     >
       <span
-        className={`font-channel text-channel font-medium transition-colors ${
+        className={`flex h-[14px] w-[14px] shrink-0 items-center justify-center font-channel text-channel font-medium transition-colors ${
           isHoveredDrop
             ? "text-on-accent"
             : isActive
