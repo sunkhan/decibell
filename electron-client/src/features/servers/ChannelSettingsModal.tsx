@@ -28,6 +28,10 @@ const PRESETS: Preset[] = [
   { label: "1 year", days: 365 },
 ];
 
+/// Reference ticks on the voice-bitrate slider (kbps). Purely visual —
+/// the slider itself is continuous (step 1).
+const BITRATE_MARKS = [32, 64, 128, 192, 256];
+
 function presetValue(days: number): number {
   // Collapse any positive value to the closest defined preset; 0 stays 0.
   if (days <= 0) return 0;
@@ -368,21 +372,42 @@ export default function ChannelSettingsModal() {
                     )}
                   </div>
                 </div>
-                <input
-                  type="range"
-                  min={16}
-                  max={320}
-                  step={8}
-                  // 0 = "client default" — park the thumb at the default's
-                  // effective value (64); the first drag sets an explicit
-                  // bitrate, Reset returns to 0.
-                  value={bitrateDraft === 0 ? 64 : bitrateDraft}
-                  onChange={(e) => setBitrateDraft(Number(e.target.value))}
-                  className="h-[4px] w-full cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-light [&::-webkit-slider-thumb]:shadow-[0_0_6px_var(--color-accent-mid)]"
-                />
-                <div className="mt-1 flex justify-between text-[10px] text-text-muted">
-                  <span>16 kbps</span>
-                  <span>320 kbps</span>
+                <div className="relative">
+                  <input
+                    type="range"
+                    min={16}
+                    max={320}
+                    step={1}
+                    // 0 = "client default" — park the thumb at the default's
+                    // effective value (64); the first drag sets an explicit
+                    // bitrate, Reset returns to 0.
+                    value={bitrateDraft === 0 ? 64 : bitrateDraft}
+                    onChange={(e) => setBitrateDraft(Number(e.target.value))}
+                    className="h-[4px] w-full cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-light [&::-webkit-slider-thumb]:shadow-[0_0_6px_var(--color-accent-mid)]"
+                  />
+                  {/* Tick marks at the common rates, positioned on the
+                      track's linear scale (16..320). Same pattern as the
+                      volume slider's 0 dB tick. */}
+                  {BITRATE_MARKS.map((k) => (
+                    <div
+                      key={k}
+                      className="pointer-events-none absolute top-1/2 h-[8px] w-px -translate-y-1/2 bg-text-muted/40"
+                      style={{ left: `${((k - 16) / 304) * 100}%` }}
+                    />
+                  ))}
+                </div>
+                <div className="relative mt-1.5 h-[13px] text-[10px] leading-none text-text-muted">
+                  <span className="absolute left-0">16</span>
+                  {BITRATE_MARKS.map((k) => (
+                    <span
+                      key={k}
+                      className="absolute -translate-x-1/2"
+                      style={{ left: `${((k - 16) / 304) * 100}%` }}
+                    >
+                      {k}
+                    </span>
+                  ))}
+                  <span className="absolute right-0">320 kbps</span>
                 </div>
               </div>
               <p className="mt-2 text-[12px] leading-[1.5] text-text-muted">
