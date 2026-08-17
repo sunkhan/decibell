@@ -391,8 +391,14 @@ export default function ChannelSettingsModal() {
                   {BITRATE_MARKS.map((k) => (
                     <div
                       key={k}
-                      className="pointer-events-none absolute top-1/2 h-[8px] w-px -translate-y-1/2 bg-text-muted/40"
-                      style={{ left: `${((k - 16) / 304) * 100}%` }}
+                      className="pointer-events-none absolute top-1/2 h-[8px] w-px -translate-x-1/2 -translate-y-1/2 bg-text-muted/40"
+                      // Thumb-center space: the 14px thumb's center only
+                      // travels [7px, 100% - 7px], so a tick placed on
+                      // the raw track scale sits ~5 kbps off near the
+                      // edges (the thumb read 27 at the "32" mark).
+                      style={{
+                        left: `calc(${(k - 16) / 304} * (100% - 14px) + 7px)`,
+                      }}
                     />
                   ))}
                 </div>
@@ -402,7 +408,9 @@ export default function ChannelSettingsModal() {
                     <span
                       key={k}
                       className="absolute -translate-x-1/2"
-                      style={{ left: `${((k - 16) / 304) * 100}%` }}
+                      style={{
+                        left: `calc(${(k - 16) / 304} * (100% - 14px) + 7px)`,
+                      }}
                     >
                       {k}
                     </span>
