@@ -638,9 +638,12 @@ export default function ServerChannelsSidebar() {
         onMouseDown={onResizeMouseDown}
         className="absolute right-0 top-0 z-10 h-full w-1 cursor-col-resize hover:bg-accent/40 active:bg-accent/60"
       />
-      {activeModal === "server-settings" && activeServerId && (
-        <ServerSettingsModal serverId={activeServerId} />
-      )}
+      {/* Mounted whenever a server is active (it self-nulls while
+          closed, like SettingsModal in MainLayout) — gating on
+          activeModal unmounted it the instant the modal closed, which
+          skipped the fade-out and forced a from-scratch mount on every
+          open. */}
+      {activeServerId && <ServerSettingsModal serverId={activeServerId} />}
       {activeModal === "leave-server-confirm" && leavePending && (
         <LeaveServerConfirmModal
           serverName={leavePending.name}

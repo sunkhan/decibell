@@ -97,7 +97,10 @@ export default function ServerSettingsModal({ serverId }: Props) {
   useEffect(() => {
     if (isOpen) {
       setMounted(true);
-      requestAnimationFrame(() => setVisible(true));
+      // Double rAF (matching SettingsModal): a single rAF fires before
+      // the next paint, so the opacity-0/scale-95 starting frame never
+      // renders and the open transition pops instead of animating.
+      requestAnimationFrame(() => requestAnimationFrame(() => setVisible(true)));
     } else {
       setVisible(false);
       setLeaveConfirm(false);
