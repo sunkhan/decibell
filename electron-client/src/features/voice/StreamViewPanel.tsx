@@ -304,7 +304,11 @@ export default function StreamViewPanel() {
 
             {!isFullscreen && (
               <div
-                className={`absolute bottom-3 right-3 flex items-center gap-2 rounded-md border border-border bg-bg-light/95 px-2.5 py-1.5 shadow-float transition-opacity duration-150 ${
+                // Fixed dark scrim, NOT a theme surface: these bars float
+                // over the video and their iconography is white — on light
+                // themes bg-bg-light resolved near-white and the controls
+                // disappeared into it.
+                className={`absolute bottom-3 right-3 flex items-center gap-2 rounded-md border border-white/10 bg-black/70 px-2.5 py-1.5 shadow-float backdrop-blur-sm transition-opacity duration-150 ${
                   hoverControlsVisible
                     ? "opacity-100"
                     : "pointer-events-none opacity-0"
@@ -394,7 +398,9 @@ export default function StreamViewPanel() {
                   </div>
                 </div>
 
-                <div className="mb-4 flex items-center gap-2 rounded-lg border border-border bg-bg-light/95 px-3 py-2 shadow-float">
+                {/* Same fixed dark scrim as the hover bar above — the
+                    white controls need it in every theme. */}
+                <div className="mb-4 flex items-center gap-2 rounded-lg border border-white/10 bg-black/70 px-3 py-2 shadow-float backdrop-blur-sm">
                   <button
                     onClick={handleMute}
                     className={`flex h-9 w-9 items-center justify-center rounded-md transition-colors ${
