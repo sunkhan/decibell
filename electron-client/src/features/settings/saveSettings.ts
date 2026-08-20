@@ -43,6 +43,7 @@ function doSave(): void {
     friends_only_dms: friendsOnlyDms,
     voice_threshold_db: ui.voiceThresholdDb,
     stream_stereo: ui.streamStereo,
+    take_stream_on_channel_switch: ui.takeStreamOnChannelSwitch,
     input_device: ui.inputDevice,
     output_device: ui.outputDevice,
     separate_stream_output: ui.separateStreamOutput,

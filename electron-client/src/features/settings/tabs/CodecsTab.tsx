@@ -1,5 +1,7 @@
 import { useEffect } from "react";
 import { useCodecSettingsStore } from "../../../stores/codecSettingsStore";
+import { useUiStore } from "../../../stores/uiStore";
+import { saveSettings } from "../saveSettings";
 import { VideoCodec, type CodecCapability } from "../../../types";
 
 const codecLabel = (c: VideoCodec): string => {
@@ -65,6 +67,7 @@ export default function CodecsTab() {
     useAv1, useH265, encodeCaps, decodeCaps, loaded, loadingRefresh,
     load, setUseAv1, setUseH265, refresh,
   } = useCodecSettingsStore();
+  const takeStreamOnChannelSwitch = useUiStore((s) => s.takeStreamOnChannelSwitch);
 
   useEffect(() => { load().catch((e) => console.error("[codecs] load failed:", e)); }, [load]);
 
@@ -88,6 +91,18 @@ export default function CodecsTab() {
         checked={useH265 && hasH265Encode}
         disabled={!hasH265Encode}
         onToggle={() => setUseH265(!useH265).catch(console.error)}
+      />
+      <ToggleRow
+        label="Take stream with me when switching voice channels"
+        hint="When you move to another voice channel while screen sharing, carry the stream into the new channel instead of ending it."
+        checked={takeStreamOnChannelSwitch}
+        disabled={false}
+        onToggle={() => {
+          useUiStore
+            .getState()
+            .setTakeStreamOnChannelSwitch(!takeStreamOnChannelSwitch);
+          saveSettings();
+        }}
       />
 
       <div className="mt-2 flex items-center gap-3">

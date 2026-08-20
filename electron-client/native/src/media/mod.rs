@@ -158,15 +158,35 @@ impl VoiceEngine {
         let audio_thread = thread::Builder::new()
             .name("decibell-audio".to_string())
             .spawn(move || {
-                pipeline::run_audio_pipeline(
-                    voice_socket_for_audio,
-                    sender_id_for_audio,
-                    voice_bitrate_bps,
-                    initial_input_device,
-                    initial_output_device,
-                    control_rx,
-                    event_tx,
-                );
+                // Guard the whole pipeline. A panic here (e.g. a virtual audio
+                // driver reporting a config that trips a resampler or a
+                // downmix assumption) used to silently terminate this thread,
+                // leaving a "connected" call with dead audio and no error shown.
+                // Catch it and surface an actionable message instead.
+                let panic_tx = event_tx.clone();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    pipeline::run_audio_pipeline(
+                        voice_socket_for_audio,
+                        sender_id_for_audio,
+                        voice_bitrate_bps,
+                        initial_input_device,
+                        initial_output_device,
+                        control_rx,
+                        event_tx,
+                    );
+                }));
+                if let Err(e) = outcome {
+                    let msg = e
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| e.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown error".to_string());
+                    log::error!("[voice] audio pipeline panicked: {}", msg);
+                    let _ = panic_tx.send(VoiceEvent::Error(format!(
+                        "Audio engine crashed ({}) — try a different device in Settings → Audio",
+                        msg
+                    )));
+                }
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
 
@@ -634,6 +654,14 @@ impl VideoEngine {
         }
     }
 
+    /// Re-point the video sender at a new media socket. Used when the stream
+    /// is carried into a new voice channel: the new VoiceEngine has a fresh
+    /// media socket, and swapping it here re-routes outgoing frames without
+    /// tearing down (and re-prompting) the capture pipeline.
+    pub fn set_send_socket(&self, socket: Arc<UdpSocket>) {
+        self.sender.set_socket(socket);
+    }
+
     /// Windows-only: spin up the native capture + encoder pipeline.
     /// Source id is the Chromium desktopCapturer id ("screen:N:0" or
     /// "window:HWND:0"). Encoder name comes from probe_native_encoders.
@@ -967,6 +995,14 @@ impl AudioStreamEngine {
         if let Some(cleanup) = self.cleanup.take() {
             cleanup();
         }
+    }
+
+    /// Re-point the STREAM_AUDIO sends at a new voice socket — used when the
+    /// stream follows the user into a new voice channel.
+    pub fn set_socket(&self, socket: Arc<UdpSocket>) {
+        let _ = self
+            .control_tx
+            .send(audio_stream_pipeline::AudioStreamControl::SetSocket(socket));
     }
 }
 

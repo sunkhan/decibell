@@ -788,6 +788,44 @@ export class StreamCapture {
       this.stream = null;
     }
   }
+
+  /// Move an already-running stream to a different voice channel WITHOUT
+  /// restarting capture (so no getDisplayMedia / portal / WGC re-prompt).
+  /// Native re-points the video (and stream-audio) send sockets at the new
+  /// voice channel's UDP sockets and re-announces the stream — capture and
+  /// the encoder keep running untouched on BOTH the WebCodecs and native
+  /// paths. Watchers in the new channel catch up on the forced keyframe.
+  async retarget(serverId: string, channelId: string): Promise<void> {
+    if (this.stopping) return;
+
+    // Use the negotiated encoder dims when we have them (WebCodecs path);
+    // fall back to the requested dims for the native path (encoderConfig is
+    // null there — native owns the real dimensions).
+    const width = this.encoderConfig?.width ?? this.opts.width;
+    const height = this.encoderConfig?.height ?? this.opts.height;
+
+    await invoke("move_stream_to_channel", {
+      serverId,
+      channelId,
+      fps: this.opts.fps,
+      width,
+      height,
+      videoBitrateKbps: this.opts.bitrateKbps,
+      shareAudio: this.opts.shareAudio,
+      initialCodec: this.codec,
+      // Keep the codec we're already encoding with — don't renegotiate mid-move.
+      enforcedCodec: this.codec,
+    });
+
+    // Point future frames / thumbnails / stop at the new channel.
+    this.opts.serverId = serverId;
+    this.opts.channelId = channelId;
+
+    // WebCodecs path: force a keyframe from the renderer encoder so the new
+    // channel's watchers get an IDR immediately. (The native path forces its
+    // own keyframe inside move_stream_to_channel.)
+    this.forceKeyframe();
+  }
 }
 
 // Module-level singleton — there's only ever one active screen-share

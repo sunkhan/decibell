@@ -24,6 +24,10 @@ pub struct AppSettings {
     pub friends_only_dms: bool,
     #[serde(default)]
     pub stream_stereo: bool,
+    /// When switching voice channels while screen-sharing, carry the stream
+    /// into the new channel instead of ending it. Default false = end it.
+    #[serde(default)]
+    pub take_stream_on_channel_switch: bool,
     /// None means "use system default"
     pub input_device: Option<String>,
     /// None means "use system default"

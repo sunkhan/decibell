@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUpdateStore } from "../../stores/updateStore";
+import { useAudioDevicesStore } from "../../stores/audioDevicesStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { playSound } from "../../utils/sounds";
 import DeviceContextMenu from "../voice/DeviceContextMenu";
@@ -60,16 +61,11 @@ export default function UserPanel() {
     type: "input" | "output";
     anchor: { x: number; y: number };
   } | null>(null);
-  const [cachedDevices, setCachedDevices] = useState<{
-    inputs: { name: string; label?: string }[];
-    outputs: { name: string; label?: string }[];
-  }>({ inputs: [], outputs: [] });
-
-  useEffect(() => {
-    invoke<{ inputs: { name: string; label?: string }[]; outputs: { name: string; label?: string }[] }>("list_audio_devices")
-      .then(setCachedDevices)
-      .catch(console.error);
-  }, []);
+  // Device roster comes from the shared store, kept fresh by the app-global
+  // devicechange sync — so the right-click device menu reflects hotplugs
+  // instead of a stale once-per-mount snapshot.
+  const deviceInputs = useAudioDevicesStore((s) => s.inputs);
+  const deviceOutputs = useAudioDevicesStore((s) => s.outputs);
 
   if (!username) return null;
 
@@ -304,9 +300,7 @@ export default function UserPanel() {
         <DeviceContextMenu
           type={deviceMenu.type}
           anchor={deviceMenu.anchor}
-          devices={
-            deviceMenu.type === "input" ? cachedDevices.inputs : cachedDevices.outputs
-          }
+          devices={deviceMenu.type === "input" ? deviceInputs : deviceOutputs}
           onClose={() => setDeviceMenu(null)}
         />
       )}

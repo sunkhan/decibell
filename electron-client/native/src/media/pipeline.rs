@@ -234,6 +234,13 @@ pub fn run_audio_pipeline(
     let mut gate_hang_remaining: u32 = 0;
 
     let mut sequence: u16 = 0;
+    // Silence-transmission keepalive. When we are not actively transmitting
+    // voice (muted, VAD gate closed, or no microphone) we drop from 50 pps to
+    // one packet per KEEPALIVE_INTERVAL — just enough to keep the server's UDP
+    // endpoint mapping for us alive and the NAT binding open, without flooding
+    // the relay with silent packets every listener discards. See the send block.
+    let mut last_voice_send = Instant::now();
+    const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(500);
     let mut local_speaking = SpeakingDetector::new();
     let mut input_level_counter: u32 = 0; // throttle InputLevel events (~every 3 frames = 60ms)
     let mut remote_peers: HashMap<String, PeerAudio> = HashMap::new();
@@ -263,9 +270,18 @@ pub fn run_audio_pipeline(
     let mut last_decoded_total: u64 = 0;
     let mut last_latency_ms: Option<u32> = None;
 
-    // AEC render reference: summed across peers per tick so AEC sees what the
-    // speaker actually plays. Reset each tick; fed to render_ref_prod at end.
-    let mut aec_render_mix: Vec<f32> = Vec::with_capacity(FRAME_SIZE * 4);
+    // AEC render reference accumulator: ONE 20ms playback frame (mono, 48kHz),
+    // summed across all peers + stream audio and flushed to `render_ref_prod`
+    // at a fixed 20ms cadence (`render_flush_interval`, section 4c). Fixing the
+    // flush rate is the whole point: the old code pushed a frame per peer PER
+    // LOOP ITERATION, so with 2+ peers decoding on different ~5ms iterations the
+    // render reference was fed 2–3× faster than the mic capture, wrecking AEC3's
+    // render/capture delay alignment — echo cancellation broke in 3+ person
+    // calls. Now it is exactly one 960-sample frame per 20ms, whatever the peer
+    // count.
+    let mut render_sum = [0.0f32; FRAME_SIZE];
+    let mut last_render_flush = Instant::now();
+    let render_flush_interval = Duration::from_millis(20);
 
     // ── Voice processing (AEC / NS / AGC) ──────────────────────────────────
     // VoipAec3 bundles all three processors. We rebuild it when toggles change.
@@ -708,20 +724,62 @@ pub fn run_audio_pipeline(
                         event_tx.send(VoiceEvent::SpeakingChanged("__local__".to_string(), state));
                 }
 
-                // Encode: when gate is closed, send true silence so nothing leaks
-                // to listeners. Opus DTX makes silence frames tiny.
-                let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
-                let encode_result = if !transmit_voice {
-                    encoder.encode_silence(&mut opus_out)
+                // ── Silence-transmission gating ──────────────────────────
+                // When actively transmitting voice, send every 20ms frame.
+                // Otherwise (muted, VAD gate closed, or the speech tail ended)
+                // fall back to one keepalive per KEEPALIVE_INTERVAL so we stop
+                // spraying the relay with silent packets. `transmit_voice`
+                // already accounts for mute (the gate is forced closed while
+                // muted) and the 200ms gate-hang, so brief inter-word pauses
+                // keep transmitting and only sustained silence throttles.
+                let should_send = if transmit_voice {
+                    last_voice_send = loop_start;
+                    true
+                } else if last_voice_send.elapsed() >= KEEPALIVE_INTERVAL {
+                    last_voice_send = loop_start;
+                    true
                 } else {
-                    encoder.encode(&frame, &mut opus_out)
+                    false
                 };
 
-                match encode_result {
-                    Ok(len) => {
-                        // Prepend flags byte: muted | deafened
-                        let flags = if muted { FLAG_MUTED } else { 0 }
-                            | if deafened { FLAG_DEAFENED } else { 0 };
+                if should_send {
+                    // Encode voice when transmitting, true silence otherwise so
+                    // a keepalive never leaks residual audio. Opus DTX keeps
+                    // silence frames tiny.
+                    let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
+                    let encode_result = if transmit_voice {
+                        encoder.encode(&frame, &mut opus_out)
+                    } else {
+                        encoder.encode_silence(&mut opus_out)
+                    };
+
+                    match encode_result {
+                        Ok(len) => {
+                            // Prepend flags byte: muted | deafened
+                            let flags = if muted { FLAG_MUTED } else { 0 }
+                                | if deafened { FLAG_DEAFENED } else { 0 };
+                            let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
+                            flagged[0] = flags;
+                            flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
+                            let packet =
+                                UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len]);
+                            let _ = socket.send(&packet.to_bytes());
+                            sequence = sequence.wrapping_add(1);
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(VoiceEvent::Error(format!("Encode error: {}", e)));
+                        }
+                    }
+                }
+            } else if input_stream_opt.is_none() {
+                // No mic — send a keepalive at KEEPALIVE_INTERVAL (NOT every
+                // ~5ms loop iteration) so the server keeps our endpoint mapping
+                // and we can still hear other participants.
+                if last_voice_send.elapsed() >= KEEPALIVE_INTERVAL {
+                    last_voice_send = loop_start;
+                    let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
+                    if let Ok(len) = encoder.encode_silence(&mut opus_out) {
+                        let flags = FLAG_MUTED; // no mic = effectively muted
                         let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
                         flagged[0] = flags;
                         flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
@@ -730,22 +788,6 @@ pub fn run_audio_pipeline(
                         let _ = socket.send(&packet.to_bytes());
                         sequence = sequence.wrapping_add(1);
                     }
-                    Err(e) => {
-                        let _ = event_tx.send(VoiceEvent::Error(format!("Encode error: {}", e)));
-                    }
-                }
-            } else if input_stream_opt.is_none() {
-                // No mic — still send silence to keep the UDP session alive
-                let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
-                if let Ok(len) = encoder.encode_silence(&mut opus_out) {
-                    let flags = FLAG_MUTED; // no mic = effectively muted
-                    let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
-                    flagged[0] = flags;
-                    flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
-                    let packet =
-                        UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len]);
-                    let _ = socket.send(&packet.to_bytes());
-                    sequence = sequence.wrapping_add(1);
                 }
             }
         }
@@ -860,7 +902,6 @@ pub fn run_audio_pipeline(
         // time debt, and when packets resume the loop fires dozens of PLC
         // frames in a single burst — audible as a glitch.
         let max_behind = Duration::from_millis(100);
-        aec_render_mix.clear();
         for (username, peer) in remote_peers.iter_mut() {
             if drain_now.duration_since(peer.voice_drain_time) > max_behind {
                 peer.voice_drain_time = drain_now - max_behind;
@@ -880,6 +921,14 @@ pub fn run_audio_pipeline(
                         if !peer.voice_underrun_logged {
                             log::info!("[pipeline] Jitter buffer reset for peer '{}' — re-buffering", username);
                             peer.voice_underrun_logged = true;
+                        }
+                        // The peer isn't delivering voice right now (silent /
+                        // keepalive-only / re-buffering). Feed the detector a
+                        // silent tick so their speaking ring clears instead of
+                        // sticking lit — with silence-gated senders we no longer
+                        // get a steady 50pps of low-RMS frames to clear it.
+                        if let Some(state) = peer.speaking.process_threshold(false) {
+                            let _ = event_tx.send(VoiceEvent::SpeakingChanged(username.clone(), state));
                         }
                         peer.voice_drain_time = drain_now;
                         break;
@@ -913,12 +962,12 @@ pub fn run_audio_pipeline(
                         for (i, &s) in pcm.iter().enumerate() {
                             f32_frame[i] = (s as f32 / 32768.0) * gain;
                         }
-                        // Sum into AEC render reference (mono, pre-resample).
+                        // Sum into the current 20ms AEC render slot (mono,
+                        // pre-resample). Flushed once per 20ms in section 4c so
+                        // the render rate tracks playback regardless of how many
+                        // peers decoded this iteration.
                         if aec_enabled {
-                            if aec_render_mix.len() < f32_frame.len() {
-                                aec_render_mix.resize(f32_frame.len(), 0.0);
-                            }
-                            for (dst, &s) in aec_render_mix.iter_mut().zip(f32_frame.iter()) {
+                            for (dst, &s) in render_sum.iter_mut().zip(f32_frame.iter()) {
                                 *dst += s;
                             }
                         }
@@ -994,15 +1043,14 @@ pub fn run_audio_pipeline(
                                 needed = resampler.input_frames_next();
                             }
                         }
-                        // Feed stream audio to AEC render reference (mono, with volume applied)
+                        // Sum stream audio into the same 20ms AEC render slot as
+                        // voice (mono, volume applied); flushed together in 4c.
                         if aec_enabled {
-                            if let Ok(mut rr_prod) = render_ref_prod.lock() {
-                                for i in 0..STEREO_FRAME_SIZE {
-                                    let l = pcm[i * 2] as f32;
-                                    let r = pcm[i * 2 + 1] as f32;
-                                    let mono = ((l + r) / 2.0) * stream_volume / 32768.0;
-                                    let _ = rr_prod.try_push(mono);
-                                }
+                            for i in 0..STEREO_FRAME_SIZE {
+                                let l = pcm[i * 2] as f32;
+                                let r = pcm[i * 2 + 1] as f32;
+                                let mono = ((l + r) / 2.0) * stream_volume / 32768.0;
+                                render_sum[i] += mono;
                             }
                         }
                     }
@@ -1010,12 +1058,24 @@ pub fn run_audio_pipeline(
             }
         }
 
-        // 4c. Feed AEC render reference (mixed voice pre-playback). ────────
-        if aec_enabled && !aec_render_mix.is_empty() {
-            if let Ok(mut rr_prod) = render_ref_prod.lock() {
-                for &s in &aec_render_mix {
-                    let _ = rr_prod.try_push(s);
+        // 4c. Flush the AEC render reference at the playback frame rate. ────
+        // Exactly one 960-sample (20ms) mono frame per render_flush_interval,
+        // summed across every peer + stream audio, then zero the accumulator.
+        // The while loop catches up if the loop fell behind; the 100ms guard
+        // caps a burst after a long stall. This keeps render:capture at 1:1 —
+        // the fix for AEC breaking with 3+ people in the channel.
+        if aec_enabled {
+            if last_render_flush.elapsed() > Duration::from_millis(100) {
+                last_render_flush = drain_now;
+            }
+            while last_render_flush.elapsed() >= render_flush_interval {
+                last_render_flush += render_flush_interval;
+                if let Ok(mut rr_prod) = render_ref_prod.lock() {
+                    for &s in render_sum.iter() {
+                        let _ = rr_prod.try_push(s);
+                    }
                 }
+                render_sum.fill(0.0);
             }
         }
 

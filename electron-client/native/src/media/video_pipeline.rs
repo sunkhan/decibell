@@ -13,13 +13,18 @@ use std::net::UdpSocket;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use arc_swap::ArcSwap;
+
 use super::video_packet::{UdpVideoPacket, UDP_MAX_PAYLOAD};
 
 /// Per-stream send context. One of these per active outgoing stream.
 /// Cheap to construct — just an atomic counter and a clone of the UDP
-/// socket handle.
+/// socket handle. The socket lives in an `ArcSwap` so it can be
+/// hot-swapped when the stream follows the user into a new voice channel
+/// (which spins up a fresh VoiceEngine with a new media socket) without
+/// tearing down the capture/encoder pipeline.
 pub struct VideoSender {
-    socket: Arc<UdpSocket>,
+    socket: ArcSwap<UdpSocket>,
     sender_id: String,
     next_frame_id: AtomicU32,
 }
@@ -27,10 +32,17 @@ pub struct VideoSender {
 impl VideoSender {
     pub fn new(socket: Arc<UdpSocket>, sender_id: String) -> Self {
         Self {
-            socket,
+            socket: ArcSwap::from(socket),
             sender_id,
             next_frame_id: AtomicU32::new(0),
         }
+    }
+
+    /// Re-point the sender at a new media socket. Used when the stream is
+    /// carried into a new voice channel — the frame id counter keeps
+    /// advancing so the receiver treats it as the same continuous stream.
+    pub fn set_socket(&self, socket: Arc<UdpSocket>) {
+        self.socket.store(socket);
     }
 
     /// Packetise an encoded frame and emit it onto the media socket.
@@ -46,6 +58,8 @@ impl VideoSender {
         let total = chunks.len() as u16;
         let mut ok = 0u32;
         let mut err = 0u32;
+        // Snapshot the current socket once per frame (cheap Arc load).
+        let socket = self.socket.load();
         for (i, chunk) in chunks.iter().enumerate() {
             let pkt = UdpVideoPacket::new_with_codec(
                 &self.sender_id,
@@ -56,7 +70,7 @@ impl VideoSender {
                 codec_byte,
                 chunk,
             );
-            match self.socket.send(&pkt.to_bytes()) {
+            match socket.send(&pkt.to_bytes()) {
                 Ok(_) => ok += 1,
                 Err(_) => err += 1,
             }

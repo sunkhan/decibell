@@ -10,6 +10,9 @@ use super::packet::UdpAudioPacket;
 
 pub enum AudioStreamControl {
     Shutdown,
+    /// Re-point the STREAM_AUDIO sends at a new voice socket — used when the
+    /// stream follows the user into a new voice channel.
+    SetSocket(Arc<UdpSocket>),
 }
 
 pub enum AudioStreamEvent {
@@ -25,7 +28,7 @@ pub fn run_audio_stream_pipeline(
     frame_rx: std::sync::mpsc::Receiver<AudioFrame>,
     control_rx: std::sync::mpsc::Receiver<AudioStreamControl>,
     event_tx: std::sync::mpsc::Sender<AudioStreamEvent>,
-    socket: Arc<UdpSocket>,
+    mut socket: Arc<UdpSocket>,
     sender_id: String,
     bitrate_kbps: u32,
 ) {
@@ -61,6 +64,10 @@ pub fn run_audio_stream_pipeline(
         // Check control messages
         match control_rx.try_recv() {
             Ok(AudioStreamControl::Shutdown) => break,
+            Ok(AudioStreamControl::SetSocket(s)) => {
+                log::info!("[stream-audio] send socket re-pointed (channel move)");
+                socket = s;
+            }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }

@@ -8,6 +8,7 @@ import { useChatEvents } from "./features/chat/useChatEvents";
 import { useServerEvents } from "./features/servers/useServerEvents";
 import { useFriendsEvents } from "./features/friends/useFriendsEvents";
 import { useVoiceEvents } from "./features/voice/useVoiceEvents";
+import { useAudioDeviceSync } from "./hooks/useAudioDeviceSync";
 import { useAuthStore } from "./stores/authStore";
 
 // HashRouter under both vite dev server (http://) and packaged
@@ -30,6 +31,7 @@ function AppRoutes() {
   useChatEvents();
   useFriendsEvents();
   useVoiceEvents();
+  useAudioDeviceSync();
   return (
     <Routes>
       <Route element={<AppLayout />}>

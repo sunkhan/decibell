@@ -489,6 +489,26 @@ export interface StopScreenShareArgs {
   channelId: string
 }
 export declare function stopScreenShare(args: StopScreenShareArgs): Promise<void>
+export interface MoveStreamToChannelArgs {
+  serverId: string
+  channelId: string
+  fps: number
+  width: number
+  height: number
+  videoBitrateKbps: number
+  shareAudio: boolean
+  initialCodec: number
+  enforcedCodec: number
+}
+/**
+ * Carry an already-running stream into a new voice channel WITHOUT restarting
+ * capture/encode. The caller has already joined the new voice channel, so a
+ * fresh VoiceEngine with new UDP sockets exists; here we re-point the video
+ * (and stream-audio) senders at those sockets and re-announce the stream in
+ * the new channel. Because capture keeps running there is no portal/WGC
+ * re-prompt — the whole reason this exists instead of stop+start.
+ */
+export declare function moveStreamToChannel(args: MoveStreamToChannelArgs): Promise<void>
 /**
  * PR8 hot path: renderer's WebCodecs.VideoEncoder produces encoded
  * chunks; we packetise + UDP. Called once per encoded frame at the

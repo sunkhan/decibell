@@ -2607,7 +2607,14 @@ void SessionManager::broadcast_to_voice_channel(const char* data, size_t length,
         if (it == voice_channels_.end()) return;
         targets.reserve(it->second.size());
         for (auto& session : it->second) {
-            if (session != sender && session->get_udp_endpoint().port() != 0) {
+            // Skip the sender, endpoints we haven't learned yet, and
+            // deafened listeners — a deafened user has muted all incoming
+            // audio client-side, so relaying to them is pure waste. Their
+            // endpoint is still refreshed from their own keepalive packets,
+            // so audio resumes the instant they un-deafen.
+            if (session != sender
+                && session->get_udp_endpoint().port() != 0
+                && !session->is_deafened()) {
                 targets.push_back(session->get_udp_endpoint());
             }
         }

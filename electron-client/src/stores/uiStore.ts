@@ -130,6 +130,10 @@ interface UiState {
   setAgcEnabled: (value: boolean) => void;
   streamStereo: boolean;
   setStreamStereo: (value: boolean) => void;
+  /// When switching voice channels while streaming, carry the stream into the
+  /// new channel instead of ending it. Default false.
+  takeStreamOnChannelSwitch: boolean;
+  setTakeStreamOnChannelSwitch: (value: boolean) => void;
   uploadLimitBps: number;
   downloadLimitBps: number;
   setUploadLimitBps: (value: number) => void;
@@ -208,6 +212,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   setAgcEnabled: (value) => set({ agcEnabled: value }),
   streamStereo: false,
   setStreamStereo: (value) => set({ streamStereo: value }),
+  takeStreamOnChannelSwitch: false,
+  setTakeStreamOnChannelSwitch: (value) => set({ takeStreamOnChannelSwitch: value }),
   uploadLimitBps: 0,
   downloadLimitBps: 0,
   setUploadLimitBps: (value) => set({ uploadLimitBps: value }),

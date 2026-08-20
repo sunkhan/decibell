@@ -419,8 +419,7 @@ export default function ChannelSettingsModal() {
                 </div>
               </div>
               <p className="mt-2 text-[12px] leading-[1.5] text-text-muted">
-                Applies immediately — connected members' encoders retune in
-                place. Members on older clients pick it up when they rejoin.
+                Applies immediately. Connected members' encoders retune in place.
               </p>
             </div>
           )}

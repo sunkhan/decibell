@@ -421,6 +421,94 @@ pub async fn stop_screen_share(args: StopScreenShareArgs) -> napi::Result<()> {
     Ok(())
 }
 
+#[napi(object)]
+pub struct MoveStreamToChannelArgs {
+    pub server_id: String,
+    pub channel_id: String,
+    pub fps: u32,
+    pub width: u32,
+    pub height: u32,
+    pub video_bitrate_kbps: u32,
+    pub share_audio: bool,
+    pub initial_codec: u8,
+    pub enforced_codec: u8,
+}
+
+/// Carry an already-running stream into a new voice channel WITHOUT restarting
+/// capture/encode. The caller has already joined the new voice channel, so a
+/// fresh VoiceEngine with new UDP sockets exists; here we re-point the video
+/// (and stream-audio) senders at those sockets and re-announce the stream in
+/// the new channel. Because capture keeps running there is no portal/WGC
+/// re-prompt — the whole reason this exists instead of stop+start.
+#[napi]
+pub async fn move_stream_to_channel(args: MoveStreamToChannelArgs) -> napi::Result<()> {
+    let state_arc = state::shared();
+    let send = {
+        let s = state_arc.lock().await;
+
+        if s.video_engine.is_none() {
+            return Err(napi::Error::from_reason("Not currently streaming"));
+        }
+        let voice = s
+            .voice_engine
+            .as_ref()
+            .ok_or_else(|| napi::Error::from_reason("Not in a voice channel"))?;
+        let media_socket = voice.media_socket();
+        let voice_socket = voice.voice_socket();
+
+        // Re-point the video sender at the new media socket and force a
+        // keyframe so the new channel's watchers get an IDR immediately.
+        if let Some(video) = s.video_engine.as_ref() {
+            video.set_send_socket(media_socket);
+            // Native-encode paths force their own keyframe; the renderer forces
+            // one for the WebCodecs path.
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            video.request_keyframe();
+        }
+        // Re-point stream audio too (present only when sharing audio).
+        if let Some(audio) = s.audio_stream_engine.as_ref() {
+            audio.set_socket(voice_socket);
+        }
+
+        // Announce the stream in the new channel — the old channel's stream was
+        // stopped server-side when we left it.
+        s.communities.get(&args.server_id).and_then(|client| {
+            client.connection_write_tx().map(|tx| {
+                let pkt = build_packet(
+                    packet::Type::StartStreamReq,
+                    packet::Payload::StartStreamReq(StartStreamRequest {
+                        channel_id: args.channel_id.clone(),
+                        target_fps: args.fps as i32,
+                        target_bitrate_kbps: args.video_bitrate_kbps as i32,
+                        has_audio: args.share_audio,
+                        resolution_width: args.width,
+                        resolution_height: args.height,
+                        chosen_codec: args.initial_codec as i32,
+                        enforced_codec: args.enforced_codec as i32,
+                    }),
+                    Some(&client.jwt),
+                );
+                (tx, pkt)
+            })
+        })
+    };
+
+    match send {
+        Some((write_tx, data)) => {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await
+            {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
+                Err(_) => Err(napi::Error::from_reason("Send timed out")),
+            }
+        }
+        None => Err(napi::Error::from_reason(format!(
+            "Not connected to community {}",
+            args.server_id
+        ))),
+    }
+}
+
 /// PR8 hot path: renderer's WebCodecs.VideoEncoder produces encoded
 /// chunks; we packetise + UDP. Called once per encoded frame at the
 /// configured FPS — needs to be cheap.

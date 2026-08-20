@@ -2,17 +2,8 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke, listen } from "../../../lib/ipc";
 import { useUiStore } from "../../../stores/uiStore";
 import { useVoiceStore } from "../../../stores/voiceStore";
+import { useAudioDevicesStore, type AudioDevice } from "../../../stores/audioDevicesStore";
 import { saveSettings } from "../saveSettings";
-
-interface AudioDevice {
-  name: string;
-  label: string;
-}
-
-interface AudioDeviceList {
-  inputs: AudioDevice[];
-  outputs: AudioDevice[];
-}
 
 function DeviceSelector({
   label,
@@ -109,6 +100,8 @@ function VoiceThresholdBar() {
   const voiceThresholdDb = useUiStore((s) => s.voiceThresholdDb);
   const inputDevice = useUiStore((s) => s.inputDevice);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
+  // Outside a call the mic only opens when the user explicitly starts a test.
+  const [micTestActive, setMicTestActive] = useState(false);
   const [inputLevel, setInputLevel] = useState(-96);
   const levelRef = useRef(-96);
   const animRef = useRef<number>(0);
@@ -130,7 +123,11 @@ function VoiceThresholdBar() {
   // the moment the Audio tab unmounts. Mirrors the tauri-client
   // start_mic_test/stop_mic_test pair without the round-trip.
   useEffect(() => {
-    if (connectedChannelId) return; // pipeline already drives the meter
+    // In a call the native pipeline drives the meter. Outside a call we only
+    // open the mic on an explicit test — opening it just because the Audio tab
+    // is visible lit the OS mic indicator for anyone who came to change an
+    // output device.
+    if (connectedChannelId || !micTestActive) return;
 
     let cancelled = false;
     let stream: MediaStream | null = null;
@@ -161,9 +158,17 @@ function VoiceThresholdBar() {
         let audioConstraint: boolean | MediaTrackConstraints = true;
         if (inputDevice) {
           try {
+            // `inputDevice` is the native (pactl/cpal) device *name*; Chromium's
+            // MediaDeviceInfo exposes the friendly *label*, which matches our
+            // device's `label` field (pactl Description) — not its name. Map
+            // name → label before comparing so the test honours the selection.
+            const selectedLabel =
+              useAudioDevicesStore
+                .getState()
+                .inputs.find((d) => d.name === inputDevice)?.label ?? inputDevice;
             const devs = await navigator.mediaDevices.enumerateDevices();
             const match = devs.find(
-              (d) => d.kind === "audioinput" && d.label === inputDevice,
+              (d) => d.kind === "audioinput" && d.label === selectedLabel,
             );
             if (match) {
               audioConstraint = { deviceId: { exact: match.deviceId } };
@@ -201,7 +206,13 @@ function VoiceThresholdBar() {
       audioCtx?.close().catch(() => {});
       levelRef.current = -96;
     };
-  }, [connectedChannelId, inputDevice]);
+  }, [connectedChannelId, inputDevice, micTestActive]);
+
+  // Stop the test automatically once a call starts (the pipeline meter takes
+  // over) so we never hold the mic open in two places.
+  useEffect(() => {
+    if (connectedChannelId && micTestActive) setMicTestActive(false);
+  }, [connectedChannelId, micTestActive]);
 
   // Smoothing animation loop — fast attack, slow decay. Reads
   // `levelRef.current`, which is fed by either the Web Audio loop above
@@ -298,7 +309,17 @@ function VoiceThresholdBar() {
           <line x1="12" y1="19" x2="12" y2="23" />
         </svg>
         <span className="text-[14px] font-medium text-text-primary">Voice Activity Threshold</span>
-        <span className="ml-auto rounded-sm bg-accent-soft px-2 py-0.5 text-[12px] font-medium text-accent-bright">
+        {!connectedChannelId && (
+          <button
+            onClick={() => setMicTestActive((v) => !v)}
+            className="ml-auto rounded-sm border border-border px-2 py-0.5 text-[12px] font-medium text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary"
+          >
+            {micTestActive ? "Stop test" : "Test mic"}
+          </button>
+        )}
+        <span
+          className={`${connectedChannelId ? "ml-auto" : ""} rounded-sm bg-accent-soft px-2 py-0.5 text-[12px] font-medium text-accent-bright`}
+        >
           {voiceThresholdDb <= MIN_THRESHOLD_DB ? "Off" : `${Math.round(voiceThresholdDb)} dB`}
         </span>
       </div>
@@ -363,7 +384,8 @@ function ToggleSwitch({ label, description, enabled, onToggle }: {
 }
 
 export default function AudioTab() {
-  const [devices, setDevices] = useState<AudioDeviceList>({ inputs: [], outputs: [] });
+  const inputs = useAudioDevicesStore((s) => s.inputs);
+  const outputs = useAudioDevicesStore((s) => s.outputs);
   const inputDevice = useUiStore((s) => s.inputDevice);
   const outputDevice = useUiStore((s) => s.outputDevice);
   const streamStereo = useUiStore((s) => s.streamStereo);
@@ -373,10 +395,11 @@ export default function AudioTab() {
   const nsLevel = useUiStore((s) => s.noiseSuppressionLevel);
   const agcEnabled = useUiStore((s) => s.agcEnabled);
 
+  // Ensure the roster is fresh whenever the tab opens (coalesced with the
+  // app-global devicechange sync). Reads come from the shared store so a
+  // hotplug detected elsewhere shows up here without a re-fetch.
   useEffect(() => {
-    invoke<AudioDeviceList>("list_audio_devices")
-      .then(setDevices)
-      .catch(console.error);
+    useAudioDevicesStore.getState().refresh();
   }, []);
 
   const handleInputChange = (name: string | null) => {
@@ -452,7 +475,7 @@ export default function AudioTab() {
                 <line x1="12" y1="19" x2="12" y2="23" />
               </svg>
             }
-            devices={devices.inputs}
+            devices={inputs}
             selected={inputDevice}
             onChange={handleInputChange}
           />
@@ -465,7 +488,7 @@ export default function AudioTab() {
                 <path d="M15.54 8.46a5 5 0 010 7.07" />
               </svg>
             }
-            devices={devices.outputs}
+            devices={outputs}
             selected={outputDevice}
             onChange={handleOutputChange}
           />
@@ -529,7 +552,7 @@ export default function AudioTab() {
                   <circle cx="18" cy="16" r="3" />
                 </svg>
               }
-              devices={devices.outputs}
+              devices={outputs}
               selected={streamOutputDevice}
               onChange={handleStreamOutputChange}
             />

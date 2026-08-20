@@ -117,7 +117,12 @@ pub struct AudioDeviceList {
 pub async fn list_audio_devices() -> napi::Result<AudioDeviceList> {
     #[cfg(target_os = "linux")]
     {
-        return Ok(list_audio_devices_pactl());
+        // pactl enumeration spawns two blocking child processes; run it on the
+        // blocking pool so it never stalls a tokio worker (hit at login and on
+        // every Settings → Audio open).
+        return tokio::task::spawn_blocking(list_audio_devices_pactl)
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("device enumeration failed: {}", e)));
     }
 
     #[cfg(not(target_os = "linux"))]
