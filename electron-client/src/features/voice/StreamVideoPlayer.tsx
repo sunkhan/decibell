@@ -8,6 +8,16 @@ import {
   activeStreamCapture,
 } from "./streaming/StreamCapture";
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
+import { useStreamStatsStore } from "./streamStats";
+
+function codecLabel(codec: VideoCodec): string {
+  const s = videoCodecToWebCodecsString(codec);
+  if (s.startsWith("avc")) return "H.264";
+  if (s.startsWith("hev") || s.startsWith("hvc")) return "HEVC";
+  if (s.startsWith("av01")) return "AV1";
+  if (s.startsWith("vp09") || s.startsWith("vp9")) return "VP9";
+  return s;
+}
 
 interface Props {
   streamerUsername: string;
@@ -39,6 +49,12 @@ interface StreamFrame {
 // rules-of-hooks violation).
 const DECODER_AVAILABLE = typeof VideoDecoder !== "undefined";
 
+function u8Equals(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 export default function StreamVideoPlayer({ streamerUsername, className }: Props) {
   const ownUsername = useAuthStore((s) => s.username);
   const isOwnStream = ownUsername !== null && streamerUsername === ownUsername;
@@ -53,6 +69,23 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
   // Active codec for the stream. Updated when stream_frame events
   // carry a different codec byte mid-stream (Plan C codec swap).
   const activeCodecRef = useRef<VideoCodec>(VideoCodec.H264_HW);
+
+  // Decoder is configured lazily on the first frame (once its codec is known)
+  // rather than speculatively as H.264 at creation.
+  const configuredRef = useRef(false);
+  // Paused while the window is hidden/minimized — WebCodecs decode is not
+  // rAF-throttled, so it would otherwise run at full rate off-screen.
+  const hiddenRef = useRef(
+    typeof document !== "undefined" && document.hidden,
+  );
+  // On-screen size of the canvas (CSS px), tracked via ResizeObserver so the
+  // per-frame output callback never reads layout. Caps the canvas backing store
+  // so a 4K stream doesn't keep a 4K buffer to paint into a 320×180 mini player.
+  const displaySizeRef = useRef({ w: 0, h: 0 });
+  // Stats counters, published to useStreamStatsStore on an interval.
+  const framesDecodedRef = useRef(0);
+  const framesDroppedRef = useRef(0);
+  const srcDimsRef = useRef({ w: 0, h: 0 });
 
   // Ask the streamer for a fresh IDR, throttled to 1/s. Renderer-side
   // frame drops (decoder-queue backpressure, decoder errors, frames
@@ -92,22 +125,9 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       if (description) {
         config.description = description;
       }
-      VideoDecoder.isConfigSupported(config)
-        .then((res) => {
-          if (!res.supported) {
-            console.error(
-              "[StreamVideoPlayer] WebCodecs reports codec NOT supported:",
-              config.codec,
-              "— full check:",
-              res,
-            );
-          } else {
-            console.log("[StreamVideoPlayer] WebCodecs supports", config.codec);
-          }
-        })
-        .catch((e) =>
-          console.error("[StreamVideoPlayer] isConfigSupported threw:", e),
-        );
+      // No isConfigSupported() here: it was async work on the hot path (fired on
+      // every configure/reconfigure/error-recovery) purely to console.log, and
+      // the config codec is already known-supported from decoderProbe.
       try {
         decoder.configure(config);
       } catch (e) {
@@ -142,66 +162,66 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    ctxRef.current = canvas.getContext("2d");
+    // Opaque (video has no transparency) + desynchronized skips per-frame alpha
+    // compositing against the page and cuts present latency.
+    ctxRef.current = canvas.getContext("2d", {
+      alpha: false,
+      desynchronized: true,
+    });
 
     let firstFrameSignalled = false;
-    let dimsLogged = false;
 
     let decoder: VideoDecoder | null = null;
     {
       decoder = new VideoDecoder({
         output: (frame: VideoFrame) => {
-          const ctx = ctxRef.current;
-          if (ctx && canvas) {
-            // Canvas is sized to the *visible* rect, and the visible
-            // region is drawn 1:1 into it.
-            //
-            // Not displayWidth/displayHeight: Chromium's WebCodecs HEVC
-            // implementation reports displayWidth = coded / SubWidthC
-            // for streams with no conformance window — half the actual
-            // picture. Not codedWidth/codedHeight either: stretching
-            // visible → coded distorted legitimately-cropped streams
-            // (1080p HEVC coded as 1920×1088 gained an 8px vertical
-            // stretch). visibleRect is correct in both cases — it
-            // equals coded when there's no crop, including the buggy-
-            // display HEVC case, and equals the true picture when
-            // there is one.
+          try {
+            framesDecodedRef.current++;
+            // visibleRect (not display*/coded*): Chromium's WebCodecs HEVC
+            // reports displayWidth = coded / SubWidthC for streams with no
+            // conformance window (half the picture), and coded includes crop
+            // padding (a 1080p HEVC coded 1920×1088 gained an 8px stretch).
+            // visibleRect is correct in both cases.
             const vr = frame.visibleRect;
             const srcX = vr ? vr.x : 0;
             const srcY = vr ? vr.y : 0;
             const srcW = vr ? vr.width : frame.codedWidth;
             const srcH = vr ? vr.height : frame.codedHeight;
-            if (
-              !dimsLogged ||
-              canvas.width !== srcW ||
-              canvas.height !== srcH
-            ) {
-              console.log(
-                "[StreamVideoPlayer] frame dims",
-                "coded=",
-                frame.codedWidth,
-                "x",
-                frame.codedHeight,
-                "display=",
-                frame.displayWidth,
-                "x",
-                frame.displayHeight,
-                "visible=",
-                srcX,
-                srcY,
-                srcW,
-                "x",
-                srcH,
-              );
-              dimsLogged = true;
+            srcDimsRef.current = { w: srcW, h: srcH };
+            const ctx = ctxRef.current;
+            // Skip painting when the canvas isn't in the document (the persistent
+            // host is parked/warm off-screen, e.g. on the streams grid) — keep
+            // decoding so a return to view is seamless, but don't blit.
+            if (ctx && canvas && canvas.isConnected) {
+              // Cap the canvas backing store to the on-screen size (× dpr),
+              // never upscaling: a 4K stream painted into the 320×180 mini keeps
+              // a 320×180 buffer, not a 3840×2160 one. Falls back to source res
+              // until the display size has been observed.
+              const dpr = window.devicePixelRatio || 1;
+              const dw = displaySizeRef.current.w;
+              const dh = displaySizeRef.current.h;
+              let dstW = srcW;
+              let dstH = srcH;
+              if (dw > 0 && dh > 0) {
+                const scale = Math.min(1, (dw * dpr) / srcW, (dh * dpr) / srcH);
+                dstW = Math.max(1, Math.round(srcW * scale));
+                dstH = Math.max(1, Math.round(srcH * scale));
+              }
+              if (canvas.width !== dstW || canvas.height !== dstH) {
+                canvas.width = dstW;
+                canvas.height = dstH;
+              }
+              ctx.drawImage(frame, srcX, srcY, srcW, srcH, 0, 0, dstW, dstH);
             }
-            if (canvas.width !== srcW || canvas.height !== srcH) {
-              canvas.width = srcW;
-              canvas.height = srcH;
-            }
-            ctx.drawImage(frame, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+          } catch (err) {
+            // drawImage can throw (detached canvas / invalid state). Swallow
+            // it so the VideoFrame is still closed below — an unclosed frame
+            // pins a scarce GPU resource and stalls the decoder once the pool
+            // drains, and an exception here escapes the WebCodecs callback.
+            console.error("[StreamVideoPlayer] draw error:", err);
+          } finally {
+            frame.close();
           }
-          frame.close();
           if (!firstFrameSignalled) {
             firstFrameSignalled = true;
             setHasFirstFrame(true);
@@ -209,7 +229,9 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         },
         error: handleDecoderError,
       });
-      configureDecoder(decoder);
+      // Configure lazily on the first frame once its codec is known, rather than
+      // speculatively as H.264 here (which cost an extra reset+reconfigure for
+      // AV1/HEVC — see the first-frame branch in handleFrame).
       decoderRef.current = decoder;
       needsKeyframeRef.current = true;
     }
@@ -227,8 +249,24 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     ) => {
       if (!decoder || decoder.state === "closed") return;
 
+      // Paused while the window is hidden/minimized: don't spend decode on
+      // frames nobody can see. On becoming visible the listener requests a
+      // keyframe and we resume from it.
+      if (hiddenRef.current) {
+        needsKeyframeRef.current = true;
+        return;
+      }
+
       const incomingCodec = (codec ?? VideoCodec.H264_HW) as VideoCodec;
-      if (incomingCodec !== activeCodecRef.current) {
+      if (!configuredRef.current) {
+        // First frame: do the initial configure now that the codec is known.
+        // No reset — the decoder is fresh.
+        activeCodecRef.current = incomingCodec;
+        descriptionRef.current = null;
+        needsKeyframeRef.current = true;
+        configuredRef.current = true;
+        configureDecoder(decoder);
+      } else if (incomingCodec !== activeCodecRef.current) {
         console.log(
           "[StreamVideoPlayer] codec change",
           activeCodecRef.current,
@@ -238,27 +276,36 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         activeCodecRef.current = incomingCodec;
         descriptionRef.current = null;
         needsKeyframeRef.current = true;
-        // Reconfigure the decoder with the new codec_string immediately.
-        // For codecs whose Chromium WebCodecs encoder emits frames in a
-        // self-contained format (AV1's sequence header inline in the
-        // bitstream, H.264 in Annex B), no description ever arrives —
-        // waiting for the description-bearing branch below would leave
-        // the decoder stuck on the previous codec_string. For codecs
-        // that DO emit a description (HEVC, AV1 in some builds), the
-        // description branch below will reconfigure a second time.
+        // Reconfigure with the new codec_string immediately. Codecs whose
+        // Chromium encoder emits self-contained frames (AV1 inline seq header,
+        // H.264 Annex B) never send a description, so waiting for the
+        // description branch would leave the decoder on the old codec_string.
         decoder.reset();
         configureDecoder(decoder);
       }
 
-      if (keyframe && description && !descriptionRef.current) {
-        // Copy out of the IPC-shared buffer into a fresh ArrayBuffer
-        // the decoder can hang onto — Electron may recycle the
-        // structured-clone buffer once this handler returns.
-        const descCopy = new Uint8Array(description);
-        descriptionRef.current = descCopy.buffer;
-        decoder.reset();
-        configureDecoder(decoder, descCopy.buffer);
-        needsKeyframeRef.current = false;
+      if (keyframe && description) {
+        // Reconfigure when the description first arrives OR changes mid-stream.
+        // A same-codec parameter-set change (e.g. a native HEVC/AV1 resolution
+        // change emits new VPS/SPS/PPS) ships a different description on a later
+        // keyframe; the old `!descriptionRef.current` guard honored only the
+        // first one, so decode corrupted/errored until a codec swap. Compare
+        // bytes and reconfigure on any change (keyframe-gated).
+        const stored = descriptionRef.current;
+        const changed =
+          !stored ||
+          stored.byteLength !== description.byteLength ||
+          !u8Equals(new Uint8Array(stored), description);
+        if (changed) {
+          // Copy out of the IPC-shared buffer into a fresh ArrayBuffer the
+          // decoder can hang onto — Electron may recycle the structured-clone
+          // buffer once this handler returns.
+          const descCopy = new Uint8Array(description);
+          descriptionRef.current = descCopy.buffer;
+          decoder.reset();
+          configureDecoder(decoder, descCopy.buffer);
+          needsKeyframeRef.current = false;
+        }
       }
 
       if (needsKeyframeRef.current && !keyframe) return;
@@ -282,6 +329,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       // the decoder queue check here covers decode overload.
       if (decoder.decodeQueueSize > 3 && !keyframe) {
         needsKeyframeRef.current = true;
+        framesDroppedRef.current++;
         // The hole this drop leaves is invisible to the native PLI
         // machinery — ask the streamer for a fresh IDR (throttled).
         requestKeyframe();
@@ -352,23 +400,69 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       // `request_stream_keyframe`, used by requestKeyframe() above for
       // drop recovery. Landing B4 is one call here when subscribing.
       //
-      // Native self-preview (Windows + Linux) takes the wire-shaped path
-      // too (isOwnStream && isNative falls into this branch). For that we
-      // force an immediate keyframe via the force_keyframe IPC, which
-      // signals the native encoder thread's AtomicBool — so the decoder
-      // doesn't sit on a spinner until the next ~2s GOP boundary.
-      if (isOwnStream && isNative) {
-        invoke("force_keyframe", {}).catch(() => {});
-      }
+      // Mid-stream join: ask for an immediate keyframe so the decoder paints
+      // quickly instead of sitting on a black canvas until the next natural GOP
+      // (seconds away with typical cadences). This matters now that the player
+      // re-mounts on view changes (e.g. popping into the floating mini-player).
+      // requestKeyframe() routes correctly: remote → request_stream_keyframe;
+      // own native self-preview → force_keyframe.
+      requestKeyframe();
     }
+
+    // Pause/resume decode on window visibility (WebCodecs decode isn't
+    // rAF-throttled, so it would run at full rate while minimized/occluded).
+    const onVisibility = () => {
+      const hidden = document.hidden;
+      hiddenRef.current = hidden;
+      if (!hidden) {
+        // Resuming: the reference chain broke while paused — request a fresh
+        // keyframe and gate deltas until it arrives.
+        needsKeyframeRef.current = true;
+        requestKeyframe();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    // Track the canvas's on-screen size for backing-store capping without
+    // reading layout in the per-frame output callback.
+    const ro = new ResizeObserver((entries) => {
+      const cr = entries[0]?.contentRect;
+      if (cr) displaySizeRef.current = { w: cr.width, h: cr.height };
+    });
+    ro.observe(canvas);
+
+    // Publish decode stats ~2/s for the stats overlay.
+    let lastDecoded = 0;
+    let lastSample = performance.now();
+    const statsTimer = window.setInterval(() => {
+      const now = performance.now();
+      const dt = (now - lastSample) / 1000;
+      const decoded = framesDecodedRef.current;
+      const fps = dt > 0 ? (decoded - lastDecoded) / dt : 0;
+      lastDecoded = decoded;
+      lastSample = now;
+      useStreamStatsStore.getState().publishStats(streamerUsername, {
+        codecLabel: codecLabel(activeCodecRef.current),
+        width: srcDimsRef.current.w,
+        height: srcDimsRef.current.h,
+        fps: Math.round(fps),
+        queue: decoder?.decodeQueueSize ?? 0,
+        dropped: framesDroppedRef.current,
+      });
+    }, 500);
 
     return () => {
       unsubscribe();
+      document.removeEventListener("visibilitychange", onVisibility);
+      ro.disconnect();
+      window.clearInterval(statsTimer);
+      useStreamStatsStore.getState().clearStats(streamerUsername);
       if (decoder && decoder.state !== "closed") {
         decoder.close();
       }
       decoderRef.current = null;
       descriptionRef.current = null;
+      configuredRef.current = false;
       setHasFirstFrame(false);
     };
   }, [streamerUsername, isOwnStream, handleDecoderError, configureDecoder, requestKeyframe]);

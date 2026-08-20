@@ -402,15 +402,18 @@ export default function AudioTab() {
     useAudioDevicesStore.getState().refresh();
   }, []);
 
+  // Native device args are napi `Option<String>`, which accepts `undefined`
+  // (→ None) but NOT `null` — passing null for a "Default" pick throws
+  // "Failed to convert Null into String". Map null → undefined at every call.
   const handleInputChange = (name: string | null) => {
     useUiStore.getState().setInputDevice(name);
-    invoke("set_input_device", { name }).catch(console.error);
+    invoke("set_input_device", { name: name ?? undefined }).catch(console.error);
     saveSettings();
   };
 
   const handleOutputChange = (name: string | null) => {
     useUiStore.getState().setOutputDevice(name);
-    invoke("set_output_device", { name }).catch(console.error);
+    invoke("set_output_device", { name: name ?? undefined }).catch(console.error);
     saveSettings();
   };
 
@@ -419,14 +422,14 @@ export default function AudioTab() {
     useUiStore.getState().setSeparateStreamOutput(newEnabled);
     invoke("set_separate_stream_output", {
       enabled: newEnabled,
-      device: newEnabled ? streamOutputDevice : null,
+      device: (newEnabled ? streamOutputDevice : null) ?? undefined,
     }).catch(console.error);
     saveSettings();
   };
 
   const handleStreamOutputChange = (name: string | null) => {
     useUiStore.getState().setStreamOutputDevice(name);
-    invoke("set_stream_output_device", { name }).catch(console.error);
+    invoke("set_stream_output_device", { name: name ?? undefined }).catch(console.error);
     saveSettings();
   };
 

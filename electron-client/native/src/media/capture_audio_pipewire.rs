@@ -70,14 +70,19 @@ pub fn start_system_audio_capture() -> Result<(std::sync::mpsc::Receiver<AudioFr
     let poller_stop = Arc::new(AtomicBool::new(false));
     let poller_handle = {
         let stop = poller_stop.clone();
-        let pids = decibell_pids.clone();
         let ports = capture_ports.clone();
+        let our_pid = std::process::id();
         std::thread::Builder::new()
             .name("decibell-audio-tap-poller".to_string())
             .spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     std::thread::sleep(std::time::Duration::from_secs(2));
                     if stop.load(Ordering::Relaxed) { break; }
+                    // Rebuild the exclusion set each tick: Decibell's Chromium
+                    // audio-service / renderer processes can restart mid-stream,
+                    // and a stale snapshot would let the new PID's audio (UI
+                    // blips, or voice routed through Chromium) leak into the tap.
+                    let pids = build_decibell_pids(our_pid);
                     tap_non_decibell_apps(&pids, &ports);
                 }
             })
@@ -570,7 +575,20 @@ fn run_audio_capture_loop(
             }
 
             let Some(raw_data) = d.data() else { return };
-            let raw_data = &raw_data[chunk_offset..][..chunk_size];
+            // Guard against malformed chunk metadata: a bad offset/size would
+            // panic on this slice, and we run on PipeWire's realtime thread
+            // across an extern "C" trampoline where a panic aborts the process.
+            let end = match chunk_offset.checked_add(chunk_size) {
+                Some(e) if e <= raw_data.len() => e,
+                _ => {
+                    log::warn!(
+                        "[audio-capture] chunk out of bounds (offset={}, size={}, buf={}); skipping",
+                        chunk_offset, chunk_size, raw_data.len()
+                    );
+                    return;
+                }
+            };
+            let raw_data = &raw_data[chunk_offset..end];
 
             let channels = data.channels.max(1) as usize;
             let format = data.format.format();

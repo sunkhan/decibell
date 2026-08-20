@@ -45,6 +45,9 @@ pub struct PeerAudio {
     pub voice_jitter: JitterBuffer,
     pub voice_drain_time: Instant,
     pub voice_underrun_logged: bool,
+    /// Last (muted, deafened) forwarded to the UI — used to emit the state
+    /// event only when it changes rather than on every audio packet.
+    pub last_reported_state: Option<(bool, bool)>,
 
     // Stream audio (screen-share audio) — unchanged location for now.
     pub stream_audio_decoder: Option<StereoOpusDecoder>,
@@ -82,6 +85,7 @@ impl PeerAudio {
             voice_jitter: JitterBuffer::new(),
             voice_drain_time: now,
             voice_underrun_logged: false,
+            last_reported_state: None,
             stream_audio_decoder: None,
             stream_jitter: JitterBuffer::new(),
             stream_drain_time: now,

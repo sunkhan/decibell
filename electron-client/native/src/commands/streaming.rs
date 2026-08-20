@@ -600,6 +600,9 @@ pub struct WatchStreamArgs {
 
 #[napi]
 pub async fn watch_stream(args: WatchStreamArgs) -> napi::Result<()> {
+    // Record the watch so the video receive thread forwards this streamer's
+    // frames (it drops frames for un-watched senders).
+    crate::media::watch_stream_add(&args.target_username);
     let state_arc = state::shared();
     let (write_tx, data) = {
         let s = state_arc.lock().await;
@@ -639,6 +642,7 @@ pub struct StopWatchingArgs {
 
 #[napi]
 pub async fn stop_watching(args: StopWatchingArgs) -> napi::Result<()> {
+    crate::media::watch_stream_remove(&args.target_username);
     let state_arc = state::shared();
     let (write_tx, data) = {
         let s = state_arc.lock().await;
@@ -996,9 +1000,28 @@ pub struct RequestStreamKeyframeArgs {
 /// drops frames (decoder-queue backpressure, decoder errors) that
 /// native can't see — this command lets it re-request a keyframe
 /// instead of freezing until the next natural IDR. Callers throttle.
+/// Per-streamer throttle for renderer-driven PLIs. The renderer already gates
+/// to 1/s, but don't trust it: a buggy or looping renderer must not be able to
+/// flood a streamer (and the relay) with keyframe requests.
+static KEYFRAME_REQ_LAST: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+> = std::sync::OnceLock::new();
+
 #[napi]
 pub async fn request_stream_keyframe(args: RequestStreamKeyframeArgs) -> napi::Result<()> {
     use crate::media::video_packet::UdpKeyframeRequest;
+    {
+        let map = KEYFRAME_REQ_LAST
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        let mut guard = map.lock().unwrap();
+        let now = std::time::Instant::now();
+        if let Some(&last) = guard.get(&args.username) {
+            if now.duration_since(last) < std::time::Duration::from_millis(500) {
+                return Ok(()); // throttled — a PLI for this streamer went out recently
+            }
+        }
+        guard.insert(args.username.clone(), now);
+    }
     let (socket, sender_id) = {
         let state_arc = state::shared();
         let guard = state_arc.lock().await;

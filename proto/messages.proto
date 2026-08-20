@@ -759,6 +759,10 @@ message VideoStreamInfo {
   // CODEC_UNKNOWN if the streamer chose Auto. Drives the lock badge
   // and the grayed-out watch button.
   VideoCodec enforced_codec = 8;
+  // Number of watchers currently subscribed to this stream. Derived from the
+  // server's stream_watchers_ set on each presence broadcast; defaults to 0 for
+  // old clients/servers.
+  uint32 watcher_count = 9;
 }
 
 message StreamPresenceUpdate {

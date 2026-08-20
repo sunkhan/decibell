@@ -27,12 +27,20 @@ const SHRINK_HYSTERESIS: usize = 3;
 /// Consecutive PLC frames that trigger a re-sync reset.
 const PLC_RESET_THRESHOLD: u32 = 10;
 
+/// A run of this many packets arriving BEHIND the play cursor means the sender
+/// restarted its sequence (left + rejoined → fresh VoiceEngine, seq from 0), so
+/// we resync. A lone behind-cursor packet is just reordering/duplication and is
+/// dropped — resetting on it would needlessly flush good buffered frames.
+const REJOIN_RESYNC_STREAK: u32 = 3;
+
 pub struct JitterBuffer {
     packets: HashMap<u16, Vec<u8>>,
     next_seq: u16,
     initialized: bool,
     ready: bool,
     consecutive_losses: u32,
+    /// Consecutive packets seen behind the play cursor — see REJOIN_RESYNC_STREAK.
+    behind_streak: u32,
 
     // ── Adaptive depth state ──
     last_arrival: Option<Instant>,
@@ -58,6 +66,7 @@ impl JitterBuffer {
             initialized: false,
             ready: false,
             consecutive_losses: 0,
+            behind_streak: 0,
             last_arrival: None,
             jitter_sec: 0.0,
             target_depth: JITTER_MIN_DEPTH,
@@ -77,11 +86,20 @@ impl JitterBuffer {
     fn on_arrival(&mut self, now: Instant) {
         if let Some(prev) = self.last_arrival {
             let iat = now.duration_since(prev).as_secs_f64();
-            let d = (iat - FRAME_DUR_SEC).abs();
-            self.jitter_sec += (d - self.jitter_sec) / 16.0;
-            // Target: roughly 2× observed jitter, floored at MIN, ceilinged at MAX.
-            let target_frames = (self.jitter_sec * 2.0 / FRAME_DUR_SEC).ceil() as usize + JITTER_MIN_DEPTH;
-            self.target_depth = target_frames.clamp(JITTER_MIN_DEPTH, JITTER_MAX_DEPTH);
+            // Ignore large gaps. A silence-gated sender emits a sparse keepalive
+            // (~1 packet / 500ms) while not talking; folding those gaps into the
+            // jitter estimate looked like huge network jitter and inflated the
+            // buffer to its ceiling, adding ~300ms of latency (plus a re-buffer
+            // artifact) every time speech resumed. Only real-cadence arrivals
+            // (a frame is 20ms; allow generous network jitter up to ~150ms)
+            // update the estimate.
+            if iat < 0.15 {
+                let d = (iat - FRAME_DUR_SEC).abs();
+                self.jitter_sec += (d - self.jitter_sec) / 16.0;
+                // Target: roughly 2× observed jitter, floored at MIN, ceilinged at MAX.
+                let target_frames = (self.jitter_sec * 2.0 / FRAME_DUR_SEC).ceil() as usize + JITTER_MIN_DEPTH;
+                self.target_depth = target_frames.clamp(JITTER_MIN_DEPTH, JITTER_MAX_DEPTH);
+            }
         }
         self.last_arrival = Some(now);
     }
@@ -94,17 +112,25 @@ impl JitterBuffer {
             self.next_seq = seq;
             self.initialized = true;
         }
-        // Detect sequence reset (user left and rejoined): if the incoming seq
-        // appears to be far behind next_seq, it's actually a fresh sequence
-        // starting from 0. Reinitialize the buffer to accept the new stream.
-        let diff = seq.wrapping_sub(self.next_seq);
-        if diff >= 32768 {
-            self.packets.clear();
-            self.next_seq = seq;
-            self.ready = false;
-        }
-        let diff = seq.wrapping_sub(self.next_seq);
-        if diff < 32768 {
+        // A packet behind the play cursor (wrapping) is normally just late,
+        // reordered, or a duplicate — drop it. Resetting the whole buffer on one
+        // such packet (the old behaviour) flushed good buffered frames and
+        // forced a re-buffer on any network that reorders/duplicates, an audible
+        // dropout. Only a *run* of behind packets means the sender genuinely
+        // restarted its sequence (rejoin); then we resync to the new stream.
+        let behind = seq.wrapping_sub(self.next_seq) >= 32768;
+        if behind {
+            self.behind_streak = self.behind_streak.saturating_add(1);
+            if self.behind_streak >= REJOIN_RESYNC_STREAK {
+                self.packets.clear();
+                self.next_seq = seq;
+                self.ready = false;
+                self.behind_streak = 0;
+                self.packets.insert(seq, data);
+            }
+            // else: a lone late/duplicate packet — discard it.
+        } else {
+            self.behind_streak = 0;
             self.packets.insert(seq, data);
         }
         if !self.ready && self.packets.len() >= self.target_depth {
@@ -129,8 +155,11 @@ impl JitterBuffer {
 
     /// Pop the next frame. Returns:
     /// - `Some(Some(data))` — packet present, decode normally
-    /// - `Some(None)` — packet missing, caller should do PLC
-    /// - `None` — buffer not ready (initial fill or post-reset re-buffering)
+    /// - `Some(None)` — packet missing but later frames are buffered → real
+    ///   mid-stream loss, caller should PLC to bridge the gap
+    /// - `None` — buffer not ready: initial fill, post-reset re-buffering, or a
+    ///   true underrun (the sender paused — e.g. a silence-gated keepalive gap;
+    ///   caller outputs silence and we wait for the next packet)
     pub fn drain(&mut self) -> Option<Option<Vec<u8>>> {
         if !self.ready { return None; }
 
@@ -154,16 +183,35 @@ impl JitterBuffer {
         }
 
         let seq = self.next_seq;
-        self.next_seq = self.next_seq.wrapping_add(1);
-        let result = self.packets.remove(&seq);
-        if result.is_some() {
-            self.consecutive_losses = 0;
-            self.decoded_frames += 1;
-        } else {
-            self.consecutive_losses += 1;
-            self.plc_frames += 1;
+        match self.packets.remove(&seq) {
+            Some(data) => {
+                self.next_seq = self.next_seq.wrapping_add(1);
+                self.consecutive_losses = 0;
+                self.decoded_frames += 1;
+                Some(Some(data))
+            }
+            None => {
+                if self.packets.is_empty() {
+                    // Nothing buffered ahead either: the sender has paused (a
+                    // silence-gated keepalive gap) or we've fully underrun.
+                    // Don't PLC forward through sequence numbers the sender
+                    // never sent — that spammed comfort noise, inflated the
+                    // packet-loss telemetry (~80% "loss" while idle), and raced
+                    // the cursor ahead of the sender. Re-buffer instead;
+                    // next_seq stays put so the sender's next contiguous packet
+                    // lands cleanly with no rewind.
+                    self.ready = false;
+                    None
+                } else {
+                    // Real mid-stream loss — later frames ARE buffered, so PLC
+                    // to bridge the gap up to them.
+                    self.next_seq = self.next_seq.wrapping_add(1);
+                    self.consecutive_losses += 1;
+                    self.plc_frames += 1;
+                    Some(None)
+                }
+            }
         }
-        Some(result)
     }
 
     /// Reset the buffer to its initial state, forcing a re-buffering period.

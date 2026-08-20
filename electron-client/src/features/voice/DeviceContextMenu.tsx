@@ -43,12 +43,14 @@ export default function DeviceContextMenu({ type, anchor, devices, onClose }: Pr
   }, [onClose]);
 
   const handleSelect = (name: string | null) => {
+    // null → undefined: napi's Option<String> rejects null (a "Default" pick),
+    // accepting only undefined/absent.
     if (type === "input") {
       useUiStore.getState().setInputDevice(name);
-      invoke("set_input_device", { name }).catch(console.error);
+      invoke("set_input_device", { name: name ?? undefined }).catch(console.error);
     } else {
       useUiStore.getState().setOutputDevice(name);
-      invoke("set_output_device", { name }).catch(console.error);
+      invoke("set_output_device", { name: name ?? undefined }).catch(console.error);
     }
     saveSettings();
     onClose();

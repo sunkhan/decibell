@@ -61,13 +61,16 @@ interface VoiceState {
   /// from VoicePresenceUpdate.user_capabilities when the streaming
   /// PR lights up codec negotiation. Defaults to empty.
   userCapabilities: Record<string, ClientCapabilities>;
-  canDecode: (username: string, codec: VideoCodec) => boolean;
   setUserState: (username: string, isMuted: boolean, isDeafened: boolean) => void;
   streamThumbnails: Record<string, string>;
   setStreamThumbnail: (username: string, dataUrl: string) => void;
-  watching: string | null;
   watchingStreams: string[];
   fullscreenStream: string | null;
+  /// The stream currently loaded in the single persistent player. Unlike
+  /// fullscreenStream it survives going "back to the streams grid", so the
+  /// decoder stays warm and re-focusing the same stream is instant. Managed by
+  /// StreamPipManager (set on focus, dropped when unwatched / idle on the grid).
+  pipStream: string | null;
   isStreaming: boolean;
   streamSettings: {
     resolution: "1080p" | "720p" | "source";
@@ -79,9 +82,9 @@ interface VoiceState {
     enforcedCodec: VideoCodec;
     includeCursor: boolean;
   };
-  setWatching: (username: string | null) => void;
   addWatching: (username: string) => void;
   removeWatching: (username: string) => void;
+  setPipStream: (username: string | null) => void;
   isStreamFullscreen: boolean;
   setFullscreenStream: (username: string | null) => void;
   setStreamFullscreen: (fs: boolean) => void;
@@ -158,12 +161,6 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       };
     }),
   userCapabilities: {},
-  canDecode: (username: string, codec: VideoCodec): boolean => {
-    if (codec === 0) return true;
-    const caps = get().userCapabilities[username];
-    if (!caps) return true;
-    return caps.decode.some((c: { codec: VideoCodec }) => c.codec === codec);
-  },
   setUserState: (username, isMuted, isDeafened) =>
     set((state) => ({
       participants: state.participants.map((p) =>
@@ -185,9 +182,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         streamThumbnails: { ...state.streamThumbnails, [username]: url },
       };
     }),
-  watching: null,
   watchingStreams: [],
   fullscreenStream: null,
+  pipStream: null,
   isStreaming: false,
   streamSettings: {
     resolution: "1080p",
@@ -199,7 +196,6 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     enforcedCodec: 0 as VideoCodec,
     includeCursor: true,
   },
-  setWatching: (username) => set({ watching: username }),
   addWatching: (username) =>
     set((state) => ({
       watchingStreams: state.watchingStreams.includes(username)
@@ -211,7 +207,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       watchingStreams: state.watchingStreams.filter((u) => u !== username),
       fullscreenStream:
         state.fullscreenStream === username ? null : state.fullscreenStream,
+      pipStream: state.pipStream === username ? null : state.pipStream,
     })),
+  setPipStream: (username) => set({ pipStream: username }),
   isStreamFullscreen: false,
   setFullscreenStream: (username) => set({ fullscreenStream: username }),
   setStreamFullscreen: (fs) => set({ isStreamFullscreen: fs }),
@@ -261,9 +259,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       speakingUsers: new Set(),
       latencyMs: null,
       error: null,
-      watching: null,
       watchingStreams: [],
       fullscreenStream: null,
+      pipStream: null,
       isStreamFullscreen: false,
       isStreaming: false,
       streamThumbnails: {},

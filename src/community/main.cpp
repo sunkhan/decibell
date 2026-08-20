@@ -16,6 +16,7 @@
 #include <vector>
 #include <set>
 #include <unordered_map>
+#include <chrono>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -193,8 +194,9 @@ public:
     bool get_thumbnail(const std::string& username,
                        std::vector<uint8_t>& out);
 
-    // Watcher tracking
-    void add_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
+    // Watcher tracking. Returns true if the watcher was newly added (so the
+    // caller fires the join-notify + one keyframe only on the FIRST subscribe).
+    bool add_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
     void remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
     // Plan C: tell the streamer that a watcher just joined or left their stream.
     // Drives the streamer's CodecSelector (LCD picker + debounce/cooldown).
@@ -303,6 +305,13 @@ private:
     std::unordered_map<std::string,
         std::unordered_map<std::string, std::set<std::shared_ptr<Session>>>>
         stream_watchers_;
+
+    // streamer_username -> last time a keyframe request was relayed to them.
+    // Rate-limits watcher-driven PLIs so a client can't force continuous IDRs
+    // by spamming WATCH, and coalesces many watchers' near-simultaneous
+    // requests into a single IDR. Guarded by mutex_.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+        last_keyframe_relay_;
 
     uint32_t max_streams_per_channel_ = 8;  // 0 = unlimited
     boost::asio::ip::udp::socket* udp_socket_ptr_ = nullptr;
@@ -758,6 +767,14 @@ private:
                           << ": not in voice channel '" << req.channel_id() << "'\n";
                 return;
             }
+            // Ignore watch requests for a user who isn't actually streaming:
+            // avoids bloating the watcher map and firing a keyframe/notify for
+            // a non-stream (part of the keyframe-amplification surface).
+            if (!manager_.has_active_stream(req.channel_id(), req.target_username())) {
+                std::cout << "[Community] Rejected WATCH_STREAM_REQ from " << username_
+                          << ": '" << req.target_username() << "' is not streaming\n";
+                return;
+            }
             // Plan C: defensive — drop the request if the stream is
             // codec-locked and the watcher can't decode that codec.
             if (manager_.watcher_blocked_by_enforcement(
@@ -766,14 +783,24 @@ private:
                           << " (can't decode enforced codec on " << req.target_username()
                           << "'s stream)\n";
             } else {
-                manager_.add_watcher(shared_from_this(), req.channel_id(), req.target_username());
+                bool newly_watching = manager_.add_watcher(
+                    shared_from_this(), req.channel_id(), req.target_username());
                 std::cout << "[Community] " << username_ << " watching " << req.target_username() << "'s stream in " << req.channel_id() << "\n";
-                // Plan C: notify streamer for LCD recompute.
-                manager_.notify_streamer_of_watcher(
-                    req.channel_id(), req.target_username(), username_,
-                    chatproj::StreamWatcherNotify::JOINED);
-                // Send PLI to streamer so new watcher gets a keyframe
-                manager_.relay_keyframe_request_internal(req.target_username());
+                // Only on the FIRST subscribe: notify the streamer (LCD
+                // recompute) and force one keyframe. Re-sending WATCH for an
+                // already-watched stream must not re-trigger these — that was a
+                // keyframe-amplification vector (loop WATCH to force continuous
+                // IDRs, collapsing quality + spiking the streamer's uplink).
+                // relay_keyframe_request_internal is rate-limited per streamer
+                // as a backstop for the WATCH/STOP/WATCH toggle variant.
+                if (newly_watching) {
+                    manager_.notify_streamer_of_watcher(
+                        req.channel_id(), req.target_username(), username_,
+                        chatproj::StreamWatcherNotify::JOINED);
+                    manager_.relay_keyframe_request_internal(req.target_username());
+                    // Push the updated watcher count to everyone in the channel.
+                    manager_.broadcast_stream_presence(req.channel_id());
+                }
             }
         }
 
@@ -786,6 +813,8 @@ private:
             manager_.notify_streamer_of_watcher(
                 req.channel_id(), req.target_username(), username_,
                 chatproj::StreamWatcherNotify::LEFT);
+            // Push the updated watcher count to everyone in the channel.
+            manager_.broadcast_stream_presence(req.channel_id());
         }
 
         // --- STREAM CODEC CHANGED (Plan C) ---
@@ -2124,14 +2153,20 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
         // back and streamed again (stop_stream clears it; leave didn't).
         for (auto ch_it = stream_watchers_.begin(); ch_it != stream_watchers_.end();) {
             auto& streamers = ch_it->second;
+            bool watcher_removed = false;
             for (auto st_it = streamers.begin(); st_it != streamers.end();) {
-                st_it->second.erase(session);
+                if (st_it->second.erase(session) > 0) watcher_removed = true;
                 if (st_it->first == username || st_it->second.empty()) {
                     st_it = streamers.erase(st_it);
                 } else {
                     ++st_it;
                 }
             }
+            // If this session was watching a stream here, the watcher count
+            // changed — re-broadcast so remaining viewers see the drop. (May
+            // duplicate a channel already flagged for the streamer path above;
+            // broadcast_stream_presence is idempotent.)
+            if (watcher_removed) affected_stream_channels.push_back(ch_it->first);
             ch_it = streamers.empty() ? stream_watchers_.erase(ch_it) : std::next(ch_it);
         }
         std::cout << "[Community] Session " << username << " left. Total: " << sessions_.size() << "\n";
@@ -2230,6 +2265,17 @@ void SessionManager::broadcast_stream_presence(const std::string& channel_id) {
                 info->set_fps(pair.second.fps);
                 info->set_current_codec(pair.second.current_codec);
                 info->set_enforced_codec(pair.second.enforced_codec);
+                // Live watcher count for this stream (0 if nobody is watching).
+                // Both maps are guarded by mutex_, held here. find() (not [])
+                // avoids inserting empty watcher entries.
+                uint32_t watchers = 0;
+                auto wch = stream_watchers_.find(channel_id);
+                if (wch != stream_watchers_.end()) {
+                    auto sit = wch->second.find(pair.first);
+                    if (sit != wch->second.end())
+                        watchers = static_cast<uint32_t>(sit->second.size());
+                }
+                info->set_watcher_count(watchers);
             }
         }
         packet.SerializeToString(&serialized);
@@ -2273,6 +2319,7 @@ bool SessionManager::get_thumbnail(const std::string& username,
 }
 
 void SessionManager::join_voice_channel(std::shared_ptr<Session> session, const std::string& new_channel, const std::string& old_channel) {
+    bool old_watcher_removed = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!old_channel.empty()) {
@@ -2285,7 +2332,7 @@ void SessionManager::join_voice_channel(std::shared_ptr<Session> session, const 
             if (ch_it != stream_watchers_.end()) {
                 auto& streamers = ch_it->second;
                 for (auto st_it = streamers.begin(); st_it != streamers.end();) {
-                    st_it->second.erase(session);
+                    if (st_it->second.erase(session) > 0) old_watcher_removed = true;
                     st_it = st_it->second.empty() ? streamers.erase(st_it) : std::next(st_it);
                 }
                 if (streamers.empty()) stream_watchers_.erase(ch_it);
@@ -2295,6 +2342,9 @@ void SessionManager::join_voice_channel(std::shared_ptr<Session> session, const 
     }
     if (!old_channel.empty()) {
         broadcast_voice_presence(old_channel);
+        // If this session was watching in the old channel, its watcher counts
+        // dropped — update the members still there.
+        if (old_watcher_removed) broadcast_stream_presence(old_channel);
     }
     broadcast_voice_presence(new_channel);
     // Send current stream presence for the new channel to the joining user
@@ -2333,6 +2383,9 @@ void SessionManager::leave_voice_channel(std::shared_ptr<Session> session, const
             notify_streamer_of_watcher(current_channel, streamer, session->get_username(),
                                        chatproj::StreamWatcherNotify::LEFT);
         }
+        // If this session was watching anything here, the counts dropped —
+        // update the members still in the channel.
+        if (!streamers_to_notify.empty()) broadcast_stream_presence(current_channel);
     }
 }
 
@@ -2637,6 +2690,18 @@ void SessionManager::relay_keyframe_request(const std::string& target_username, 
     std::memset(req.target_username, 0, chatproj::SENDER_ID_SIZE);
 
     std::lock_guard<std::mutex> lock(mutex_);
+    // Rate-limit PLIs per streamer (250ms): a client must not be able to force
+    // continuous IDRs by spamming WATCH / UDP keyframe requests, and many
+    // watchers' near-simultaneous requests coalesce into a single IDR.
+    {
+        auto now = std::chrono::steady_clock::now();
+        auto it = last_keyframe_relay_.find(target_username);
+        if (it != last_keyframe_relay_.end() &&
+            now - it->second < std::chrono::milliseconds(250)) {
+            return;
+        }
+        last_keyframe_relay_[target_username] = now;
+    }
     for (auto& session : sessions_) {
         if (session->get_username() == target_username && session->get_udp_media_endpoint().port() != 0) {
             auto buffer = std::make_shared<std::vector<char>>(reinterpret_cast<const char*>(&req),
@@ -2662,9 +2727,9 @@ void SessionManager::relay_nack(const char* data, size_t length, const std::stri
     }
 }
 
-void SessionManager::add_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username) {
+bool SessionManager::add_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username) {
     std::lock_guard<std::mutex> lock(mutex_);
-    stream_watchers_[channel_id][streamer_username].insert(watcher);
+    return stream_watchers_[channel_id][streamer_username].insert(watcher).second;
 }
 
 bool SessionManager::watcher_blocked_by_enforcement(

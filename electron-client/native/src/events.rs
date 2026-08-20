@@ -920,6 +920,8 @@ pub struct StreamInfoPayload {
     /// badge and grayed-out watch button when local client lacks the
     /// codec in its decode caps.
     pub enforced_codec: i32,
+    /// Number of watchers currently subscribed to this stream (server-derived).
+    pub watcher_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]

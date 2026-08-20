@@ -155,6 +155,8 @@ export interface StreamInfo {
   fps: number;
   currentCodec: VideoCodec;
   enforcedCodec: VideoCodec;
+  /// Number of watchers currently subscribed to this stream (server-derived).
+  watcherCount: number;
 }
 
 /// Notify reasons for StreamCodecChangedNotify (Plan C). Numeric

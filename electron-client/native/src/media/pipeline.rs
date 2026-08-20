@@ -851,11 +851,19 @@ pub fn run_audio_pipeline(
                                 } else {
                                     (0u8, raw_payload)
                                 };
+                                // Emit mute/deafen only on an actual change —
+                                // these flags ride every audio packet (~50/s per
+                                // talking peer) but almost never change, so
+                                // forwarding each to the JS event bridge floods
+                                // the IPC channel for nothing.
                                 let peer_muted = flags & FLAG_MUTED != 0;
                                 let peer_deafened = flags & FLAG_DEAFENED != 0;
-                                let _ = event_tx.send(VoiceEvent::UserStateChanged(
-                                    username.clone(), peer_muted, peer_deafened,
-                                ));
+                                if peer.last_reported_state != Some((peer_muted, peer_deafened)) {
+                                    peer.last_reported_state = Some((peer_muted, peer_deafened));
+                                    let _ = event_tx.send(VoiceEvent::UserStateChanged(
+                                        username.clone(), peer_muted, peer_deafened,
+                                    ));
+                                }
 
                                 peer.voice_jitter.push(pkt.sequence, opus_data.to_vec());
                                 peer.voice_underrun_logged = false;

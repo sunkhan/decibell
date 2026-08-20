@@ -20,6 +20,7 @@
 // caller can surface the error.
 
 import { invoke } from "../../../lib/ipc";
+import { useAuthStore } from "../../../stores/authStore";
 import { useChatStore } from "../../../stores/chatStore";
 import { useUiStore } from "../../../stores/uiStore";
 import { useVoiceStore } from "../../../stores/voiceStore";
@@ -45,6 +46,34 @@ export async function joinVoiceChannel(
     switchingChannel &&
     prevServerId === serverId &&
     useUiStore.getState().takeStreamOnChannelSwitch;
+
+  // Stop watching any streams from the OLD channel before switching. The flow
+  // previously reconciled only our own stream, so watch subscriptions leaked on
+  // a channel switch: the server may keep relaying the old channel's frames to a
+  // renderer that no longer has a subscriber, and the watch state never cleared
+  // for the old (server, channel). Fire the stops un-awaited (best-effort) and
+  // clear the local watch state so the new channel's presence repopulates fresh.
+  if (
+    switchingChannel &&
+    prevServerId &&
+    prevChannelId &&
+    voice.watchingStreams.length > 0
+  ) {
+    const ownUsername = useAuthStore.getState().username;
+    for (const target of voice.watchingStreams) {
+      if (target === ownUsername) continue; // own self-preview isn't a server watch
+      invoke("stop_watching", {
+        serverId: prevServerId,
+        channelId: prevChannelId,
+        targetUsername: target,
+      }).catch(() => {});
+    }
+    useVoiceStore.setState({
+      watchingStreams: [],
+      fullscreenStream: null,
+      pipStream: null,
+    });
+  }
 
   // Default / cross-server: end the stream cleanly BEFORE the switch, using the
   // OLD channel, so the server, native engine and UI all agree it's over.
@@ -100,16 +129,15 @@ export async function joinVoiceChannel(
     throw err;
   }
 
-  // Re-apply persisted audio preferences against the fresh pipeline. The
-  // engine already honoured the saved input/output device at start (same
-  // config we just flushed), but threshold, DSP toggles and separate-stream
-  // routing are not applied at start, so push them here.
-  //
-  // Send device + DSP values UNCONDITIONALLY (null included): the old
-  // truthy-only guards left a "Default" (null) device pick or a disabled
-  // toggle stuck on whatever the previous session had set.
+  // Apply the preferences the engine does NOT set up at start. It already
+  // honoured the saved input/output device (native reads the same config we
+  // just flushed), so we deliberately do NOT re-send those: re-sending
+  // hot-swapped the CPAL streams for nothing (an audible pop), and passing
+  // `null` for a "Default" device tripped napi's `Option<String>`, which
+  // accepts `undefined`/absent but rejects `null`. We only push the VAD
+  // threshold, the DSP toggles, and — because enabling it rebuilds the voice
+  // output on the default device — the separate-stream routing.
   const {
-    inputDevice,
     outputDevice,
     separateStreamOutput,
     streamOutputDevice,
@@ -123,23 +151,20 @@ export async function joinVoiceChannel(
     thresholdDb: voiceThresholdDb <= -60 ? -96 : voiceThresholdDb,
   }).catch(console.error);
 
-  invoke("set_input_device", { name: inputDevice ?? null }).catch(console.error);
-
   if (separateStreamOutput) {
-    // Order matters: enabling separate-stream output rebuilds the voice
-    // output on the *default* device, so the chosen voice output device must
-    // be (re)applied AFTER the split is configured (audio backlog #2). Await
-    // the split so its control message is enqueued before the device sets.
+    // Order matters: enabling separate-stream output rebuilds the voice output
+    // on the *default* device, so the chosen voice output device must be
+    // (re)applied AFTER the split is configured (audio backlog #2). Await the
+    // split so its control message is enqueued before the device sets. Use
+    // `?? undefined` (never null) for the Option<String> device args.
     await invoke("set_separate_stream_output", {
       enabled: true,
-      device: streamOutputDevice ?? null,
+      device: streamOutputDevice ?? undefined,
     }).catch(console.error);
-    invoke("set_output_device", { name: outputDevice ?? null }).catch(console.error);
-    invoke("set_stream_output_device", { name: streamOutputDevice ?? null }).catch(
+    invoke("set_output_device", { name: outputDevice ?? undefined }).catch(console.error);
+    invoke("set_stream_output_device", { name: streamOutputDevice ?? undefined }).catch(
       console.error,
     );
-  } else {
-    invoke("set_output_device", { name: outputDevice ?? null }).catch(console.error);
   }
 
   invoke("set_aec_enabled", { enabled: aecEnabled }).catch(console.error);

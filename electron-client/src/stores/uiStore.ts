@@ -109,6 +109,9 @@ interface UiState {
   openChannelSettings: (channelId: string) => void;
   connectionStatus: "connected" | "reconnecting" | "disconnected";
   activeView: "home" | "server" | "browse" | "voice" | "dm";
+  /// Which corner the floating pop-out stream player snaps to.
+  pipCorner: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+  setPipCorner: (c: "top-left" | "top-right" | "bottom-left" | "bottom-right") => void;
   membersPanelVisible: boolean;
   dmFriendsPanelVisible: boolean;
   authError: AuthErrorNotice | null;
@@ -191,6 +194,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   channelSettingsChannelId: null,
   connectionStatus: "connected",
   activeView: "home",
+  pipCorner: "bottom-right",
+  setPipCorner: (c) => set({ pipCorner: c }),
   membersPanelVisible: true,
   dmFriendsPanelVisible: true,
   authError: null,

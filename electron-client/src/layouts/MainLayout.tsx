@@ -9,6 +9,8 @@ import FriendsList from "../features/friends/FriendsList";
 import FriendsPage from "../features/friends/FriendsPage";
 import MembersList from "../features/friends/MembersList";
 import VoicePanel from "../features/voice/VoicePanel";
+import MiniStreamPlayer from "../features/voice/MiniStreamPlayer";
+import StreamPipManager from "../features/voice/StreamPipManager";
 import UserPanel from "../features/channels/UserPanel";
 import UserContextMenu from "../features/voice/UserContextMenu";
 import ImageViewer from "../features/chat/ImageViewer";
@@ -126,6 +128,14 @@ export default function MainLayout() {
           </>
         )}
       </div>
+
+      {/* Owns the single persistent stream player, portaled into a host node
+          that the full view and the mini player reparent between themselves —
+          so the decoder is never torn down when switching views. */}
+      <StreamPipManager />
+      {/* Floating pop-out stream player — shows the watched stream while the
+          user is in any non-voice view so it keeps playing as they browse. */}
+      <MiniStreamPlayer />
 
       <UserContextMenu />
       <UserProfilePopup />

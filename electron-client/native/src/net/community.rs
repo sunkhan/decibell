@@ -742,6 +742,7 @@ impl CommunityClient {
                             fps: s.fps,
                             current_codec: s.current_codec,
                             enforced_codec: s.enforced_codec,
+                            watcher_count: s.watcher_count,
                         })
                         .collect();
                     events::emit_stream_presence_updated(

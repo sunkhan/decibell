@@ -1,11 +1,23 @@
-import { useState, useRef, useCallback, useEffect, memo } from "react";
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  memo,
+} from "react";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { invoke } from "../../lib/ipc";
 import { getCurrentWindow } from "../../lib/window";
 import { UserAvatar } from "../../components/UserAvatar";
-import StreamVideoPlayer from "./StreamVideoPlayer";
+import StreamStatsOverlay from "./StreamStatsOverlay";
+import {
+  getMiniRect,
+  placeStreamPip,
+  recordFullViewRect,
+} from "./streamPipHost";
 
 function VolumeIcon({ muted }: { muted: boolean }) {
   if (muted) {
@@ -64,6 +76,8 @@ export default function StreamViewPanel() {
   const overlayTimeout = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [streamVolume, setStreamVolume] = useState(100);
   const prevVolume = useRef(100);
+  const [showStats, setShowStats] = useState(false);
+  const pipSlotRef = useRef<HTMLDivElement>(null);
 
   const [lastStreamUser, setLastStreamUser] = useState<string | null>(null);
   useEffect(() => {
@@ -71,6 +85,61 @@ export default function StreamViewPanel() {
   }, [fullscreenStream]);
 
   const displayUser = fullscreenStream || lastStreamUser;
+
+  // Claim the shared, persistent stream player node into the full-view slot
+  // whenever a stream is focused here. The player is reparented (not remounted)
+  // between this view and the floating mini player, so the decoder survives the
+  // move and playback is seamless. Re-runs on stream switch so the full view
+  // reclaims the host after the mini player had it. Also record the slot's rect
+  // so the mini player can shrink out of it.
+  useLayoutEffect(() => {
+    if (fullscreenStream && pipSlotRef.current) {
+      placeStreamPip(pipSlotRef.current);
+      recordFullViewRect(pipSlotRef.current);
+    }
+  }, [fullscreenStream]);
+
+  // On mount (returning to the voice view), grow the video back out of the mini
+  // player's last spot. Mount-only: switching streams while already here must
+  // not re-trigger it. Animates the slot's transform (the video inside is
+  // pointer-events:none), leaving the surrounding controls untouched.
+  useLayoutEffect(() => {
+    const el = pipSlotRef.current;
+    const from = getMiniRect();
+    if (!el || !fullscreenStream || !from || from.width < 1) return;
+    // Reset any leftover transform BEFORE measuring, so `to` is the true resting
+    // rect. Without this, React StrictMode's double-invoke (run #1 sets the
+    // transform, its cleanup cancels the animation but leaves the transform on)
+    // makes run #2 measure the already-shrunk rect → no-op → stuck small.
+    el.style.transition = "none";
+    el.style.transform = "";
+    const to = el.getBoundingClientRect();
+    if (to.width < 1) return;
+    const dx = from.left - to.left;
+    const dy = from.top - to.top;
+    const sx = from.width / to.width;
+    const sy = from.height / to.height;
+    if (Math.abs(dx) < 2 && Math.abs(dy) < 2 && Math.abs(sx - 1) < 0.02) return;
+    el.style.transformOrigin = "top left";
+    el.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
+    void el.offsetWidth;
+    const raf = requestAnimationFrame(() => {
+      el.style.transition = "transform 340ms cubic-bezier(0.34, 1.32, 0.64, 1)";
+      el.style.transform = "translate(0px, 0px) scale(1, 1)";
+    });
+    const done = setTimeout(() => {
+      el.style.transition = "";
+      el.style.transform = "";
+    }, 440);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(done);
+      // Never leave the slot shrunk if torn down / re-invoked mid-animation.
+      el.style.transition = "";
+      el.style.transform = "";
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const appWindow = getCurrentWindow();
 
@@ -239,6 +308,11 @@ export default function StreamViewPanel() {
               {qualityBadge && (
                 <span className="text-[11px] text-text-muted">{qualityBadge}</span>
               )}
+              {stream && stream.watcherCount > 0 && (
+                <span className="text-[11px] text-text-muted">
+                  · {stream.watcherCount} watching
+                </span>
+              )}
               <div className="ml-auto flex items-center gap-2">
                 {!isOwnStream && stream?.hasAudio && (
                   <div className="flex items-center gap-1.5">
@@ -297,10 +371,13 @@ export default function StreamViewPanel() {
             onMouseMove={handleMouseMove}
             onMouseLeave={handleMouseLeave}
           >
-            <StreamVideoPlayer
-              streamerUsername={displayUser}
-              className={`h-full w-full object-contain ${isFullscreen ? "" : "rounded-lg"}`}
-            />
+            {/* The shared persistent stream player is reparented in here so it
+                survives moving to/from the floating mini player. */}
+            <div ref={pipSlotRef} className="h-full w-full" />
+
+            {showStats && displayUser && (
+              <StreamStatsOverlay username={displayUser} />
+            )}
 
             {!isFullscreen && (
               <div
@@ -347,6 +424,20 @@ export default function StreamViewPanel() {
                   </>
                 )}
                 <button
+                  onClick={() => setShowStats((v) => !v)}
+                  className={`flex h-7 w-7 items-center justify-center rounded-sm transition-colors ${
+                    showStats
+                      ? "text-accent-bright hover:bg-white/[0.08]"
+                      : "text-white/80 hover:bg-white/[0.08] hover:text-white"
+                  }`}
+                  title="Stream stats"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 3v18h18" />
+                    <path d="M7 15l3-4 3 3 4-6" />
+                  </svg>
+                </button>
+                <button
                   onClick={enterFullscreen}
                   className="flex h-7 w-7 items-center justify-center rounded-sm text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white"
                   title="Fullscreen"
@@ -385,6 +476,11 @@ export default function StreamViewPanel() {
                   </span>
                   {qualityBadge && (
                     <span className="text-[10px] text-white/60">{qualityBadge}</span>
+                  )}
+                  {stream && stream.watcherCount > 0 && (
+                    <span className="text-[10px] text-white/60">
+                      · {stream.watcherCount} watching
+                    </span>
                   )}
                   <div className="ml-2 flex -space-x-1.5">
                     {participants.slice(0, 4).map((p) => (

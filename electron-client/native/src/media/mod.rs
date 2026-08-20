@@ -82,6 +82,53 @@ use pipeline::{ControlMessage, VoiceEvent};
 
 use crate::events;
 
+/// Usernames of the remote streams the local user is currently watching. The
+/// video receive thread drops reassembled frames whose streamer isn't in this
+/// set: the client never validated that a relayed username matched an active
+/// watch, so a spoofed / over-relayed sender could be surfaced as another user;
+/// this also skips the reassembly→IPC→renderer hops for frames nobody wants.
+/// Own-stream self-preview bypasses this entirely (it flows from the encoder
+/// thread's TSFN, not the receive thread). Lock-free reads on the hot path.
+static WATCHED_STREAMS: std::sync::OnceLock<
+    arc_swap::ArcSwap<std::collections::HashSet<String>>,
+> = std::sync::OnceLock::new();
+
+fn watched_streams() -> &'static arc_swap::ArcSwap<std::collections::HashSet<String>> {
+    WATCHED_STREAMS
+        .get_or_init(|| arc_swap::ArcSwap::from_pointee(std::collections::HashSet::new()))
+}
+
+/// Mark a remote streamer as watched (frames for them are forwarded to JS).
+pub fn watch_stream_add(username: &str) {
+    let cur = watched_streams().load();
+    if cur.contains(username) {
+        return;
+    }
+    let mut next = (**cur).clone();
+    next.insert(username.to_string());
+    watched_streams().store(Arc::new(next));
+}
+
+/// Stop forwarding a streamer's frames.
+pub fn watch_stream_remove(username: &str) {
+    let cur = watched_streams().load();
+    if !cur.contains(username) {
+        return;
+    }
+    let mut next = (**cur).clone();
+    next.remove(username);
+    watched_streams().store(Arc::new(next));
+}
+
+/// Drop all watches (voice session ended / switched channels).
+pub fn watched_streams_clear() {
+    watched_streams().store(Arc::new(std::collections::HashSet::new()));
+}
+
+fn is_watched(username: &str) -> bool {
+    watched_streams().load().contains(username)
+}
+
 /// VoiceEngine — owns both the voice UDP socket (server_port + 1) and
 /// the media UDP socket (server_port + 2). The voice socket carries
 /// AUDIO / STREAM_AUDIO / PING traffic; the media socket carries
@@ -197,15 +244,44 @@ impl VoiceEngine {
         let video_recv_thread = thread::Builder::new()
             .name("decibell-video-recv".to_string())
             .spawn(move || {
-                run_video_recv_thread(
-                    media_socket_for_video_recv,
-                    sender_id_for_video,
-                    event_tx_video,
-                    video_recv_stop_thread,
-                );
+                // Guard the receive loop like the audio/encoder threads. It
+                // processes fully untrusted network input but was previously
+                // unguarded: a panic here (crafted packet, future invariant
+                // change) would unwind and silently kill video for every
+                // watched stream with no error and no restart. Catch it and
+                // surface an actionable message instead.
+                let panic_tx = event_tx_video.clone();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_video_recv_thread(
+                        media_socket_for_video_recv,
+                        sender_id_for_video,
+                        event_tx_video,
+                        video_recv_stop_thread,
+                    );
+                }));
+                if let Err(e) = outcome {
+                    let msg = e
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| e.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown error".to_string());
+                    log::error!("[video-recv] thread panicked: {}", msg);
+                    let _ = panic_tx.send(VoiceEvent::Error(format!(
+                        "Video receive crashed ({}) — screen share playback stopped",
+                        msg
+                    )));
+                }
             })
             .map_err(|e| format!("Failed to spawn video recv thread: {}", e))?;
 
+        // Monotonic epoch for stream-frame presentation timestamps. The old
+        // `frame_id * 33_333` hardcoded a 30fps clock: 60fps streams advanced
+        // at half real rate, and a stream restart (frame_id resets to 0) made
+        // the timestamp jump backwards — both confuse the renderer decoder's
+        // pacing/ordering. A real monotonic clock is correct at any frame rate
+        // and never rewinds. Frames are painted on arrival, so wall-time
+        // presentation timestamps are exactly right here.
+        let video_ts_epoch = std::time::Instant::now();
         // Voice + video event bridge. Runs on Tokio's blocking pool so it
         // never holds a worker thread (a previous `tokio::spawn` +
         // `block_in_place` pattern in tauri-client permanently stole
@@ -245,7 +321,7 @@ impl VoiceEngine {
                             username: frame.streamer_username,
                             codec: frame.codec,
                             keyframe: frame.is_keyframe,
-                            timestamp: (frame.frame_id as i64) * 33_333,
+                            timestamp: video_ts_epoch.elapsed().as_micros() as i64,
                             data: frame.data,
                             description: frame.description,
                         });
@@ -282,6 +358,9 @@ impl VoiceEngine {
     }
 
     pub fn stop(&mut self) {
+        // This voice session is ending — forget which remote streams it was
+        // watching so stale entries don't leak into the next session.
+        watched_streams_clear();
         let _ = self.control_tx.send(ControlMessage::Shutdown);
         if let Some(handle) = self.audio_thread.take() {
             let _ = handle.join();
@@ -459,6 +538,12 @@ fn run_video_recv_thread(
             frame
         };
     let emit_frame = |frame: video_receiver::ReassembledFrame| {
+        // Only forward frames for streams we're actually watching. See
+        // WATCHED_STREAMS above: defense against spoofed/over-relayed senders,
+        // and it drops the IPC/renderer work for frames nobody subscribed to.
+        if !is_watched(&frame.streamer_username) {
+            return;
+        }
         let frame = strip_keyframe_description(frame);
         let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
     };

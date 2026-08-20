@@ -205,6 +205,7 @@ export function useVoiceEvents() {
           fps: number;
           currentCodec?: number;
           enforcedCodec?: number;
+          watcherCount?: number;
         }[];
       }>("stream_presence_updated", (event) => {
         const username = useAuthStore.getState().username;
@@ -219,6 +220,7 @@ export function useVoiceEvents() {
           fps: s.fps || 0,
           currentCodec: (s.currentCodec ?? VideoCodec.UNKNOWN) as VideoCodec,
           enforcedCodec: (s.enforcedCodec ?? VideoCodec.UNKNOWN) as VideoCodec,
+          watcherCount: s.watcherCount || 0,
         }));
 
         // ---- streamsByUser update (source of truth across all

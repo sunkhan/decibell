@@ -1,5 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SizedSample};
+use smallvec::SmallVec;
 use std::sync::Arc;
 use arc_swap::ArcSwap;
 use ringbuf::{HeapProd, HeapCons, traits::{Consumer, Producer}};
@@ -435,7 +436,11 @@ where
     let silence = T::from_sample(0.0f32);
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
         let peer_snapshot = peers_out.load();
-        let mut voice_guards: Vec<std::sync::MutexGuard<HeapCons<i16>>> = peer_snapshot
+        // Stack-inline for the typical ≤8-peer channel so the real-time output
+        // callback does no heap allocation (only a >8-peer channel spills to the
+        // heap). Guards live only for this callback, so `pop_voice_sum` still
+        // takes it as a `&mut [_]` slice via Deref.
+        let mut voice_guards: SmallVec<[std::sync::MutexGuard<HeapCons<i16>>; 8]> = peer_snapshot
             .iter()
             .filter_map(|p| p.cons.try_lock().ok())
             .collect();
@@ -484,7 +489,11 @@ where
     let n = out_ch.max(1) as usize;
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
         let peer_snapshot = peers_out.load();
-        let mut voice_guards: Vec<std::sync::MutexGuard<HeapCons<i16>>> = peer_snapshot
+        // Stack-inline for the typical ≤8-peer channel so the real-time output
+        // callback does no heap allocation (only a >8-peer channel spills to the
+        // heap). Guards live only for this callback, so `pop_voice_sum` still
+        // takes it as a `&mut [_]` slice via Deref.
+        let mut voice_guards: SmallVec<[std::sync::MutexGuard<HeapCons<i16>>; 8]> = peer_snapshot
             .iter()
             .filter_map(|p| p.cons.try_lock().ok())
             .collect();

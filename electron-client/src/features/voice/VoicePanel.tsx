@@ -29,6 +29,7 @@ export default function VoicePanel() {
   const latencyMs = useVoiceStore((s) => s.latencyMs);
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
+  const pipStream = useVoiceStore((s) => s.pipStream);
   const isStreamFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
   const isStreaming = useVoiceStore((s) => s.isStreaming);
   const disconnect = useVoiceStore((s) => s.disconnect);
@@ -113,9 +114,12 @@ export default function VoicePanel() {
       useVoiceStore.getState().setIsStreaming(false);
     }
     if (connectedServerId && connectedChannelId) {
+      // Best-effort, un-awaited: leave_voice_channel below drops all watch
+      // subscriptions server-side, so don't serialize N round-trips into the
+      // disconnect path (this was N awaited round-trips before leaving).
       for (const username of watchingStreams) {
         if (username !== ownUsername) {
-          await invoke("stop_watching", {
+          invoke("stop_watching", {
             serverId: connectedServerId,
             channelId: connectedChannelId,
             targetUsername: username,
@@ -177,8 +181,11 @@ export default function VoicePanel() {
         </div>
       )}
 
-      {hasStreams && (
-        <div className={fullscreenStream ? "hidden" : "flex flex-1 overflow-hidden"}>
+      {hasStreams && !fullscreenStream && (
+        // Unmount (not `hidden`) the grid while a stream is fullscreen: a
+        // display:none inline StreamVideoPlayer keeps its VideoDecoder running,
+        // so every watched card decoded off-screen behind the full-view player.
+        <div className="flex flex-1 overflow-hidden">
           <div className="flex flex-1 flex-col overflow-hidden">
             <div className="px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
               Live — {activeStreams.length}
@@ -234,7 +241,11 @@ export default function VoicePanel() {
                           enforced={stream.enforcedCodec !== 0}
                           size="small"
                         />
-                        {isWatching ? (
+                        {isWatching && stream.ownerUsername !== pipStream ? (
+                          // The stream matching pipStream is already decoded by
+                          // the single persistent player (StreamPipManager); show
+                          // its poster here instead of spinning up a second
+                          // decoder for the same stream.
                           <StreamVideoPlayer
                             streamerUsername={stream.ownerUsername}
                             className="h-full w-full object-cover"
@@ -299,6 +310,8 @@ export default function VoicePanel() {
                               ? `${stream.resolutionWidth}x${stream.resolutionHeight}`
                               : ""}
                             {stream.fps > 0 ? ` · ${stream.fps}fps` : ""}
+                            {stream.watcherCount > 0 &&
+                              ` · ${stream.watcherCount} watching`}
                           </div>
                         </div>
                         {isWatching && (
