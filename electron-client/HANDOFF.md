@@ -67,12 +67,14 @@ read them as "how streaming got here", not as current open work.
 | 0.6.x | persistent DMs, message deletion, custom avatars + server pictures, auto-rejoin, crash reporting (Sentry), AUR packaging |
 | 0.6.10 | five-palette theme system + Appearance settings tab; Friends home screen; chat-scroll fixes; ThumbHash attachment placeholders |
 | 0.6.11 | attachment scroll glitch fixed for real (decode-side, B12–B15); streaming fix round — per-sender wire receiver, stream-audio A/V sync, Windows/AMD fallback + escape hatch, 120fps codec levels, fresh-launch watch-lock fix |
-| **0.7.0** | **roles/permissions with Discord-style hierarchy; channel management — create/rename/delete, categories, drag-reorder; nicknames + unban; unified server-settings screen (Overview/Members/Roles/Bans); per-channel voice bitrate incl. live mid-call retune; cross-server channel-key fix; community-server hardening pass (owner seeding, zombie sessions, inert central-sync deadlines, wire validation)** |
+| 0.7.0 | roles/permissions with Discord-style hierarchy; channel management — create/rename/delete, categories, drag-reorder; nicknames + unban; unified server-settings screen (Overview/Members/Roles/Bans); per-channel voice bitrate incl. live mid-call retune; cross-server channel-key fix; community-server hardening pass (owner seeding, zombie sessions, inert central-sync deadlines, wire validation) |
 
-0.7.0 is the current release — the first since 0.6.x to ship BOTH
-client and community-server changes (new proto packet types 88–104;
-old/new components stay wire-compatible, but the admin features need
-matched builds). The design record is
+| **0.7.1** | **audio-device hotplug sync (roster store + mid-call re-resolution); stream carry-over on same-server channel switch ("take stream with me"); deafened-listener relay skip; server-settings modal animation; light-theme stream controls; mouse back/forward no longer walks history** |
+
+0.7.1 is the current release. Like 0.7.0 it ships client AND
+community-server changes (0.7.1's server side is just the deafened
+relay skip — no proto changes, any 0.7.x pairing is fine). The 0.7.x
+design record is
 `docs/superpowers/specs/2026-08-17-roles-permissions-design.md`; the
 server fix batches are CODE_REVIEW.md batches 11–12.
 
