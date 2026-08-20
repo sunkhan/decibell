@@ -73,6 +73,24 @@ export function hardenNavigation(win: BrowserWindow, allowedOrigin: string): voi
     // own preload or disable sandboxing).
     e.preventDefault();
   });
+
+  // Mouse back/forward buttons (XButton1/2) arrive as browser-nav app
+  // commands on Windows and Linux. The renderer is a state-driven SPA,
+  // so walking webContents history lands on a stale document — going
+  // "back" right after signing in dropped users onto the login screen.
+  // Swallow the commands outright.
+  win.on("app-command", (e, cmd) => {
+    if (cmd === "browser-backward" || cmd === "browser-forward") {
+      e.preventDefault();
+    }
+  });
+  // Belt-and-suspenders for traversal paths app-command doesn't cover
+  // (e.g. macOS trackpad swipe, or anything driving goBack directly —
+  // which notably does NOT fire will-navigate): keep the back-stack
+  // empty so there is never an entry to traverse to.
+  win.webContents.on("did-finish-load", () => {
+    win.webContents.navigationHistory.clear();
+  });
 }
 
 /// Forward the Electron-side resize / maximize / unmaximize lifecycle
