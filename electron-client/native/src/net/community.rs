@@ -9,6 +9,7 @@
 //! channel list. Future PRs add handlers for messages, channel
 //! lifecycle, voice presence, streaming, invites, members.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -82,6 +83,14 @@ pub struct CommunityClient {
     pub attachment_port: u16,
     /// Per-file upload cap reported by the server. 0 = unlimited.
     pub max_attachment_bytes: i64,
+    /// Set once the server has told us this connection is over for good:
+    /// a failed COMMUNITY_AUTH_RES (the server closes the socket after
+    /// every rejection, and the same JWT with no invite can't do better
+    /// next time), a MEMBERSHIP_REVOKED (kick/ban), or a successful leave.
+    /// The read loop consults it when the socket drops: without it the
+    /// reconnect loop ran forever after a kick — re-auth, get `not_member`,
+    /// toast "Couldn't join server", back off, repeat every 30 s.
+    terminated: Arc<AtomicBool>,
 }
 
 impl CommunityClient {
@@ -110,7 +119,13 @@ impl CommunityClient {
         connection.send(auth_data).await?;
 
         let sid = server_id.clone();
-        let router_task = tokio::spawn(Self::route_packets(read_rx, state.clone(), sid));
+        let terminated = Arc::new(AtomicBool::new(false));
+        let router_task = tokio::spawn(Self::route_packets(
+            read_rx,
+            state.clone(),
+            sid,
+            terminated.clone(),
+        ));
 
         // Keepalive ping every 30s. Same lock-free pattern as central.
         let ping_write_tx = connection.clone_write_tx();
@@ -149,6 +164,7 @@ impl CommunityClient {
             jwt,
             attachment_port: 0,
             max_attachment_bytes: 0,
+            terminated,
         })
     }
 
@@ -281,6 +297,7 @@ impl CommunityClient {
         port: u16,
         jwt: String,
         state: Arc<Mutex<AppState>>,
+        terminated: Arc<AtomicBool>,
     ) {
         let sid_for_task = server_id.clone();
         let state_for_store = state.clone();
@@ -317,8 +334,12 @@ impl CommunityClient {
                         let _ = connection.send(auth_data).await;
 
                         let sid = sid_for_task.clone();
-                        let router =
-                            tokio::spawn(Self::route_packets(read_rx, state.clone(), sid));
+                        let router = tokio::spawn(Self::route_packets(
+                            read_rx,
+                            state.clone(),
+                            sid,
+                            terminated.clone(),
+                        ));
 
                         // Restart keepalive ping task
                         let ping_write_tx = connection.clone_write_tx();
@@ -387,6 +408,7 @@ impl CommunityClient {
         mut read_rx: mpsc::Receiver<Packet>,
         state: Arc<Mutex<AppState>>,
         server_id: String,
+        terminated: Arc<AtomicBool>,
     ) {
         while let Some(packet) = read_rx.recv().await {
             match packet.payload {
@@ -396,6 +418,13 @@ impl CommunityClient {
                         .into_iter()
                         .map(channel_info_payload)
                         .collect();
+                    if !resp.success {
+                        // The server closes the socket after any rejection
+                        // (auth / not_member / banned / invalid_invite) and
+                        // none of those change by retrying the same JWT
+                        // without an invite — don't reconnect.
+                        terminated.store(true, Ordering::SeqCst);
+                    }
                     if resp.success {
                         // Cache attachment endpoint on the client so
                         // upload commands don't have to re-resolve.
@@ -590,6 +619,9 @@ impl CommunityClient {
                     });
                 }
                 Some(packet::Payload::ModActionRes(resp)) => {
+                    if resp.success && resp.action == "leave" {
+                        terminated.store(true, Ordering::SeqCst);
+                    }
                     events::emit_mod_action_responded(events::ModActionRespondedPayload {
                         server_id: server_id.clone(),
                         success: resp.success,
@@ -636,6 +668,7 @@ impl CommunityClient {
                     });
                 }
                 Some(packet::Payload::MembershipRevoked(rev)) => {
+                    terminated.store(true, Ordering::SeqCst);
                     events::emit_membership_revoked(events::MembershipRevokedPayload {
                         server_id: server_id.clone(),
                         action: rev.action,
@@ -826,7 +859,29 @@ impl CommunityClient {
             }
         }
 
-        // Read loop ended — connection lost. Pull host/port/jwt from
+        // Read loop ended. If the server told us this session is over
+        // for good (rejected auth, kicked/banned, left), retire the
+        // client instead of reconnecting: the renderer has already
+        // processed the corresponding event, and connection_lost lets
+        // it clear connectedServers + the attachment registry.
+        if terminated.load(Ordering::SeqCst) {
+            log::info!(
+                "Community {} session ended by server; not reconnecting",
+                server_id
+            );
+            let removed = {
+                let mut s = state.lock().await;
+                s.pending_thumbnail_fetches.clear();
+                s.communities.remove(&server_id)
+            };
+            events::emit_connection_lost("community", Some(server_id.clone()));
+            // Dropping the client aborts its tasks — including this one,
+            // which takes effect at the next await; we return right away.
+            drop(removed);
+            return;
+        }
+
+        // Connection lost unexpectedly. Pull host/port/jwt from
         // current AppState so a moved client doesn't lose its config.
         let (host, port, jwt) = {
             let mut s = state.lock().await;
@@ -848,7 +903,7 @@ impl CommunityClient {
             "Community server {} read loop ended, starting reconnect",
             server_id
         );
-        Self::start_reconnect(server_id, host, port, jwt, state);
+        Self::start_reconnect(server_id, host, port, jwt, state, terminated);
     }
 }
 
