@@ -804,6 +804,26 @@ std::vector<DbMember> CommunityDb::list_members() const {
     return out;
 }
 
+std::optional<DbMember> CommunityDb::get_member(const std::string& username) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "SELECT username, joined_at, nickname FROM members WHERE username=?;");
+    if (!q.s) return std::nullopt;
+    q.bind_text(1, username);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    DbMember m;
+    m.username = q.col_text(0);
+    m.joined_at = q.col_int64(1);
+    m.nickname = q.col_text(2);
+    return m;
+}
+
+int64_t CommunityDb::count_members() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "SELECT COUNT(*) FROM members;");
+    if (!q.s || q.step() != SQLITE_ROW) return 0;
+    return q.col_int64(0);
+}
+
 bool CommunityDb::is_banned(const std::string& username) const {
     std::lock_guard<std::mutex> lock(mutex_);
     Stmt q(db_, "SELECT 1 FROM bans WHERE username=?;");

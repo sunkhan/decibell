@@ -255,13 +255,13 @@ def test_b3_utf8_truncation():
     check("nickname accepted", r is not None and r.mod_action_res.success)
     got = None
     try:
-        ml = owner.wait(pb.Packet.MEMBER_LIST_RES, timeout=3)
-        if ml:
-            got = next((m.nickname for m in ml.member_list_res.members if m.username == "bob"), None)
+        up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=3, pred=lambda p: p.member_upsert.member.username == "bob")
+        if up:
+            got = up.member_upsert.member.nickname
     except Exception as e:  # UnicodeDecodeError / DecodeError == what prost would do
-        check("MEMBER_LIST_RES decodable", False, repr(e))
+        check("MEMBER_UPSERT decodable", False, repr(e))
         got = None
-    check("MEMBER_LIST_RES decodable with clamped nickname", got is not None and got == "a" * 30, repr(got))
+    check("MEMBER_UPSERT decodable with clamped nickname", got is not None and got == "a" * 30, repr(got))
     # Channel rename: 62 ASCII + 'é' (2 bytes) = 64 ok; 63 + 'é' = 65 → must clamp to 63, not 64 (split).
     owner.send(pb.Packet.CHANNEL_RENAME_REQ, channel_rename_req=pb.ChannelRenameRequest(
         channel_id="general", name="g" * 63 + "é"))
@@ -390,16 +390,15 @@ def test_offline_kick_roster():
     owner.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="heidi", reason=""))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "kick")
     check("offline kick succeeded", r is not None and r.mod_action_res.success)
-    ml = owner.wait(pb.Packet.MEMBER_LIST_RES, timeout=2)
-    names = [m.username for m in ml.member_list_res.members] if ml else None
-    check("roster broadcast after offline kick, heidi gone", ml is not None and "heidi" not in names, str(names))
+    rm = owner.wait(pb.Packet.MEMBER_REMOVE, timeout=2, pred=lambda p: p.member_remove.username == "heidi")
+    check("MEMBER_REMOVE after offline kick", rm is not None)
     ivan = join("ivan", owner); ivan.close(); time.sleep(0.5); owner.flush(0.8)
     owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="ivan", reason=""))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
     check("offline ban succeeded", r is not None and r.mod_action_res.success)
-    ml = owner.wait(pb.Packet.MEMBER_LIST_RES, timeout=2)
-    check("roster broadcast after offline ban, ivan in ban list", ml is not None and "ivan" in list(ml.member_list_res.bans)
-          and "ivan" not in [m.username for m in ml.member_list_res.members])
+    rm = owner.wait(pb.Packet.MEMBER_REMOVE, timeout=2, pred=lambda p: p.member_remove.username == "ivan")
+    bl = owner.wait(pb.Packet.BAN_LIST_RES, timeout=2, pred=lambda p: "ivan" in p.ban_list_res.bans)
+    check("MEMBER_REMOVE + BAN_LIST_RES after offline ban", rm is not None and bl is not None)
     owner.close()
 
 
@@ -416,8 +415,8 @@ def test_no_ghost_after_leave_or_ban():
     check("leave acknowledged", r is not None and r.mod_action_res.success)
     vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=3, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge" and len(p.voice_presence_update.active_users) == 0)
     check("voice presence cleared after leave (session reaped)", vp is not None)
-    ml = owner.wait(pb.Packet.MEMBER_LIST_RES, timeout=2)
-    check("roster without judy after leave", ml is not None and "judy" not in [m.username for m in ml.member_list_res.members])
+    rm = owner.wait(pb.Packet.MEMBER_REMOVE, timeout=2, pred=lambda p: p.member_remove.username == "judy")
+    check("MEMBER_REMOVE after leave", rm is not None)
     check("judy socket closed", judy.is_closed())
     judy.close()
     # Same via ban while in voice (online target, close_after_flush path).
@@ -825,6 +824,66 @@ def test_v2_overwrite_guards():
     for c in (sam, tia, uma, owner): c.close()
 
 
+def test_roster_deltas():
+    print("[roster] paged snapshot + MEMBER_UPSERT/REMOVE deltas + revision")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.flush(0.5)
+    # Seed 250 offline members directly (joined long ago) to exercise paging.
+    now = int(time.time())
+    c = sqlite3.connect(DB)
+    for i in range(250):
+        c.execute("insert or ignore into members(username, joined_at, nickname) values(?, ?, '')", (f"zz{i:03d}", now))
+    c.commit(); c.close()
+    owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(after="", limit=100))
+    p1 = owner.wait(pb.Packet.MEMBER_LIST_RES, pred=lambda p: p.member_list_res.first_page)
+    r1 = p1.member_list_res
+    online = [m.username for m in r1.members if m.is_online]
+    offline = [m.username for m in r1.members if not m.is_online]
+    check("first page: all online members + 100 offline", "alice" in online and len(offline) == 100 and r1.has_more, f"online={len(online)} offline={len(offline)} has_more={r1.has_more}")
+    check("total_members reported", r1.total_members >= 251, str(r1.total_members))
+    seen = set(offline)
+    after = r1.next_after; pages = 1
+    while after:
+        owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(after=after, limit=100))
+        pg = owner.wait(pb.Packet.MEMBER_LIST_RES, pred=lambda p: not p.member_list_res.first_page)
+        r = pg.member_list_res; pages += 1
+        names = [m.username for m in r.members]
+        check(f"page {pages}: offline only, no duplicates", all(not m.is_online for m in r.members) and not (seen & set(names)))
+        seen |= set(names)
+        after = r.next_after if r.has_more else ""
+    check("paging covers every offline member exactly once", len(seen) == r1.total_members - len(online), f"{len(seen)} vs {r1.total_members - len(online)}")
+    rev = r1.revision
+    # presence flip → upsert with is_online
+    vic = join("vic", owner)
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=lambda p: p.member_upsert.member.username == "vic")
+    check("join → MEMBER_UPSERT online", up is not None and up.member_upsert.member.is_online)
+    check("revision increased", up is not None and up.member_upsert.revision > rev)
+    rev = up.member_upsert.revision
+    vic.close()
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=3, pred=lambda p: p.member_upsert.member.username == "vic" and not p.member_upsert.member.is_online)
+    check("disconnect → MEMBER_UPSERT offline", up is not None)
+    check("revision strictly monotonic", up is not None and up.member_upsert.revision == rev + 1, f"{up.member_upsert.revision if up else None} vs {rev}")
+    # two sessions: only the last disconnect flips presence
+    w1 = join("wes", owner, nonce="a"); owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=lambda p: p.member_upsert.member.username == "wes")
+    w2 = Client("wes", nonce="b"); assert auth_ok(w2)[0]; owner.flush(0.5)
+    w1.close()
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=1.5, pred=lambda p: p.member_upsert.member.username == "wes" and not p.member_upsert.member.is_online)
+    check("first of two sessions closing → still online (no offline upsert)", up is None)
+    w2.close()
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=3, pred=lambda p: p.member_upsert.member.username == "wes" and not p.member_upsert.member.is_online)
+    check("last session closing → offline upsert", up is not None)
+    # ban list request gating
+    xan = join("xan", owner); xan.flush(0.5)
+    xan.send(pb.Packet.BAN_LIST_REQ, ban_list_req=pb.BanListRequest())
+    bl = xan.wait(pb.Packet.BAN_LIST_RES)
+    check("BAN_LIST_REQ denied without BAN_MEMBERS", bl is not None and not bl.ban_list_res.success)
+    owner.send(pb.Packet.BAN_LIST_REQ, ban_list_req=pb.BanListRequest())
+    bl = owner.wait(pb.Packet.BAN_LIST_RES, pred=lambda p: p.ban_list_res.success)
+    check("owner gets ban list", bl is not None)
+    sql("delete from members where username like 'zz%'")
+    xan.close(); owner.close()
+
+
 def test_auth_failure_closes():
     print("[regression] failed auth still delivers response then closes")
     c = Client("nobody")
@@ -857,6 +916,7 @@ if __name__ == "__main__":
         test_v2_enforced_bits()
         test_v2_private_channel()
         test_v2_overwrite_guards()
+        test_roster_deltas()
     finally:
         stop_server(proc)
     test_b9_timeouts()

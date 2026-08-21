@@ -5,6 +5,15 @@
 
 ---
 
+## Fix progress — batch 16 (2026-08-22): roster deltas (P1 proper)
+
+Review §3 P1. Compatibility with older clients deliberately dropped (app not distributed yet).
+**Proto:** `MEMBER_LIST_REQ{after, limit}` is now a **paged snapshot** (first page = every online member + first `limit` offline by username; later pages offline only; `revision`, `total_members`, `has_more`, `next_after`, `first_page`); new `MEMBER_UPSERT` (106), `MEMBER_REMOVE` (107), `BAN_LIST_REQ/RES` (108/109); `MemberListResponse.bans` reserved.
+**C++ community server — 109/109 e2e:**
+- ✅ The full-roster push (`broadcast_members`, O(members × online) per join/leave/nickname/role change, plus one `has_permission` per online user) is gone. `emit_member_upsert` / `emit_member_remove` send one `MemberInfo` to everyone — O(online); presence flips only when a user's LAST session closes; role delete upserts each former holder; bans are their own list pushed to BAN_MEMBERS holders. Every packet carries a per-process monotonic roster revision — `main.cpp`, `db.{hpp,cpp}` (`get_member`, `count_members`)
+**Client — renderer tsc clean, native `cargo check` clean (83 warnings, unchanged):**
+- ✅ `chatStore`: `applyMemberPage` / `upsertMember` / `removeMember` / `memberRosterMeta` (revision gap → refetch page 1); members sidebar and MembersTab page offline members in on scroll / "Load more"; `list_members{after, limit}`, `list_bans`; mod actions no longer refetch the roster.
+
 ## Fix progress — batch 15 (2026-08-22): permissions v2 — resolver, enforced bits, per-channel overwrites
 
 Design: `docs/superpowers/specs/2026-08-22-permissions-v2-design.md`. Review §4 D1/D2/D6.

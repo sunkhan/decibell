@@ -186,6 +186,14 @@ message Packet {
                                      // response via CHANNEL_ACTION_RES action="overwrite"
     CHANNEL_OVERWRITES_REQ    = 104; // client→community
     CHANNEL_OVERWRITES_RES    = 105; // community→client; also pushed after a change
+
+    // --- Roster deltas (replaces full-roster pushes) ---
+    // See "Roster protocol" below. MEMBER_LIST_REQ/RES (38/39) are now a
+    // PAGED snapshot fetched on demand; live changes arrive as deltas.
+    MEMBER_UPSERT = 106;   // community→all: one member joined / changed / presence flipped
+    MEMBER_REMOVE = 107;   // community→all: one member left / was kicked or banned
+    BAN_LIST_REQ  = 108;   // client→community (BAN_MEMBERS)
+    BAN_LIST_RES  = 109;   // community→BAN_MEMBERS holders; pushed on change
   }
 
   Type type = 1;
@@ -330,6 +338,12 @@ message Packet {
     ChannelOverwriteSetRequest channel_overwrite_set_req = 105;
     ChannelOverwritesRequest   channel_overwrites_req    = 106;
     ChannelOverwritesResponse  channel_overwrites_res    = 107;
+
+    // --- Roster deltas ---
+    MemberUpsert    member_upsert = 108;
+    MemberRemove    member_remove = 109;
+    BanListRequest  ban_list_req  = 110;
+    BanListResponse ban_list_res  = 111;
   }
 }
 
@@ -931,13 +945,65 @@ message MemberInfo {
   repeated int64 role_ids = 6;
 }
 
-message MemberListRequest {}
+// --- Roster protocol ---
+// The roster used to be one MEMBER_LIST_RES snapshot, re-pushed to every
+// session on every join / leave / nickname / role change: O(members ×
+// online) bytes per event, the first thing that falls over past a few
+// hundred members. Now:
+//   * MEMBER_LIST_REQ is a PAGED snapshot the client fetches on demand.
+//     The first page (after == "") carries EVERY online member plus the
+//     first `limit` offline members (ordered by username); later pages
+//     (after = previous next_after) carry offline members only. Clients
+//     render online members from page 1 and load offline members as the
+//     sidebar scrolls.
+//   * Live changes arrive as MEMBER_UPSERT (join, nickname, roles,
+//     online/offline flip — carries the full MemberInfo) and
+//     MEMBER_REMOVE (leave / kick / ban). O(online) per event.
+//   * Every roster packet carries `revision`, a per-server-process
+//     counter incremented on each change. A client that sees a gap
+//     (delta.revision != last + 1) missed something and re-fetches page 1.
+//   * Bans are their own list (BAN_LIST_REQ/RES), sent only to
+//     BAN_MEMBERS holders, pushed on change.
+message MemberListRequest {
+  // Username cursor: "" for the first page, else next_after of the page
+  // before. Offline members only after the first page.
+  string after = 1;
+  // Offline members per page; server clamps to [1, 200], default 100.
+  int32 limit = 2;
+}
 
 message MemberListResponse {
   bool success = 1;
   string message = 2;
   repeated MemberInfo members = 3;
-  repeated string bans = 4;
+  reserved 4;
+  reserved "bans";
+  uint64 revision = 5;
+  // Members in the whole server (online + offline), for "N members" UI.
+  int64 total_members = 6;
+  bool has_more = 7;
+  string next_after = 8;
+  // True on the first page (all online members are included).
+  bool first_page = 9;
+}
+
+message MemberUpsert {
+  MemberInfo member = 1;
+  uint64 revision = 2;
+}
+
+message MemberRemove {
+  string username = 1;
+  uint64 revision = 2;
+}
+
+message BanListRequest {}
+
+message BanListResponse {
+  bool success = 1;
+  string message = 2;
+  repeated string bans = 3;
+  uint64 revision = 4;
 }
 
 // --- Roles + permissions ---

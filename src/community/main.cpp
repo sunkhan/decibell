@@ -207,18 +207,25 @@ public:
     // Re-send the (per-recipient) channel list to one user's sessions —
     // after a role assignment changed what they can see.
     void send_channels_to_user(const std::string& username);
-    // Push a fresh MEMBER_LIST_RES to every authenticated session so their
-    // members sidebar reflects joins, departures, kicks, bans, and online
-    // flips without having to re-open the server. Sessions whose user
-    // holds BAN_MEMBERS (or the owner) also receive the ban list;
-    // everyone else gets members-only.
-    //
-    // Coalesced: the full roster goes to every session, so a burst of
-    // connects/disconnects (a reconnect storm after a restart) used to
-    // mean one O(members × online) fan-out per event. Calls within the
-    // coalescing window collapse into a single broadcast.
-    void broadcast_members();
-    void broadcast_members_now();
+    // Roster deltas (see "Roster protocol" in messages.proto). The full
+    // roster used to be re-pushed to every session on every change —
+    // O(members × online) per event. Now one MemberInfo goes out per
+    // change, O(online).
+    //   emit_member_upsert: join, nickname, roles, online/offline flip.
+    //   emit_member_remove: leave / kick / ban.
+    //   broadcast_bans:     BAN_LIST_RES to BAN_MEMBERS holders.
+    // Every packet carries the monotonically increasing roster revision.
+    void emit_member_upsert(const std::string& username);
+    void emit_member_remove(const std::string& username);
+    void broadcast_bans();
+    uint64_t roster_revision() const { return roster_revision_; }
+    // Builds the wire MemberInfo for one member (nullopt if not a member).
+    std::optional<chatproj::MemberInfo> build_member_info(const std::string& username);
+    // Paged snapshot for MEMBER_LIST_REQ. First page (after == "") = every
+    // online member + the first `limit` offline members by username;
+    // later pages = offline only.
+    void fill_member_page(const std::string& after, int32_t limit,
+                          chatproj::MemberListResponse* res);
     // Push the full role list to every authenticated session. Fired on
     // any role create/update/delete so hierarchy + colors stay live.
     void broadcast_roles();
@@ -366,7 +373,7 @@ public:
     int idle_timeout_seconds() const { return idle_timeout_seconds_; }
 
     // Executor for manager-owned timers (roster coalescing). Must be set
-    // before the first broadcast_members() call.
+    // before any timer-backed manager operation.
     void set_io_context(boost::asio::io_context& io);
 
     // Attachment config — reported to clients on CommunityAuthResponse so
@@ -442,9 +449,7 @@ private:
     int idle_timeout_seconds_ = 90;
 
     boost::asio::io_context* io_ = nullptr;
-    std::unique_ptr<boost::asio::steady_timer> members_timer_;
-    bool members_broadcast_pending_ = false;
-    static constexpr auto kMembersCoalesce = std::chrono::milliseconds(250);
+    uint64_t roster_revision_ = 0;
 
 
     // Auto-rejoin: central-assigned community_servers.id. 0 means
@@ -838,10 +843,19 @@ private:
             // member role_ids and gate its admin UI without a round trip.
             send_packet(build_role_list_packet(manager_.db()));
             manager_.send_initial_voice_presences(shared_from_this());
-            // Tell every existing member about the roster change. Covers both
-            // a brand-new member (just added via invite redemption) and a
-            // returning member flipping from offline to online.
-            manager_.broadcast_members();
+            // Roster delta: a brand-new member (invite redemption) or a
+            // returning member flipping online — one MemberInfo to everyone.
+            manager_.emit_member_upsert(username_);
+            // BAN_MEMBERS holders get the ban list up-front.
+            if (manager_.authz().check(chatproj::Action::ViewBans, {username_, "", ""})) {
+                chatproj::Packet bl;
+                bl.set_type(chatproj::Packet::BAN_LIST_RES);
+                auto* res = bl.mutable_ban_list_res();
+                res->set_success(true);
+                res->set_revision(manager_.roster_revision());
+                if (auto* db = manager_.db()) for (const auto& u : db->list_bans()) res->add_bans(u);
+                send_packet(bl);
+            }
             // Auto-rejoin: push membership to central so this user gets
             // auto-rejoined on future logins. Idempotent — fires on
             // every successful auth and serves as the bootstrap for
@@ -1716,43 +1730,31 @@ private:
             }
         }
 
-        // --- MEMBER LIST ---
+        // --- MEMBER LIST (paged snapshot; deltas keep it live) ---
         else if (packet.type() == chatproj::Packet::MEMBER_LIST_REQ) {
-            auto* db = manager_.db();
+            const auto& req = packet.member_list_req();
             chatproj::Packet p;
             p.set_type(chatproj::Packet::MEMBER_LIST_RES);
-            auto* res = p.mutable_member_list_res();
-            if (!db) {
+            manager_.fill_member_page(req.after(), req.limit(), p.mutable_member_list_res());
+            send_packet(p);
+        }
+
+        // --- BAN LIST ---
+        else if (packet.type() == chatproj::Packet::BAN_LIST_REQ) {
+            auto* db = manager_.db();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::BAN_LIST_RES);
+            auto* res = p.mutable_ban_list_res();
+            res->set_revision(manager_.roster_revision());
+            if (!db) { res->set_success(false); res->set_message("Server misconfigured."); send_packet(p); return; }
+            if (auto a = manager_.authz().check(chatproj::Action::ViewBans, {username_, "", ""}); !a) {
                 res->set_success(false);
-                res->set_message("Server misconfigured.");
+                res->set_message(a.reason);
                 send_packet(p);
                 return;
             }
             res->set_success(true);
-            const std::string owner_name = db->owner();
-            auto online_users = manager_.get_online_usernames();
-            std::unordered_map<std::string, std::vector<int64_t>> roles_by_user;
-            for (const auto& [user, role_id] : db->list_all_member_roles()) {
-                roles_by_user[user].push_back(role_id);
-            }
-            for (const auto& m : db->list_members()) {
-                auto* info = res->add_members();
-                info->set_username(m.username);
-                info->set_joined_at(m.joined_at);
-                info->set_nickname(m.nickname);
-                info->set_is_owner(m.username == owner_name);
-                info->set_is_online(online_users.count(m.username) > 0);
-                if (auto it = roles_by_user.find(m.username); it != roles_by_user.end()) {
-                    for (int64_t rid : it->second) info->add_role_ids(rid);
-                }
-            }
-            // The ban list reveals moderation history — only BAN_MEMBERS
-            // holders (and the owner, who holds everything) see it.
-            if (manager_.authz().check(chatproj::Action::ViewBans, {username_, "", ""})) {
-                for (const auto& u : db->list_bans()) {
-                    res->add_bans(u);
-                }
-            }
+            for (const auto& u : db->list_bans()) res->add_bans(u);
             send_packet(p);
         }
 
@@ -1780,13 +1782,8 @@ private:
             send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, removed,
                                 removed ? "Member kicked." : "User is not a member.",
                                 target, "kick");
-            // An online target's socket close runs leave() → roster
-            // broadcast. An OFFLINE target triggers nothing, so every
-            // client (the actor's included) kept listing them as a
-            // member — the action looked like it had failed.
-            if (removed && closed == 0) {
-                manager_.broadcast_members();
-            }
+            (void)closed;
+            if (removed) manager_.emit_member_remove(target);
         }
 
         // --- BAN MEMBER ---
@@ -1808,10 +1805,10 @@ private:
             send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, ok,
                                 ok ? "Member banned." : "Ban failed.",
                                 target, "ban");
-            // Offline target: no leave() will fire, so push the roster
-            // (and the refreshed ban list for BAN_MEMBERS holders) now.
-            if (ok && closed == 0) {
-                manager_.broadcast_members();
+            (void)closed;
+            if (ok) {
+                manager_.emit_member_remove(target);
+                manager_.broadcast_bans();
             }
         }
 
@@ -1827,6 +1824,7 @@ private:
             }
             db->remove_member(username_);
             manager_.sync_membership_revoke(username_);
+            manager_.emit_member_remove(username_);
             send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, true,
                                 "You have left the server.",
                                 username_, "leave");
@@ -1852,7 +1850,7 @@ private:
                 std::cout << "[Community] " << target << " unbanned by "
                           << username_ << "\n";
                 // Refresh ban lists for every BAN_MEMBERS holder.
-                manager_.broadcast_members();
+                manager_.broadcast_bans();
             }
         }
 
@@ -2004,6 +2002,12 @@ private:
                 fail("You can't delete a role at or above your highest role.");
                 return;
             }
+            // Holders lose the role (cascade) — collect them first so each
+            // gets a MEMBER_UPSERT afterwards.
+            std::vector<std::string> holders;
+            for (const auto& [user, rid] : db->list_all_member_roles()) {
+                if (rid == req.role_id()) holders.push_back(user);
+            }
             if (!db->delete_role(req.role_id())) {
                 fail("Failed to delete role.");
                 return;
@@ -2013,8 +2017,7 @@ private:
             std::cout << "[Community] Role '" << role->name
                       << "' deleted by " << username_ << "\n";
             manager_.broadcast_roles();
-            // Members holding the role lost it (cascade) — refresh rosters.
-            manager_.broadcast_members();
+            for (const auto& u : holders) manager_.emit_member_upsert(u);
             manager_.broadcast_channels();
         }
 
@@ -2093,9 +2096,9 @@ private:
             }
             res->set_success(true);
             send_packet(p);
-            // The refreshed roster (with role_ids) is the authoritative
-            // confirmation for every client, requester included.
-            manager_.broadcast_members();
+            // The delta (with role_ids) is the authoritative confirmation
+            // for every client, requester included.
+            manager_.emit_member_upsert(req.username());
             // The target's channel visibility / my_permissions changed.
             manager_.send_channels_to_user(req.username());
         }
@@ -2256,7 +2259,7 @@ private:
                                 ok ? "" : "Not a member.",
                                 target, "nickname");
             if (ok) {
-                manager_.broadcast_members();
+                manager_.emit_member_upsert(target);
             }
         }
 
@@ -2438,6 +2441,7 @@ private:
                 return presence_bucket_.try_take();
             case T::CHANNEL_HISTORY_REQ:
             case T::MEMBER_LIST_REQ:
+            case T::BAN_LIST_REQ:
             case T::ROLE_LIST_REQ:
             case T::INVITE_LIST_REQ:
             case T::FETCH_STREAM_THUMBNAIL_REQ:
@@ -2653,7 +2657,16 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
         broadcast_stream_presence(ch);
     }
     if (was_authenticated) {
-        broadcast_members();
+        // Presence flip only once the user's LAST session is gone; a
+        // kicked/left user is no longer a member and emit_member_upsert
+        // then skips (their MEMBER_REMOVE was already broadcast).
+        bool still_online;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto it = sessions_by_user_.find(session->get_username());
+            still_online = it != sessions_by_user_.end() && !it->second.empty();
+        }
+        if (!still_online) emit_member_upsert(session->get_username());
     }
 }
 
@@ -2887,99 +2900,119 @@ void SessionManager::broadcast_to_members(const chatproj::Packet& packet) {
 
 void SessionManager::set_io_context(boost::asio::io_context& io) {
     io_ = &io;
-    members_timer_ = std::make_unique<boost::asio::steady_timer>(io);
 }
 
-void SessionManager::broadcast_members() {
-    if (!db_) return;
-    if (!members_timer_) { broadcast_members_now(); return; }
-    if (members_broadcast_pending_) return;
-    members_broadcast_pending_ = true;
-    members_timer_->expires_after(kMembersCoalesce);
-    members_timer_->async_wait([this](const boost::system::error_code& ec) {
-        members_broadcast_pending_ = false;
-        if (ec) return;
-        broadcast_members_now();
-    });
+std::optional<chatproj::MemberInfo> SessionManager::build_member_info(const std::string& username) {
+    if (!db_) return std::nullopt;
+    auto m = db_->get_member(username);
+    if (!m) return std::nullopt;
+    chatproj::MemberInfo info;
+    info.set_username(m->username);
+    info.set_joined_at(m->joined_at);
+    info.set_nickname(m->nickname);
+    info.set_is_owner(m->username == db_->owner());
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = sessions_by_user_.find(username);
+        info.set_is_online(it != sessions_by_user_.end() && !it->second.empty());
+    }
+    for (int64_t rid : db_->get_member_role_ids(username)) info.add_role_ids(rid);
+    return info;
 }
 
-void SessionManager::broadcast_members_now() {
-    if (!db_) return;
+void SessionManager::emit_member_upsert(const std::string& username) {
+    auto info = build_member_info(username);
+    if (!info) return;   // not a member (any more) — a MEMBER_REMOVE covers it
+    chatproj::Packet p;
+    p.set_type(chatproj::Packet::MEMBER_UPSERT);
+    auto* up = p.mutable_member_upsert();
+    *up->mutable_member() = std::move(*info);
+    up->set_revision(++roster_revision_);
+    broadcast_to_members(p);
+}
 
-    // Snapshot DB state first — db_ takes its own mutex so doing this
-    // outside mutex_ keeps lock acquisition orders consistent.
+void SessionManager::emit_member_remove(const std::string& username) {
+    chatproj::Packet p;
+    p.set_type(chatproj::Packet::MEMBER_REMOVE);
+    auto* rm = p.mutable_member_remove();
+    rm->set_username(username);
+    rm->set_revision(++roster_revision_);
+    broadcast_to_members(p);
+}
+
+void SessionManager::fill_member_page(const std::string& after, int32_t limit,
+                                      chatproj::MemberListResponse* res) {
+    if (!db_) { res->set_success(false); res->set_message("Server misconfigured."); return; }
+    if (limit <= 0) limit = 100;
+    if (limit > 200) limit = 200;
     const std::string owner_name = db_->owner();
-    auto members = db_->list_members();
-    auto bans = db_->list_bans();
+    auto online = get_online_usernames();
+    // One roster scan + one member_roles scan; both are cheap at the
+    // scale a single community server serves, and this only runs on
+    // demand (page fetches), never on every roster event.
     std::unordered_map<std::string, std::vector<int64_t>> roles_by_user;
     for (const auto& [user, role_id] : db_->list_all_member_roles()) {
         roles_by_user[user].push_back(role_id);
     }
+    auto members = db_->list_members();
+    std::sort(members.begin(), members.end(),
+              [](const chatproj::DbMember& a, const chatproj::DbMember& b) {
+                  return a.username < b.username;
+              });
+    const bool first_page = after.empty();
+    auto emit = [&](const chatproj::DbMember& m) {
+        auto* info = res->add_members();
+        info->set_username(m.username);
+        info->set_joined_at(m.joined_at);
+        info->set_nickname(m.nickname);
+        info->set_is_owner(m.username == owner_name);
+        info->set_is_online(online.count(m.username) > 0);
+        if (auto it = roles_by_user.find(m.username); it != roles_by_user.end()) {
+            for (int64_t rid : it->second) info->add_role_ids(rid);
+        }
+    };
+    if (first_page) {
+        for (const auto& m : members) {
+            if (online.count(m.username)) emit(m);
+        }
+    }
+    int32_t offline_sent = 0;
+    bool has_more = false;
+    std::string next_after;
+    for (const auto& m : members) {
+        if (online.count(m.username)) continue;
+        if (!first_page && m.username <= after) continue;
+        if (offline_sent >= limit) { has_more = true; break; }
+        emit(m);
+        ++offline_sent;
+        next_after = m.username;
+    }
+    res->set_success(true);
+    res->set_revision(roster_revision_);
+    res->set_total_members(static_cast<int64_t>(members.size()));
+    res->set_has_more(has_more);
+    res->set_next_after(has_more ? next_after : "");
+    res->set_first_page(first_page);
+}
 
-    // Compute online set + fan-out targets under session mutex.
-    std::set<std::string> online;
+void SessionManager::broadcast_bans() {
+    if (!db_ || !authz_) return;
+    chatproj::Packet p;
+    p.set_type(chatproj::Packet::BAN_LIST_RES);
+    auto* res = p.mutable_ban_list_res();
+    res->set_success(true);
+    res->set_revision(roster_revision_);
+    for (const auto& u : db_->list_bans()) res->add_bans(u);
+    auto framed = frame_packet(p);
     std::vector<std::pair<std::shared_ptr<Session>, std::string>> targets;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        targets.reserve(sessions_.size());
         for (const auto& s : sessions_) {
-            if (s->is_authenticated() && !s->get_username().empty()) {
-                online.insert(s->get_username());
-                targets.emplace_back(s, s->get_username());
-            }
+            if (s->is_authenticated()) targets.emplace_back(s, s->get_username());
         }
     }
-
-    // Ban-list visibility follows BAN_MEMBERS (owner holds every
-    // permission implicitly). Computed after releasing mutex_ — these
-    // are DB lookups.
-    std::set<std::string> sees_bans;
-    for (const auto& u : online) {
-        if (authz_ && authz_->check(chatproj::Action::ViewBans, {u, "", ""})) {
-            sees_bans.insert(u);
-        }
-    }
-
-    auto frame_pkt = [](const chatproj::Packet& p) {
-        std::string serialized;
-        p.SerializeToString(&serialized);
-        uint32_t length = htonl(static_cast<uint32_t>(serialized.size()));
-        auto framed = std::make_shared<std::vector<uint8_t>>();
-        framed->resize(4 + serialized.size());
-        std::memcpy(framed->data(), &length, 4);
-        std::memcpy(framed->data() + 4, serialized.data(), serialized.size());
-        return framed;
-    };
-
-    chatproj::Packet pkt_no_bans;
-    pkt_no_bans.set_type(chatproj::Packet::MEMBER_LIST_RES);
-    {
-        auto* res = pkt_no_bans.mutable_member_list_res();
-        res->set_success(true);
-        for (const auto& m : members) {
-            auto* info = res->add_members();
-            info->set_username(m.username);
-            info->set_joined_at(m.joined_at);
-            info->set_nickname(m.nickname);
-            info->set_is_owner(m.username == owner_name);
-            info->set_is_online(online.count(m.username) > 0);
-            if (auto it = roles_by_user.find(m.username); it != roles_by_user.end()) {
-                for (int64_t rid : it->second) info->add_role_ids(rid);
-            }
-        }
-    }
-
-    chatproj::Packet pkt_with_bans = pkt_no_bans;
-    for (const auto& u : bans) {
-        pkt_with_bans.mutable_member_list_res()->add_bans(u);
-    }
-
-    auto framed_no_bans = frame_pkt(pkt_no_bans);
-    auto framed_with_bans = bans.empty() ? framed_no_bans : frame_pkt(pkt_with_bans);
-
     for (const auto& [session, user] : targets) {
-        session->deliver(sees_bans.count(user) > 0 ? framed_with_bans
-                                                   : framed_no_bans);
+        if (authz_->check(chatproj::Action::ViewBans, {user, "", ""})) session->deliver(framed);
     }
 }
 

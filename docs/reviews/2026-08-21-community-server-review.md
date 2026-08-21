@@ -89,7 +89,7 @@ Client ──TLS 8080──▶ Central   auth/JWT, friends, DMs, presence, direc
 
 | # | Sev | Finding |
 |---|-----|---------|
-| P1 | **High [×2]** | `broadcast_members()` (`main.cpp:2410-2470`) = `list_members` + `list_bans` + `list_all_member_roles` + **one `has_permission()` per online user** + full roster serialised and delivered to **every** session, on every auth, disconnect (twice, B13), nickname, role assign, unban. 2k members / 200 online ≈ 400 SQL statements + ~20 MB egress per connect, on the thread that relays voice. Cheap fix: coalesce with a 250 ms timer + cache `sees_bans`. Right fix: `MEMBER_UPDATE`/`MEMBER_REMOVE`/`PRESENCE` deltas with a `revision`, and a lazy/paged member list. |
+| P1 | **High [×2]** ✅ | `broadcast_members()` (`main.cpp:2410-2470`) = `list_members` + `list_bans` + `list_all_member_roles` + **one `has_permission()` per online user** + full roster serialised and delivered to **every** session, on every auth, disconnect (twice, B13), nickname, role assign, unban. 2k members / 200 online ≈ 400 SQL statements + ~20 MB egress per connect, on the thread that relays voice. Cheap fix: coalesce with a 250 ms timer + cache `sees_bans`. Right fix: `MEMBER_UPDATE`/`MEMBER_REMOVE`/`PRESENCE` deltas with a `revision`, and a lazy/paged member list. |
 | P2 ✅ | Med **[×2]** | `has_permission()`/`member_level()` = 2–3 `sqlite3_prepare_v2` each incl. `get_meta_("owner")`; no prepared-statement cache anywhere (`Stmt` re-prepares every call; `create_channel`/`normalize_channel_order_` prepare one UPDATE per row in a loop). Cache owner in memory, cache per-user effective perms + level (invalidate on role/member-role/ban change), cache statements. Mandatory once `SEND_MESSAGES` is checked on every message. |
 | P3 ✅ | Med **[×2]** | `find_session_by_username`, `relay_keyframe_request`, `relay_nack` are O(sessions) linear scans under `mutex_` — NACKs and watcher notifies are hot-path. A `username → sessions` index fixes this and B4 together. |
 | P4 ✅ | Med **[×2]** | Every `sync_*` spawns a detached thread + a fresh TLS handshake to central. A restart-driven reconnect storm = N threads, N simultaneous TLS connections, up to 5 s each. The heartbeat thread captures `&manager` and can outlive `run()`. One worker thread + bounded queue (also gives ordering: a revoke can't overtake its register). |
@@ -137,6 +137,9 @@ Batch 15 (2026-08-22): §5 step 3 — `authorize()` abstraction, enforced
 SEND/CONNECT/STREAM, one hierarchy rule, per-channel overwrites (D1, D2,
 D6 ✅; 96 e2e checks). See
 `docs/superpowers/specs/2026-08-22-permissions-v2-design.md`.
+
+Batch 16 (2026-08-22): P1 proper — paged roster snapshot + MEMBER_UPSERT /
+MEMBER_REMOVE deltas with a revision, separate ban list (109 e2e checks).
 
 ## 5. Suggested order of work
 

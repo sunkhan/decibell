@@ -249,6 +249,8 @@ public:
     bool add_member(const std::string& username);
     bool remove_member(const std::string& username);
     std::vector<DbMember> list_members() const;
+    std::optional<DbMember> get_member(const std::string& username) const;
+    int64_t count_members() const;
 
     // --- bans ---
     bool is_banned(const std::string& username) const;
