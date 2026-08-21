@@ -42,6 +42,17 @@ fn channel_info_payload(c: ChannelInfo) -> events::ChannelInfoPayload {
     }
 }
 
+fn member_info_payload(m: MemberInfo) -> events::MemberInfoPayload {
+    events::MemberInfoPayload {
+        username: m.username,
+        joined_at: m.joined_at,
+        nickname: m.nickname,
+        is_owner: m.is_owner,
+        is_online: m.is_online,
+        role_ids: m.role_ids,
+    }
+}
+
 fn map_attachment(a: Attachment) -> events::AttachmentPayload {
     events::AttachmentPayload {
         id: a.id,
@@ -633,24 +644,43 @@ impl CommunityClient {
                     });
                 }
                 Some(packet::Payload::MemberListRes(resp)) => {
-                    let members: Vec<events::MemberInfoPayload> = resp
-                        .members
-                        .into_iter()
-                        .map(|m| events::MemberInfoPayload {
-                            username: m.username,
-                            joined_at: m.joined_at,
-                            nickname: m.nickname,
-                            is_owner: m.is_owner,
-                            is_online: m.is_online,
-                            role_ids: m.role_ids,
-                        })
-                        .collect();
+                    let members: Vec<events::MemberInfoPayload> =
+                        resp.members.into_iter().map(member_info_payload).collect();
                     events::emit_member_list_received(events::MemberListReceivedPayload {
                         server_id: server_id.clone(),
                         success: resp.success,
                         message: resp.message,
                         members,
+                        revision: resp.revision,
+                        total_members: resp.total_members,
+                        has_more: resp.has_more,
+                        next_after: resp.next_after,
+                        first_page: resp.first_page,
+                    });
+                }
+                Some(packet::Payload::MemberUpsert(up)) => {
+                    if let Some(m) = up.member {
+                        events::emit_member_upsert(events::MemberUpsertPayload {
+                            server_id: server_id.clone(),
+                            member: member_info_payload(m),
+                            revision: up.revision,
+                        });
+                    }
+                }
+                Some(packet::Payload::MemberRemove(rm)) => {
+                    events::emit_member_remove(events::MemberRemovePayload {
+                        server_id: server_id.clone(),
+                        username: rm.username,
+                        revision: rm.revision,
+                    });
+                }
+                Some(packet::Payload::BanListRes(resp)) => {
+                    events::emit_ban_list_received(events::BanListReceivedPayload {
+                        server_id: server_id.clone(),
+                        success: resp.success,
+                        message: resp.message,
                         bans: resp.bans,
+                        revision: resp.revision,
                     });
                 }
                 Some(packet::Payload::ModActionRes(resp)) => {

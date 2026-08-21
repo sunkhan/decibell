@@ -301,6 +301,49 @@ export interface ChannelOverwrite {
   deny: number;
 }
 
+/// Roster paging state per server (see "Roster protocol" in
+/// proto/messages.proto). `revision` is the last roster revision applied;
+/// a delta that doesn't continue it means we missed something → refetch.
+export interface MemberRosterMeta {
+  revision: number;
+  totalMembers: number;
+  hasMore: boolean;
+  nextAfter: string;
+  loadingMore: boolean;
+}
+
+export interface MemberListReceivedPayload {
+  serverId: string;
+  success: boolean;
+  message: string;
+  members: ServerMember[];
+  revision: number;
+  totalMembers: number;
+  hasMore: boolean;
+  nextAfter: string;
+  firstPage: boolean;
+}
+
+export interface MemberUpsertPayload {
+  serverId: string;
+  member: ServerMember;
+  revision: number;
+}
+
+export interface MemberRemovePayload {
+  serverId: string;
+  username: string;
+  revision: number;
+}
+
+export interface BanListReceivedPayload {
+  serverId: string;
+  success: boolean;
+  message: string;
+  bans: string[];
+  revision: number;
+}
+
 export interface ChannelOverwritesReceivedPayload {
   serverId: string;
   success: boolean;

@@ -215,6 +215,9 @@ pub const MEMBER_LIST_RECEIVED: &str = "member_list_received";
 pub const MOD_ACTION_RESPONDED: &str = "mod_action_responded";
 pub const MEMBERSHIP_REVOKED: &str = "membership_revoked";
 pub const ROLE_LIST_RECEIVED: &str = "role_list_received";
+pub const MEMBER_UPSERT: &str = "member_upsert";
+pub const MEMBER_REMOVE: &str = "member_remove";
+pub const BAN_LIST_RECEIVED: &str = "ban_list_received";
 pub const CHANNEL_OVERWRITES_RECEIVED: &str = "channel_overwrites_received";
 pub const ROLE_ACTION_RESPONDED: &str = "role_action_responded";
 pub const CHANNEL_LIST_UPDATED: &str = "channel_list_updated";
@@ -662,8 +665,41 @@ pub struct MemberListReceivedPayload {
     pub server_id: String,
     pub success: bool,
     pub message: String,
+    /// One page (see "Roster protocol" in messages.proto): the first page
+    /// carries every online member + the first `limit` offline members;
+    /// later pages carry offline members only.
     pub members: Vec<MemberInfoPayload>,
+    pub revision: u64,
+    pub total_members: i64,
+    pub has_more: bool,
+    pub next_after: String,
+    pub first_page: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberUpsertPayload {
+    pub server_id: String,
+    pub member: MemberInfoPayload,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberRemovePayload {
+    pub server_id: String,
+    pub username: String,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BanListReceivedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
     pub bans: Vec<String>,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -726,6 +762,18 @@ pub struct RoleActionRespondedPayload {
 
 pub fn emit_role_list_received(payload: RoleListReceivedPayload) {
     send(ROLE_LIST_RECEIVED, payload);
+}
+
+pub fn emit_member_upsert(payload: MemberUpsertPayload) {
+    send(MEMBER_UPSERT, payload);
+}
+
+pub fn emit_member_remove(payload: MemberRemovePayload) {
+    send(MEMBER_REMOVE, payload);
+}
+
+pub fn emit_ban_list_received(payload: BanListReceivedPayload) {
+    send(BAN_LIST_RECEIVED, payload);
 }
 
 pub fn emit_channel_overwrites_received(payload: ChannelOverwritesReceivedPayload) {

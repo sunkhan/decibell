@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { UserAvatar } from "../../components/UserAvatar";
@@ -9,6 +10,40 @@ export default function MembersList() {
   const membersByServer = useChatStore((s) => s.membersByServer);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
+  const rosterMeta = useChatStore((s) =>
+    activeServerId ? s.memberRosterMeta[activeServerId] : undefined,
+  );
+  const setMembersLoadingMore = useChatStore((s) => s.setMembersLoadingMore);
+
+  // Roster paging: page 1 (every online member + the first offline page)
+  // is fetched on auth; further offline pages load as the list scrolls
+  // to its end. Live changes arrive as deltas, so no polling.
+  const loadMore = useCallback(() => {
+    if (!activeServerId || !rosterMeta?.hasMore || rosterMeta.loadingMore) return;
+    setMembersLoadingMore(activeServerId, true);
+    invoke("list_members", {
+      serverId: activeServerId,
+      after: rosterMeta.nextAfter,
+      limit: 100,
+    }).catch((err) => {
+      console.error("list_members:", err);
+      setMembersLoadingMore(activeServerId, false);
+    });
+  }, [activeServerId, rosterMeta, setMembersLoadingMore]);
+
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) loadMore();
+      },
+      { rootMargin: "200px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [loadMore]);
 
   const { online, offline } = useMemo(() => {
     const roster = activeServerId ? membersByServer[activeServerId] ?? [] : [];
@@ -69,14 +104,26 @@ export default function MembersList() {
         </div>
         {online.map((m) => renderRow(m, true))}
 
-        {offline.length > 0 && (
+        {(offline.length > 0 || rosterMeta?.hasMore) && (
           <>
             <div className="px-1 pt-4 pb-1">
               <h3 className="font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted">
-                Offline — {offline.length}
+                Offline — {rosterMeta ? Math.max(0, rosterMeta.totalMembers - online.length) : offline.length}
               </h3>
             </div>
             {offline.map((m) => renderRow(m, false))}
+            {rosterMeta?.hasMore && (
+              <div ref={sentinelRef} className="px-1 py-2">
+                <button
+                  type="button"
+                  onClick={loadMore}
+                  disabled={rosterMeta.loadingMore}
+                  className="w-full rounded-sm py-1.5 text-[12px] text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary disabled:cursor-default"
+                >
+                  {rosterMeta.loadingMore ? "Loading…" : "Load more"}
+                </button>
+              </div>
+            )}
           </>
         )}
 

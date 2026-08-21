@@ -13,22 +13,17 @@ interface AttachmentTargetResult {
   maxAttachmentBytes: number;
 }
 import type {
+  BanListReceivedPayload,
   ChannelInfo,
   ChannelOverwritesReceivedPayload,
+  MemberListReceivedPayload,
+  MemberRemovePayload,
+  MemberUpsertPayload,
   ChannelUpdatedPayload,
   ConnectionEventPayload,
   CommunityAuthRespondedPayload,
-  ServerMember,
   ServerRole,
 } from "../../types";
-
-interface MemberListReceivedPayload {
-  serverId: string;
-  success: boolean;
-  message: string;
-  members: ServerMember[];
-  bans: string[];
-}
 
 interface ModActionRespondedPayload {
   serverId: string;
@@ -238,18 +233,62 @@ export function useServerEvents() {
             chat.setActiveChannel(firstText.id);
           }
         }
-        // Populate the members sidebar — every server view uses it.
-        invoke("list_members", { serverId: p.serverId }).catch(console.error);
+        // Populate the members sidebar — every server view uses it. Page 1
+        // = every online member + the first offline page; deltas keep it
+        // live from here on.
+        refetchRoster(p.serverId);
       },
     );
+
+    // Roster protocol: paged snapshot + live deltas with a revision. A
+    // delta that doesn't continue the last applied revision means we
+    // missed one (reconnect window) → refetch page 1.
+    const refetchRoster = (serverId: string) =>
+      invoke("list_members", { serverId, after: "", limit: 100 }).catch(console.error);
 
     const unlistenMembers = listen<MemberListReceivedPayload>(
       "member_list_received",
       (event) => {
-        const { serverId, success, members, bans } = event.payload;
-        if (success) {
-          useChatStore.getState().setMembersForServer(serverId, members, bans);
+        const p = event.payload;
+        if (!p.success) {
+          useChatStore.getState().setMembersLoadingMore(p.serverId, false);
+          return;
         }
+        useChatStore.getState().applyMemberPage(p.serverId, p.members, {
+          revision: p.revision,
+          totalMembers: p.totalMembers,
+          hasMore: p.hasMore,
+          nextAfter: p.nextAfter,
+          firstPage: p.firstPage,
+        });
+      },
+    );
+
+    const unlistenMemberUpsert = listen<MemberUpsertPayload>(
+      "member_upsert",
+      (event) => {
+        const { serverId, member, revision } = event.payload;
+        if (!useChatStore.getState().upsertMember(serverId, member, revision)) {
+          refetchRoster(serverId);
+        }
+      },
+    );
+
+    const unlistenMemberRemove = listen<MemberRemovePayload>(
+      "member_remove",
+      (event) => {
+        const { serverId, username, revision } = event.payload;
+        if (!useChatStore.getState().removeMember(serverId, username, revision)) {
+          refetchRoster(serverId);
+        }
+      },
+    );
+
+    const unlistenBans = listen<BanListReceivedPayload>(
+      "ban_list_received",
+      (event) => {
+        const { serverId, success, bans } = event.payload;
+        if (success) useChatStore.getState().setBansForServer(serverId, bans);
       },
     );
 
@@ -345,10 +384,9 @@ export function useServerEvents() {
         if (action === "leave") {
           useChatStore.getState().removeConnectedServer(serverId);
           useUiStore.getState().setActiveView("browse");
-        } else {
-          // Refresh authoritative roster after kick/ban.
-          invoke("list_members", { serverId }).catch(console.error);
         }
+        // Kick/ban/nickname/unban confirm themselves via the pushed
+        // member_upsert / member_remove / ban_list_received deltas.
       },
     );
 
@@ -582,6 +620,9 @@ export function useServerEvents() {
       unlistenChannelList.then((fn) => fn());
       unlistenChannelAction.then((fn) => fn());
       unlistenRoleList.then((fn) => fn());
+      unlistenMemberUpsert.then((fn) => fn());
+      unlistenMemberRemove.then((fn) => fn());
+      unlistenBans.then((fn) => fn());
       unlistenOverwrites.then((fn) => fn());
       unlistenRoleAction.then((fn) => fn());
       unlistenMod.then((fn) => fn());

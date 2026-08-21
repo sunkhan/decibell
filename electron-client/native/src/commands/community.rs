@@ -38,14 +38,40 @@ async fn send_for_server(
 #[napi(object)]
 pub struct ListMembersArgs {
     pub server_id: String,
+    /// Username cursor: omit/"" for the first page (all online members +
+    /// first `limit` offline), else `nextAfter` of the previous page.
+    pub after: Option<String>,
+    /// Offline members per page (server clamps to [1, 200]; default 100).
+    pub limit: Option<i32>,
 }
 
+/// Fetch one page of the roster. Live changes arrive as member_upsert /
+/// member_remove; this is only for the initial load and scroll paging.
 #[napi]
 pub async fn list_members(args: ListMembersArgs) -> napi::Result<()> {
     send_for_server(
         &args.server_id,
         packet::Type::MemberListReq,
-        packet::Payload::MemberListReq(MemberListRequest {}),
+        packet::Payload::MemberListReq(MemberListRequest {
+            after: args.after.unwrap_or_default(),
+            limit: args.limit.unwrap_or(0),
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct ListBansArgs {
+    pub server_id: String,
+}
+
+/// Fetch the ban list (BAN_MEMBERS). Also pushed by the server on change.
+#[napi]
+pub async fn list_bans(args: ListBansArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::BanListReq,
+        packet::Payload::BanListReq(BanListRequest {}),
     )
     .await
 }

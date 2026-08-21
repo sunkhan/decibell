@@ -12,6 +12,18 @@ import { formatJoined, roleColor } from "./helpers";
 /// MembersAdminPanel into the unified server-settings screen.
 export default function MembersTab({ serverId }: { serverId: string }) {
   const members = useChatStore((s) => s.membersByServer[serverId] ?? []);
+  const rosterMeta = useChatStore((s) => s.memberRosterMeta[serverId]);
+  const setMembersLoadingMore = useChatStore((s) => s.setMembersLoadingMore);
+  const loadMore = () => {
+    if (!rosterMeta?.hasMore || rosterMeta.loadingMore) return;
+    setMembersLoadingMore(serverId, true);
+    invoke("list_members", { serverId, after: rosterMeta.nextAfter, limit: 100 }).catch(
+      (err) => {
+        console.error("list_members:", err);
+        setMembersLoadingMore(serverId, false);
+      },
+    );
+  };
   const roles = useChatStore((s) => s.rolesByServer[serverId] ?? []);
   const currentUser = useAuthStore((s) => s.username);
 
@@ -311,6 +323,18 @@ export default function MembersTab({ serverId }: { serverId: string }) {
               </div>
             );
           })}
+          {rosterMeta?.hasMore && (
+            <button
+              type="button"
+              onClick={loadMore}
+              disabled={rosterMeta.loadingMore}
+              className="mt-1 w-full rounded-md bg-bg-light py-2 text-[12px] text-text-secondary transition-colors hover:bg-bg-lighter disabled:cursor-default disabled:opacity-60"
+            >
+              {rosterMeta.loadingMore
+                ? "Loading…"
+                : `Load more (${Math.max(0, rosterMeta.totalMembers - members.length)} remaining)`}
+            </button>
+          )}
         </div>
       )}
 

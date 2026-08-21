@@ -111,7 +111,8 @@ export default function ServerSettingsModal({ serverId }: Props) {
   // off these, and the pushed broadcasts keep them live afterwards.
   useEffect(() => {
     if (!isOpen) return;
-    invoke("list_members", { serverId }).catch(console.error);
+    invoke("list_members", { serverId, after: "", limit: 100 }).catch(console.error);
+    invoke("list_bans", { serverId }).catch(() => {});
     invoke("list_roles", { serverId }).catch(() => {});
   }, [isOpen, serverId]);
 

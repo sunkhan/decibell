@@ -3,6 +3,7 @@ import type {
   ChannelInfo,
   ChannelOverwrite,
   CommunityServer,
+  MemberRosterMeta,
   Message,
   PendingInvite,
   ServerInvite,
@@ -50,6 +51,8 @@ interface ChatState {
   serverOwner: Record<string, string>;
   membersByServer: Record<string, ServerMember[]>;
   bansByServer: Record<string, string[]>;
+  /// Paging / revision state for membersByServer (roster protocol).
+  memberRosterMeta: Record<string, MemberRosterMeta>;
   /// Per-server role list, most-senior-first, `everyone` last. Absent /
   /// empty for legacy servers that predate roles — permission hooks
   /// fall back to owner-only gating in that case.
@@ -131,7 +134,19 @@ interface ChatState {
     meta: { name: string; description: string },
   ) => void;
   setServerOwner: (serverId: string, owner: string) => void;
-  setMembersForServer: (serverId: string, members: ServerMember[], bans: string[]) => void;
+  /// Apply one roster page. The first page replaces the list (it carries
+  /// every online member); later pages append offline members.
+  applyMemberPage: (
+    serverId: string,
+    members: ServerMember[],
+    meta: { revision: number; totalMembers: number; hasMore: boolean; nextAfter: string; firstPage: boolean },
+  ) => void;
+  /// Live deltas. Return false when the revision doesn't continue the
+  /// last applied one (a gap) so the caller can refetch page 1.
+  upsertMember: (serverId: string, member: ServerMember, revision: number) => boolean;
+  removeMember: (serverId: string, username: string, revision: number) => boolean;
+  setMembersLoadingMore: (serverId: string, loading: boolean) => void;
+  setBansForServer: (serverId: string, bans: string[]) => void;
   setRolesForServer: (serverId: string, roles: ServerRole[]) => void;
   setOverwritesForChannel: (
     serverId: string,
@@ -302,6 +317,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   serverOwner: {},
   membersByServer: {},
   bansByServer: {},
+  memberRosterMeta: {},
   rolesByServer: {},
   overwritesByChannel: {},
   invitesByServer: {},
@@ -435,9 +451,79 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setServerOwner: (serverId, owner) =>
     set((state) => ({ serverOwner: { ...state.serverOwner, [serverId]: owner } })),
 
-  setMembersForServer: (serverId, members, bans) =>
+  applyMemberPage: (serverId, members, meta) =>
+    set((state) => {
+      const existing = meta.firstPage ? [] : state.membersByServer[serverId] ?? [];
+      const byName = new Map(existing.map((m) => [m.username, m]));
+      for (const m of members) byName.set(m.username, m);
+      return {
+        membersByServer: { ...state.membersByServer, [serverId]: Array.from(byName.values()) },
+        memberRosterMeta: {
+          ...state.memberRosterMeta,
+          [serverId]: {
+            revision: meta.revision,
+            totalMembers: meta.totalMembers,
+            hasMore: meta.hasMore,
+            nextAfter: meta.nextAfter,
+            loadingMore: false,
+          },
+        },
+      };
+    }),
+
+  upsertMember: (serverId, member, revision) => {
+    const state = get();
+    const meta = state.memberRosterMeta[serverId];
+    // No page loaded yet → nothing to patch; the page fetch will carry it.
+    if (!meta) return true;
+    if (revision !== meta.revision + 1) return false;
+    const list = state.membersByServer[serverId] ?? [];
+    const idx = list.findIndex((m) => m.username === member.username);
+    const next = idx >= 0 ? list.map((m, i) => (i === idx ? member : m)) : [...list, member];
+    set({
+      membersByServer: { ...state.membersByServer, [serverId]: next },
+      memberRosterMeta: {
+        ...state.memberRosterMeta,
+        [serverId]: {
+          ...meta,
+          revision,
+          totalMembers: idx >= 0 ? meta.totalMembers : meta.totalMembers + 1,
+        },
+      },
+    });
+    return true;
+  },
+
+  removeMember: (serverId, username, revision) => {
+    const state = get();
+    const meta = state.memberRosterMeta[serverId];
+    if (!meta) return true;
+    if (revision !== meta.revision + 1) return false;
+    const list = state.membersByServer[serverId] ?? [];
+    const next = list.filter((m) => m.username !== username);
+    set({
+      membersByServer: { ...state.membersByServer, [serverId]: next },
+      memberRosterMeta: {
+        ...state.memberRosterMeta,
+        [serverId]: {
+          ...meta,
+          revision,
+          totalMembers: Math.max(0, meta.totalMembers - (next.length === list.length ? 0 : 1)),
+        },
+      },
+    });
+    return true;
+  },
+
+  setMembersLoadingMore: (serverId, loading) =>
+    set((state) => {
+      const meta = state.memberRosterMeta[serverId];
+      if (!meta) return {};
+      return { memberRosterMeta: { ...state.memberRosterMeta, [serverId]: { ...meta, loadingMore: loading } } };
+    }),
+
+  setBansForServer: (serverId, bans) =>
     set((state) => ({
-      membersByServer: { ...state.membersByServer, [serverId]: members },
       bansByServer: { ...state.bansByServer, [serverId]: bans },
     })),
 
@@ -689,6 +775,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       serverOwner: {},
       membersByServer: {},
       bansByServer: {},
+      memberRosterMeta: {},
       rolesByServer: {},
       serverAttachmentConfig: {},
       channelsByServer: {},
