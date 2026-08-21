@@ -80,6 +80,8 @@ export interface UpdateChannelRetentionArgs {
    * presence, so retention-only updates can't reset it).
    */
   voiceBitrateKbps?: number
+  /** Text channels: slowmode seconds (0 = off). None = leave unchanged. */
+  slowmodeSeconds?: number
 }
 /**
  * MANAGE_CHANNELS edit. All five retention values are sent as a
@@ -150,6 +152,28 @@ export interface RenameChannelArgs {
   name: string
 }
 export declare function renameChannel(args: RenameChannelArgs): Promise<void>
+export interface SetChannelOverwriteArgs {
+  serverId: string
+  channelId: string
+  /** "role" | "member" */
+  targetType: string
+  /** Role id (decimal string) or username. */
+  targetId: string
+  allow: number
+  deny: number
+}
+/**
+ * Permissions v2: set (or, with allow == deny == 0, clear) one
+ * per-channel overwrite. Result arrives as channel_action_responded with
+ * action "overwrite"; the server then re-pushes channel_list_updated
+ * (with refreshed myPermissions) and channel_overwrites_received.
+ */
+export declare function setChannelOverwrite(args: SetChannelOverwriteArgs): Promise<void>
+export interface ListChannelOverwritesArgs {
+  serverId: string
+  channelId: string
+}
+export declare function listChannelOverwrites(args: ListChannelOverwritesArgs): Promise<void>
 export interface DeleteChannelArgs {
   serverId: string
   channelId: string
@@ -157,8 +181,71 @@ export interface DeleteChannelArgs {
 export declare function deleteChannel(args: DeleteChannelArgs): Promise<void>
 export interface ListMembersArgs {
   serverId: string
+  /**
+   * Username cursor: omit/"" for the first page (all online members +
+   * first `limit` offline), else `nextAfter` of the previous page.
+   */
+  after?: string
+  /** Offline members per page (server clamps to [1, 200]; default 100). */
+  limit?: number
 }
+/**
+ * Fetch one page of the roster. Live changes arrive as member_upsert /
+ * member_remove; this is only for the initial load and scroll paging.
+ */
 export declare function listMembers(args: ListMembersArgs): Promise<void>
+export interface UpdateServerArgs {
+  serverId: string
+  name: string
+  description: string
+}
+/**
+ * MANAGE_SERVER: rename / re-describe the server. Result arrives as
+ * server_update_responded; everyone gets server_meta_updated.
+ */
+export declare function updateServer(args: UpdateServerArgs): Promise<void>
+export interface ListAuditLogArgs {
+  serverId: string
+  /** 0 = newest. */
+  beforeId?: number
+  limit?: number
+}
+export declare function listAuditLog(args: ListAuditLogArgs): Promise<void>
+export interface TimeoutMemberArgs {
+  serverId: string
+  username: string
+  /** Unix seconds; 0 clears an active timeout. */
+  until: number
+  reason?: string
+}
+/**
+ * MODERATE_MEMBERS + hierarchy. Response via mod_action_responded
+ * action="timeout"; the member_upsert delta carries timedOutUntil.
+ */
+export declare function timeoutMember(args: TimeoutMemberArgs): Promise<void>
+export interface VoiceModArgs {
+  serverId: string
+  username: string
+  /** "server_mute" | "server_unmute" | "server_deafen" | "server_undeafen" | "move" | "disconnect" */
+  action: string
+  /** "move" only. */
+  channelId?: string
+}
+export declare function voiceMod(args: VoiceModArgs): Promise<void>
+export interface TransferOwnershipArgs {
+  serverId: string
+  newOwner: string
+}
+/**
+ * Owner only. Response via mod_action_responded action="transfer";
+ * everyone gets server_meta_updated + member_upsert for both users.
+ */
+export declare function transferOwnership(args: TransferOwnershipArgs): Promise<void>
+export interface ListBansArgs {
+  serverId: string
+}
+/** Fetch the ban list (BAN_MEMBERS). Also pushed by the server on change. */
+export declare function listBans(args: ListBansArgs): Promise<void>
 export interface KickMemberArgs {
   serverId: string
   username: string
@@ -175,6 +262,10 @@ export interface BanMemberArgs {
   username: string
   /** Optional — see KickMemberArgs. */
   reason?: string
+  /** Unix seconds when the ban lifts; omit / 0 = permanent. */
+  expiresAt?: number
+  /** Also delete the member's messages from the last N seconds (≤ 7 days). */
+  deleteMessageSeconds?: number
 }
 export declare function banMember(args: BanMemberArgs): Promise<void>
 export interface LeaveServerArgs {

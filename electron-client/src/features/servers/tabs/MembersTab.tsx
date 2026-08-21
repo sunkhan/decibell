@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { invoke } from "../../../lib/ipc";
 import { useChatStore } from "../../../stores/chatStore";
+import { EMPTY_LIST } from "../../../lib/empty";
 import { useAuthStore } from "../../../stores/authStore";
 import { UserAvatar } from "../../../components/UserAvatar";
 import type { ServerRole } from "../../../types";
@@ -11,7 +12,7 @@ import { formatJoined, roleColor } from "./helpers";
 /// assignment, and hierarchy-aware kick/ban. Moved out of the old
 /// MembersAdminPanel into the unified server-settings screen.
 export default function MembersTab({ serverId }: { serverId: string }) {
-  const members = useChatStore((s) => s.membersByServer[serverId] ?? []);
+  const members = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
   const rosterMeta = useChatStore((s) => s.memberRosterMeta[serverId]);
   const setMembersLoadingMore = useChatStore((s) => s.setMembersLoadingMore);
   const loadMore = () => {
@@ -24,7 +25,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
       },
     );
   };
-  const roles = useChatStore((s) => s.rolesByServer[serverId] ?? []);
+  const roles = useChatStore((s) => s.rolesByServer[serverId] ?? EMPTY_LIST);
   const currentUser = useAuthStore((s) => s.username);
 
   const canKick = usePermission(serverId, PERM.KICK_MEMBERS);

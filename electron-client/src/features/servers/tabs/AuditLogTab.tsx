@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke, listen } from "../../../lib/ipc";
 import { useChatStore } from "../../../stores/chatStore";
+import { EMPTY_LIST } from "../../../lib/empty";
 import { UserAvatar } from "../../../components/UserAvatar";
 import type { AuditEntry, AuditLogReceivedPayload } from "../../../types";
 
@@ -41,7 +42,7 @@ function describe(e: AuditEntry, channelName: (id: string) => string): string {
 /// from the server's audit_log table written by every moderation and
 /// management handler.
 export default function AuditLogTab({ serverId }: { serverId: string }) {
-  const channels = useChatStore((s) => s.channelsByServer[serverId] ?? []);
+  const channels = useChatStore((s) => s.channelsByServer[serverId] ?? EMPTY_LIST);
   const channelName = (id: string) => channels.find((c) => c.id === id)?.name ?? id;
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [hasMore, setHasMore] = useState(false);

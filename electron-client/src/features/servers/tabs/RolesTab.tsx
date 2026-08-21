@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "../../../lib/ipc";
 import { useChatStore } from "../../../stores/chatStore";
+import { EMPTY_LIST } from "../../../lib/empty";
 import type { ServerRole } from "../../../types";
 import {
   EDITABLE_PERMISSIONS,
@@ -26,8 +27,8 @@ interface RoleDraft {
 /// server: only roles strictly below your highest are editable (the
 /// default role's permissions are editable by any role manager).
 export default function RolesTab({ serverId }: { serverId: string }) {
-  const roles = useChatStore((s) => s.rolesByServer[serverId] ?? []);
-  const members = useChatStore((s) => s.membersByServer[serverId] ?? []);
+  const roles = useChatStore((s) => s.rolesByServer[serverId] ?? EMPTY_LIST);
+  const members = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
   const canManageRoles = usePermission(serverId, PERM.MANAGE_ROLES);
   const { isOwner, level: myLevel } = useHierarchy(serverId);
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, listen } from "../../../lib/ipc";
 import { useChatStore } from "../../../stores/chatStore";
+import { EMPTY_LIST } from "../../../lib/empty";
 import { useAuthStore } from "../../../stores/authStore";
 import { toast } from "../../../stores/toastStore";
 import { stringToGradient } from "../../../utils/colors";
@@ -24,7 +25,7 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
   const hasPicture = pictureVersion !== "";
   const currentUser = useAuthStore((s) => s.username);
   const isOwner = !!currentUser && !!owner && owner === currentUser;
-  const members = useChatStore((s) => s.membersByServer[serverId] ?? []);
+  const members = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [cropperFile, setCropperFile] = useState<File | null>(null);

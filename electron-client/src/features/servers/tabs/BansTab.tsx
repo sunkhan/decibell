@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "../../../lib/ipc";
 import { useChatStore } from "../../../stores/chatStore";
+import { EMPTY_LIST } from "../../../lib/empty";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { PERM, usePermission } from "../permissions";
 import { formatJoined } from "./helpers";
@@ -9,7 +10,7 @@ import { formatJoined } from "./helpers";
 /// server) with reason / moderator / expiry and unban. The list refresh
 /// after a successful unban arrives via the pushed ban_list_received.
 export default function BansTab({ serverId }: { serverId: string }) {
-  const bans = useChatStore((s) => s.bansByServer[serverId] ?? []);
+  const bans = useChatStore((s) => s.bansByServer[serverId] ?? EMPTY_LIST);
   const canBan = usePermission(serverId, PERM.BAN_MEMBERS);
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);

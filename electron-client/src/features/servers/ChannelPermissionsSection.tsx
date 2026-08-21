@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
+import { EMPTY_LIST } from "../../lib/empty";
 import { useAuthStore } from "../../stores/authStore";
 import { channelKey } from "../../lib/channelKey";
 import { toast } from "../../stores/toastStore";
@@ -41,10 +42,10 @@ export function ChannelPermissionsSection({
 }) {
   const localUsername = useAuthStore((s) => s.username);
   const owner = useChatStore((s) => s.serverOwner[serverId]);
-  const roles = useChatStore((s) => s.rolesByServer[serverId] ?? []);
-  const members = useChatStore((s) => s.membersByServer[serverId] ?? []);
+  const roles = useChatStore((s) => s.rolesByServer[serverId] ?? EMPTY_LIST);
+  const members = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
   const overwrites = useChatStore(
-    (s) => s.overwritesByChannel[channelKey(serverId, channel.id)] ?? [],
+    (s) => s.overwritesByChannel[channelKey(serverId, channel.id)] ?? EMPTY_LIST,
   );
   const canEdit = useChannelPermission(serverId, channel.id, PERM.MANAGE_ROLES);
   const canView =

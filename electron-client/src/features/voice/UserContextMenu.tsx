@@ -1,4 +1,5 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useMemo, useRef, useCallback } from "react";
+import { EMPTY_LIST } from "../../lib/empty";
 import { createPortal } from "react-dom";
 import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
@@ -50,8 +51,14 @@ export default function UserContextMenu() {
   const serverOwner = useChatStore((s) => (contextServerId ? s.serverOwner[contextServerId] : undefined));
   const channelPresence = useVoiceStore((s) => s.channelPresence);
   const channelUserStates = useVoiceStore((s) => s.channelUserStates);
-  const voiceChannels = useChatStore((s) =>
-    contextServerId ? (s.channelsByServer[contextServerId] ?? []).filter((c) => c.type === "voice") : [],
+  const serverChannels = useChatStore((s) =>
+    contextServerId ? s.channelsByServer[contextServerId] ?? EMPTY_LIST : EMPTY_LIST,
+  );
+  // Derived outside the selector — a selector must return a stable
+  // reference (see lib/empty.ts).
+  const voiceChannels = useMemo(
+    () => serverChannels.filter((c) => c.type === "voice"),
+    [serverChannels],
   );
   const targetVoiceChannel = username
     ? Object.entries(channelPresence).find(([, users]) => users.includes(username))?.[0] ?? null
