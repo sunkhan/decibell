@@ -14,5 +14,6 @@ DECIBELL_E2E_PB="$D/pb" DECIBELL_E2E_SERVER="$D/community_server" DECIBELL_E2E_R
 with `DECIBELL_AUTH_TIMEOUT_SECONDS` / `DECIBELL_IDLE_TIMEOUT_SECONDS` /
 `DECIBELL_RETENTION_INTERVAL_SECONDS` for the deadline and sweep checks) (self-signed cert generated into
 the run dir), mints HS256 JWTs with the test secret, and exercises the
-2026-08-21 fix batches 13 + 14 permissions v2 (batch 15) and roster deltas (batch 16) (see `docs/reviews/2026-08-21-community-server-review.md`).
+2026-08-21 fix batches 13 + 14 permissions v2 (batch 15), roster deltas (batch 16) and
+server management + moderation (batch 17) (see `docs/reviews/2026-08-21-community-server-review.md`).
 Requires `python3` with `protobuf`, and `protoc`, `g++`, `openssl`, `sqlite3`.

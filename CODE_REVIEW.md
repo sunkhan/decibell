@@ -5,6 +5,16 @@
 
 ---
 
+## Fix progress — batch 17 (2026-08-22): server management + moderation (items 1–7)
+
+Design: `docs/superpowers/specs/2026-08-22-server-management-moderation-design.md`. Review §4 D3/D4/D5 + B15.
+**C++ community server — schema v7, 151/151 e2e:**
+- ✅ In-app server rename/description (`SERVER_UPDATE_REQ`, live `SERVER_META_UPDATE`); DB is the source of truth, env only seeds (B15); heartbeat re-reads the DB
+- ✅ Audit log table + `AUDIT_LOG_REQ/RES`, written by every mod/management handler, pruned after 180 days (D3)
+- ✅ Timeouts (`TIMEOUT_MEMBER_REQ`, enforced in `Authorizer` for send/attach/voice/stream), ban expiry + reason-to-target + message purge (broadcast as `CHANNEL_MESSAGE_DELETED`), richer `BAN_LIST_RES`, per-channel slowmode (MANAGE_MESSAGES bypass), voice moderation (server mute/deafen enforced in the UDP relay, move, disconnect, `VOICE_FORCE_NOTIFY`), ownership transfer (D4/D5)
+- ✅ New bits `VIEW_AUDIT_LOG` / `MODERATE_MEMBERS` / `VOICE_MODERATE` (1<<16..18)
+**Client — renderer tsc clean, native `cargo check` clean (83 warnings, unchanged):** editable Overview + transfer card, Audit Log tab, moderation dialogs with reason/duration/purge, timeout chip + countdown bar, slowmode control + hint, richer Bans tab, voice-mod context menu + server-mute badges, `voice_force_notify` handling.
+
 ## Fix progress — batch 16 (2026-08-22): roster deltas (P1 proper)
 
 Review §3 P1. Compatibility with older clients deliberately dropped (app not distributed yet).

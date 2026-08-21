@@ -169,6 +169,8 @@ bool CommunityDb::open(const std::string& path,
     return true;
 }
 
+namespace { bool column_exists(sqlite3* db, const char* table, const char* column); }
+
 void CommunityDb::init_schema_() {
     exec_sql(db_,
         "CREATE TABLE IF NOT EXISTS server_meta ("
@@ -218,6 +220,37 @@ void CommunityDb::init_schema_() {
 
     // --- v6: per-channel overwrites + v2 permission bits ---
     migrate_to_v6_overwrites_();
+
+    // --- v7: timeouts, server voice flags, ban expiry, slowmode, audit log ---
+    migrate_to_v7_moderation_();
+}
+
+void CommunityDb::migrate_to_v7_moderation_() {
+    struct Col { const char* table; const char* name; const char* ddl; } cols[] = {
+        { "members",  "timed_out_until",  "timed_out_until INTEGER NOT NULL DEFAULT 0" },
+        { "members",  "server_muted",     "server_muted INTEGER NOT NULL DEFAULT 0" },
+        { "members",  "server_deafened",  "server_deafened INTEGER NOT NULL DEFAULT 0" },
+        { "bans",     "expires_at",       "expires_at INTEGER NOT NULL DEFAULT 0" },
+        { "channels", "slowmode_seconds", "slowmode_seconds INTEGER NOT NULL DEFAULT 0" },
+    };
+    for (const auto& c : cols) {
+        if (!column_exists(db_, c.table, c.name)) {
+            std::string sql = std::string("ALTER TABLE ") + c.table + " ADD COLUMN " + c.ddl + ";";
+            exec_sql(db_, sql.c_str());
+        }
+    }
+    exec_sql(db_,
+        "CREATE TABLE IF NOT EXISTS audit_log ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  ts INTEGER NOT NULL,"
+        "  actor TEXT NOT NULL,"
+        "  action TEXT NOT NULL,"
+        "  target TEXT NOT NULL DEFAULT '',"
+        "  channel_id TEXT NOT NULL DEFAULT '',"
+        "  details TEXT NOT NULL DEFAULT ''"
+        ");");
+    exec_sql(db_, "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);");
+    set_meta_("schema_version", "7");
 }
 
 void CommunityDb::migrate_to_v6_overwrites_() {
@@ -589,12 +622,11 @@ void CommunityDb::seed_if_empty_(const std::string& owner,
     // created while that bug was live, the first time they boot with
     // DECIBELL_OWNER_USERNAME set.
     if (!get_meta_("owner").empty()) {
-        // Existing DB — still refresh the current name/description to match
-        // whatever the operator configured via env vars on this launch,
-        // since that is authoritative. Owner is NOT overwritten; ownership
-        // transfers are a deliberate manual operation.
-        if (!name.empty()) set_meta_("server_name", name);
-        set_meta_("server_description", desc);
+        // Existing DB: the DB is the source of truth for name/description
+        // (they're editable in-app via SERVER_UPDATE_REQ); env vars only
+        // fill a still-empty name. Owner is never overwritten here —
+        // ownership transfers go through TRANSFER_OWNERSHIP_REQ.
+        if (get_meta_("server_name").empty() && !name.empty()) set_meta_("server_name", name);
         return;
     }
     if (owner.empty()) {
@@ -741,6 +773,24 @@ std::string CommunityDb::server_description() const {
     return get_meta_("server_description");
 }
 
+void CommunityDb::set_server_meta(const std::string& name, const std::string& description) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    set_meta_("server_name", name);
+    set_meta_("server_description", description);
+}
+
+bool CommunityDb::transfer_ownership(const std::string& new_owner) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    {
+        Stmt q(db_, "SELECT 1 FROM members WHERE username=?;");
+        if (!q.s) return false;
+        q.bind_text(1, new_owner);
+        if (q.step() != SQLITE_ROW) return false;
+    }
+    set_meta_("owner", new_owner);   // refreshes owner_cache_ + invalidates perms
+    return true;
+}
+
 bool CommunityDb::is_member(const std::string& username) const {
     std::lock_guard<std::mutex> lock(mutex_);
     Stmt q(db_, "SELECT 1 FROM members WHERE username=?;");
@@ -791,14 +841,17 @@ std::vector<DbMember> CommunityDb::list_members() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<DbMember> out;
     Stmt q(db_,
-        "SELECT username, joined_at, nickname FROM members "
-        "ORDER BY joined_at ASC;");
+        "SELECT username, joined_at, nickname, timed_out_until, server_muted, server_deafened "
+        "FROM members ORDER BY joined_at ASC;");
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) {
         DbMember m;
         m.username = q.col_text(0);
         m.joined_at = q.col_int64(1);
         m.nickname = q.col_text(2);
+        m.timed_out_until = q.col_int64(3);
+        m.server_muted = q.col_int(4) != 0;
+        m.server_deafened = q.col_int(5) != 0;
         out.push_back(std::move(m));
     }
     return out;
@@ -806,7 +859,9 @@ std::vector<DbMember> CommunityDb::list_members() const {
 
 std::optional<DbMember> CommunityDb::get_member(const std::string& username) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    Stmt q(db_, "SELECT username, joined_at, nickname FROM members WHERE username=?;");
+    Stmt q(db_,
+        "SELECT username, joined_at, nickname, timed_out_until, server_muted, server_deafened "
+        "FROM members WHERE username=?;");
     if (!q.s) return std::nullopt;
     q.bind_text(1, username);
     if (q.step() != SQLITE_ROW) return std::nullopt;
@@ -814,7 +869,31 @@ std::optional<DbMember> CommunityDb::get_member(const std::string& username) con
     m.username = q.col_text(0);
     m.joined_at = q.col_int64(1);
     m.nickname = q.col_text(2);
+    m.timed_out_until = q.col_int64(3);
+    m.server_muted = q.col_int(4) != 0;
+    m.server_deafened = q.col_int(5) != 0;
     return m;
+}
+
+bool CommunityDb::set_timeout(const std::string& username, int64_t until) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "UPDATE members SET timed_out_until=? WHERE username=?;");
+    if (!q.s) return false;
+    q.bind_int64(1, until < 0 ? 0 : until);
+    q.bind_text(2, username);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
+}
+
+bool CommunityDb::set_server_voice_flags(const std::string& username, bool muted, bool deafened) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "UPDATE members SET server_muted=?, server_deafened=? WHERE username=?;");
+    if (!q.s) return false;
+    q.bind_int(1, muted ? 1 : 0);
+    q.bind_int(2, deafened ? 1 : 0);
+    q.bind_text(3, username);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
 }
 
 int64_t CommunityDb::count_members() const {
@@ -824,17 +903,46 @@ int64_t CommunityDb::count_members() const {
     return q.col_int64(0);
 }
 
-bool CommunityDb::is_banned(const std::string& username) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    Stmt q(db_, "SELECT 1 FROM bans WHERE username=?;");
+namespace {
+// Shared by is_banned / get_ban / redeem_invite (mutex held by caller):
+// an expired ban is deleted on sight and reported as "not banned".
+bool ban_active_unlocked(sqlite3* db, const std::string& username, DbBan* out) {
+    Stmt q(db, "SELECT username, banned_at, banned_by, reason, expires_at FROM bans WHERE username=?;");
     if (!q.s) return false;
     q.bind_text(1, username);
-    return q.step() == SQLITE_ROW;
+    if (q.step() != SQLITE_ROW) return false;
+    DbBan b;
+    b.username = q.col_text(0);
+    b.banned_at = q.col_int64(1);
+    b.banned_by = q.col_text(2);
+    b.reason = q.col_text(3);
+    b.expires_at = q.col_int64(4);
+    if (b.expires_at != 0 && b.expires_at <= now_seconds()) {
+        Stmt del(db, "DELETE FROM bans WHERE username=?;");
+        if (del.s) { del.bind_text(1, username); del.step(); }
+        return false;
+    }
+    if (out) *out = b;
+    return true;
+}
+} // namespace
+
+bool CommunityDb::is_banned(const std::string& username) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return ban_active_unlocked(db_, username, nullptr);
+}
+
+std::optional<DbBan> CommunityDb::get_ban(const std::string& username) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    DbBan b;
+    if (!ban_active_unlocked(db_, username, &b)) return std::nullopt;
+    return b;
 }
 
 bool CommunityDb::add_ban(const std::string& username,
                           const std::string& banned_by,
-                          const std::string& reason) {
+                          const std::string& reason,
+                          int64_t expires_at) {
     std::lock_guard<std::mutex> lock(mutex_);
     invalidate_user_perms_(username);
     overwrites_cache_.clear();
@@ -861,17 +969,19 @@ bool CommunityDb::add_ban(const std::string& username,
     bool ok = false;
     {
         Stmt ins(db_,
-            "INSERT INTO bans(username, banned_at, banned_by, reason) "
-            "VALUES(?, ?, ?, ?) "
+            "INSERT INTO bans(username, banned_at, banned_by, reason, expires_at) "
+            "VALUES(?, ?, ?, ?, ?) "
             "ON CONFLICT(username) DO UPDATE SET "
             "  banned_at=excluded.banned_at, "
             "  banned_by=excluded.banned_by, "
-            "  reason=excluded.reason;");
+            "  reason=excluded.reason, "
+            "  expires_at=excluded.expires_at;");
         if (ins.s) {
             ins.bind_text(1, username);
             ins.bind_int64(2, now_seconds());
             ins.bind_text(3, banned_by);
             ins.bind_text(4, reason);
+            ins.bind_int64(5, expires_at < 0 ? 0 : expires_at);
             ok = (ins.step() == SQLITE_DONE);
         }
     }
@@ -887,13 +997,25 @@ bool CommunityDb::remove_ban(const std::string& username) {
     return q.step() == SQLITE_DONE;
 }
 
-std::vector<std::string> CommunityDb::list_bans() const {
+std::vector<DbBan> CommunityDb::list_bans() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<std::string> out;
-    Stmt q(db_, "SELECT username FROM bans ORDER BY banned_at DESC;");
+    std::vector<DbBan> out;
+    const int64_t now = now_seconds();
+    // Sweep expired rows first so the list (and its count) is honest.
+    {
+        Stmt del(db_, "DELETE FROM bans WHERE expires_at != 0 AND expires_at <= ?;");
+        if (del.s) { del.bind_int64(1, now); del.step(); }
+    }
+    Stmt q(db_, "SELECT username, banned_at, banned_by, reason, expires_at FROM bans ORDER BY banned_at DESC;");
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) {
-        out.push_back(q.col_text(0));
+        DbBan b;
+        b.username = q.col_text(0);
+        b.banned_at = q.col_int64(1);
+        b.banned_by = q.col_text(2);
+        b.reason = q.col_text(3);
+        b.expires_at = q.col_int64(4);
+        out.push_back(std::move(b));
     }
     return out;
 }
@@ -1417,13 +1539,7 @@ InviteResult CommunityDb::redeem_invite(const std::string& code,
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Ban check first — banned users can never redeem, regardless of invite.
-    {
-        Stmt q(db_, "SELECT 1 FROM bans WHERE username=?;");
-        if (q.s) {
-            q.bind_text(1, redeeming_user);
-            if (q.step() == SQLITE_ROW) return InviteResult::Banned;
-        }
-    }
+    if (ban_active_unlocked(db_, redeeming_user, nullptr)) return InviteResult::Banned;
 
     // If already a member, the invite code is moot — treat as success and skip
     // the uses increment so invites aren't wasted on double-joins.
@@ -1494,7 +1610,7 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
     Stmt q(db_,
         "SELECT id, name, type, position, voice_bitrate_kbps, "
         "  retention_days_text, retention_days_image, retention_days_video, "
-        "  retention_days_document, retention_days_audio "
+        "  retention_days_document, retention_days_audio, slowmode_seconds "
         "FROM channels ORDER BY position ASC, id ASC;");
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) {
@@ -1509,6 +1625,7 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
         c.retention_days_video    = q.col_int(7);
         c.retention_days_document = q.col_int(8);
         c.retention_days_audio    = q.col_int(9);
+        c.slowmode_seconds        = q.col_int(10);
         out.push_back(std::move(c));
     }
     return out;
@@ -1519,7 +1636,7 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
     Stmt q(db_,
         "SELECT id, name, type, position, voice_bitrate_kbps, "
         "  retention_days_text, retention_days_image, retention_days_video, "
-        "  retention_days_document, retention_days_audio "
+        "  retention_days_document, retention_days_audio, slowmode_seconds "
         "FROM channels WHERE id=?;");
     if (!q.s) return std::nullopt;
     q.bind_text(1, channel_id);
@@ -1535,6 +1652,7 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
     c.retention_days_video    = q.col_int(7);
     c.retention_days_document = q.col_int(8);
     c.retention_days_audio    = q.col_int(9);
+    c.slowmode_seconds        = q.col_int(10);
     return c;
 }
 
@@ -1848,6 +1966,18 @@ bool CommunityDb::set_nickname(const std::string& username,
     if (!q.s) return false;
     q.bind_text(1, nickname);
     q.bind_text(2, username);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
+}
+
+bool CommunityDb::set_channel_slowmode(const std::string& channel_id, int32_t seconds) {
+    if (seconds < 0) seconds = 0;
+    if (seconds > 21600) seconds = 21600;
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "UPDATE channels SET slowmode_seconds=? WHERE id=? AND type=0;");
+    if (!q.s) return false;
+    q.bind_int(1, seconds);
+    q.bind_text(2, channel_id);
     if (q.step() != SQLITE_DONE) return false;
     return sqlite3_changes(db_) > 0;
 }
@@ -2414,6 +2544,106 @@ CommunityDb::DeleteMessageResult CommunityDb::delete_message(
 bool CommunityDb::can_delete_others(const std::string& username) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return (effective_permissions_unlocked_(username) & perms::kManageMessages) != 0;
+}
+
+CommunityDb::PurgedMessages CommunityDb::delete_messages_by_sender_since(
+    const std::string& sender, int64_t since_ts) {
+    PurgedMessages out;
+    std::lock_guard<std::mutex> lock(mutex_);
+    {
+        Stmt q(db_, "SELECT id, channel_id FROM messages WHERE sender=? AND timestamp>=?;");
+        if (!q.s) return out;
+        q.bind_text(1, sender);
+        q.bind_int64(2, since_ts);
+        while (q.step() == SQLITE_ROW) {
+            out.messages.emplace_back(q.col_text(1), q.col_int64(0));
+        }
+    }
+    if (out.messages.empty()) return out;
+    {
+        Stmt q(db_,
+            "SELECT storage_path FROM attachments "
+            "WHERE storage_path IS NOT NULL AND storage_path != '' AND message_id IN "
+            "  (SELECT id FROM messages WHERE sender=? AND timestamp>=?);");
+        if (q.s) {
+            q.bind_text(1, sender);
+            q.bind_int64(2, since_ts);
+            while (q.step() == SQLITE_ROW) out.unlink_paths.push_back(q.col_text(0));
+        }
+    }
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    {
+        Stmt q(db_,
+            "DELETE FROM attachments WHERE message_id IN "
+            "  (SELECT id FROM messages WHERE sender=? AND timestamp>=?);");
+        if (q.s) { q.bind_text(1, sender); q.bind_int64(2, since_ts); q.step(); }
+    }
+    {
+        Stmt q(db_, "DELETE FROM messages WHERE sender=? AND timestamp>=?;");
+        if (q.s) { q.bind_text(1, sender); q.bind_int64(2, since_ts); q.step(); }
+    }
+    exec_sql(db_, "COMMIT;");
+    return out;
+}
+
+void CommunityDb::add_audit(const std::string& actor, const std::string& action,
+                            const std::string& target, const std::string& channel_id,
+                            const std::string& details) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_,
+        "INSERT INTO audit_log(ts, actor, action, target, channel_id, details) "
+        "VALUES(?, ?, ?, ?, ?, ?);");
+    if (!q.s) return;
+    q.bind_int64(1, now_seconds());
+    q.bind_text(2, actor);
+    q.bind_text(3, action);
+    q.bind_text(4, target);
+    q.bind_text(5, channel_id);
+    q.bind_text(6, clamp_utf8(details, 512));
+    q.step();
+}
+
+std::vector<DbAuditEntry> CommunityDb::list_audit(int64_t before_id, int32_t limit,
+                                                  bool* has_more) const {
+    if (has_more) *has_more = false;
+    if (limit <= 0) limit = 50;
+    if (limit > 100) limit = 100;
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<DbAuditEntry> out;
+    Stmt q(db_,
+        before_id > 0
+            ? "SELECT id, ts, actor, action, target, channel_id, details FROM audit_log "
+              "WHERE id<? ORDER BY id DESC LIMIT ?;"
+            : "SELECT id, ts, actor, action, target, channel_id, details FROM audit_log "
+              "ORDER BY id DESC LIMIT ?;");
+    if (!q.s) return out;
+    int idx = 1;
+    if (before_id > 0) q.bind_int64(idx++, before_id);
+    q.bind_int(idx, limit + 1);
+    while (q.step() == SQLITE_ROW) {
+        DbAuditEntry e;
+        e.id = q.col_int64(0);
+        e.timestamp = q.col_int64(1);
+        e.actor = q.col_text(2);
+        e.action = q.col_text(3);
+        e.target = q.col_text(4);
+        e.channel_id = q.col_text(5);
+        e.details = q.col_text(6);
+        out.push_back(std::move(e));
+    }
+    if (static_cast<int32_t>(out.size()) > limit) {
+        out.pop_back();
+        if (has_more) *has_more = true;
+    }
+    return out;
+}
+
+void CommunityDb::prune_audit(int64_t cutoff_ts) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "DELETE FROM audit_log WHERE ts < ?;");
+    if (!q.s) return;
+    q.bind_int64(1, cutoff_ts);
+    q.step();
 }
 
 CommunityDb::PrunedTextResult CommunityDb::prune_text_messages(

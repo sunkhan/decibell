@@ -68,7 +68,7 @@ Client ──TLS 8080──▶ Central   auth/JWT, friends, DMs, presence, direc
 | B12 ✅ | Med **[×2]** | `db.cpp:2147` `prune_attachments` (also `bind_attachments`) | One `?` per doomed row in `UPDATE … WHERE id IN (…)`. Exceeding `SQLITE_MAX_VARIABLE_NUMBER` (999 on SQLite < 3.32) makes the prepare fail silently; the caller still unlinks blobs and broadcasts tombstones while rows keep `purged_at=0` → re-broadcast every sweep, GET 410 forever. Fix: chunk at ≤500 or reuse the JOIN predicate; cap attachments per message. |
 | B13 ✅ | Med **[×2]** | `main.cpp:2131` `SessionManager::leave()` | Not idempotent; read-error + write-error + overflow paths each call it → two `broadcast_members()` per disconnect, and `erase_thumbnail_cache(username)` kills a second session's thumbnail. Guard on `sessions_.erase() > 0`. |
 | B14 ✅ | Med | `main.cpp:2703` `relay_keyframe_request` | `last_keyframe_relay_[target] = now` is recorded **before** the target is looked up; `target` comes straight from the UDP datagram / WATCH req and is never erased → unbounded map growth from random target names. |
-| B15 | Med | `db.cpp:503-505` `seed_if_empty_` | Overwrites `server_name`/`description` from env on every boot; `hb_name` read once at startup (`main.cpp:3739`). Any in-app rename (`PERM_MANAGE_SERVER` exists) would be clobbered on restart. Pick DB as source of truth before adding rename. |
+| B15 | Med ✅ | `db.cpp:503-505` `seed_if_empty_` | Overwrites `server_name`/`description` from env on every boot; `hb_name` read once at startup (`main.cpp:3739`). Any in-app rename (`PERM_MANAGE_SERVER` exists) would be clobbered on restart. Pick DB as source of truth before adding rename. |
 | B16 ✅ | Med (client) | `InviteModal.tsx:50-63` | Still owner-gated ("Only the server owner can manage invites") while its entry point and the server gate on `MANAGE_INVITES` → dead modal for role holders. |
 | B17 ✅ | Med (client) | `ServerBrowseView.tsx:208`, `DeepLinkJoinModal.tsx:51` | Invite-joined servers keyed by synthetic `host:port` while everything else uses central's numeric id → no `ServerBar` tile until re-login; same server can exist twice after a later `SERVER_LIST_REQ`, with messages cached under the wrong key. |
 | B18 ✅ | Low **[×2]** | `main.cpp:927-982` `CHANNEL_MSG` | If `insert_message` fails the message is still broadcast with `id=0` → undeletable ghost on every client, absent from history. Drop + tell the sender. |
@@ -140,6 +140,10 @@ D6 ✅; 96 e2e checks). See
 
 Batch 16 (2026-08-22): P1 proper — paged roster snapshot + MEMBER_UPSERT /
 MEMBER_REMOVE deltas with a revision, separate ban list (109 e2e checks).
+
+Batch 17 (2026-08-22): server management + moderation — rename,
+audit log, timeouts, ban expiry/purge, slowmode, voice moderation,
+ownership transfer (B15, D3, D4, D5 ✅; 151 e2e checks).
 
 ## 5. Suggested order of work
 

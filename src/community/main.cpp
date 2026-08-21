@@ -140,6 +140,7 @@ void fill_channel_info(chatproj::ChannelInfo* info, const chatproj::DbChannel& c
     info->set_retention_days_video(ch.retention_days_video);
     info->set_retention_days_document(ch.retention_days_document);
     info->set_retention_days_audio(ch.retention_days_audio);
+    info->set_slowmode_seconds(ch.slowmode_seconds);
 }
 
 /// Builds a CHANNEL_LIST_UPDATE packet for ONE recipient: only channels
@@ -167,6 +168,33 @@ void fill_overwrite(chatproj::ChannelOverwrite* out, const chatproj::DbOverwrite
     out->set_target_id(ow.target_id);
     out->set_allow(ow.allow);
     out->set_deny(ow.deny);
+}
+
+void fill_ban_list(chatproj::BanListResponse* res, chatproj::CommunityDb* db, uint64_t revision) {
+    res->set_success(db != nullptr);
+    res->set_revision(revision);
+    if (!db) return;
+    for (const auto& b : db->list_bans()) {
+        auto* e = res->add_entries();
+        e->set_username(b.username);
+        e->set_banned_by(b.banned_by);
+        e->set_reason(b.reason);
+        e->set_banned_at(b.banned_at);
+        e->set_expires_at(b.expires_at);
+    }
+}
+
+std::string format_utc(int64_t ts) {
+    std::time_t t = static_cast<std::time_t>(ts);
+    std::tm tm{};
+#ifdef _WIN32
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M UTC", &tm);
+    return buf;
 }
 
 chatproj::Packet build_overwrites_packet(chatproj::CommunityDb* db, const std::string& channel_id) {
@@ -207,6 +235,15 @@ public:
     // Re-send the (per-recipient) channel list to one user's sessions —
     // after a role assignment changed what they can see.
     void send_channels_to_user(const std::string& username);
+    // SERVER_META_UPDATE (name / description / owner) to every session.
+    void broadcast_server_meta();
+    // Voice moderation on every live session of `username`. Returns the
+    // number of sessions affected (0 = offline / not in voice for
+    // move/disconnect).
+    size_t apply_server_voice_flags(const std::string& username, bool muted, bool deafened);
+    size_t move_to_voice_channel(const std::string& username, const std::string& channel_id,
+                                 const std::string& actor);
+    size_t disconnect_from_voice(const std::string& username, const std::string& actor);
     // Roster deltas (see "Roster protocol" in messages.proto). The full
     // roster used to be re-pushed to every session on every change —
     // O(members × online) per event. Now one MemberInfo goes out per
@@ -334,7 +371,8 @@ public:
     size_t force_disconnect(const std::string& username,
                             const std::string& action,
                             const std::string& reason,
-                            const std::string& actor);
+                            const std::string& actor,
+                            int64_t expires_at = 0);
 
     // Central-hosted invite sync. Community servers register each live invite
     // with central so clients can redeem a raw code without knowing host:port.
@@ -630,6 +668,13 @@ public:
     void set_udp_media_endpoint(const boost::asio::ip::udp::endpoint& ep) { udp_media_endpoint_ = ep; }
     boost::asio::ip::udp::endpoint get_udp_media_endpoint() const { return udp_media_endpoint_; }
     std::string get_current_voice_channel() const { return current_voice_channel_; }
+    void set_current_voice_channel(const std::string& ch) { current_voice_channel_ = ch; }
+    // Moderator-applied voice flags (VOICE_MOD_REQ), loaded from the
+    // member row at auth and updated live. The relay drops a server-muted
+    // user's audio and skips a server-deafened user as a target.
+    bool is_server_muted() const { return server_muted_ || server_deafened_; }
+    bool is_server_deafened() const { return server_deafened_; }
+    void set_server_voice_flags(bool muted, bool deafened) { server_muted_ = muted; server_deafened_ = deafened; }
     bool is_muted() const { return is_muted_; }
     bool is_deafened() const { return is_deafened_; }
     void set_muted(bool m) { is_muted_ = m; }
@@ -836,6 +881,9 @@ private:
             }
             manager_.register_authenticated(shared_from_this());
             arm_deadline(manager_.idle_timeout_seconds());
+            if (auto m = db->get_member(username_)) {
+                set_server_voice_flags(m->server_muted, m->server_deafened);
+            }
 
             std::cout << "[Community] Authorized user: " << username_ << "\n";
             send_auth_response(true, "Authentication successful.", "");
@@ -850,10 +898,7 @@ private:
             if (manager_.authz().check(chatproj::Action::ViewBans, {username_, "", ""})) {
                 chatproj::Packet bl;
                 bl.set_type(chatproj::Packet::BAN_LIST_RES);
-                auto* res = bl.mutable_ban_list_res();
-                res->set_success(true);
-                res->set_revision(manager_.roster_revision());
-                if (auto* db = manager_.db()) for (const auto& u : db->list_bans()) res->add_bans(u);
+                fill_ban_list(bl.mutable_ban_list_res(), manager_.db(), manager_.roster_revision());
                 send_packet(bl);
             }
             // Auto-rejoin: push membership to central so this user gets
@@ -1184,6 +1229,25 @@ private:
                                         username_, "message");
                     return;
                 }
+                // Slowmode: one message per `slowmode_seconds` per channel
+                // unless the sender may MANAGE_MESSAGES there.
+                std::optional<chatproj::DbChannel> sm;
+                if (auto* db = manager_.db()) sm = db->get_channel(msg->channel_id());
+                if (sm && sm->slowmode_seconds > 0 &&
+                    !(manager_.authz().channel_permissions(username_, msg->channel_id()) & chatproj::perms::kManageMessages)) {
+                    const auto now = std::chrono::steady_clock::now();
+                    auto it = last_message_at_.find(msg->channel_id());
+                    if (it != last_message_at_.end()) {
+                        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - it->second).count();
+                        if (elapsed < sm->slowmode_seconds) {
+                            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                "Slowmode is on — wait " + std::to_string(sm->slowmode_seconds - elapsed) + "s.",
+                                username_, "message");
+                            return;
+                        }
+                    }
+                    last_message_at_[msg->channel_id()] = now;
+                }
             }
             // Size cap — the 2 MB frame cap alone would let one message
             // carry ~2 MB of text, persisted and fanned out to every
@@ -1399,6 +1463,15 @@ private:
                 db->set_channel_voice_bitrate(req.channel_id(),
                                               req.voice_bitrate_kbps());
             }
+            if (ok && req.has_slowmode_seconds()) {
+                db->set_channel_slowmode(req.channel_id(), req.slowmode_seconds());
+            }
+            if (ok) {
+                db->add_audit(username_, "channel_update", "", req.channel_id(),
+                              req.has_slowmode_seconds()
+                                  ? "slowmode " + std::to_string(req.slowmode_seconds()) + "s"
+                                  : "retention/bitrate");
+            }
             res->set_success(ok);
             res->set_message(ok ? "Channel updated." : "Channel not found.");
             if (!ok) {
@@ -1407,19 +1480,8 @@ private:
                 send_packet(p);
                 return;
             }
-            {
-                if (auto ch = db->get_channel(req.channel_id())) {
-                    auto* info = res->mutable_channel();
-                    info->set_id(ch->id);
-                    info->set_name(ch->name);
-                    info->set_type(channel_type_to_proto(ch->type));
-                    info->set_voice_bitrate_kbps(ch->voice_bitrate_kbps);
-                    info->set_retention_days_text(ch->retention_days_text);
-                    info->set_retention_days_image(ch->retention_days_image);
-                    info->set_retention_days_video(ch->retention_days_video);
-                    info->set_retention_days_document(ch->retention_days_document);
-                    info->set_retention_days_audio(ch->retention_days_audio);
-                }
+            if (auto ch = db->get_channel(req.channel_id())) {
+                fill_channel_info(res->mutable_channel(), *ch);
             }
             // Fan out to everyone who can see the channel so they get the new
             // retention settings immediately (rendered in the channel
@@ -1457,6 +1519,8 @@ private:
             }
 
             auto wipe = db->wipe_channel(req.channel_id());
+            db->add_audit(username_, "channel_wipe", "", req.channel_id(),
+                          std::to_string(wipe.deleted_message_count) + " messages");
             res->set_success(true);
             res->set_message("Channel wiped.");
             res->set_deleted_message_count(wipe.deleted_message_count);
@@ -1549,6 +1613,10 @@ private:
             res->set_success(true);
             res->set_message("");
             send_packet(rsp);
+            if (*sender != username_) {
+                db->add_audit(username_, "message_delete", *sender, req.channel_id(),
+                              "message " + std::to_string(req.message_id()));
+            }
 
             // Filesystem cleanup — mirror the CHANNEL_WIPE pattern.
             // Each storage_path may have sibling thumbnail variants;
@@ -1667,6 +1735,8 @@ private:
             send_packet(p);
             if (created) {
                 manager_.sync_invite_register(created->code, created->expires_at);
+                db->add_audit(username_, "invite_create", created->code, "",
+                              max_uses ? "max uses " + std::to_string(max_uses) : "unlimited");
             }
         }
 
@@ -1727,6 +1797,7 @@ private:
             send_packet(p);
             if (ok) {
                 manager_.sync_invite_unregister(code);
+                db->add_audit(username_, "invite_revoke", code, "", "");
             }
         }
 
@@ -1753,8 +1824,7 @@ private:
                 send_packet(p);
                 return;
             }
-            res->set_success(true);
-            for (const auto& u : db->list_bans()) res->add_bans(u);
+            fill_ban_list(res, db, manager_.roster_revision());
             send_packet(p);
         }
 
@@ -1783,7 +1853,10 @@ private:
                                 removed ? "Member kicked." : "User is not a member.",
                                 target, "kick");
             (void)closed;
-            if (removed) manager_.emit_member_remove(target);
+            if (removed) {
+                manager_.emit_member_remove(target);
+                db->add_audit(username_, "kick", target, "", reason.empty() ? "" : "reason: " + reason);
+            }
         }
 
         // --- BAN MEMBER ---
@@ -1797,11 +1870,23 @@ private:
                 send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, target, "ban");
                 return;
             }
-            bool ok = db->add_ban(target, username_, reason);
+            const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
+            int64_t expires_at = packet.ban_member_req().expires_at();
+            if (expires_at != 0 && expires_at <= now_ts) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "Ban expiry is in the past.", target, "ban");
+                return;
+            }
+            // "Delete last N seconds of messages" — clamped to 7 days.
+            int32_t purge_seconds = packet.ban_member_req().delete_message_seconds();
+            if (purge_seconds < 0) purge_seconds = 0;
+            if (purge_seconds > 7 * 86400) purge_seconds = 7 * 86400;
+
+            bool ok = db->add_ban(target, username_, reason, expires_at);
             // Unconditional for the same reason as the kick path: the
             // target may be offline and force_disconnect would skip it.
             manager_.sync_membership_revoke(target);
-            const size_t closed = manager_.force_disconnect(target, "ban", reason, username_);
+            const size_t closed = manager_.force_disconnect(target, "ban", reason, username_, expires_at);
             send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, ok,
                                 ok ? "Member banned." : "Ban failed.",
                                 target, "ban");
@@ -1809,6 +1894,31 @@ private:
             if (ok) {
                 manager_.emit_member_remove(target);
                 manager_.broadcast_bans();
+                std::string details = reason.empty() ? "" : "reason: " + reason;
+                if (expires_at) details += (details.empty() ? "" : "; ") + std::string("until ") + format_utc(expires_at);
+                if (purge_seconds > 0) {
+                    auto purged = db->delete_messages_by_sender_since(target, now_ts - purge_seconds);
+                    for (const auto& path : purged.unlink_paths) {
+                        std::error_code ec;
+                        std::filesystem::remove(path, ec);
+                        std::filesystem::remove(path + ".thumb.jpg", ec);
+                        std::filesystem::remove(path + ".thumb-320px.jpg", ec);
+                        std::filesystem::remove(path + ".thumb-640px.jpg", ec);
+                        std::filesystem::remove(path + ".thumb-1280px.jpg", ec);
+                    }
+                    for (const auto& [ch, mid] : purged.messages) {
+                        chatproj::Packet bcast;
+                        bcast.set_type(chatproj::Packet::CHANNEL_MESSAGE_DELETED);
+                        auto* bw = bcast.mutable_channel_message_deleted();
+                        bw->set_channel_id(ch);
+                        bw->set_message_id(mid);
+                        bw->set_deleted_at(now_ts);
+                        bw->set_deleted_by(username_);
+                        manager_.broadcast_to_channel(bcast, ch);
+                    }
+                    details += (details.empty() ? "" : "; ") + std::to_string(purged.messages.size()) + " messages purged";
+                }
+                db->add_audit(username_, "ban", target, "", details);
             }
         }
 
@@ -1851,6 +1961,7 @@ private:
                           << username_ << "\n";
                 // Refresh ban lists for every BAN_MEMBERS holder.
                 manager_.broadcast_bans();
+                db->add_audit(username_, "unban", target, "", "");
             }
         }
 
@@ -1912,6 +2023,7 @@ private:
             send_packet(p);
             std::cout << "[Community] Role '" << created->name
                       << "' created by " << username_ << "\n";
+            db->add_audit(username_, "role_create", created->name, "", "");
             manager_.broadcast_roles();
         }
 
@@ -1971,6 +2083,8 @@ private:
                 fill_role_info(res->mutable_role(), *updated);
             }
             send_packet(p);
+            db->add_audit(username_, "role_update", name, "",
+                          requested_perms != role->permissions ? "permissions changed" : "");
             manager_.broadcast_roles();
             // Permission bits changed → every member's per-channel
             // my_permissions (and possibly visibility) may have changed.
@@ -2016,6 +2130,7 @@ private:
             send_packet(p);
             std::cout << "[Community] Role '" << role->name
                       << "' deleted by " << username_ << "\n";
+            db->add_audit(username_, "role_delete", role->name, "", "");
             manager_.broadcast_roles();
             for (const auto& u : holders) manager_.emit_member_upsert(u);
             manager_.broadcast_channels();
@@ -2096,6 +2211,12 @@ private:
             }
             res->set_success(true);
             send_packet(p);
+            {
+                std::string details;
+                for (int64_t id : added) if (auto r = db->get_role(id)) details += "+" + r->name + " ";
+                for (int64_t id : removed) if (auto r = db->get_role(id)) details += "-" + r->name + " ";
+                db->add_audit(username_, "member_roles", req.username(), "", details);
+            }
             // The delta (with role_ids) is the authoritative confirmation
             // for every client, requester included.
             manager_.emit_member_upsert(req.username());
@@ -2147,6 +2268,7 @@ private:
             send_packet(p);
             std::cout << "[Community] Channel #" << created->id
                       << " created by " << username_ << "\n";
+            db->add_audit(username_, "channel_create", created->name, created->id, "");
             manager_.broadcast_channels();
         }
 
@@ -2180,6 +2302,7 @@ private:
                 fill_channel_info(res->mutable_channel(), *ch);
             }
             send_packet(p);
+            db->add_audit(username_, "channel_rename", name, req.channel_id(), "");
             manager_.broadcast_channels();
         }
 
@@ -2236,6 +2359,8 @@ private:
                       << " deleted by " << username_ << " ("
                       << wipe->deleted_message_count << " messages, "
                       << wipe->deleted_attachment_count << " attachments)\n";
+            db->add_audit(username_, "channel_delete", ch->name, req.channel_id(),
+                          std::to_string(wipe->deleted_message_count) + " messages");
             manager_.broadcast_channels();
         }
 
@@ -2260,6 +2385,10 @@ private:
                                 target, "nickname");
             if (ok) {
                 manager_.emit_member_upsert(target);
+                if (target != username_) {
+                    db->add_audit(username_, "nickname", target, "",
+                                  nickname.empty() ? "cleared" : "set to " + nickname);
+                }
             }
         }
 
@@ -2390,9 +2519,185 @@ private:
             std::cout << "[Community] Overwrite on #" << row.channel_id << " for "
                       << (row.target_type == 1 ? "member " : "role ") << row.target_id
                       << " set by " << username_ << "\n";
+            db->add_audit(username_, "overwrite_set",
+                          std::string(row.target_type == 1 ? "member:" : "role:") + row.target_id,
+                          row.channel_id,
+                          (row.allow == 0 && row.deny == 0) ? "cleared"
+                              : "allow " + std::to_string(row.allow) + " deny " + std::to_string(row.deny));
             // Visibility / my_permissions may have changed for anyone.
             manager_.broadcast_channels();
             manager_.broadcast_overwrites(row.channel_id);
+        }
+
+        // --- SERVER UPDATE (name / description) ---
+        else if (packet.type() == chatproj::Packet::SERVER_UPDATE_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.server_update_req();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::SERVER_UPDATE_RES);
+            auto* res = p.mutable_server_update_res();
+            auto fail = [&](const std::string& msg) { res->set_success(false); res->set_message(msg); send_packet(p); };
+            if (!db) { fail("Server misconfigured."); return; }
+            if (auto a = manager_.authz().check(chatproj::Action::ManageServer, {username_, "", ""}); !a) {
+                fail(a.reason); return;
+            }
+            const std::string name = chatproj::clamp_utf8(req.name(), 64);
+            const std::string desc = chatproj::clamp_utf8(req.description(), 512);
+            if (name.empty()) { fail("Server name can't be empty."); return; }
+            db->set_server_meta(name, desc);
+            db->add_audit(username_, "server_update", "", "", "name: " + name);
+            res->set_success(true);
+            send_packet(p);
+            manager_.broadcast_server_meta();
+            std::cout << "[Community] Server renamed to '" << name << "' by " << username_ << "\n";
+        }
+
+        // --- AUDIT LOG ---
+        else if (packet.type() == chatproj::Packet::AUDIT_LOG_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.audit_log_req();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::AUDIT_LOG_RES);
+            auto* res = p.mutable_audit_log_res();
+            if (!db) { res->set_success(false); res->set_message("Server misconfigured."); send_packet(p); return; }
+            if (auto a = manager_.authz().check(chatproj::Action::ViewAuditLog, {username_, "", ""}); !a) {
+                res->set_success(false); res->set_message(a.reason); send_packet(p); return;
+            }
+            bool has_more = false;
+            for (const auto& e : db->list_audit(req.before_id(), req.limit(), &has_more)) {
+                auto* out = res->add_entries();
+                out->set_id(e.id);
+                out->set_timestamp(e.timestamp);
+                out->set_actor(e.actor);
+                out->set_action(e.action);
+                out->set_target(e.target);
+                out->set_channel_id(e.channel_id);
+                out->set_details(e.details);
+            }
+            res->set_success(true);
+            res->set_has_more(has_more);
+            send_packet(p);
+        }
+
+        // --- TIMEOUT ---
+        else if (packet.type() == chatproj::Packet::TIMEOUT_MEMBER_REQ) {
+            auto* db = manager_.db();
+            if (!db) return;
+            const auto& req = packet.timeout_member_req();
+            const std::string& target = req.username();
+            if (auto a = manager_.authz().check(chatproj::Action::TimeoutMember, {username_, "", target}); !a) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, target, "timeout");
+                return;
+            }
+            const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
+            int64_t until = req.until();
+            if (until != 0 && until <= now_ts) until = 0;                 // past = clear
+            if (until > now_ts + 28 * 86400) until = now_ts + 28 * 86400; // Discord's cap
+            if (!db->set_timeout(target, until)) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, "Not a member.", target, "timeout");
+                return;
+            }
+            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, true, "", target, "timeout");
+            manager_.emit_member_upsert(target);
+            db->add_audit(username_, until ? "timeout" : "timeout_clear", target, "",
+                          until ? "until " + format_utc(until) + (req.reason().empty() ? "" : "; reason: " + req.reason())
+                                : "");
+            std::cout << "[Community] " << target << (until ? " timed out by " : " timeout cleared by ")
+                      << username_ << "\n";
+        }
+
+        // --- VOICE MODERATION ---
+        else if (packet.type() == chatproj::Packet::VOICE_MOD_REQ) {
+            auto* db = manager_.db();
+            if (!db) return;
+            const auto& req = packet.voice_mod_req();
+            const std::string& target = req.username();
+            if (auto a = manager_.authz().check(chatproj::Action::VoiceModerate, {username_, "", target}); !a) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, target, "voice_mod");
+                return;
+            }
+            auto member = db->get_member(target);
+            if (!member) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, "Not a member.", target, "voice_mod");
+                return;
+            }
+            std::string verb;
+            switch (req.action()) {
+                case chatproj::VoiceModRequest::SERVER_MUTE:
+                case chatproj::VoiceModRequest::SERVER_UNMUTE:
+                case chatproj::VoiceModRequest::SERVER_DEAFEN:
+                case chatproj::VoiceModRequest::SERVER_UNDEAFEN: {
+                    bool muted = member->server_muted, deafened = member->server_deafened;
+                    if (req.action() == chatproj::VoiceModRequest::SERVER_MUTE) { muted = true; verb = "server_mute"; }
+                    if (req.action() == chatproj::VoiceModRequest::SERVER_UNMUTE) { muted = false; verb = "server_unmute"; }
+                    if (req.action() == chatproj::VoiceModRequest::SERVER_DEAFEN) { deafened = true; verb = "server_deafen"; }
+                    if (req.action() == chatproj::VoiceModRequest::SERVER_UNDEAFEN) { deafened = false; verb = "server_undeafen"; }
+                    db->set_server_voice_flags(target, muted, deafened);
+                    manager_.apply_server_voice_flags(target, muted, deafened);
+                    break;
+                }
+                case chatproj::VoiceModRequest::MOVE: {
+                    auto ch = db->get_channel(req.channel_id());
+                    if (!ch || ch->type != 1) {
+                        send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, "Unknown voice channel.", target, "voice_mod");
+                        return;
+                    }
+                    // The target still needs CONNECT in the destination.
+                    if (!manager_.authz().check(chatproj::Action::ConnectVoice, {target, req.channel_id(), ""})) {
+                        send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                            "That member can't connect to the destination channel.", target, "voice_mod");
+                        return;
+                    }
+                    if (manager_.move_to_voice_channel(target, req.channel_id(), username_) == 0) {
+                        send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, "Member is not in voice.", target, "voice_mod");
+                        return;
+                    }
+                    verb = "voice_move";
+                    break;
+                }
+                case chatproj::VoiceModRequest::DISCONNECT: {
+                    if (manager_.disconnect_from_voice(target, username_) == 0) {
+                        send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, "Member is not in voice.", target, "voice_mod");
+                        return;
+                    }
+                    verb = "voice_disconnect";
+                    break;
+                }
+                default:
+                    send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, "Unknown action.", target, "voice_mod");
+                    return;
+            }
+            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, true, "", target, "voice_mod");
+            db->add_audit(username_, "voice_mod", target, req.channel_id(), verb);
+        }
+
+        // --- TRANSFER OWNERSHIP ---
+        else if (packet.type() == chatproj::Packet::TRANSFER_OWNERSHIP_REQ) {
+            auto* db = manager_.db();
+            if (!db) return;
+            const std::string& new_owner = packet.transfer_ownership_req().new_owner();
+            if (auto a = manager_.authz().check(chatproj::Action::TransferOwnership, {username_, "", new_owner}); !a) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, new_owner, "transfer");
+                return;
+            }
+            if (new_owner == username_) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, "You already own this server.", new_owner, "transfer");
+                return;
+            }
+            const std::string old_owner = username_;
+            if (!db->transfer_ownership(new_owner)) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, "Not a member.", new_owner, "transfer");
+                return;
+            }
+            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, true, "", new_owner, "transfer");
+            db->add_audit(old_owner, "ownership_transfer", new_owner, "", "");
+            manager_.broadcast_server_meta();
+            manager_.emit_member_upsert(old_owner);
+            manager_.emit_member_upsert(new_owner);
+            // Both users' effective permissions changed everywhere.
+            manager_.broadcast_channels();
+            manager_.broadcast_bans();
+            std::cout << "[Community] Ownership transferred from " << old_owner << " to " << new_owner << "\n";
         }
     }
 
@@ -2442,6 +2747,7 @@ private:
             case T::CHANNEL_HISTORY_REQ:
             case T::MEMBER_LIST_REQ:
             case T::BAN_LIST_REQ:
+            case T::AUDIT_LOG_REQ:
             case T::ROLE_LIST_REQ:
             case T::INVITE_LIST_REQ:
             case T::FETCH_STREAM_THUMBNAIL_REQ:
@@ -2464,6 +2770,11 @@ private:
             case T::CHANNEL_DELETE_REQ:
             case T::CHANNEL_REORDER_REQ:
             case T::SET_NICKNAME_REQ:
+            case T::CHANNEL_OVERWRITE_SET_REQ:
+            case T::SERVER_UPDATE_REQ:
+            case T::TIMEOUT_MEMBER_REQ:
+            case T::VOICE_MOD_REQ:
+            case T::TRANSFER_OWNERSHIP_REQ:
                 return admin_bucket_.try_take();
             default:
                 return true;
@@ -2553,6 +2864,10 @@ private:
     boost::asio::ip::udp::endpoint udp_media_endpoint_;
     bool is_muted_ = false;
     bool is_deafened_ = false;
+    bool server_muted_ = false;
+    bool server_deafened_ = false;
+    // Slowmode: last accepted message time per channel.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_message_at_;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
     std::mutex write_mutex_;
     chatproj::ClientCapabilities capabilities_;
@@ -2911,6 +3226,7 @@ std::optional<chatproj::MemberInfo> SessionManager::build_member_info(const std:
     info.set_joined_at(m->joined_at);
     info.set_nickname(m->nickname);
     info.set_is_owner(m->username == db_->owner());
+    info.set_timed_out_until(m->timed_out_until);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = sessions_by_user_.find(username);
@@ -2967,6 +3283,7 @@ void SessionManager::fill_member_page(const std::string& after, int32_t limit,
         info->set_nickname(m.nickname);
         info->set_is_owner(m.username == owner_name);
         info->set_is_online(online.count(m.username) > 0);
+        info->set_timed_out_until(m.timed_out_until);
         if (auto it = roles_by_user.find(m.username); it != roles_by_user.end()) {
             for (int64_t rid : it->second) info->add_role_ids(rid);
         }
@@ -2999,10 +3316,7 @@ void SessionManager::broadcast_bans() {
     if (!db_ || !authz_) return;
     chatproj::Packet p;
     p.set_type(chatproj::Packet::BAN_LIST_RES);
-    auto* res = p.mutable_ban_list_res();
-    res->set_success(true);
-    res->set_revision(roster_revision_);
-    for (const auto& u : db_->list_bans()) res->add_bans(u);
+    fill_ban_list(p.mutable_ban_list_res(), db_, roster_revision_);
     auto framed = frame_packet(p);
     std::vector<std::pair<std::shared_ptr<Session>, std::string>> targets;
     {
@@ -3049,6 +3363,70 @@ void SessionManager::send_channels_to_user(const std::string& username) {
     if (sessions.empty()) return;
     auto framed = frame_packet(build_channel_list_packet(*authz_, username));
     for (const auto& s : sessions) s->deliver(framed);
+}
+
+void SessionManager::broadcast_server_meta() {
+    if (!db_) return;
+    chatproj::Packet p;
+    p.set_type(chatproj::Packet::SERVER_META_UPDATE);
+    auto* m = p.mutable_server_meta_update();
+    m->set_server_name(db_->server_name());
+    m->set_server_description(db_->server_description());
+    m->set_owner_username(db_->owner());
+    broadcast_to_members(p);
+}
+
+size_t SessionManager::apply_server_voice_flags(const std::string& username, bool muted, bool deafened) {
+    auto sessions = find_sessions_by_username(username);
+    std::set<std::string> channels;
+    for (const auto& s : sessions) {
+        s->set_server_voice_flags(muted, deafened);
+        if (!s->get_current_voice_channel().empty()) channels.insert(s->get_current_voice_channel());
+    }
+    for (const auto& ch : channels) broadcast_voice_presence(ch);
+    return sessions.size();
+}
+
+size_t SessionManager::move_to_voice_channel(const std::string& username, const std::string& channel_id,
+                                             const std::string& actor) {
+    size_t moved = 0;
+    for (const auto& s : find_sessions_by_username(username)) {
+        const std::string old = s->get_current_voice_channel();
+        if (old.empty() || old == channel_id) continue;
+        stop_stream(s, old);
+        join_voice_channel(s, channel_id, old);
+        s->set_current_voice_channel(channel_id);
+        chatproj::Packet p;
+        p.set_type(chatproj::Packet::VOICE_FORCE_NOTIFY);
+        auto* n = p.mutable_voice_force_notify();
+        n->set_action(chatproj::VoiceForceNotify::MOVED);
+        n->set_channel_id(channel_id);
+        n->set_actor(actor);
+        s->send_packet_external(p);
+        ++moved;
+    }
+    return moved;
+}
+
+size_t SessionManager::disconnect_from_voice(const std::string& username, const std::string& actor) {
+    size_t n = 0;
+    for (const auto& s : find_sessions_by_username(username)) {
+        const std::string old = s->get_current_voice_channel();
+        if (old.empty()) continue;
+        stop_stream(s, old);
+        leave_voice_channel(s, old);
+        s->set_current_voice_channel("");
+        s->set_muted(false);
+        s->set_deafened(false);
+        chatproj::Packet p;
+        p.set_type(chatproj::Packet::VOICE_FORCE_NOTIFY);
+        auto* fn = p.mutable_voice_force_notify();
+        fn->set_action(chatproj::VoiceForceNotify::DISCONNECTED);
+        fn->set_actor(actor);
+        s->send_packet_external(p);
+        ++n;
+    }
+    return n;
 }
 
 void SessionManager::broadcast_to_channel(const chatproj::Packet& packet, const std::string& channel_id) {
@@ -3263,7 +3641,8 @@ void SessionManager::broadcast_to_voice_channel(const char* data, size_t length,
             // so audio resumes the instant they un-deafen.
             if (session != sender
                 && session->get_udp_endpoint().port() != 0
-                && !session->is_deafened()) {
+                && !session->is_deafened()
+                && !session->is_server_deafened()) {
                 targets.push_back(session->get_udp_endpoint());
             }
         }
@@ -3513,6 +3892,8 @@ void SessionManager::broadcast_voice_presence(const std::string& channel_id) {
                 state->set_username(session->get_username());
                 state->set_is_muted(session->is_muted());
                 state->set_is_deafened(session->is_deafened());
+                state->set_is_server_muted(session->is_server_muted());
+                state->set_is_server_deafened(session->is_server_deafened());
                 // Parallel array: user_capabilities[i] belongs to active_users[i].
                 // Plan A Group 7: ship per-user caps so peers can drive the
                 // LCD picker, watch-button gating, and codec badge locally.
@@ -3567,6 +3948,8 @@ void SessionManager::send_initial_voice_presences(std::shared_ptr<Session> sessi
             state->set_username(s->get_username());
             state->set_is_muted(s->is_muted());
             state->set_is_deafened(s->is_deafened());
+            state->set_is_server_muted(s->is_server_muted());
+            state->set_is_server_deafened(s->is_server_deafened());
             *update->add_user_capabilities() = s->get_capabilities();
         }
 
@@ -3677,7 +4060,8 @@ std::vector<std::shared_ptr<Session>> SessionManager::find_sessions_by_username(
 size_t SessionManager::force_disconnect(const std::string& username,
                                         const std::string& action,
                                         const std::string& reason,
-                                        const std::string& actor) {
+                                        const std::string& actor,
+                                        int64_t expires_at) {
     // Every live session of the user — a ban that closed only the first
     // match left a second device fully authenticated and posting.
     auto sessions = find_sessions_by_username(username);
@@ -3693,6 +4077,7 @@ size_t SessionManager::force_disconnect(const std::string& username,
     rev->set_action(action);
     rev->set_reason(reason);
     rev->set_actor(actor);
+    rev->set_expires_at(expires_at);
 
     for (const auto& session : sessions) {
         // Deliver the reason, then close once the write queue drains
@@ -4055,8 +4440,12 @@ private:
                                                 std::min(uname.size(), size_t(SID - 1)));
 
                                     if (packet_type == chatproj::UdpPacketType::AUDIO) {
-                                        manager_.broadcast_to_voice_channel(
-                                            udp_buffer_, bytes_recvd, channel, session, udp_socket_);
+                                        // Server-muted (or -deafened) by a moderator:
+                                        // drop at the relay; the client can't bypass it.
+                                        if (!session->is_server_muted()) {
+                                            manager_.broadcast_to_voice_channel(
+                                                udp_buffer_, bytes_recvd, channel, session, udp_socket_);
+                                        }
                                     } else if (packet_type == chatproj::UdpPacketType::STREAM_AUDIO) {
                                         // Stream audio stays on voice path (small, latency-sensitive).
                                         // Send to each watcher's *voice* endpoint so it lands on
@@ -4246,16 +4635,19 @@ private:
 
 void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_timer& timer,
                     const std::string& central_host, int central_port,
-                    const std::string& server_name, const std::string& server_desc,
                     const std::string& public_ip, int community_port,
                     SessionManager& manager, const std::string& jwt_secret) {
-    // Build heartbeat packet
+    // Build heartbeat packet. Name/description come from the DB every
+    // tick so an in-app rename (SERVER_UPDATE_REQ) reaches the central
+    // directory within a minute.
     chatproj::Packet packet;
     packet.set_type(chatproj::Packet::SERVER_HEARTBEAT);
     packet.set_auth_token(jwt_secret);
     auto* hb = packet.mutable_server_heartbeat();
-    hb->set_name(server_name);
-    hb->set_description(server_desc);
+    if (auto* db = manager.db()) {
+        hb->set_name(db->server_name());
+        hb->set_description(db->server_description());
+    }
     hb->set_host_ip(public_ip);
     hb->set_port(community_port);
     hb->set_member_count(static_cast<int>(manager.member_count()));
@@ -4305,11 +4697,11 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
     // Schedule next heartbeat in 60 seconds
     timer.expires_after(std::chrono::seconds(60));
     timer.async_wait([&io_context, &timer, &central_host, central_port,
-                      &server_name, &server_desc, &public_ip, community_port,
+                      &public_ip, community_port,
                       &manager, &jwt_secret](boost::system::error_code ec) {
         if (!ec) {
             send_heartbeat(io_context, timer, central_host, central_port,
-                           server_name, server_desc, public_ip, community_port,
+                           public_ip, community_port,
                            manager, jwt_secret);
         }
     });
@@ -4425,11 +4817,8 @@ int main() {
         // Start heartbeat timer. Pull the authoritative server name/description
         // from the DB so the central directory reflects any rename.
         boost::asio::steady_timer heartbeat_timer(io_context);
-        std::string hb_name = db.server_name();
-        std::string hb_desc = db.server_description();
         send_heartbeat(io_context, heartbeat_timer, central_host, 8080,
-                       hb_name, hb_desc, public_ip, 8082,
-                       manager, jwt_secret);
+                       public_ip, 8082, manager, jwt_secret);
 
         // Retention pruner. Fires every 10 minutes — long enough to be
         // negligible overhead, short enough that users see retention-capped
@@ -4439,6 +4828,8 @@ int main() {
         retention_fn = [&](const boost::system::error_code& ec) {
             if (ec) return;
             manager.run_retention_sweep();
+            // Audit entries older than 180 days.
+            db.prune_audit(static_cast<int64_t>(std::time(nullptr)) - 180LL * 86400);
             retention_timer.expires_after(std::chrono::seconds(retention_interval_s));
             retention_timer.async_wait(retention_fn);
         };

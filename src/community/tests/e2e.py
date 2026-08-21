@@ -397,7 +397,7 @@ def test_offline_kick_roster():
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
     check("offline ban succeeded", r is not None and r.mod_action_res.success)
     rm = owner.wait(pb.Packet.MEMBER_REMOVE, timeout=2, pred=lambda p: p.member_remove.username == "ivan")
-    bl = owner.wait(pb.Packet.BAN_LIST_RES, timeout=2, pred=lambda p: "ivan" in p.ban_list_res.bans)
+    bl = owner.wait(pb.Packet.BAN_LIST_RES, timeout=2, pred=lambda p: any(e.username == "ivan" for e in p.ban_list_res.entries))
     check("MEMBER_REMOVE + BAN_LIST_RES after offline ban", rm is not None and bl is not None)
     owner.close()
 
@@ -884,6 +884,187 @@ def test_roster_deltas():
     xan.close(); owner.close()
 
 
+def test_server_update_and_transfer():
+    print("[mgmt] server rename + ownership transfer")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    yul = join("yul", owner)
+    owner.flush(0.5); yul.flush(0.5)
+    yul.send(pb.Packet.SERVER_UPDATE_REQ, server_update_req=pb.ServerUpdateRequest(name="hack", description=""))
+    r = yul.wait(pb.Packet.SERVER_UPDATE_RES)
+    check("rename denied without MANAGE_SERVER", r is not None and not r.server_update_res.success)
+    owner.send(pb.Packet.SERVER_UPDATE_REQ, server_update_req=pb.ServerUpdateRequest(name="Renamed Server", description="new desc"))
+    r = owner.wait(pb.Packet.SERVER_UPDATE_RES)
+    check("owner renames", r is not None and r.server_update_res.success)
+    m = yul.wait(pb.Packet.SERVER_META_UPDATE, timeout=2)
+    check("SERVER_META_UPDATE broadcast with new name", m is not None and m.server_meta_update.server_name == "Renamed Server" and m.server_meta_update.server_description == "new desc")
+    check("DB is source of truth", sql("select value from server_meta where key='server_name'") == [("Renamed Server",)])
+    # fresh auth reflects it
+    c = Client("alice"); ok, ar = auth_ok(c); check("auth response carries new name", ok and ar.community_auth_res.server_name == "Renamed Server"); c.close()
+    # transfer: non-owner denied; owner → yul
+    yul.flush(0.3)
+    yul.send(pb.Packet.TRANSFER_OWNERSHIP_REQ, transfer_ownership_req=pb.TransferOwnershipRequest(new_owner="yul"))
+    r = yul.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "transfer")
+    check("transfer denied for non-owner", r is not None and not r.mod_action_res.success)
+    owner.flush(0.3)
+    owner.send(pb.Packet.TRANSFER_OWNERSHIP_REQ, transfer_ownership_req=pb.TransferOwnershipRequest(new_owner="yul"))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "transfer")
+    check("owner transfers to yul", r is not None and r.mod_action_res.success, r.mod_action_res.message if r else None)
+    m = yul.wait(pb.Packet.SERVER_META_UPDATE, timeout=2, pred=lambda p: p.server_meta_update.owner_username == "yul")
+    check("SERVER_META_UPDATE announces new owner", m is not None)
+    up = yul.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=lambda p: p.member_upsert.member.username == "yul" and p.member_upsert.member.is_owner)
+    check("MEMBER_UPSERT marks yul as owner", up is not None)
+    # old owner can no longer rename; new owner can
+    owner.flush(0.3)
+    owner.send(pb.Packet.SERVER_UPDATE_REQ, server_update_req=pb.ServerUpdateRequest(name="Alice again", description=""))
+    r = owner.wait(pb.Packet.SERVER_UPDATE_RES)
+    check("former owner lost MANAGE_SERVER", r is not None and not r.server_update_res.success)
+    # transfer back so later tests keep alice as owner
+    yul.send(pb.Packet.TRANSFER_OWNERSHIP_REQ, transfer_ownership_req=pb.TransferOwnershipRequest(new_owner="alice"))
+    r = yul.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "transfer")
+    check("transfer back", r is not None and r.mod_action_res.success)
+    yul.close(); owner.close()
+
+
+def test_audit_log():
+    print("[audit] audit log records mod actions, gated on VIEW_AUDIT_LOG")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    zed = join("zed", owner); owner.flush(0.5); zed.flush(0.5)
+    zed.send(pb.Packet.AUDIT_LOG_REQ, audit_log_req=pb.AuditLogRequest(before_id=0, limit=10))
+    r = zed.wait(pb.Packet.AUDIT_LOG_RES)
+    check("denied without VIEW_AUDIT_LOG", r is not None and not r.audit_log_res.success)
+    owner.send(pb.Packet.AUDIT_LOG_REQ, audit_log_req=pb.AuditLogRequest(before_id=0, limit=100))
+    r = owner.wait(pb.Packet.AUDIT_LOG_RES)
+    actions = [e.action for e in r.audit_log_res.entries] if r else []
+    check("owner sees entries newest-first incl. ownership_transfer + server_update", r is not None and r.audit_log_res.success
+          and "ownership_transfer" in actions and "server_update" in actions and actions.index("ownership_transfer") < actions.index("server_update"), str(actions[:8]))
+    first_id = r.audit_log_res.entries[0].id
+    owner.send(pb.Packet.AUDIT_LOG_REQ, audit_log_req=pb.AuditLogRequest(before_id=first_id, limit=5))
+    r2 = owner.wait(pb.Packet.AUDIT_LOG_RES)
+    check("paging with before_id excludes newer", r2 is not None and all(e.id < first_id for e in r2.audit_log_res.entries) and len(r2.audit_log_res.entries) <= 5)
+    zed.close(); owner.close()
+
+
+def test_timeouts():
+    print("[timeout] timed-out member can't post / join voice; clear restores")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    amy = join("amy", owner); owner.flush(0.5); amy.flush(0.5)
+    amy.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="alice", until=int(time.time()) + 60))
+    r = amy.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
+    check("denied without MODERATE_MEMBERS / on owner", r is not None and not r.mod_action_res.success)
+    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="amy", until=int(time.time()) + 60, reason="cool off"))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
+    check("owner times out amy", r is not None and r.mod_action_res.success)
+    up = amy.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=lambda p: p.member_upsert.member.username == "amy")
+    check("MEMBER_UPSERT carries timed_out_until", up is not None and up.member_upsert.member.timed_out_until > int(time.time()))
+    amy.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="hi"))
+    r = amy.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "message")
+    check("message rejected while timed out", r is not None and not r.mod_action_res.success and "timed out" in r.mod_action_res.message)
+    amy.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    r = amy.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice")
+    check("voice join rejected while timed out", r is not None and not r.mod_action_res.success)
+    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="amy", until=0))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
+    amy.flush(0.5); owner.flush(0.3)
+    amy.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="back"))
+    check("message delivered after clear", owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.content == "back") is not None)
+    amy.close(); owner.close()
+
+
+def test_ban_expiry_and_purge():
+    print("[ban] expiry lifts the ban; purge deletes recent messages")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ben = join("ben", owner); owner.flush(0.5); ben.flush(0.5)
+    for i in range(3):
+        ben.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content=f"spam {i}"))
+    owner.drain(1.0)
+    ids = [p.channel_msg.id for p in owner.inbox if p.type == pb.Packet.CHANNEL_MSG and p.channel_msg.sender == "ben"]
+    check("3 messages landed", len(ids) == 3)
+    owner.inbox.clear()
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="ben", reason="spam", expires_at=int(time.time()) + 6, delete_message_seconds=3600))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
+    check("temp ban with purge succeeded", r is not None and r.mod_action_res.success)
+    rev = ben.wait(pb.Packet.MEMBERSHIP_REVOKED, timeout=2)
+    check("target sees reason + expiry", rev is not None and rev.membership_revoked.reason == "spam" and rev.membership_revoked.expires_at > 0)
+    owner.drain(1.5)
+    deleted = sorted(p.channel_message_deleted.message_id for p in owner.inbox if p.type == pb.Packet.CHANNEL_MESSAGE_DELETED)
+    check("CHANNEL_MESSAGE_DELETED for each purged message", deleted == sorted(ids), f"{deleted} vs {sorted(ids)}")
+    check("rows gone", sql("select count(*) from messages where sender='ben'") == [(0,)])
+    bl = next((p for p in owner.inbox if p.type == pb.Packet.BAN_LIST_RES), None)
+    e = next((e for e in bl.ban_list_res.entries if e.username == "ben"), None) if bl else None
+    check("ban list entry has reason/by/expiry", e is not None and e.reason == "spam" and e.banned_by == "alice" and e.expires_at > 0)
+    ben.close()
+    c = Client("ben"); ok, ar = auth_ok(c)
+    check("still banned before expiry", not ok and ar.community_auth_res.error_code == "banned"); c.close()
+    time.sleep(6.5)
+    code = make_invite(owner)
+    c = Client("ben", invite=code); ok, ar = auth_ok(c)
+    check("ban expired → can rejoin with invite", ok, ar.community_auth_res.error_code if ar else None); c.close()
+    owner.close()
+
+
+def test_slowmode():
+    print("[slowmode] one message per N seconds unless MANAGE_MESSAGES")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    cal = join("cal", owner); owner.flush(0.5); cal.flush(0.5)
+    owner.send(pb.Packet.CHANNEL_UPDATE_REQ, channel_update_req=pb.ChannelUpdateRequest(channel_id="general", slowmode_seconds=3))
+    r = owner.wait(pb.Packet.CHANNEL_UPDATE_RES)
+    check("slowmode set", r is not None and r.channel_update_res.success and r.channel_update_res.channel.slowmode_seconds == 3)
+    cal.flush(0.5)
+    cal.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="one"))
+    cal.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="two"))
+    r = cal.wait(pb.Packet.MOD_ACTION_RES, timeout=2, pred=lambda p: p.mod_action_res.action == "message")
+    check("second message within window rejected", r is not None and "Slowmode" in r.mod_action_res.message)
+    owner.flush(0.5)
+    owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="a"))
+    owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="b"))
+    owner.drain(1.0)
+    got = [p.channel_msg.content for p in owner.inbox if p.type == pb.Packet.CHANNEL_MSG]
+    check("owner (MANAGE_MESSAGES) bypasses slowmode", "a" in got and "b" in got)
+    owner.send(pb.Packet.CHANNEL_UPDATE_REQ, channel_update_req=pb.ChannelUpdateRequest(channel_id="general", slowmode_seconds=0))
+    owner.wait(pb.Packet.CHANNEL_UPDATE_RES)
+    cal.close(); owner.close()
+
+
+def test_voice_moderation():
+    print("[voice mod] server mute/deafen, move, disconnect")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    dee = join("dee", owner); owner.flush(0.5); dee.flush(0.5)
+    dee.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "dee" in p.voice_presence_update.active_users)
+    dee.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="alice", action=pb.VoiceModRequest.SERVER_MUTE))
+    r = dee.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
+    check("denied without VOICE_MODERATE", r is not None and not r.mod_action_res.success)
+    owner.flush(0.3)
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", action=pb.VoiceModRequest.SERVER_MUTE))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
+    check("owner server-mutes dee", r is not None and r.mod_action_res.success, r.mod_action_res.message if r else None)
+    vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2, pred=lambda p: any(s.username == "dee" and s.is_server_muted for s in p.voice_presence_update.user_states))
+    check("presence shows is_server_muted", vp is not None)
+    check("persisted on member", sql("select server_muted from members where username='dee'") == [(1,)])
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", action=pb.VoiceModRequest.SERVER_UNMUTE))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
+    dee.flush(0.5); owner.flush(0.5)
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", action=pb.VoiceModRequest.MOVE, channel_id="voice-lounge-2"))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
+    check("move succeeded", r is not None and r.mod_action_res.success, r.mod_action_res.message if r else None)
+    n = dee.wait(pb.Packet.VOICE_FORCE_NOTIFY, timeout=2)
+    check("target gets VOICE_FORCE_NOTIFY MOVED", n is not None and n.voice_force_notify.action == pb.VoiceForceNotify.MOVED and n.voice_force_notify.channel_id == "voice-lounge-2")
+    vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge-2" and "dee" in p.voice_presence_update.active_users)
+    check("presence in new channel", vp is not None)
+    owner.flush(0.3); dee.flush(0.3)
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", action=pb.VoiceModRequest.DISCONNECT))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
+    check("disconnect succeeded", r is not None and r.mod_action_res.success)
+    n = dee.wait(pb.Packet.VOICE_FORCE_NOTIFY, timeout=2)
+    check("target gets DISCONNECTED", n is not None and n.voice_force_notify.action == pb.VoiceForceNotify.DISCONNECTED)
+    vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge-2" and len(p.voice_presence_update.active_users) == 0)
+    check("presence cleared", vp is not None)
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", action=pb.VoiceModRequest.DISCONNECT))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
+    check("disconnect of a non-voice member fails cleanly", r is not None and not r.mod_action_res.success)
+    dee.close(); owner.close()
+
+
 def test_auth_failure_closes():
     print("[regression] failed auth still delivers response then closes")
     c = Client("nobody")
@@ -917,6 +1098,12 @@ if __name__ == "__main__":
         test_v2_private_channel()
         test_v2_overwrite_guards()
         test_roster_deltas()
+        test_server_update_and_transfer()
+        test_audit_log()
+        test_timeouts()
+        test_ban_expiry_and_purge()
+        test_slowmode()
+        test_voice_moderation()
     finally:
         stop_server(proc)
     test_b9_timeouts()

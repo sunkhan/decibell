@@ -194,6 +194,19 @@ message Packet {
     MEMBER_REMOVE = 107;   // community→all: one member left / was kicked or banned
     BAN_LIST_REQ  = 108;   // client→community (BAN_MEMBERS)
     BAN_LIST_RES  = 109;   // community→BAN_MEMBERS holders; pushed on change
+
+    // --- Server management + moderation (2026-08-22) ---
+    SERVER_UPDATE_REQ      = 110;  // client→community (MANAGE_SERVER): name/description
+    SERVER_UPDATE_RES      = 111;  // community→requester; everyone gets SERVER_META_UPDATE
+    AUDIT_LOG_REQ          = 112;  // client→community (VIEW_AUDIT_LOG)
+    AUDIT_LOG_RES          = 113;  // community→requester
+    TIMEOUT_MEMBER_REQ     = 114;  // client→community (MODERATE_MEMBERS + hierarchy);
+                                   // response via MOD_ACTION_RES action="timeout"
+    VOICE_MOD_REQ          = 115;  // client→community (VOICE_MODERATE + hierarchy);
+                                   // response via MOD_ACTION_RES action="voice_mod"
+    VOICE_FORCE_NOTIFY     = 116;  // community→target: you were moved / disconnected
+    TRANSFER_OWNERSHIP_REQ = 117;  // client→community (owner only);
+                                   // response via MOD_ACTION_RES action="transfer"
   }
 
   Type type = 1;
@@ -344,6 +357,16 @@ message Packet {
     MemberRemove    member_remove = 109;
     BanListRequest  ban_list_req  = 110;
     BanListResponse ban_list_res  = 111;
+
+    // --- Server management + moderation ---
+    ServerUpdateRequest      server_update_req      = 112;
+    ServerUpdateResponse     server_update_res      = 113;
+    AuditLogRequest          audit_log_req          = 114;
+    AuditLogResponse         audit_log_res          = 115;
+    TimeoutMemberRequest     timeout_member_req     = 116;
+    VoiceModRequest          voice_mod_req          = 117;
+    VoiceForceNotify         voice_force_notify     = 118;
+    TransferOwnershipRequest transfer_ownership_req = 119;
   }
 }
 
@@ -493,6 +516,9 @@ message ChannelInfo {
   // always included). Clients gate composer / attach / voice-join /
   // history UI from this; the server stays authoritative.
   uint64 my_permissions = 10;
+  // Minimum seconds between two messages from the same member in this
+  // channel. 0 = off. MANAGE_MESSAGES holders bypass it.
+  int32 slowmode_seconds = 11;
 }
 
 message CommunityAuthRequest {
@@ -741,6 +767,9 @@ message ChannelUpdateRequest {
   // retention-only update can never silently reset the bitrate.
   // Applied by clients on their next voice join.
   optional int32 voice_bitrate_kbps = 7;
+  // Text channels: slowmode in seconds (0 = off), clamped to [0, 21600].
+  // Absent = leave unchanged.
+  optional int32 slowmode_seconds = 8;
 }
 
 message ChannelUpdateResponse {
@@ -804,6 +833,11 @@ message VoiceUserState {
   string username = 1;
   bool is_muted = 2;
   bool is_deafened = 3;
+  // Moderator-applied (VOICE_MOD_REQ), persisted on the member: a
+  // server-muted user's audio is dropped by the relay; a server-deafened
+  // user receives no audio (and is implicitly muted).
+  bool is_server_muted = 4;
+  bool is_server_deafened = 5;
 }
 
 message VoicePresenceUpdate {
@@ -943,6 +977,9 @@ message MemberInfo {
   // role is implicit and never listed). Clients resolve them against
   // RoleListResponse to compute display color and permissions.
   repeated int64 role_ids = 6;
+  // Unix seconds until which the member is timed out (can't send, join
+  // voice or stream). 0 = not timed out.
+  int64 timed_out_until = 7;
 }
 
 // --- Roster protocol ---
@@ -1002,8 +1039,10 @@ message BanListRequest {}
 message BanListResponse {
   bool success = 1;
   string message = 2;
-  repeated string bans = 3;
+  reserved 3;
+  reserved "bans";
   uint64 revision = 4;
+  repeated BanInfo entries = 5;
 }
 
 // --- Roles + permissions ---
@@ -1038,6 +1077,10 @@ enum Permission {
   PERM_VIEW_CHANNEL     = 8192;  // 1<<13 — channel is listed / its traffic delivered
   PERM_READ_HISTORY     = 16384; // 1<<14 — CHANNEL_HISTORY_REQ
   PERM_ATTACH_FILES     = 32768; // 1<<15 — attachments on messages / upload init
+  // --- server management + moderation ---
+  PERM_VIEW_AUDIT_LOG   = 65536;  // 1<<16
+  PERM_MODERATE_MEMBERS = 131072; // 1<<17 — timeouts
+  PERM_VOICE_MODERATE   = 262144; // 1<<18 — server mute/deafen, move, disconnect
 }
 
 message RoleInfo {
@@ -1117,6 +1160,20 @@ message KickMemberRequest {
 message BanMemberRequest {
   string username = 1;
   string reason = 2;
+  // Unix seconds when the ban lifts itself; 0 = permanent.
+  int64 expires_at = 3;
+  // Also delete the member's messages from the last N seconds
+  // (0 = none; clamped to 7 days). Each deletion is broadcast as
+  // CHANNEL_MESSAGE_DELETED to the channel's viewers.
+  int32 delete_message_seconds = 4;
+}
+
+message BanInfo {
+  string username = 1;
+  string banned_by = 2;
+  string reason = 3;
+  int64 banned_at = 4;
+  int64 expires_at = 5;   // 0 = permanent
 }
 
 message ModActionResponse {
@@ -1138,10 +1195,85 @@ message ServerMetaUpdate {
 }
 
 message MembershipRevoked {
-  // "kick" | "ban"
+  // "kick" | "ban" | "leave"
   string action = 1;
   string reason = 2;
   string actor = 3;
+  // Bans only: when the ban lifts (0 = permanent).
+  int64 expires_at = 4;
+}
+
+// --- Server management + moderation ---
+
+message ServerUpdateRequest {
+  string name = 1;          // ≤ 64 bytes, non-empty
+  string description = 2;   // ≤ 512 bytes
+}
+
+message ServerUpdateResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// One moderation / management event. `action` is a stable snake_case
+// verb ("kick", "ban", "unban", "timeout", "timeout_clear", "role_create",
+// "role_update", "role_delete", "member_roles", "channel_create",
+// "channel_rename", "channel_delete", "channel_update", "channel_wipe",
+// "message_delete", "overwrite_set", "nickname", "server_update",
+// "ownership_transfer", "voice_mod", "invite_create", "invite_revoke").
+message AuditEntry {
+  int64 id = 1;
+  int64 timestamp = 2;
+  string actor = 3;
+  string action = 4;
+  string target = 5;      // username, role name, invite code, … (may be empty)
+  string channel_id = 6;  // when channel-scoped
+  string details = 7;     // free-text summary ("reason: spam", "+Mod −Helper", …)
+}
+
+message AuditLogRequest {
+  int64 before_id = 1;    // 0 = newest
+  int32 limit = 2;        // server clamps to [1, 100]
+}
+
+message AuditLogResponse {
+  bool success = 1;
+  string message = 2;
+  repeated AuditEntry entries = 3;   // newest first
+  bool has_more = 4;
+}
+
+// until = 0 clears an active timeout. Clamped to 28 days.
+message TimeoutMemberRequest {
+  string username = 1;
+  int64 until = 2;
+  string reason = 3;
+}
+
+message VoiceModRequest {
+  enum Action {
+    SERVER_MUTE = 0;
+    SERVER_UNMUTE = 1;
+    SERVER_DEAFEN = 2;
+    SERVER_UNDEAFEN = 3;
+    MOVE = 4;          // requires channel_id
+    DISCONNECT = 5;
+  }
+  string username = 1;
+  Action action = 2;
+  string channel_id = 3;
+}
+
+// Sent to the affected user only.
+message VoiceForceNotify {
+  enum Action { MOVED = 0; DISCONNECTED = 1; }
+  Action action = 1;
+  string channel_id = 2;   // MOVED: the new channel
+  string actor = 3;
+}
+
+message TransferOwnershipRequest {
+  string new_owner = 1;
 }
 
 // --- Central-hosted invite lookup ---

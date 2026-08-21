@@ -16,6 +16,9 @@ struct DbMember {
     std::string username;
     int64_t joined_at = 0;
     std::string nickname;
+    int64_t timed_out_until = 0;   // unix seconds; 0 = not timed out
+    bool server_muted = false;     // moderator-applied voice mute (persists)
+    bool server_deafened = false;
 };
 
 struct DbInvite {
@@ -39,6 +42,7 @@ struct DbChannel {
     int32_t retention_days_video = 0;
     int32_t retention_days_document = 0;
     int32_t retention_days_audio = 0;
+    int32_t slowmode_seconds = 0;  // text channels; 0 = off
 };
 
 struct DbMessage {
@@ -104,6 +108,17 @@ struct DbBan {
     int64_t banned_at = 0;
     std::string banned_by;
     std::string reason;
+    int64_t expires_at = 0;   // 0 = permanent
+};
+
+struct DbAuditEntry {
+    int64_t id = 0;
+    int64_t timestamp = 0;
+    std::string actor;
+    std::string action;
+    std::string target;
+    std::string channel_id;
+    std::string details;
 };
 
 // Mirrors chatproj::RoleInfo. `position` is a dense hierarchy index:
@@ -137,6 +152,10 @@ constexpr uint64_t kStream          = 1ull << 12;
 constexpr uint64_t kViewChannel     = 1ull << 13;
 constexpr uint64_t kReadHistory     = 1ull << 14;
 constexpr uint64_t kAttachFiles     = 1ull << 15;
+// server management + moderation
+constexpr uint64_t kViewAuditLog    = 1ull << 16;
+constexpr uint64_t kModerateMembers = 1ull << 17;   // timeouts
+constexpr uint64_t kVoiceModerate   = 1ull << 18;   // server mute/deafen/move/disconnect
 constexpr uint64_t kAll             = ~0ull;
 // Every currently-defined permission bit. Role create/update mask
 // client-supplied bitfields with this so undefined bits never reach the
@@ -148,7 +167,8 @@ constexpr uint64_t kKnownMask =
     kAdministrator | kManageServer | kManageChannels | kManageRoles |
     kKickMembers | kBanMembers | kManageMessages | kManageInvites |
     kManageNicknames | kSendMessages | kConnectVoice | kStream |
-    kViewChannel | kReadHistory | kAttachFiles;
+    kViewChannel | kReadHistory | kAttachFiles |
+    kViewAuditLog | kModerateMembers | kVoiceModerate;
 // What the seeded `everyone` role starts with: every "ordinary member"
 // bit on, so a fresh server behaves like one without permissions until
 // an operator tightens something. Migration v6 ORs the v2 bits into an
@@ -236,6 +256,12 @@ public:
     std::string owner() const;
     std::string server_name() const;
     std::string server_description() const;
+    // In-app server rename (MANAGE_SERVER). The DB is the source of truth;
+    // env vars only seed a fresh DB.
+    void set_server_meta(const std::string& name, const std::string& description);
+    // Ownership transfer: new owner must be a member. Invalidates all
+    // permission caches (owner is resolved from server_meta).
+    bool transfer_ownership(const std::string& new_owner);
 
     // --- auto-rejoin: cached central-assigned server_id ---
     // Survives community restarts so we don't depend on a fresh
@@ -251,14 +277,22 @@ public:
     std::vector<DbMember> list_members() const;
     std::optional<DbMember> get_member(const std::string& username) const;
     int64_t count_members() const;
+    // Timeout (unix seconds; 0 clears). False if not a member.
+    bool set_timeout(const std::string& username, int64_t until);
+    // Moderator voice flags, persisted across sessions.
+    bool set_server_voice_flags(const std::string& username, bool muted, bool deafened);
 
     // --- bans ---
+    // Expired bans (expires_at != 0 && <= now) count as not banned and are
+    // lazily deleted.
     bool is_banned(const std::string& username) const;
+    std::optional<DbBan> get_ban(const std::string& username) const;
     bool add_ban(const std::string& username,
                  const std::string& banned_by,
-                 const std::string& reason);
+                 const std::string& reason,
+                 int64_t expires_at = 0);
     bool remove_ban(const std::string& username);
-    std::vector<std::string> list_bans() const;
+    std::vector<DbBan> list_bans() const;
 
     // --- invites ---
     // Generates a code and inserts a new invite. Returns the created invite on
@@ -380,6 +414,8 @@ public:
                                   int32_t video_days,
                                   int32_t document_days,
                                   int32_t audio_days);
+    // Slowmode for a text channel (seconds; 0 = off; clamped to 21600).
+    bool set_channel_slowmode(const std::string& channel_id, int32_t seconds);
     // Set a voice channel's Opus bitrate (kbps; 0 = client default).
     // Clamped to [0, 512]. Returns false if the channel doesn't exist,
     // isn't a voice channel, or on DB error.
@@ -512,6 +548,27 @@ public:
     // failure mid-way leaves the channel intact.
     WipeChannelResult wipe_channel(const std::string& channel_id);
 
+    // --- ban purge ---
+    // Deletes every message `sender` posted since `since_ts` (plus their
+    // attachment rows). Returns (channel_id, message_id) pairs for
+    // CHANNEL_MESSAGE_DELETED broadcasts and blob paths to unlink.
+    struct PurgedMessages {
+        std::vector<std::pair<std::string, int64_t>> messages;
+        std::vector<std::string> unlink_paths;
+    };
+    PurgedMessages delete_messages_by_sender_since(const std::string& sender,
+                                                   int64_t since_ts);
+
+    // --- audit log ---
+    void add_audit(const std::string& actor, const std::string& action,
+                   const std::string& target, const std::string& channel_id,
+                   const std::string& details);
+    // Newest first; `before_id` 0 = newest. Limit clamped to [1, 100].
+    std::vector<DbAuditEntry> list_audit(int64_t before_id, int32_t limit,
+                                         bool* has_more) const;
+    // Drops entries older than `cutoff_ts`.
+    void prune_audit(int64_t cutoff_ts);
+
     // --- retention pruning ---
     // Delete messages in `channel_id` whose timestamp is strictly older than
     // `cutoff_ts`. Returns (deleted_message_ids, storage_paths_of_remaining_
@@ -567,6 +624,7 @@ private:
     uint64_t channel_permissions_unlocked_(const std::string& username,
                                            const std::string& channel_id) const;
     void migrate_to_v6_overwrites_();
+    void migrate_to_v7_moderation_();
     // server_meta.owner, loaded at open() and kept in sync by set_meta_.
     std::string owner_cache_;
     void seed_if_empty_(const std::string& owner,

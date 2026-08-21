@@ -38,7 +38,8 @@ Decibell is a decentralized Discord-like application with three components:
 - Hardcoded channels on auth: `general` (text), `announcements` (text), `voice-lounge` (voice)
 - Environment (all optional unless noted):
   `DECIBELL_JWT_SECRET` (required), `DECIBELL_CENTRAL_HOST` (127.0.0.1),
-  `DECIBELL_SERVER_NAME`, `DECIBELL_SERVER_DESC`, `DECIBELL_PUBLIC_IP`,
+  `DECIBELL_SERVER_NAME`, `DECIBELL_SERVER_DESC` (seed a fresh DB only —
+  the name/description are edited in-app afterwards), `DECIBELL_PUBLIC_IP`,
   `DECIBELL_OWNER_USERNAME` (required on first boot), `DECIBELL_DB_PATH`,
   `DECIBELL_ATTACHMENTS_ROOT`, `DECIBELL_MAX_ATTACHMENT_BYTES` (100 MiB),
   `DECIBELL_AUTH_TIMEOUT_SECONDS` (10 — TLS+auth deadline for a new
