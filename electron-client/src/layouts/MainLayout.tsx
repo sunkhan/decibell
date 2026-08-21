@@ -83,7 +83,7 @@ export default function MainLayout() {
 
       <ServerBar />
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden" data-pip-content-row>
         {activeView === "browse" ? (
           <>
             <DmSidebar />

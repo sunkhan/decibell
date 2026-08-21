@@ -7,8 +7,10 @@ import {
   memo,
 } from "react";
 import { useVoiceStore } from "../../stores/voiceStore";
+import { useChatStore } from "../../stores/chatStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useDisplayName } from "../../hooks/useDisplayName";
 import { invoke } from "../../lib/ipc";
 import { getCurrentWindow } from "../../lib/window";
 import { UserAvatar } from "../../components/UserAvatar";
@@ -65,6 +67,11 @@ export default function StreamViewPanel() {
   const participants = useVoiceStore((s) => s.participants);
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
+  const serverMembers = useChatStore((s) =>
+    connectedServerId ? s.membersByServer[connectedServerId] : undefined,
+  );
+  const nameOf = (u: string) =>
+    serverMembers?.find((m) => m.username === u)?.nickname || u;
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
 
   const currentUsername = useAuthStore((s) => s.username);
@@ -303,7 +310,7 @@ export default function StreamViewPanel() {
             <div className="mb-2 flex items-center gap-2.5 px-1">
               <UserAvatar username={displayUser} size={24} />
               <span className="text-[13px] font-medium text-text-primary">
-                {displayUser}'s screen
+                {nameOf(displayUser)}'s screen
               </span>
               {qualityBadge && (
                 <span className="text-[11px] text-text-muted">{qualityBadge}</span>
@@ -472,7 +479,7 @@ export default function StreamViewPanel() {
                 <div className="mb-2 flex items-center gap-2">
                   <UserAvatar username={displayUser} size={22} />
                   <span className="text-[12px] font-medium text-white">
-                    {displayUser}'s screen
+                    {nameOf(displayUser)}'s screen
                   </span>
                   {qualityBadge && (
                     <span className="text-[10px] text-white/60">{qualityBadge}</span>
@@ -678,7 +685,7 @@ export default function StreamViewPanel() {
                           : "text-text-secondary hover:bg-surface-hover"
                       }`}
                     >
-                      {s.ownerUsername}'s screen
+                      {nameOf(s.ownerUsername)}'s screen
                     </button>
                   ))}
               </div>
@@ -708,6 +715,7 @@ const SidebarParticipantRow = memo(function SidebarParticipantRow({
   );
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
+  const displayName = useDisplayName(connectedServerId, username);
 
   return (
     <div
@@ -722,7 +730,7 @@ const SidebarParticipantRow = memo(function SidebarParticipantRow({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY });
+        openContextMenu(username, { x: e.clientX, y: e.clientY }, connectedServerId);
       }}
     >
       <div
@@ -736,7 +744,7 @@ const SidebarParticipantRow = memo(function SidebarParticipantRow({
       </div>
       <div className="min-w-0">
         <div className="truncate text-[11px] font-medium text-text-secondary">
-          {username}
+          {displayName}
         </div>
         {isStreaming && (
           <div className="text-[10px] font-medium text-accent">Streaming</div>

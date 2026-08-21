@@ -2,6 +2,7 @@ import { memo } from "react";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useDisplayName } from "../../hooks/useDisplayName";
 import { UserAvatar } from "../../components/UserAvatar";
 
 interface Props {
@@ -75,6 +76,7 @@ const PresenceRow = memo(function PresenceRow({
   });
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
+  const displayName = useDisplayName(connectedServerId, username);
 
   return (
     <div
@@ -89,12 +91,12 @@ const PresenceRow = memo(function PresenceRow({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY });
+        openContextMenu(username, { x: e.clientX, y: e.clientY }, connectedServerId);
       }}
     >
       <UserAvatar username={username} size={22} />
       <span className="min-w-0 truncate text-text-secondary transition-colors group-hover:text-text-primary">
-        {username}
+        {displayName}
       </span>
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         {isStreaming && <LiveBadge />}
@@ -134,6 +136,7 @@ const ActiveRow = memo(function ActiveRow({
   const selfDeafened = useVoiceStore((s) => s.isDeafened);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
+  const displayName = useDisplayName(connectedServerId, username);
 
   const userMuted = isLocal ? selfMuted : rosterMuted;
   const userDeafened = isLocal ? selfDeafened : rosterDeafened;
@@ -151,7 +154,7 @@ const ActiveRow = memo(function ActiveRow({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY });
+        openContextMenu(username, { x: e.clientX, y: e.clientY }, connectedServerId);
       }}
     >
       <div
@@ -169,7 +172,7 @@ const ActiveRow = memo(function ActiveRow({
             : "text-text-secondary group-hover:text-text-primary"
         }`}
       >
-        {username}
+        {displayName}
       </span>
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         {isStreaming && <LiveBadge />}

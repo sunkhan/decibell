@@ -25,10 +25,33 @@ const ENTRANCE_MS = 340;
 // Slightly overshooting ease → the mini bounces as it shrinks into place.
 const ENTRANCE_EASE = "cubic-bezier(0.34, 1.32, 0.64, 1)";
 
-function cornerTopLeft(corner: Corner): { x: number; y: number } {
+// Chrome the mini must clear, measured from the layout (not hardcoded) so it
+// tracks theme/width/view changes:
+//  - top: below the top bar — the content row's top ([data-pip-content-row]).
+//  - left: right of the DM rail only ([data-pip-dm-rail]); covering the channel
+//    list to its right is fine.
+function chromeInsets(): { top: number; left: number } {
+  const row = document.querySelector("[data-pip-content-row]");
+  const dmRail = document.querySelector("[data-pip-dm-rail]");
   return {
-    x: corner.endsWith("left") ? MARGIN : window.innerWidth - WIDTH - MARGIN,
-    y: corner.startsWith("top") ? MARGIN : window.innerHeight - HEIGHT - MARGIN,
+    top: row ? row.getBoundingClientRect().top : MARGIN,
+    left: dmRail ? dmRail.getBoundingClientRect().right : MARGIN,
+  };
+}
+
+function cornerTopLeft(corner: Corner): { x: number; y: number } {
+  const isTop = corner.startsWith("top");
+  const isLeft = corner.endsWith("left");
+  const insets = chromeInsets();
+  // Left corners (top AND bottom) clear the DM rail but may cover the channel
+  // list. Top corners sit below the top bar. Right corners keep to the window
+  // edge (may cover the members list). Bottom edge is unconstrained vertically.
+  const x = isLeft ? insets.left + MARGIN : window.innerWidth - WIDTH - MARGIN;
+  const y = isTop ? insets.top + MARGIN : window.innerHeight - HEIGHT - MARGIN;
+  // Clamp so a narrow/short window can't push the box off-screen.
+  return {
+    x: Math.max(MARGIN, Math.min(x, window.innerWidth - WIDTH - MARGIN)),
+    y: Math.max(MARGIN, Math.min(y, window.innerHeight - HEIGHT - MARGIN)),
   };
 }
 
@@ -85,18 +108,31 @@ export default function MiniStreamPlayer() {
     if (visible && slotRef.current) placeStreamPip(slotRef.current);
   }, [visible, pipStream]);
 
-  // Rest at the corner when a drag/spring isn't positioning it.
+  // Rest at the corner when a drag/spring isn't positioning it. Re-runs on view
+  // change too, since the left-sidebar width (and thus the top-corner inset) can
+  // differ between views (e.g. browse drops the channel sidebar).
   useLayoutEffect(() => {
     if (!draggingRef.current && rafRef.current == null) applyRestingPos();
-  }, [pipCorner, visible, applyRestingPos]);
+  }, [pipCorner, visible, activeView, applyRestingPos]);
 
-  // Keep the resting corner correct across window resizes.
+  // Keep the resting corner correct across window resizes and content-row
+  // geometry changes (e.g. the reconnecting banner appearing shifts the top
+  // inset), unless a drag/spring is currently positioning it.
   useEffect(() => {
-    const onResize = () => {
+    const reposition = () => {
       if (!draggingRef.current && rafRef.current == null) applyRestingPos();
     };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    window.addEventListener("resize", reposition);
+    const row = document.querySelector("[data-pip-content-row]");
+    let ro: ResizeObserver | null = null;
+    if (row) {
+      ro = new ResizeObserver(reposition);
+      ro.observe(row);
+    }
+    return () => {
+      window.removeEventListener("resize", reposition);
+      ro?.disconnect();
+    };
   }, [applyRestingPos]);
 
   // Entrance: shrink from where the full-view player was into the corner.

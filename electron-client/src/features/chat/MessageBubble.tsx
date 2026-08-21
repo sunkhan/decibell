@@ -2,6 +2,7 @@ import { memo } from "react";
 import type { Message } from "../../types";
 import { stringToColor } from "../../utils/colors";
 import { useUiStore } from "../../stores/uiStore";
+import { useDisplayName } from "../../hooks/useDisplayName";
 import { UserAvatar } from "../../components/UserAvatar";
 import MessageText from "./MessageText";
 import AttachmentList from "./AttachmentList";
@@ -88,6 +89,9 @@ function MessageBubble({
 }: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
+  // Server nickname (or the username when none / in DMs). Identity visuals
+  // (avatar, name color) stay keyed on message.sender.
+  const displayName = useDisplayName(serverId, message.sender);
   // Dev-only: log any post-mount height settle (Virtuoso corrects the
   // scroll on each one, so these are candidate scroll-glitch causes).
   const auditRef = useRowHeightAudit(message.id > 0 ? message.id : message.nonce ?? "?");
@@ -105,7 +109,7 @@ function MessageBubble({
   };
   const handleSenderContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    openContextMenu(message.sender, { x: e.clientX, y: e.clientY });
+    openContextMenu(message.sender, { x: e.clientX, y: e.clientY }, serverId);
   };
 
   if (grouped) {
@@ -187,7 +191,7 @@ function MessageBubble({
             onClick={handleSenderClick}
             onContextMenu={handleSenderContextMenu}
           >
-            {message.sender}
+            {displayName}
           </span>
           <span className="font-mono text-meta font-normal tabular-nums text-text-muted">
             {formatTimestamp(message.timestamp)}

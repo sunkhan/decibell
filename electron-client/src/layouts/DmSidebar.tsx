@@ -29,7 +29,10 @@ export default function DmSidebar() {
   };
 
   return (
-    <div className="chrome-scope relative flex h-full w-[68px] shrink-0 flex-col items-center bg-bg-darkest pb-14 pt-px">
+    <div
+      data-pip-dm-rail
+      className="chrome-scope relative flex h-full w-[68px] shrink-0 flex-col items-center bg-bg-darkest pb-14 pt-px"
+    >
       <div className="absolute right-0 top-0 bottom-14 w-px bg-border" />
       <div className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto px-3 py-1">
         {sortedConversations.map((conv) => {

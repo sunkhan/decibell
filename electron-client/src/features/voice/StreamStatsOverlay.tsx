@@ -10,6 +10,7 @@ export default function StreamStatsOverlay({ username }: { username: string }) {
   const rows: [string, string][] = [
     ["Codec", stats.codecLabel],
     ["Resolution", stats.width > 0 ? `${stats.width}×${stats.height}` : "—"],
+    ["Input", `${stats.inputFps} fps`],
     ["Decode", `${stats.fps} fps`],
     ["Queue", String(stats.queue)],
     ["Dropped", String(stats.dropped)],

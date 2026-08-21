@@ -647,14 +647,6 @@ export interface RequestStreamKeyframeArgs {
   /** Username of the streamer whose next frame should be an IDR. */
   username: string
 }
-/**
- * Watcher-side keyframe request: send a UdpKeyframeRequest (PLI) to
- * the named streamer over the media socket. The receive thread fires
- * these automatically on reassembly gaps, but the *renderer* also
- * drops frames (decoder-queue backpressure, decoder errors) that
- * native can't see — this command lets it re-request a keyframe
- * instead of freezing until the next natural IDR. Callers throttle.
- */
 export declare function requestStreamKeyframe(args: RequestStreamKeyframeArgs): Promise<void>
 export interface JoinVoiceChannelArgs {
   serverId: string

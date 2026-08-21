@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke, listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -97,7 +97,12 @@ function RetentionRow({
 export default function ChannelSettingsModal() {
   const activeModal = useUiStore((s) => s.activeModal);
   const closeModal = useUiStore((s) => s.closeModal);
-  useEscapeToClose(closeModal, activeModal === "channel-settings");
+  const isOpen = activeModal === "channel-settings";
+  useEscapeToClose(closeModal, isOpen);
+  // Enter/exit animation (matches SettingsModal / ServerSettingsModal): stay
+  // mounted through the close so the fade + scale-out can play, then unmount.
+  const [mounted, setMounted] = useState(false);
+  const [visible, setVisible] = useState(false);
   const activeServerId = useChatStore((s) => s.activeServerId);
   // Explicit target set by the per-row gear icon — the channel no
   // longer needs to be the active one.
@@ -145,6 +150,23 @@ export default function ChannelSettingsModal() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setMounted(true);
+      // Double rAF so the opacity-0/scale-95 first frame paints before we flip
+      // to visible — otherwise the open pops instead of transitioning.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => setVisible(true)),
+      );
+    } else {
+      setVisible(false);
+    }
+  }, [isOpen]);
+
+  const handleTransitionEnd = useCallback(() => {
+    if (!visible) setMounted(false);
+  }, [visible]);
 
   // Reset draft whenever the modal opens or the underlying channel
   // changes. This component stays mounted across open/close (it
@@ -206,7 +228,7 @@ export default function ChannelSettingsModal() {
     };
   }, [activeModal, activeServerId, channel?.id]);
 
-  if (activeModal !== "channel-settings" || !channel || !activeServerId) return null;
+  if (!mounted || !channel || !activeServerId) return null;
 
   const setField = (field: RetentionField, value: number) => {
     setDraft((d) => ({ ...d, [field]: value }));
@@ -299,11 +321,17 @@ export default function ChannelSettingsModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/65"
+      className="fixed inset-0 z-50 flex items-center justify-center transition-colors duration-300"
+      style={{ backgroundColor: visible ? "rgba(0,0,0,0.65)" : "rgba(0,0,0,0)" }}
       onClick={closeModal}
+      onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-[560px] animate-[cardIn_0.25s_ease] flex-col overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal"
+        className="flex max-h-[85vh] w-full max-w-[560px] flex-col overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-all duration-300"
+        style={{
+          opacity: visible ? 1 : 0,
+          transform: visible ? "scale(1)" : "scale(0.95)",
+        }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-border-divider px-6 py-5">

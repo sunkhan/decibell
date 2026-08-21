@@ -9,6 +9,11 @@ import {
 } from "./streaming/StreamCapture";
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { useStreamStatsStore } from "./streamStats";
+import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
+
+// Stall detection thresholds (no painted frame for this long).
+const STALL_MS = 3000; // → show a "reconnecting" indicator + ping for a keyframe
+const STALL_HARD_MS = 6000; // → also reset the decoder to recover a wedged one
 
 function codecLabel(codec: VideoCodec): string {
   const s = videoCodecToWebCodecsString(codec);
@@ -83,9 +88,23 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
   // so a 4K stream doesn't keep a 4K buffer to paint into a 320×180 mini player.
   const displaySizeRef = useRef({ w: 0, h: 0 });
   // Stats counters, published to useStreamStatsStore on an interval.
+  const framesReceivedRef = useRef(0);
   const framesDecodedRef = useRef(0);
   const framesDroppedRef = useRef(0);
   const srcDimsRef = useRef({ w: 0, h: 0 });
+
+  // Stall detection: last time an output frame painted, plus the reactive
+  // "reconnecting" state (mirrored in a ref for reads inside callbacks).
+  const lastFrameAtRef = useRef(0);
+  const lastHardResetRef = useRef(0);
+  const hasDecodedRef = useRef(false);
+  const [stalled, setStalled] = useState(false);
+  const stalledRef = useRef(false);
+
+  // Hardware decode: prefer the GPU when the probe confirmed a HW decoder for
+  // the active codec; fall back to software once if a HW config never paints.
+  const preferHwRef = useRef(true);
+  const usingHwRef = useRef(false);
 
   // Ask the streamer for a fresh IDR, throttled to 1/s. Renderer-side
   // frame drops (decoder-queue backpressure, decoder errors, frames
@@ -125,6 +144,21 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       if (description) {
         config.description = description;
       }
+      // Prefer the GPU decoder when the probe confirmed one exists for this
+      // codec — matters most for our target (gamers on 4K / high-fps AV1/HEVC),
+      // where software decode is the usual overload source. Chromium can
+      // occasionally fail to allocate a HW decoder and NOT fall back on its own
+      // (Linux/NVIDIA without nvidia-vaapi-driver), so handleDecoderError drops
+      // us to software once if a HW config never produces a frame.
+      const caps = useCodecSettingsStore.getState().decodeCaps;
+      const hasHw =
+        caps.find((c) => c.codec === activeCodecRef.current)?.hardware ?? false;
+      if (preferHwRef.current && hasHw) {
+        config.hardwareAcceleration = "prefer-hardware";
+        usingHwRef.current = true;
+      } else {
+        usingHwRef.current = false;
+      }
       // No isConfigSupported() here: it was async work on the hot path (fired on
       // every configure/reconfigure/error-recovery) purely to console.log, and
       // the config codec is already known-supported from decoderProbe.
@@ -140,6 +174,17 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
   const handleDecoderError = useCallback(
     (e: DOMException) => {
       console.error("[StreamVideoPlayer] Decoder error:", e);
+      // If a hardware config errored before it ever painted a frame, treat it
+      // as a HW-decoder allocation failure (Chromium not falling back on its
+      // own) rather than a normal broken-reference drop, and switch to software
+      // for the rest of this stream. A HW config that already produced frames is
+      // left on the GPU path — normal mid-stream errors must not disable it.
+      if (usingHwRef.current && preferHwRef.current && !hasDecodedRef.current) {
+        console.warn(
+          "[StreamVideoPlayer] hardware decode failed to start — falling back to software",
+        );
+        preferHwRef.current = false;
+      }
       needsKeyframeRef.current = true;
       // A decoder error usually means a broken reference chain — a
       // dropped delta somewhere the native PLI machinery couldn't see.
@@ -177,6 +222,13 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         output: (frame: VideoFrame) => {
           try {
             framesDecodedRef.current++;
+            // A frame painted — feed the stall watchdog and clear any indicator.
+            lastFrameAtRef.current = performance.now();
+            hasDecodedRef.current = true;
+            if (stalledRef.current) {
+              stalledRef.current = false;
+              setStalled(false);
+            }
             // visibleRect (not display*/coded*): Chromium's WebCodecs HEVC
             // reports displayWidth = coded / SubWidthC for streams with no
             // conformance window (half the picture), and coded includes crop
@@ -248,6 +300,11 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       codec: number,
     ) => {
       if (!decoder || decoder.state === "closed") return;
+
+      // Count every frame that arrives (before any drop/decode). For your own
+      // stream this is the encode/capture rate; for a remote stream it's the
+      // network-received rate. The gap vs. decoded fps is what the player drops.
+      framesReceivedRef.current++;
 
       // Paused while the window is hidden/minimized: don't spend decode on
       // frames nobody can see. On becoming visible the listener requests a
@@ -433,29 +490,71 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
 
     // Publish decode stats ~2/s for the stats overlay.
     let lastDecoded = 0;
+    let lastReceived = 0;
     let lastSample = performance.now();
     const statsTimer = window.setInterval(() => {
       const now = performance.now();
       const dt = (now - lastSample) / 1000;
       const decoded = framesDecodedRef.current;
+      const received = framesReceivedRef.current;
       const fps = dt > 0 ? (decoded - lastDecoded) / dt : 0;
+      const inputFps = dt > 0 ? (received - lastReceived) / dt : 0;
       lastDecoded = decoded;
+      lastReceived = received;
       lastSample = now;
       useStreamStatsStore.getState().publishStats(streamerUsername, {
         codecLabel: codecLabel(activeCodecRef.current),
         width: srcDimsRef.current.w,
         height: srcDimsRef.current.h,
+        inputFps: Math.round(inputFps),
         fps: Math.round(fps),
         queue: decoder?.decodeQueueSize ?? 0,
         dropped: framesDroppedRef.current,
       });
     }, 500);
 
+    // Stall watchdog: if the picture freezes (no painted frame), show a
+    // "reconnecting" indicator and ping the streamer for a keyframe — which
+    // doubles as a liveness probe, so a static-but-alive stream answers and
+    // clears immediately. Escalates to a decoder reset if it stays wedged.
+    lastFrameAtRef.current = performance.now();
+    const stallTimer = window.setInterval(() => {
+      // An intentional visibility pause isn't a stall — keep the clock fresh.
+      if (hiddenRef.current) {
+        lastFrameAtRef.current = performance.now();
+        return;
+      }
+      if (!firstFrameSignalled) return; // still waiting for the first frame
+      const since = performance.now() - lastFrameAtRef.current;
+      if (since < STALL_MS) return;
+      if (!stalledRef.current) {
+        stalledRef.current = true;
+        setStalled(true);
+      }
+      requestKeyframe();
+      if (
+        since > STALL_HARD_MS &&
+        decoder &&
+        decoder.state !== "closed" &&
+        performance.now() - lastHardResetRef.current > STALL_HARD_MS
+      ) {
+        // A wedged decoder (frames arriving, none coming out) won't recover
+        // from a keyframe alone — reset it. Throttled so we don't thrash.
+        lastHardResetRef.current = performance.now();
+        decoder.reset();
+        configureDecoder(decoder, descriptionRef.current ?? undefined);
+        needsKeyframeRef.current = true;
+      }
+    }, 1000);
+
     return () => {
       unsubscribe();
       document.removeEventListener("visibilitychange", onVisibility);
       ro.disconnect();
       window.clearInterval(statsTimer);
+      window.clearInterval(stallTimer);
+      stalledRef.current = false;
+      setStalled(false);
       useStreamStatsStore.getState().clearStats(streamerUsername);
       if (decoder && decoder.state !== "closed") {
         decoder.close();
@@ -506,6 +605,32 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         ref={canvasRef}
         className={`${className ?? "h-full w-full object-contain"} ${hasFirstFrame ? "" : "opacity-0"}`}
       />
+      {hasFirstFrame && stalled && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40">
+          <div className="flex items-center gap-2 rounded-md border border-white/10 bg-black/70 px-3 py-2 text-[12px] font-medium text-white/90 backdrop-blur-sm">
+            <svg
+              className="h-4 w-4 animate-spin text-warning"
+              viewBox="0 0 24 24"
+              fill="none"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="3"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+              />
+            </svg>
+            Reconnecting…
+          </div>
+        </div>
+      )}
     </div>
   );
 }

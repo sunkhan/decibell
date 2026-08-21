@@ -265,8 +265,11 @@ export default function UserProfilePopup() {
 
         <div className="px-4 pb-1 pt-3">
           <div className="font-display text-[16px] font-semibold text-text-primary">
-            {username}
+            {memberEntry?.nickname || username}
           </div>
+          {memberEntry?.nickname && memberEntry.nickname !== username && (
+            <div className="text-[12px] text-text-muted">{username}</div>
+          )}
           <div className="mt-1.5">
             {isOnline ? (
               <span className="inline-flex items-center gap-[5px] rounded-sm bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">

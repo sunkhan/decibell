@@ -9,7 +9,11 @@ export interface StreamStats {
   /// Source (decoded) resolution.
   width: number;
   height: number;
-  /// Measured decoded frames per second (rolling ~1s window).
+  /// Frames arriving at the player per second (before drop/decode). For your
+  /// own stream this is the encode/capture rate; for a remote stream it's the
+  /// network-received rate.
+  inputFps: number;
+  /// Measured decoded frames per second (rolling ~0.5s window).
   fps: number;
   /// Current WebCodecs decode queue depth (backpressure indicator).
   queue: number;

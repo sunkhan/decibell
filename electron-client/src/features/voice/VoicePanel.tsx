@@ -4,6 +4,7 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
+import { useDisplayName } from "../../hooks/useDisplayName";
 import { UserAvatar } from "../../components/UserAvatar";
 import StreamViewPanel from "./StreamViewPanel";
 import StreamVideoPlayer from "./StreamVideoPlayer";
@@ -42,6 +43,14 @@ export default function VoicePanel() {
   });
 
   const ownUsername = useAuthStore((s) => s.username);
+
+  // Server roster → resolve stream owners to their server nickname (avatars and
+  // identity stay keyed on the username).
+  const serverMembers = useChatStore((s) =>
+    connectedServerId ? s.membersByServer[connectedServerId] : undefined,
+  );
+  const nameOf = (u: string) =>
+    serverMembers?.find((m) => m.username === u)?.nickname || u;
 
   const [showPicker, setShowPicker] = useState(false);
 
@@ -288,7 +297,7 @@ export default function VoicePanel() {
                         <div className="min-w-0 flex-1 text-left">
                           <div className="flex items-center gap-1.5">
                             <span className="truncate text-[13px] font-medium text-text-primary">
-                              {stream.ownerUsername}
+                              {nameOf(stream.ownerUsername)}
                             </span>
                             {stream.hasAudio && (
                               <svg
@@ -517,6 +526,7 @@ const ParticipantCard = memo(function ParticipantCard({
   const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
+  const displayName = useDisplayName(connectedServerId, username);
 
   return (
     <div
@@ -531,7 +541,7 @@ const ParticipantCard = memo(function ParticipantCard({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY });
+        openContextMenu(username, { x: e.clientX, y: e.clientY }, connectedServerId);
       }}
     >
       <div className="relative">
@@ -565,7 +575,7 @@ const ParticipantCard = memo(function ParticipantCard({
         )}
       </div>
       <div className="max-w-full truncate text-center text-[13px] font-medium text-text-primary">
-        {username}
+        {displayName}
       </div>
     </div>
   );

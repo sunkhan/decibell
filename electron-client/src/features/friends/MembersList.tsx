@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { UserAvatar } from "../../components/UserAvatar";
+import type { ServerMember } from "../../types";
 
 export default function MembersList() {
   const activeServerId = useChatStore((s) => s.activeServerId);
@@ -13,28 +14,30 @@ export default function MembersList() {
     const roster = activeServerId ? membersByServer[activeServerId] ?? [] : [];
     const onlineList = roster.filter((m) => m.isOnline);
     const offlineList = roster.filter((m) => !m.isOnline);
-    const byName = (a: { username: string }, b: { username: string }) =>
-      a.username.localeCompare(b.username);
+    // Sort by display name (nickname when set), matching how the list reads.
+    const dn = (m: ServerMember) => m.nickname || m.username;
+    const byName = (a: ServerMember, b: ServerMember) =>
+      dn(a).localeCompare(dn(b));
     onlineList.sort(byName);
     offlineList.sort(byName);
     return { online: onlineList, offline: offlineList };
   }, [activeServerId, membersByServer]);
 
-  const renderRow = (username: string, isOnline: boolean) => (
+  const renderRow = (m: ServerMember, isOnline: boolean) => (
     <div
-      key={username}
+      key={m.username}
       className="list-row group flex cursor-pointer items-center rounded-sm transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
-        openProfilePopup(username, { x: rect.right + 8, y: rect.top }, activeServerId);
+        openProfilePopup(m.username, { x: rect.right + 8, y: rect.top }, activeServerId);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY });
+        openContextMenu(m.username, { x: e.clientX, y: e.clientY }, activeServerId);
       }}
     >
       <div className={`relative shrink-0 ${isOnline ? "" : "opacity-[0.62]"}`}>
-        <UserAvatar username={username} size={34} />
+        <UserAvatar username={m.username} size={34} />
         <div
           className={`absolute -bottom-px -right-px avatar-dot rounded-full border-[2.5px] border-bg-tertiary ${
             isOnline ? "bg-success" : "bg-text-muted"
@@ -48,7 +51,7 @@ export default function MembersList() {
             : "font-normal text-text-muted"
         }`}
       >
-        {username}
+        {m.nickname || m.username}
       </span>
     </div>
   );
@@ -64,7 +67,7 @@ export default function MembersList() {
             Online — {online.length}
           </h3>
         </div>
-        {online.map((m) => renderRow(m.username, true))}
+        {online.map((m) => renderRow(m, true))}
 
         {offline.length > 0 && (
           <>
@@ -73,7 +76,7 @@ export default function MembersList() {
                 Offline — {offline.length}
               </h3>
             </div>
-            {offline.map((m) => renderRow(m.username, false))}
+            {offline.map((m) => renderRow(m, false))}
           </>
         )}
 

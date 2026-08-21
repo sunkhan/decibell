@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
+import { useDisplayName } from "../../hooks/useDisplayName";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { UserAvatar } from "../../components/UserAvatar";
@@ -31,7 +32,9 @@ function dbToPercent(db: number): string {
 export default function UserContextMenu() {
   const username = useUiStore((s) => s.contextMenuUser);
   const anchor = useUiStore((s) => s.contextMenuAnchor);
+  const contextServerId = useUiStore((s) => s.contextMenuServerId);
   const closeContextMenu = useUiStore((s) => s.closeContextMenu);
+  const displayName = useDisplayName(contextServerId, username ?? "");
   const userVolumes = useVoiceStore((s) => s.userVolumes);
   const setUserVolume = useVoiceStore((s) => s.setUserVolume);
   const localMutedUsers = useVoiceStore((s) => s.localMutedUsers);
@@ -136,7 +139,7 @@ export default function UserContextMenu() {
       <div className="flex items-center gap-2.5 border-b border-border-divider px-3.5 py-3">
         <UserAvatar username={username} size={32} />
         <span className="truncate font-display text-[14px] font-medium text-text-primary">
-          {username}
+          {displayName}
         </span>
       </div>
 

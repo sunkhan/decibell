@@ -123,6 +123,8 @@ interface UiState {
   profilePopupServerId: string | null;
   contextMenuUser: string | null;
   contextMenuAnchor: { x: number; y: number } | null;
+  /// Server the context menu was opened in, so it can resolve the nickname.
+  contextMenuServerId: string | null;
   voiceThresholdDb: number;
   setVoiceThresholdDb: (value: number) => void;
   aecEnabled: boolean;
@@ -179,7 +181,11 @@ interface UiState {
   setActiveView: (view: "home" | "server" | "browse" | "voice" | "dm") => void;
   openProfilePopup: (username: string, anchor: { x: number; y: number }, serverId?: string | null) => void;
   closeProfilePopup: () => void;
-  openContextMenu: (username: string, anchor: { x: number; y: number }) => void;
+  openContextMenu: (
+    username: string,
+    anchor: { x: number; y: number },
+    serverId?: string | null,
+  ) => void;
   closeContextMenu: () => void;
   crashReportingEnabled: boolean;
   crashReportingConsentShown: boolean;
@@ -207,6 +213,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   profilePopupServerId: null,
   contextMenuUser: null,
   contextMenuAnchor: null,
+  contextMenuServerId: null,
   voiceThresholdDb: -50,
   setVoiceThresholdDb: (value) => set({ voiceThresholdDb: value }),
   aecEnabled: false,
@@ -279,10 +286,18 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ profilePopupUser: username, profilePopupAnchor: anchor, profilePopupServerId: serverId }),
   closeProfilePopup: () =>
     set({ profilePopupUser: null, profilePopupAnchor: null, profilePopupServerId: null }),
-  openContextMenu: (username, anchor) =>
-    set({ contextMenuUser: username, contextMenuAnchor: anchor }),
+  openContextMenu: (username, anchor, serverId = null) =>
+    set({
+      contextMenuUser: username,
+      contextMenuAnchor: anchor,
+      contextMenuServerId: serverId,
+    }),
   closeContextMenu: () =>
-    set({ contextMenuUser: null, contextMenuAnchor: null }),
+    set({
+      contextMenuUser: null,
+      contextMenuAnchor: null,
+      contextMenuServerId: null,
+    }),
   crashReportingEnabled: true,
   crashReportingConsentShown: false,
   crashReportingInstallId: null,
