@@ -4,6 +4,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -502,6 +503,17 @@ private:
     std::optional<DbRole> get_role_unlocked_(int64_t role_id) const;
     int32_t max_role_position_unlocked_() const;
     uint64_t effective_permissions_unlocked_(const std::string& username) const;
+    // Per-user (effective permissions, hierarchy level), computed once and
+    // cached until any role / member-role / membership / owner change
+    // (invalidate_perm_cache_ or targeted erase). has_permission() runs on
+    // every roster broadcast per online user and on the hot message path
+    // once SEND_MESSAGES is enforced, so it must not hit SQLite each time.
+    struct PermEntry { uint64_t permissions = 0; int32_t level = 0; };
+    const PermEntry& perm_entry_unlocked_(const std::string& username) const;
+    void invalidate_perm_cache_();
+    mutable std::unordered_map<std::string, PermEntry> perm_cache_;
+    // server_meta.owner, loaded at open() and kept in sync by set_meta_.
+    std::string owner_cache_;
     void seed_if_empty_(const std::string& owner,
                         const std::string& name,
                         const std::string& desc);

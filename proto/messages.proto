@@ -491,6 +491,12 @@ message CommunityAuthResponse {
   // Port for the HTTP attachment endpoint (upload/download). Typically
   // community server TCP port + 3. 0 means "feature not available".
   int32 attachment_port = 9;
+  // Central-assigned community_servers.id, learned by the community via
+  // SERVER_HEARTBEAT_RES. Lets a client that connected through an invite
+  // (knowing only host:port) re-key the connection onto the same id the
+  // central directory / memberships use, so the server doesn't exist
+  // twice in the UI. 0 = not yet learned (client keeps its own key).
+  int64 server_id = 10;
 }
 
 message ChannelMessage {

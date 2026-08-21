@@ -32,6 +32,8 @@
 #include "../common/udp_packet.hpp"
 #include "db.hpp"
 #include "attachment_http.hpp"
+#include "rate_limit.hpp"
+#include "central_sync.hpp"
 
 namespace ssl = boost::asio::ssl;
 using boost::asio::ip::tcp;
@@ -160,7 +162,13 @@ public:
     // flips without having to re-open the server. Sessions whose user
     // holds BAN_MEMBERS (or the owner) also receive the ban list;
     // everyone else gets members-only.
+    //
+    // Coalesced: the full roster goes to every session, so a burst of
+    // connects/disconnects (a reconnect storm after a restart) used to
+    // mean one O(members × online) fan-out per event. Calls within the
+    // coalescing window collapse into a single broadcast.
     void broadcast_members();
+    void broadcast_members_now();
     // Push the full role list to every authenticated session. Fired on
     // any role create/update/delete so hierarchy + colors stay live.
     void broadcast_roles();
@@ -210,7 +218,8 @@ public:
     // Watcher tracking. Returns true if the watcher was newly added (so the
     // caller fires the join-notify + one keyframe only on the FIRST subscribe).
     bool add_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
-    void remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
+    // Returns true if the watcher was actually subscribed.
+    bool remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username);
     // Plan C: tell the streamer that a watcher just joined or left their stream.
     // Drives the streamer's CodecSelector (LCD picker + debounce/cooldown).
     void notify_streamer_of_watcher(const std::string& channel_id,
@@ -275,6 +284,10 @@ public:
                           const std::string& public_ip, int community_port);
     void sync_invite_register(const std::string& code, int64_t expires_at);
     void sync_invite_unregister(const std::string& code);
+    // Queue a framed packet for the central-sync worker (no-op when no
+    // central is configured). `done` runs on the worker thread.
+    void enqueue_central(std::vector<uint8_t> framed, bool read_response = false,
+                         chatproj::CentralSyncWorker::Done done = nullptr);
 
     // --- Auto-rejoin: server_id learned from SERVER_HEARTBEAT_RES ---
     // (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)
@@ -289,6 +302,20 @@ public:
     void sync_server_picture(const std::string& data,
                               const std::string& version);
     void sync_membership_revoke(const std::string& username);
+
+    // Session deadlines (seconds). auth: time a freshly-connected peer
+    // has to complete COMMUNITY_AUTH_REQ; idle: time an authenticated
+    // session may go without any frame (clients CLIENT_PING every 30 s).
+    void set_timeouts(int auth_seconds, int idle_seconds) {
+        auth_timeout_seconds_ = auth_seconds;
+        idle_timeout_seconds_ = idle_seconds;
+    }
+    int auth_timeout_seconds() const { return auth_timeout_seconds_; }
+    int idle_timeout_seconds() const { return idle_timeout_seconds_; }
+
+    // Executor for manager-owned timers (roster coalescing). Must be set
+    // before the first broadcast_members() call.
+    void set_io_context(boost::asio::io_context& io);
 
     // Attachment config — reported to clients on CommunityAuthResponse so
     // they know where to upload and what size cap to pre-validate against.
@@ -358,6 +385,14 @@ private:
 
     int attachment_port_ = 0;
     int64_t max_attachment_bytes_ = 0;
+    int auth_timeout_seconds_ = 10;
+    int idle_timeout_seconds_ = 90;
+
+    boost::asio::io_context* io_ = nullptr;
+    std::unique_ptr<boost::asio::steady_timer> members_timer_;
+    bool members_broadcast_pending_ = false;
+    static constexpr auto kMembersCoalesce = std::chrono::milliseconds(250);
+
 
     // Auto-rejoin: central-assigned community_servers.id. 0 means
     // "not yet learned" — sync_membership_register/revoke silently
@@ -366,6 +401,12 @@ private:
     std::atomic<int64_t> server_id_{0};
 
     std::mutex mutex_;
+
+    // Central-sync worker (see central_sync.hpp). Created by
+    // set_central_sync; null when no central host is configured. LAST
+    // member on purpose: its destructor joins the worker thread, whose
+    // callbacks touch server_id_ / db_, so it must go first.
+    std::unique_ptr<chatproj::CentralSyncWorker> central_worker_;
 };
 
 class Session : public std::enable_shared_from_this<Session> {
@@ -373,6 +414,7 @@ public:
     Session(tcp::socket socket, SessionManager& manager, ssl::context& context, const std::string& jwt_secret)
         : socket_(std::move(socket), context),
           close_timer_(socket_.lowest_layer().get_executor()),
+          deadline_timer_(socket_.lowest_layer().get_executor()),
           manager_(manager), jwt_secret_(jwt_secret) {
         // Enable TCP keepalive to detect dead client connections.
         // Tighten from system defaults (~2h) to 15s idle + 5s interval + 3 retries = ~30s detection.
@@ -388,6 +430,10 @@ public:
 
     void start() {
         auto self(shared_from_this());
+        // The auth deadline covers the TLS handshake too: a peer that
+        // connects and never completes either used to pin a Session
+        // (and its fd) forever — there was no timer of any kind here.
+        arm_deadline(manager_.auth_timeout_seconds());
         socket_.async_handshake(ssl::stream_base::server,
             [this, self](const boost::system::error_code& error) {
                 if (!error) {
@@ -396,6 +442,25 @@ public:
                     manager_.leave(shared_from_this());
                 }
             });
+    }
+
+    // (Re)arm the inactivity deadline. Pre-auth it's the auth deadline
+    // (armed once, never extended by junk frames); post-auth it's the
+    // idle deadline, re-armed on every frame incl. CLIENT_PING.
+    void arm_deadline(int seconds) {
+        if (seconds <= 0) return;
+        auto self(shared_from_this());
+        deadline_timer_.expires_after(std::chrono::seconds(seconds));
+        deadline_timer_.async_wait([this, self](const boost::system::error_code& ec) {
+            if (ec) return;   // re-armed or cancelled
+            if (closing_) return;
+            std::cout << "[Community] Dropping "
+                      << (authenticated_ ? ("idle session of " + username_)
+                                         : std::string("unauthenticated session"))
+                      << " (deadline)\n";
+            manager_.leave(shared_from_this());
+            close_connection();
+        });
     }
 
     void deliver(std::shared_ptr<std::vector<uint8_t>> framed_data) {
@@ -551,7 +616,13 @@ private:
                     uint32_t net_len;
                     std::memcpy(&net_len, inbound_header_, 4);
                     uint32_t length = ntohl(net_len);
-                    if (length > 2 * 1024 * 1024) {
+                    // Pre-auth the only legitimate frame is
+                    // COMMUNITY_AUTH_REQ (a JWT + invite code, < 4 KB).
+                    // Without this cap an unauthenticated peer could make
+                    // us allocate the full 2 MiB per connection.
+                    constexpr uint32_t kPreAuthMaxFrame = 64 * 1024;
+                    if (length > 2 * 1024 * 1024 ||
+                        (!authenticated_ && length > kPreAuthMaxFrame)) {
                         // Drop the session instead of a bare `return`,
                         // which would leave the read loop dead but the
                         // socket open (and the session still receiving
@@ -580,6 +651,13 @@ private:
                     // flight when close_after_flush() was called.
                     if (closing_) return;
                     process_packet();
+                    if (authenticated_) arm_deadline(manager_.idle_timeout_seconds());
+                    // Don't keep a 2 MiB buffer pinned per session after
+                    // one large frame (thumbnail / big paste).
+                    if (inbound_body_.capacity() > 256 * 1024) {
+                        inbound_body_.clear();
+                        inbound_body_.shrink_to_fit();
+                    }
                     if (!closing_) do_read_header();
                 } else {
                     manager_.leave(shared_from_this());
@@ -699,6 +777,7 @@ private:
                 udp_key_ = token_;
             }
             manager_.register_authenticated(shared_from_this());
+            arm_deadline(manager_.idle_timeout_seconds());
 
             std::cout << "[Community] Authorized user: " << username_ << "\n";
             send_auth_response(true, "Authentication successful.", "");
@@ -741,6 +820,23 @@ private:
             return;
         }
 
+        // Per-session rate limits. Each packet class draws from its own
+        // bucket; an exhausted bucket drops the packet (CHANNEL_MSG tells
+        // the sender so its optimistic bubble doesn't hang). Limits are
+        // far above anything a human produces through the UI.
+        if (!rate_limit_allows(packet.type())) {
+            if (rate_limit_log_bucket_.try_take()) {
+                std::cout << "[Community] Rate-limited " << username_
+                          << " on packet type " << packet.type() << "\n";
+            }
+            if (packet.type() == chatproj::Packet::CHANNEL_MSG) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "You're sending messages too fast.",
+                                    username_, "message");
+            }
+            return;
+        }
+
         // --- JOIN VOICE CHANNEL ---
         if (packet.type() == chatproj::Packet::JOIN_VOICE_REQ) {
             const auto& jvr = packet.join_voice_req();
@@ -758,6 +854,11 @@ private:
             // Capture client capabilities (Plan A Group 7). Empty when sent
             // by a legacy client; treated downstream as "H.264 only".
             if (jvr.has_capabilities()) {
+                if (!capabilities_within_limits(jvr.capabilities())) {
+                    std::cout << "[Community] Rejected JOIN_VOICE_REQ from " << username_
+                              << ": oversized capabilities\n";
+                    return;
+                }
                 set_capabilities(jvr.capabilities());
             }
             // A stream is bound to the channel it was started in. Moving
@@ -778,6 +879,11 @@ private:
         else if (packet.type() == chatproj::Packet::UPDATE_CAPABILITIES_REQ) {
             const auto& req = packet.update_capabilities_req();
             if (req.has_capabilities()) {
+                if (!capabilities_within_limits(req.capabilities())) {
+                    std::cout << "[Community] Rejected UPDATE_CAPABILITIES_REQ from "
+                              << username_ << ": oversized capabilities\n";
+                    return;
+                }
                 set_capabilities(req.capabilities());
                 if (!current_voice_channel_.empty()) {
                     manager_.broadcast_voice_presence(current_voice_channel_);
@@ -880,7 +986,13 @@ private:
         // --- STOP WATCHING STREAM ---
         else if (packet.type() == chatproj::Packet::STOP_WATCHING_REQ) {
             const auto& req = packet.stop_watching_req();
-            manager_.remove_watcher(shared_from_this(), req.channel_id(), req.target_username());
+            // Only a real watcher triggers the streamer notify + presence
+            // rebroadcast — otherwise STOP_WATCHING for a stream you never
+            // subscribed to was a free all-session broadcast and a fake
+            // LEFT signal into the streamer's cooldown logic.
+            if (!manager_.remove_watcher(shared_from_this(), req.channel_id(), req.target_username())) {
+                return;
+            }
             std::cout << "[Community] " << username_ << " stopped watching " << req.target_username() << "'s stream\n";
             // Plan C: notify streamer so cooldown timer can start.
             manager_.notify_streamer_of_watcher(
@@ -988,6 +1100,15 @@ private:
             if (msg->content().empty() && msg->attachments_size() == 0) {
                 return;
             }
+            // The client caps a message at 10 attachments; enforce it
+            // here too so bind_attachments' IN-list stays bounded.
+            constexpr int MAX_ATTACHMENTS_PER_MESSAGE = 10;
+            if (msg->attachments_size() > MAX_ATTACHMENTS_PER_MESSAGE) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                    "Too many attachments on one message.",
+                                    username_, "message");
+                return;
+            }
 
             // Persist before broadcast so the id we echo to clients matches
             // what history_res will return. Server stamps the authoritative
@@ -1002,8 +1123,17 @@ private:
                 if (new_id > 0) {
                     msg->set_id(new_id);
                 } else {
+                    // Don't broadcast a message that isn't in history:
+                    // clients would get an id=0 row they can never
+                    // delete and that vanishes on the next reload. Tell
+                    // the sender instead so their optimistic bubble is
+                    // withdrawn.
                     std::cerr << "[Community] Failed to persist CHANNEL_MSG from "
                               << username_ << " in #" << msg->channel_id() << "\n";
+                    send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                                        "Message could not be saved — try again.",
+                                        username_, "message");
+                    return;
                 }
             }
 
@@ -1034,7 +1164,7 @@ private:
                         pa->set_filename(row.filename);
                         pa->set_mime(row.mime);
                         pa->set_size_bytes(row.size_bytes);
-                        pa->set_url(row.storage_path);
+                        pa->set_url("/attachments/" + std::to_string(row.id));
                         pa->set_position(row.position);
                         pa->set_created_at(row.created_at);
                         pa->set_purged_at(row.purged_at);
@@ -1107,7 +1237,7 @@ private:
                         proto_a->set_filename(a->filename);
                         proto_a->set_mime(a->mime);
                         proto_a->set_size_bytes(a->size_bytes);
-                        proto_a->set_url(a->storage_path);
+                        proto_a->set_url("/attachments/" + std::to_string(a->id));
                         proto_a->set_position(a->position);
                         proto_a->set_created_at(a->created_at);
                         proto_a->set_purged_at(a->purged_at);
@@ -1396,7 +1526,16 @@ private:
                 return;
             }
             const auto& req = packet.invite_create_req();
-            auto created = db->create_invite(username_, req.expires_at(), req.max_uses());
+            const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
+            if (req.expires_at() != 0 && req.expires_at() <= now_ts) {
+                send_simple_mod_res(chatproj::Packet::INVITE_CREATE_RES, false,
+                                    "Invite expiry is in the past.", "", "");
+                return;
+            }
+            // Negative max_uses used to be stored verbatim and read as
+            // "unlimited" by every `> 0` check — normalise to 0.
+            const int32_t max_uses = req.max_uses() < 0 ? 0 : req.max_uses();
+            auto created = db->create_invite(username_, req.expires_at(), max_uses);
 
             chatproj::Packet p;
             p.set_type(chatproj::Packet::INVITE_CREATE_RES);
@@ -2128,6 +2267,66 @@ private:
         send_packet(p);
     }
 
+    // Routes a packet type to its rate-limit bucket. Unlisted types
+    // (pings, stop-stream, leave) are not limited.
+    bool rate_limit_allows(chatproj::Packet::Type type) {
+        using T = chatproj::Packet;
+        switch (type) {
+            case T::CHANNEL_MSG:
+                return msg_bucket_.try_take();
+            case T::STREAM_THUMBNAIL_UPDATE:
+                return thumb_bucket_.try_take();
+            // LEAVE_VOICE_REQ / STOP_STREAM_REQ are deliberately unlimited:
+            // dropping a leave would desync the client from the server's
+            // voice state, whereas a dropped join just gets retried.
+            case T::JOIN_VOICE_REQ:
+            case T::VOICE_STATE_NOTIFY:
+            case T::UPDATE_CAPABILITIES_REQ:
+            case T::START_STREAM_REQ:
+            case T::WATCH_STREAM_REQ:
+            case T::STOP_WATCHING_REQ:
+            case T::STREAM_CODEC_CHANGED_NOTIFY:
+                return presence_bucket_.try_take();
+            case T::CHANNEL_HISTORY_REQ:
+            case T::MEMBER_LIST_REQ:
+            case T::ROLE_LIST_REQ:
+            case T::INVITE_LIST_REQ:
+            case T::FETCH_STREAM_THUMBNAIL_REQ:
+                return query_bucket_.try_take();
+            case T::CHANNEL_UPDATE_REQ:
+            case T::CHANNEL_WIPE_REQ:
+            case T::MESSAGE_DELETE_REQ:
+            case T::UPDATE_SERVER_PICTURE_REQ:
+            case T::INVITE_CREATE_REQ:
+            case T::INVITE_REVOKE_REQ:
+            case T::KICK_MEMBER_REQ:
+            case T::BAN_MEMBER_REQ:
+            case T::UNBAN_MEMBER_REQ:
+            case T::ROLE_CREATE_REQ:
+            case T::ROLE_UPDATE_REQ:
+            case T::ROLE_DELETE_REQ:
+            case T::MEMBER_ROLES_UPDATE_REQ:
+            case T::CHANNEL_CREATE_REQ:
+            case T::CHANNEL_RENAME_REQ:
+            case T::CHANNEL_DELETE_REQ:
+            case T::CHANNEL_REORDER_REQ:
+            case T::SET_NICKNAME_REQ:
+                return admin_bucket_.try_take();
+            default:
+                return true;
+        }
+    }
+
+    // ClientCapabilities is stored per session and re-serialised into
+    // every VOICE_PRESENCE_UPDATE for the channel — an unbounded list was
+    // an amplification vector (one fat caps blob × N members × every
+    // mute toggle). Real clients advertise a handful of codecs.
+    static bool capabilities_within_limits(const chatproj::ClientCapabilities& caps) {
+        constexpr int kMaxCodecEntries = 16;
+        return caps.encode_size() <= kMaxCodecEntries &&
+               caps.decode_size() <= kMaxCodecEntries;
+    }
+
     void send_auth_response(bool success, const std::string& msg,
                             const std::string& error_code) {
         chatproj::Packet p;
@@ -2158,6 +2357,8 @@ private:
             }
             res->set_max_attachment_bytes(manager_.max_attachment_bytes());
             res->set_attachment_port(manager_.attachment_port());
+            // Central-assigned id (0 until the first heartbeat response).
+            res->set_server_id(manager_.server_id());
         }
 
         send_packet(p);
@@ -2177,8 +2378,17 @@ private:
 
     ssl::stream<tcp::socket> socket_;
     boost::asio::steady_timer close_timer_;
+    boost::asio::steady_timer deadline_timer_;
     SessionManager& manager_;
     char inbound_header_[4];
+
+    // Rate-limit buckets (burst capacity, sustained per second).
+    chatproj::TokenBucket msg_bucket_{8, 1.5};        // chat messages
+    chatproj::TokenBucket thumb_bucket_{6, 1.0};      // stream thumbnails
+    chatproj::TokenBucket presence_bucket_{10, 2.0};  // voice/stream signalling
+    chatproj::TokenBucket query_bucket_{20, 4.0};     // history / list fetches
+    chatproj::TokenBucket admin_bucket_{20, 2.0};     // management + moderation
+    chatproj::TokenBucket rate_limit_log_bucket_{3, 0.2};
     std::vector<uint8_t> inbound_body_;
 
     std::string jwt_secret_;
@@ -2241,7 +2451,10 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
             if (by_user != sessions_by_user_.end()) {
                 auto& vec = by_user->second;
                 vec.erase(std::remove(vec.begin(), vec.end(), session), vec.end());
-                if (vec.empty()) sessions_by_user_.erase(by_user);
+                if (vec.empty()) {
+                    sessions_by_user_.erase(by_user);
+                    last_keyframe_relay_.erase(username);
+                }
             }
         }
         // Empty entries are pruned as we go — these maps are keyed by
@@ -2339,6 +2552,7 @@ void SessionManager::stop_stream(std::shared_ptr<Session> session, const std::st
             wch->second.erase(session->get_username());
             if (wch->second.empty()) stream_watchers_.erase(wch);
         }
+        last_keyframe_relay_.erase(session->get_username());
     }
     // Drop any cached thumbnail for this streamer; popup viewers
     // will now get an empty response (and they'll stop polling
@@ -2521,7 +2735,25 @@ void SessionManager::broadcast_to_members(const chatproj::Packet& packet) {
     }
 }
 
+void SessionManager::set_io_context(boost::asio::io_context& io) {
+    io_ = &io;
+    members_timer_ = std::make_unique<boost::asio::steady_timer>(io);
+}
+
 void SessionManager::broadcast_members() {
+    if (!db_) return;
+    if (!members_timer_) { broadcast_members_now(); return; }
+    if (members_broadcast_pending_) return;
+    members_broadcast_pending_ = true;
+    members_timer_->expires_after(kMembersCoalesce);
+    members_timer_->async_wait([this](const boost::system::error_code& ec) {
+        members_broadcast_pending_ = false;
+        if (ec) return;
+        broadcast_members_now();
+    });
+}
+
+void SessionManager::broadcast_members_now() {
     if (!db_) return;
 
     // Snapshot DB state first — db_ takes its own mutex so doing this
@@ -2717,22 +2949,30 @@ void SessionManager::run_retention_sweep() {
 
     if (sweeps.empty()) return;
 
-    // Build one CHANNEL_PRUNED packet per affected channel and fan out to every
-    // authenticated session so their local state stays in sync without reload.
+    // Fan CHANNEL_PRUNED out to every authenticated session so their
+    // local state stays in sync without reload. Batched: the first sweep
+    // after enabling retention on an old channel can prune hundreds of
+    // thousands of rows, and one packet carrying every id would be
+    // multi-MB (the server's own frame cap is 2 MiB). Clients treat each
+    // CHANNEL_PRUNED independently, so splitting is transparent.
+    constexpr size_t kPrunedBatch = 2000;
     for (const auto& cp : sweeps) {
-        chatproj::Packet p;
-        p.set_type(chatproj::Packet::CHANNEL_PRUNED);
-        auto* msg = p.mutable_channel_pruned();
-        msg->set_channel_id(cp.channel_id);
-        for (auto id : cp.deleted_message_ids) {
-            msg->add_deleted_message_ids(id);
-        }
-        for (const auto& pa : cp.purged_attachments) {
-            auto* t = msg->add_purged_attachments();
-            t->set_attachment_id(pa.attachment_id);
-            t->set_purged_at(pa.purged_at);
-        }
-        broadcast_to_members(p);
+        size_t mi = 0, ai = 0;
+        do {
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::CHANNEL_PRUNED);
+            auto* msg = p.mutable_channel_pruned();
+            msg->set_channel_id(cp.channel_id);
+            for (size_t n = 0; mi < cp.deleted_message_ids.size() && n < kPrunedBatch; ++mi, ++n) {
+                msg->add_deleted_message_ids(cp.deleted_message_ids[mi]);
+            }
+            for (size_t n = 0; ai < cp.purged_attachments.size() && n < kPrunedBatch; ++ai, ++n) {
+                auto* t = msg->add_purged_attachments();
+                t->set_attachment_id(cp.purged_attachments[ai].attachment_id);
+                t->set_purged_at(cp.purged_attachments[ai].purged_at);
+            }
+            broadcast_to_members(p);
+        } while (mi < cp.deleted_message_ids.size() || ai < cp.purged_attachments.size());
         std::cout << "[Community] Retention sweep on #" << cp.channel_id
                   << ": " << cp.deleted_message_ids.size() << " messages, "
                   << cp.purged_attachments.size() << " attachments\n";
@@ -2804,20 +3044,24 @@ void SessionManager::relay_keyframe_request(const std::string& target_username, 
     std::memset(req.target_username, 0, chatproj::SENDER_ID_SIZE);
 
     std::lock_guard<std::mutex> lock(mutex_);
+    // Resolve the target FIRST: the rate-limit map is keyed by whatever
+    // name the datagram carried, and recording before the lookup let any
+    // member grow it by one entry per packet of random targets, forever
+    // (entries are pruned in leave() / stop_stream now, too).
+    auto it = sessions_by_user_.find(target_username);
+    if (it == sessions_by_user_.end()) return;
     // Rate-limit PLIs per streamer (250ms): a client must not be able to force
     // continuous IDRs by spamming WATCH / UDP keyframe requests, and many
     // watchers' near-simultaneous requests coalesce into a single IDR.
     {
         auto now = std::chrono::steady_clock::now();
-        auto it = last_keyframe_relay_.find(target_username);
-        if (it != last_keyframe_relay_.end() &&
-            now - it->second < std::chrono::milliseconds(250)) {
+        auto rl = last_keyframe_relay_.find(target_username);
+        if (rl != last_keyframe_relay_.end() &&
+            now - rl->second < std::chrono::milliseconds(250)) {
             return;
         }
         last_keyframe_relay_[target_username] = now;
     }
-    auto it = sessions_by_user_.find(target_username);
-    if (it == sessions_by_user_.end()) return;
     for (auto& session : it->second) {
         if (session->get_udp_media_endpoint().port() != 0) {
             auto buffer = std::make_shared<std::vector<char>>(reinterpret_cast<const char*>(&req),
@@ -2930,17 +3174,19 @@ void SessionManager::handle_stream_codec_changed(
     broadcast_to_voice_channel_tcp(forwarded, notify.channel_id());
 }
 
-void SessionManager::remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username) {
+bool SessionManager::remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username) {
     std::lock_guard<std::mutex> lock(mutex_);
+    bool removed = false;
     auto ch_it = stream_watchers_.find(channel_id);
     if (ch_it != stream_watchers_.end()) {
         auto st_it = ch_it->second.find(streamer_username);
         if (st_it != ch_it->second.end()) {
-            st_it->second.erase(watcher);
+            removed = st_it->second.erase(watcher) > 0;
             if (st_it->second.empty()) ch_it->second.erase(st_it);
             if (ch_it->second.empty()) stream_watchers_.erase(ch_it);
         }
     }
+    return removed;
 }
 
 void SessionManager::broadcast_to_watchers(const char* data, size_t length, const std::string& channel_id,
@@ -3206,6 +3452,13 @@ size_t SessionManager::force_disconnect(const std::string& username,
     return sessions.size();
 }
 
+namespace {
+bool send_to_central_blocking(const std::string& host, int port,
+                              const std::vector<uint8_t>& framed,
+                              bool read_response,
+                              chatproj::Packet* out_response);
+} // namespace
+
 void SessionManager::set_central_sync(const std::string& central_host, int central_port,
                                       const std::string& jwt_secret,
                                       const std::string& public_ip, int community_port) {
@@ -3214,6 +3467,32 @@ void SessionManager::set_central_sync(const std::string& central_host, int centr
     central_jwt_secret_ = jwt_secret;
     public_ip_ = public_ip;
     community_port_ = community_port;
+    if (central_host_.empty() || central_port_ == 0) return;
+    const std::string host = central_host_;
+    const int port = central_port_;
+    central_worker_ = std::make_unique<chatproj::CentralSyncWorker>(
+        [host, port](const std::vector<uint8_t>& framed, bool read_response,
+                     std::vector<uint8_t>* response) {
+            chatproj::Packet resp;
+            const bool ok = send_to_central_blocking(host, port, framed, read_response,
+                                                     read_response ? &resp : nullptr);
+            if (ok && read_response && response) {
+                std::string serialized;
+                resp.SerializeToString(&serialized);
+                response->assign(serialized.begin(), serialized.end());
+            }
+            return ok;
+        });
+    central_worker_->start();
+}
+
+void SessionManager::enqueue_central(std::vector<uint8_t> framed, bool read_response,
+                                     chatproj::CentralSyncWorker::Done done) {
+    if (!central_worker_) return;
+    if (!central_worker_->enqueue(std::move(framed), read_response, std::move(done))) {
+        std::cerr << "[CentralSync] queue full, dropping packet ("
+                  << central_worker_->pending() << " pending)\n";
+    }
 }
 
 namespace {
@@ -3236,8 +3515,8 @@ constexpr auto kCentralSyncTimeout = std::chrono::seconds(5);
 
 bool send_to_central_blocking(const std::string& host, int port,
                               const std::vector<uint8_t>& framed,
-                              bool read_response = false,
-                              chatproj::Packet* out_response = nullptr) {
+                              bool read_response,
+                              chatproj::Packet* out_response) {
     try {
         boost::asio::io_context io;
         ssl::context ctx(ssl::context::tlsv12_client);
@@ -3325,11 +3604,7 @@ void SessionManager::sync_membership_revoke(const std::string& username) {
     packet.SerializeToString(&serialized);
     auto framed = chatproj::create_framed_packet(serialized);
 
-    std::string host = central_host_;
-    int port = central_port_;
-    std::thread([host, port, framed = std::move(framed)]() {
-        send_to_central_blocking(host, port, framed);
-    }).detach();
+    enqueue_central(std::move(framed));
 }
 
 void SessionManager::sync_server_picture(const std::string& data,
@@ -3348,11 +3623,7 @@ void SessionManager::sync_server_picture(const std::string& data,
     packet.SerializeToString(&serialized);
     auto framed = chatproj::create_framed_packet(serialized);
 
-    std::string host = central_host_;
-    int port = central_port_;
-    std::thread([host, port, framed = std::move(framed)]() {
-        send_to_central_blocking(host, port, framed);
-    }).detach();
+    enqueue_central(std::move(framed));
 }
 
 void SessionManager::sync_membership_register(const std::string& username) {
@@ -3374,11 +3645,7 @@ void SessionManager::sync_membership_register(const std::string& username) {
     packet.SerializeToString(&serialized);
     auto framed = chatproj::create_framed_packet(serialized);
 
-    std::string host = central_host_;
-    int port = central_port_;
-    std::thread([host, port, framed = std::move(framed)]() {
-        send_to_central_blocking(host, port, framed);
-    }).detach();
+    enqueue_central(std::move(framed));
 }
 
 void SessionManager::sync_invite_register(const std::string& code, int64_t expires_at) {
@@ -3397,11 +3664,7 @@ void SessionManager::sync_invite_register(const std::string& code, int64_t expir
     packet.SerializeToString(&serialized);
     auto framed = chatproj::create_framed_packet(serialized);
 
-    std::string host = central_host_;
-    int port = central_port_;
-    std::thread([host, port, framed = std::move(framed)]() {
-        send_to_central_blocking(host, port, framed);
-    }).detach();
+    enqueue_central(std::move(framed));
 }
 
 void SessionManager::sync_invite_unregister(const std::string& code) {
@@ -3417,17 +3680,14 @@ void SessionManager::sync_invite_unregister(const std::string& code) {
     packet.SerializeToString(&serialized);
     auto framed = chatproj::create_framed_packet(serialized);
 
-    std::string host = central_host_;
-    int port = central_port_;
-    std::thread([host, port, framed = std::move(framed)]() {
-        send_to_central_blocking(host, port, framed);
-    }).detach();
+    enqueue_central(std::move(framed));
 }
 
 class CommunityServer {
 public:
     CommunityServer(boost::asio::io_context& io_context, short port, SessionManager& manager, const std::string& jwt_secret)
         : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
+          accept_backoff_(io_context),
           udp_socket_(io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), port + 1)),
           media_udp_socket_(io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), port + 2)),
           ssl_context_(ssl::context::tlsv12),
@@ -3471,8 +3731,19 @@ private:
                     auto session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_, jwt_secret_);
                     manager_.join(session);
                     session->start();
+                    do_accept();
+                    return;
                 }
-                do_accept();
+                if (ec == boost::asio::error::operation_aborted) return;
+                // Back off before re-arming: under fd exhaustion accept()
+                // fails instantly (EMFILE) and an unconditional re-arm
+                // spun the io thread at 100 %, starving the UDP relay.
+                std::cerr << "[Community] accept failed: " << ec.message()
+                          << " — retrying in 500 ms\n";
+                accept_backoff_.expires_after(std::chrono::milliseconds(500));
+                accept_backoff_.async_wait([this](const boost::system::error_code& tec) {
+                    if (!tec) do_accept();
+                });
             });
     }
 
@@ -3506,6 +3777,14 @@ private:
                         for (int i = 0; i < SID; ++i) {
                             if (packet->sender_id[i] == '\0') break;
                             token_str.push_back(packet->sender_id[i]);
+                        }
+
+                        // Same defence as the VIDEO relay: a declared
+                        // payload_size that overruns the datagram is a lie
+                        // that would otherwise be amplified to the channel.
+                        constexpr size_t AUDIO_HEADER = 1 + SID + 2 + 2;
+                        if (static_cast<size_t>(packet->payload_size) > bytes_recvd - AUDIO_HEADER) {
+                            token_str.clear();
                         }
 
                         if (!token_str.empty()) {
@@ -3699,6 +3978,7 @@ private:
     }
 
     tcp::acceptor acceptor_;
+    boost::asio::steady_timer accept_backoff_;
     boost::asio::ip::udp::socket udp_socket_;
     boost::asio::ip::udp::socket media_udp_socket_;
     char udp_buffer_[sizeof(chatproj::UdpVideoPacket) > sizeof(chatproj::UdpFecPacket) ? sizeof(chatproj::UdpVideoPacket) : sizeof(chatproj::UdpFecPacket)];
@@ -3742,27 +4022,31 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
     // `manager` and its CommunityDb outlive io_context.run() in main(),
     // so the reference captures are safe; server_id_ is atomic and the
     // DB serializes internally.
-    std::thread([central_host, central_port, framed = std::move(framed), &manager]() {
-        chatproj::Packet resp;
-        if (!send_to_central_blocking(central_host, central_port, framed,
-                                      /*read_response=*/true, &resp)) {
-            std::cerr << "[Heartbeat] Failed to send\n";
-            return;
-        }
-        if (resp.type() == chatproj::Packet::SERVER_HEARTBEAT_RES) {
-            int64_t id = resp.server_heartbeat_res().server_id();
-            if (id > 0 && manager.server_id() != id) {
-                manager.set_server_id(id);
-                if (auto* db = manager.db()) {
-                    db->set_central_server_id(id);
-                }
-                std::cout << "[Heartbeat] Cached central server_id = "
-                          << id << "\n";
+    // Goes through the single central-sync worker (see central_sync.hpp)
+    // like every other central exchange; the response callback runs on
+    // that thread — server_id_ is atomic and the DB serialises internally.
+    manager.enqueue_central(std::move(framed), /*read_response=*/true,
+        [central_host, central_port, &manager](bool ok, const std::vector<uint8_t>& body) {
+            if (!ok) {
+                std::cerr << "[Heartbeat] Failed to send\n";
+                return;
             }
-        }
-        std::cout << "[Heartbeat] Sent to central server (" << central_host
-                  << ":" << central_port << ")\n";
-    }).detach();
+            chatproj::Packet resp;
+            if (resp.ParseFromArray(body.data(), static_cast<int>(body.size())) &&
+                resp.type() == chatproj::Packet::SERVER_HEARTBEAT_RES) {
+                int64_t id = resp.server_heartbeat_res().server_id();
+                if (id > 0 && manager.server_id() != id) {
+                    manager.set_server_id(id);
+                    if (auto* db = manager.db()) {
+                        db->set_central_server_id(id);
+                    }
+                    std::cout << "[Heartbeat] Cached central server_id = "
+                              << id << "\n";
+                }
+            }
+            std::cout << "[Heartbeat] Sent to central server (" << central_host
+                      << ":" << central_port << ")\n";
+        });
 
     // Schedule next heartbeat in 60 seconds
     timer.expires_after(std::chrono::seconds(60));
@@ -3788,6 +4072,9 @@ int main() {
         const char* db_path_env = std::getenv("DECIBELL_DB_PATH");
         const char* attachments_root_env = std::getenv("DECIBELL_ATTACHMENTS_ROOT");
         const char* max_attachment_env = std::getenv("DECIBELL_MAX_ATTACHMENT_BYTES");
+        const char* auth_timeout_env = std::getenv("DECIBELL_AUTH_TIMEOUT_SECONDS");
+        const char* idle_timeout_env = std::getenv("DECIBELL_IDLE_TIMEOUT_SECONDS");
+        const char* retention_interval_env = std::getenv("DECIBELL_RETENTION_INTERVAL_SECONDS");
 
         if (!jwt_env) {
             std::cerr << "Missing required environment variable: DECIBELL_JWT_SECRET\n";
@@ -3807,6 +4094,13 @@ int main() {
             try { max_attachment_bytes = std::stoll(max_attachment_env); }
             catch (...) { /* keep default on parse failure */ }
         }
+        auto env_seconds = [](const char* v, int def) {
+            if (!v) return def;
+            try { int n = std::stoi(v); return n > 0 ? n : def; } catch (...) { return def; }
+        };
+        const int auth_timeout_s = env_seconds(auth_timeout_env, 10);
+        const int idle_timeout_s = env_seconds(idle_timeout_env, 90);
+        const int retention_interval_s = env_seconds(retention_interval_env, 600);
 
         // Open (or create) the persistent DB. If the file doesn't exist yet
         // we require DECIBELL_OWNER_USERNAME so we know who to seed as owner.
@@ -3830,6 +4124,8 @@ int main() {
         boost::asio::io_context io_context;
         SessionManager manager;
         manager.set_db(&db);
+        manager.set_io_context(io_context);
+        manager.set_timeouts(auth_timeout_s, idle_timeout_s);
         // Auto-rejoin: hydrate the cached central server_id (learned
         // via SERVER_HEARTBEAT_RES on a previous run) so membership-
         // sync packets work as soon as the first user auths after
@@ -3886,15 +4182,27 @@ int main() {
         retention_fn = [&](const boost::system::error_code& ec) {
             if (ec) return;
             manager.run_retention_sweep();
-            retention_timer.expires_after(std::chrono::minutes(10));
+            retention_timer.expires_after(std::chrono::seconds(retention_interval_s));
             retention_timer.async_wait(retention_fn);
         };
         // First sweep after ~30s so the server has settled and any fresh-open
         // DB migrations are past.
-        retention_timer.expires_after(std::chrono::seconds(30));
+        retention_timer.expires_after(std::chrono::seconds(std::min(30, retention_interval_s)));
         retention_timer.async_wait(retention_fn);
 
-        io_context.run();
+        // A handler that throws (an unexpected std::filesystem error, a
+        // bad_alloc on one session) must not take the whole server down:
+        // log it and keep serving. run() returns normally only when there
+        // is no more work, which never happens while the acceptors live.
+        for (;;) {
+            try {
+                io_context.run();
+                break;
+            } catch (const std::exception& e) {
+                std::cerr << "[Community] Unhandled exception in io loop: "
+                          << e.what() << " — continuing\n";
+            }
+        }
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";
     }

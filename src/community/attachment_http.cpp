@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "db.hpp"
+#include "rate_limit.hpp"
 
 namespace ssl = boost::asio::ssl;
 using boost::asio::ip::tcp;
@@ -200,6 +201,27 @@ static std::string safe_content_type(const std::string& mime) {
 // Each incoming TCP/TLS connection lives inside one AttachmentConnection.
 // Lifetime is extended via shared_ptr so the async handler chain keeps the
 // object alive until the last completion callback fires.
+// Per-username bucket for POST /attachments/init (one DB row + one
+// directory + one file per call). Shared across connections; the server
+// is single-threaded so a plain map is fine.
+class InitRateLimiter {
+public:
+    bool allow(const std::string& username) {
+        auto it = buckets_.find(username);
+        if (it == buckets_.end()) {
+            if (buckets_.size() >= 4096) buckets_.clear();
+            it = buckets_.emplace(username, chatproj::TokenBucket(20, 0.5)).first;
+        }
+        return it->second.try_take();
+    }
+private:
+    std::unordered_map<std::string, chatproj::TokenBucket> buckets_;
+};
+InitRateLimiter& init_rate_limiter() {
+    static InitRateLimiter l;
+    return l;
+}
+
 class AttachmentConnection : public std::enable_shared_from_this<AttachmentConnection> {
 public:
     AttachmentConnection(tcp::socket socket,
@@ -210,6 +232,7 @@ public:
                          int64_t max_attachment_bytes)
         : socket_(std::move(socket), ssl_ctx),
           shutdown_timer_(socket_.lowest_layer().get_executor()),
+          deadline_timer_(socket_.lowest_layer().get_executor()),
           db_(db),
           jwt_secret_(jwt_secret),
           storage_root_(storage_root),
@@ -217,6 +240,7 @@ public:
 
     void start() {
         auto self = shared_from_this();
+        arm_deadline();
         socket_.async_handshake(ssl::stream_base::server,
             [this, self](const boost::system::error_code& ec) {
                 if (ec) return;
@@ -225,6 +249,22 @@ public:
     }
 
 private:
+    // Inactivity deadline, re-armed on every read/write progress. A peer
+    // that handshakes and trickles (or never sends) the request head,
+    // or stalls mid-PATCH, used to hold this connection — and in PATCH
+    // an open FILE* — for as long as it liked.
+    static constexpr auto kInactivity = std::chrono::seconds(30);
+    void arm_deadline() {
+        auto self = shared_from_this();
+        deadline_timer_.expires_after(kInactivity);
+        deadline_timer_.async_wait([this, self](const boost::system::error_code& ec) {
+            if (ec) return;
+            if (patch_fp_ && *patch_fp_) { std::fclose(*patch_fp_); *patch_fp_ = nullptr; }
+            boost::system::error_code ignore;
+            socket_.lowest_layer().close(ignore);
+        });
+    }
+
     // ---- reading request head ----
 
     void read_head() {
@@ -233,6 +273,7 @@ private:
         boost::asio::async_read_until(socket_, head_buf_, "\r\n\r\n",
             [this, self](const boost::system::error_code& ec, std::size_t n) {
                 if (ec) return;
+                arm_deadline();
                 if (n > 16 * 1024) { send_error(431, "Request Header Fields Too Large"); return; }
                 std::string head{
                     boost::asio::buffers_begin(head_buf_.data()),
@@ -348,6 +389,7 @@ private:
             send_error(413, "Payload Too Large"); return;
         }
         if (!db_.is_member(username_))      { send_error(403, "Forbidden"); return; }
+        if (!init_rate_limiter().allow(username_)) { send_error(429, "Too Many Requests"); return; }
         // Category headers carry no messages — nothing can bind an
         // attachment uploaded against one, so refuse at init.
         auto target_channel = db_.get_channel(channel_id);
@@ -423,7 +465,7 @@ private:
         const std::string partial_path = att->storage_path + ".partial";
         std::error_code ec;
         const int64_t cur_size = static_cast<int64_t>(
-            std::filesystem::exists(partial_path)
+            std::filesystem::exists(partial_path, ec)
                 ? std::filesystem::file_size(partial_path, ec) : 0);
         if (ec) { send_error(500, "Internal Server Error"); return; }
         if (offset != cur_size) {
@@ -493,6 +535,7 @@ private:
                     if (patch_fp_ && *patch_fp_) { std::fclose(*patch_fp_); *patch_fp_ = nullptr; }
                     return;
                 }
+                arm_deadline();
                 if (std::fwrite(patch_chunk_.data(), 1, n, *patch_fp_) != n) {
                     std::fclose(*patch_fp_); *patch_fp_ = nullptr;
                     send_error(500, "Internal Server Error"); return;
@@ -533,7 +576,7 @@ private:
         if (att->upload_status == "uploading") {
             const std::string partial = att->storage_path + ".partial";
             std::error_code ec;
-            if (std::filesystem::exists(partial))
+            if (std::filesystem::exists(partial, ec))
                 offset = static_cast<int64_t>(std::filesystem::file_size(partial, ec));
         } else {
             offset = att->size_bytes;
@@ -558,7 +601,7 @@ private:
 
         const std::string partial = att->storage_path + ".partial";
         std::error_code ec;
-        if (!std::filesystem::exists(partial)) { send_error(409, "Conflict"); return; }
+        if (!std::filesystem::exists(partial, ec)) { send_error(409, "Conflict"); return; }
         const int64_t actual = static_cast<int64_t>(std::filesystem::file_size(partial, ec));
         if (ec) { send_error(500, "Internal Server Error"); return; }
         if (att->expected_size > 0 && actual != att->expected_size) {
@@ -816,6 +859,7 @@ private:
             boost::asio::buffer(thumb_buf_.data() + base, want),
             [this, self](const boost::system::error_code& ec, std::size_t n) {
                 if (ec) return;
+                arm_deadline();
                 thumb_remain_ -= static_cast<int64_t>(n);
                 if (thumb_remain_ == 0) return finish_thumbnail();
                 read_thumbnail_chunk();
@@ -881,6 +925,7 @@ private:
         boost::asio::async_write(socket_, boost::asio::buffer(*buf),
             [this, self, fp, buf, remaining, got](const boost::system::error_code& ec, std::size_t) {
                 if (ec) { std::fclose(*fp); *fp = nullptr; return; }
+                arm_deadline();
                 send_file_body(fp, remaining - static_cast<int64_t>(got));
             });
     }
@@ -940,6 +985,7 @@ private:
     // loses nothing when we just drop the socket.
     void graceful_close() {
         auto self = shared_from_this();
+        deadline_timer_.cancel();
         shutdown_timer_.expires_after(std::chrono::seconds(2));
         shutdown_timer_.async_wait([this, self](const boost::system::error_code& ec) {
             if (ec) return;  // cancelled: shutdown completed in time
@@ -960,6 +1006,7 @@ private:
 
     ssl::stream<tcp::socket> socket_;
     boost::asio::steady_timer shutdown_timer_;
+    boost::asio::steady_timer deadline_timer_;
     chatproj::CommunityDb& db_;
     std::string jwt_secret_;
     std::string storage_root_;
@@ -1002,6 +1049,7 @@ AttachmentHttpServer::AttachmentHttpServer(boost::asio::io_context& ioc,
     : ioc_(ioc),
       ssl_ctx_(ssl::context::tlsv12),
       acceptor_(ioc, tcp::endpoint(tcp::v4(), port)),
+      accept_backoff_(ioc),
       db_(db),
       jwt_secret_(jwt_secret),
       storage_root_(storage_root),
@@ -1036,7 +1084,17 @@ void AttachmentHttpServer::do_accept() {
                     std::move(socket), ssl_ctx_, db_, jwt_secret_,
                     storage_root_, max_attachment_bytes_);
                 conn->start();
+                do_accept();
+                return;
             }
-            do_accept();
+            if (ec == boost::asio::error::operation_aborted) return;
+            // See CommunityServer::do_accept — EMFILE must not become a
+            // busy loop on the shared io thread.
+            std::cerr << "[AttachmentHttp] accept failed: " << ec.message()
+                      << " — retrying in 500 ms\n";
+            accept_backoff_.expires_after(std::chrono::milliseconds(500));
+            accept_backoff_.async_wait([this](const boost::system::error_code& tec) {
+                if (!tec) do_accept();
+            });
         });
 }

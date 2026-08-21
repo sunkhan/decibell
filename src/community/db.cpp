@@ -2,12 +2,14 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <random>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace chatproj {
@@ -34,20 +36,66 @@ std::string random_invite_code() {
     return code;
 }
 
-// Scoped sqlite3_stmt — prepared on construction, finalized on destruction.
+// Prepared-statement cache. Every query used to be sqlite3_prepare_v2'd on
+// each call (a full SQL parse + planner pass), which made has_permission()
+// — two statements, called once per online user per roster broadcast and
+// soon once per CHANNEL_MSG — the dominant DB cost. Statements are cached
+// by SQL text and handed out to Stmt; a statement that is already checked
+// out (the same SQL used in a nested scope) falls back to a one-off
+// prepare, so reuse can never alias a live cursor. All access happens
+// under CommunityDb::mutex_ (one DB per process), and the cache is
+// finalized before sqlite3_close in ~CommunityDb.
+struct StmtCache {
+    struct Entry { sqlite3_stmt* stmt; bool in_use; };
+    std::unordered_map<std::string, Entry> by_sql;
+    static constexpr size_t kMaxEntries = 512;
+
+    void finalize_all() {
+        for (auto& [sql, e] : by_sql) sqlite3_finalize(e.stmt);
+        by_sql.clear();
+    }
+};
+StmtCache& stmt_cache() {
+    static StmtCache c;
+    return c;
+}
+
+// Scoped sqlite3_stmt — checked out of the cache (or prepared) on
+// construction; reset + released (or finalized) on destruction.
 struct Stmt {
     sqlite3_stmt* s = nullptr;
     sqlite3* db = nullptr;
+    StmtCache::Entry* cached = nullptr;
 
     Stmt(sqlite3* d, const char* sql) : db(d) {
+        auto& cache = stmt_cache();
+        auto it = cache.by_sql.find(sql);
+        if (it != cache.by_sql.end() && !it->second.in_use) {
+            cached = &it->second;
+            cached->in_use = true;
+            s = cached->stmt;
+            return;
+        }
         if (sqlite3_prepare_v2(db, sql, -1, &s, nullptr) != SQLITE_OK) {
             std::cerr << "[DB] prepare failed for \"" << sql << "\": "
                       << sqlite3_errmsg(db) << "\n";
             s = nullptr;
+            return;
+        }
+        if (it == cache.by_sql.end() && cache.by_sql.size() < StmtCache::kMaxEntries) {
+            auto ins = cache.by_sql.emplace(sql, StmtCache::Entry{s, true});
+            cached = &ins.first->second;
         }
     }
     ~Stmt() {
-        if (s) sqlite3_finalize(s);
+        if (!s) return;
+        if (cached) {
+            sqlite3_reset(s);
+            sqlite3_clear_bindings(s);
+            cached->in_use = false;
+        } else {
+            sqlite3_finalize(s);
+        }
     }
     Stmt(const Stmt&) = delete;
     Stmt& operator=(const Stmt&) = delete;
@@ -85,6 +133,7 @@ CommunityDb::CommunityDb() = default;
 
 CommunityDb::~CommunityDb() {
     if (db_) {
+        stmt_cache().finalize_all();
         sqlite3_close(db_);
         db_ = nullptr;
     }
@@ -116,6 +165,7 @@ bool CommunityDb::open(const std::string& path,
     ensure_default_channels_();
     // Existing DBs may pre-date the text-above-voice ordering invariant.
     normalize_channel_order_();
+    owner_cache_ = get_meta_("owner");
     return true;
 }
 
@@ -334,6 +384,18 @@ void CommunityDb::migrate_to_v2_() {
     exec_sql(db_,
         "CREATE INDEX IF NOT EXISTS idx_attachments_pending "
         "ON attachments(created_at) WHERE message_id = 0;");
+    // wipe_channel / delete_channel filter attachments by channel_id
+    // (full scans without this). Rows from before channel_id existed
+    // have '' and were orphaned by wipe/delete — backfill from the
+    // bound message once; idempotent.
+    exec_sql(db_,
+        "CREATE INDEX IF NOT EXISTS idx_attachments_channel "
+        "ON attachments(channel_id);");
+    exec_sql(db_,
+        "UPDATE attachments SET channel_id = "
+        "  (SELECT channel_id FROM messages WHERE messages.id = attachments.message_id) "
+        "WHERE channel_id = '' AND message_id > 0 "
+        "  AND EXISTS (SELECT 1 FROM messages WHERE messages.id = attachments.message_id);");
 
     // FTS5 virtual table shadowing messages.content. Populated/kept in sync
     // via triggers so search is ready the moment we ship a search UI.
@@ -604,11 +666,19 @@ void CommunityDb::set_meta_(const std::string& key, const std::string& value) {
     q.bind_text(1, key);
     q.bind_text(2, value);
     q.step();
+    if (key == "owner") {
+        owner_cache_ = value;
+        perm_cache_.clear();
+    }
 }
 
 std::string CommunityDb::owner() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return get_meta_("owner");
+    return owner_cache_;
+}
+
+void CommunityDb::invalidate_perm_cache_() {
+    perm_cache_.clear();
 }
 
 int64_t CommunityDb::central_server_id() const {
@@ -658,6 +728,7 @@ bool CommunityDb::add_member(const std::string& username) {
 
 bool CommunityDb::remove_member(const std::string& username) {
     std::lock_guard<std::mutex> lock(mutex_);
+    perm_cache_.erase(username);
     exec_sql(db_, "BEGIN IMMEDIATE;");
     // Role assignments don't survive leaving/kick — a rejoining member
     // starts clean, matching Discord semantics.
@@ -706,6 +777,7 @@ bool CommunityDb::add_ban(const std::string& username,
                           const std::string& banned_by,
                           const std::string& reason) {
     std::lock_guard<std::mutex> lock(mutex_);
+    perm_cache_.erase(username);
     // Remove membership (and role assignments) and insert ban atomically.
     exec_sql(db_, "BEGIN IMMEDIATE;");
     {
@@ -818,6 +890,7 @@ std::optional<DbRole> CommunityDb::create_role(const std::string& raw_name,
     const std::string name = clamp_utf8(raw_name, kMaxRoleNameBytes);
     if (name.empty()) return std::nullopt;
     std::lock_guard<std::mutex> lock(mutex_);
+    invalidate_perm_cache_();   // positions shift for every role
     exec_sql(db_, "BEGIN IMMEDIATE;");
     // New roles land at position 1, directly above `everyone`; existing
     // roles shift up one to stay dense.
@@ -851,6 +924,7 @@ bool CommunityDb::update_role(int64_t role_id,
     std::lock_guard<std::mutex> lock(mutex_);
     auto cur = get_role_unlocked_(role_id);
     if (!cur) return false;
+    invalidate_perm_cache_();
 
     if (cur->is_default) {
         // Only the permission bits of `everyone` are editable.
@@ -917,6 +991,7 @@ bool CommunityDb::delete_role(int64_t role_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto cur = get_role_unlocked_(role_id);
     if (!cur || cur->is_default) return false;
+    invalidate_perm_cache_();
 
     exec_sql(db_, "BEGIN IMMEDIATE;");
     bool ok = true;
@@ -978,6 +1053,7 @@ bool CommunityDb::set_member_roles(const std::string& username,
         auto r = get_role_unlocked_(id);
         if (!r || r->is_default) return false;
     }
+    perm_cache_.erase(username);
     exec_sql(db_, "BEGIN IMMEDIATE;");
     bool ok = true;
     {
@@ -1000,26 +1076,43 @@ bool CommunityDb::set_member_roles(const std::string& username,
     return ok;
 }
 
-uint64_t CommunityDb::effective_permissions_unlocked_(const std::string& username) const {
-    if (!username.empty() && get_meta_("owner") == username) return perms::kAll;
-    uint64_t p = 0;
-    // Base bits from `everyone` + OR of the member's assigned roles.
-    {
+const CommunityDb::PermEntry& CommunityDb::perm_entry_unlocked_(const std::string& username) const {
+    auto it = perm_cache_.find(username);
+    if (it != perm_cache_.end()) return it->second;
+
+    PermEntry e;
+    if (!username.empty() && owner_cache_ == username) {
+        e.permissions = perms::kAll;
+        e.level = INT32_MAX;
+    } else {
+        // Base bits from `everyone` + OR of the member's assigned roles,
+        // and the highest assigned position, in one pass.
         Stmt q(db_,
-            "SELECT permissions FROM roles WHERE is_default=1 "
+            "SELECT permissions, 0 FROM roles WHERE is_default=1 "
             "UNION ALL "
-            "SELECT r.permissions FROM roles r "
+            "SELECT r.permissions, r.position FROM roles r "
             "JOIN member_roles mr ON mr.role_id = r.id "
             "WHERE mr.username=?1;");
+        uint64_t p = 0;
+        int32_t level = 0;
         if (q.s) {
             q.bind_text(1, username);
             while (q.step() == SQLITE_ROW) {
                 p |= static_cast<uint64_t>(q.col_int64(0));
+                level = std::max(level, q.col_int(1));
             }
         }
+        e.permissions = (p & perms::kAdministrator) ? perms::kAll : p;
+        e.level = level;
     }
-    if (p & perms::kAdministrator) return perms::kAll;
-    return p;
+    // Bounded: entries are per username and cleared on any role change;
+    // a pathological churn of usernames still can't grow it past this.
+    if (perm_cache_.size() >= 4096) perm_cache_.clear();
+    return perm_cache_.emplace(username, e).first->second;
+}
+
+uint64_t CommunityDb::effective_permissions_unlocked_(const std::string& username) const {
+    return perm_entry_unlocked_(username).permissions;
 }
 
 uint64_t CommunityDb::effective_permissions(const std::string& username) const {
@@ -1034,17 +1127,7 @@ bool CommunityDb::has_permission(const std::string& username, uint64_t perm) con
 
 int32_t CommunityDb::member_level(const std::string& username) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!username.empty() && get_meta_("owner") == username) {
-        return INT32_MAX;
-    }
-    Stmt q(db_,
-        "SELECT COALESCE(MAX(r.position), 0) FROM roles r "
-        "JOIN member_roles mr ON mr.role_id = r.id "
-        "WHERE mr.username=?;");
-    if (!q.s) return 0;
-    q.bind_text(1, username);
-    if (q.step() != SQLITE_ROW) return 0;
-    return q.col_int(0);
+    return perm_entry_unlocked_(username).level;
 }
 
 std::optional<DbInvite> CommunityDb::create_invite(const std::string& created_by,
@@ -2199,25 +2282,40 @@ std::vector<PurgedAttachmentInfo> CommunityDb::prune_attachments(
     }
     if (out.empty()) return out;
 
-    // Soft-delete: storage_path→NULL, purged_at→now. Single UPDATE rather
-    // than a loop — attachments.id list is bounded by this channel+kind page.
+    // Soft-delete: storage_path→NULL, purged_at→now, using the SAME
+    // predicate as the SELECT above (nothing can change in between — one
+    // connection, mutex held). This used to be `WHERE id IN (?,?,...)`
+    // with one placeholder per row: the first sweep over an old channel
+    // with thousands of images exceeded SQLITE_MAX_VARIABLE_NUMBER, the
+    // prepare failed silently, and the caller still unlinked the blobs
+    // and broadcast tombstones while the rows kept purged_at=0 — so the
+    // next sweep found them again, forever.
     const int64_t now = now_seconds();
-    std::string placeholders;
-    placeholders.reserve(out.size() * 2);
-    for (size_t i = 0; i < out.size(); ++i) {
-        if (i > 0) placeholders.push_back(',');
-        placeholders.push_back('?');
-    }
-    const std::string sql =
+    Stmt q(db_,
         "UPDATE attachments SET storage_path=NULL, purged_at=? "
-        "WHERE id IN (" + placeholders + ");";
-    Stmt q(db_, sql.c_str());
+        "WHERE id IN (SELECT a.id FROM attachments a "
+        "             JOIN messages m ON m.id = a.message_id "
+        "             WHERE m.channel_id=? AND a.kind=? AND a.created_at<? "
+        "               AND a.purged_at=0);");
+    bool ok = false;
     if (q.s) {
         q.bind_int64(1, now);
-        for (size_t i = 0; i < out.size(); ++i) {
-            q.bind_int64(static_cast<int>(i + 2), out[i].attachment_id);
+        q.bind_text(2, channel_id);
+        q.bind_int(3, kind);
+        q.bind_int64(4, cutoff_ts);
+        ok = q.step() == SQLITE_DONE;
+        if (ok && sqlite3_changes(db_) != static_cast<int>(out.size())) {
+            std::cerr << "[DB] prune_attachments: tombstoned "
+                      << sqlite3_changes(db_) << " rows, expected "
+                      << out.size() << "\n";
         }
-        q.step();
+    }
+    if (!ok) {
+        std::cerr << "[DB] prune_attachments: tombstone UPDATE failed for #"
+                  << channel_id << " kind " << kind << ": "
+                  << sqlite3_errmsg(db_) << "\n";
+        out.clear();   // don't unlink / broadcast what we didn't commit
+        return out;
     }
     for (auto& p : out) p.purged_at = now;
     return out;

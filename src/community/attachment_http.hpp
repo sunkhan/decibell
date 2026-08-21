@@ -51,6 +51,7 @@ private:
     boost::asio::io_context& ioc_;
     boost::asio::ssl::context ssl_ctx_;
     boost::asio::ip::tcp::acceptor acceptor_;
+    boost::asio::steady_timer accept_backoff_;
     chatproj::CommunityDb& db_;
     std::string jwt_secret_;
     std::string storage_root_;

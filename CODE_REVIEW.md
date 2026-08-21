@@ -5,6 +5,31 @@
 
 ---
 
+## Fix progress — batch 14 (2026-08-21): remaining review bugs + hardening
+
+Findings: `docs/reviews/2026-08-21-community-server-review.md` §2 (B9–B27) and §3 (P1–P4).
+**C++ community server — compiled standalone, 66/66 e2e checks (`src/community/tests/e2e.py`, now incl. short-timeout and fast-sweep server instances):**
+- ✅ **Deadlines** (B9): 10 s TLS+auth deadline, 90 s idle deadline re-armed per frame (CLIENT_PING counts), 64 KB pre-auth frame cap, `inbound_body_` shrinks after big frames; attachment connections get a 30 s inactivity deadline (closes a stalled PATCH's `FILE*` too); both accept loops back off 500 ms on error instead of spinning on EMFILE. Knobs: `DECIBELL_AUTH_TIMEOUT_SECONDS`, `DECIBELL_IDLE_TIMEOUT_SECONDS` — `main.cpp`, `attachment_http.cpp`
+- ✅ **Rate limiting** (B11): per-session token buckets by packet class (messages 8 burst/1.5 s⁻¹, signalling 10/2, queries 20/4, admin 20/2, thumbnails 6/1); throttled CHANNEL_MSGs get `MOD_ACTION_RES{action="message"}` so the optimistic bubble is withdrawn; `/attachments/init` limited per username (20 burst/0.5 s⁻¹ → 429) — new `rate_limit.hpp`
+- ✅ **Capabilities cap** (B10): `ClientCapabilities` with > 16 encode or decode entries is dropped (was re-serialised into every VOICE_PRESENCE_UPDATE) — `main.cpp`
+- ✅ **`prune_attachments` IN-list** (B12): tombstone UPDATE now reuses the SELECT's JOIN predicate (no per-row placeholders, no `SQLITE_MAX_VARIABLE_NUMBER` cliff); a failed UPDATE no longer unlinks/broadcasts; messages capped at 10 attachments server-side — `db.cpp`, `main.cpp`
+- ✅ **`last_keyframe_relay_` growth** (B14): target resolved before the timestamp is recorded; pruned on stream stop / last session leave — `main.cpp`
+- ✅ **id=0 broadcast** (B18): a CHANNEL_MSG whose insert fails is not broadcast; sender gets a failure `MOD_ACTION_RES` — `main.cpp`
+- ✅ **Throwing `std::filesystem` overloads** (B19) → `error_code` overloads; `io_context.run()` wrapped in a log-and-continue loop — `attachment_http.cpp`, `main.cpp`
+- ✅ `Attachment.url` is `/attachments/<id>` instead of the server's absolute path (B20); invite `max_uses < 0` → 0 and past `expires_at` rejected (B25); AUDIO relay validates `payload_size` and STOP_WATCHING from a non-watcher is inert (B26); `CHANNEL_PRUNED` batched at 2000 ids/packet (B27)
+- ✅ **Permission + statement cache** (P2): per-user (effective permissions, level) cached in `CommunityDb`, invalidated on role create/update/delete, member-role set, remove/ban, owner change; owner cached in memory; prepared statements cached by SQL text (checked-out statements fall back to a one-off prepare) — `db.{hpp,cpp}`
+- ✅ **Central-sync worker** (P4): one thread + bounded queue for heartbeat / invite / membership / picture sync instead of a detached thread + TLS handshake per event; joined on shutdown — new `central_sync.hpp`, `main.cpp`
+- ✅ **Roster coalescing** (P1 cheap): `broadcast_members()` collapses calls within 250 ms into one fan-out — `main.cpp`
+- ✅ Index `attachments(channel_id)` + one-time backfill of legacy `''` rows (P7); `DECIBELL_RETENTION_INTERVAL_SECONDS` knob
+
+**Proto:** `CommunityAuthResponse.server_id = 10` (central-assigned id; 0 until learned).
+
+**Client — renderer tsc clean, native `cargo check` clean (83 warnings, unchanged):**
+- ✅ **Invite-joined servers keyed `host:port`** (B17): native re-keys the connection onto central's id when the auth response carries one (tearing down any stale client under that id) and reports `requestedServerId`/`host`/`port` in `community_auth_responded`; the renderer follows the re-key for the active server and `mergeServers` a tile entry so an invite-joined server shows up immediately — `net/community.rs`, `events.rs`, `useServerEvents.ts`, `types/index.ts`
+- ✅ **InviteModal owner-gated** (B16) → `usePermission(MANAGE_INVITES)` — `InviteModal.tsx`
+
+**Still open:** P1 proper (delta member events + lazy roster), P5 relay allocations, P6 FTS triggers, P8 HTTP keep-alive; then permission model v2 (§5 of the review).
+
 ## Fix progress — batch 13 (2026-08-21): community-server review fix batch
 
 Findings + full context: `docs/reviews/2026-08-21-community-server-review.md`.

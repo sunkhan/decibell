@@ -36,6 +36,15 @@ Decibell is a decentralized Discord-like application with three components:
 - Handles screen sharing signaling (start/stop/watch)
 - Runs on port **8082** (TCP/TLS) + port **8083** (UDP relay, i.e. `port + 1`)
 - Hardcoded channels on auth: `general` (text), `announcements` (text), `voice-lounge` (voice)
+- Environment (all optional unless noted):
+  `DECIBELL_JWT_SECRET` (required), `DECIBELL_CENTRAL_HOST` (127.0.0.1),
+  `DECIBELL_SERVER_NAME`, `DECIBELL_SERVER_DESC`, `DECIBELL_PUBLIC_IP`,
+  `DECIBELL_OWNER_USERNAME` (required on first boot), `DECIBELL_DB_PATH`,
+  `DECIBELL_ATTACHMENTS_ROOT`, `DECIBELL_MAX_ATTACHMENT_BYTES` (100 MiB),
+  `DECIBELL_AUTH_TIMEOUT_SECONDS` (10 — TLS+auth deadline for a new
+  connection), `DECIBELL_IDLE_TIMEOUT_SECONDS` (90 — authenticated session
+  with no frames; clients ping every 30 s),
+  `DECIBELL_RETENTION_INTERVAL_SECONDS` (600 — retention sweep period).
 
 ### Client (`src/client/`)
 - Qt6/QML desktop application (being replaced with Tauri v2)

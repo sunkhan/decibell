@@ -124,7 +124,7 @@ class Client:
             pass
 
 
-def start_server(fresh=False):
+def start_server(fresh=False, extra_env=None):
     os.makedirs(RUN, exist_ok=True)
     if fresh:
         for f in ("c.db", "c.db-wal", "c.db-shm"):
@@ -136,6 +136,8 @@ def start_server(fresh=False):
                        capture_output=True)
     env = dict(os.environ, DECIBELL_JWT_SECRET=SECRET, DECIBELL_OWNER_USERNAME="alice", DECIBELL_DB_PATH="./c.db",
                DECIBELL_ATTACHMENTS_ROOT="./att", DECIBELL_CENTRAL_HOST="127.0.0.1")
+    if extra_env:
+        env.update(extra_env)
     log = open(os.path.join(RUN, "server.log"), "ab")
     proc = subprocess.Popen([SERVER_BIN], cwd=RUN, env=env, stdout=log, stderr=subprocess.STDOUT)
     for _ in range(50):
@@ -430,6 +432,219 @@ def test_no_ghost_after_leave_or_ban():
     kim.close(); owner.close()
 
 
+def raw_tls(port=8082):
+    ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+    return ctx.wrap_socket(socket.create_connection((HOST, port), timeout=3))
+
+
+def socket_closed(sock, wait):
+    """True if the peer closes `sock` within `wait` seconds."""
+    sock.settimeout(wait)
+    try:
+        return sock.recv(16) == b""
+    except (ssl.SSLError, ConnectionError, OSError):
+        return True
+    except socket.timeout:
+        return False
+
+
+def test_b9_timeouts():
+    print("[B9] auth / idle deadlines + pre-auth frame cap (short-timeout server)")
+    proc = start_server(extra_env={"DECIBELL_AUTH_TIMEOUT_SECONDS": "2", "DECIBELL_IDLE_TIMEOUT_SECONDS": "4"})
+    try:
+        t0 = time.time()
+        s1 = raw_tls()
+        check("unauthenticated TLS session closed by auth deadline", socket_closed(s1, 4.0), f"{time.time()-t0:.1f}s")
+        s1.close()
+        # Pre-auth oversized frame → immediate drop.
+        s2 = raw_tls()
+        s2.sendall(struct.pack(">I", 100 * 1024))
+        check("pre-auth 100 KB frame rejected", socket_closed(s2, 2.0))
+        s2.close()
+        # Authenticated but silent → idle deadline.
+        owner = Client("alice"); assert auth_ok(owner)[0]
+        t0 = time.time()
+        check("idle authenticated session closed after idle deadline", owner.is_closed(6.0), f"{time.time()-t0:.1f}s")
+        owner.close()
+        # Authenticated + pinging stays alive past the idle deadline.
+        owner = Client("alice"); assert auth_ok(owner)[0]
+        alive = True
+        for _ in range(6):
+            time.sleep(1.0)
+            owner.send(pb.Packet.CLIENT_PING)
+            owner.drain(0.05)
+            if owner.closed:
+                alive = False; break
+        owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest())
+        ml = owner.wait(pb.Packet.MEMBER_LIST_RES, timeout=2)
+        check("pinging session survives 6 s past a 4 s idle deadline", alive and ml is not None)
+        owner.close()
+    finally:
+        stop_server(proc)
+
+
+def test_b11_rate_limit():
+    print("[B11] message flood is throttled and the sender is told")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    lou = join("lou", owner)
+    owner.flush(0.5); lou.flush(0.5)
+    for i in range(30):
+        lou.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content=f"spam {i}"))
+    owner.drain(2.0); lou.drain(1.0)
+    delivered = sum(1 for p in owner.inbox if p.type == pb.Packet.CHANNEL_MSG)
+    rejected = sum(1 for p in lou.inbox if p.type == pb.Packet.MOD_ACTION_RES and p.mod_action_res.action == "message"
+                   and not p.mod_action_res.success)
+    check("burst capped (8 burst + ~1.5/s)", 8 <= delivered <= 14, f"delivered={delivered}")
+    check("sender notified for each dropped message", rejected == 30 - delivered, f"rejected={rejected} delivered={delivered}")
+    lou.close(); owner.close()
+
+
+def test_b10_caps_cap():
+    print("[B10] oversized ClientCapabilities are rejected")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    mia = join("mia", owner)
+    owner.flush(0.5); mia.flush(0.5)
+    caps = pb.ClientCapabilities()
+    for i in range(100):
+        caps.decode.add(codec=pb.CODEC_H264_HW, max_width=1920, max_height=1080, max_fps=60)
+    mia.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge", capabilities=caps))
+    vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=1.5, pred=lambda p: "mia" in p.voice_presence_update.active_users)
+    check("join with 100 codec entries dropped", vp is None)
+    small = pb.ClientCapabilities(); small.decode.add(codec=pb.CODEC_H264_HW)
+    mia.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge", capabilities=small))
+    vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2, pred=lambda p: "mia" in p.voice_presence_update.active_users)
+    check("normal caps accepted", vp is not None)
+    mia.close(); owner.close()
+
+
+def test_b25_invite_params():
+    print("[B25] invite parameter validation")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.send(pb.Packet.INVITE_CREATE_REQ, invite_create_req=pb.InviteCreateRequest(expires_at=int(time.time()) - 60, max_uses=0))
+    r = owner.wait(pb.Packet.INVITE_CREATE_RES)
+    check("past expiry rejected", r is not None and not r.invite_create_res.success)
+    owner.send(pb.Packet.INVITE_CREATE_REQ, invite_create_req=pb.InviteCreateRequest(expires_at=0, max_uses=-5))
+    r = owner.wait(pb.Packet.INVITE_CREATE_RES)
+    check("negative max_uses normalised to 0", r is not None and r.invite_create_res.success and r.invite_create_res.invite.max_uses == 0)
+    owner.close()
+
+
+def test_b26_stop_watching_spoof():
+    print("[B26] STOP_WATCHING from a non-watcher is inert")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ned = join("ned", owner); oli = join("oli", owner)
+    for c in (ned, oli):
+        c.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    ned.send(pb.Packet.START_STREAM_REQ, start_stream_req=pb.StartStreamRequest(channel_id="voice-lounge", target_fps=30))
+    time.sleep(0.5); ned.flush(0.5); oli.flush(0.5); owner.flush(0.5)
+    oli.send(pb.Packet.STOP_WATCHING_REQ, stop_watching_req=pb.StopWatchingRequest(channel_id="voice-lounge", target_username="ned"))
+    n = ned.wait(pb.Packet.STREAM_WATCHER_NOTIFY, timeout=1.5)
+    check("no LEFT notify for a never-subscribed watcher", n is None)
+    oli.send(pb.Packet.WATCH_STREAM_REQ, watch_stream_req=pb.WatchStreamRequest(channel_id="voice-lounge", target_username="ned"))
+    n = ned.wait(pb.Packet.STREAM_WATCHER_NOTIFY, timeout=2, pred=lambda p: p.stream_watcher_notify.action == pb.StreamWatcherNotify.JOINED)
+    check("real watch → JOINED notify", n is not None)
+    oli.send(pb.Packet.STOP_WATCHING_REQ, stop_watching_req=pb.StopWatchingRequest(channel_id="voice-lounge", target_username="ned"))
+    n = ned.wait(pb.Packet.STREAM_WATCHER_NOTIFY, timeout=2, pred=lambda p: p.stream_watcher_notify.action == pb.StreamWatcherNotify.LEFT)
+    check("real unwatch → LEFT notify", n is not None)
+    ned.close(); oli.close(); owner.close()
+
+
+def test_p2_perm_cache_invalidation():
+    print("[P2] permission cache invalidates on role changes")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    pat = join("pat", owner)
+    owner.flush(0.5); pat.flush(0.5)
+    pat.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="pat-1", type=pb.ChannelInfo.TEXT))
+    r = pat.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "create")
+    check("no MANAGE_CHANNELS → create rejected", r is not None and not r.channel_action_res.success)
+    owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="Builder", color=0, permissions=pb.PERM_MANAGE_CHANNELS))
+    role = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
+    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="pat", role_ids=[role.id]))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
+    pat.flush(0.5)
+    pat.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="pat-2", type=pb.ChannelInfo.TEXT))
+    r = pat.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "create")
+    check("role assigned → create allowed (cache refreshed)", r is not None and r.channel_action_res.success, r.channel_action_res.message if r else None)
+    owner.send(pb.Packet.ROLE_UPDATE_REQ, role_update_req=pb.RoleUpdateRequest(role_id=role.id, name="Builder", color=0, permissions=0, position=role.position))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "update")
+    pat.flush(0.5)
+    pat.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="pat-3", type=pb.ChannelInfo.TEXT))
+    r = pat.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "create")
+    check("role bits removed → create rejected (cache invalidated)", r is not None and not r.channel_action_res.success)
+    owner.send(pb.Packet.ROLE_UPDATE_REQ, role_update_req=pb.RoleUpdateRequest(role_id=role.id, name="Builder", color=0, permissions=pb.PERM_MANAGE_CHANNELS, position=role.position))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "update")
+    owner.send(pb.Packet.ROLE_DELETE_REQ, role_delete_req=pb.RoleDeleteRequest(role_id=role.id))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "delete")
+    pat.flush(0.5)
+    pat.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="pat-4", type=pb.ChannelInfo.TEXT))
+    r = pat.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "create")
+    check("role deleted → create rejected (cache invalidated)", r is not None and not r.channel_action_res.success)
+    pat.close(); owner.close()
+
+
+def test_b20_attachment_url():
+    print("[B20] Attachment.url no longer leaks the server filesystem path")
+    now = int(time.time())
+    mid = sql("insert into messages(channel_id, sender, content, timestamp) values('general','alice','with file',?) returning id", now)[0][0]
+    aid = sql("insert into attachments(message_id, kind, filename, mime, size_bytes, storage_path, position, created_at, upload_status, uploader, channel_id) "
+              "values(?,0,'x.png','image/png',10,'/srv/secret/att/general/1_x.png',0,?,'ready','alice','general') returning id", mid, now)[0][0]
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", before_id=0, limit=50))
+    h = owner.wait(pb.Packet.CHANNEL_HISTORY_RES)
+    url = None
+    for m in h.channel_history_res.messages if h else []:
+        for a in m.attachments:
+            if a.id == aid: url = a.url
+    check("history attachment url is /attachments/<id>", url == f"/attachments/{aid}", repr(url))
+    owner.close()
+
+
+def test_b12_b27_retention_sweep():
+    print("[B12/B27] retention sweep: >999 attachments tombstoned once; CHANNEL_PRUNED batched")
+    old = int(time.time()) - 10 * 86400
+    att_dir = os.path.join(RUN, "att", "general"); os.makedirs(att_dir, exist_ok=True)
+    c = sqlite3.connect(DB)
+    paths = []
+    for i in range(1200):
+        mid = c.execute("insert into messages(channel_id, sender, content, timestamp) values('general','alice',?,?)", (f"img {i}", old)).lastrowid
+        path = os.path.join(att_dir, f"r{i}.png"); open(path, "wb").write(b"x"); paths.append(path)
+        c.execute("insert into attachments(message_id, kind, filename, mime, size_bytes, storage_path, position, created_at, upload_status, uploader, channel_id) "
+                  "values(?,0,'r.png','image/png',1,?,0,?,'ready','alice','general')", (mid, path, old))
+    # (announcements was deleted by the B1 test — and stays deleted — so use a channel of our own.)
+    c.execute("insert or ignore into channels(id, name, type, position) values('archive','archive',0,99)")
+    for i in range(2500):
+        c.execute("insert into messages(channel_id, sender, content, timestamp) values('archive','alice',?,?)", (f"old {i}", old))
+    c.execute("update channels set retention_days_image=1 where id='general'")
+    c.execute("update channels set retention_days_text=1 where id='archive'")
+    c.commit(); c.close()
+    proc = start_server(extra_env={"DECIBELL_RETENTION_INTERVAL_SECONDS": "2"})
+    try:
+        owner = Client("alice"); assert auth_ok(owner)[0]
+        owner.drain(6.0)   # ≥2 sweeps
+        pruned = [p.channel_pruned for p in owner.inbox if p.type == pb.Packet.CHANNEL_PRUNED]
+        gen = [cp for cp in pruned if cp.channel_id == "general"]
+        ann = [cp for cp in pruned if cp.channel_id == "archive"]
+        purged = sum(len(cp.purged_attachments) for cp in gen)
+        check("1200 attachments tombstoned in exactly one sweep", purged == 1200 and len(gen) == 1, f"purged={purged} packets={len(gen)}")
+        deleted = sum(len(cp.deleted_message_ids) for cp in ann)
+        check("2500 messages pruned, batched <=2000 per packet", deleted == 2500 and len(ann) == 2 and all(len(cp.deleted_message_ids) <= 2000 for cp in ann),
+              f"deleted={deleted} packets={len(ann)}")
+        check("blobs unlinked", not any(os.path.exists(p) for p in paths))
+        rows = sql("select count(*) from attachments where channel_id='general' and purged_at=0 and created_at<?", old + 1)
+        check("no un-tombstoned old rows left (no re-purge loop)", rows == [(0,)], str(rows))
+        owner.close()
+    finally:
+        stop_server(proc)
+    sql("update channels set retention_days_image=0, retention_days_text=0")
+
+
+def test_auth_server_id_field():
+    print("[B17 server] CommunityAuthResponse carries server_id (0 without central)")
+    c = Client("alice"); ok, r = auth_ok(c)
+    check("server_id field present and 0", ok and r.community_auth_res.server_id == 0)
+    c.close()
+
+
 def test_auth_failure_closes():
     print("[regression] failed auth still delivers response then closes")
     c = Client("nobody")
@@ -452,8 +667,17 @@ if __name__ == "__main__":
         test_ghost_stream()
         test_offline_kick_roster()
         test_no_ghost_after_leave_or_ban()
+        test_b11_rate_limit()
+        test_b10_caps_cap()
+        test_b25_invite_params()
+        test_b26_stop_watching_spoof()
+        test_p2_perm_cache_invalidation()
+        test_b20_attachment_url()
+        test_auth_server_id_field()
     finally:
         stop_server(proc)
+    test_b9_timeouts()
+    test_b12_b27_retention_sweep()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     if FAIL:
         print("FAILED:", FAIL)
