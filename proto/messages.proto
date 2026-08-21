@@ -179,6 +179,13 @@ message Packet {
     CHANNEL_REORDER_REQ = 102;  // client→community (MANAGE_CHANNELS):
                                 // full new order after a drag; response via
                                 // CHANNEL_ACTION_RES action="reorder"
+
+    // --- Per-channel permission overwrites (permissions v2) ---
+    // See docs/superpowers/specs/2026-08-22-permissions-v2-design.md
+    CHANNEL_OVERWRITE_SET_REQ = 103; // client→community (MANAGE_ROLES in channel);
+                                     // response via CHANNEL_ACTION_RES action="overwrite"
+    CHANNEL_OVERWRITES_REQ    = 104; // client→community
+    CHANNEL_OVERWRITES_RES    = 105; // community→client; also pushed after a change
   }
 
   Type type = 1;
@@ -318,6 +325,11 @@ message Packet {
     ChannelListUpdate     channel_list_update = 102;
     SetNicknameRequest    set_nickname_req    = 103;
     ChannelReorderRequest channel_reorder_req = 104;
+
+    // --- Per-channel permission overwrites ---
+    ChannelOverwriteSetRequest channel_overwrite_set_req = 105;
+    ChannelOverwritesRequest   channel_overwrites_req    = 106;
+    ChannelOverwritesResponse  channel_overwrites_res    = 107;
   }
 }
 
@@ -460,6 +472,13 @@ message ChannelInfo {
   int32 retention_days_video = 7;
   int32 retention_days_document = 8;
   int32 retention_days_audio = 9;
+  // The RECIPIENT's resolved permissions for this channel (server-wide
+  // role bits with the channel's overwrites applied; owner/ADMINISTRATOR
+  // = everything). Channel lists are built per recipient and only
+  // contain channels the recipient can VIEW_CHANNEL (categories are
+  // always included). Clients gate composer / attach / voice-join /
+  // history UI from this; the server stays authoritative.
+  uint64 my_permissions = 10;
 }
 
 message CommunityAuthRequest {
@@ -642,6 +661,40 @@ message ChannelReorderRequest {
 message SetNicknameRequest {
   string username = 1;
   string nickname = 2;
+}
+
+// --- Per-channel permission overwrites ---
+// Discord's model: an overwrite per (channel, role | member) with an allow
+// and a deny bitfield. Resolution: base server permissions → @everyone
+// overwrite → OR of role overwrites → member overwrite; owner and
+// ADMINISTRATOR bypass overwrites; a result without VIEW_CHANNEL is 0.
+message ChannelOverwrite {
+  string channel_id = 1;
+  enum TargetType { ROLE = 0; MEMBER = 1; }
+  TargetType target_type = 2;
+  // Role id (decimal string) for ROLE, username for MEMBER.
+  string target_id = 3;
+  uint64 allow = 4;
+  uint64 deny = 5;
+}
+
+// Sets (or, with allow = deny = 0, removes) one overwrite. Requires
+// MANAGE_ROLES in the channel; only bits the actor holds in that channel
+// may be changed; role targets must sit strictly below the actor's level.
+// Result rides CHANNEL_ACTION_RES with action="overwrite".
+message ChannelOverwriteSetRequest {
+  ChannelOverwrite overwrite = 1;
+}
+
+message ChannelOverwritesRequest {
+  string channel_id = 1;
+}
+
+message ChannelOverwritesResponse {
+  bool success = 1;
+  string message = 2;
+  string channel_id = 3;
+  repeated ChannelOverwrite overwrites = 4;
 }
 
 message ChannelHistoryRequest {
@@ -912,9 +965,13 @@ enum Permission {
   PERM_MANAGE_MESSAGES  = 64;    // 1<<6  — delete other members' messages
   PERM_MANAGE_INVITES   = 128;   // 1<<7  — create/list/revoke invites
   PERM_MANAGE_NICKNAMES = 256;   // 1<<8  — reserved (ships with nickname editing)
-  PERM_SEND_MESSAGES    = 1024;  // 1<<10 — reserved, default-on
-  PERM_CONNECT_VOICE    = 2048;  // 1<<11 — reserved, default-on
-  PERM_STREAM           = 4096;  // 1<<12 — reserved, default-on
+  PERM_SEND_MESSAGES    = 1024;  // 1<<10 — post in a text channel (enforced since v2)
+  PERM_CONNECT_VOICE    = 2048;  // 1<<11 — join a voice channel (enforced since v2)
+  PERM_STREAM           = 4096;  // 1<<12 — start a screen share (enforced since v2)
+  // --- permissions v2 (per-channel overwrites) ---
+  PERM_VIEW_CHANNEL     = 8192;  // 1<<13 — channel is listed / its traffic delivered
+  PERM_READ_HISTORY     = 16384; // 1<<14 — CHANNEL_HISTORY_REQ
+  PERM_ATTACH_FILES     = 32768; // 1<<15 — attachments on messages / upload init
 }
 
 message RoleInfo {

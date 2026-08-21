@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "db.hpp"
+#include "authz.hpp"
 #include "rate_limit.hpp"
 
 namespace ssl = boost::asio::ssl;
@@ -227,6 +228,7 @@ public:
     AttachmentConnection(tcp::socket socket,
                          ssl::context& ssl_ctx,
                          chatproj::CommunityDb& db,
+                         const chatproj::Authorizer* authz,
                          const std::string& jwt_secret,
                          const std::string& storage_root,
                          int64_t max_attachment_bytes)
@@ -234,6 +236,7 @@ public:
           shutdown_timer_(socket_.lowest_layer().get_executor()),
           deadline_timer_(socket_.lowest_layer().get_executor()),
           db_(db),
+          authz_(authz),
           jwt_secret_(jwt_secret),
           storage_root_(storage_root),
           max_attachment_bytes_(max_attachment_bytes) {}
@@ -395,6 +398,14 @@ private:
         auto target_channel = db_.get_channel(channel_id);
         if (!target_channel || target_channel->type == 2) {
             send_error(404, "Not Found"); return;
+        }
+        // Permissions v2: uploading is "sending a message with a file".
+        if (authz_) {
+            const chatproj::AuthCtx ctx{username_, channel_id, ""};
+            if (!authz_->check(chatproj::Action::SendMessage, ctx) ||
+                !authz_->check(chatproj::Action::AttachFiles, ctx)) {
+                send_error(403, "Forbidden"); return;
+            }
         }
 
         const std::string safe_name = sanitize_filename(filename);
@@ -638,6 +649,12 @@ private:
         if (att->upload_status != "ready")      { send_error(404, "Not Found"); return; }
         if (att->purged_at != 0)                { send_error(410, "Gone"); return; }
         if (!db_.is_member(username_))          { send_error(403, "Forbidden"); return; }
+        // Permissions v2: a private channel's files are private too.
+        // Legacy rows (channel_id '') fall back to the membership check.
+        if (authz_ && !att->channel_id.empty() &&
+            !authz_->check(chatproj::Action::ViewChannel, {username_, att->channel_id, ""})) {
+            send_error(403, "Forbidden"); return;
+        }
 
         // ?variant=thumb[&size=N] diverts to a JPEG thumbnail file.
         // Reuses the same GET endpoint and auth check rather than
@@ -1008,6 +1025,7 @@ private:
     boost::asio::steady_timer shutdown_timer_;
     boost::asio::steady_timer deadline_timer_;
     chatproj::CommunityDb& db_;
+    const chatproj::Authorizer* authz_;
     std::string jwt_secret_;
     std::string storage_root_;
     int64_t max_attachment_bytes_;
@@ -1081,7 +1099,7 @@ void AttachmentHttpServer::do_accept() {
         [this](const boost::system::error_code& ec, tcp::socket socket) {
             if (!ec) {
                 auto conn = std::make_shared<AttachmentConnection>(
-                    std::move(socket), ssl_ctx_, db_, jwt_secret_,
+                    std::move(socket), ssl_ctx_, db_, authz_, jwt_secret_,
                     storage_root_, max_attachment_bytes_);
                 conn->start();
                 do_accept();

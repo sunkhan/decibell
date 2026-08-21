@@ -133,6 +133,11 @@ checks). Open: B15 (env-owned name/description — folded into the
 server-rename work), B22/B24/B28 (cosmetic), B29/B30 (central), P1 proper,
 P5, P6, P8.
 
+Batch 15 (2026-08-22): §5 step 3 — `authorize()` abstraction, enforced
+SEND/CONNECT/STREAM, one hierarchy rule, per-channel overwrites (D1, D2,
+D6 ✅; 96 e2e checks). See
+`docs/superpowers/specs/2026-08-22-permissions-v2-design.md`.
+
 ## 5. Suggested order of work
 
 1. **Fix batch (small, verifiable with the standalone build + e2e client):**

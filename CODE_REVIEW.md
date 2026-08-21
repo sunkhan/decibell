@@ -5,6 +5,21 @@
 
 ---
 
+## Fix progress — batch 15 (2026-08-22): permissions v2 — resolver, enforced bits, per-channel overwrites
+
+Design: `docs/superpowers/specs/2026-08-22-permissions-v2-design.md`. Review §4 D1/D2/D6.
+**C++ community server — compiled standalone, 96/96 e2e checks:**
+- ✅ **`Authorizer`** (`authz.hpp`): `check(Action, AuthCtx{user, channel, target})` replaces the 15 inline `has_permission` / owner / hierarchy blocks; uniform reasons; `can_moderate()` is the single hierarchy rule (strictly higher assigned-role level; owner ∞; ADMINISTRATOR never bypasses) — `main.cpp`
+- ✅ **Enforced bits**: `SEND_MESSAGES` (CHANNEL_MSG, attachment init), `CONNECT_VOICE` (JOIN_VOICE_REQ), `STREAM` (START_STREAM_REQ); denials answer via `MOD_ACTION_RES{action="message"|"voice"|"stream"}`
+- ✅ **Per-channel overwrites**: `channel_overwrites` table (v6), `CHANNEL_OVERWRITE_SET_REQ` / `CHANNEL_OVERWRITES_REQ/RES`, Discord resolution (base → everyone → roles → member; owner/admin bypass; no VIEW ⇒ 0), cached per (user, channel) and invalidated with the role cache + on overwrite/channel changes; cascades on channel delete / role delete / member removal; escalation guard (only bits held in that channel), role-hierarchy guard, self-lock-out guard — `db.{hpp,cpp}`, `main.cpp`
+- ✅ New bits `VIEW_CHANNEL` / `READ_HISTORY` / `ATTACH_FILES` (1<<13..15), default-on; v6 migration ORs them into an existing `everyone` once
+- ✅ **Per-recipient channel lists** (`COMMUNITY_AUTH_RES`, `CHANNEL_LIST_UPDATE`) with `ChannelInfo.my_permissions`; channel-scoped fan-out (`broadcast_to_channel`) for messages, deletes, wipes, prunes, retention updates, voice/stream presence; attachment GET requires VIEW on the attachment's channel; history requires READ_HISTORY
+
+**Client — renderer tsc clean, native `cargo check` clean (83 warnings, unchanged):**
+- ✅ `permissions.ts`: new bits, all enforced bits now editable in the role editor, `useChannelPermission()`; `ChannelPermissionsSection` (tri-state allow / inherit / deny per role or member) mounted in `ChannelSettingsModal`; sidebar gear follows per-channel MANAGE_CHANNELS/MANAGE_ROLES; composer shows a read-only bar without SEND, attach button hidden without ATTACH_FILES, voice join blocked without CONNECT, Stream button hidden without STREAM; native `set_channel_overwrite` / `list_channel_overwrites` + `channel_overwrites_received`
+
+**Open next:** P1 proper (delta roster events — design in the 2026-08-22 conversation notes), server rename / ownership transfer / audit log, timeouts + slowmode.
+
 ## Fix progress — batch 14 (2026-08-21): remaining review bugs + hardening
 
 Findings: `docs/reviews/2026-08-21-community-server-review.md` §2 (B9–B27) and §3 (P1–P4).

@@ -67,6 +67,7 @@ struct DbAttachment {
     std::string upload_status;
     int64_t expected_size = 0; // declared at init; used to validate final size
     std::string uploader;      // username that POSTed /init
+    std::string channel_id;    // channel the upload was initiated for (VIEW gate on GET)
     // Intrinsic pixel dimensions; 0 if unknown (older row or non-image kind).
     // Populated from the uploader's init metadata.
     int32_t width = 0;
@@ -132,6 +133,10 @@ constexpr uint64_t kManageNicknames = 1ull << 8;
 constexpr uint64_t kSendMessages    = 1ull << 10;
 constexpr uint64_t kConnectVoice    = 1ull << 11;
 constexpr uint64_t kStream          = 1ull << 12;
+// permissions v2 — per-channel overwrites
+constexpr uint64_t kViewChannel     = 1ull << 13;
+constexpr uint64_t kReadHistory     = 1ull << 14;
+constexpr uint64_t kAttachFiles     = 1ull << 15;
 constexpr uint64_t kAll             = ~0ull;
 // Every currently-defined permission bit. Role create/update mask
 // client-supplied bitfields with this so undefined bits never reach the
@@ -142,10 +147,16 @@ constexpr uint64_t kAll             = ~0ull;
 constexpr uint64_t kKnownMask =
     kAdministrator | kManageServer | kManageChannels | kManageRoles |
     kKickMembers | kBanMembers | kManageMessages | kManageInvites |
-    kManageNicknames | kSendMessages | kConnectVoice | kStream;
-// What the seeded `everyone` role starts with: the reserved default-on
-// bits, so future enforcement of send/connect/stream needs no migration.
-constexpr uint64_t kDefaultEveryone = kSendMessages | kConnectVoice | kStream;
+    kManageNicknames | kSendMessages | kConnectVoice | kStream |
+    kViewChannel | kReadHistory | kAttachFiles;
+// What the seeded `everyone` role starts with: every "ordinary member"
+// bit on, so a fresh server behaves like one without permissions until
+// an operator tightens something. Migration v6 ORs the v2 bits into an
+// existing `everyone` once.
+constexpr uint64_t kDefaultEveryone =
+    kSendMessages | kConnectVoice | kStream |
+    kViewChannel | kReadHistory | kAttachFiles;
+constexpr uint64_t kV2Bits = kViewChannel | kReadHistory | kAttachFiles;
 } // namespace perms
 
 // Bounds a user-supplied display string (role/channel name, nickname) to
@@ -181,6 +192,16 @@ inline std::string clamp_utf8(const std::string& in, size_t max_bytes) {
 constexpr size_t kMaxRoleNameBytes    = 64;
 constexpr size_t kMaxChannelNameBytes = 64;
 constexpr size_t kMaxNicknameBytes    = 32;
+
+// One per-channel permission overwrite (Discord model). target_type 0 =
+// role (target_id = role id as decimal text), 1 = member (username).
+struct DbOverwrite {
+    std::string channel_id;
+    int32_t target_type = 0;
+    std::string target_id;
+    uint64_t allow = 0;
+    uint64_t deny = 0;
+};
 
 // Reason an invite cannot be redeemed.
 enum class InviteResult {
@@ -291,6 +312,25 @@ public:
     // Hierarchy level: highest assigned role position (0 with no roles).
     // Owner → INT32_MAX. Used for "can only act below yourself" checks.
     int32_t member_level(const std::string& username) const;
+
+    // --- permissions v2: per-channel overwrites ---
+    // See docs/superpowers/specs/2026-08-22-permissions-v2-design.md.
+    std::vector<DbOverwrite> list_overwrites(const std::string& channel_id) const;
+    // Upserts; allow == deny == 0 deletes the row. Caller validates
+    // authorization; this only checks the channel/target exist. Bits are
+    // masked to perms::kKnownMask and a bit set in both allow and deny
+    // is treated as deny.
+    bool set_overwrite(const DbOverwrite& ow);
+    // The user's resolved permissions in `channel_id`:
+    //   base (effective_permissions) → everyone overwrite → OR of role
+    //   overwrites → member overwrite; owner / ADMINISTRATOR bypass
+    //   overwrites; a result without VIEW_CHANNEL collapses to 0.
+    // Unknown channel → 0. Cached per (user, channel).
+    uint64_t channel_permissions(const std::string& username,
+                                 const std::string& channel_id) const;
+    bool has_channel_permission(const std::string& username,
+                                const std::string& channel_id,
+                                uint64_t perm) const;
 
     // --- channels ---
     std::vector<DbChannel> list_channels() const;
@@ -511,7 +551,20 @@ private:
     struct PermEntry { uint64_t permissions = 0; int32_t level = 0; };
     const PermEntry& perm_entry_unlocked_(const std::string& username) const;
     void invalidate_perm_cache_();
+    // Targeted: one user's server-wide + per-channel entries.
+    void invalidate_user_perms_(const std::string& username);
     mutable std::unordered_map<std::string, PermEntry> perm_cache_;
+    // (user, channel) → resolved channel permissions. Cleared with
+    // perm_cache_ and on any overwrite / channel change.
+    mutable std::unordered_map<std::string,
+        std::unordered_map<std::string, uint64_t>> channel_perm_cache_;
+    // channel → overwrites, loaded lazily; cleared on overwrite writes,
+    // channel delete, role delete, member removal.
+    mutable std::unordered_map<std::string, std::vector<DbOverwrite>> overwrites_cache_;
+    const std::vector<DbOverwrite>& overwrites_unlocked_(const std::string& channel_id) const;
+    uint64_t channel_permissions_unlocked_(const std::string& username,
+                                           const std::string& channel_id) const;
+    void migrate_to_v6_overwrites_();
     // server_meta.owner, loaded at open() and kept in sync by set_meta_.
     std::string owner_cache_;
     void seed_if_empty_(const std::string& owner,

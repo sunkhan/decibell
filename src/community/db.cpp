@@ -215,6 +215,34 @@ void CommunityDb::init_schema_() {
 
     // --- v5: roles + permissions ---
     migrate_to_v5_roles_();
+
+    // --- v6: per-channel overwrites + v2 permission bits ---
+    migrate_to_v6_overwrites_();
+}
+
+void CommunityDb::migrate_to_v6_overwrites_() {
+    exec_sql(db_,
+        "CREATE TABLE IF NOT EXISTS channel_overwrites ("
+        "  channel_id TEXT NOT NULL,"
+        "  target_type INTEGER NOT NULL,"
+        "  target_id TEXT NOT NULL,"
+        "  allow INTEGER NOT NULL DEFAULT 0,"
+        "  deny INTEGER NOT NULL DEFAULT 0,"
+        "  PRIMARY KEY (channel_id, target_type, target_id)"
+        ");");
+    // Grant the v2 bits (VIEW_CHANNEL / READ_HISTORY / ATTACH_FILES) to an
+    // existing `everyone` exactly once, so an upgraded server keeps
+    // behaving as it did until an operator tightens something. (A fresh
+    // server seeds them via kDefaultEveryone.)
+    if (get_meta_("perm_bits_v6").empty()) {
+        Stmt q(db_, "UPDATE roles SET permissions = permissions | ? WHERE is_default = 1;");
+        if (q.s) {
+            q.bind_int64(1, static_cast<int64_t>(perms::kV2Bits));
+            q.step();
+        }
+        set_meta_("perm_bits_v6", "1");
+    }
+    set_meta_("schema_version", "6");
 }
 
 void CommunityDb::migrate_to_v5_roles_() {
@@ -668,7 +696,7 @@ void CommunityDb::set_meta_(const std::string& key, const std::string& value) {
     q.step();
     if (key == "owner") {
         owner_cache_ = value;
-        perm_cache_.clear();
+        invalidate_perm_cache_();
     }
 }
 
@@ -679,6 +707,12 @@ std::string CommunityDb::owner() const {
 
 void CommunityDb::invalidate_perm_cache_() {
     perm_cache_.clear();
+    channel_perm_cache_.clear();
+}
+
+void CommunityDb::invalidate_user_perms_(const std::string& username) {
+    perm_cache_.erase(username);
+    channel_perm_cache_.erase(username);
 }
 
 int64_t CommunityDb::central_server_id() const {
@@ -728,8 +762,13 @@ bool CommunityDb::add_member(const std::string& username) {
 
 bool CommunityDb::remove_member(const std::string& username) {
     std::lock_guard<std::mutex> lock(mutex_);
-    perm_cache_.erase(username);
+    invalidate_user_perms_(username);
+    overwrites_cache_.clear();
     exec_sql(db_, "BEGIN IMMEDIATE;");
+    {
+        Stmt q(db_, "DELETE FROM channel_overwrites WHERE target_type=1 AND target_id=?;");
+        if (q.s) { q.bind_text(1, username); q.step(); }
+    }
     // Role assignments don't survive leaving/kick — a rejoining member
     // starts clean, matching Discord semantics.
     {
@@ -777,9 +816,14 @@ bool CommunityDb::add_ban(const std::string& username,
                           const std::string& banned_by,
                           const std::string& reason) {
     std::lock_guard<std::mutex> lock(mutex_);
-    perm_cache_.erase(username);
+    invalidate_user_perms_(username);
+    overwrites_cache_.clear();
     // Remove membership (and role assignments) and insert ban atomically.
     exec_sql(db_, "BEGIN IMMEDIATE;");
+    {
+        Stmt del(db_, "DELETE FROM channel_overwrites WHERE target_type=1 AND target_id=?;");
+        if (del.s) { del.bind_text(1, username); del.step(); }
+    }
     {
         Stmt del(db_, "DELETE FROM member_roles WHERE username=?;");
         if (del.s) {
@@ -992,10 +1036,16 @@ bool CommunityDb::delete_role(int64_t role_id) {
     auto cur = get_role_unlocked_(role_id);
     if (!cur || cur->is_default) return false;
     invalidate_perm_cache_();
+    overwrites_cache_.clear();
 
     exec_sql(db_, "BEGIN IMMEDIATE;");
     bool ok = true;
     {
+        Stmt q(db_, "DELETE FROM channel_overwrites WHERE target_type=0 AND target_id=?;");
+        ok = q.s != nullptr;
+        if (ok) { q.bind_text(1, std::to_string(role_id)); ok = q.step() == SQLITE_DONE; }
+    }
+    if (ok) {
         Stmt q(db_, "DELETE FROM member_roles WHERE role_id=?;");
         ok = q.s != nullptr;
         if (ok) { q.bind_int64(1, role_id); ok = q.step() == SQLITE_DONE; }
@@ -1053,7 +1103,7 @@ bool CommunityDb::set_member_roles(const std::string& username,
         auto r = get_role_unlocked_(id);
         if (!r || r->is_default) return false;
     }
-    perm_cache_.erase(username);
+    invalidate_user_perms_(username);
     exec_sql(db_, "BEGIN IMMEDIATE;");
     bool ok = true;
     {
@@ -1128,6 +1178,151 @@ bool CommunityDb::has_permission(const std::string& username, uint64_t perm) con
 int32_t CommunityDb::member_level(const std::string& username) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return perm_entry_unlocked_(username).level;
+}
+
+// --- permissions v2: per-channel overwrites ---
+
+const std::vector<DbOverwrite>& CommunityDb::overwrites_unlocked_(const std::string& channel_id) const {
+    auto it = overwrites_cache_.find(channel_id);
+    if (it != overwrites_cache_.end()) return it->second;
+    std::vector<DbOverwrite> rows;
+    Stmt q(db_,
+        "SELECT channel_id, target_type, target_id, allow, deny "
+        "FROM channel_overwrites WHERE channel_id=?;");
+    if (q.s) {
+        q.bind_text(1, channel_id);
+        while (q.step() == SQLITE_ROW) {
+            DbOverwrite ow;
+            ow.channel_id = q.col_text(0);
+            ow.target_type = q.col_int(1);
+            ow.target_id = q.col_text(2);
+            ow.allow = static_cast<uint64_t>(q.col_int64(3));
+            ow.deny = static_cast<uint64_t>(q.col_int64(4));
+            rows.push_back(std::move(ow));
+        }
+    }
+    if (overwrites_cache_.size() >= 4096) overwrites_cache_.clear();
+    return overwrites_cache_.emplace(channel_id, std::move(rows)).first->second;
+}
+
+std::vector<DbOverwrite> CommunityDb::list_overwrites(const std::string& channel_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return overwrites_unlocked_(channel_id);
+}
+
+bool CommunityDb::set_overwrite(const DbOverwrite& in) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    {
+        Stmt q(db_, "SELECT 1 FROM channels WHERE id=?;");
+        if (!q.s) return false;
+        q.bind_text(1, in.channel_id);
+        if (q.step() != SQLITE_ROW) return false;
+    }
+    if (in.target_type == 0) {
+        int64_t rid = 0;
+        try { rid = std::stoll(in.target_id); } catch (...) { return false; }
+        if (!get_role_unlocked_(rid)) return false;
+    } else if (in.target_type == 1) {
+        Stmt q(db_, "SELECT 1 FROM members WHERE username=?;");
+        if (!q.s) return false;
+        q.bind_text(1, in.target_id);
+        if (q.step() != SQLITE_ROW) return false;
+    } else {
+        return false;
+    }
+    const uint64_t deny = in.deny & perms::kKnownMask;
+    const uint64_t allow = (in.allow & perms::kKnownMask) & ~deny;
+
+    overwrites_cache_.erase(in.channel_id);
+    channel_perm_cache_.clear();
+
+    if (allow == 0 && deny == 0) {
+        Stmt q(db_,
+            "DELETE FROM channel_overwrites "
+            "WHERE channel_id=? AND target_type=? AND target_id=?;");
+        if (!q.s) return false;
+        q.bind_text(1, in.channel_id);
+        q.bind_int(2, in.target_type);
+        q.bind_text(3, in.target_id);
+        return q.step() == SQLITE_DONE;
+    }
+    Stmt q(db_,
+        "INSERT INTO channel_overwrites(channel_id, target_type, target_id, allow, deny) "
+        "VALUES(?, ?, ?, ?, ?) "
+        "ON CONFLICT(channel_id, target_type, target_id) DO UPDATE SET "
+        "  allow=excluded.allow, deny=excluded.deny;");
+    if (!q.s) return false;
+    q.bind_text(1, in.channel_id);
+    q.bind_int(2, in.target_type);
+    q.bind_text(3, in.target_id);
+    q.bind_int64(4, static_cast<int64_t>(allow));
+    q.bind_int64(5, static_cast<int64_t>(deny));
+    return q.step() == SQLITE_DONE;
+}
+
+uint64_t CommunityDb::channel_permissions_unlocked_(const std::string& username,
+                                                    const std::string& channel_id) const {
+    auto& per_user = channel_perm_cache_[username];
+    if (auto it = per_user.find(channel_id); it != per_user.end()) return it->second;
+
+    uint64_t result = 0;
+    {
+        Stmt q(db_, "SELECT 1 FROM channels WHERE id=?;");
+        bool exists = false;
+        if (q.s) { q.bind_text(1, channel_id); exists = q.step() == SQLITE_ROW; }
+        if (!exists) {
+            per_user.emplace(channel_id, 0);
+            return 0;
+        }
+    }
+    const PermEntry& base = perm_entry_unlocked_(username);
+    if (base.permissions == perms::kAll) {
+        result = perms::kAll;   // owner / ADMINISTRATOR bypass overwrites
+    } else {
+        std::set<std::string> my_roles;
+        {
+            Stmt q(db_, "SELECT role_id FROM member_roles WHERE username=?;");
+            if (q.s) {
+                q.bind_text(1, username);
+                while (q.step() == SQLITE_ROW) my_roles.insert(std::to_string(q.col_int64(0)));
+            }
+        }
+        std::string everyone_id;
+        {
+            Stmt q(db_, "SELECT id FROM roles WHERE is_default=1;");
+            if (q.s && q.step() == SQLITE_ROW) everyone_id = std::to_string(q.col_int64(0));
+        }
+        uint64_t p = base.permissions;
+        uint64_t ev_allow = 0, ev_deny = 0, role_allow = 0, role_deny = 0, me_allow = 0, me_deny = 0;
+        for (const auto& ow : overwrites_unlocked_(channel_id)) {
+            if (ow.target_type == 0) {
+                if (ow.target_id == everyone_id) { ev_allow |= ow.allow; ev_deny |= ow.deny; }
+                else if (my_roles.count(ow.target_id)) { role_allow |= ow.allow; role_deny |= ow.deny; }
+            } else if (ow.target_id == username) {
+                me_allow |= ow.allow; me_deny |= ow.deny;
+            }
+        }
+        p = (p & ~ev_deny) | ev_allow;
+        p = (p & ~role_deny) | role_allow;
+        p = (p & ~me_deny) | me_allow;
+        result = (p & perms::kViewChannel) ? p : 0;
+    }
+    if (per_user.size() >= 1024) per_user.clear();
+    per_user.emplace(channel_id, result);
+    return result;
+}
+
+uint64_t CommunityDb::channel_permissions(const std::string& username,
+                                          const std::string& channel_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return channel_permissions_unlocked_(username, channel_id);
+}
+
+bool CommunityDb::has_channel_permission(const std::string& username,
+                                         const std::string& channel_id,
+                                         uint64_t perm) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return (channel_permissions_unlocked_(username, channel_id) & perm) == perm;
 }
 
 std::optional<DbInvite> CommunityDb::create_invite(const std::string& created_by,
@@ -1602,6 +1797,14 @@ std::optional<CommunityDb::WipeChannelResult> CommunityDb::delete_channel(
         }
     }
     if (ok) {
+        Stmt del(db_, "DELETE FROM channel_overwrites WHERE channel_id=?;");
+        ok = del.s != nullptr;
+        if (ok) {
+            del.bind_text(1, channel_id);
+            ok = del.step() == SQLITE_DONE;
+        }
+    }
+    if (ok) {
         Stmt del(db_, "DELETE FROM channels WHERE id=?;");
         ok = del.s != nullptr;
         if (ok) {
@@ -1611,6 +1814,8 @@ std::optional<CommunityDb::WipeChannelResult> CommunityDb::delete_channel(
     }
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
     if (!ok) return std::nullopt;
+    overwrites_cache_.erase(channel_id);
+    channel_perm_cache_.clear();
     normalize_channel_order_();
     return out;
 }
@@ -1863,6 +2068,7 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
     a.upload_status = q.col_text(10);
     a.expected_size = q.col_int64(11);
     a.uploader = q.col_text(12);
+    a.channel_id = q.col_text(13);
     a.width = q.col_int(14);
     a.height = q.col_int(15);
     a.thumbnail_size_bytes = q.col_int64(16);

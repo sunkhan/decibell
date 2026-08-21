@@ -12,6 +12,7 @@
 
 namespace chatproj {
 class CommunityDb;
+class Authorizer;
 }
 
 // HTTP/TLS endpoint for resumable attachment upload/download. Runs alongside
@@ -42,6 +43,10 @@ public:
     // So callers (e.g. SessionManager::broadcast_to_members on
     // CommunityAuthResponse) can report the right attachment port to clients.
     unsigned short port() const { return port_; }
+    // Permissions v2 resolver (upload: SEND_MESSAGES + ATTACH_FILES in the
+    // channel; download: VIEW_CHANNEL on the attachment's channel). Must be
+    // set before the first request; without it only membership is checked.
+    void set_authz(const chatproj::Authorizer* a) { authz_ = a; }
     int64_t max_attachment_bytes() const { return max_attachment_bytes_; }
     const std::string& storage_root() const { return storage_root_; }
 
@@ -53,6 +58,7 @@ private:
     boost::asio::ip::tcp::acceptor acceptor_;
     boost::asio::steady_timer accept_backoff_;
     chatproj::CommunityDb& db_;
+    const chatproj::Authorizer* authz_ = nullptr;
     std::string jwt_secret_;
     std::string storage_root_;
     int64_t max_attachment_bytes_;

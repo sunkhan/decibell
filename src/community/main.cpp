@@ -34,6 +34,7 @@
 #include "attachment_http.hpp"
 #include "rate_limit.hpp"
 #include "central_sync.hpp"
+#include "authz.hpp"
 
 namespace ssl = boost::asio::ssl;
 using boost::asio::ip::tcp;
@@ -73,6 +74,18 @@ std::string sha256_hex(const std::string& data) {
 void strip_client_envelope(chatproj::Packet& p) {
     p.clear_auth_token();
     p.clear_timestamp();
+}
+
+/// Length-prefixed wire frame for a packet, shared across fan-out paths.
+std::shared_ptr<std::vector<uint8_t>> frame_packet(const chatproj::Packet& p) {
+    std::string serialized;
+    p.SerializeToString(&serialized);
+    uint32_t length = htonl(static_cast<uint32_t>(serialized.size()));
+    auto framed = std::make_shared<std::vector<uint8_t>>();
+    framed->resize(4 + serialized.size());
+    std::memcpy(framed->data(), &length, 4);
+    std::memcpy(framed->data() + 4, serialized.data(), serialized.size());
+    return framed;
 }
 
 /// Builds a ROLE_LIST_RES packet from the current DB state. Pushed to a
@@ -129,15 +142,42 @@ void fill_channel_info(chatproj::ChannelInfo* info, const chatproj::DbChannel& c
     info->set_retention_days_audio(ch.retention_days_audio);
 }
 
-/// Builds a CHANNEL_LIST_UPDATE packet with the full ordered channel
-/// list. Broadcast to every member after any create/rename/delete.
-chatproj::Packet build_channel_list_packet(chatproj::CommunityDb* db) {
+/// Builds a CHANNEL_LIST_UPDATE packet for ONE recipient: only channels
+/// they can VIEW (categories always), each stamped with the recipient's
+/// resolved permissions. Channel lists are per recipient since
+/// permissions v2 — see the spec.
+chatproj::Packet build_channel_list_packet(const chatproj::Authorizer& authz,
+                                           const std::string& username) {
     chatproj::Packet p;
     p.set_type(chatproj::Packet::CHANNEL_LIST_UPDATE);
     auto* update = p.mutable_channel_list_update();
+    for (const auto& ch : authz.visible_channels(username)) {
+        auto* info = update->add_channels();
+        fill_channel_info(info, ch);
+        info->set_my_permissions(authz.channel_permissions(username, ch.id));
+    }
+    return p;
+}
+
+/// Copies a DbOverwrite into the wire shape.
+void fill_overwrite(chatproj::ChannelOverwrite* out, const chatproj::DbOverwrite& ow) {
+    out->set_channel_id(ow.channel_id);
+    out->set_target_type(ow.target_type == 1 ? chatproj::ChannelOverwrite::MEMBER
+                                             : chatproj::ChannelOverwrite::ROLE);
+    out->set_target_id(ow.target_id);
+    out->set_allow(ow.allow);
+    out->set_deny(ow.deny);
+}
+
+chatproj::Packet build_overwrites_packet(chatproj::CommunityDb* db, const std::string& channel_id) {
+    chatproj::Packet p;
+    p.set_type(chatproj::Packet::CHANNEL_OVERWRITES_RES);
+    auto* res = p.mutable_channel_overwrites_res();
+    res->set_success(db != nullptr);
+    res->set_channel_id(channel_id);
     if (db) {
-        for (const auto& ch : db->list_channels()) {
-            fill_channel_info(update->add_channels(), ch);
+        for (const auto& ow : db->list_overwrites(channel_id)) {
+            fill_overwrite(res->add_overwrites(), ow);
         }
     }
     return p;
@@ -152,11 +192,21 @@ public:
     void leave(std::shared_ptr<Session> session);
     void join_voice_channel(std::shared_ptr<Session> session, const std::string& new_channel, const std::string& old_channel);
     void leave_voice_channel(std::shared_ptr<Session> session, const std::string& current_channel);
-    // Broadcast to every authenticated session on this server. Text channels
-    // use this: every member is implicitly subscribed to every channel, so a
-    // CHANNEL_MSG fan-out goes to the whole server rather than a per-channel
-    // presence set.
+    // Broadcast to every authenticated session on this server (server-wide
+    // packets: roster, roles, member-level events).
     void broadcast_to_members(const chatproj::Packet& packet);
+    // Broadcast to every authenticated session that can VIEW `channel_id`
+    // (permissions v2). Every channel-scoped packet — messages, deletes,
+    // wipes, prunes, retention updates, voice/stream presence — goes
+    // through this so a private channel's traffic never reaches members
+    // who can't see it.
+    void broadcast_to_channel(const chatproj::Packet& packet, const std::string& channel_id);
+    // Push CHANNEL_OVERWRITES_RES for a channel to every session allowed
+    // to view them (MANAGE_ROLES / MANAGE_CHANNELS there).
+    void broadcast_overwrites(const std::string& channel_id);
+    // Re-send the (per-recipient) channel list to one user's sessions —
+    // after a role assignment changed what they can see.
+    void send_channels_to_user(const std::string& username);
     // Push a fresh MEMBER_LIST_RES to every authenticated session so their
     // members sidebar reflects joins, departures, kicks, bans, and online
     // flips without having to re-open the server. Sessions whose user
@@ -256,6 +306,8 @@ public:
     // Persistent state.
     void set_db(chatproj::CommunityDb* db) { db_ = db; }
     chatproj::CommunityDb* db() { return db_; }
+    void set_authz(const chatproj::Authorizer* a) { authz_ = a; }
+    const chatproj::Authorizer& authz() const { return *authz_; }
 
     // Member count (authoritative from DB), used by the central-server heartbeat.
     size_t member_count();
@@ -375,6 +427,7 @@ private:
     std::unordered_map<std::string, std::vector<std::shared_ptr<Session>>> sessions_by_user_;
 
     chatproj::CommunityDb* db_ = nullptr;
+    const chatproj::Authorizer* authz_ = nullptr;
 
     // Central-sync config (populated once at startup via set_central_sync).
     std::string central_host_;
@@ -851,6 +904,14 @@ private:
                           << ": unknown or non-voice channel '" << target_channel << "'\n";
                 return;
             }
+            if (auto a = manager_.authz().check(chatproj::Action::ConnectVoice,
+                                                {username_, target_channel, ""}); !a) {
+                std::cout << "[Community] Rejected JOIN_VOICE_REQ from " << username_
+                          << ": " << a.reason << "\n";
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason,
+                                    username_, "voice");
+                return;
+            }
             // Capture client capabilities (Plan A Group 7). Empty when sent
             // by a legacy client; treated downstream as "H.264 only".
             if (jvr.has_capabilities()) {
@@ -913,6 +974,14 @@ private:
                           << ": not in voice channel '" << req.channel_id() << "'\n";
                 return;
             }
+            if (auto a = manager_.authz().check(chatproj::Action::Stream,
+                                                {username_, req.channel_id(), ""}); !a) {
+                std::cout << "[Community] Rejected START_STREAM_REQ from " << username_
+                          << ": " << a.reason << "\n";
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason,
+                                    username_, "stream");
+                return;
+            }
             // Codec defaults: legacy clients (pre-negotiation) leave both
             // chosen_codec and enforced_codec as CODEC_UNKNOWN. Treat
             // chosen_codec=UNKNOWN as H264_HW (the only codec they ever sent)
@@ -944,6 +1013,10 @@ private:
                 req.channel_id() != current_voice_channel_) {
                 std::cout << "[Community] Rejected WATCH_STREAM_REQ from " << username_
                           << ": not in voice channel '" << req.channel_id() << "'\n";
+                return;
+            }
+            if (!manager_.authz().check(chatproj::Action::ViewChannel,
+                                        {username_, req.channel_id(), ""})) {
                 return;
             }
             // Ignore watch requests for a user who isn't actually streaming:
@@ -1084,6 +1157,20 @@ private:
                     return;
                 }
             }
+            // Permissions v2: SEND_MESSAGES (and ATTACH_FILES when the
+            // message carries attachments) resolved for this channel.
+            {
+                const chatproj::AuthCtx ctx{username_, msg->channel_id(), ""};
+                auto a = manager_.authz().check(chatproj::Action::SendMessage, ctx);
+                if (a && msg->attachments_size() > 0) {
+                    a = manager_.authz().check(chatproj::Action::AttachFiles, ctx);
+                }
+                if (!a) {
+                    send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason,
+                                        username_, "message");
+                    return;
+                }
+            }
             // Size cap — the 2 MB frame cap alone would let one message
             // carry ~2 MB of text, persisted and fanned out to every
             // member. 64 KB is far above anything typed by hand and
@@ -1184,7 +1271,7 @@ private:
                 msg->clear_attachments();
             }
 
-            manager_.broadcast_to_members(routed);
+            manager_.broadcast_to_channel(routed, msg->channel_id());
             std::cout << "[#" << msg->channel_id() << "] " << username_
                       << ": " << msg->content()
                       << (msg->attachments_size() > 0
@@ -1201,6 +1288,12 @@ private:
             const auto& req = packet.channel_history_req();
             res->set_channel_id(req.channel_id());
             if (!db) { send_packet(p); return; }
+            // Permissions v2: no READ_HISTORY (or no VIEW) → empty page.
+            if (!manager_.authz().check(chatproj::Action::ReadHistory,
+                                        {username_, req.channel_id(), ""})) {
+                send_packet(p);
+                return;
+            }
 
             bool has_more = false;
             auto msgs = db->fetch_messages(
@@ -1268,13 +1361,14 @@ private:
                 send_packet(p);
                 return;
             }
-            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
+            const auto& req = packet.channel_update_req();
+            if (auto a = manager_.authz().check(chatproj::Action::ManageChannel,
+                                                {username_, req.channel_id(), ""}); !a) {
                 res->set_success(false);
-                res->set_message("You don't have permission to edit channels.");
+                res->set_message(a.reason);
                 send_packet(p);
                 return;
             }
-            const auto& req = packet.channel_update_req();
             bool ok = db->update_channel_retention(
                 req.channel_id(),
                 req.retention_days_text(),
@@ -1313,10 +1407,10 @@ private:
                     info->set_retention_days_audio(ch->retention_days_audio);
                 }
             }
-            // Fan out to every authenticated session so everyone sees the new
-            // retention settings immediately (they need it rendered in the
-            // channel sidebar + any open edit modals).
-            manager_.broadcast_to_members(p);
+            // Fan out to everyone who can see the channel so they get the new
+            // retention settings immediately (rendered in the channel
+            // sidebar + any open edit modals).
+            manager_.broadcast_to_channel(p, req.channel_id());
         }
 
         // --- CHANNEL WIPE (owner-only nuke of all history in a channel) ---
@@ -1334,9 +1428,10 @@ private:
                 send_packet(rsp);
                 return;
             }
-            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
+            if (auto a = manager_.authz().check(chatproj::Action::WipeChannel,
+                                                {username_, req.channel_id(), ""}); !a) {
                 res->set_success(false);
-                res->set_message("You don't have permission to wipe channel history.");
+                res->set_message(a.reason);
                 send_packet(rsp);
                 return;
             }
@@ -1375,7 +1470,7 @@ private:
             bw->set_channel_id(req.channel_id());
             bw->set_wiped_at(static_cast<int64_t>(std::time(nullptr)));
             bw->set_wiped_by(username_);
-            manager_.broadcast_to_members(bcast);
+            manager_.broadcast_to_channel(bcast, req.channel_id());
 
             std::cout << "[Community] #" << req.channel_id()
                       << " wiped by " << username_
@@ -1419,11 +1514,14 @@ private:
                 return;
             }
 
-            if (*sender != username_ && !db->can_delete_others(username_)) {
-                res->set_success(false);
-                res->set_message("You don't have permission to delete this message.");
-                send_packet(rsp);
-                return;
+            if (*sender != username_) {
+                if (auto a = manager_.authz().check(chatproj::Action::DeleteOthersMessage,
+                                                    {username_, req.channel_id(), ""}); !a) {
+                    res->set_success(false);
+                    res->set_message(a.reason);
+                    send_packet(rsp);
+                    return;
+                }
             }
 
             auto del = db->delete_message(req.channel_id(), req.message_id());
@@ -1460,7 +1558,7 @@ private:
             bw->set_message_id(req.message_id());
             bw->set_deleted_at(static_cast<int64_t>(std::time(nullptr)));
             bw->set_deleted_by(username_);
-            manager_.broadcast_to_members(bcast);
+            manager_.broadcast_to_channel(bcast, req.channel_id());
 
             std::cout << "[Community] message " << req.message_id()
                       << " in #" << req.channel_id()
@@ -1486,9 +1584,9 @@ private:
                 send_packet(rsp);
                 return;
             }
-            if (!db->has_permission(username_, chatproj::perms::kManageServer)) {
+            if (auto a = manager_.authz().check(chatproj::Action::ManageServer, {username_, "", ""}); !a) {
                 res->set_success(false);
-                res->set_message("You don't have permission to change the server picture.");
+                res->set_message(a.reason);
                 send_packet(rsp);
                 return;
             }
@@ -1519,10 +1617,8 @@ private:
         else if (packet.type() == chatproj::Packet::INVITE_CREATE_REQ) {
             auto* db = manager_.db();
             if (!db) return;
-            if (!db->has_permission(username_, chatproj::perms::kManageInvites)) {
-                send_simple_mod_res(chatproj::Packet::INVITE_CREATE_RES, false,
-                                    "You don't have permission to create invites.",
-                                    "", "");
+            if (auto a = manager_.authz().check(chatproj::Action::ManageInvites, {username_, "", ""}); !a) {
+                send_simple_mod_res(chatproj::Packet::INVITE_CREATE_RES, false, a.reason, "", "");
                 return;
             }
             const auto& req = packet.invite_create_req();
@@ -1572,9 +1668,9 @@ private:
                 send_packet(p);
                 return;
             }
-            if (!db->has_permission(username_, chatproj::perms::kManageInvites)) {
+            if (auto a = manager_.authz().check(chatproj::Action::ManageInvites, {username_, "", ""}); !a) {
                 res->set_success(false);
-                res->set_message("You don't have permission to list invites.");
+                res->set_message(a.reason);
                 send_packet(p);
                 return;
             }
@@ -1605,9 +1701,9 @@ private:
                 send_packet(p);
                 return;
             }
-            if (!db->has_permission(username_, chatproj::perms::kManageInvites)) {
+            if (auto a = manager_.authz().check(chatproj::Action::ManageInvites, {username_, "", ""}); !a) {
                 res->set_success(false);
-                res->set_message("You don't have permission to revoke invites.");
+                res->set_message(a.reason);
                 send_packet(p);
                 return;
             }
@@ -1652,7 +1748,7 @@ private:
             }
             // The ban list reveals moderation history — only BAN_MEMBERS
             // holders (and the owner, who holds everything) see it.
-            if (db->has_permission(username_, chatproj::perms::kBanMembers)) {
+            if (manager_.authz().check(chatproj::Action::ViewBans, {username_, "", ""})) {
                 for (const auto& u : db->list_bans()) {
                     res->add_bans(u);
                 }
@@ -1666,32 +1762,10 @@ private:
             if (!db) return;
             const std::string& target = packet.kick_member_req().username();
             const std::string& reason = packet.kick_member_req().reason();
-            const std::string owner_name = db->owner();
-            if (!db->has_permission(username_, chatproj::perms::kKickMembers)) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "You don't have permission to kick members.",
-                                    target, "kick");
-                return;
-            }
-            if (target == owner_name) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "Cannot kick the server owner.",
-                                    target, "kick");
-                return;
-            }
-            if (target == username_) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "Use leave to remove yourself.",
-                                    target, "kick");
-                return;
-            }
-            // Hierarchy: only members strictly below your own highest role
-            // can be kicked. Owner level is INT32_MAX, so the owner
-            // bypasses this and can never be outranked.
-            if (db->member_level(target) >= db->member_level(username_)) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "You can't kick a member with an equal or higher role.",
-                                    target, "kick");
+            // Permission + owner/self guards + hierarchy all live in authz.
+            if (auto a = manager_.authz().check(chatproj::Action::KickMember,
+                                                {username_, "", target}); !a) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, target, "kick");
                 return;
             }
             bool removed = db->remove_member(target);
@@ -1721,30 +1795,9 @@ private:
             if (!db) return;
             const std::string& target = packet.ban_member_req().username();
             const std::string& reason = packet.ban_member_req().reason();
-            const std::string owner_name = db->owner();
-            if (!db->has_permission(username_, chatproj::perms::kBanMembers)) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "You don't have permission to ban members.",
-                                    target, "ban");
-                return;
-            }
-            if (target == owner_name) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "Cannot ban the server owner.",
-                                    target, "ban");
-                return;
-            }
-            if (target == username_) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "Cannot ban yourself.",
-                                    target, "ban");
-                return;
-            }
-            // Hierarchy: same rule as kick — only strictly-lower members.
-            if (db->member_level(target) >= db->member_level(username_)) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "You can't ban a member with an equal or higher role.",
-                                    target, "ban");
+            if (auto a = manager_.authz().check(chatproj::Action::BanMember,
+                                                {username_, "", target}); !a) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, target, "ban");
                 return;
             }
             bool ok = db->add_ban(target, username_, reason);
@@ -1787,10 +1840,8 @@ private:
             auto* db = manager_.db();
             if (!db) return;
             const std::string& target = packet.unban_member_req().username();
-            if (!db->has_permission(username_, chatproj::perms::kBanMembers)) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "You don't have permission to unban members.",
-                                    target, "unban");
+            if (auto a = manager_.authz().check(chatproj::Action::UnbanMember, {username_, "", ""}); !a) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, target, "unban");
                 return;
             }
             bool ok = db->remove_ban(target);
@@ -1824,9 +1875,9 @@ private:
                 send_packet(p);
                 return;
             }
-            if (!db->has_permission(username_, chatproj::perms::kManageRoles)) {
+            if (auto a = manager_.authz().check(chatproj::Action::ManageRoles, {username_, "", ""}); !a) {
                 res->set_success(false);
-                res->set_message("You don't have permission to manage roles.");
+                res->set_message(a.reason);
                 send_packet(p);
                 return;
             }
@@ -1880,8 +1931,8 @@ private:
                 send_packet(p);
             };
             if (!db) { fail("Server misconfigured."); return; }
-            if (!db->has_permission(username_, chatproj::perms::kManageRoles)) {
-                fail("You don't have permission to manage roles.");
+            if (auto a = manager_.authz().check(chatproj::Action::ManageRoles, {username_, "", ""}); !a) {
+                fail(a.reason.c_str());
                 return;
             }
             auto role = db->get_role(req.role_id());
@@ -1923,6 +1974,9 @@ private:
             }
             send_packet(p);
             manager_.broadcast_roles();
+            // Permission bits changed → every member's per-channel
+            // my_permissions (and possibly visibility) may have changed.
+            manager_.broadcast_channels();
         }
 
         // --- ROLE: DELETE ---
@@ -1939,8 +1993,8 @@ private:
                 send_packet(p);
             };
             if (!db) { fail("Server misconfigured."); return; }
-            if (!db->has_permission(username_, chatproj::perms::kManageRoles)) {
-                fail("You don't have permission to manage roles.");
+            if (auto a = manager_.authz().check(chatproj::Action::ManageRoles, {username_, "", ""}); !a) {
+                fail(a.reason.c_str());
                 return;
             }
             auto role = db->get_role(req.role_id());
@@ -1961,6 +2015,7 @@ private:
             manager_.broadcast_roles();
             // Members holding the role lost it (cascade) — refresh rosters.
             manager_.broadcast_members();
+            manager_.broadcast_channels();
         }
 
         // --- MEMBER ROLES: UPDATE (replace a member's role set) ---
@@ -1977,8 +2032,8 @@ private:
                 send_packet(p);
             };
             if (!db) { fail("Server misconfigured."); return; }
-            if (!db->has_permission(username_, chatproj::perms::kManageRoles)) {
-                fail("You don't have permission to manage roles.");
+            if (auto a = manager_.authz().check(chatproj::Action::ManageRoles, {username_, "", ""}); !a) {
+                fail(a.reason.c_str());
                 return;
             }
             if (!db->is_member(req.username())) { fail("Not a member."); return; }
@@ -2041,6 +2096,8 @@ private:
             // The refreshed roster (with role_ids) is the authoritative
             // confirmation for every client, requester included.
             manager_.broadcast_members();
+            // The target's channel visibility / my_permissions changed.
+            manager_.send_channels_to_user(req.username());
         }
 
         // --- CHANNEL: CREATE ---
@@ -2057,8 +2114,8 @@ private:
                 send_packet(p);
             };
             if (!db) { fail("Server misconfigured."); return; }
-            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
-                fail("You don't have permission to manage channels.");
+            if (auto a = manager_.authz().check(chatproj::Action::CreateChannel, {username_, "", ""}); !a) {
+                fail(a.reason.c_str());
                 return;
             }
             std::string name = chatproj::clamp_utf8(req.name(), chatproj::kMaxChannelNameBytes);
@@ -2104,8 +2161,9 @@ private:
                 send_packet(p);
             };
             if (!db) { fail("Server misconfigured."); return; }
-            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
-                fail("You don't have permission to manage channels.");
+            if (auto a = manager_.authz().check(chatproj::Action::ManageChannel,
+                                                {username_, req.channel_id(), ""}); !a) {
+                fail(a.reason.c_str());
                 return;
             }
             std::string name = chatproj::clamp_utf8(req.name(), chatproj::kMaxChannelNameBytes);
@@ -2136,8 +2194,9 @@ private:
                 send_packet(p);
             };
             if (!db) { fail("Server misconfigured."); return; }
-            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
-                fail("You don't have permission to manage channels.");
+            if (auto a = manager_.authz().check(chatproj::Action::ManageChannel,
+                                                {username_, req.channel_id(), ""}); !a) {
+                fail(a.reason.c_str());
                 return;
             }
             auto ch = db->get_channel(req.channel_id());
@@ -2185,22 +2244,12 @@ private:
             const std::string& target = req.username();
             std::string nickname = chatproj::clamp_utf8(req.nickname(), chatproj::kMaxNicknameBytes);
 
-            if (target != username_) {
-                // Changing someone else's nickname: MANAGE_NICKNAMES +
-                // strictly-higher role (owner bypasses via level).
-                if (!db->has_permission(username_, chatproj::perms::kManageNicknames)) {
-                    send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                        "You don't have permission to manage nicknames.",
-                                        target, "nickname");
-                    return;
-                }
-                if (db->member_level(target) >= db->member_level(username_)) {
-                    send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                        "You can't change the nickname of a member "
-                                        "with an equal or higher role.",
-                                        target, "nickname");
-                    return;
-                }
+            // Self always allowed; others need MANAGE_NICKNAMES + hierarchy.
+            if (auto a = manager_.authz().check(chatproj::Action::ManageNicknameOf,
+                                                {username_, "", target}); !a) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason,
+                                    target, "nickname");
+                return;
             }
             bool ok = db->set_nickname(target, nickname);
             send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, ok,
@@ -2225,8 +2274,8 @@ private:
                 send_packet(p);
             };
             if (!db) { fail("Server misconfigured."); return; }
-            if (!db->has_permission(username_, chatproj::perms::kManageChannels)) {
-                fail("You don't have permission to manage channels.");
+            if (auto a = manager_.authz().check(chatproj::Action::ReorderChannels, {username_, "", ""}); !a) {
+                fail(a.reason.c_str());
                 return;
             }
             std::vector<std::string> ordered(req.channel_ids().begin(),
@@ -2241,6 +2290,106 @@ private:
             res->set_success(true);
             send_packet(p);
             manager_.broadcast_channels();
+        }
+
+        // --- CHANNEL OVERWRITES: LIST ---
+        else if (packet.type() == chatproj::Packet::CHANNEL_OVERWRITES_REQ) {
+            auto* db = manager_.db();
+            const std::string& channel_id = packet.channel_overwrites_req().channel_id();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::CHANNEL_OVERWRITES_RES);
+            auto* res = p.mutable_channel_overwrites_res();
+            res->set_channel_id(channel_id);
+            if (!db) { res->set_success(false); res->set_message("Server misconfigured."); send_packet(p); return; }
+            if (auto a = manager_.authz().check(chatproj::Action::ViewOverwrites,
+                                                {username_, channel_id, ""}); !a) {
+                res->set_success(false);
+                res->set_message(a.reason);
+                send_packet(p);
+                return;
+            }
+            send_packet(build_overwrites_packet(db, channel_id));
+        }
+
+        // --- CHANNEL OVERWRITES: SET / CLEAR ---
+        else if (packet.type() == chatproj::Packet::CHANNEL_OVERWRITE_SET_REQ) {
+            auto* db = manager_.db();
+            const auto& ow = packet.channel_overwrite_set_req().overwrite();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::CHANNEL_ACTION_RES);
+            auto* res = p.mutable_channel_action_res();
+            res->set_action("overwrite");
+            auto fail = [&](const std::string& msg) {
+                res->set_success(false);
+                res->set_message(msg);
+                send_packet(p);
+            };
+            if (!db) { fail("Server misconfigured."); return; }
+            auto ch = db->get_channel(ow.channel_id());
+            if (!ch) { fail("Channel not found."); return; }
+            if (auto a = manager_.authz().check(chatproj::Action::ManageOverwrites,
+                                                {username_, ow.channel_id(), ""}); !a) {
+                fail(a.reason);
+                return;
+            }
+            chatproj::DbOverwrite row;
+            row.channel_id = ow.channel_id();
+            row.target_type = ow.target_type() == chatproj::ChannelOverwrite::MEMBER ? 1 : 0;
+            row.target_id = ow.target_id();
+            row.deny = ow.deny() & chatproj::perms::kKnownMask;
+            row.allow = (ow.allow() & chatproj::perms::kKnownMask) & ~row.deny;
+
+            // Escalation guard (same spirit as roles): only bits the actor
+            // holds IN THIS CHANNEL may change, in either direction. Bits a
+            // row already carries that the actor lacks survive untouched.
+            const uint64_t actor_perms = manager_.authz().channel_permissions(username_, row.channel_id);
+            uint64_t cur_allow = 0, cur_deny = 0;
+            for (const auto& existing : db->list_overwrites(row.channel_id)) {
+                if (existing.target_type == row.target_type && existing.target_id == row.target_id) {
+                    cur_allow = existing.allow; cur_deny = existing.deny;
+                }
+            }
+            const uint64_t changed = (row.allow ^ cur_allow) | (row.deny ^ cur_deny);
+            if ((changed & ~actor_perms) != 0) {
+                fail("You can't change permissions you don't have in this channel.");
+                return;
+            }
+            // Role targets: strictly below your level (everyone, position 0,
+            // is always editable). Member targets: any member.
+            if (row.target_type == 0) {
+                int64_t rid = 0;
+                try { rid = std::stoll(row.target_id); } catch (...) { fail("Unknown role."); return; }
+                auto role = db->get_role(rid);
+                if (!role) { fail("Unknown role."); return; }
+                if (!role->is_default && role->position >= db->member_level(username_)) {
+                    fail("You can't edit overwrites for a role at or above your highest role.");
+                    return;
+                }
+            } else if (!db->is_member(row.target_id)) {
+                fail("Not a member.");
+                return;
+            }
+            if (!db->set_overwrite(row)) { fail("Failed to save overwrite."); return; }
+            // Lock-out guard: if the actor just lost VIEW on this channel
+            // (e.g. denied it for a role they hold), revert.
+            if (!(manager_.authz().channel_permissions(username_, row.channel_id) & chatproj::perms::kViewChannel)) {
+                chatproj::DbOverwrite revert = row;
+                revert.allow = cur_allow; revert.deny = cur_deny;
+                db->set_overwrite(revert);
+                fail("That would remove your own access to this channel.");
+                return;
+            }
+            res->set_success(true);
+            fill_channel_info(res->mutable_channel(), *ch);
+            res->mutable_channel()->set_my_permissions(
+                manager_.authz().channel_permissions(username_, row.channel_id));
+            send_packet(p);
+            std::cout << "[Community] Overwrite on #" << row.channel_id << " for "
+                      << (row.target_type == 1 ? "member " : "role ") << row.target_id
+                      << " set by " << username_ << "\n";
+            // Visibility / my_permissions may have changed for anyone.
+            manager_.broadcast_channels();
+            manager_.broadcast_overwrites(row.channel_id);
         }
     }
 
@@ -2339,17 +2488,12 @@ private:
         if (success) {
             auto* db = manager_.db();
             if (db) {
-                for (const auto& ch : db->list_channels()) {
+                // Per-recipient: only channels this user can VIEW, each
+                // with their resolved permissions.
+                for (const auto& ch : manager_.authz().visible_channels(username_)) {
                     auto* info = res->add_channels();
-                    info->set_id(ch.id);
-                    info->set_name(ch.name);
-                    info->set_type(channel_type_to_proto(ch.type));
-                    info->set_voice_bitrate_kbps(ch.voice_bitrate_kbps);
-                    info->set_retention_days_text(ch.retention_days_text);
-                    info->set_retention_days_image(ch.retention_days_image);
-                    info->set_retention_days_video(ch.retention_days_video);
-                    info->set_retention_days_document(ch.retention_days_document);
-                    info->set_retention_days_audio(ch.retention_days_audio);
+                    fill_channel_info(info, ch);
+                    info->set_my_permissions(manager_.authz().channel_permissions(username_, ch.id));
                 }
                 res->set_server_name(db->server_name());
                 res->set_server_description(db->server_description());
@@ -2615,12 +2759,18 @@ void SessionManager::broadcast_stream_presence(const std::string& channel_id) {
     std::memcpy(framed->data(), &length, 4);
     std::memcpy(framed->data() + 4, serialized.data(), serialized.size());
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& session : sessions_) {
-        // Only authenticated sessions receive presence. A peer that merely
-        // completed the TLS handshake (never sent COMMUNITY_AUTH_REQ) must
-        // not passively harvest usernames / codec caps / mute state.
-        if (session->is_authenticated()) {
+    std::vector<std::pair<std::shared_ptr<Session>, std::string>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& session : sessions_) {
+            // Only authenticated sessions receive presence. A peer that merely
+            // completed the TLS handshake (never sent COMMUNITY_AUTH_REQ) must
+            // not passively harvest usernames / codec caps / mute state.
+            if (session->is_authenticated()) targets.emplace_back(session, session->get_username());
+        }
+    }
+    for (const auto& [session, user] : targets) {
+        if (!authz_ || (authz_->channel_permissions(user, channel_id) & chatproj::perms::kViewChannel)) {
             session->deliver(framed);
         }
     }
@@ -2785,7 +2935,7 @@ void SessionManager::broadcast_members_now() {
     // are DB lookups.
     std::set<std::string> sees_bans;
     for (const auto& u : online) {
-        if (db_->has_permission(u, chatproj::perms::kBanMembers)) {
+        if (authz_ && authz_->check(chatproj::Action::ViewBans, {u, "", ""})) {
             sees_bans.insert(u);
         }
     }
@@ -2839,8 +2989,67 @@ void SessionManager::broadcast_roles() {
 }
 
 void SessionManager::broadcast_channels() {
-    if (!db_) return;
-    broadcast_to_members(build_channel_list_packet(db_));
+    if (!db_ || !authz_) return;
+    // Per recipient (permissions v2): each user gets only the channels they
+    // can VIEW, stamped with their own my_permissions. Identical lists
+    // across users share one serialisation via the per-username cache.
+    std::vector<std::pair<std::shared_ptr<Session>, std::string>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& s : sessions_) {
+            if (s->is_authenticated()) targets.emplace_back(s, s->get_username());
+        }
+    }
+    std::unordered_map<std::string, std::shared_ptr<std::vector<uint8_t>>> by_user;
+    for (const auto& [session, user] : targets) {
+        auto it = by_user.find(user);
+        if (it == by_user.end()) {
+            it = by_user.emplace(user, frame_packet(build_channel_list_packet(*authz_, user))).first;
+        }
+        session->deliver(it->second);
+    }
+}
+
+void SessionManager::send_channels_to_user(const std::string& username) {
+    if (!db_ || !authz_) return;
+    auto sessions = find_sessions_by_username(username);
+    if (sessions.empty()) return;
+    auto framed = frame_packet(build_channel_list_packet(*authz_, username));
+    for (const auto& s : sessions) s->deliver(framed);
+}
+
+void SessionManager::broadcast_to_channel(const chatproj::Packet& packet, const std::string& channel_id) {
+    if (!authz_) { broadcast_to_members(packet); return; }
+    auto framed = frame_packet(packet);
+    std::vector<std::pair<std::shared_ptr<Session>, std::string>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& s : sessions_) {
+            if (s->is_authenticated()) targets.emplace_back(s, s->get_username());
+        }
+    }
+    for (const auto& [session, user] : targets) {
+        if (authz_->channel_permissions(user, channel_id) & chatproj::perms::kViewChannel) {
+            session->deliver(framed);
+        }
+    }
+}
+
+void SessionManager::broadcast_overwrites(const std::string& channel_id) {
+    if (!db_ || !authz_) return;
+    auto framed = frame_packet(build_overwrites_packet(db_, channel_id));
+    std::vector<std::pair<std::shared_ptr<Session>, std::string>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& s : sessions_) {
+            if (s->is_authenticated()) targets.emplace_back(s, s->get_username());
+        }
+    }
+    for (const auto& [session, user] : targets) {
+        if (authz_->check(chatproj::Action::ViewOverwrites, {user, channel_id, ""})) {
+            session->deliver(framed);
+        }
+    }
 }
 
 bool SessionManager::voice_channel_occupied(const std::string& channel_id) {
@@ -2971,7 +3180,7 @@ void SessionManager::run_retention_sweep() {
                 t->set_attachment_id(cp.purged_attachments[ai].attachment_id);
                 t->set_purged_at(cp.purged_attachments[ai].purged_at);
             }
-            broadcast_to_members(p);
+            broadcast_to_channel(p, cp.channel_id);
         } while (mi < cp.deleted_message_ids.size() || ai < cp.purged_attachments.size());
         std::cout << "[Community] Retention sweep on #" << cp.channel_id
                   << ": " << cp.deleted_message_ids.size() << " messages, "
@@ -3287,11 +3496,17 @@ void SessionManager::broadcast_voice_presence(const std::string& channel_id) {
     std::memcpy(framed->data(), &length, 4);
     std::memcpy(framed->data() + 4, serialized.data(), serialized.size());
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& session : sessions_) {
-        // Authenticated sessions only — an unauthenticated TLS peer must
-        // not receive the voice roster (usernames + mute/deafen state).
-        if (session->is_authenticated()) {
+    std::vector<std::pair<std::shared_ptr<Session>, std::string>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& session : sessions_) {
+            // Authenticated sessions only — an unauthenticated TLS peer must
+            // not receive the voice roster (usernames + mute/deafen state).
+            if (session->is_authenticated()) targets.emplace_back(session, session->get_username());
+        }
+    }
+    for (const auto& [session, user] : targets) {
+        if (!authz_ || (authz_->channel_permissions(user, channel_id) & chatproj::perms::kViewChannel)) {
             session->deliver(framed);
         }
     }
@@ -3299,9 +3514,14 @@ void SessionManager::broadcast_voice_presence(const std::string& channel_id) {
 
 void SessionManager::send_initial_voice_presences(std::shared_ptr<Session> session) {
     std::lock_guard<std::mutex> lock(mutex_);
+    const std::string me = session->get_username();
+    auto can_view = [&](const std::string& channel_id) {
+        return !authz_ || (authz_->channel_permissions(me, channel_id) & chatproj::perms::kViewChannel);
+    };
     for (const auto& pair : voice_channels_) {
         const std::string& channel_id = pair.first;
         if (pair.second.empty()) continue;
+        if (!can_view(channel_id)) continue;
 
         chatproj::Packet packet;
         packet.set_type(chatproj::Packet::VOICE_PRESENCE_UPDATE);
@@ -3333,6 +3553,7 @@ void SessionManager::send_initial_voice_presences(std::shared_ptr<Session> sessi
     for (const auto& pair : active_streams_) {
         const std::string& channel_id = pair.first;
         if (pair.second.empty()) continue;
+        if (!can_view(channel_id)) continue;
 
         chatproj::Packet packet;
         packet.set_type(chatproj::Packet::STREAM_PRESENCE_UPDATE);
@@ -4123,7 +4344,9 @@ int main() {
 
         boost::asio::io_context io_context;
         SessionManager manager;
+        chatproj::Authorizer authz(db);
         manager.set_db(&db);
+        manager.set_authz(&authz);
         manager.set_io_context(io_context);
         manager.set_timeouts(auth_timeout_s, idle_timeout_s);
         // Auto-rejoin: hydrate the cached central server_id (learned
@@ -4144,6 +4367,7 @@ int main() {
                                                static_cast<unsigned short>(attachment_port),
                                                db, jwt_secret, attachments_root,
                                                max_attachment_bytes);
+        attachment_server.set_authz(&authz);
         std::cout << "Decibell Community Server running on port 8082...\n";
         std::cout << "[Community] Owner: " << db.owner()
                   << " | Members: " << manager.member_count() << "\n";

@@ -645,6 +645,186 @@ def test_auth_server_id_field():
     c.close()
 
 
+def everyone_role(c):
+    c.send(pb.Packet.ROLE_LIST_REQ, role_list_req=pb.RoleListRequest())
+    rl = c.wait(pb.Packet.ROLE_LIST_RES)
+    return next(r for r in rl.role_list_res.roles if r.is_default)
+
+
+def set_everyone_perms(owner, perms):
+    ev = everyone_role(owner)
+    owner.send(pb.Packet.ROLE_UPDATE_REQ, role_update_req=pb.RoleUpdateRequest(role_id=ev.id, name=ev.name, color=0, permissions=perms, position=0))
+    r = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "update")
+    assert r and r.role_action_res.success, r
+    return ev
+
+
+def set_overwrite(c, channel_id, target_type, target_id, allow=0, deny=0):
+    c.send(pb.Packet.CHANNEL_OVERWRITE_SET_REQ, channel_overwrite_set_req=pb.ChannelOverwriteSetRequest(
+        overwrite=pb.ChannelOverwrite(channel_id=channel_id, target_type=target_type, target_id=str(target_id), allow=allow, deny=deny)))
+    return c.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "overwrite")
+
+
+def channel_list(c, timeout=3):
+    u = c.wait(pb.Packet.CHANNEL_LIST_UPDATE, timeout=timeout)
+    return {ch.id: ch for ch in u.channel_list_update.channels} if u else None
+
+
+ALL_MEMBER_BITS = (pb.PERM_SEND_MESSAGES | pb.PERM_CONNECT_VOICE | pb.PERM_STREAM |
+                   pb.PERM_VIEW_CHANNEL | pb.PERM_READ_HISTORY | pb.PERM_ATTACH_FILES)
+
+
+def test_v2_enforced_bits():
+    print("[v2] SEND_MESSAGES / CONNECT_VOICE / STREAM are enforced")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    quinn = join("quinn", owner)
+    owner.flush(0.5); quinn.flush(0.5)
+    # everyone loses SEND + CONNECT + STREAM
+    set_everyone_perms(owner, ALL_MEMBER_BITS & ~(pb.PERM_SEND_MESSAGES | pb.PERM_CONNECT_VOICE | pb.PERM_STREAM))
+    cl = channel_list(quinn)
+    check("member got a channel-list push with my_permissions", cl is not None and "general" in cl and not (cl["general"].my_permissions & pb.PERM_SEND_MESSAGES))
+    quinn.flush(0.3)
+    quinn.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="blocked?"))
+    r = quinn.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "message")
+    check("message rejected without SEND_MESSAGES", r is not None and not r.mod_action_res.success)
+    check("owner didn't receive it", owner.wait(pb.Packet.CHANNEL_MSG, timeout=1.0) is None)
+    quinn.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    r = quinn.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice")
+    check("voice join rejected without CONNECT_VOICE", r is not None and not r.mod_action_res.success)
+    # restore CONNECT but not STREAM
+    set_everyone_perms(owner, ALL_MEMBER_BITS & ~pb.PERM_STREAM)
+    quinn.flush(0.5)
+    quinn.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2, pred=lambda p: "quinn" in p.voice_presence_update.active_users)
+    check("voice join allowed again", vp is not None)
+    quinn.send(pb.Packet.START_STREAM_REQ, start_stream_req=pb.StartStreamRequest(channel_id="voice-lounge", target_fps=30))
+    r = quinn.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "stream")
+    check("stream rejected without STREAM", r is not None and not r.mod_action_res.success)
+    set_everyone_perms(owner, ALL_MEMBER_BITS)
+    owner.send(pb.Packet.ROLE_LIST_REQ, role_list_req=pb.RoleListRequest()); owner.wait(pb.Packet.ROLE_LIST_RES)
+    quinn.close(); owner.close()
+
+
+def test_v2_private_channel():
+    print("[v2] per-channel overwrites: private + read-only channels")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ev = everyone_role(owner)
+    rae = join("rae", owner)
+    owner.flush(0.5); rae.flush(0.5)
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="staff", type=pb.ChannelInfo.TEXT))
+    cr = owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "create")
+    staff = cr.channel_action_res.channel.id
+    cl = channel_list(rae); check("member sees new channel before overwrite", cl is not None and staff in cl)
+    rae.flush(0.3); owner.flush(0.3)
+    # deny VIEW for everyone → private
+    r = set_overwrite(owner, staff, pb.ChannelOverwrite.ROLE, ev.id, deny=pb.PERM_VIEW_CHANNEL)
+    check("owner set everyone-deny VIEW", r is not None and r.channel_action_res.success, r.channel_action_res.message if r else None)
+    cl = channel_list(rae); check("member's list no longer contains staff", cl is not None and staff not in cl, str(sorted(cl) if cl else None))
+    ocl = channel_list(owner); check("owner still sees staff", ocl is not None and staff in ocl)
+    rae.flush(0.3); owner.flush(0.3)
+    rae.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=staff, content="sneaky"))
+    r = rae.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "message")
+    check("member can't post into hidden channel", r is not None and not r.mod_action_res.success)
+    owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=staff, content="secret"))
+    check("owner's message not delivered to member", rae.wait(pb.Packet.CHANNEL_MSG, timeout=1.0, pred=lambda p: p.channel_msg.channel_id == staff) is None)
+    rae.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id=staff, before_id=0, limit=50))
+    h = rae.wait(pb.Packet.CHANNEL_HISTORY_RES)
+    check("history of hidden channel is empty for member", h is not None and len(h.channel_history_res.messages) == 0)
+    # overwrites listing: member denied, owner ok
+    rae.send(pb.Packet.CHANNEL_OVERWRITES_REQ, channel_overwrites_req=pb.ChannelOverwritesRequest(channel_id=staff))
+    o = rae.wait(pb.Packet.CHANNEL_OVERWRITES_RES)
+    check("member can't list overwrites", o is not None and not o.channel_overwrites_res.success)
+    owner.send(pb.Packet.CHANNEL_OVERWRITES_REQ, channel_overwrites_req=pb.ChannelOverwritesRequest(channel_id=staff))
+    o = owner.wait(pb.Packet.CHANNEL_OVERWRITES_RES, pred=lambda p: p.channel_overwrites_res.success)
+    check("owner lists the everyone overwrite", o is not None and len(o.channel_overwrites_res.overwrites) == 1 and o.channel_overwrites_res.overwrites[0].deny == pb.PERM_VIEW_CHANNEL)
+    # member overwrite lets rae in
+    r = set_overwrite(owner, staff, pb.ChannelOverwrite.MEMBER, "rae", allow=pb.PERM_VIEW_CHANNEL)
+    check("member-allow VIEW set", r is not None and r.channel_action_res.success)
+    cl = channel_list(rae)
+    check("member sees staff again with VIEW+SEND", cl is not None and staff in cl and (cl[staff].my_permissions & (pb.PERM_VIEW_CHANNEL | pb.PERM_SEND_MESSAGES)) == (pb.PERM_VIEW_CHANNEL | pb.PERM_SEND_MESSAGES))
+    rae.flush(0.3); owner.flush(0.3)
+    owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=staff, content="welcome"))
+    check("owner's message now delivered", rae.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.channel_id == staff) is not None)
+    # read-only: deny SEND for everyone on general
+    r = set_overwrite(owner, "general", pb.ChannelOverwrite.ROLE, ev.id, deny=pb.PERM_SEND_MESSAGES)
+    cl = channel_list(rae)
+    check("read-only: my_permissions lacks SEND on general", cl is not None and not (cl["general"].my_permissions & pb.PERM_SEND_MESSAGES) and (cl["general"].my_permissions & pb.PERM_VIEW_CHANNEL))
+    rae.flush(0.3)
+    rae.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="nope"))
+    r = rae.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "message")
+    check("member can't post in read-only channel", r is not None and not r.mod_action_res.success)
+    owner.flush(0.3)
+    owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="announcement"))
+    check("member still receives owner's post", rae.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.content == "announcement") is not None)
+    # clear
+    set_overwrite(owner, "general", pb.ChannelOverwrite.ROLE, ev.id)
+    # attachment GET in private channel: 403 for a member without VIEW
+    set_overwrite(owner, staff, pb.ChannelOverwrite.MEMBER, "rae")   # clear member overwrite → hidden again
+    now = int(time.time())
+    mid = sql("insert into messages(channel_id, sender, content, timestamp) values(?,'alice','f',?) returning id", staff, now)[0][0]
+    path = os.path.join(RUN, "att", "secret.bin"); os.makedirs(os.path.dirname(path), exist_ok=True); open(path, "wb").write(b"top secret")
+    aid = sql("insert into attachments(message_id, kind, filename, mime, size_bytes, storage_path, position, created_at, upload_status, uploader, channel_id) "
+              "values(?,2,'s.bin','application/octet-stream',10,?,0,?,'ready','alice',?) returning id", mid, path, now, staff)[0][0]
+    def http_get(user):
+        sk = raw_tls(8085)
+        sk.sendall(f"GET /attachments/{aid} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {jwt(user)}\r\n\r\n".encode())
+        sk.settimeout(3); data = b""
+        try:
+            while True:
+                chunk = sk.recv(4096)
+                if not chunk: break
+                data += chunk
+        except Exception: pass
+        sk.close(); return data[:12]
+    check("attachment GET in hidden channel → 403 for member", http_get("rae").startswith(b"HTTP/1.1 403"))
+    check("attachment GET in hidden channel → 200 for owner", http_get("alice").startswith(b"HTTP/1.1 200"))
+    rae.close(); owner.close()
+
+
+def test_v2_overwrite_guards():
+    print("[v2] overwrite escalation + lock-out guards, hierarchy rule")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ev = everyone_role(owner)
+    sam = join("sam", owner); tia = join("tia", owner)
+    owner.flush(0.5); sam.flush(0.5); tia.flush(0.5)
+    # sam gets a role with MANAGE_ROLES (but not MANAGE_SERVER / BAN)
+    owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="Curator", color=0, permissions=pb.PERM_MANAGE_ROLES))
+    role = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
+    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="sam", role_ids=[role.id]))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
+    sam.flush(0.5)
+    r = set_overwrite(sam, "general", pb.ChannelOverwrite.MEMBER, "sam", allow=pb.PERM_BAN_MEMBERS)
+    check("can't grant a bit you don't hold in the channel", r is not None and not r.channel_action_res.success, r.channel_action_res.message if r else None)
+    r = set_overwrite(sam, "general", pb.ChannelOverwrite.ROLE, ev.id, deny=pb.PERM_VIEW_CHANNEL)
+    check("lock-out guard: can't deny your own VIEW", r is not None and not r.channel_action_res.success, r.channel_action_res.message if r else None)
+    r = set_overwrite(sam, "general", pb.ChannelOverwrite.MEMBER, "tia", deny=pb.PERM_SEND_MESSAGES)
+    check("can deny a bit you hold (mute tia in #general)", r is not None and r.channel_action_res.success, r.channel_action_res.message if r else None)
+    tia.flush(0.5)
+    tia.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="hi"))
+    r = tia.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "message")
+    check("tia muted in #general", r is not None and not r.mod_action_res.success)
+    # hierarchy rule: everyone with KICK → two role-less members can't kick each other
+    set_everyone_perms(owner, ALL_MEMBER_BITS | pb.PERM_KICK_MEMBERS)
+    tia.flush(0.5)
+    uma = join("uma", owner); tia.flush(0.5); uma.flush(0.5)
+    tia.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="uma", reason=""))
+    r = tia.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "kick")
+    check("role-less member can't kick a role-less member (equal level)", r is not None and not r.mod_action_res.success)
+    sam.flush(0.5)
+    sam.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="uma", reason=""))
+    r = sam.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "kick")
+    check("role holder (level 1) can kick a role-less member", r is not None and r.mod_action_res.success, r.mod_action_res.message if r else None)
+    set_everyone_perms(owner, ALL_MEMBER_BITS)
+    set_overwrite(owner, "general", pb.ChannelOverwrite.MEMBER, "tia")
+    # role delete cascades its overwrites
+    set_overwrite(owner, "general", pb.ChannelOverwrite.ROLE, role.id, deny=pb.PERM_ATTACH_FILES)
+    owner.send(pb.Packet.ROLE_DELETE_REQ, role_delete_req=pb.RoleDeleteRequest(role_id=role.id))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "delete")
+    rows = sql("select count(*) from channel_overwrites where target_type=0 and target_id=?", str(role.id))
+    check("role delete cascades its overwrites", rows == [(0,)])
+    for c in (sam, tia, uma, owner): c.close()
+
+
 def test_auth_failure_closes():
     print("[regression] failed auth still delivers response then closes")
     c = Client("nobody")
@@ -674,6 +854,9 @@ if __name__ == "__main__":
         test_p2_perm_cache_invalidation()
         test_b20_attachment_url()
         test_auth_server_id_field()
+        test_v2_enforced_bits()
+        test_v2_private_channel()
+        test_v2_overwrite_guards()
     finally:
         stop_server(proc)
     test_b9_timeouts()
