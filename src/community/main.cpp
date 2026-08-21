@@ -21,6 +21,7 @@
 #include <thread>
 #include <utility>
 #include <algorithm>
+#include <functional>
 #include <system_error>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -35,6 +36,7 @@
 #include "rate_limit.hpp"
 #include "central_sync.hpp"
 #include "authz.hpp"
+#include "../common/ed25519_keys.hpp"
 
 namespace ssl = boost::asio::ssl;
 using boost::asio::ip::tcp;
@@ -378,8 +380,13 @@ public:
     // Central-hosted invite sync. Community servers register each live invite
     // with central so clients can redeem a raw code without knowing host:port.
     void set_central_sync(const std::string& central_host, int central_port,
-                          const std::string& jwt_secret,
-                          const std::string& public_ip, int community_port);
+                          const std::string& community_secret,
+                          const std::string& public_ip, int community_port,
+                          const std::string& central_cert_pin);
+    // sha256-hex of our own TLS certificate, reported in heartbeats so
+    // clients can pin the community connection.
+    void set_cert_fingerprint(const std::string& fp) { cert_fingerprint_ = fp; }
+    const std::string& cert_fingerprint() const { return cert_fingerprint_; }
     void sync_invite_register(const std::string& code, int64_t expires_at);
     void sync_invite_unregister(const std::string& code);
     // Queue a framed packet for the central-sync worker (no-op when no
@@ -481,9 +488,10 @@ private:
     // Central-sync config (populated once at startup via set_central_sync).
     std::string central_host_;
     int central_port_ = 0;
-    std::string central_jwt_secret_;
+    std::string central_secret_;
     std::string public_ip_;
     int community_port_ = 0;
+    std::string cert_fingerprint_;
 
     int attachment_port_ = 0;
     int64_t max_attachment_bytes_ = 0;
@@ -511,11 +519,11 @@ private:
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
-    Session(tcp::socket socket, SessionManager& manager, ssl::context& context, const std::string& jwt_secret)
+    Session(tcp::socket socket, SessionManager& manager, ssl::context& context, const std::string& jwt_public_pem)
         : socket_(std::move(socket), context),
           close_timer_(socket_.lowest_layer().get_executor()),
           deadline_timer_(socket_.lowest_layer().get_executor()),
-          manager_(manager), jwt_secret_(jwt_secret) {
+          manager_(manager), jwt_public_pem_(jwt_public_pem) {
         // Enable TCP keepalive to detect dead client connections.
         // Tighten from system defaults (~2h) to 15s idle + 5s interval + 3 retries = ~30s detection.
         socket_.lowest_layer().set_option(boost::asio::socket_base::keep_alive(true));
@@ -793,15 +801,24 @@ private:
             std::string token = req.jwt_token();
             std::string invite_code = req.invite_code();
 
-            // Step 1: JWT verification.
+            // Step 1: JWT verification — Ed25519 with central's PUBLIC key
+            // (Theme A). This server can check a token but can't mint one.
             std::string candidate_username;
+            int64_t candidate_uid = 0;
             try {
                 auto decoded = jwt::decode(token);
                 auto verifier = jwt::verify()
-                    .allow_algorithm(jwt::algorithm::hs256{jwt_secret_})
+                    .allow_algorithm(jwt::algorithm::ed25519{jwt_public_pem_, ""})
                     .with_issuer("decibell_central_auth");
                 verifier.verify(decoded);
                 candidate_username = decoded.get_subject();
+                if (decoded.has_payload_claim("uid")) {
+                    const auto& c = decoded.get_payload_claim("uid");
+                    if (c.get_type() == jwt::json::type::integer) candidate_uid = c.as_integer();
+                    else if (c.get_type() == jwt::json::type::number) candidate_uid = static_cast<int64_t>(c.as_number());
+                    else if (c.get_type() == jwt::json::type::string) { try { candidate_uid = std::stoll(c.as_string()); } catch (...) {} }
+                }
+                if (candidate_username.empty()) throw std::runtime_error("empty subject");
             } catch (const std::exception& e) {
                 std::cout << "[Community] Auth failed (JWT): " << e.what() << "\n";
                 send_auth_response(false, "Invalid token.", "auth");
@@ -819,7 +836,7 @@ private:
                 return;
             }
 
-            if (db->is_banned(candidate_username)) {
+            if (db->is_banned(candidate_username, candidate_uid)) {
                 std::cout << "[Community] Blocked banned user: " << candidate_username << "\n";
                 send_auth_response(false, "You are banned from this server.", "banned");
                 manager_.leave(shared_from_this());
@@ -838,10 +855,10 @@ private:
                     return;
                 }
                 chatproj::DbInvite consumed;
-                auto result = db->redeem_invite(invite_code, candidate_username, &consumed);
+                auto result = db->redeem_invite(invite_code, candidate_username, candidate_uid, &consumed);
                 switch (result) {
                     case chatproj::InviteResult::Ok:
-                        if (!db->add_member(candidate_username)) {
+                        if (!db->add_member(candidate_username, candidate_uid)) {
                             send_auth_response(false, "Failed to record membership.", "auth");
                             manager_.leave(shared_from_this());
                             close_after_flush();
@@ -875,7 +892,10 @@ private:
             // Step 3: accept.
             authenticated_ = true;
             username_ = candidate_username;
+            uid_ = candidate_uid;
             token_ = token;
+            // Back-fill the stable uid on members that joined before Theme A.
+            if (uid_ > 0) db->set_member_uid(username_, uid_);
 
             constexpr size_t UDP_KEY_LEN = chatproj::SENDER_ID_SIZE - 1;
             if (token_.size() >= UDP_KEY_LEN) {
@@ -2854,8 +2874,9 @@ private:
     chatproj::TokenBucket rate_limit_log_bucket_{3, 0.2};
     std::vector<uint8_t> inbound_body_;
 
-    std::string jwt_secret_;
+    std::string jwt_public_pem_;
     bool authenticated_ = false;
+    int64_t uid_ = 0;
     // Set by close_after_flush(): the session has been rejected, the
     // read loop must not re-arm, and the socket closes once the write
     // queue drains.
@@ -4087,26 +4108,54 @@ namespace {
 bool send_to_central_blocking(const std::string& host, int port,
                               const std::vector<uint8_t>& framed,
                               bool read_response,
-                              chatproj::Packet* out_response);
+                              chatproj::Packet* out_response,
+                              const std::function<bool(const std::string&)>& pin_check);
 } // namespace
 
 void SessionManager::set_central_sync(const std::string& central_host, int central_port,
-                                      const std::string& jwt_secret,
-                                      const std::string& public_ip, int community_port) {
+                                      const std::string& community_secret,
+                                      const std::string& public_ip, int community_port,
+                                      const std::string& central_cert_pin) {
     central_host_ = central_host;
     central_port_ = central_port;
-    central_jwt_secret_ = jwt_secret;
+    central_secret_ = community_secret;
     public_ip_ = public_ip;
     community_port_ = community_port;
     if (central_host_.empty() || central_port_ == 0) return;
     const std::string host = central_host_;
     const int port = central_port_;
+    // Central certificate pinning. DECIBELL_CENTRAL_CERT_FINGERPRINT pins
+    // explicitly; otherwise trust-on-first-use: the first fingerprint seen
+    // is stored in server_meta and every later connection must match it.
+    // A mismatch is logged loudly and the exchange is refused.
+    chatproj::CommunityDb* db = db_;
+    auto pin_check = [db, central_cert_pin](const std::string& seen) -> bool {
+        if (!central_cert_pin.empty()) {
+            if (seen == central_cert_pin) return true;
+            std::cerr << "[CentralSync] REFUSED: central certificate " << seen
+                      << " does not match DECIBELL_CENTRAL_CERT_FINGERPRINT\n";
+            return false;
+        }
+        if (!db) return true;
+        const std::string pinned = db->central_cert_fingerprint();
+        if (pinned.empty()) {
+            db->set_central_cert_fingerprint(seen);
+            std::cout << "[CentralSync] Pinned central certificate (TOFU): " << seen << "\n";
+            return true;
+        }
+        if (pinned == seen) return true;
+        std::cerr << "[CentralSync] REFUSED: central certificate changed (pinned " << pinned
+                  << ", seen " << seen << "). If central was legitimately re-keyed, "
+                     "set DECIBELL_CENTRAL_CERT_FINGERPRINT or clear the pin "
+                     "(server_meta key central_cert_fingerprint).\n";
+        return false;
+    };
     central_worker_ = std::make_unique<chatproj::CentralSyncWorker>(
-        [host, port](const std::vector<uint8_t>& framed, bool read_response,
-                     std::vector<uint8_t>* response) {
+        [host, port, pin_check](const std::vector<uint8_t>& framed, bool read_response,
+                                std::vector<uint8_t>* response) {
             chatproj::Packet resp;
             const bool ok = send_to_central_blocking(host, port, framed, read_response,
-                                                     read_response ? &resp : nullptr);
+                                                     read_response ? &resp : nullptr, pin_check);
             if (ok && read_response && response) {
                 std::string serialized;
                 resp.SerializeToString(&serialized);
@@ -4147,14 +4196,24 @@ constexpr auto kCentralSyncTimeout = std::chrono::seconds(5);
 bool send_to_central_blocking(const std::string& host, int port,
                               const std::vector<uint8_t>& framed,
                               bool read_response,
-                              chatproj::Packet* out_response) {
+                              chatproj::Packet* out_response,
+                              const std::function<bool(const std::string&)>& pin_check) {
     try {
         boost::asio::io_context io;
         ssl::context ctx(ssl::context::tlsv12_client);
-        ctx.set_verify_mode(ssl::verify_none);
+        // Pin the leaf certificate by fingerprint (self-signed certs never
+        // chain to a CA, so chain verification is irrelevant — the
+        // callback's verdict on depth 0 is the whole decision).
+        ctx.set_verify_mode(ssl::verify_peer);
 
         tcp::resolver resolver(io);
         ssl::stream<tcp::socket> ssl_socket(io, ctx);
+        ssl_socket.set_verify_callback([&pin_check](bool /*preverified*/, ssl::verify_context& vctx) {
+            X509_STORE_CTX* store = vctx.native_handle();
+            if (X509_STORE_CTX_get_error_depth(store) != 0) return true;
+            X509* cert = X509_STORE_CTX_get_current_cert(store);
+            return pin_check(chatproj::cert_fingerprint_from_x509(cert));
+        });
 
         bool completed = false;
         uint32_t len_be = 0;
@@ -4226,7 +4285,7 @@ void SessionManager::sync_membership_revoke(const std::string& username) {
     if (sid <= 0) return;
     chatproj::Packet packet;
     packet.set_type(chatproj::Packet::MEMBERSHIP_REVOKE_REQ);
-    packet.set_auth_token(central_jwt_secret_);
+    packet.set_auth_token(central_secret_);
     auto* req = packet.mutable_membership_revoke_req();
     req->set_username(username);
     req->set_server_id(sid);
@@ -4243,7 +4302,7 @@ void SessionManager::sync_server_picture(const std::string& data,
     if (central_host_.empty() || central_port_ == 0) return;
     chatproj::Packet packet;
     packet.set_type(chatproj::Packet::SYNC_SERVER_PICTURE_REQ);
-    packet.set_auth_token(central_jwt_secret_);
+    packet.set_auth_token(central_secret_);
     auto* req = packet.mutable_sync_server_picture_req();
     req->set_host(public_ip_);
     req->set_port(community_port_);
@@ -4268,7 +4327,7 @@ void SessionManager::sync_membership_register(const std::string& username) {
     }
     chatproj::Packet packet;
     packet.set_type(chatproj::Packet::MEMBERSHIP_REGISTER_REQ);
-    packet.set_auth_token(central_jwt_secret_);
+    packet.set_auth_token(central_secret_);
     auto* req = packet.mutable_membership_register_req();
     req->set_username(username);
     req->set_server_id(sid);
@@ -4285,7 +4344,7 @@ void SessionManager::sync_invite_register(const std::string& code, int64_t expir
 
     chatproj::Packet packet;
     packet.set_type(chatproj::Packet::INVITE_REGISTER_REQ);
-    packet.set_auth_token(central_jwt_secret_);
+    packet.set_auth_token(central_secret_);
     auto* req = packet.mutable_invite_register_req();
     req->set_code(code);
     req->set_host(public_ip_);
@@ -4304,7 +4363,7 @@ void SessionManager::sync_invite_unregister(const std::string& code) {
 
     chatproj::Packet packet;
     packet.set_type(chatproj::Packet::INVITE_UNREGISTER_REQ);
-    packet.set_auth_token(central_jwt_secret_);
+    packet.set_auth_token(central_secret_);
     auto* req = packet.mutable_invite_unregister_req();
     req->set_code(code);
 
@@ -4317,14 +4376,14 @@ void SessionManager::sync_invite_unregister(const std::string& code) {
 
 class CommunityServer {
 public:
-    CommunityServer(boost::asio::io_context& io_context, short port, SessionManager& manager, const std::string& jwt_secret)
+    CommunityServer(boost::asio::io_context& io_context, short port, SessionManager& manager, const std::string& jwt_public_pem)
         : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
           accept_backoff_(io_context),
           udp_socket_(io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), port + 1)),
           media_udp_socket_(io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), port + 2)),
           ssl_context_(ssl::context::tlsv12),
           manager_(manager),
-          jwt_secret_(jwt_secret) {
+          jwt_secret_(jwt_public_pem) {
 
         ssl_context_.set_options(
             ssl::context::default_workarounds |
@@ -4655,13 +4714,13 @@ private:
 void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_timer& timer,
                     const std::string& central_host, int central_port,
                     const std::string& public_ip, int community_port,
-                    SessionManager& manager, const std::string& jwt_secret) {
+                    SessionManager& manager, const std::string& community_secret) {
     // Build heartbeat packet. Name/description come from the DB every
     // tick so an in-app rename (SERVER_UPDATE_REQ) reaches the central
     // directory within a minute.
     chatproj::Packet packet;
     packet.set_type(chatproj::Packet::SERVER_HEARTBEAT);
-    packet.set_auth_token(jwt_secret);
+    packet.set_auth_token(community_secret);
     auto* hb = packet.mutable_server_heartbeat();
     if (auto* db = manager.db()) {
         hb->set_name(db->server_name());
@@ -4672,6 +4731,7 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
     hb->set_member_count(static_cast<int>(manager.member_count()));
     // Stable identity across IP/port changes (0 until first learned).
     hb->set_server_id(manager.server_id());
+    hb->set_cert_fingerprint(manager.cert_fingerprint());
 
     std::string serialized;
     packet.SerializeToString(&serialized);
@@ -4719,18 +4779,20 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
     timer.expires_after(std::chrono::seconds(60));
     timer.async_wait([&io_context, &timer, &central_host, central_port,
                       &public_ip, community_port,
-                      &manager, &jwt_secret](boost::system::error_code ec) {
+                      &manager, &community_secret](boost::system::error_code ec) {
         if (!ec) {
             send_heartbeat(io_context, timer, central_host, central_port,
                            public_ip, community_port,
-                           manager, jwt_secret);
+                           manager, community_secret);
         }
     });
 }
 
 int main() {
     try {
-        const char* jwt_env = std::getenv("DECIBELL_JWT_SECRET");
+        const char* jwt_pub_env = std::getenv("DECIBELL_JWT_PUBLIC_KEY_FILE");
+        const char* secret_env = std::getenv("DECIBELL_COMMUNITY_SECRET");
+        const char* central_pin_env = std::getenv("DECIBELL_CENTRAL_CERT_FINGERPRINT");
         const char* central_host_env = std::getenv("DECIBELL_CENTRAL_HOST");
         const char* server_name_env = std::getenv("DECIBELL_SERVER_NAME");
         const char* server_desc_env = std::getenv("DECIBELL_SERVER_DESC");
@@ -4743,12 +4805,34 @@ int main() {
         const char* idle_timeout_env = std::getenv("DECIBELL_IDLE_TIMEOUT_SECONDS");
         const char* retention_interval_env = std::getenv("DECIBELL_RETENTION_INTERVAL_SECONDS");
 
-        if (!jwt_env) {
-            std::cerr << "Missing required environment variable: DECIBELL_JWT_SECRET\n";
+        if (std::getenv("DECIBELL_JWT_SECRET")) {
+            std::cerr << "[Community] DECIBELL_JWT_SECRET is no longer used (Theme A): tokens are verified "
+                         "with central's Ed25519 public key (DECIBELL_JWT_PUBLIC_KEY_FILE), and the "
+                         "central sync secret is DECIBELL_COMMUNITY_SECRET.\n";
+        }
+        if (!jwt_pub_env || !secret_env || secret_env[0] == '\0') {
+            std::cerr << "Missing required environment variables:\n";
+            if (!jwt_pub_env) std::cerr << "  DECIBELL_JWT_PUBLIC_KEY_FILE (central's jwt_ed25519.pem.pub)\n";
+            if (!secret_env || secret_env[0] == '\0')
+                std::cerr << "  DECIBELL_COMMUNITY_SECRET (shared with central; authenticates heartbeats / sync)\n";
             return 1;
         }
-
-        std::string jwt_secret = jwt_env;
+        const std::string jwt_public_pem = chatproj::read_file(jwt_pub_env);
+        if (jwt_public_pem.find("PUBLIC KEY") == std::string::npos) {
+            std::cerr << "[Community] " << jwt_pub_env << " is not a PEM public key\n";
+            return 1;
+        }
+        std::string community_secret = secret_env;
+        std::string central_cert_pin = central_pin_env ? central_pin_env : "";
+        // Our own certificate's fingerprint, advertised to central so
+        // clients can pin us.
+        const std::string own_cert_fingerprint =
+            chatproj::cert_fingerprint_from_pem(chatproj::read_file("server.crt"));
+        if (own_cert_fingerprint.empty()) {
+            std::cerr << "[Community] Could not read server.crt to compute its fingerprint\n";
+            return 1;
+        }
+        std::cout << "[Community] TLS certificate fingerprint: " << own_cert_fingerprint << "\n";
         std::string central_host = central_host_env ? central_host_env : "127.0.0.1";
         std::string server_name = server_name_env ? server_name_env : "Community Server";
         std::string server_desc = server_desc_env ? server_desc_env : "";
@@ -4804,14 +4888,15 @@ int main() {
             std::cout << "[Community] Loaded cached central server_id = "
                       << cached << "\n";
         }
-        manager.set_central_sync(central_host, 8080, jwt_secret, public_ip, 8082);
+        manager.set_cert_fingerprint(own_cert_fingerprint);
+        manager.set_central_sync(central_host, 8080, community_secret, public_ip, 8082, central_cert_pin);
         // Attachment HTTP/TLS listener. port+3 (= 8085 by default).
         const int attachment_port = 8082 + 3;
         manager.set_attachment_config(attachment_port, max_attachment_bytes);
-        CommunityServer s(io_context, 8082, manager, jwt_secret);
+        CommunityServer s(io_context, 8082, manager, jwt_public_pem);
         AttachmentHttpServer attachment_server(io_context,
                                                static_cast<unsigned short>(attachment_port),
-                                               db, jwt_secret, attachments_root,
+                                               db, jwt_public_pem, attachments_root,
                                                max_attachment_bytes);
         attachment_server.set_authz(&authz);
         std::cout << "Decibell Community Server running on port 8082...\n";
@@ -4839,7 +4924,7 @@ int main() {
         // from the DB so the central directory reflects any rename.
         boost::asio::steady_timer heartbeat_timer(io_context);
         send_heartbeat(io_context, heartbeat_timer, central_host, 8080,
-                       public_ip, 8082, manager, jwt_secret);
+                       public_ip, 8082, manager, community_secret);
 
         // Retention pruner. Fires every 10 minutes — long enough to be
         // negligible overhead, short enough that users see retention-capped

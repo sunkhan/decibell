@@ -40,6 +40,11 @@ Decibell is a decentralized Discord-like application with three components:
   `DECIBELL_JWT_SECRET` (required), `DECIBELL_CENTRAL_HOST` (127.0.0.1),
   `DECIBELL_SERVER_NAME`, `DECIBELL_SERVER_DESC` (seed a fresh DB only —
   the name/description are edited in-app afterwards), `DECIBELL_PUBLIC_IP`,
+  `DECIBELL_JWT_PUBLIC_KEY_FILE` (required — central's `jwt_ed25519.pem.pub`),
+  `DECIBELL_COMMUNITY_SECRET` (required — shared with central; authenticates
+  heartbeats / sync; NOT a signing key),
+  `DECIBELL_CENTRAL_CERT_FINGERPRINT` (optional — pins central's TLS cert;
+  otherwise trust-on-first-use),
   `DECIBELL_OWNER_USERNAME` (required on first boot), `DECIBELL_DB_PATH`,
   `DECIBELL_ATTACHMENTS_ROOT`, `DECIBELL_MAX_ATTACHMENT_BYTES` (100 MiB),
   `DECIBELL_AUTH_TIMEOUT_SECONDS` (10 — TLS+auth deadline for a new
@@ -70,7 +75,7 @@ All TCP communication uses length-prefix framing with Protobuf serialization:
 - **Frame format:** `[4-byte big-endian length][Protobuf Packet bytes]`
 - **Helper:** `chatproj::create_framed_packet()` in `src/common/net_utils.hpp`
 - **Max body size enforced:** 2 MB (server drops packets larger than this)
-- **TLS/SSL:** All TCP connections use TLS 1.2+. Client certificate verification is disabled (`ssl::verify_none`).
+- **TLS/SSL:** All TCP connections use TLS 1.2+. Self-signed certificates are **pinned by sha256 fingerprint** (Theme A): central is trust-on-first-use; communities are pinned to the fingerprint central reports for them (fallback TOFU). `verify_none` is gone.
 
 ### Connection Details
 - Central server: port **8080** (hardcoded in server `main.cpp`)
@@ -82,7 +87,7 @@ All TCP communication uses length-prefix framing with Protobuf serialization:
 1. Client connects to central server over TCP/TLS
 2. Client sends `LoginRequest` (username, password)
 3. Central server verifies credentials against PostgreSQL, returns `LoginResponse` with JWT
-4. JWT: HS256, issuer `"decibell_central_auth"`, subject = username; secret is a hardcoded placeholder in `main()`
+4. JWT: **Ed25519 (EdDSA)**, issuer `"decibell_central_auth"`, subject = username, `uid` claim = stable user id. Central signs with a private key (`DECIBELL_JWT_KEY_FILE`, generated on first boot); community servers verify with the public key only (`DECIBELL_JWT_PUBLIC_KEY_FILE`) and cannot forge tokens. The community↔central channel uses a separate `DECIBELL_COMMUNITY_SECRET`.
 5. Client presents JWT in `CommunityAuthRequest.jwt_token` when connecting to community server
 6. Community server verifies JWT signature and issuer, returns channel list in `CommunityAuthResponse`
 7. Subsequent TCP packets from the client to the central server include `auth_token` (field 16 of `Packet`)

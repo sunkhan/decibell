@@ -18,6 +18,7 @@ import { initUpdater, kickoffInitialCheck, cancelInitialCheck } from "./update";
 import { sweepStale } from "./fileRegistry";
 import { initMainSentry } from "./sentry";
 import * as crypto from "node:crypto";
+import { verifyHostFingerprint } from "./attachmentRegistry";
 
 // Single-instance lock — second launches focus the existing window.
 // Required for deep-link handling on Windows/Linux (so a second
@@ -643,32 +644,56 @@ app.whenReady().then(async () => {
     { useSystemPicker: process.platform === "darwin" },
   );
 
-  // Community + central servers use self-signed TLS certs (the Rust
-  // chat path uses NoVerifier in net/tls.rs to match). Tell Chromium's
-  // network stack to do the same so renderer-side fetch() can hit the
-  // attachment HTTP endpoints. Verification result 0 = trust this
-  // certificate. Default-pass anything else through (-3 = use
-  // Chromium's default verification result).
-  //
-  // This is strictly a "trust on first use, never verify" stance,
-  // matching the C++ client's `ssl::verify_none` baseline. Production
-  // hardening (cert pinning per joined community) is a separate piece
-  // of work not in this PR.
-  session.defaultSession.setCertificateVerifyProc((_req, callback) => {
-    callback(0);
+  // Community servers use self-signed TLS certs, so Chromium's default
+  // verification would reject the attachment HTTPS endpoints. Instead of
+  // trusting everything (the old stance), PIN: the Rust chat connection
+  // to each community already verified its certificate (net/pins.rs —
+  // central-reported fingerprint or trust-on-first-use) and the
+  // attachment listener shares that certificate, so a host we know must
+  // present exactly that fingerprint. 0 = trust, -2 = reject, -3 = let
+  // Chromium decide (hosts that aren't ours, e.g. Sentry / the updater).
+  const pinVerdict = (hostname: string, pem: string): number => {
+    const b64 = pem.replace(/-----(BEGIN|END) CERTIFICATE-----/g, "").replace(/\s+/g, "");
+    let der: Buffer;
+    try {
+      der = Buffer.from(b64, "base64");
+    } catch {
+      return -2;
+    }
+    const fp = crypto.createHash("sha256").update(der).digest("hex");
+    switch (verifyHostFingerprint(hostname, fp)) {
+      case "match":
+        return 0;
+      case "mismatch":
+        console.error(`[tls] pin mismatch for ${hostname}: presented ${fp}`);
+        return -2;
+      default:
+        return -3;
+    }
+  };
+  session.defaultSession.setCertificateVerifyProc((req, callback) => {
+    callback(pinVerdict(req.hostname, req.certificate.data));
   });
 
-  // Belt-and-suspenders: even with the verify proc above, some
-  // Electron builds raise certificate errors for self-signed certs
-  // through this event path before the verify proc kicks in (notably
-  // for `net.fetch` from main during early connection setup). Trust
-  // the cert here too, matching the ssl::verify_none baseline of the
-  // C++ client.
+  // Some Electron builds raise certificate errors through this event
+  // before the verify proc runs (notably `net.fetch` from main during
+  // early setup). Apply the same pin here.
   app.on(
     "certificate-error",
-    (event, _webContents, _url, _error, _certificate, callback) => {
-      event.preventDefault();
-      callback(true);
+    (event, _webContents, url, _error, certificate, callback) => {
+      let hostname = "";
+      try {
+        hostname = new URL(url).hostname;
+      } catch {
+        /* fall through: unknown host → let Chromium reject */
+      }
+      const verdict = pinVerdict(hostname, certificate.data);
+      if (verdict === 0) {
+        event.preventDefault();
+        callback(true);
+      } else {
+        callback(false);
+      }
     },
   );
 

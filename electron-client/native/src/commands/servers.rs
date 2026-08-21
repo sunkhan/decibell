@@ -269,6 +269,10 @@ pub struct AttachmentTarget {
     pub jwt: String,
     /// Per-file upload cap reported by the server. 0 = unlimited.
     pub max_attachment_bytes: i64,
+    /// sha256-hex of the certificate this community presented on its chat
+    /// connection; the attachment listener uses the same certificate, so
+    /// Electron pins the HTTPS host to it.
+    pub cert_fingerprint: String,
 }
 
 /// Resolve the HTTPS endpoint for attachment uploads/downloads against a
@@ -294,7 +298,24 @@ pub async fn get_attachment_target(
         port: client.attachment_port as i32,
         jwt: client.jwt.clone(),
         max_attachment_bytes: client.max_attachment_bytes,
+        cert_fingerprint: client.cert_fingerprint.clone(),
     }))
+}
+
+#[napi(object)]
+pub struct TrustCertificateArgs {
+    pub host: String,
+    pub port: u16,
+}
+
+/// User-initiated re-trust after a `CERT_MISMATCH:` failure: forget the
+/// pin (and central's expectation) for host:port so the next connect
+/// accepts — and pins — whatever certificate is presented. Only do this
+/// when the operator confirms the server was legitimately re-keyed.
+#[napi]
+pub async fn trust_certificate(args: TrustCertificateArgs) -> napi::Result<()> {
+    crate::net::pins::retrust(&args.host, args.port);
+    Ok(())
 }
 
 /// Best-effort URL-decoding for the host segment of an invite link.

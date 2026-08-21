@@ -26,24 +26,56 @@ def b64(b):
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 
 
-def jwt(username, nonce=""):
-    h = b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+KEY_PEM = os.path.join(RUN, "jwt_ed25519.pem")
+PUB_PEM = KEY_PEM + ".pub"
+
+
+def ensure_keys():
+    """Ed25519 JWT keypair (Theme A): central signs, communities verify."""
+    os.makedirs(RUN, exist_ok=True)
+    if not os.path.exists(KEY_PEM):
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out", KEY_PEM], check=True, capture_output=True)
+        subprocess.run(["openssl", "pkey", "-in", KEY_PEM, "-pubout", "-out", PUB_PEM], check=True, capture_output=True)
+
+
+_uid_counter = {}
+
+
+def uid_for(username):
+    """Deterministic per-username stable id, like central's users.uid."""
+    return _uid_counter.setdefault(username, 1000 + len(_uid_counter))
+
+
+def jwt(username, nonce="", uid=None):
+    ensure_keys()
+    h = b64(json.dumps({"alg": "EdDSA", "typ": "JWS"}).encode())
     now = int(time.time())
-    p = b64(json.dumps({"iss": "decibell_central_auth", "sub": username,
+    p = b64(json.dumps({"iss": "decibell_central_auth", "sub": username, "uid": uid if uid is not None else uid_for(username),
                         "iat": now, "exp": now + 3600, "n": nonce}).encode())
-    sig = hmac.new(SECRET.encode(), f"{h}.{p}".encode(), hashlib.sha256).digest()
-    return f"{h}.{p}.{b64(sig)}"
+    return f"{h}.{p}.{b64(ed25519_sign(KEY_PEM, f'{h}.{p}'.encode()))}"
+
+
+def ed25519_sign(key_pem, data):
+    """openssl pkeyutl -rawin needs a seekable file (one-shot EdDSA)."""
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False, dir=RUN) as f:
+        f.write(data); path = f.name
+    try:
+        return subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", key_pem, "-rawin", "-in", path],
+                              check=True, capture_output=True).stdout
+    finally:
+        os.unlink(path)
 
 
 class Client:
-    def __init__(self, username, invite="", nonce="", timeout=3.0):
+    def __init__(self, username, invite="", nonce="", timeout=3.0, uid=None):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         raw = socket.create_connection((HOST, 8082), timeout=timeout)
         self.s = ctx.wrap_socket(raw)
         self.username = username
-        self.jwt = jwt(username, nonce)
+        self.jwt = jwt(username, nonce, uid)
         self.buf = b""
         self.inbox = []
         self.closed = False
@@ -134,7 +166,9 @@ def start_server(fresh=False, extra_env=None):
         subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "server.key",
                         "-out", "server.crt", "-subj", "/CN=localhost", "-days", "2"], cwd=RUN, check=True,
                        capture_output=True)
-    env = dict(os.environ, DECIBELL_JWT_SECRET=SECRET, DECIBELL_OWNER_USERNAME="alice", DECIBELL_DB_PATH="./c.db",
+    ensure_keys()
+    env = dict(os.environ, DECIBELL_JWT_PUBLIC_KEY_FILE=PUB_PEM, DECIBELL_COMMUNITY_SECRET=SECRET,
+               DECIBELL_OWNER_USERNAME="alice", DECIBELL_DB_PATH="./c.db",
                DECIBELL_ATTACHMENTS_ROOT="./att", DECIBELL_CENTRAL_HOST="127.0.0.1")
     if extra_env:
         env.update(extra_env)
@@ -1167,6 +1201,51 @@ def test_http_keepalive_and_fts():
     sk.close()
 
 
+def test_theme_a_tokens_and_uid():
+    print("[theme A] Ed25519 tokens; HS256 / wrong-key tokens rejected; bans follow the uid")
+    # A token signed with a different Ed25519 key must be rejected.
+    other = os.path.join(RUN, "other_ed25519.pem")
+    if not os.path.exists(other):
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out", other], check=True, capture_output=True)
+    h = b64(json.dumps({"alg": "EdDSA", "typ": "JWS"}).encode())
+    now = int(time.time())
+    p = b64(json.dumps({"iss": "decibell_central_auth", "sub": "alice", "uid": 1, "iat": now, "exp": now + 3600}).encode())
+    forged = f"{h}.{p}.{b64(ed25519_sign(other, f'{h}.{p}'.encode()))}"
+    ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+    c = Client.__new__(Client)
+    c.s = ctx.wrap_socket(socket.create_connection((HOST, 8082), timeout=3)); c.username = "alice"; c.jwt = forged; c.buf = b""; c.inbox = []; c.closed = False
+    c.send(pb.Packet.COMMUNITY_AUTH_REQ, community_auth_req=pb.CommunityAuthRequest(jwt_token=forged))
+    ok, r = auth_ok(c)
+    check("token signed by another key rejected", not ok and r is not None and r.community_auth_res.error_code == "auth"); c.close()
+    # An HS256 token (old scheme) with the community secret as key must be rejected too.
+    h2 = b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    sig2 = hmac.new(SECRET.encode(), f"{h2}.{p}".encode(), hashlib.sha256).digest()
+    hs = f"{h2}.{p}.{b64(sig2)}"
+    c = Client.__new__(Client)
+    c.s = ctx.wrap_socket(socket.create_connection((HOST, 8082), timeout=3)); c.username = "alice"; c.jwt = hs; c.buf = b""; c.inbox = []; c.closed = False
+    c.send(pb.Packet.COMMUNITY_AUTH_REQ, community_auth_req=pb.CommunityAuthRequest(jwt_token=hs))
+    ok, r = auth_ok(c)
+    check("HS256 token rejected (no symmetric fallback)", not ok); c.close()
+    # uid-keyed bans: ban "gus" (uid 4242); "gus_renamed" with the same uid is still banned.
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    code = make_invite(owner)
+    gus = Client("gus", invite=code, uid=4242); assert auth_ok(gus)[0]
+    check("member row stores uid", sql("select uid from members where username='gus'") == [(4242,)])
+    owner.flush(0.5)
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="gus", reason="bye"))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
+    gus.close()
+    code = make_invite(owner)
+    c = Client("gus_renamed", invite=code, uid=4242); ok, r = auth_ok(c)
+    check("renamed account with the banned uid is still banned", not ok and r.community_auth_res.error_code == "banned"); c.close()
+    code = make_invite(owner)
+    c = Client("gus_renamed", invite=code, uid=4243); ok, r = auth_ok(c)
+    check("different uid with the new name is admitted", ok); c.close()
+    owner.send(pb.Packet.UNBAN_MEMBER_REQ, unban_member_req=pb.UnbanMemberRequest(username="gus"))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "unban")
+    owner.close()
+
+
 def test_auth_failure_closes():
     print("[regression] failed auth still delivers response then closes")
     c = Client("nobody")
@@ -1208,6 +1287,7 @@ if __name__ == "__main__":
         test_voice_moderation()
         test_udp_relay()
         test_http_keepalive_and_fts()
+        test_theme_a_tokens_and_uid()
     finally:
         stop_server(proc)
     test_b9_timeouts()

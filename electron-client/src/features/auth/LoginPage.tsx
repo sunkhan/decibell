@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
+import { handleCertMismatch } from "../../lib/certMismatch";
 
 export default function LoginPage() {
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -18,6 +19,10 @@ export default function LoginPage() {
     try {
       await invoke("login", { username, password });
     } catch (err) {
+      if (handleCertMismatch(err, handleLogin)) {
+        useAuthStore.getState().setLoggingIn(false);
+        return;
+      }
       useAuthStore.getState().setLoginError(String(err));
     }
   };

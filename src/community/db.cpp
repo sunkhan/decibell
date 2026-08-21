@@ -223,6 +223,18 @@ void CommunityDb::init_schema_() {
 
     // --- v7: timeouts, server voice flags, ban expiry, slowmode, audit log ---
     migrate_to_v7_moderation_();
+
+    // --- v8: stable user ids (Theme A) ---
+    migrate_to_v8_uid_();
+}
+
+void CommunityDb::migrate_to_v8_uid_() {
+    if (!column_exists(db_, "members", "uid"))
+        exec_sql(db_, "ALTER TABLE members ADD COLUMN uid INTEGER NOT NULL DEFAULT 0;");
+    if (!column_exists(db_, "bans", "uid"))
+        exec_sql(db_, "ALTER TABLE bans ADD COLUMN uid INTEGER NOT NULL DEFAULT 0;");
+    exec_sql(db_, "CREATE INDEX IF NOT EXISTS idx_bans_uid ON bans(uid) WHERE uid > 0;");
+    set_meta_("schema_version", "8");
 }
 
 void CommunityDb::migrate_to_v7_moderation_() {
@@ -751,6 +763,16 @@ void CommunityDb::set_central_server_id(int64_t id) {
     set_meta_("central_server_id", std::to_string(id));
 }
 
+std::string CommunityDb::central_cert_fingerprint() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return get_meta_("central_cert_fingerprint");
+}
+
+void CommunityDb::set_central_cert_fingerprint(const std::string& fp) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    set_meta_("central_cert_fingerprint", fp);
+}
+
 std::string CommunityDb::server_name() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return get_meta_("server_name");
@@ -787,15 +809,27 @@ bool CommunityDb::is_member(const std::string& username) const {
     return q.step() == SQLITE_ROW;
 }
 
-bool CommunityDb::add_member(const std::string& username) {
+bool CommunityDb::add_member(const std::string& username, int64_t uid) {
     std::lock_guard<std::mutex> lock(mutex_);
     Stmt q(db_,
-        "INSERT OR IGNORE INTO members(username, joined_at, nickname) "
-        "VALUES(?, ?, '');");
+        "INSERT OR IGNORE INTO members(username, joined_at, nickname, uid) "
+        "VALUES(?, ?, '', ?);");
     if (!q.s) return false;
     q.bind_text(1, username);
     q.bind_int64(2, now_seconds());
+    q.bind_int64(3, uid);
     return q.step() == SQLITE_DONE;
+}
+
+void CommunityDb::set_member_uid(const std::string& username, int64_t uid) {
+    if (uid <= 0) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "UPDATE members SET uid=? WHERE username=? AND uid<>?;");
+    if (!q.s) return;
+    q.bind_int64(1, uid);
+    q.bind_text(2, username);
+    q.bind_int64(3, uid);
+    q.step();
 }
 
 bool CommunityDb::remove_member(const std::string& username) {
@@ -829,7 +863,7 @@ std::vector<DbMember> CommunityDb::list_members() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<DbMember> out;
     Stmt q(db_,
-        "SELECT username, joined_at, nickname, timed_out_until, server_muted, server_deafened "
+        "SELECT username, joined_at, nickname, timed_out_until, server_muted, server_deafened, uid "
         "FROM members ORDER BY joined_at ASC;");
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) {
@@ -840,6 +874,7 @@ std::vector<DbMember> CommunityDb::list_members() const {
         m.timed_out_until = q.col_int64(3);
         m.server_muted = q.col_int(4) != 0;
         m.server_deafened = q.col_int(5) != 0;
+        m.uid = q.col_int64(6);
         out.push_back(std::move(m));
     }
     return out;
@@ -848,7 +883,7 @@ std::vector<DbMember> CommunityDb::list_members() const {
 std::optional<DbMember> CommunityDb::get_member(const std::string& username) const {
     std::lock_guard<std::mutex> lock(mutex_);
     Stmt q(db_,
-        "SELECT username, joined_at, nickname, timed_out_until, server_muted, server_deafened "
+        "SELECT username, joined_at, nickname, timed_out_until, server_muted, server_deafened, uid "
         "FROM members WHERE username=?;");
     if (!q.s) return std::nullopt;
     q.bind_text(1, username);
@@ -860,6 +895,7 @@ std::optional<DbMember> CommunityDb::get_member(const std::string& username) con
     m.timed_out_until = q.col_int64(3);
     m.server_muted = q.col_int(4) != 0;
     m.server_deafened = q.col_int(5) != 0;
+    m.uid = q.col_int64(6);
     return m;
 }
 
@@ -894,10 +930,13 @@ int64_t CommunityDb::count_members() const {
 namespace {
 // Shared by is_banned / get_ban / redeem_invite (mutex held by caller):
 // an expired ban is deleted on sight and reported as "not banned".
-bool ban_active_unlocked(sqlite3* db, const std::string& username, DbBan* out) {
-    Stmt q(db, "SELECT username, banned_at, banned_by, reason, expires_at FROM bans WHERE username=?;");
+bool ban_active_unlocked(sqlite3* db, const std::string& username, int64_t uid, DbBan* out) {
+    Stmt q(db,
+        "SELECT username, banned_at, banned_by, reason, expires_at FROM bans "
+        "WHERE username=? OR (?2 > 0 AND uid=?2) LIMIT 1;");
     if (!q.s) return false;
     q.bind_text(1, username);
+    q.bind_int64(2, uid);
     if (q.step() != SQLITE_ROW) return false;
     DbBan b;
     b.username = q.col_text(0);
@@ -907,7 +946,7 @@ bool ban_active_unlocked(sqlite3* db, const std::string& username, DbBan* out) {
     b.expires_at = q.col_int64(4);
     if (b.expires_at != 0 && b.expires_at <= now_seconds()) {
         Stmt del(db, "DELETE FROM bans WHERE username=?;");
-        if (del.s) { del.bind_text(1, username); del.step(); }
+        if (del.s) { del.bind_text(1, b.username); del.step(); }
         return false;
     }
     if (out) *out = b;
@@ -915,15 +954,15 @@ bool ban_active_unlocked(sqlite3* db, const std::string& username, DbBan* out) {
 }
 } // namespace
 
-bool CommunityDb::is_banned(const std::string& username) const {
+bool CommunityDb::is_banned(const std::string& username, int64_t uid) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return ban_active_unlocked(db_, username, nullptr);
+    return ban_active_unlocked(db_, username, uid, nullptr);
 }
 
 std::optional<DbBan> CommunityDb::get_ban(const std::string& username) const {
     std::lock_guard<std::mutex> lock(mutex_);
     DbBan b;
-    if (!ban_active_unlocked(db_, username, &b)) return std::nullopt;
+    if (!ban_active_unlocked(db_, username, 0, &b)) return std::nullopt;
     return b;
 }
 
@@ -934,6 +973,12 @@ bool CommunityDb::add_ban(const std::string& username,
     std::lock_guard<std::mutex> lock(mutex_);
     invalidate_user_perms_(username);
     overwrites_cache_.clear();
+    // Stable uid (if the member row has one) so the ban survives a rename.
+    int64_t uid = 0;
+    {
+        Stmt q(db_, "SELECT uid FROM members WHERE username=?;");
+        if (q.s) { q.bind_text(1, username); if (q.step() == SQLITE_ROW) uid = q.col_int64(0); }
+    }
     // Remove membership (and role assignments) and insert ban atomically.
     exec_sql(db_, "BEGIN IMMEDIATE;");
     {
@@ -957,19 +1002,21 @@ bool CommunityDb::add_ban(const std::string& username,
     bool ok = false;
     {
         Stmt ins(db_,
-            "INSERT INTO bans(username, banned_at, banned_by, reason, expires_at) "
-            "VALUES(?, ?, ?, ?, ?) "
+            "INSERT INTO bans(username, banned_at, banned_by, reason, expires_at, uid) "
+            "VALUES(?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(username) DO UPDATE SET "
             "  banned_at=excluded.banned_at, "
             "  banned_by=excluded.banned_by, "
             "  reason=excluded.reason, "
-            "  expires_at=excluded.expires_at;");
+            "  expires_at=excluded.expires_at, "
+            "  uid=excluded.uid;");
         if (ins.s) {
             ins.bind_text(1, username);
             ins.bind_int64(2, now_seconds());
             ins.bind_text(3, banned_by);
             ins.bind_text(4, reason);
             ins.bind_int64(5, expires_at < 0 ? 0 : expires_at);
+            ins.bind_int64(6, uid);
             ok = (ins.step() == SQLITE_DONE);
         }
     }
@@ -1523,11 +1570,12 @@ bool CommunityDb::revoke_invite(const std::string& code) {
 
 InviteResult CommunityDb::redeem_invite(const std::string& code,
                                         const std::string& redeeming_user,
+                                        int64_t redeeming_uid,
                                         DbInvite* out_invite) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Ban check first — banned users can never redeem, regardless of invite.
-    if (ban_active_unlocked(db_, redeeming_user, nullptr)) return InviteResult::Banned;
+    if (ban_active_unlocked(db_, redeeming_user, redeeming_uid, nullptr)) return InviteResult::Banned;
 
     // If already a member, the invite code is moot — treat as success and skip
     // the uses increment so invites aren't wasted on double-joins.

@@ -31,7 +31,7 @@ interface FetchResult {
 // Renderer can also pass `attachmentTarget: { serverId }` to skip
 // repeating host/port/jwt — the main-process registry resolves it.
 export function registerNetHandlers(): void {
-  ipcMain.handle("decibell:attachmentRegistry:set", (_e, serverId: string, target: { host: string; port: number; jwt: string }) => {
+  ipcMain.handle("decibell:attachmentRegistry:set", (_e, serverId: string, target: { host: string; port: number; jwt: string; certFingerprint?: string }) => {
     setAttachmentTarget(serverId, target);
   });
   ipcMain.handle("decibell:attachmentRegistry:clear", (_e, serverId: string) => {

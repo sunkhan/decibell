@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { handleCertMismatch } from "../../lib/certMismatch";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -61,7 +62,7 @@ export default function DeepLinkJoinModal() {
       // triggered via close below) or surface an authError (handled above).
       setPendingInvite(null);
     } catch (err) {
-      setLocalError(String(err));
+      if (!handleCertMismatch(err, handleJoin)) setLocalError(String(err));
       setJoining(false);
     }
   };

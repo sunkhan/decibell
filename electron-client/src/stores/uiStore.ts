@@ -93,6 +93,14 @@ export interface AuthErrorNotice {
   errorCode: string;
 }
 
+export interface CertMismatchNotice {
+  host: string;
+  port: number;
+  /// sha256-hex of the certificate the server presented.
+  fingerprint: string;
+  retry?: () => Promise<void> | void;
+}
+
 export interface MembershipRevocationNotice {
   serverId: string;
   action: string;
@@ -122,6 +130,11 @@ interface UiState {
   dmFriendsPanelVisible: boolean;
   authError: AuthErrorNotice | null;
   setAuthError: (err: AuthErrorNotice | null) => void;
+  /// A TLS connection was refused because the server's certificate no
+  /// longer matches the pinned / central-reported fingerprint (Theme A).
+  /// Drives CertMismatchModal; `retry` re-runs the action after re-trust.
+  certMismatch: CertMismatchNotice | null;
+  setCertMismatch: (n: CertMismatchNotice | null) => void;
   membershipRevocationNotice: MembershipRevocationNotice | null;
   setMembershipRevocationNotice: (notice: MembershipRevocationNotice | null) => void;
   profilePopupUser: string | null;
@@ -214,6 +227,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   dmFriendsPanelVisible: true,
   authError: null,
   setAuthError: (err) => set({ authError: err }),
+  certMismatch: null,
+  setCertMismatch: (n) => set({ certMismatch: n }),
   membershipRevocationNotice: null,
   setMembershipRevocationNotice: (notice) => set({ membershipRevocationNotice: notice }),
   profilePopupUser: null,

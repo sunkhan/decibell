@@ -1,67 +1,110 @@
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error, SignatureScheme};
-use std::sync::Arc;
+use sha2::{Digest, Sha256};
+use std::sync::{Arc, Mutex};
 use tokio_rustls::TlsConnector;
 
-/// Certificate verifier that accepts all certificates.
-/// Matches the existing C++ client's `ssl::verify_none` behavior.
-#[derive(Debug)]
-struct NoVerifier;
+use super::pins::{self, Policy};
 
-impl ServerCertVerifier for NoVerifier {
+/// Fingerprint-pinning verifier (Theme A). Self-signed certificates never
+/// chain to a CA, so WebPKI validation is meaningless here; identity is
+/// the sha256 of the leaf certificate, checked against what central told
+/// us (communities) or what we saw first (central / unknown hosts). The
+/// handshake signature is still verified, so a pinned certificate can't
+/// be replayed by someone without its private key.
+#[derive(Debug)]
+struct PinVerifier {
+    host: String,
+    port: u16,
+    policy: Policy,
+    seen: Arc<Mutex<Option<String>>>,
+    provider: Arc<CryptoProvider>,
+}
+
+impl std::fmt::Debug for Policy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Policy::Exact(fp) => write!(f, "Exact({})", fp),
+            Policy::Tofu => write!(f, "Tofu"),
+        }
+    }
+}
+
+pub fn fingerprint_hex(der: &[u8]) -> String {
+    let digest = Sha256::digest(der);
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+impl ServerCertVerifier for PinVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &CertificateDer<'_>,
+        end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, Error> {
+        let fp = fingerprint_hex(end_entity.as_ref());
+        match &self.policy {
+            Policy::Exact(expected) if expected != &fp => {
+                log::error!(
+                    "TLS pin mismatch for {}:{}: expected {}, got {}",
+                    self.host, self.port, expected, fp
+                );
+                return Err(Error::General(format!(
+                    "CERT_MISMATCH:{}:{}:{}",
+                    self.host, self.port, fp
+                )));
+            }
+            _ => {}
+        }
+        *self.seen.lock().unwrap() = Some(fp.clone());
+        pins::record_seen(&self.host, self.port, &fp);
         Ok(ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::ECDSA_NISTP521_SHA512,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::ED25519,
-            SignatureScheme::ED448,
-        ]
+        self.provider.signature_verification_algorithms.supported_schemes()
     }
 }
 
-/// Creates a TLS connector that skips certificate verification.
-pub fn create_tls_connector() -> TlsConnector {
-    let config = ClientConfig::builder()
+/// TLS connector pinned for one host:port. `seen` receives the
+/// fingerprint of the certificate that was accepted.
+pub fn create_pinned_connector(host: &str, port: u16) -> (TlsConnector, Arc<Mutex<Option<String>>>) {
+    let seen = Arc::new(Mutex::new(None));
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = PinVerifier {
+        host: host.to_string(),
+        port,
+        policy: pins::policy_for(host, port),
+        seen: seen.clone(),
+        provider: provider.clone(),
+    };
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("rustls default protocol versions")
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(NoVerifier))
+        .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();
-
-    TlsConnector::from(Arc::new(config))
+    (TlsConnector::from(Arc::new(config)), seen)
 }

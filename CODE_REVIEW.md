@@ -5,6 +5,21 @@
 
 ---
 
+## Fix progress — batch 19 (2026-08-22): Theme A — asymmetric JWTs + separate secret + cert pinning
+
+Design: `docs/superpowers/specs/2026-08-22-theme-a-asymmetric-jwt-cert-pinning-design.md`. Closes the top-ranked report item. Old-client compatibility not kept.
+**Community server — 168/168 e2e (new: Ed25519 accepted, HS256 / wrong-key tokens rejected, uid-keyed bans survive a rename):**
+- ✅ JWTs verified with central's Ed25519 **public key** (`DECIBELL_JWT_PUBLIC_KEY_FILE`) — verify, never mint; attachment HTTP too — `main.cpp`, `attachment_http.cpp`
+- ✅ community↔central authenticated by `DECIBELL_COMMUNITY_SECRET` (no longer the signing key); `DECIBELL_JWT_SECRET` retired
+- ✅ stable `uid` claim → `members.uid` / `bans.uid`; `is_banned` matches username OR uid (schema v8) — `db.{hpp,cpp}`
+- ✅ central connection pinned (Boost verify callback; `DECIBELL_CENTRAL_CERT_FINGERPRINT` or TOFU in `server_meta`); own cert fingerprint reported in heartbeats — `main.cpp`, new `src/common/ed25519_keys.hpp`
+**Central server — syntax-checked against fetched libpqxx/libpq headers (only the pre-existing `pqxx::binarystring` vs libpqxx-8 diagnostics):**
+- ✅ Ed25519 signing (key generated first boot at `DECIBELL_JWT_KEY_FILE`, `.pub` written beside it); `uid` claim; `users.uid` BIGSERIAL; `DECIBELL_COMMUNITY_SECRET`; `community_servers.cert_fingerprint` stored + served in directory / memberships / invite resolve — `auth_manager.{hpp,cpp}`, `main.cpp`
+**Client — renderer + main tsc clean, native `cargo check` clean (82 warnings), app boots:**
+- ✅ Native `net/pins.rs` (TOFU `cert_pins.json` + central-reported expectations) + `net/tls.rs` fingerprint verifier; `connect_pinned`; expectations cached from directory / memberships / invite; `trust_certificate`; `CERT_MISMATCH:` contract
+- ✅ Electron main pins the attachment HTTPS host to native's accepted fingerprint (via `attachmentRegistry`); unknown hosts fall through — `index.ts`, `attachmentRegistry.ts`
+- ✅ `CertMismatchModal` + `handleCertMismatch` on login / connect / redeem / deep-link with deliberate re-trust
+
 ## Fix progress — batch 18 (2026-08-22): relay/FTS/keep-alive perf + central B29/B30
 
 **C++ community server — 163/163 e2e (new: UDP echo, audio fan-out with sender rewrite, 50-packet burst, server-mute drop, keep-alive across requests, FTS gone):**
@@ -311,7 +326,7 @@ None of these require a protocol redesign to fix incrementally, but the transpor
 ## Cross-cutting themes
 
 ### Theme A — Transport trust is off everywhere, and one secret does everything
-> **⏳ SCHEDULED as the FINAL fix batch** (decision 2026-07-22) — see the "SCHEDULED — FINAL batch" note near the top of this file for the planned approach (asymmetric JWTs + separate heartbeat secret + cert pinning) and the open key-distribution decision.
+> **✅ DONE (batch 19, 2026-08-22).** Originally scheduled as the FINAL fix batch (decision 2026-07-22) — see the "SCHEDULED — FINAL batch" note near the top of this file for the planned approach (asymmetric JWTs + separate heartbeat secret + cert pinning) and the open key-distribution decision.
 
 This is the backbone issue. `verify_none` / `NoVerifier` / `callback(0)` appears on **every** TLS surface: client→central, client→community, community→central, and the Electron session as a whole. Independently, the HS256 JWT signing key is the *same value* the community servers present as their shared secret (**[corroborated]** by both the central and community reviews). The combination is what turns a passive network position into a full compromise: MITM the (unverified) handshake, read the shared secret out of the first community→central heartbeat, and now you can mint a valid JWT for any username on any server. Even without MITM, every self-hoster who runs a community server already holds the key that forges everyone's identity.
 

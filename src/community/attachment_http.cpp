@@ -75,15 +75,16 @@ std::string sanitize_filename(const std::string& raw) {
     return out;
 }
 
-// Validate an HS256 JWT with the same issuer the TCP layer uses. On success
-// returns the `sub` claim (username). On failure returns nullopt.
-std::optional<std::string> verify_jwt(const std::string& token, const std::string& secret) {
+// Validate an Ed25519 JWT with central's public key (same check as the
+// TCP layer). On success returns the `sub` claim (username).
+std::optional<std::string> verify_jwt(const std::string& token, const std::string& public_pem) {
     try {
         auto decoded = jwt::decode(token);
         jwt::verify()
-            .allow_algorithm(jwt::algorithm::hs256{secret})
+            .allow_algorithm(jwt::algorithm::ed25519{public_pem, ""})
             .with_issuer("decibell_central_auth")
             .verify(decoded);
+        if (decoded.get_subject().empty()) return std::nullopt;
         return decoded.get_subject();
     } catch (const std::exception&) {
         return std::nullopt;

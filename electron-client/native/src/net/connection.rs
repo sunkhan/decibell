@@ -9,7 +9,7 @@ use tokio_util::codec::Framed;
 
 use super::framing::LengthPrefixCodec;
 use super::proto::Packet;
-use super::tls::create_tls_connector;
+use super::tls::create_pinned_connector;
 
 /// A managed TCP/TLS connection with read/write channels.
 pub struct Connection {
@@ -25,6 +25,17 @@ impl Connection {
         host: &str,
         port: u16,
     ) -> Result<(Self, mpsc::Receiver<Packet>), String> {
+        let (conn, rx, _fp) = Self::connect_pinned(host, port).await?;
+        Ok((conn, rx))
+    }
+
+    /// Like `connect`, also returning the sha256-hex fingerprint of the
+    /// server certificate that was accepted (see net/pins.rs). A pin
+    /// mismatch fails with an error starting `CERT_MISMATCH:`.
+    pub async fn connect_pinned(
+        host: &str,
+        port: u16,
+    ) -> Result<(Self, mpsc::Receiver<Packet>, String), String> {
         let addr = format!("{}:{}", host, port);
         let tcp = TcpStream::connect(&addr)
             .await
@@ -35,14 +46,21 @@ impl Connection {
         // First probe after 15s idle, retry every 5s, give up after 3 failures.
         Self::set_tcp_keepalive(&tcp);
 
-        let connector = create_tls_connector();
+        let (connector, seen_fp) = create_pinned_connector(host, port);
         let domain = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| format!("Invalid server name '{}': {}", host, e))?;
 
-        let tls_stream = connector
-            .connect(domain, tcp)
-            .await
-            .map_err(|e| format!("TLS handshake with {} failed: {}", addr, e))?;
+        let tls_stream = connector.connect(domain, tcp).await.map_err(|e| {
+            let msg = e.to_string();
+            // Surface the pin failure verbatim so the renderer can offer
+            // "trust the new certificate" instead of a generic TLS error.
+            if let Some(idx) = msg.find("CERT_MISMATCH:") {
+                msg[idx..].to_string()
+            } else {
+                format!("TLS handshake with {} failed: {}", addr, msg)
+            }
+        })?;
+        let fingerprint = seen_fp.lock().unwrap().clone().unwrap_or_default();
 
         let framed = Framed::new(tls_stream, LengthPrefixCodec);
         let (mut sink, mut stream) = framed.split();
@@ -91,6 +109,7 @@ impl Connection {
                 write_task,
             },
             read_rx,
+            fingerprint,
         ))
     }
 

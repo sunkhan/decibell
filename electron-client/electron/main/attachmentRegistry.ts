@@ -12,6 +12,10 @@ interface AttachmentTarget {
   host: string;
   port: number;
   jwt: string;
+  /// sha256-hex of the certificate native accepted on the chat connection
+  /// to this community (the attachment listener shares the certificate).
+  /// setCertificateVerifyProc pins the HTTPS host to it. "" = unknown.
+  certFingerprint?: string;
 }
 
 const targets = new Map<string, AttachmentTarget>();
@@ -30,4 +34,25 @@ export function clearAllAttachmentTargets(): void {
 
 export function getAttachmentTarget(serverId: string): AttachmentTarget | null {
   return targets.get(serverId) ?? null;
+}
+
+/// Pinning verdict for a TLS connection Chromium is about to trust, given
+/// the hostname and the sha256-hex of the presented leaf certificate:
+///  - "match":   a registered community on that host presented this cert
+///  - "mismatch": the host is a registered community but the cert differs
+///  - "unknown": not one of our communities (leave it to Chromium)
+export function verifyHostFingerprint(
+  hostname: string,
+  fingerprintHex: string,
+): "match" | "mismatch" | "unknown" {
+  const host = hostname.toLowerCase();
+  let sawHost = false;
+  for (const t of targets.values()) {
+    if (t.host.toLowerCase() !== host) continue;
+    sawHost = true;
+    if (t.certFingerprint && t.certFingerprint.toLowerCase() === fingerprintHex) {
+      return "match";
+    }
+  }
+  return sawHost ? "mismatch" : "unknown";
 }

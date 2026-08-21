@@ -279,6 +279,11 @@ impl CentralClient {
                         // event through the existing path; renderer
                         // collapses placeholders to connected tiles
                         // there.
+                        // Pin each community to the fingerprint central
+                        // reports before we connect to it (Theme A).
+                        for m in &resp.memberships {
+                            crate::net::pins::set_expected(&m.host_ip, m.port as u16, &m.cert_fingerprint);
+                        }
                         let memberships: Vec<events::ServerInfo> = resp
                             .memberships
                             .into_iter()
@@ -316,6 +321,9 @@ impl CentralClient {
                     events::emit_register_responded(resp.success, resp.message);
                 }
                 Some(packet::Payload::ServerListRes(resp)) => {
+                    for srv in &resp.servers {
+                        crate::net::pins::set_expected(&srv.host_ip, srv.port as u16, &srv.cert_fingerprint);
+                    }
                     let servers: Vec<events::ServerInfo> = resp
                         .servers
                         .into_iter()
@@ -384,6 +392,9 @@ impl CentralClient {
                     events::emit_friend_action_responded(resp.success, resp.message);
                 }
                 Some(packet::Payload::InviteResolveRes(resp)) => {
+                    if resp.success {
+                        crate::net::pins::set_expected(&resp.host, resp.port as u16, &resp.cert_fingerprint);
+                    }
                     // Fulfil the `resolve_invite_code` waiter keyed by
                     // the echoed code. Orphan responses (caller already
                     // timed out) are dropped silently.

@@ -22,6 +22,7 @@
 #include "messages.pb.h"
 #include "../common/net_utils.hpp"
 #include "auth_utils.hpp"
+#include "../common/ed25519_keys.hpp"
 #include "session_manager.hpp"
 #include "auth_manager.hpp"
 
@@ -675,7 +676,7 @@ private:
             std::cout << "[Server] Heartbeat from community server: " << hb.name() << " at " << hb.host_ip() << ":" << hb.port() << "\n";
             int server_id = auth_manager_.upsertCommunityServer(
                 hb.name(), hb.description(), hb.host_ip(), hb.port(), hb.member_count(),
-                hb.server_id());
+                hb.server_id(), hb.cert_fingerprint());
 
             // Auto-rejoin: reply with the assigned server_id so the
             // community can populate Membership{Register,Revoke}Req on
@@ -821,8 +822,9 @@ private:
             if (resolved) {
                 body->set_success(true);
                 body->set_message("");
-                body->set_host(resolved->first);
-                body->set_port(static_cast<uint32_t>(resolved->second));
+                body->set_host(resolved->host);
+                body->set_port(static_cast<uint32_t>(resolved->port));
+                body->set_cert_fingerprint(resolved->cert_fingerprint);
             } else {
                 body->set_success(false);
                 body->set_message("Unknown or expired invite");
@@ -1109,23 +1111,40 @@ private:
 
 int main() {
     try {
-        const char* jwt_env = std::getenv("DECIBELL_JWT_SECRET");
+        const char* secret_env = std::getenv("DECIBELL_COMMUNITY_SECRET");
         const char* db_env = std::getenv("DECIBELL_DB_CONN");
+        const char* key_env = std::getenv("DECIBELL_JWT_KEY_FILE");
 
-        // Reject an empty JWT secret, not just an unset one: an empty HMAC
-        // key makes every token trivially forgeable and makes
-        // verifySharedSecret("") accept an empty community auth_token.
-        if (!jwt_env || jwt_env[0] == '\0' || !db_env) {
+        // The community secret must be non-empty: verifySharedSecret("")
+        // would otherwise accept an empty community auth_token.
+        if (!secret_env || secret_env[0] == '\0' || !db_env) {
             std::cerr << "Missing or empty required environment variables:\n";
-            if (!jwt_env || jwt_env[0] == '\0')
-                std::cerr << "  DECIBELL_JWT_SECRET (must be non-empty)\n";
+            if (!secret_env || secret_env[0] == '\0')
+                std::cerr << "  DECIBELL_COMMUNITY_SECRET (must be non-empty; shared with community servers,\n"
+                             "                             authenticates their heartbeats / sync — NOT a signing key)\n";
             if (!db_env) std::cerr << "  DECIBELL_DB_CONN\n";
             return 1;
         }
+        if (std::getenv("DECIBELL_JWT_SECRET")) {
+            std::cerr << "[Auth] DECIBELL_JWT_SECRET is no longer used: JWTs are Ed25519-signed "
+                         "(DECIBELL_JWT_KEY_FILE); community servers verify with the public key.\n";
+        }
 
-        std::string jwt_secret = jwt_env;
+        // Ed25519 signing key (Theme A). Generated on first boot; the
+        // public half is written next to it (<file>.pub) to hand to
+        // community servers via DECIBELL_JWT_PUBLIC_KEY_FILE.
+        const std::string key_file = key_env ? key_env : "jwt_ed25519.pem";
+        std::string jwt_private_pem, jwt_public_pem;
+        if (!chatproj::load_or_create_ed25519(key_file, jwt_private_pem, jwt_public_pem)) {
+            std::cerr << "[Auth] Could not load or create the JWT signing key at " << key_file << "\n";
+            return 1;
+        }
+        std::cout << "[Auth] JWT signing key: " << key_file
+                  << " (public key: " << key_file << ".pub)\n";
+
+        std::string community_secret = secret_env;
         std::string db_conn = db_env;
-        AuthManager auth_manager(jwt_secret, db_conn);
+        AuthManager auth_manager(community_secret, db_conn, jwt_private_pem, jwt_public_pem);
 
         boost::asio::io_context io_context;
         

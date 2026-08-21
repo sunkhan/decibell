@@ -14,6 +14,7 @@ namespace chatproj {
 
 struct DbMember {
     std::string username;
+    int64_t uid = 0;               // central's stable user id (0 = unknown / pre-Theme-A)
     int64_t joined_at = 0;
     std::string nickname;
     int64_t timed_out_until = 0;   // unix seconds; 0 = not timed out
@@ -269,10 +270,15 @@ public:
     // restart. Returns 0 if not yet learned.
     int64_t central_server_id() const;
     void set_central_server_id(int64_t id);
+    // TOFU pin of central's TLS certificate (sha256-hex); '' = not yet seen.
+    std::string central_cert_fingerprint() const;
+    void set_central_cert_fingerprint(const std::string& fp);
 
     // --- membership ---
     bool is_member(const std::string& username) const;
-    bool add_member(const std::string& username);
+    bool add_member(const std::string& username, int64_t uid = 0);
+    // Records the stable uid on an existing member row (no-op if 0).
+    void set_member_uid(const std::string& username, int64_t uid);
     bool remove_member(const std::string& username);
     std::vector<DbMember> list_members() const;
     std::optional<DbMember> get_member(const std::string& username) const;
@@ -284,8 +290,10 @@ public:
 
     // --- bans ---
     // Expired bans (expires_at != 0 && <= now) count as not banned and are
-    // lazily deleted.
-    bool is_banned(const std::string& username) const;
+    // lazily deleted. A ban matches by username OR (when both sides know
+    // it) by the stable uid, so renaming an account at central doesn't
+    // lift it.
+    bool is_banned(const std::string& username, int64_t uid = 0) const;
     std::optional<DbBan> get_ban(const std::string& username) const;
     bool add_ban(const std::string& username,
                  const std::string& banned_by,
@@ -309,6 +317,7 @@ public:
     // accepted.
     InviteResult redeem_invite(const std::string& code,
                                const std::string& redeeming_user,
+                               int64_t redeeming_uid,
                                DbInvite* out_invite);
 
     // --- roles + permissions ---
@@ -624,6 +633,7 @@ private:
                                            const std::string& channel_id) const;
     void migrate_to_v6_overwrites_();
     void migrate_to_v7_moderation_();
+    void migrate_to_v8_uid_();
     // server_meta.owner, loaded at open() and kept in sync by set_meta_.
     std::string owner_cache_;
     void seed_if_empty_(const std::string& owner,

@@ -441,6 +441,12 @@ export interface AttachmentTarget {
   jwt: string
   /** Per-file upload cap reported by the server. 0 = unlimited. */
   maxAttachmentBytes: number
+  /**
+   * sha256-hex of the certificate this community presented on its chat
+   * connection; the attachment listener uses the same certificate, so
+   * Electron pins the HTTPS host to it.
+   */
+  certFingerprint: string
 }
 /**
  * Resolve the HTTPS endpoint for attachment uploads/downloads against a
@@ -451,6 +457,17 @@ export interface AttachmentTarget {
  * connection reuse + Chromium's TLS stack.
  */
 export declare function getAttachmentTarget(args: GetAttachmentTargetArgs): Promise<AttachmentTarget | null>
+export interface TrustCertificateArgs {
+  host: string
+  port: number
+}
+/**
+ * User-initiated re-trust after a `CERT_MISMATCH:` failure: forget the
+ * pin (and central's expectation) for host:port so the next connect
+ * accepts — and pins — whatever certificate is presented. Only do this
+ * when the operator confirms the server was legitimately re-keyed.
+ */
+export declare function trustCertificate(args: TrustCertificateArgs): Promise<void>
 export interface DropMembershipArgs {
   serverId: string
 }

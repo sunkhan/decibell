@@ -11,6 +11,7 @@ interface AttachmentTargetResult {
   port: number;
   jwt: string;
   maxAttachmentBytes: number;
+  certFingerprint: string;
 }
 import type {
   BanListReceivedPayload,
@@ -212,6 +213,7 @@ export function useServerEvents() {
                   host: target.host,
                   port: target.port,
                   jwt: target.jwt,
+                  certFingerprint: target.certFingerprint,
                 });
               }
             })

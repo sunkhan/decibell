@@ -16,6 +16,12 @@ void AuthManager::initializeDatabase() {
             "  password_hash VARCHAR(128) NOT NULL"
             ")"
         );
+        // Stable user id (Theme A, 2026-08-22): carried as the `uid` JWT
+        // claim so community servers can key bans / audit rows on
+        // something a username change or reuse can't defeat. BIGSERIAL in
+        // ADD COLUMN creates the sequence and back-fills existing rows.
+        txn.exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS uid BIGSERIAL");
+        txn.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_uid_idx ON users (uid)");
         // Avatar columns added 2026-05-12 (see docs/superpowers/specs/
         // 2026-05-12-custom-profile-pictures-design.md §5). ADD COLUMN
         // IF NOT EXISTS makes this idempotent on already-deployed servers.
@@ -121,6 +127,13 @@ void AuthManager::initializeDatabase() {
             "ADD COLUMN IF NOT EXISTS picture_version VARCHAR(64) "
             "NOT NULL DEFAULT ''"
         );
+        // TLS certificate fingerprint reported by the community (Theme A);
+        // served to clients so they can pin the community connection.
+        txn.exec(
+            "ALTER TABLE community_servers "
+            "ADD COLUMN IF NOT EXISTS cert_fingerprint VARCHAR(64) "
+            "NOT NULL DEFAULT ''"
+        );
 
         txn.commit();
     } catch (const std::exception& e) {
@@ -167,30 +180,50 @@ std::optional<std::string> AuthManager::authenticateUser(const std::string& user
         return std::nullopt;
     }
 
-    // Generate a JWT valid for 24 hours
+    // Generate a JWT valid for 24 hours. Ed25519 (EdDSA): only this
+    // process holds the private key, so a community server — which gets
+    // the public key — can verify tokens but never mint one.
     auto now = std::chrono::system_clock::now();
-    auto token = jwt::create()
-        .set_issuer("decibell_central_auth")
-        .set_type("JWS")
-        .set_subject(username)
-        .set_issued_at(now)
-        .set_expires_at(now + std::chrono::hours(24))
-        .sign(jwt::algorithm::hs256{secret_key_});
-
-    return token;
+    try {
+        auto token = jwt::create()
+            .set_issuer("decibell_central_auth")
+            .set_type("JWS")
+            .set_subject(username)
+            .set_payload_claim("uid", jwt::claim(nlohmann::json(getUserId(username))))
+            .set_issued_at(now)
+            .set_expires_at(now + std::chrono::hours(24))
+            .sign(jwt::algorithm::ed25519{jwt_public_pem_, jwt_private_pem_});
+        return token;
+    } catch (const std::exception& e) {
+        std::cerr << "[Auth] JWT signing failed: " << e.what() << "\n";
+        return std::nullopt;
+    }
 }
 
 bool AuthManager::validateToken(const std::string& token) {
     try {
         auto decoded = jwt::decode(token);
         auto verifier = jwt::verify()
-            .allow_algorithm(jwt::algorithm::hs256{secret_key_})
+            .allow_algorithm(jwt::algorithm::ed25519{jwt_public_pem_, ""})
             .with_issuer("decibell_central_auth");
-            
+
         verifier.verify(decoded);
         return true;
     } catch (const std::exception& e) {
         return false;
+    }
+}
+
+int64_t AuthManager::getUserId(const std::string& username) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result res = txn.exec_params("SELECT uid FROM users WHERE username = $1", username);
+        if (res.empty() || res[0][0].is_null()) return 0;
+        return res[0][0].as<int64_t>();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getUserId: " << e.what() << "\n";
+        return 0;
     }
 }
 
@@ -267,7 +300,7 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
         // still their server.
         pqxx::result res = txn.exec(
             "SELECT id, name, description, host_ip, port, member_count, "
-            "       COALESCE(picture_version, '') "
+            "       COALESCE(picture_version, ''), COALESCE(cert_fingerprint, '') "
             "FROM community_servers "
             "WHERE last_heartbeat > NOW() - INTERVAL '5 minutes' "
             "ORDER BY member_count DESC LIMIT 50"
@@ -282,6 +315,7 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
             info.set_port(row[4].as<int>());
             info.set_member_count(row[5].as<int>());
             info.set_picture_version(row[6].as<std::string>());
+            info.set_cert_fingerprint(row[7].as<std::string>());
             servers.push_back(info);
         }
     } catch (const std::exception& e) {
@@ -292,7 +326,7 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
 
 int AuthManager::upsertCommunityServer(const std::string& name, const std::string& description,
                                        const std::string& host_ip, int port, int member_count,
-                                       int64_t known_id) {
+                                       int64_t known_id, const std::string& cert_fingerprint) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
@@ -310,9 +344,9 @@ int AuthManager::upsertCommunityServer(const std::string& name, const std::strin
             pqxx::result up = txn.exec_params(
                 "UPDATE community_servers "
                 "SET name = $1, description = $2, host_ip = $3, port = $4, "
-                "    member_count = $5, last_heartbeat = NOW() "
+                "    member_count = $5, last_heartbeat = NOW(), cert_fingerprint = $7 "
                 "WHERE id = $6 RETURNING id",
-                name, description, host_ip, port, member_count, known_id);
+                name, description, host_ip, port, member_count, known_id, cert_fingerprint);
             if (!up.empty()) {
                 txn.commit();
                 return up[0][0].as<int>();
@@ -323,13 +357,14 @@ int AuthManager::upsertCommunityServer(const std::string& name, const std::strin
         // Schema for community_servers (incl. the picture columns) is
         // created once in initializeDatabase — no DDL on the heartbeat path.
         pqxx::result rs = txn.exec_params(
-            "INSERT INTO community_servers (name, description, host_ip, port, member_count, last_heartbeat) "
-            "VALUES ($1, $2, $3, $4, $5, NOW()) "
+            "INSERT INTO community_servers (name, description, host_ip, port, member_count, last_heartbeat, cert_fingerprint) "
+            "VALUES ($1, $2, $3, $4, $5, NOW(), $6) "
             "ON CONFLICT (host_ip, port) DO UPDATE SET "
             "name = EXCLUDED.name, description = EXCLUDED.description, "
-            "member_count = EXCLUDED.member_count, last_heartbeat = NOW() "
+            "member_count = EXCLUDED.member_count, last_heartbeat = NOW(), "
+            "cert_fingerprint = EXCLUDED.cert_fingerprint "
             "RETURNING id",
-            name, description, host_ip, port, member_count
+            name, description, host_ip, port, member_count, cert_fingerprint
         );
         txn.commit();
         if (rs.empty()) return 0;
@@ -372,12 +407,15 @@ void AuthManager::unregisterCommunityInvite(const std::string& code) {
     }
 }
 
-std::optional<std::pair<std::string, int>> AuthManager::resolveCommunityInvite(const std::string& code) {
+std::optional<AuthManager::ResolvedInvite> AuthManager::resolveCommunityInvite(const std::string& code) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result res = txn.exec_params(
-            "SELECT host, port, expires_at FROM community_invites WHERE code = $1",
+            "SELECT i.host, i.port, i.expires_at, "
+            "       COALESCE((SELECT cs.cert_fingerprint FROM community_servers cs "
+            "                 WHERE cs.host_ip = i.host AND cs.port = i.port LIMIT 1), '') "
+            "FROM community_invites i WHERE i.code = $1",
             code
         );
         if (res.empty()) return std::nullopt;
@@ -404,7 +442,11 @@ std::optional<std::pair<std::string, int>> AuthManager::resolveCommunityInvite(c
             }
         }
 
-        return std::make_pair(res[0][0].as<std::string>(), res[0][1].as<int>());
+        ResolvedInvite out;
+        out.host = res[0][0].as<std::string>();
+        out.port = res[0][1].as<int>();
+        out.cert_fingerprint = res[0][3].as<std::string>();
+        return out;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] resolveCommunityInvite: " << e.what() << "\n";
         return std::nullopt;
@@ -820,7 +862,7 @@ AuthManager::getUserCommunities(const std::string& username) {
         pqxx::result rs = txn.exec_params(
             "SELECT cs.id, cs.name, cs.description, cs.host_ip, "
             "       cs.port, cs.member_count, "
-            "       COALESCE(cs.picture_version, '') "
+            "       COALESCE(cs.picture_version, ''), COALESCE(cs.cert_fingerprint, '') "
             "FROM user_communities uc "
             "JOIN community_servers cs ON cs.id = uc.server_id "
             "WHERE uc.username = $1 "
@@ -838,6 +880,7 @@ AuthManager::getUserCommunities(const std::string& username) {
             info.set_port(row[4].as<int>());
             info.set_member_count(row[5].as<int>());
             info.set_picture_version(row[6].as<std::string>());
+            info.set_cert_fingerprint(row[7].as<std::string>());
             out.push_back(std::move(info));
         }
         return out;

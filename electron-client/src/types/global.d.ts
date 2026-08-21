@@ -47,7 +47,7 @@ declare global {
       attachmentRegistry: {
         set: (
           serverId: string,
-          target: { host: string; port: number; jwt: string },
+          target: { host: string; port: number; jwt: string; certFingerprint?: string },
         ) => Promise<void>;
         clear: (serverId: string) => Promise<void>;
         clearAll: () => Promise<void>;

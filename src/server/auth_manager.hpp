@@ -8,8 +8,14 @@
 
 class AuthManager {
 public:
-    AuthManager(const std::string& secret_key, const std::string& db_conn_str) 
-        : secret_key_(secret_key), db_conn_str_(db_conn_str) {
+    /// `community_secret` authenticates community→central packets
+    /// (heartbeat, invite / membership / picture sync). It is NOT a signing
+    /// key: JWTs are Ed25519-signed with `jwt_private_pem`; community
+    /// servers hold only the public key and can verify but never forge.
+    AuthManager(const std::string& community_secret, const std::string& db_conn_str,
+                const std::string& jwt_private_pem, const std::string& jwt_public_pem)
+        : secret_key_(community_secret), db_conn_str_(db_conn_str),
+          jwt_private_pem_(jwt_private_pem), jwt_public_pem_(jwt_public_pem) {
         initializeDatabase();
     }
 
@@ -22,9 +28,8 @@ public:
     // Verifies an incoming JWT from a client or community server
     bool validateToken(const std::string& token);
 
-    // Constant-time comparison — this value is also the HS256 JWT signing
-    // key, so a timing side-channel here is high-value. (Length is allowed
-    // to short-circuit; the length isn't the secret.)
+    // Constant-time comparison of the community↔central secret. (Length is
+    // allowed to short-circuit; the length isn't the secret.)
     bool verifySharedSecret(const std::string& secret) const {
         if (secret.size() != secret_key_.size()) return false;
         volatile unsigned char diff = 0;
@@ -45,14 +50,20 @@ public:
     // back to the (host_ip, port) upsert.
     int upsertCommunityServer(const std::string& name, const std::string& description,
                               const std::string& host_ip, int port, int member_count,
-                              int64_t known_id = 0);
+                              int64_t known_id = 0,
+                              const std::string& cert_fingerprint = "");
 
     // Invite lookup (community servers register invites here so clients can
     // redeem a raw code without knowing the hosting server's host:port).
     void registerCommunityInvite(const std::string& code, const std::string& host, int port, int64_t expires_at);
     void unregisterCommunityInvite(const std::string& code);
     // Returns (host, port) or nullopt if the code is unknown or expired.
-    std::optional<std::pair<std::string, int>> resolveCommunityInvite(const std::string& code);
+    struct ResolvedInvite {
+        std::string host;
+        int port = 0;
+        std::string cert_fingerprint;   // '' if the community hasn't reported one
+    };
+    std::optional<ResolvedInvite> resolveCommunityInvite(const std::string& code);
 
     // Friend System
     std::string handleFriendAction(const std::string& requester, chatproj::FriendActionType action, const std::string& target);
@@ -183,7 +194,11 @@ public:
 
 private:
     std::string secret_key_;
-    std::string db_conn_str_; // Add this member variable
+    std::string db_conn_str_;
+    std::string jwt_private_pem_;
+    std::string jwt_public_pem_;
+    /// users.uid for a username (0 if unknown).
+    int64_t getUserId(const std::string& username);
 
     void initializeDatabase();
 

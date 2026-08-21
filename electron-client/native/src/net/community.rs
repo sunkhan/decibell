@@ -97,6 +97,10 @@ pub struct CommunityClient {
     pub attachment_port: u16,
     /// Per-file upload cap reported by the server. 0 = unlimited.
     pub max_attachment_bytes: i64,
+    /// sha256-hex of the TLS certificate accepted for this connection. The
+    /// attachment HTTPS listener shares it, so Electron's certificate
+    /// verifier pins the attachment host to this value.
+    pub cert_fingerprint: String,
     /// Set once the server has told us this connection is over for good:
     /// a failed COMMUNITY_AUTH_RES (the server closes the socket after
     /// every rejection, and the same JWT with no invite can't do better
@@ -119,7 +123,7 @@ impl CommunityClient {
         invite_code: Option<String>,
         state: Arc<Mutex<AppState>>,
     ) -> Result<Self, String> {
-        let (connection, read_rx) = Connection::connect(&host, port).await?;
+        let (connection, read_rx, cert_fingerprint) = Connection::connect_pinned(&host, port).await?;
 
         // Send CommunityAuthRequest
         let auth_data = build_packet(
@@ -178,6 +182,7 @@ impl CommunityClient {
             jwt,
             attachment_port: 0,
             max_attachment_bytes: 0,
+            cert_fingerprint,
             terminated,
         })
     }
@@ -329,8 +334,8 @@ impl CommunityClient {
                 );
                 tokio::time::sleep(delay).await;
 
-                match Connection::connect(&host, port).await {
-                    Ok((connection, read_rx)) => {
+                match Connection::connect_pinned(&host, port).await {
+                    Ok((connection, read_rx, fp)) => {
                         log::info!("Reconnected to community server {}", sid_for_task);
 
                         // Re-authenticate. No invite code on reconnect — the
@@ -390,6 +395,7 @@ impl CommunityClient {
                             client.router_task = Some(router);
                             client.reconnect_task = None;
                             client.ping_task = Some(ping_task);
+                            client.cert_fingerprint = fp;
                         }
                         drop(s);
 

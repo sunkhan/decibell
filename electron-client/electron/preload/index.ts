@@ -190,7 +190,7 @@ contextBridge.exposeInMainWorld("decibell", {
   attachmentRegistry: {
     set: (
       serverId: string,
-      target: { host: string; port: number; jwt: string },
+      target: { host: string; port: number; jwt: string; certFingerprint?: string },
     ): Promise<void> =>
       ipcRenderer.invoke(
         "decibell:attachmentRegistry:set",

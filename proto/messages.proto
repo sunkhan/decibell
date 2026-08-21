@@ -440,6 +440,12 @@ message CommunityServerInfo {
   // ServerListResponse.servers so clients know up-front which tiles
   // have a picture set.
   string picture_version = 7;
+  // sha256-hex of the community's TLS certificate (DER), as reported in
+  // its heartbeats. Clients pin the community connection to it — the
+  // central connection is itself pinned (TOFU), so this is a trusted
+  // channel for the fingerprint. '' = not reported yet (client falls
+  // back to trust-on-first-use for that host).
+  string cert_fingerprint = 8;
 }
 
 message ServerListResponse {
@@ -929,6 +935,9 @@ message ServerHeartbeat {
   // when the community's public IP or port changes, instead of creating a
   // new (host_ip, port) row and orphaning the old memberships.
   int64 server_id = 6;
+  // sha256-hex of this community's TLS certificate (DER). Central stores
+  // it and hands it to clients so they can pin the community connection.
+  string cert_fingerprint = 7;
 }
 
 // --- Invites + Membership ---
@@ -1308,6 +1317,8 @@ message InviteResolveResponse {
   uint32 port = 4;
   // Echoed so the client can correlate concurrent lookups.
   string code = 5;
+  // See CommunityServerInfo.cert_fingerprint.
+  string cert_fingerprint = 6;
 }
 
 // --- Video codec negotiation messages ---

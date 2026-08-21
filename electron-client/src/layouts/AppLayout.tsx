@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import CertMismatchModal from "../components/CertMismatchModal";
 import { Outlet } from "react-router-dom";
 import * as Sentry from "@sentry/electron/renderer";
 import Titlebar from "./Titlebar";
@@ -78,6 +79,7 @@ export default function AppLayout() {
         <Outlet />
       </div>
       <ToastStack />
+      <CertMismatchModal />
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { handleCertMismatch } from "../../lib/certMismatch";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -161,7 +162,7 @@ export default function ServerBrowseView() {
       setActiveServer(serverId);
       setActiveView("server");
     } catch (err) {
-      setError(String(err));
+      if (!handleCertMismatch(err)) setError(String(err));
     } finally {
       setConnectingId(null);
     }
@@ -222,7 +223,7 @@ export default function ServerBrowseView() {
       setInviteHost("");
       setInvitePort("");
     } catch (err) {
-      setInviteError(String(err));
+      if (!handleCertMismatch(err)) setInviteError(String(err));
       setRedeeming(false);
       setRedeemTarget(null);
     }
