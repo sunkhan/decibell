@@ -407,7 +407,7 @@ impl CommunityClient {
     async fn route_packets(
         mut read_rx: mpsc::Receiver<Packet>,
         state: Arc<Mutex<AppState>>,
-        server_id: String,
+        mut server_id: String,
         terminated: Arc<AtomicBool>,
     ) {
         while let Some(packet) = read_rx.recv().await {
@@ -425,19 +425,53 @@ impl CommunityClient {
                         // without an invite — don't reconnect.
                         terminated.store(true, Ordering::SeqCst);
                     }
+                    let requested_server_id = server_id.clone();
+                    let (mut host, mut port) = (String::new(), 0u16);
                     if resp.success {
+                        let mut s = state.lock().await;
+                        // Re-key onto central's id. An invite join only
+                        // knows host:port, so the renderer opened this
+                        // connection under a synthetic "host:port" id; the
+                        // server now tells us the id central's directory
+                        // and membership list use. Without this the same
+                        // server showed up twice (and the invite-joined
+                        // one had no ServerBar tile until re-login).
+                        if resp.server_id > 0 {
+                            let real = resp.server_id.to_string();
+                            if real != server_id && s.communities.contains_key(&server_id) {
+                                // A stale client under the real id (e.g. an
+                                // earlier attempt) would shadow this live one.
+                                if let Some(mut old) = s.communities.remove(&real) {
+                                    old.disconnect();
+                                }
+                                if let Some(mut client) = s.communities.remove(&server_id) {
+                                    client.server_id = real.clone();
+                                    s.communities.insert(real.clone(), client);
+                                }
+                                log::info!(
+                                    "Community {} re-keyed to central id {}",
+                                    server_id,
+                                    real
+                                );
+                                server_id = real;
+                            }
+                        }
                         // Cache attachment endpoint on the client so
                         // upload commands don't have to re-resolve.
-                        let mut s = state.lock().await;
                         if let Some(client) = s.communities.get_mut(&server_id) {
                             if resp.attachment_port > 0 {
                                 client.attachment_port = resp.attachment_port as u16;
                             }
                             client.max_attachment_bytes = resp.max_attachment_bytes;
+                            host = client.host.clone();
+                            port = client.port;
                         }
                     }
                     events::emit_community_auth_responded(events::CommunityAuthRespondedPayload {
                         server_id: server_id.clone(),
+                        requested_server_id,
+                        host,
+                        port,
                         success: resp.success,
                         message: resp.message,
                         channels,

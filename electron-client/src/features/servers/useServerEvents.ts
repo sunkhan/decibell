@@ -160,6 +160,29 @@ export function useServerEvents() {
           toast.error("Couldn't join server", p.message || "Connection rejected.");
           return;
         }
+        // Invite joins open the connection under a synthetic "host:port"
+        // id; native re-keys it onto central's id once the server reports
+        // it (CommunityAuthResponse.server_id). Follow the re-key here so
+        // every store entry below lands under the real id, and make sure
+        // a ServerBar tile exists — the central server list may not have
+        // been fetched (or may not list a private server) yet.
+        if (p.requestedServerId && p.requestedServerId !== p.serverId) {
+          const chat = useChatStore.getState();
+          if (chat.activeServerId === p.requestedServerId) {
+            chat.setActiveServer(p.serverId);
+          }
+          chat.removeConnectedServer(p.requestedServerId);
+        }
+        useChatStore.getState().mergeServers([
+          {
+            id: p.serverId,
+            name: p.serverName,
+            description: p.serverDescription,
+            hostIp: p.host,
+            port: p.port,
+            memberCount: 0,
+          },
+        ]);
         // Auto-rejoin: successful auth — drop the pending placeholder
         // (next paint of ServerBar will pick up the connectedServers
         // entry below and render the real tile state).

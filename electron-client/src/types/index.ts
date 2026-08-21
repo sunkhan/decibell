@@ -286,6 +286,12 @@ export interface ChannelInfo {
 
 export interface CommunityAuthRespondedPayload {
   serverId: string;
+  /// Id the connection was opened under; differs from serverId only when
+  /// native re-keyed an invite-joined ("host:port") connection onto the
+  /// central-assigned id reported by the server.
+  requestedServerId: string;
+  host: string;
+  port: number;
   success: boolean;
   message: string;
   channels: ChannelInfo[];

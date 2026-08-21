@@ -465,6 +465,13 @@ pub struct ChannelWipedPayload {
 #[serde(rename_all = "camelCase")]
 pub struct CommunityAuthRespondedPayload {
     pub server_id: String,
+    /// The id the connection was opened under. Differs from `server_id`
+    /// only when the native layer re-keyed an invite-joined connection
+    /// (opened under a synthetic "host:port" id) onto the central-assigned
+    /// id the server reported in CommunityAuthResponse.server_id.
+    pub requested_server_id: String,
+    pub host: String,
+    pub port: u16,
     pub success: bool,
     pub message: String,
     pub channels: Vec<ChannelInfoPayload>,

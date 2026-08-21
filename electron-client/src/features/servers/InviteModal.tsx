@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
-import { useAuthStore } from "../../stores/authStore";
 import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import type { ServerInvite } from "../../types";
+import { PERM, usePermission } from "./permissions";
 
 const EXPIRY_OPTIONS: { label: string; seconds: number }[] = [
   { label: "1 hour", seconds: 3600 },
@@ -30,10 +30,8 @@ export default function InviteModal() {
   const closeModal = useUiStore((s) => s.closeModal);
   useEscapeToClose(closeModal, activeModal === "invite-manage");
   const activeServerId = useChatStore((s) => s.activeServerId);
-  const serverOwner = useChatStore((s) => s.serverOwner);
   const invitesByServer = useChatStore((s) => s.invitesByServer);
   const servers = useChatStore((s) => s.servers);
-  const currentUser = useAuthStore((s) => s.username);
 
   const [expirySec, setExpirySec] = useState(604800);
   const [maxUsesUnlimited, setMaxUsesUnlimited] = useState(true);
@@ -47,20 +45,22 @@ export default function InviteModal() {
     () => servers.find((s) => s.id === activeServerId) ?? null,
     [servers, activeServerId]
   );
-  const isOwner =
-    !!activeServerId && !!currentUser && serverOwner[activeServerId] === currentUser;
+  // The server gates invite create/list/revoke on MANAGE_INVITES (roles
+  // v1); this modal was still owner-only, so a role holder who opened it
+  // from the (correctly gated) sidebar entry got a dead "owner only" card.
+  const canManage = usePermission(activeServerId, PERM.MANAGE_INVITES);
 
   useEffect(() => {
-    if (activeModal === "invite-manage" && activeServerId && isOwner) {
+    if (activeModal === "invite-manage" && activeServerId && canManage) {
       invoke("list_invites", { serverId: activeServerId }).catch((err) =>
         setError(String(err))
       );
     }
-  }, [activeModal, activeServerId, isOwner]);
+  }, [activeModal, activeServerId, canManage]);
 
   if (activeModal !== "invite-manage" || !activeServerId) return null;
 
-  if (!isOwner) {
+  if (!canManage) {
     return (
       <div
         className="fixed inset-0 z-50 flex items-center justify-center transition-colors duration-300"
@@ -75,7 +75,7 @@ export default function InviteModal() {
             Invites
           </h2>
           <p className="text-[13px] text-text-secondary">
-            Only the server owner can manage invites.
+            You don't have permission to manage invites.
           </p>
           <button
             onClick={closeModal}
