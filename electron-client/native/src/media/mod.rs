@@ -31,6 +31,7 @@ pub mod capture_audio_wasapi;
 pub mod caps;
 pub mod codec;
 pub mod codec_selection;
+pub mod debug_dump;
 pub mod jitter;
 pub mod packet;
 pub mod peer;
@@ -69,6 +70,8 @@ pub mod encoder_thread;
 pub mod thumbnail;
 pub mod pipeline;
 pub mod speaking;
+#[cfg(test)]
+pub mod voice_sim_tests;
 pub mod video_packet;
 pub mod video_pipeline;
 pub mod video_receiver;

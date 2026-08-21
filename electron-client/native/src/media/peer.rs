@@ -6,13 +6,14 @@
 // replaces the older "decode-all-then-mix-into-one-shared-ring" design that
 // stalled every listener on the slowest decoder.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb, traits::{Observer, Split}};
 use rubato::{Resampler, SincFixedOut};
 
-use super::audio_device::make_sinc_resampler;
+use super::audio_device::{make_sinc_resampler, soft_clip};
 use super::codec::{OpusDecoder, StereoOpusDecoder, FRAME_SIZE, SAMPLE_RATE};
 use super::jitter::JitterBuffer;
 use super::speaking::SpeakingDetector;
@@ -45,6 +46,18 @@ pub struct PeerAudio {
     pub voice_jitter: JitterBuffer,
     pub voice_drain_time: Instant,
     pub voice_underrun_logged: bool,
+    /// Last time the speaking detector was fed a silent tick while idle
+    /// (rate-limits those ticks to frame cadence under ring-level pacing).
+    pub last_silent_tick: Instant,
+    /// Decoded 20ms frames (mono 48kHz, gain applied) queued for the AEC
+    /// render reference. Decoding is paced by the playback ring and can
+    /// burst several frames in one tick; the render flush (pipeline §4c)
+    /// consumes exactly one per 20ms so the reference keeps playback timing.
+    pub render_fifo: VecDeque<[f32; FRAME_SIZE]>,
+    /// Set when the jitter buffer went idle; the next frame pushed into an
+    /// empty ring gets a short fade-in so a talkspurt never starts with a
+    /// step from digital silence (a 20ms VAD gate opens mid-waveform).
+    pub onset_pending: bool,
     /// Last (muted, deafened) forwarded to the UI — used to emit the state
     /// event only when it changes rather than on every audio packet.
     pub last_reported_state: Option<(bool, bool)>,
@@ -85,6 +98,9 @@ impl PeerAudio {
             voice_jitter: JitterBuffer::new(),
             voice_drain_time: now,
             voice_underrun_logged: false,
+            last_silent_tick: now,
+            render_fifo: VecDeque::new(),
+            onset_pending: true,
             last_reported_state: None,
             stream_audio_decoder: None,
             stream_jitter: JitterBuffer::new(),
@@ -124,20 +140,34 @@ impl PeerAudio {
         }
     }
 
-    /// Push a decoded 20ms frame (960 f32 samples at 48kHz) through the
-    /// resampler (if any) and into the peer's ring buffer.
+    /// Samples (at the output device rate) queued in this peer's ring and not
+    /// yet consumed by the output callback.
+    pub fn ring_len(&self) -> usize {
+        self.prod.occupied_len()
+    }
+
+    /// Output device sample rate this peer's ring is filled at.
+    pub fn output_rate(&self) -> u32 {
+        self.output_rate
+    }
+
+    /// Push a decoded 20ms frame (960 f32 samples at 48kHz, per-user gain
+    /// already applied) through the resampler (if any) and into the peer's
+    /// ring buffer. The ring is i16, so the gain-boosted signal is
+    /// soft-limited here — the output mixer's limiter only sees the sum and
+    /// could never undo a hard clip that already happened at this conversion.
     pub fn push_voice_frame(&mut self, pcm_f32: &[f32]) {
         use ringbuf::traits::Producer;
         if self.resampler.is_none() {
             // Direct 48kHz → i16
             for &s in pcm_f32 {
-                let q = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
+                let q = (soft_clip(s) * 32767.0) as i16;
                 let _ = self.prod.try_push(q);
             }
             return;
         }
 
-        self.resamp_accum.extend(pcm_f32.iter().map(|&s| s as f64));
+        self.resamp_accum.extend(pcm_f32.iter().map(|&s| soft_clip(s) as f64));
         let resampler = self.resampler.as_mut().unwrap();
         let mut needed = resampler.input_frames_next();
         while self.resamp_accum.len() >= needed {
@@ -150,6 +180,26 @@ impl PeerAudio {
                 }
             }
             needed = resampler.input_frames_next();
+        }
+    }
+
+    /// The talkspurt ended: push whatever is still inside the resampler's
+    /// input accumulator through to the ring (zero-padded) so the tail is
+    /// played out completely now, instead of being glued onto the front of
+    /// the next talkspurt ten milliseconds of stale audio later.
+    pub fn flush_tail(&mut self) {
+        use ringbuf::traits::Producer;
+        let Some(resampler) = self.resampler.as_mut() else { return };
+        if self.resamp_accum.is_empty() { return; }
+        let needed = resampler.input_frames_next();
+        self.resamp_accum.resize(needed, 0.0);
+        self.resamp_scratch.clear();
+        self.resamp_scratch.extend(self.resamp_accum.drain(..));
+        if let Ok(out) = resampler.process(&[&self.resamp_scratch], None) {
+            for &s in &out[0] {
+                let q = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
+                let _ = self.prod.try_push(q);
+            }
         }
     }
 

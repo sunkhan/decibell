@@ -8,8 +8,10 @@ use rubato::Resampler;
 
 use super::audio_device::{
     make_sinc_resampler, build_input_stream, build_output_stream,
-    build_voice_output_stream, build_stream_output_stream, PeerList,
+    build_voice_output_stream, build_stream_output_stream, OutputPullStats, PeerList,
 };
+use super::jitter::Frame;
+use super::debug_dump::AudioDump;
 use super::codec::{
     OpusEncoder, FRAME_SIZE, MAX_OPUS_FRAME_SIZE,
     SAMPLE_RATE, STEREO_FRAME_SAMPLES, STEREO_FRAME_SIZE,
@@ -68,6 +70,11 @@ pub enum VoiceEvent {
 // Flags byte prepended to audio payload
 const FLAG_MUTED: u8 = 0x01;
 const FLAG_DEAFENED: u8 = 0x02;
+/// This frame carries no voice: a gate-closed tail frame or a keepalive.
+/// Receivers use it to tell "the sender paused" from "a packet is late", and
+/// to keep keepalive cadence out of their jitter estimate. Older clients
+/// ignore the bit (they only test the two above) — wire-compatible.
+pub const FLAG_SILENCE: u8 = 0x04;
 
 // Per-peer state lives in `media::peer::PeerAudio`. Voice mixing happens in
 // the output audio callback which pulls from each peer's ring buffer.
@@ -134,6 +141,23 @@ pub fn run_audio_pipeline(
     // ── Build output stream first (we need its sample rate for input matching) ─
     let stream_stereo = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+    // Per-output-stream pull telemetry (see OutputPullStats). `main_pull`
+    // serves the voice (or voice+stream) output, `stream_pull` the separate
+    // stream-audio output when that mode is on.
+    // Opt-in raw audio capture (DECIBELL_AUDIO_DUMP=dir). The output tap is
+    // an SPSC ring the callback pushes the device mix into; drained to the
+    // WAV file from this thread each tick.
+    let mut audio_dump = AudioDump::from_env();
+    let (mut tap_cons, tap_prod) = if audio_dump.is_some() {
+        let rb = HeapRb::<i16>::new(BUF_CAP * 4);
+        let (p, c) = rb.split();
+        (Some(c), Some(Arc::new(std::sync::Mutex::new(p))))
+    } else {
+        (None, None)
+    };
+    let main_pull = Arc::new(OutputPullStats::new(tap_prod));
+    let stream_pull = Arc::new(OutputPullStats::new(None));
+
     let (mut output_stream, mut output_sample_rate) = match build_output_stream(
         &host,
         initial_output_device.as_deref(),
@@ -141,6 +165,7 @@ pub fn run_audio_pipeline(
         Arc::clone(&stream_cons),
         Arc::clone(&stream_stereo),
         Arc::clone(&render_ref_prod),
+        Arc::clone(&main_pull),
         &event_tx,
     ) {
         Some((stream, rate, _ch)) => (Some(stream), rate),
@@ -232,6 +257,15 @@ pub fn run_audio_pipeline(
     const GATE_HANG_FRAMES: u32 = 10; // 200ms @ 20ms/frame
     let mut gate_open: bool = false;
     let mut gate_hang_remaining: u32 = 0;
+    // When the gate closes we don't stop dead: we send a few frames of
+    // *encoded* silence at normal cadence first, so the receiver's decoder
+    // renders the voice→silence transition itself (MDCT overlap / LPC decay)
+    // and its playback ring runs out on true zeros. Stopping on the last
+    // voice frame left the receiver to cut the waveform wherever it happened
+    // to be — an audible tick at the end of every talkspurt, louder for
+    // peers the listener has boosted.
+    const GATE_TAIL_FRAMES: u32 = 3; // 60ms
+    let mut gate_tail_remaining: u32 = 0;
 
     let mut sequence: u16 = 0;
     // Silence-transmission keepalive. When we are not actively transmitting
@@ -270,6 +304,37 @@ pub fn run_audio_pipeline(
     let mut last_decoded_total: u64 = 0;
     let mut last_latency_ms: Option<u32> = None;
 
+    // ── Playback-ring pacing ────────────────────────────────────────────
+    // Frames are decoded into each peer's ring when the ring drops below a
+    // low-water mark, not on a free-running 20ms clock. The old clock-paced
+    // drain kept at most one frame in the ring while the device callback
+    // pulls its whole period at once (26ms on a stock PipeWire desktop), so
+    // whether a callback found the ring short was down to phase luck — and
+    // silence gating re-rolls that phase at every talkspurt. Pacing on ring
+    // level also absorbs device-vs-wall-clock drift in the jitter buffer,
+    // where it's handled gracefully, instead of in the ring, where it isn't.
+    // The low-water mark is the device's observed per-callback pull plus one
+    // loop tick of margin; until a pull has been observed assume 20ms.
+    let mut main_pull_frames: usize = 0;
+    let mut stream_pull_frames: usize = 0;
+    let mut last_pull_sample = Instant::now();
+    let pull_sample_interval = Duration::from_secs(2);
+    fn low_water_samples(pull_frames: usize, rate: u32, channels: usize) -> usize {
+        let pull = if pull_frames > 0 { pull_frames } else { (rate / 50) as usize };
+        (pull + (rate / 100) as usize) * channels
+    }
+    // Frames a cold start must hold beyond the jitter target so that, once
+    // the ring is primed, the jitter buffer still holds `target`. The ring
+    // sits anywhere in [low_water - pull, low_water + frame) between ticks,
+    // so budget its top of range: low_water plus one frame.
+    fn prime_frames(low_water: usize, rate: u32, channels: usize) -> usize {
+        let frame = ((FRAME_SIZE as u64 * rate as u64 / SAMPLE_RATE as u64) as usize * channels).max(1);
+        (low_water + frame - 1) / frame + 1
+    }
+    // Bound on frames decoded per peer per tick (a cold-start prime or a
+    // post-stall catch-up); keeps one tick short even with many peers.
+    const MAX_FRAMES_PER_TICK: usize = 8;
+
     // AEC render reference accumulator: ONE 20ms playback frame (mono, 48kHz),
     // summed across all peers + stream audio and flushed to `render_ref_prod`
     // at a fixed 20ms cadence (`render_flush_interval`, section 4c). Fixing the
@@ -282,6 +347,10 @@ pub fn run_audio_pipeline(
     let mut render_sum = [0.0f32; FRAME_SIZE];
     let mut last_render_flush = Instant::now();
     let render_flush_interval = Duration::from_millis(20);
+    // Decoded stream-audio frames (mono 48kHz, volume applied) awaiting the
+    // render flush — same role as PeerAudio::render_fifo for voice.
+    let mut stream_render_fifo: std::collections::VecDeque<[f32; FRAME_SIZE]> = std::collections::VecDeque::new();
+    const RENDER_FIFO_MAX: usize = 32;
 
     // ── Voice processing (AEC / NS / AGC) ──────────────────────────────────
     // VoipAec3 bundles all three processors. We rebuild it when toggles change.
@@ -442,7 +511,7 @@ pub fn run_audio_pipeline(
                     playback_stream_accum_l.clear();
                     playback_stream_accum_r.clear();
                     if separate_stream_enabled {
-                        match build_voice_output_stream(&host, name.as_deref(), Arc::clone(&peers), Arc::clone(&render_ref_prod), &event_tx) {
+                        match build_voice_output_stream(&host, name.as_deref(), Arc::clone(&peers), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
                             Some((stream, rate, _ch)) => {
                                 output_sample_rate = rate;
                                 output_stream = Some(stream);
@@ -450,7 +519,7 @@ pub fn run_audio_pipeline(
                             None => log::info!("[pipeline] Warning: no output device after hot-swap"),
                         }
                     } else {
-                        match build_output_stream(&host, name.as_deref(), Arc::clone(&peers), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), &event_tx) {
+                        match build_output_stream(&host, name.as_deref(), Arc::clone(&peers), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
                             Some((stream, rate, _ch)) => {
                                 output_sample_rate = rate;
                                 output_stream = Some(stream);
@@ -486,18 +555,18 @@ pub fn run_audio_pipeline(
                     playback_stream_accum_r.clear();
                     if enabled {
                         // Main output: voice-only
-                        if let Some((stream, rate, _ch)) = build_voice_output_stream(&host, None, Arc::clone(&peers), Arc::clone(&render_ref_prod), &event_tx) {
+                        if let Some((stream, rate, _ch)) = build_voice_output_stream(&host, None, Arc::clone(&peers), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
                             output_sample_rate = rate;
                             output_stream = Some(stream);
                         }
                         // Stream output: stream-only on separate device (may have different rate)
-                        if let Some((stream, rate, _ch)) = build_stream_output_stream(&host, device.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), &event_tx) {
+                        if let Some((stream, rate, _ch)) = build_stream_output_stream(&host, device.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&stream_pull), &event_tx) {
                             stream_output_sample_rate = rate;
                             stream_output = Some(stream);
                         }
                     } else {
                         // Back to mixed mode — stream plays on same device as voice
-                        if let Some((stream, rate, _ch)) = build_output_stream(&host, None, Arc::clone(&peers), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), &event_tx) {
+                        if let Some((stream, rate, _ch)) = build_output_stream(&host, None, Arc::clone(&peers), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
                             output_sample_rate = rate;
                             stream_output_sample_rate = rate;
                             output_stream = Some(stream);
@@ -522,7 +591,7 @@ pub fn run_audio_pipeline(
                         { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                         playback_stream_accum_l.clear();
                         playback_stream_accum_r.clear();
-                        if let Some((stream, rate, _ch)) = build_stream_output_stream(&host, name.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), &event_tx) {
+                        if let Some((stream, rate, _ch)) = build_stream_output_stream(&host, name.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&stream_pull), &event_tx) {
                             stream_output_sample_rate = rate;
                             stream_output = Some(stream);
                             // Rebuild stream resampler for the new device rate
@@ -692,6 +761,7 @@ pub fn run_audio_pipeline(
                 };
                 let open_threshold = voice_threshold_db;
                 let close_threshold = voice_threshold_db - GATE_HYSTERESIS_DB;
+                let gate_was_open = gate_open;
                 if muted {
                     gate_open = false;
                     gate_hang_remaining = 0;
@@ -709,6 +779,9 @@ pub fn run_audio_pipeline(
                     }
                 }
                 let transmit_voice = gate_open;
+                if gate_was_open && !gate_open {
+                    gate_tail_remaining = GATE_TAIL_FRAMES;
+                }
 
                 // Emit input level for the UI meter (~every 60ms)
                 input_level_counter += 1;
@@ -735,6 +808,12 @@ pub fn run_audio_pipeline(
                 let should_send = if transmit_voice {
                     last_voice_send = loop_start;
                     true
+                } else if gate_tail_remaining > 0 {
+                    // Gate just closed: a short run of encoded silence at
+                    // cadence so the listener's decoder fades us out cleanly.
+                    gate_tail_remaining -= 1;
+                    last_voice_send = loop_start;
+                    true
                 } else if last_voice_send.elapsed() >= KEEPALIVE_INTERVAL {
                     last_voice_send = loop_start;
                     true
@@ -755,9 +834,10 @@ pub fn run_audio_pipeline(
 
                     match encode_result {
                         Ok(len) => {
-                            // Prepend flags byte: muted | deafened
+                            // Prepend flags byte: muted | deafened | silence
                             let flags = if muted { FLAG_MUTED } else { 0 }
-                                | if deafened { FLAG_DEAFENED } else { 0 };
+                                | if deafened { FLAG_DEAFENED } else { 0 }
+                                | if transmit_voice { 0 } else { FLAG_SILENCE };
                             let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
                             flagged[0] = flags;
                             flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
@@ -779,7 +859,7 @@ pub fn run_audio_pipeline(
                     last_voice_send = loop_start;
                     let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
                     if let Ok(len) = encoder.encode_silence(&mut opus_out) {
-                        let flags = FLAG_MUTED; // no mic = effectively muted
+                        let flags = FLAG_MUTED | FLAG_SILENCE; // no mic = effectively muted
                         let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
                         flagged[0] = flags;
                         flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
@@ -865,7 +945,8 @@ pub fn run_audio_pipeline(
                                     ));
                                 }
 
-                                peer.voice_jitter.push(pkt.sequence, opus_data.to_vec());
+                                let is_silence = flags & FLAG_SILENCE != 0;
+                                peer.voice_jitter.push(pkt.sequence, opus_data.to_vec(), is_silence);
                                 peer.voice_underrun_logged = false;
                             } else if pkt.packet_type == PACKET_TYPE_STREAM_AUDIO {
                                 if username != sender_id {
@@ -879,6 +960,14 @@ pub fn run_audio_pipeline(
 
                                     if peer.stream_audio_decoder.is_none() {
                                         peer.stream_audio_decoder = super::codec::StereoOpusDecoder::new().ok();
+                                        // Stream audio is continuous and rarely
+                                        // quiet, so the quiet-frame-first trim
+                                        // may never find a frame to drop; cap
+                                        // the backlog tightly (splice past
+                                        // +60ms over target) so it stays in
+                                        // step with the immediately-painted
+                                        // video. Voice keeps the default.
+                                        peer.stream_jitter.set_hard_excess(3);
                                     }
 
                                     // Straight into the jitter buffer on every
@@ -888,7 +977,7 @@ pub fn run_audio_pipeline(
                                     // WebCodecs video painting immediately it
                                     // had become a pure audio-behind-video lag
                                     // (see peer.rs).
-                                    peer.stream_jitter.push(pkt.sequence, pkt.payload_data().to_vec());
+                                    peer.stream_jitter.push(pkt.sequence, pkt.payload_data().to_vec(), false);
                                 }
                             }
                         }
@@ -905,11 +994,51 @@ pub fn run_audio_pipeline(
         // 4b. Drain jitter buffers → decode → push to per-peer ring ─────────
         let drain_now = Instant::now();
         let frame_dur = Duration::from_millis(20);
-        // Cap how far behind drain times can fall. Without this, a peer whose
-        // jitter buffer empties (e.g. network stutter) accumulates a large
-        // time debt, and when packets resume the loop fires dozens of PLC
-        // frames in a single burst — audible as a glitch.
+        // Clock-paced fallback only: cap how far behind drain times can fall
+        // so a stall doesn't fire dozens of frames in one burst.
         let max_behind = Duration::from_millis(100);
+
+        // Refresh the device pull estimate every couple of seconds.
+        if drain_now.duration_since(last_pull_sample) >= pull_sample_interval {
+            last_pull_sample = drain_now;
+            let m = main_pull.take_recent_max();
+            if m > 0 && m != main_pull_frames {
+                log::info!("[pipeline] Output pull size: {} frames @ {}Hz", m, output_sample_rate);
+                main_pull_frames = m;
+            }
+            // A callback gap of 3+ pulls means the device stalled under us
+            // (xrun) — that's a pop no amount of ring priming prevents.
+            let gap_us = main_pull.take_max_gap_us();
+            if main_pull_frames > 0 && gap_us > 3 * (main_pull_frames as u64 * 1_000_000 / output_sample_rate as u64) {
+                log::warn!("[pipeline] Output callback gap {:.1}ms (pull is {:.1}ms) — device xrun?",
+                    gap_us as f64 / 1000.0, main_pull_frames as f64 * 1000.0 / output_sample_rate as f64);
+                if let Some(d) = audio_dump.as_mut() { d.event(&format!("OUTPUT CALLBACK GAP {:.1}ms", gap_us as f64 / 1000.0)); }
+            }
+            if let Some(d) = audio_dump.as_mut() { d.flush(); }
+            let m = stream_pull.take_recent_max();
+            if m > 0 && m != stream_pull_frames {
+                log::info!("[pipeline] Stream output pull size: {} frames @ {}Hz", m, stream_output_sample_rate);
+                stream_pull_frames = m;
+            }
+        }
+
+        // Voice rings are paced by their consumer when there is one and we're
+        // actually feeding them. With no output stream, or while deafened
+        // (decode for the speaking indicator, never push), the ring would
+        // never move — fall back to the 20ms clock.
+        let voice_ring_paced = output_stream.is_some() && !deafened;
+        let voice_low_water = low_water_samples(main_pull_frames, output_sample_rate, 1);
+        let voice_prime = prime_frames(voice_low_water, output_sample_rate, 1);
+
+        let stream_is_stereo = stream_stereo.load(std::sync::atomic::Ordering::Relaxed);
+        let stream_channels = if stream_is_stereo { 2 } else { 1 };
+        let stream_ring_paced = if separate_stream_enabled { stream_output.is_some() } else { output_stream.is_some() };
+        let stream_low_water = low_water_samples(
+            if separate_stream_enabled { stream_pull_frames } else { main_pull_frames },
+            stream_output_sample_rate, stream_channels,
+        );
+        let stream_prime = prime_frames(stream_low_water, stream_output_sample_rate, stream_channels);
+
         for (username, peer) in remote_peers.iter_mut() {
             if drain_now.duration_since(peer.voice_drain_time) > max_behind {
                 peer.voice_drain_time = drain_now - max_behind;
@@ -917,174 +1046,285 @@ pub fn run_audio_pipeline(
             if drain_now.duration_since(peer.stream_drain_time) > max_behind {
                 peer.stream_drain_time = drain_now - max_behind;
             }
+            peer.voice_jitter.set_prime_frames(if voice_ring_paced { voice_prime } else { 0 });
+
             // ── Voice jitter buffer ──
-            while drain_now.duration_since(peer.voice_drain_time) >= frame_dur {
-                peer.voice_drain_time += frame_dur;
-                let opus_opt = match peer.voice_jitter.drain() {
-                    Some(v) => v,
-                    None => {
-                        // Buffer not ready (initial fill or auto-recovery reset).
-                        // Log once per underrun episode; the flag is cleared when
-                        // packets resume in the recv handler.
-                        if !peer.voice_underrun_logged {
-                            log::info!("[pipeline] Jitter buffer reset for peer '{}' — re-buffering", username);
-                            peer.voice_underrun_logged = true;
-                        }
-                        // The peer isn't delivering voice right now (silent /
-                        // keepalive-only / re-buffering). Feed the detector a
-                        // silent tick so their speaking ring clears instead of
-                        // sticking lit — with silence-gated senders we no longer
-                        // get a steady 50pps of low-RMS frames to clear it.
+            let mut produced = 0usize;
+            loop {
+                let due = if voice_ring_paced {
+                    peer.ring_len() < voice_low_water
+                } else {
+                    drain_now.duration_since(peer.voice_drain_time) >= frame_dur
+                };
+                if !due || produced >= MAX_FRAMES_PER_TICK { break; }
+                if !voice_ring_paced { peer.voice_drain_time += frame_dur; }
+
+                let frame = peer.voice_jitter.drain();
+                if let Some(d) = audio_dump.as_mut() {
+                    match &frame {
+                        Frame::Expand => d.event(&format!("{} EXPAND (plc) ring={} tgt={}", username, peer.ring_len(), peer.voice_jitter.target())),
+                        Frame::Lost => d.event(&format!("{} LOST (fec/plc) jb={}", username, peer.voice_jitter.len())),
+                        Frame::Idle if !peer.onset_pending => d.event(&format!("{} idle ring={} under={}", username, peer.ring_len(), peer.voice_jitter.underruns)),
+                        _ => {}
+                    }
+                }
+                if frame == Frame::Idle {
+                    if !peer.onset_pending {
+                        // First idle tick after audio: play out the
+                        // resampler's remainder so the tail ends cleanly.
+                        peer.flush_tail();
+                    }
+                    peer.onset_pending = true;
+                    // Nothing to play: cold, the sender paused (gate tail /
+                    // keepalive), or an underrun's PLC expansion ran out.
+                    if !peer.voice_underrun_logged && peer.voice_jitter.underruns > 0 {
+                        log::debug!("[pipeline] Voice idle for peer '{}' (underruns={}, expand={}, tgt={})",
+                            username, peer.voice_jitter.underruns, peer.voice_jitter.expand_frames, peer.voice_jitter.target());
+                        peer.voice_underrun_logged = true;
+                    }
+                    // Feed the speaking detector a silent tick at frame
+                    // cadence so the ring clears instead of sticking lit —
+                    // a silence-gated sender no longer streams low-RMS
+                    // frames to clear it for us.
+                    if drain_now.duration_since(peer.last_silent_tick) >= frame_dur {
+                        peer.last_silent_tick = drain_now;
                         if let Some(state) = peer.speaking.process_threshold(false) {
                             let _ = event_tx.send(VoiceEvent::SpeakingChanged(username.clone(), state));
                         }
-                        peer.voice_drain_time = drain_now;
-                        break;
                     }
-                };
+                    if !voice_ring_paced { peer.voice_drain_time = drain_now; }
+                    break;
+                }
+                produced += 1;
                 let mut pcm = [0i16; FRAME_SIZE];
-                let decode_ok = match &opus_opt {
-                    Some(data) => peer.decoder.decode(data, &mut pcm).is_ok(),
-                    None => {
-                        // Packet lost — try FEC recovery using the next packet
+                let decode_ok = match &frame {
+                    Frame::Packet(data) => peer.decoder.decode(data, &mut pcm).is_ok(),
+                    Frame::Lost => {
+                        // Packet lost with later frames buffered — try FEC
+                        // from the next packet, else plain PLC.
                         if let Some(next_data) = peer.voice_jitter.peek_next() {
                             peer.decoder.decode_fec(next_data, &mut pcm).is_ok()
                         } else {
-                            // No next packet available — fall back to basic PLC
                             peer.decoder.decode(&[], &mut pcm).is_ok()
                         }
                     }
+                    // Ran dry mid-talkspurt: conceal while the late packet
+                    // lands (bounded by the jitter buffer).
+                    Frame::Expand => peer.decoder.decode(&[], &mut pcm).is_ok(),
+                    Frame::Idle => unreachable!(),
                 };
-                if decode_ok {
-                    let rms = {
-                        let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
-                        (sum_sq / pcm.len() as f64).sqrt() as f32
-                    };
-                    let rms_db = if rms > 0.0 { 20.0 * (rms / 32768.0).log10() } else { -96.0 };
-                    if let Some(state) = peer.speaking.process_threshold(rms_db >= -50.0) {
-                        let _ = event_tx.send(VoiceEvent::SpeakingChanged(username.clone(), state));
+                if !decode_ok { continue; }
+                // Fade PLC expansion to silence across the episode: Opus PLC
+                // alone keeps a voiced tail pitch-repeating at useful level for
+                // 100ms+, which — when a pre-0.7.4 sender simply stops — is
+                // heard as a short buzz/tick after the person stops talking.
+                // A late packet that resumes playback comes back at full
+                // level; Opus smooths that join itself.
+                if frame == Frame::Expand {
+                    let k = peer.voice_jitter.expand_index() as f32;
+                    let g = (1.0 - k / (super::jitter::MAX_EXPAND_FRAMES as f32 + 1.0)).powi(2);
+                    for s in pcm.iter_mut() { *s = (*s as f32 * g) as i16; }
+                }
+
+                let rms = {
+                    let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
+                    (sum_sq / pcm.len() as f64).sqrt() as f32
+                };
+                let rms_db = if rms > 0.0 { 20.0 * (rms / 32768.0).log10() } else { -96.0 };
+                if let Some(state) = peer.speaking.process_threshold(rms_db >= -50.0) {
+                    let _ = event_tx.send(VoiceEvent::SpeakingChanged(username.clone(), state));
+                }
+                // Latency trim: over target, drop quiet frames (decoded, so
+                // the decoder state stays continuous) instead of playing them.
+                if peer.voice_jitter.should_drop_excess(rms_db < -45.0) {
+                    if let Some(d) = audio_dump.as_mut() {
+                        d.event(&format!("{} DROP excess={} rms={:.0}dB", username, peer.voice_jitter.excess(), rms_db));
                     }
-                    if !deafened {
-                        let gain = user_volumes.get(username.as_str()).copied().unwrap_or(1.0);
-                        let mut f32_frame = [0.0f32; FRAME_SIZE];
-                        for (i, &s) in pcm.iter().enumerate() {
-                            f32_frame[i] = (s as f32 / 32768.0) * gain;
-                        }
-                        // Sum into the current 20ms AEC render slot (mono,
-                        // pre-resample). Flushed once per 20ms in section 4c so
-                        // the render rate tracks playback regardless of how many
-                        // peers decoded this iteration.
-                        if aec_enabled {
-                            for (dst, &s) in render_sum.iter_mut().zip(f32_frame.iter()) {
-                                *dst += s;
-                            }
-                        }
-                        peer.push_voice_frame(&f32_frame);
+                    if !voice_ring_paced { peer.voice_drain_time -= frame_dur; }
+                    continue;
+                }
+                if !deafened {
+                    let gain = user_volumes.get(username.as_str()).copied().unwrap_or(1.0);
+                    let mut f32_frame = [0.0f32; FRAME_SIZE];
+                    for (i, &s) in pcm.iter().enumerate() {
+                        f32_frame[i] = (s as f32 / 32768.0) * gain;
                     }
+                    // Talkspurt onset into an empty ring: the sender's VAD
+                    // gate opened on a 20ms frame boundary, so the waveform
+                    // can start anywhere. Ramp the first few ms so the
+                    // listener doesn't get a step from digital silence.
+                    if peer.onset_pending && peer.ring_len() == 0 {
+                        const FADE: usize = 144; // 3ms @ 48kHz
+                        for (i, s) in f32_frame.iter_mut().take(FADE).enumerate() {
+                            *s *= i as f32 / FADE as f32;
+                        }
+                        if let Some(d) = audio_dump.as_mut() {
+                            d.event(&format!("{} onset (fade-in) tgt={} jb={}", username, peer.voice_jitter.target(), peer.voice_jitter.len()));
+                        }
+                    }
+                    peer.onset_pending = false;
+                    if let Some(d) = audio_dump.as_mut() {
+                        d.peer_frame(username, &f32_frame);
+                    }
+                    // Queue for the AEC render reference (mono, pre-resample);
+                    // section 4c sums one frame per peer per 20ms.
+                    if aec_enabled {
+                        if peer.render_fifo.len() >= RENDER_FIFO_MAX { peer.render_fifo.pop_front(); }
+                        peer.render_fifo.push_back(f32_frame);
+                    }
+                    peer.push_voice_frame(&f32_frame);
                 }
             }
 
             // ── Stream audio jitter buffer ──
             if let Some(ref mut decoder) = peer.stream_audio_decoder {
-                while drain_now.duration_since(peer.stream_drain_time) >= frame_dur {
-                    peer.stream_drain_time += frame_dur;
-                    let opus_opt = match peer.stream_jitter.drain() {
-                        Some(v) => v,
-                        None => {
-                            peer.stream_drain_time = drain_now;
-                            break;
-                        }
+                peer.stream_jitter.set_prime_frames(if stream_ring_paced { stream_prime } else { 0 });
+                let mut produced = 0usize;
+                loop {
+                    let due = if stream_ring_paced {
+                        let len = stream_prod.lock().map(|p| p.occupied_len()).unwrap_or(usize::MAX);
+                        len < stream_low_water
+                    } else {
+                        drain_now.duration_since(peer.stream_drain_time) >= frame_dur
                     };
+                    if !due || produced >= MAX_FRAMES_PER_TICK { break; }
+                    if !stream_ring_paced { peer.stream_drain_time += frame_dur; }
+
+                    let frame = peer.stream_jitter.drain();
+                    if frame == Frame::Idle {
+                        if !stream_ring_paced { peer.stream_drain_time = drain_now; }
+                        break;
+                    }
+                    produced += 1;
                     let mut pcm = [0i16; STEREO_FRAME_SAMPLES];
-                    let decode_ok = match &opus_opt {
-                        Some(data) => decoder.decode(data, &mut pcm).is_ok(),
-                        None => decoder.decode(&[], &mut pcm).is_ok(), // PLC
+                    let decode_ok = match &frame {
+                        Frame::Packet(data) => decoder.decode(data, &mut pcm).is_ok(),
+                        Frame::Lost | Frame::Expand => decoder.decode(&[], &mut pcm).is_ok(), // PLC
+                        Frame::Idle => unreachable!(),
                     };
-                    if decode_ok {
-                        if playback_stream_resampler.is_none() {
-                            // Output device is 48kHz — push directly
-                            if let Ok(mut prod) = stream_prod.lock() {
-                                for i in 0..STEREO_FRAME_SIZE {
-                                    let l = pcm[i * 2] as i32;
-                                    let r = pcm[i * 2 + 1] as i32;
-                                    if stream_stereo.load(std::sync::atomic::Ordering::Relaxed) {
-                                        let sl = ((l as f32) * stream_volume) as i32;
-                                        let sr = ((r as f32) * stream_volume) as i32;
-                                        let _ = prod.try_push(sl.clamp(-32768, 32767) as i16);
-                                        let _ = prod.try_push(sr.clamp(-32768, 32767) as i16);
-                                    } else {
-                                        let mono = (l + r) / 2;
-                                        let scaled = ((mono as f32) * stream_volume) as i32;
-                                        let _ = prod.try_push(scaled.clamp(-32768, 32767) as i16);
-                                    }
+                    if !decode_ok { continue; }
+                    let quiet = {
+                        let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
+                        let rms = (sum_sq / pcm.len() as f64).sqrt() as f32;
+                        rms < 32768.0 * 0.0056 // ≈ -45 dBFS
+                    };
+                    if peer.stream_jitter.should_drop_excess(quiet) {
+                        if !stream_ring_paced { peer.stream_drain_time -= frame_dur; }
+                        continue;
+                    }
+                    if playback_stream_resampler.is_none() {
+                        // Output device is 48kHz — push directly
+                        if let Ok(mut prod) = stream_prod.lock() {
+                            for i in 0..STEREO_FRAME_SIZE {
+                                let l = pcm[i * 2] as i32;
+                                let r = pcm[i * 2 + 1] as i32;
+                                if stream_is_stereo {
+                                    let sl = ((l as f32) * stream_volume) as i32;
+                                    let sr = ((r as f32) * stream_volume) as i32;
+                                    let _ = prod.try_push(sl.clamp(-32768, 32767) as i16);
+                                    let _ = prod.try_push(sr.clamp(-32768, 32767) as i16);
+                                } else {
+                                    let mono = (l + r) / 2;
+                                    let scaled = ((mono as f32) * stream_volume) as i32;
+                                    let _ = prod.try_push(scaled.clamp(-32768, 32767) as i16);
                                 }
                             }
-                        } else if let Some(ref mut resampler) = playback_stream_resampler {
-                            // Resample stereo 48kHz → output device rate, then push
-                            for i in 0..STEREO_FRAME_SIZE {
-                                let l = pcm[i * 2] as f32 * stream_volume / 32768.0;
-                                let r = pcm[i * 2 + 1] as f32 * stream_volume / 32768.0;
-                                playback_stream_accum_l.push(l as f64);
-                                playback_stream_accum_r.push(r as f64);
-                            }
-                            let mut needed = resampler.input_frames_next();
-                            while playback_stream_accum_l.len() >= needed && playback_stream_accum_r.len() >= needed {
-                                playback_stream_scratch_l.clear();
-                                playback_stream_scratch_l.extend(playback_stream_accum_l.drain(..needed));
-                                playback_stream_scratch_r.clear();
-                                playback_stream_scratch_r.extend(playback_stream_accum_r.drain(..needed));
-                                if let Ok(out) = resampler.process(&[&playback_stream_scratch_l, &playback_stream_scratch_r], None) {
-                                    if let Ok(mut prod) = stream_prod.lock() {
-                                        let is_stereo = stream_stereo.load(std::sync::atomic::Ordering::Relaxed);
-                                        let len = out[0].len().min(out[1].len());
-                                        for i in 0..len {
-                                            if is_stereo {
-                                                let _ = prod.try_push((out[0][i] * 32768.0).clamp(-32768.0, 32767.0) as i16);
-                                                let _ = prod.try_push((out[1][i] * 32768.0).clamp(-32768.0, 32767.0) as i16);
-                                            } else {
-                                                let mono = (out[0][i] + out[1][i]) / 2.0;
-                                                let _ = prod.try_push((mono * 32768.0).clamp(-32768.0, 32767.0) as i16);
-                                            }
+                        }
+                    } else if let Some(ref mut resampler) = playback_stream_resampler {
+                        // Resample stereo 48kHz → output device rate, then push
+                        for i in 0..STEREO_FRAME_SIZE {
+                            let l = pcm[i * 2] as f32 * stream_volume / 32768.0;
+                            let r = pcm[i * 2 + 1] as f32 * stream_volume / 32768.0;
+                            playback_stream_accum_l.push(l as f64);
+                            playback_stream_accum_r.push(r as f64);
+                        }
+                        let mut needed = resampler.input_frames_next();
+                        while playback_stream_accum_l.len() >= needed && playback_stream_accum_r.len() >= needed {
+                            playback_stream_scratch_l.clear();
+                            playback_stream_scratch_l.extend(playback_stream_accum_l.drain(..needed));
+                            playback_stream_scratch_r.clear();
+                            playback_stream_scratch_r.extend(playback_stream_accum_r.drain(..needed));
+                            if let Ok(out) = resampler.process(&[&playback_stream_scratch_l, &playback_stream_scratch_r], None) {
+                                if let Ok(mut prod) = stream_prod.lock() {
+                                    let len = out[0].len().min(out[1].len());
+                                    for i in 0..len {
+                                        if stream_is_stereo {
+                                            let _ = prod.try_push((out[0][i] * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                                            let _ = prod.try_push((out[1][i] * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                                        } else {
+                                            let mono = (out[0][i] + out[1][i]) / 2.0;
+                                            let _ = prod.try_push((mono * 32768.0).clamp(-32768.0, 32767.0) as i16);
                                         }
                                     }
                                 }
-                                needed = resampler.input_frames_next();
                             }
+                            needed = resampler.input_frames_next();
                         }
-                        // Sum stream audio into the same 20ms AEC render slot as
-                        // voice (mono, volume applied); flushed together in 4c.
-                        if aec_enabled {
-                            for i in 0..STEREO_FRAME_SIZE {
-                                let l = pcm[i * 2] as f32;
-                                let r = pcm[i * 2 + 1] as f32;
-                                let mono = ((l + r) / 2.0) * stream_volume / 32768.0;
-                                render_sum[i] += mono;
-                            }
+                    }
+                    // Queue stream audio for the AEC render reference (mono,
+                    // volume applied); summed with voice in 4c.
+                    if aec_enabled {
+                        let mut mono = [0.0f32; FRAME_SIZE];
+                        for i in 0..STEREO_FRAME_SIZE {
+                            let l = pcm[i * 2] as f32;
+                            let r = pcm[i * 2 + 1] as f32;
+                            mono[i] = ((l + r) / 2.0) * stream_volume / 32768.0;
                         }
+                        if stream_render_fifo.len() >= RENDER_FIFO_MAX { stream_render_fifo.pop_front(); }
+                        stream_render_fifo.push_back(mono);
                     }
                 }
             }
         }
 
+        // 4b'. Debug dump: device output tap + ring-dry detection ─────────
+        if let Some(d) = audio_dump.as_mut() {
+            if let Some(c) = tap_cons.as_mut() {
+                let mut buf: Vec<i16> = Vec::with_capacity(c.occupied_len());
+                while let Some(s) = c.try_pop() { buf.push(s); }
+                if !buf.is_empty() { d.output_samples(&buf, output_sample_rate); }
+            }
+            for (username, peer) in remote_peers.iter() {
+                if voice_ring_paced && peer.ring_len() == 0
+                    && (peer.voice_jitter.is_ready() || peer.voice_jitter.is_expanding())
+                {
+                    d.event(&format!("{} RING DRY while audio expected (jb={})", username, peer.voice_jitter.len()));
+                }
+            }
+        }
+
         // 4c. Flush the AEC render reference at the playback frame rate. ────
-        // Exactly one 960-sample (20ms) mono frame per render_flush_interval,
-        // summed across every peer + stream audio, then zero the accumulator.
-        // The while loop catches up if the loop fell behind; the 100ms guard
-        // caps a burst after a long stall. This keeps render:capture at 1:1 —
-        // the fix for AEC breaking with 3+ people in the channel.
+        // Exactly one 960-sample (20ms) mono frame per render_flush_interval:
+        // the sum of the oldest queued frame of every peer plus stream audio.
+        // Decoding is paced by the playback ring and bursts at talkspurt
+        // starts, so frames are queued (render_fifo) and released here at
+        // frame cadence rather than summed as they're decoded. The while loop
+        // catches up if the loop fell behind; the 100ms guard caps a burst
+        // after a long stall. Keeps render:capture at 1:1 whatever the peer
+        // count — the fix for AEC breaking with 3+ people in the channel.
         if aec_enabled {
             if last_render_flush.elapsed() > Duration::from_millis(100) {
                 last_render_flush = drain_now;
             }
             while last_render_flush.elapsed() >= render_flush_interval {
                 last_render_flush += render_flush_interval;
+                render_sum.fill(0.0);
+                for peer in remote_peers.values_mut() {
+                    if let Some(f) = peer.render_fifo.pop_front() {
+                        for (dst, &s) in render_sum.iter_mut().zip(f.iter()) { *dst += s; }
+                    }
+                }
+                if let Some(f) = stream_render_fifo.pop_front() {
+                    for (dst, &s) in render_sum.iter_mut().zip(f.iter()) { *dst += s; }
+                }
                 if let Ok(mut rr_prod) = render_ref_prod.lock() {
                     for &s in render_sum.iter() {
                         let _ = rr_prod.try_push(s);
                     }
                 }
-                render_sum.fill(0.0);
             }
+        } else if !stream_render_fifo.is_empty() {
+            stream_render_fifo.clear();
         }
 
         // 5. Clean up stale remote peers (no packet for > 5s) ─────────────────
@@ -1146,12 +1386,13 @@ pub fn run_audio_pipeline(
             let stream_fill = if let Ok(c) = stream_cons.try_lock() { c.occupied_len() } else { 0 };
             let recv_drop_total = recv_drops.load(std::sync::atomic::Ordering::Relaxed);
             let peer_stats: Vec<String> = remote_peers.iter().map(|(n, p)| {
-                format!("{}(j={:.1}ms tgt={} plc={} drop={})",
-                    n, p.voice_jitter.jitter_ms(), p.voice_jitter.target(),
-                    p.voice_jitter.plc_frames, p.voice_jitter.dropped_frames)
+                format!("{}(j={:.1}ms tgt={} buf={} ring={} plc={} exp={} under={} drop={})",
+                    n, p.voice_jitter.jitter_ms(), p.voice_jitter.target(), p.voice_jitter.len(), p.ring_len(),
+                    p.voice_jitter.plc_frames, p.voice_jitter.expand_frames, p.voice_jitter.underruns,
+                    p.voice_jitter.dropped_frames)
             }).collect();
-            log::info!("[pipeline] diag: peers=[{}], stream_buf={}/{}, recv_drops={}, pkts_this_iter={}",
-                peer_stats.join(", "), stream_fill, BUF_CAP, recv_drop_total, pkt_count_this_iter);
+            log::info!("[pipeline] diag: peers=[{}], pull={}fr low_water={} short_pulls={} stream_buf={}/{}, recv_drops={}, pkts_this_iter={}",
+                peer_stats.join(", "), main_pull_frames, voice_low_water, main_pull.short_pulls(), stream_fill, BUF_CAP, recv_drop_total, pkt_count_this_iter);
         }
 
         // 7. Sleep if loop finished under 5ms ──────────────────────────────────

@@ -1,9 +1,10 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SizedSample};
 use smallvec::SmallVec;
+use std::time::Instant;
 use std::sync::Arc;
 use arc_swap::ArcSwap;
-use ringbuf::{HeapProd, HeapCons, traits::{Consumer, Producer}};
+use ringbuf::{HeapProd, HeapCons, traits::{Consumer, Observer, Producer}};
 use rubato::{SincFixedOut, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
 use super::codec::SAMPLE_RATE;
@@ -235,7 +236,7 @@ fn resolve_playback_device(host: &cpal::Host, device_name: Option<&str>) -> Opti
 /// spoke at once (or a per-user volume boost pushed a single voice past full
 /// scale). C1-continuous at the knee (unity slope), so there's no audible kink.
 #[inline]
-fn soft_clip(x: f32) -> f32 {
+pub(crate) fn soft_clip(x: f32) -> f32 {
     const KNEE: f32 = 0.75; // ≈ -2.5 dBFS; speech peaks sit well below this
     let a = x.abs();
     if a <= KNEE {
@@ -244,6 +245,79 @@ fn soft_clip(x: f32) -> f32 {
         let over = a - KNEE;
         let headroom = 1.0 - KNEE;
         x.signum() * (KNEE + headroom * (over / (over + headroom)))
+    }
+}
+
+/// What the output callback actually pulls per call, reported back to the
+/// pipeline. The pipeline keeps each playback ring at least one pull (plus a
+/// loop-tick margin) deep, so a callback never finds the ring short and
+/// splices zeros into speech. `recent_max` is read-and-reset by the pipeline
+/// every couple of seconds; the very first callback is skipped because many
+/// backends prime their whole device buffer in one oversized pull.
+pub struct OutputPullStats {
+    recent_max_frames: std::sync::atomic::AtomicUsize,
+    callbacks: std::sync::atomic::AtomicU64,
+    /// Callbacks where some peer ring had audio but less than the pull —
+    /// i.e. zeros got spliced into that peer's voice. Should stay 0.
+    short_pulls: std::sync::atomic::AtomicU64,
+    /// Longest gap between consecutive callbacks (µs) since last read. A gap
+    /// of several periods means the device stalled/xrun'd underneath us.
+    max_gap_us: std::sync::atomic::AtomicU64,
+    last_cb_ns: std::sync::atomic::AtomicU64,
+    base: Instant,
+    /// Optional tap of the mono mix handed to the device (debug dump).
+    tap: Option<Arc<std::sync::Mutex<HeapProd<i16>>>>,
+}
+
+impl OutputPullStats {
+    pub fn new(tap: Option<Arc<std::sync::Mutex<HeapProd<i16>>>>) -> Self {
+        Self {
+            recent_max_frames: std::sync::atomic::AtomicUsize::new(0),
+            callbacks: std::sync::atomic::AtomicU64::new(0),
+            short_pulls: std::sync::atomic::AtomicU64::new(0),
+            max_gap_us: std::sync::atomic::AtomicU64::new(0),
+            last_cb_ns: std::sync::atomic::AtomicU64::new(0),
+            base: Instant::now(),
+            tap,
+        }
+    }
+    #[inline]
+    fn record(&self, frames: usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let now_ns = self.base.elapsed().as_nanos() as u64;
+        let prev = self.last_cb_ns.swap(now_ns, Relaxed);
+        if self.callbacks.fetch_add(1, Relaxed) == 0 {
+            return; // initial device-buffer fill, not the steady-state pull
+        }
+        self.recent_max_frames.fetch_max(frames, Relaxed);
+        if prev > 0 {
+            self.max_gap_us.fetch_max((now_ns - prev) / 1000, Relaxed);
+        }
+    }
+    #[inline]
+    fn note_short(&self) {
+        self.short_pulls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// Largest pull (in device frames) since the previous call; 0 if none.
+    pub fn take_recent_max(&self) -> usize {
+        self.recent_max_frames.swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn take_max_gap_us(&self) -> u64 {
+        self.max_gap_us.swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn short_pulls(&self) -> u64 {
+        self.short_pulls.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn callbacks(&self) -> u64 {
+        self.callbacks.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[inline]
+    fn tap_push(&self, mono: f32) {
+        if let Some(t) = &self.tap {
+            if let Ok(mut p) = t.try_lock() {
+                let _ = p.try_push((mono.clamp(-1.0, 1.0) * 32767.0) as i16);
+            }
+        }
     }
 }
 
@@ -318,6 +392,37 @@ fn default_stream_config(channels: u16) -> cpal::StreamConfig {
     }
 }
 
+/// Device buffer we ask for on capture and playback streams: 40ms total,
+/// which on ALSA (cpal sets period = buffer/4) means ~10ms callbacks. cpal's default is a
+/// 100ms buffer with ~25ms periods — that alone was ~60ms of output latency,
+/// and a 25ms pull is what the per-peer rings must be kept primed against
+/// (see OutputPullStats). Backends that reject a fixed size (WASAPI shared
+/// mode) fall back to the default; the pipeline measures the real pull size
+/// either way.
+fn preferred_buffer_frames(rate: u32) -> u32 {
+    rate / 25
+}
+
+/// Try the stream with our preferred fixed buffer first, then the backend
+/// default. `$build` is an expression over `$cfg` producing
+/// `Result<cpal::Stream, cpal::BuildStreamError>`.
+macro_rules! build_with_buffer_fallback {
+    ($cfg:ident, $label:expr, $build:expr) => {{
+        let mut fixed = $cfg.clone();
+        fixed.buffer_size = cpal::BufferSize::Fixed(preferred_buffer_frames($cfg.sample_rate.0));
+        let attempt = { let $cfg = &fixed; $build };
+        match attempt {
+            Ok(s) => Ok(s),
+            Err(e) => {
+                log::info!("[pipeline] {}: fixed {}-frame buffer rejected ({}), using backend default",
+                    $label, preferred_buffer_frames($cfg.sample_rate.0), e);
+                let $cfg = &$cfg;
+                $build
+            }
+        }
+    }};
+}
+
 // ── Generic capture callback ─────────────────────────────────────────────────
 
 /// Build the capture callback for sample type `T`. Downmixes to mono and
@@ -389,7 +494,9 @@ pub fn build_input_stream(
     let (input_cfg, in_ch, fmt) = input_config(&input_device);
     let input_sample_rate = input_cfg.sample_rate.0;
 
-    match build_input_stream_fmt(&input_device, &input_cfg, fmt, in_ch, capture_prod) {
+    let built = build_with_buffer_fallback!(input_cfg, "Capture",
+        build_input_stream_fmt(&input_device, input_cfg, fmt, in_ch, Arc::clone(&capture_prod)));
+    match built {
         Ok(stream) => {
             if let Err(e) = stream.play() {
                 log::warn!("[pipeline] failed to start capture stream: {}", e);
@@ -428,6 +535,7 @@ fn output_mix_cb<T>(
     peers_out: PeerList,
     stream_cons_out: Arc<std::sync::Mutex<HeapCons<i16>>>,
     pb_stream_stereo: Arc<std::sync::atomic::AtomicBool>,
+    pull_stats: Arc<OutputPullStats>,
 ) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo)
 where
     T: SizedSample + FromSample<f32>,
@@ -435,6 +543,8 @@ where
     let n = out_ch.max(1) as usize;
     let silence = T::from_sample(0.0f32);
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        let frames = data.len() / n;
+        pull_stats.record(frames);
         let peer_snapshot = peers_out.load();
         // Stack-inline for the typical ≤8-peer channel so the real-time output
         // callback does no heap allocation (only a >8-peer channel spills to the
@@ -444,6 +554,9 @@ where
             .iter()
             .filter_map(|p| p.cons.try_lock().ok())
             .collect();
+        if voice_guards.iter().any(|g| { let a = g.occupied_len(); a > 0 && a < frames }) {
+            pull_stats.note_short();
+        }
 
         let Ok(mut stream_guard) = stream_cons_out.try_lock() else {
             drop(voice_guards);
@@ -455,7 +568,9 @@ where
             for sample in data.iter_mut() {
                 let v = pop_voice_sum(&mut voice_guards);
                 let s = stream_guard.try_pop().unwrap_or(0) as i32;
-                *sample = T::from_sample(soft_clip((v + s) as f32 / 32768.0));
+                let m = soft_clip((v + s) as f32 / 32768.0);
+                pull_stats.tap_push(m);
+                *sample = T::from_sample(m);
             }
         } else {
             for frame in data.chunks_exact_mut(n) {
@@ -463,14 +578,19 @@ where
                 if pb_stream_stereo.load(std::sync::atomic::Ordering::Relaxed) && n >= 2 {
                     let sl = stream_guard.try_pop().unwrap_or(0) as i32;
                     let sr = stream_guard.try_pop().unwrap_or(0) as i32;
-                    let left = T::from_sample(soft_clip((v + sl) as f32 / 32768.0));
-                    let right = T::from_sample(soft_clip((v + sr) as f32 / 32768.0));
+                    let ml = soft_clip((v + sl) as f32 / 32768.0);
+                    let mr = soft_clip((v + sr) as f32 / 32768.0);
+                    pull_stats.tap_push((ml + mr) * 0.5);
+                    let left = T::from_sample(ml);
+                    let right = T::from_sample(mr);
                     frame[0] = left;
                     frame[1] = right;
                     for ch in &mut frame[2..] { *ch = left; }
                 } else {
                     let s = stream_guard.try_pop().unwrap_or(0) as i32;
-                    let mixed = T::from_sample(soft_clip((v + s) as f32 / 32768.0));
+                    let m = soft_clip((v + s) as f32 / 32768.0);
+                    pull_stats.tap_push(m);
+                    let mixed = T::from_sample(m);
                     for ch in frame.iter_mut() { *ch = mixed; }
                 }
             }
@@ -482,12 +602,15 @@ where
 fn voice_only_cb<T>(
     out_ch: u16,
     peers_out: PeerList,
+    pull_stats: Arc<OutputPullStats>,
 ) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo)
 where
     T: SizedSample + FromSample<f32>,
 {
     let n = out_ch.max(1) as usize;
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        let frames = data.len() / n;
+        pull_stats.record(frames);
         let peer_snapshot = peers_out.load();
         // Stack-inline for the typical ≤8-peer channel so the real-time output
         // callback does no heap allocation (only a >8-peer channel spills to the
@@ -497,9 +620,14 @@ where
             .iter()
             .filter_map(|p| p.cons.try_lock().ok())
             .collect();
+        if voice_guards.iter().any(|g| { let a = g.occupied_len(); a > 0 && a < frames }) {
+            pull_stats.note_short();
+        }
         for frame in data.chunks_exact_mut(n) {
             let v = pop_voice_sum(&mut voice_guards);
-            let out = T::from_sample(soft_clip(v as f32 / 32768.0));
+            let m = soft_clip(v as f32 / 32768.0);
+            pull_stats.tap_push(m);
+            let out = T::from_sample(m);
             for ch in frame.iter_mut() { *ch = out; }
         }
     }
@@ -510,6 +638,7 @@ fn stream_only_cb<T>(
     out_ch: u16,
     stream_cons_out: Arc<std::sync::Mutex<HeapCons<i16>>>,
     pb_stereo: Arc<std::sync::atomic::AtomicBool>,
+    pull_stats: Arc<OutputPullStats>,
 ) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo)
 where
     T: SizedSample + FromSample<f32>,
@@ -517,6 +646,7 @@ where
     let n = out_ch.max(1) as usize;
     let silence = T::from_sample(0.0f32);
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        pull_stats.record(data.len() / n);
         let Ok(mut guard) = stream_cons_out.try_lock() else {
             for sample in data.iter_mut() { *sample = silence; }
             return;
@@ -573,6 +703,7 @@ pub fn build_output_stream(
     stream_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
     stream_stereo: Arc<std::sync::atomic::AtomicBool>,
     _render_ref_prod: Arc<std::sync::Mutex<HeapProd<f32>>>,
+    pull_stats: Arc<OutputPullStats>,
     event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
 ) -> Option<(cpal::Stream, u32, u16)> {
     let output_device = resolve_playback_device(host, device_name)?;
@@ -582,10 +713,10 @@ pub fn build_output_stream(
     // Build in the device's native sample format (see build_output_dispatch!).
     // Mixing sums each peer's ring as i32, adds stream audio, soft-limits, and
     // converts to the device format.
-    let stream = match build_output_dispatch!(
-        &output_device, &stream_config, fmt,
-        output_mix_cb(out_ch, peers, stream_cons, stream_stereo)
-    ) {
+    let stream = match build_with_buffer_fallback!(stream_config, "Output", build_output_dispatch!(
+        &output_device, stream_config, fmt,
+        output_mix_cb(out_ch, peers, stream_cons, stream_stereo, pull_stats)
+    )) {
         Ok(s) => s,
         Err(e) => {
             let _ = event_tx.send(VoiceEvent::Error(format!(
@@ -614,16 +745,17 @@ pub fn build_voice_output_stream(
     device_name: Option<&str>,
     peers: PeerList,
     _render_ref_prod: Arc<std::sync::Mutex<HeapProd<f32>>>,
+    pull_stats: Arc<OutputPullStats>,
     event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
 ) -> Option<(cpal::Stream, u32, u16)> {
     let output_device = resolve_playback_device(host, device_name)?;
     let (stream_config, out_ch, fmt) = output_config(&output_device, "Voice output");
     let output_sample_rate = stream_config.sample_rate.0;
 
-    let stream = match build_output_dispatch!(
-        &output_device, &stream_config, fmt,
-        voice_only_cb(out_ch, peers)
-    ) {
+    let stream = match build_with_buffer_fallback!(stream_config, "Voice output", build_output_dispatch!(
+        &output_device, stream_config, fmt,
+        voice_only_cb(out_ch, peers, pull_stats)
+    )) {
         Ok(s) => s,
         Err(e) => {
             let _ = event_tx.send(VoiceEvent::Error(format!("Failed to build voice output stream: {}", e)));
@@ -648,16 +780,17 @@ pub fn build_stream_output_stream(
     device_name: Option<&str>,
     stream_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
     stream_stereo: Arc<std::sync::atomic::AtomicBool>,
+    pull_stats: Arc<OutputPullStats>,
     event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
 ) -> Option<(cpal::Stream, u32, u16)> {
     let output_device = resolve_playback_device(host, device_name)?;
     let (stream_config, out_ch, fmt) = output_config(&output_device, "Stream output");
     let output_sample_rate = stream_config.sample_rate.0;
 
-    let stream = match build_output_dispatch!(
-        &output_device, &stream_config, fmt,
-        stream_only_cb(out_ch, stream_cons, stream_stereo)
-    ) {
+    let stream = match build_with_buffer_fallback!(stream_config, "Stream output", build_output_dispatch!(
+        &output_device, stream_config, fmt,
+        stream_only_cb(out_ch, stream_cons, stream_stereo, pull_stats)
+    )) {
         Ok(s) => s,
         Err(e) => {
             let _ = event_tx.send(VoiceEvent::Error(format!("Failed to build stream output: {}", e)));

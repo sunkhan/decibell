@@ -288,6 +288,23 @@ All structs use `#pragma pack(push, 1)` (1-byte alignment, no padding). Source: 
 | sender_id | 1 | 32 | char[32] | Token hash or username of requester |
 | target_username | 33 | 32 | char[32] | Username of the streamer to send PLI to |
 
+### Audio Payload Flags Byte (Electron client ↔ client)
+The Electron client prepends one flags byte to the Opus data inside
+`UdpAudioPacket.payload` (the server relays the payload untouched, so this
+is a client↔client contract; unknown bits are ignored by older clients):
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| 0x01 | `FLAG_MUTED` | Sender is muted |
+| 0x02 | `FLAG_DEAFENED` | Sender is deafened |
+| 0x04 | `FLAG_SILENCE` | Frame carries no voice: a gate-closed tail frame or a keepalive. Receivers treat a following gap as a pause (no PLC) and keep the sparse keepalive cadence out of their jitter estimate. Added 0.7.4. |
+
+Since 0.7.1 the client silence-gates transmission: while the VAD gate is
+closed it sends one keepalive per 500 ms instead of 50 pps. Since 0.7.4 the
+gate closing is followed by 3 frames of encoded silence at normal cadence
+(so the listener's decoder renders the fade itself) and all non-voice
+frames carry `FLAG_SILENCE`.
+
 ### UDP Identity Matching
 The community server uses `find_session_by_token(udp_id)`: it checks whether the session's full JWT token **ends with** the `sender_id` string from the UDP packet. On broadcast, `sender_id` is overwritten with the authenticated username before forwarding to other clients.
 
