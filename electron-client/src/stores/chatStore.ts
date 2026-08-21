@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  BanInfo,
   ChannelInfo,
   ChannelOverwrite,
   CommunityServer,
@@ -50,7 +51,7 @@ interface ChatState {
   serverMeta: Record<string, { name: string; description: string }>;
   serverOwner: Record<string, string>;
   membersByServer: Record<string, ServerMember[]>;
-  bansByServer: Record<string, string[]>;
+  bansByServer: Record<string, BanInfo[]>;
   /// Paging / revision state for membersByServer (roster protocol).
   memberRosterMeta: Record<string, MemberRosterMeta>;
   /// Per-server role list, most-senior-first, `everyone` last. Absent /
@@ -146,7 +147,7 @@ interface ChatState {
   upsertMember: (serverId: string, member: ServerMember, revision: number) => boolean;
   removeMember: (serverId: string, username: string, revision: number) => boolean;
   setMembersLoadingMore: (serverId: string, loading: boolean) => void;
-  setBansForServer: (serverId: string, bans: string[]) => void;
+  setBansForServer: (serverId: string, bans: BanInfo[]) => void;
   setRolesForServer: (serverId: string, roles: ServerRole[]) => void;
   setOverwritesForChannel: (
     serverId: string,

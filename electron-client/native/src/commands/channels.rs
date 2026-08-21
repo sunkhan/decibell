@@ -105,6 +105,8 @@ pub struct UpdateChannelRetentionArgs {
     /// None/undefined = leave unchanged (the wire field has explicit
     /// presence, so retention-only updates can't reset it).
     pub voice_bitrate_kbps: Option<i32>,
+    /// Text channels: slowmode seconds (0 = off). None = leave unchanged.
+    pub slowmode_seconds: Option<i32>,
 }
 
 /// MANAGE_CHANNELS edit. All five retention values are sent as a
@@ -121,6 +123,7 @@ pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi:
         retention_days_document,
         retention_days_audio,
         voice_bitrate_kbps,
+        slowmode_seconds,
     } = args;
     send_for_server(
         &server_id,
@@ -133,6 +136,7 @@ pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi:
             retention_days_document,
             retention_days_audio,
             voice_bitrate_kbps,
+            slowmode_seconds,
         }),
     )
     .await

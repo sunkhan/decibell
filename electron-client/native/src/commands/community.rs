@@ -61,6 +61,132 @@ pub async fn list_members(args: ListMembersArgs) -> napi::Result<()> {
 }
 
 #[napi(object)]
+pub struct UpdateServerArgs {
+    pub server_id: String,
+    pub name: String,
+    pub description: String,
+}
+
+/// MANAGE_SERVER: rename / re-describe the server. Result arrives as
+/// server_update_responded; everyone gets server_meta_updated.
+#[napi]
+pub async fn update_server(args: UpdateServerArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::ServerUpdateReq,
+        packet::Payload::ServerUpdateReq(ServerUpdateRequest {
+            name: args.name,
+            description: args.description,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct ListAuditLogArgs {
+    pub server_id: String,
+    /// 0 = newest.
+    pub before_id: Option<i64>,
+    pub limit: Option<i32>,
+}
+
+#[napi]
+pub async fn list_audit_log(args: ListAuditLogArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::AuditLogReq,
+        packet::Payload::AuditLogReq(AuditLogRequest {
+            before_id: args.before_id.unwrap_or(0),
+            limit: args.limit.unwrap_or(50),
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct TimeoutMemberArgs {
+    pub server_id: String,
+    pub username: String,
+    /// Unix seconds; 0 clears an active timeout.
+    pub until: i64,
+    pub reason: Option<String>,
+}
+
+/// MODERATE_MEMBERS + hierarchy. Response via mod_action_responded
+/// action="timeout"; the member_upsert delta carries timedOutUntil.
+#[napi]
+pub async fn timeout_member(args: TimeoutMemberArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::TimeoutMemberReq,
+        packet::Payload::TimeoutMemberReq(TimeoutMemberRequest {
+            username: args.username,
+            until: args.until,
+            reason: args.reason.unwrap_or_default(),
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct VoiceModArgs {
+    pub server_id: String,
+    pub username: String,
+    /// "server_mute" | "server_unmute" | "server_deafen" | "server_undeafen" | "move" | "disconnect"
+    pub action: String,
+    /// "move" only.
+    pub channel_id: Option<String>,
+}
+
+#[napi]
+pub async fn voice_mod(args: VoiceModArgs) -> napi::Result<()> {
+    let action = match args.action.as_str() {
+        "server_mute" => voice_mod_request::Action::ServerMute,
+        "server_unmute" => voice_mod_request::Action::ServerUnmute,
+        "server_deafen" => voice_mod_request::Action::ServerDeafen,
+        "server_undeafen" => voice_mod_request::Action::ServerUndeafen,
+        "move" => voice_mod_request::Action::Move,
+        "disconnect" => voice_mod_request::Action::Disconnect,
+        other => {
+            return Err(napi::Error::from_reason(format!(
+                "Unknown voice_mod action '{}'",
+                other
+            )))
+        }
+    };
+    send_for_server(
+        &args.server_id,
+        packet::Type::VoiceModReq,
+        packet::Payload::VoiceModReq(VoiceModRequest {
+            username: args.username,
+            action: action as i32,
+            channel_id: args.channel_id.unwrap_or_default(),
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct TransferOwnershipArgs {
+    pub server_id: String,
+    pub new_owner: String,
+}
+
+/// Owner only. Response via mod_action_responded action="transfer";
+/// everyone gets server_meta_updated + member_upsert for both users.
+#[napi]
+pub async fn transfer_ownership(args: TransferOwnershipArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::TransferOwnershipReq,
+        packet::Payload::TransferOwnershipReq(TransferOwnershipRequest {
+            new_owner: args.new_owner,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
 pub struct ListBansArgs {
     pub server_id: String,
 }
@@ -110,6 +236,10 @@ pub struct BanMemberArgs {
     pub username: String,
     /// Optional — see KickMemberArgs.
     pub reason: Option<String>,
+    /// Unix seconds when the ban lifts; omit / 0 = permanent.
+    pub expires_at: Option<i64>,
+    /// Also delete the member's messages from the last N seconds (≤ 7 days).
+    pub delete_message_seconds: Option<i32>,
 }
 
 #[napi]
@@ -118,6 +248,8 @@ pub async fn ban_member(args: BanMemberArgs) -> napi::Result<()> {
         server_id,
         username,
         reason,
+        expires_at,
+        delete_message_seconds,
     } = args;
     send_for_server(
         &server_id,
@@ -125,6 +257,8 @@ pub async fn ban_member(args: BanMemberArgs) -> napi::Result<()> {
         packet::Payload::BanMemberReq(BanMemberRequest {
             username,
             reason: reason.unwrap_or_default(),
+            expires_at: expires_at.unwrap_or(0),
+            delete_message_seconds: delete_message_seconds.unwrap_or(0),
         }),
     )
     .await

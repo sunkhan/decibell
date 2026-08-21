@@ -24,6 +24,10 @@ export const PERM = {
   VIEW_CHANNEL: 8192,
   READ_HISTORY: 16384,
   ATTACH_FILES: 32768,
+  // server management + moderation
+  VIEW_AUDIT_LOG: 65536,
+  MODERATE_MEMBERS: 131072,
+  VOICE_MODERATE: 262144,
 } as const;
 
 /// The permission bits surfaced in role editors and the per-channel
@@ -78,6 +82,21 @@ export const EDITABLE_PERMISSIONS: Array<{
     bit: PERM.MANAGE_NICKNAMES,
     label: "Manage Nicknames",
     description: "Change lower-ranked members' nicknames.",
+  },
+  {
+    bit: PERM.MODERATE_MEMBERS,
+    label: "Moderate Members",
+    description: "Time out lower-ranked members.",
+  },
+  {
+    bit: PERM.VOICE_MODERATE,
+    label: "Moderate Voice",
+    description: "Server-mute, deafen, move and disconnect lower-ranked members in voice.",
+  },
+  {
+    bit: PERM.VIEW_AUDIT_LOG,
+    label: "View Audit Log",
+    description: "See who did what in server settings.",
   },
   {
     bit: PERM.VIEW_CHANNEL,

@@ -66,6 +66,8 @@ export interface ServerMember {
   nickname: string;
   isOwner: boolean;
   isOnline: boolean;
+  /// Unix seconds until which the member is timed out; 0 = none.
+  timedOutUntil?: number;
   /// Ids of the member's assigned roles (the default `everyone` role is
   /// implicit and never listed). Resolve against the server's role list
   /// for names/colors/permissions. Empty on legacy servers.
@@ -112,6 +114,9 @@ export interface VoiceParticipant {
   username: string;
   isMuted: boolean;
   isDeafened: boolean;
+  /// Moderator-applied (server mute/deafen), persisted on the member.
+  isServerMuted?: boolean;
+  isServerDeafened?: boolean;
   isSpeaking: boolean;
   audioLevel: number;
 }
@@ -289,6 +294,8 @@ export interface ChannelInfo {
   /// composer / attach / voice-join / history UI from this — the server
   /// is authoritative. 0 / undefined on legacy servers (→ no gating).
   myPermissions?: number;
+  /// Text channels: seconds between messages per member (0 = off).
+  slowmodeSeconds?: number;
 }
 
 /// One per-channel permission overwrite (permissions v2).
@@ -336,12 +343,52 @@ export interface MemberRemovePayload {
   revision: number;
 }
 
+export interface BanInfo {
+  username: string;
+  bannedBy: string;
+  reason: string;
+  bannedAt: number;
+  expiresAt: number; // 0 = permanent
+}
+
 export interface BanListReceivedPayload {
   serverId: string;
   success: boolean;
   message: string;
-  bans: string[];
+  entries: BanInfo[];
   revision: number;
+}
+
+export interface ServerMetaUpdatedPayload {
+  serverId: string;
+  serverName: string;
+  serverDescription: string;
+  ownerUsername: string;
+}
+
+export interface AuditEntry {
+  id: number;
+  timestamp: number;
+  actor: string;
+  action: string;
+  target: string;
+  channelId: string;
+  details: string;
+}
+
+export interface AuditLogReceivedPayload {
+  serverId: string;
+  success: boolean;
+  message: string;
+  entries: AuditEntry[];
+  hasMore: boolean;
+}
+
+export interface VoiceForceNotifyPayload {
+  serverId: string;
+  action: "moved" | "disconnected";
+  channelId: string;
+  actor: string;
 }
 
 export interface ChannelOverwritesReceivedPayload {

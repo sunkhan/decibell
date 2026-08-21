@@ -39,6 +39,7 @@ fn channel_info_payload(c: ChannelInfo) -> events::ChannelInfoPayload {
         retention_days_document: c.retention_days_document,
         retention_days_audio: c.retention_days_audio,
         my_permissions: c.my_permissions,
+        slowmode_seconds: c.slowmode_seconds,
     }
 }
 
@@ -50,6 +51,7 @@ fn member_info_payload(m: MemberInfo) -> events::MemberInfoPayload {
         is_owner: m.is_owner,
         is_online: m.is_online,
         role_ids: m.role_ids,
+        timed_out_until: m.timed_out_until,
     }
 }
 
@@ -675,12 +677,72 @@ impl CommunityClient {
                     });
                 }
                 Some(packet::Payload::BanListRes(resp)) => {
+                    let entries = resp
+                        .entries
+                        .into_iter()
+                        .map(|b| events::BanInfoPayload {
+                            username: b.username,
+                            banned_by: b.banned_by,
+                            reason: b.reason,
+                            banned_at: b.banned_at,
+                            expires_at: b.expires_at,
+                        })
+                        .collect();
                     events::emit_ban_list_received(events::BanListReceivedPayload {
                         server_id: server_id.clone(),
                         success: resp.success,
                         message: resp.message,
-                        bans: resp.bans,
+                        entries,
                         revision: resp.revision,
+                    });
+                }
+                Some(packet::Payload::ServerMetaUpdate(m)) => {
+                    events::emit_server_meta_updated(events::ServerMetaUpdatedPayload {
+                        server_id: server_id.clone(),
+                        server_name: m.server_name,
+                        server_description: m.server_description,
+                        owner_username: m.owner_username,
+                    });
+                }
+                Some(packet::Payload::ServerUpdateRes(resp)) => {
+                    events::emit_server_update_responded(events::ServerUpdateRespondedPayload {
+                        server_id: server_id.clone(),
+                        success: resp.success,
+                        message: resp.message,
+                    });
+                }
+                Some(packet::Payload::AuditLogRes(resp)) => {
+                    let entries = resp
+                        .entries
+                        .into_iter()
+                        .map(|e| events::AuditEntryPayload {
+                            id: e.id,
+                            timestamp: e.timestamp,
+                            actor: e.actor,
+                            action: e.action,
+                            target: e.target,
+                            channel_id: e.channel_id,
+                            details: e.details,
+                        })
+                        .collect();
+                    events::emit_audit_log_received(events::AuditLogReceivedPayload {
+                        server_id: server_id.clone(),
+                        success: resp.success,
+                        message: resp.message,
+                        entries,
+                        has_more: resp.has_more,
+                    });
+                }
+                Some(packet::Payload::VoiceForceNotify(n)) => {
+                    events::emit_voice_force_notify(events::VoiceForceNotifyPayload {
+                        server_id: server_id.clone(),
+                        action: match voice_force_notify::Action::try_from(n.action) {
+                            Ok(voice_force_notify::Action::Disconnected) => "disconnected",
+                            _ => "moved",
+                        }
+                        .to_string(),
+                        channel_id: n.channel_id,
+                        actor: n.actor,
                     });
                 }
                 Some(packet::Payload::ModActionRes(resp)) => {
@@ -763,6 +825,7 @@ impl CommunityClient {
                         action: rev.action,
                         reason: rev.reason,
                         actor: rev.actor,
+                        expires_at: rev.expires_at,
                     });
                 }
                 Some(packet::Payload::VoicePresenceUpdate(update)) => {
@@ -773,6 +836,8 @@ impl CommunityClient {
                             username: s.username,
                             is_muted: s.is_muted,
                             is_deafened: s.is_deafened,
+                            is_server_muted: s.is_server_muted,
+                            is_server_deafened: s.is_server_deafened,
                         })
                         .collect();
 

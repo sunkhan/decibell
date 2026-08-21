@@ -23,6 +23,14 @@ import WelcomeState from "./WelcomeState";
 import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
 import { useCanDeleteOthers } from "../servers/useCanDeleteOthers";
 import { PERM, useChannelPermission } from "../servers/permissions";
+
+function formatRemaining(totalSec: number): string {
+  const s = Math.max(0, Math.floor(totalSec));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.ceil(s / 60)}m`;
+  if (s < 86400) return `${Math.ceil(s / 3600)}h`;
+  return `${Math.ceil(s / 86400)}d`;
+}
 import type { Message } from "../../types";
 
 // How close (in messages) the rendered window's top edge may get to the
@@ -62,6 +70,21 @@ export default function ChatPanel() {
   // bits (read-only channels, muted members). Server stays authoritative.
   const canSend = useChannelPermission(activeServerId, activeChannelId, PERM.SEND_MESSAGES);
   const canAttach = useChannelPermission(activeServerId, activeChannelId, PERM.ATTACH_FILES);
+  const canBypassSlowmode = useChannelPermission(activeServerId, activeChannelId, PERM.MANAGE_MESSAGES);
+  // Timed out (MODERATE_MEMBERS): the server rejects sends; show why.
+  const ownUsername = useAuthStore((s) => s.username);
+  const timedOutUntil = useChatStore((s) =>
+    activeServerId
+      ? s.membersByServer[activeServerId]?.find((m) => m.username === ownUsername)?.timedOutUntil ?? 0
+      : 0,
+  );
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    if (!timedOutUntil || timedOutUntil <= nowSec) return;
+    const t = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [timedOutUntil, nowSec]);
+  const timedOut = timedOutUntil > nowSec;
 
   // Local state for which message is being deleted; the modal reads
   // this when it confirms. Tracked locally rather than in uiStore so
@@ -670,10 +693,12 @@ export default function ChatPanel() {
           so adding files visibly expands the bar upward (Discord pattern).
           Drop-target wiring: the bar lights up while a drag is in flight,
           saturated state when the cursor is over the bar. */}
-      {!canSend ? (
+      {!canSend || timedOut ? (
         <div className="px-3 py-2">
           <div className="flex min-h-[54px] items-center rounded-lg border border-border bg-bg-light px-3.5 py-2.5 text-[13px] text-text-muted">
-            You don't have permission to send messages in #{channelName ?? "channel"}.
+            {timedOut
+              ? `You are timed out. You can send messages again in ${formatRemaining(timedOutUntil - nowSec)}.`
+              : `You don't have permission to send messages in #${channelName ?? "channel"}.`}
           </div>
         </div>
       ) : (
@@ -732,7 +757,11 @@ export default function ChatPanel() {
                     .setChannelDraft(activeServerId, activeChannelId, value);
               }}
               onEnter={handleSend}
-              placeholder={`Message #${channelName ?? "channel"}`}
+              placeholder={
+                channel?.slowmodeSeconds && !canBypassSlowmode
+                  ? `Message #${channelName ?? "channel"} · slowmode ${formatRemaining(channel.slowmodeSeconds)}`
+                  : `Message #${channelName ?? "channel"}`
+              }
               maxHeight={160}
               className="flex-1 bg-transparent text-sm leading-snug text-text-primary"
             />

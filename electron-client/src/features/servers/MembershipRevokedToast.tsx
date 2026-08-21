@@ -49,6 +49,13 @@ export default function MembershipRevokedToast() {
               Reason: {notice.reason}
             </p>
           )}
+          {notice.action === "ban" && (
+            <p className="mt-0.5 text-xs text-text-muted">
+              {notice.expiresAt
+                ? `Until ${new Date(notice.expiresAt * 1000).toLocaleString()}`
+                : "This ban is permanent."}
+            </p>
+          )}
         </div>
         <button
           onClick={() => clearNotice(null)}

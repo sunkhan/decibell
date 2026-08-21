@@ -29,6 +29,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
 
   const canKick = usePermission(serverId, PERM.KICK_MEMBERS);
   const canBan = usePermission(serverId, PERM.BAN_MEMBERS);
+  const canTimeout = usePermission(serverId, PERM.MODERATE_MEMBERS);
   const canManageRoles = usePermission(serverId, PERM.MANAGE_ROLES);
   const canManageNicknames = usePermission(serverId, PERM.MANAGE_NICKNAMES);
   const { isOwner, level: myLevel, levelOf } = useHierarchy(serverId);
@@ -36,9 +37,21 @@ export default function MembersTab({ serverId }: { serverId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<
-    | { kind: "kick" | "ban"; username: string }
+    | { kind: "kick" | "ban" | "timeout"; username: string }
     | null
   >(null);
+  // Moderation dialog fields (reset when the dialog opens).
+  const [reason, setReason] = useState("");
+  const [banDurationSec, setBanDurationSec] = useState(0);        // 0 = permanent
+  const [purgeSec, setPurgeSec] = useState(0);                    // 0 = none
+  const [timeoutSec, setTimeoutSec] = useState(600);
+  const openConfirm = (kind: "kick" | "ban" | "timeout", username: string) => {
+    setReason("");
+    setBanDurationSec(0);
+    setPurgeSec(0);
+    setTimeoutSec(600);
+    setConfirm({ kind, username });
+  };
   /// Username whose inline role-assignment checkbox list is open.
   const [assignOpen, setAssignOpen] = useState<string | null>(null);
   /// Username whose inline nickname editor is open, and its draft.
@@ -63,7 +76,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
     setPendingAction(`kick:${username}`);
     setError(null);
     try {
-      await invoke("kick_member", { serverId, username, reason: "" });
+      await invoke("kick_member", { serverId, username, reason: reason.trim() });
     } catch (err) {
       setError(String(err));
     } finally {
@@ -76,7 +89,31 @@ export default function MembersTab({ serverId }: { serverId: string }) {
     setPendingAction(`ban:${username}`);
     setError(null);
     try {
-      await invoke("ban_member", { serverId, username, reason: "" });
+      await invoke("ban_member", {
+        serverId,
+        username,
+        reason: reason.trim(),
+        expiresAt: banDurationSec > 0 ? Math.floor(Date.now() / 1000) + banDurationSec : 0,
+        deleteMessageSeconds: purgeSec,
+      });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setPendingAction(null);
+      setConfirm(null);
+    }
+  };
+
+  const runTimeout = async (username: string, clear = false) => {
+    setPendingAction(`timeout:${username}`);
+    setError(null);
+    try {
+      await invoke("timeout_member", {
+        serverId,
+        username,
+        until: clear ? 0 : Math.floor(Date.now() / 1000) + timeoutSec,
+        reason: reason.trim(),
+      });
     } catch (err) {
       setError(String(err));
     } finally {
@@ -185,6 +222,14 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                           You
                         </span>
                       )}
+                      {(m.timedOutUntil ?? 0) * 1000 > Date.now() && (
+                        <span
+                          title={`Timed out until ${new Date((m.timedOutUntil ?? 0) * 1000).toLocaleString()}`}
+                          className="rounded-sm bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-warning"
+                        >
+                          Timed out
+                        </span>
+                      )}
                     </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-text-muted">
                       <span>Joined {formatJoined(m.joinedAt)}</span>
@@ -242,11 +287,31 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                         Roles
                       </button>
                     )}
+                    {!m.isOwner && !isSelf && outranked && canTimeout && (
+                      (m.timedOutUntil ?? 0) * 1000 > Date.now() ? (
+                        <button
+                          onClick={() => {
+                            setReason("");
+                            runTimeout(m.username, true);
+                          }}
+                          disabled={pendingAction === `timeout:${m.username}`}
+                          className="rounded-sm bg-bg-light px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-success/15 hover:text-success disabled:opacity-50"
+                        >
+                          End timeout
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => openConfirm("timeout", m.username)}
+                          disabled={pendingAction === `timeout:${m.username}`}
+                          className="rounded-sm bg-bg-light px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-warning/15 hover:text-warning disabled:opacity-50"
+                        >
+                          Timeout
+                        </button>
+                      )
+                    )}
                     {canModerate && canKick && (
                       <button
-                        onClick={() =>
-                          setConfirm({ kind: "kick", username: m.username })
-                        }
+                        onClick={() => openConfirm("kick", m.username)}
                         disabled={pendingAction === `kick:${m.username}`}
                         className="rounded-sm bg-warning/10 px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-warning/20 hover:text-warning disabled:opacity-50"
                       >
@@ -255,9 +320,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                     )}
                     {canModerate && canBan && (
                       <button
-                        onClick={() =>
-                          setConfirm({ kind: "ban", username: m.username })
-                        }
+                        onClick={() => openConfirm("ban", m.username)}
                         disabled={pendingAction === `ban:${m.username}`}
                         className="rounded-sm bg-error/10 px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-error/20 hover:text-error disabled:opacity-50"
                       >
@@ -354,13 +417,72 @@ export default function MembersTab({ serverId }: { serverId: string }) {
             <h3 className="mb-2 font-display text-[16px] font-semibold text-text-primary">
               {confirm.kind === "kick"
                 ? `Kick ${confirm.username}?`
-                : `Ban ${confirm.username}?`}
+                : confirm.kind === "ban"
+                  ? `Ban ${confirm.username}?`
+                  : `Time out ${confirm.username}?`}
             </h3>
-            <p className="mb-5 text-[13px] leading-[1.55] text-text-secondary">
+            <p className="mb-3 text-[13px] leading-[1.55] text-text-secondary">
               {confirm.kind === "kick"
                 ? "They will be disconnected but can rejoin with a valid invite."
-                : "They will be disconnected and prevented from rejoining."}
+                : confirm.kind === "ban"
+                  ? "They will be disconnected and prevented from rejoining."
+                  : "They stay in the server but can't send messages, join voice or stream until it ends."}
             </p>
+            <input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              maxLength={200}
+              placeholder="Reason (shown to them and in the audit log)"
+              className="mb-3 w-full rounded-md border border-border bg-bg-lighter px-3 py-2 text-[13px] text-text-primary outline-none transition-all focus:border-accent focus:shadow-ring"
+            />
+            {confirm.kind === "ban" && (
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                  Duration
+                  <select
+                    value={banDurationSec}
+                    onChange={(e) => setBanDurationSec(parseInt(e.target.value, 10))}
+                    className="appearance-none rounded-md border border-border bg-bg-lighter px-2.5 py-2 text-[13px] font-normal normal-case tracking-normal text-text-primary outline-none focus:border-accent"
+                  >
+                    <option value={0}>Permanent</option>
+                    <option value={3600}>1 hour</option>
+                    <option value={86400}>1 day</option>
+                    <option value={7 * 86400}>7 days</option>
+                    <option value={30 * 86400}>30 days</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                  Delete messages
+                  <select
+                    value={purgeSec}
+                    onChange={(e) => setPurgeSec(parseInt(e.target.value, 10))}
+                    className="appearance-none rounded-md border border-border bg-bg-lighter px-2.5 py-2 text-[13px] font-normal normal-case tracking-normal text-text-primary outline-none focus:border-accent"
+                  >
+                    <option value={0}>Don't delete any</option>
+                    <option value={3600}>Last hour</option>
+                    <option value={86400}>Last 24 hours</option>
+                    <option value={7 * 86400}>Last 7 days</option>
+                  </select>
+                </label>
+              </div>
+            )}
+            {confirm.kind === "timeout" && (
+              <label className="mb-3 flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                Duration
+                <select
+                  value={timeoutSec}
+                  onChange={(e) => setTimeoutSec(parseInt(e.target.value, 10))}
+                  className="appearance-none rounded-md border border-border bg-bg-lighter px-2.5 py-2 text-[13px] font-normal normal-case tracking-normal text-text-primary outline-none focus:border-accent"
+                >
+                  <option value={60}>60 seconds</option>
+                  <option value={300}>5 minutes</option>
+                  <option value={600}>10 minutes</option>
+                  <option value={3600}>1 hour</option>
+                  <option value={86400}>1 day</option>
+                  <option value={7 * 86400}>1 week</option>
+                </select>
+              </label>
+            )}
             <div className="flex gap-2.5">
               <button
                 onClick={() => setConfirm(null)}
@@ -371,7 +493,8 @@ export default function MembersTab({ serverId }: { serverId: string }) {
               <button
                 onClick={() => {
                   if (confirm.kind === "kick") runKick(confirm.username);
-                  else runBan(confirm.username);
+                  else if (confirm.kind === "ban") runBan(confirm.username);
+                  else runTimeout(confirm.username);
                 }}
                 disabled={!!pendingAction}
                 className="flex-1 rounded-md bg-error py-2.5 text-[13px] font-semibold text-white transition-colors hover:bg-error/85 disabled:opacity-50"

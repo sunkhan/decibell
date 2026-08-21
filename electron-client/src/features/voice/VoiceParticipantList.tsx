@@ -33,6 +33,20 @@ function LocalMuteIcon() {
   );
 }
 
+/// Moderator-applied mute/deafen (persisted on the member). Distinct
+/// from the user's own mute so people can tell "muted themselves" from
+/// "muted by a mod".
+function ServerMuteBadge({ deafened }: { deafened: boolean }) {
+  return (
+    <span
+      title={deafened ? "Server deafened by a moderator" : "Server muted by a moderator"}
+      className="rounded-sm bg-error/15 px-1 py-px text-[9px] font-semibold uppercase tracking-[0.04em] text-error"
+    >
+      {deafened ? "Srv deaf" : "Srv mute"}
+    </span>
+  );
+}
+
 function DeafenIcon() {
   return (
     <svg className="h-3.5 w-3.5 shrink-0 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -101,6 +115,9 @@ const PresenceRow = memo(function PresenceRow({
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         {isStreaming && <LiveBadge />}
         {isLocallyMuted && <LocalMuteIcon />}
+        {(userState?.isServerMuted || userState?.isServerDeafened) && (
+          <ServerMuteBadge deafened={!!userState?.isServerDeafened} />
+        )}
         {userState?.isDeafened ? <DeafenIcon /> : userState?.isMuted ? <MuteIcon /> : null}
       </div>
     </div>
@@ -115,6 +132,8 @@ interface ActiveRowProps {
   /// local-mute, our own mute/deafen — is fetched per-row below.
   rosterMuted: boolean;
   rosterDeafened: boolean;
+  serverMuted?: boolean;
+  serverDeafened?: boolean;
   connectedServerId: string | null;
 }
 
@@ -123,6 +142,8 @@ const ActiveRow = memo(function ActiveRow({
   isLocal,
   rosterMuted,
   rosterDeafened,
+  serverMuted,
+  serverDeafened,
   connectedServerId,
 }: ActiveRowProps) {
   const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
@@ -177,6 +198,7 @@ const ActiveRow = memo(function ActiveRow({
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         {isStreaming && <LiveBadge />}
         {isLocallyMuted && <LocalMuteIcon />}
+        {(serverMuted || serverDeafened) && <ServerMuteBadge deafened={!!serverDeafened} />}
         {userDeafened ? <DeafenIcon /> : userMuted ? <MuteIcon /> : null}
       </div>
     </div>
@@ -215,6 +237,8 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
           isLocal={p.username === localUsername}
           rosterMuted={p.isMuted}
           rosterDeafened={p.isDeafened}
+          serverMuted={p.isServerMuted}
+          serverDeafened={p.isServerDeafened}
           connectedServerId={connectedServerId}
         />
       ))}

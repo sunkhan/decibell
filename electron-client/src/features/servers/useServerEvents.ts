@@ -15,6 +15,8 @@ interface AttachmentTargetResult {
 import type {
   BanListReceivedPayload,
   ChannelInfo,
+  ServerMetaUpdatedPayload,
+  VoiceForceNotifyPayload,
   ChannelOverwritesReceivedPayload,
   MemberListReceivedPayload,
   MemberRemovePayload,
@@ -38,6 +40,7 @@ interface MembershipRevokedPayload {
   action: string;
   reason: string;
   actor: string;
+  expiresAt: number;
 }
 
 interface RoleListReceivedPayload {
@@ -287,8 +290,55 @@ export function useServerEvents() {
     const unlistenBans = listen<BanListReceivedPayload>(
       "ban_list_received",
       (event) => {
-        const { serverId, success, bans } = event.payload;
-        if (success) useChatStore.getState().setBansForServer(serverId, bans);
+        const { serverId, success, entries } = event.payload;
+        if (success) useChatStore.getState().setBansForServer(serverId, entries);
+      },
+    );
+
+    // In-app rename / ownership transfer: the server pushes the new meta
+    // to everyone; the roster deltas carry the owner flag flips.
+    const unlistenServerMeta = listen<ServerMetaUpdatedPayload>(
+      "server_meta_updated",
+      (event) => {
+        const p = event.payload;
+        const chat = useChatStore.getState();
+        chat.setServerMeta(p.serverId, { name: p.serverName, description: p.serverDescription });
+        chat.setServerOwner(p.serverId, p.ownerUsername);
+        // Keep the ServerBar tile's name in sync too.
+        useChatStore.setState((state) => ({
+          servers: state.servers.map((srv) =>
+            srv.id === p.serverId ? { ...srv, name: p.serverName, description: p.serverDescription } : srv,
+          ),
+        }));
+      },
+    );
+
+    // Moderator moved us to another voice channel or kicked us out of
+    // voice. Server-side membership already changed; mirror it locally.
+    const unlistenVoiceForce = listen<VoiceForceNotifyPayload>(
+      "voice_force_notify",
+      async (event) => {
+        const { serverId, action, channelId, actor } = event.payload;
+        const voice = useVoiceStore.getState();
+        if (voice.connectedServerId !== serverId) return;
+        if (action === "moved") {
+          voice.setConnectedChannel(serverId, channelId);
+          const name =
+            useChatStore.getState().channelsByServer[serverId]?.find((c) => c.id === channelId)?.name ?? channelId;
+          toast.info("Moved", `${actor} moved you to ${name}.`);
+          return;
+        }
+        if (voice.isStreaming) {
+          const { stopActiveStream } = await import("../voice/streaming/StreamCapture");
+          await stopActiveStream().catch(() => {});
+          voice.setIsStreaming(false);
+        }
+        invoke("leave_voice_channel").catch(console.error);
+        voice.disconnect();
+        if (useUiStore.getState().activeView === "voice") {
+          useUiStore.getState().setActiveView("server");
+        }
+        toast.error("Disconnected", `${actor} disconnected you from voice.`);
       },
     );
 
@@ -400,6 +450,7 @@ export function useServerEvents() {
           action: event.payload.action,
           reason: event.payload.reason,
           actor: event.payload.actor,
+          expiresAt: event.payload.expiresAt,
         });
         if (useChatStore.getState().activeServerId === serverId) {
           useChatStore.getState().setActiveServer(null);
@@ -623,6 +674,8 @@ export function useServerEvents() {
       unlistenMemberUpsert.then((fn) => fn());
       unlistenMemberRemove.then((fn) => fn());
       unlistenBans.then((fn) => fn());
+      unlistenServerMeta.then((fn) => fn());
+      unlistenVoiceForce.then((fn) => fn());
       unlistenOverwrites.then((fn) => fn());
       unlistenRoleAction.then((fn) => fn());
       unlistenMod.then((fn) => fn());

@@ -55,7 +55,7 @@ export function useVoiceEvents() {
         serverId: string;
         channelId: string;
         participants: string[];
-        userStates: { username: string; isMuted: boolean; isDeafened: boolean }[];
+        userStates: { username: string; isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean }[];
         userCapabilities?: ClientCapabilities[];
       }>("voice_presence_updated", (event) => {
         const { channelId, participants, userStates, userCapabilities } = event.payload;
@@ -84,6 +84,8 @@ export function useVoiceEvents() {
               username: u,
               isMuted: stateMap.get(u)?.isMuted ?? false,
               isDeafened: stateMap.get(u)?.isDeafened ?? false,
+              isServerMuted: stateMap.get(u)?.isServerMuted ?? false,
+              isServerDeafened: stateMap.get(u)?.isServerDeafened ?? false,
               isSpeaking: store.speakingUsers.has(u),
               audioLevel: 0,
             })),

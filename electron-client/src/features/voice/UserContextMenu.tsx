@@ -7,6 +7,9 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { saveSettings } from "../settings/saveSettings";
+import { useChatStore } from "../../stores/chatStore";
+import { toast } from "../../stores/toastStore";
+import { PERM, usePermission, useHierarchy } from "../servers/permissions";
 
 const MIN_DB = -40;
 const MAX_DB = 15;
@@ -40,6 +43,40 @@ export default function UserContextMenu() {
   const localMutedUsers = useVoiceStore((s) => s.localMutedUsers);
   const toggleLocalMute = useVoiceStore((s) => s.toggleLocalMute);
   const currentUsername = useAuthStore((s) => s.username);
+  // Voice moderation (VOICE_MODERATE + hierarchy), only when the target is
+  // currently in a voice channel on the context server.
+  const canVoiceMod = usePermission(contextServerId, PERM.VOICE_MODERATE);
+  const { isOwner: localIsOwner, level: localLevel, levelOf } = useHierarchy(contextServerId);
+  const serverOwner = useChatStore((s) => (contextServerId ? s.serverOwner[contextServerId] : undefined));
+  const channelPresence = useVoiceStore((s) => s.channelPresence);
+  const channelUserStates = useVoiceStore((s) => s.channelUserStates);
+  const voiceChannels = useChatStore((s) =>
+    contextServerId ? (s.channelsByServer[contextServerId] ?? []).filter((c) => c.type === "voice") : [],
+  );
+  const targetVoiceChannel = username
+    ? Object.entries(channelPresence).find(([, users]) => users.includes(username))?.[0] ?? null
+    : null;
+  const targetVoiceState = username && targetVoiceChannel
+    ? channelUserStates[targetVoiceChannel]?.[username]
+    : undefined;
+  const showVoiceMod =
+    !!username &&
+    !!contextServerId &&
+    canVoiceMod &&
+    username !== currentUsername &&
+    username !== serverOwner &&
+    (localIsOwner || levelOf(username) < localLevel) &&
+    !!targetVoiceChannel;
+  const runVoiceMod = useCallback(
+    (action: string, channelId?: string) => {
+      if (!username || !contextServerId) return;
+      invoke("voice_mod", { serverId: contextServerId, username, action, channelId }).catch((err) =>
+        toast.error("Voice moderation failed", String(err)),
+      );
+      closeContextMenu();
+    },
+    [username, contextServerId, closeContextMenu],
+  );
   const menuRef = useRef<HTMLDivElement>(null);
   const isLocallyMuted = username ? localMutedUsers.has(username) : false;
 
@@ -229,6 +266,50 @@ export default function UserContextMenu() {
               </span>
             </div>
           </div>
+
+          {showVoiceMod && (
+            <div className="border-t border-border-divider px-[5px] py-1">
+              <div className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                Moderation
+              </div>
+              <button
+                onClick={() => runVoiceMod(targetVoiceState?.isServerMuted ? "server_unmute" : "server_mute")}
+                className="flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-text-primary transition-colors hover:bg-surface-hover"
+              >
+                {targetVoiceState?.isServerMuted ? "Server unmute" : "Server mute"}
+              </button>
+              <button
+                onClick={() => runVoiceMod(targetVoiceState?.isServerDeafened ? "server_undeafen" : "server_deafen")}
+                className="flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-text-primary transition-colors hover:bg-surface-hover"
+              >
+                {targetVoiceState?.isServerDeafened ? "Server undeafen" : "Server deafen"}
+              </button>
+              {voiceChannels.filter((c) => c.id !== targetVoiceChannel).length > 0 && (
+                <select
+                  defaultValue=""
+                  onChange={(e) => {
+                    if (e.target.value) runVoiceMod("move", e.target.value);
+                  }}
+                  className="mt-1 w-full appearance-none rounded-md border border-border bg-bg-lighter px-2.5 py-[6px] text-[12px] text-text-secondary outline-none focus:border-accent"
+                >
+                  <option value="">Move to…</option>
+                  {voiceChannels
+                    .filter((c) => c.id !== targetVoiceChannel)
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                </select>
+              )}
+              <button
+                onClick={() => runVoiceMod("disconnect")}
+                className="mt-1 flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-error transition-colors hover:bg-error/10"
+              >
+                Disconnect from voice
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>,

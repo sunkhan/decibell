@@ -98,6 +98,8 @@ export interface MembershipRevocationNotice {
   action: string;
   reason: string;
   actor: string;
+  /// Bans: unix seconds when the ban lifts (0 = permanent).
+  expiresAt?: number;
 }
 
 interface UiState {

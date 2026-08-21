@@ -218,6 +218,10 @@ pub const ROLE_LIST_RECEIVED: &str = "role_list_received";
 pub const MEMBER_UPSERT: &str = "member_upsert";
 pub const MEMBER_REMOVE: &str = "member_remove";
 pub const BAN_LIST_RECEIVED: &str = "ban_list_received";
+pub const SERVER_META_UPDATED: &str = "server_meta_updated";
+pub const SERVER_UPDATE_RESPONDED: &str = "server_update_responded";
+pub const AUDIT_LOG_RECEIVED: &str = "audit_log_received";
+pub const VOICE_FORCE_NOTIFY: &str = "voice_force_notify";
 pub const CHANNEL_OVERWRITES_RECEIVED: &str = "channel_overwrites_received";
 pub const ROLE_ACTION_RESPONDED: &str = "role_action_responded";
 pub const CHANNEL_LIST_UPDATED: &str = "channel_list_updated";
@@ -325,6 +329,8 @@ pub struct ChannelInfoPayload {
     /// v2: server-wide role bits with the channel's overwrites applied;
     /// owner/ADMINISTRATOR = everything). Bits sit far below 2^53.
     pub my_permissions: u64,
+    /// Text channels: seconds between messages per member (0 = off).
+    pub slowmode_seconds: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -657,6 +663,8 @@ pub struct MemberInfoPayload {
     /// Ids of the member's assigned roles (default `everyone` implicit).
     /// Resolve against `role_list_received` for names/colors/permissions.
     pub role_ids: Vec<i64>,
+    /// Unix seconds until which the member is timed out; 0 = none.
+    pub timed_out_until: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -698,7 +706,7 @@ pub struct BanListReceivedPayload {
     pub server_id: String,
     pub success: bool,
     pub message: String,
-    pub bans: Vec<String>,
+    pub entries: Vec<BanInfoPayload>,
     pub revision: u64,
 }
 
@@ -720,6 +728,67 @@ pub struct MembershipRevokedPayload {
     pub action: String,
     pub reason: String,
     pub actor: String,
+    /// Bans only: unix seconds when the ban lifts (0 = permanent).
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerMetaUpdatedPayload {
+    pub server_id: String,
+    pub server_name: String,
+    pub server_description: String,
+    pub owner_username: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerUpdateRespondedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditEntryPayload {
+    pub id: i64,
+    pub timestamp: i64,
+    pub actor: String,
+    pub action: String,
+    pub target: String,
+    pub channel_id: String,
+    pub details: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditLogReceivedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub entries: Vec<AuditEntryPayload>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceForceNotifyPayload {
+    pub server_id: String,
+    /// "moved" | "disconnected"
+    pub action: String,
+    pub channel_id: String,
+    pub actor: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BanInfoPayload {
+    pub username: String,
+    pub banned_by: String,
+    pub reason: String,
+    pub banned_at: i64,
+    pub expires_at: i64,
 }
 
 // ── Roles + permissions ──────────────────────────────────────────
@@ -774,6 +843,22 @@ pub fn emit_member_remove(payload: MemberRemovePayload) {
 
 pub fn emit_ban_list_received(payload: BanListReceivedPayload) {
     send(BAN_LIST_RECEIVED, payload);
+}
+
+pub fn emit_server_meta_updated(payload: ServerMetaUpdatedPayload) {
+    send(SERVER_META_UPDATED, payload);
+}
+
+pub fn emit_server_update_responded(payload: ServerUpdateRespondedPayload) {
+    send(SERVER_UPDATE_RESPONDED, payload);
+}
+
+pub fn emit_audit_log_received(payload: AuditLogReceivedPayload) {
+    send(AUDIT_LOG_RECEIVED, payload);
+}
+
+pub fn emit_voice_force_notify(payload: VoiceForceNotifyPayload) {
+    send(VOICE_FORCE_NOTIFY, payload);
 }
 
 pub fn emit_channel_overwrites_received(payload: ChannelOverwritesReceivedPayload) {
@@ -858,6 +943,9 @@ pub struct VoiceUserStatePayload {
     pub username: String,
     pub is_muted: bool,
     pub is_deafened: bool,
+    /// Moderator-applied (persisted on the member).
+    pub is_server_muted: bool,
+    pub is_server_deafened: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

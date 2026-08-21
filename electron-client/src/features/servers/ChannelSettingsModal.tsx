@@ -150,6 +150,7 @@ export default function ChannelSettingsModal() {
   const [error, setError] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [bitrateDraft, setBitrateDraft] = useState(0);
+  const [slowmodeDraft, setSlowmodeDraft] = useState(0);
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
   const [wipeConfirmText, setWipeConfirmText] = useState("");
   const [wiping, setWiping] = useState(false);
@@ -192,6 +193,7 @@ export default function ChannelSettingsModal() {
     });
     setNameDraft(channel.name);
     setBitrateDraft(channel.voiceBitrateKbps);
+    setSlowmodeDraft(channel.slowmodeSeconds ?? 0);
     setError(null);
     setSaving(false);
     setWipeConfirmOpen(false);
@@ -251,7 +253,9 @@ export default function ChannelSettingsModal() {
   const nameDirty =
     !!channel && nameDraft.trim().length > 0 && nameDraft.trim() !== channel.name;
   const bitrateDirty = !!channel && isVoice && bitrateDraft !== channel.voiceBitrateKbps;
-  const dirty = retentionDirty || nameDirty || bitrateDirty;
+  const slowmodeDirty =
+    !!channel && !isVoice && !isCategory && slowmodeDraft !== (channel.slowmodeSeconds ?? 0);
+  const dirty = retentionDirty || nameDirty || bitrateDirty || slowmodeDirty;
 
   const handleSave = async () => {
     if (!canManage) return;
@@ -265,7 +269,7 @@ export default function ChannelSettingsModal() {
           name: nameDraft.trim(),
         });
       }
-      if (retentionDirty || bitrateDirty) {
+      if (retentionDirty || bitrateDirty || slowmodeDirty) {
         await invoke("update_channel_retention", {
           serverId: activeServerId,
           channelId: channel.id,
@@ -276,6 +280,7 @@ export default function ChannelSettingsModal() {
           retentionDaysAudio: draft.retentionDaysAudio,
           // Explicit presence on the wire: undefined = leave unchanged.
           voiceBitrateKbps: isVoice ? bitrateDraft : undefined,
+          slowmodeSeconds: slowmodeDirty ? slowmodeDraft : undefined,
         });
       }
       closeModal();
@@ -459,6 +464,31 @@ export default function ChannelSettingsModal() {
           )}
 
           {!isCategory && !isVoice && (<>
+          <div className="mb-5">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+              Slowmode
+            </div>
+            <select
+              value={slowmodeDraft}
+              disabled={!canManage}
+              onChange={(e) => setSlowmodeDraft(parseInt(e.target.value, 10))}
+              className="w-full appearance-none rounded-md border border-border bg-bg-lighter px-3 py-2.5 pr-9 text-[13px] text-text-primary outline-none transition-all hover:border-text-faint focus:border-accent focus:shadow-ring disabled:opacity-60"
+            >
+              <option value={0}>Off</option>
+              <option value={5}>5 seconds</option>
+              <option value={10}>10 seconds</option>
+              <option value={30}>30 seconds</option>
+              <option value={60}>1 minute</option>
+              <option value={300}>5 minutes</option>
+              <option value={900}>15 minutes</option>
+              <option value={3600}>1 hour</option>
+              <option value={21600}>6 hours</option>
+            </select>
+            <p className="mt-2 text-[12px] leading-[1.5] text-text-muted">
+              Members wait this long between messages. Members who can Manage
+              Messages here are exempt.
+            </p>
+          </div>
           <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
             Retention
           </div>
