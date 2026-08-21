@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cerrno>
 #include <cstring>
 #include <cstdio>
@@ -208,6 +209,7 @@ public:
                          const std::string& storage_root,
                          int64_t max_attachment_bytes)
         : socket_(std::move(socket), ssl_ctx),
+          shutdown_timer_(socket_.lowest_layer().get_executor()),
           db_(db),
           jwt_secret_(jwt_secret),
           storage_root_(storage_root),
@@ -923,9 +925,32 @@ private:
         auto buf = std::make_shared<std::string>(std::move(data));
         boost::asio::async_write(socket_, boost::asio::buffer(*buf),
             [this, self, buf](const boost::system::error_code&, std::size_t) {
-                boost::system::error_code ignore;
-                socket_.shutdown(ignore);
+                graceful_close();
             });
+    }
+
+    // TLS close_notify, asynchronously and with a deadline. This used to
+    // be the SYNCHRONOUS ssl::stream::shutdown(), which sends close_notify
+    // and then blocks reading the peer's close_notify — on the one io
+    // thread shared with chat, auth and both UDP relays. Any peer that
+    // completed a TLS handshake (no credentials needed), received its
+    // response and simply went silent froze the whole server until it
+    // hung up. Every response is Connection: close with a Content-Length,
+    // so a peer that doesn't answer the close_notify within the deadline
+    // loses nothing when we just drop the socket.
+    void graceful_close() {
+        auto self = shared_from_this();
+        shutdown_timer_.expires_after(std::chrono::seconds(2));
+        shutdown_timer_.async_wait([this, self](const boost::system::error_code& ec) {
+            if (ec) return;  // cancelled: shutdown completed in time
+            boost::system::error_code ignore;
+            socket_.lowest_layer().close(ignore);
+        });
+        socket_.async_shutdown([this, self](const boost::system::error_code&) {
+            shutdown_timer_.cancel();
+            boost::system::error_code ignore;
+            socket_.lowest_layer().close(ignore);
+        });
     }
 
     // ---- state ----
@@ -934,6 +959,7 @@ private:
     static constexpr int64_t GET_BUF_SIZE   = 256 * 1024;
 
     ssl::stream<tcp::socket> socket_;
+    boost::asio::steady_timer shutdown_timer_;
     chatproj::CommunityDb& db_;
     std::string jwt_secret_;
     std::string storage_root_;

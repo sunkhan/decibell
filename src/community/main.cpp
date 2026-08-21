@@ -20,6 +20,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <algorithm>
 #include <system_error>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -58,6 +59,18 @@ std::string sha256_hex(const std::string& data) {
         out.push_back(kHex[b & 0x0F]);
     }
     return out;
+}
+
+/// Strips the client-only envelope fields before a packet received from
+/// one member is forwarded to others. The Electron client puts its bearer
+/// JWT in Packet.auth_token on EVERY packet it sends (the central server
+/// requires that; community handlers never read it) — so forwarding a
+/// client packet verbatim broadcast the sender's JWT to every member with
+/// every CHANNEL_MSG / thumbnail / codec-change notify. Anyone in the
+/// server could have impersonated the sender for the token's lifetime.
+void strip_client_envelope(chatproj::Packet& p) {
+    p.clear_auth_token();
+    p.clear_timestamp();
 }
 
 /// Builds a ROLE_LIST_RES packet from the current DB state. Pushed to a
@@ -219,7 +232,10 @@ public:
     void broadcast_to_watchers_voice(const char* data, size_t length, const std::string& channel_id, const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket);
     void set_udp_socket(boost::asio::ip::udp::socket* sock) { udp_socket_ptr_ = sock; }
     void set_media_udp_socket(boost::asio::ip::udp::socket* sock) { media_udp_socket_ptr_ = sock; }
-    void register_udp_key(const std::string& udp_key, std::shared_ptr<Session> session);
+    // Index an authenticated session by its udp_key (UDP sender lookup)
+    // and username (moderation / relay lookup). Called once, after the
+    // session's username_/udp_key_ are set.
+    void register_authenticated(std::shared_ptr<Session> session);
     void unregister_udp_key(const std::string& udp_key);
     void relay_keyframe_request_internal(const std::string& target_username);
     size_t session_count() { std::lock_guard<std::mutex> lock(mutex_); return sessions_.size(); }
@@ -236,14 +252,21 @@ public:
     size_t member_count();
 
     // Find an active session by username. Returns nullptr if not connected.
+    // A user may hold several live sessions (two devices, a reconnect
+    // racing its predecessor); this returns an arbitrary one — use
+    // find_sessions_by_username when the action must hit all of them.
     std::shared_ptr<Session> find_session_by_username(const std::string& username);
+    std::vector<std::shared_ptr<Session>> find_sessions_by_username(const std::string& username);
 
-    // Forcibly disconnect a session — sends MEMBERSHIP_REVOKED then closes.
-    // Also cleans up channel/voice/stream membership via leave().
-    void force_disconnect(const std::string& username,
-                          const std::string& action,
-                          const std::string& reason,
-                          const std::string& actor);
+    // Forcibly disconnect EVERY live session of `username` — sends
+    // MEMBERSHIP_REVOKED then closes each. Returns how many sessions were
+    // hit (0 = target offline; the caller must then refresh rosters
+    // itself, since no leave() will fire to do it). Cleanup of
+    // voice/stream state happens via leave() on the socket close.
+    size_t force_disconnect(const std::string& username,
+                            const std::string& action,
+                            const std::string& reason,
+                            const std::string& actor);
 
     // Central-hosted invite sync. Community servers register each live invite
     // with central so clients can redeem a raw code without knowing host:port.
@@ -319,6 +342,10 @@ private:
 
     // O(1) UDP sender_id → session lookup (key = last 31 chars of JWT)
     std::unordered_map<std::string, std::shared_ptr<Session>> udp_key_index_;
+    // username → every authenticated live session for that user. Replaces
+    // the linear scans of sessions_ on the NACK/keyframe relay path and
+    // lets kick/ban reach all of a user's sessions, not just the first.
+    std::unordered_map<std::string, std::vector<std::shared_ptr<Session>>> sessions_by_user_;
 
     chatproj::CommunityDb* db_ = nullptr;
 
@@ -344,7 +371,9 @@ private:
 class Session : public std::enable_shared_from_this<Session> {
 public:
     Session(tcp::socket socket, SessionManager& manager, ssl::context& context, const std::string& jwt_secret)
-        : socket_(std::move(socket), context), manager_(manager), jwt_secret_(jwt_secret) {
+        : socket_(std::move(socket), context),
+          close_timer_(socket_.lowest_layer().get_executor()),
+          manager_(manager), jwt_secret_(jwt_secret) {
         // Enable TCP keepalive to detect dead client connections.
         // Tighten from system defaults (~2h) to 15s idle + 5s interval + 3 retries = ~30s detection.
         socket_.lowest_layer().set_option(boost::asio::socket_base::keep_alive(true));
@@ -448,7 +477,26 @@ public:
             std::lock_guard<std::mutex> lock(write_mutex_);
             pending = !write_queue_.empty();
         }
-        if (!pending) close_connection();
+        if (!pending) { finish_close(); return; }
+        // Hard deadline: a peer that stops reading must not keep a
+        // rejected / kicked session (and its queued frames) alive
+        // indefinitely waiting for the drain.
+        auto self = shared_from_this();
+        close_timer_.expires_after(std::chrono::seconds(3));
+        close_timer_.async_wait([this, self](const boost::system::error_code& ec) {
+            if (!ec) finish_close();
+        });
+    }
+
+    // Detach from the manager, then close. Needed because a closing
+    // session no longer re-arms its read loop, so the usual
+    // "socket close → read error → manager_.leave()" path never runs
+    // for it; without this a kicked/left user stayed in sessions_ and
+    // the voice/stream maps as a ghost. leave() is idempotent.
+    void finish_close() {
+        close_timer_.cancel();
+        manager_.leave(shared_from_this());
+        close_connection();
     }
 
     // Send a pre-built packet. Public so SessionManager can push notifications
@@ -486,7 +534,7 @@ private:
                     if (more_to_write) {
                         do_write();
                     } else if (closing_) {
-                        close_connection();
+                        finish_close();
                     }
                 } else {
                     manager_.leave(shared_from_this());
@@ -527,9 +575,11 @@ private:
         boost::asio::async_read(socket_, boost::asio::buffer(inbound_body_.data(), length),
             [this, self](boost::system::error_code ec, std::size_t) {
                 if (!ec) {
+                    // A closing session (failed auth, kick/ban, leave)
+                    // must not act on a frame that was already in
+                    // flight when close_after_flush() was called.
+                    if (closing_) return;
                     process_packet();
-                    // A rejected session (failed auth) sets closing_ —
-                    // don't re-arm the read loop for it.
                     if (!closing_) do_read_header();
                 } else {
                     manager_.leave(shared_from_this());
@@ -648,7 +698,7 @@ private:
             } else {
                 udp_key_ = token_;
             }
-            manager_.register_udp_key(udp_key_, shared_from_this());
+            manager_.register_authenticated(shared_from_this());
 
             std::cout << "[Community] Authorized user: " << username_ << "\n";
             send_auth_response(true, "Authentication successful.", "");
@@ -677,6 +727,20 @@ private:
         // Drop unauthenticated traffic
         if (!authenticated_) return;
 
+        // Membership is re-validated on every post-auth packet (one PK
+        // lookup). Kick/ban now close every session of the target, but
+        // this closes the residual window — a session whose membership
+        // row vanished by any path (ban via another node in the future,
+        // manual DB edit, a race with its own leave) must not keep
+        // posting, joining voice or streaming on a stale auth.
+        if (auto* db = manager_.db(); db && !db->is_member(username_)) {
+            std::cout << "[Community] Dropping session of " << username_
+                      << ": no longer a member\n";
+            manager_.leave(shared_from_this());
+            close_connection();
+            return;
+        }
+
         // --- JOIN VOICE CHANNEL ---
         if (packet.type() == chatproj::Packet::JOIN_VOICE_REQ) {
             const auto& jvr = packet.join_voice_req();
@@ -695,6 +759,15 @@ private:
             // by a legacy client; treated downstream as "H.264 only".
             if (jvr.has_capabilities()) {
                 set_capabilities(jvr.capabilities());
+            }
+            // A stream is bound to the channel it was started in. Moving
+            // to another channel must end it (LEAVE_VOICE_REQ already
+            // does) — otherwise active_streams_[old][user] lingers: the
+            // old channel keeps advertising a live stream nobody can
+            // watch, it counts against max_streams_per_channel_, and
+            // thumbnails can still be pushed into it.
+            if (!current_voice_channel_.empty() && current_voice_channel_ != target_channel) {
+                manager_.stop_stream(shared_from_this(), current_voice_channel_);
             }
             manager_.join_voice_channel(shared_from_this(), target_channel, current_voice_channel_);
             current_voice_channel_ = target_channel;
@@ -824,6 +897,7 @@ private:
 
         // --- STREAM THUMBNAIL UPDATE ---
         else if (packet.type() == chatproj::Packet::STREAM_THUMBNAIL_UPDATE) {
+            strip_client_envelope(packet);
             auto* update = packet.mutable_stream_thumbnail_update();
             // Cap thumbnail size — these are small JPEG previews. Without a
             // cap any member could repeatedly push ~2 MB blobs (up to the
@@ -880,6 +954,7 @@ private:
         // --- CHANNEL MESSAGE ROUTING ---
         else if (packet.type() == chatproj::Packet::CHANNEL_MSG) {
             chatproj::Packet routed = packet;
+            strip_client_envelope(routed);
             auto* msg = routed.mutable_channel_msg();
             msg->set_sender(username_); // Enforce identity
 
@@ -1488,10 +1563,17 @@ private:
             manager_.sync_membership_revoke(target);
             // Even if they weren't in the members table, force-disconnect
             // any live session so the UI reflects the action.
-            manager_.force_disconnect(target, "kick", reason, username_);
+            const size_t closed = manager_.force_disconnect(target, "kick", reason, username_);
             send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, removed,
                                 removed ? "Member kicked." : "User is not a member.",
                                 target, "kick");
+            // An online target's socket close runs leave() → roster
+            // broadcast. An OFFLINE target triggers nothing, so every
+            // client (the actor's included) kept listing them as a
+            // member — the action looked like it had failed.
+            if (removed && closed == 0) {
+                manager_.broadcast_members();
+            }
         }
 
         // --- BAN MEMBER ---
@@ -1530,10 +1612,15 @@ private:
             // Unconditional for the same reason as the kick path: the
             // target may be offline and force_disconnect would skip it.
             manager_.sync_membership_revoke(target);
-            manager_.force_disconnect(target, "ban", reason, username_);
+            const size_t closed = manager_.force_disconnect(target, "ban", reason, username_);
             send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, ok,
                                 ok ? "Member banned." : "Ban failed.",
                                 target, "ban");
+            // Offline target: no leave() will fire, so push the roster
+            // (and the refreshed ban list for BAN_MEMBERS holders) now.
+            if (ok && closed == 0) {
+                manager_.broadcast_members();
+            }
         }
 
         // --- LEAVE SERVER ---
@@ -1617,8 +1704,7 @@ private:
                 send_packet(p);
                 return;
             }
-            std::string name = req.name();
-            if (name.size() > 64) name.resize(64);
+            std::string name = chatproj::clamp_utf8(req.name(), chatproj::kMaxRoleNameBytes);
             if (name.empty()) {
                 res->set_success(false);
                 res->set_message("Role name can't be empty.");
@@ -1686,8 +1772,7 @@ private:
                 fail("You can't change permissions you don't have.");
                 return;
             }
-            std::string name = req.name();
-            if (name.size() > 64) name.resize(64);
+            std::string name = chatproj::clamp_utf8(req.name(), chatproj::kMaxRoleNameBytes);
             if (!db->update_role(req.role_id(), name, req.color() & 0xFFFFFF,
                                  requested_perms, req.position())) {
                 fail("Failed to update role.");
@@ -1772,18 +1857,37 @@ private:
             std::set<int64_t> requested;
             for (int64_t id : req.role_ids()) requested.insert(id);
 
-            std::vector<int64_t> delta;
+            std::vector<int64_t> added, removed;
             for (int64_t id : requested) {
-                if (current.count(id) == 0) delta.push_back(id);
+                if (current.count(id) == 0) added.push_back(id);
             }
             for (int64_t id : current) {
-                if (requested.count(id) == 0) delta.push_back(id);
+                if (requested.count(id) == 0) removed.push_back(id);
             }
-            for (int64_t id : delta) {
+            // Escalation guard, mirroring ROLE_CREATE/UPDATE: a role you
+            // ADD must not carry permission bits you don't hold yourself.
+            // Hierarchy alone isn't enough — a lower-positioned role can
+            // still carry ADMINISTRATOR, and assigning it (to yourself or
+            // anyone) would hand out bits the actor was never granted.
+            // Removing such a role is always fine (de-escalation).
+            const uint64_t actor_perms = db->effective_permissions(username_);
+            for (int64_t id : added) {
                 auto role = db->get_role(id);
                 if (!role || role->is_default) { fail("Unknown role in request."); return; }
                 if (role->position >= actor_level) {
-                    fail("You can't assign or remove a role at or above your highest role.");
+                    fail("You can't assign a role at or above your highest role.");
+                    return;
+                }
+                if ((role->permissions & ~actor_perms) != 0) {
+                    fail("You can't assign a role that grants permissions you don't have.");
+                    return;
+                }
+            }
+            for (int64_t id : removed) {
+                auto role = db->get_role(id);
+                if (!role || role->is_default) { fail("Unknown role in request."); return; }
+                if (role->position >= actor_level) {
+                    fail("You can't remove a role at or above your highest role.");
                     return;
                 }
             }
@@ -1818,8 +1922,7 @@ private:
                 fail("You don't have permission to manage channels.");
                 return;
             }
-            std::string name = req.name();
-            if (name.size() > 64) name.resize(64);
+            std::string name = chatproj::clamp_utf8(req.name(), chatproj::kMaxChannelNameBytes);
             if (name.empty()) { fail("Channel name can't be empty."); return; }
             int32_t type = 0;
             if (req.type() == chatproj::ChannelInfo::VOICE) type = 1;
@@ -1866,8 +1969,7 @@ private:
                 fail("You don't have permission to manage channels.");
                 return;
             }
-            std::string name = req.name();
-            if (name.size() > 64) name.resize(64);
+            std::string name = chatproj::clamp_utf8(req.name(), chatproj::kMaxChannelNameBytes);
             if (name.empty()) { fail("Channel name can't be empty."); return; }
             if (!db->rename_channel(req.channel_id(), name)) {
                 fail("Channel not found.");
@@ -1942,8 +2044,7 @@ private:
             if (!db) return;
             const auto& req = packet.set_nickname_req();
             const std::string& target = req.username();
-            std::string nickname = req.nickname();
-            if (nickname.size() > 32) nickname.resize(32);
+            std::string nickname = chatproj::clamp_utf8(req.nickname(), chatproj::kMaxNicknameBytes);
 
             if (target != username_) {
                 // Changing someone else's nickname: MANAGE_NICKNAMES +
@@ -2075,6 +2176,7 @@ private:
     }
 
     ssl::stream<tcp::socket> socket_;
+    boost::asio::steady_timer close_timer_;
     SessionManager& manager_;
     char inbound_header_[4];
     std::vector<uint8_t> inbound_body_;
@@ -2116,6 +2218,11 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
     const bool was_authenticated = session->is_authenticated();
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        // Idempotent: the read-error, write-error and backlog-overflow
+        // paths can each call leave() for the same session. The second
+        // call used to re-run the full roster broadcast and wipe the
+        // thumbnail cache of a *second* session of the same user.
+        if (sessions_.erase(session) == 0) return;
         if (!session->get_udp_key().empty()) {
             // Only erase the index entry if it still points at THIS
             // session. On reconnect the same JWT-derived udp_key is
@@ -2128,8 +2235,15 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
                 udp_key_index_.erase(it);
             }
         }
-        sessions_.erase(session);
         const std::string username = session->get_username();
+        if (!username.empty()) {
+            auto by_user = sessions_by_user_.find(username);
+            if (by_user != sessions_by_user_.end()) {
+                auto& vec = by_user->second;
+                vec.erase(std::remove(vec.begin(), vec.end(), session), vec.end());
+                if (vec.empty()) sessions_by_user_.erase(by_user);
+            }
+        }
         // Empty entries are pruned as we go — these maps are keyed by
         // whatever channel ids sessions brought in, and entries that
         // only ever get emptied (never erased) accumulate for the
@@ -2702,8 +2816,10 @@ void SessionManager::relay_keyframe_request(const std::string& target_username, 
         }
         last_keyframe_relay_[target_username] = now;
     }
-    for (auto& session : sessions_) {
-        if (session->get_username() == target_username && session->get_udp_media_endpoint().port() != 0) {
+    auto it = sessions_by_user_.find(target_username);
+    if (it == sessions_by_user_.end()) return;
+    for (auto& session : it->second) {
+        if (session->get_udp_media_endpoint().port() != 0) {
             auto buffer = std::make_shared<std::vector<char>>(reinterpret_cast<const char*>(&req),
                                                                reinterpret_cast<const char*>(&req) + sizeof(req));
             udp_socket.async_send_to(
@@ -2716,8 +2832,10 @@ void SessionManager::relay_keyframe_request(const std::string& target_username, 
 
 void SessionManager::relay_nack(const char* data, size_t length, const std::string& target_username, boost::asio::ip::udp::socket& udp_socket) {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& session : sessions_) {
-        if (session->get_username() == target_username && session->get_udp_media_endpoint().port() != 0) {
+    auto it = sessions_by_user_.find(target_username);
+    if (it == sessions_by_user_.end()) return;
+    for (auto& session : it->second) {
+        if (session->get_udp_media_endpoint().port() != 0) {
             auto buffer = std::make_shared<std::vector<char>>(data, data + length);
             udp_socket.async_send_to(
                 boost::asio::buffer(*buffer), session->get_udp_media_endpoint(),
@@ -2805,8 +2923,11 @@ void SessionManager::handle_stream_codec_changed(
     }
     // Rebroadcast presence so all viewers' badges update.
     broadcast_stream_presence(notify.channel_id());
-    // Forward the original notify so viewers get the toast text + reason.
-    broadcast_to_voice_channel_tcp(packet, notify.channel_id());
+    // Forward the notify so viewers get the toast text + reason — minus
+    // the sender's envelope (auth_token carries their JWT).
+    chatproj::Packet forwarded = packet;
+    strip_client_envelope(forwarded);
+    broadcast_to_voice_channel_tcp(forwarded, notify.channel_id());
 }
 
 void SessionManager::remove_watcher(std::shared_ptr<Session> watcher, const std::string& channel_id, const std::string& streamer_username) {
@@ -2997,9 +3118,13 @@ void SessionManager::send_initial_voice_presences(std::shared_ptr<Session> sessi
     }
 }
 
-void SessionManager::register_udp_key(const std::string& udp_key, std::shared_ptr<Session> session) {
+void SessionManager::register_authenticated(std::shared_ptr<Session> session) {
     std::lock_guard<std::mutex> lock(mutex_);
-    udp_key_index_[udp_key] = session;
+    udp_key_index_[session->get_udp_key()] = session;
+    auto& vec = sessions_by_user_[session->get_username()];
+    if (std::find(vec.begin(), vec.end(), session) == vec.end()) {
+        vec.push_back(session);
+    }
 }
 
 void SessionManager::unregister_udp_key(const std::string& udp_key) {
@@ -3037,35 +3162,48 @@ std::set<std::string> SessionManager::get_online_usernames() {
 
 std::shared_ptr<Session> SessionManager::find_session_by_username(const std::string& username) {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& s : sessions_) {
-        if (s->get_username() == username) return s;
-    }
-    return nullptr;
+    auto it = sessions_by_user_.find(username);
+    if (it == sessions_by_user_.end() || it->second.empty()) return nullptr;
+    return it->second.front();
 }
 
-void SessionManager::force_disconnect(const std::string& username,
-                                      const std::string& action,
-                                      const std::string& reason,
-                                      const std::string& actor) {
-    auto session = find_session_by_username(username);
-    if (!session) return;
+std::vector<std::shared_ptr<Session>> SessionManager::find_sessions_by_username(const std::string& username) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = sessions_by_user_.find(username);
+    if (it == sessions_by_user_.end()) return {};
+    return it->second;
+}
+
+size_t SessionManager::force_disconnect(const std::string& username,
+                                        const std::string& action,
+                                        const std::string& reason,
+                                        const std::string& actor) {
+    // Every live session of the user — a ban that closed only the first
+    // match left a second device fully authenticated and posting.
+    auto sessions = find_sessions_by_username(username);
+    if (sessions.empty()) return 0;
 
     // NOTE: the central membership revoke is NOT synced here — this
-    // early-returns for offline targets, so the kick/ban/leave handlers
+    // returns 0 for offline targets, so the kick/ban/leave handlers
     // call sync_membership_revoke() themselves, unconditionally.
 
-    // Best-effort notification before we close the socket. If the write is
-    // already queued behind a slow client, the close below cancels it — the
-    // target just won't see the reason, which is fine.
     chatproj::Packet p;
     p.set_type(chatproj::Packet::MEMBERSHIP_REVOKED);
     auto* rev = p.mutable_membership_revoked();
     rev->set_action(action);
     rev->set_reason(reason);
     rev->set_actor(actor);
-    session->send_packet_external(p);
 
-    session->close_connection();
+    for (const auto& session : sessions) {
+        // Deliver the reason, then close once the write queue drains
+        // (close_after_flush stops the read loop immediately, so the
+        // session can't act on anything else in the meantime). The
+        // previous close_connection() right after the send relied on
+        // asio's speculative write to get MEMBERSHIP_REVOKED out.
+        session->send_packet_external(p);
+        session->close_after_flush();
+    }
+    return sessions.size();
 }
 
 void SessionManager::set_central_sync(const std::string& central_host, int central_port,

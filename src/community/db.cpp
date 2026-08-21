@@ -109,8 +109,10 @@ bool CommunityDb::open(const std::string& path,
 
     init_schema_();
     seed_if_empty_(owner_username, server_name, server_description);
-    // Always run after seed: catches existing DBs that pre-date any new
-    // default channels added to the canonical seed set.
+    // Versioned, one-shot: a no-op once the DB has been stamped with the
+    // current seed version (see ensure_default_channels_). It used to run
+    // INSERT OR IGNORE on every boot, which resurrected any default
+    // channel an operator had deleted via CHANNEL_DELETE_REQ.
     ensure_default_channels_();
     // Existing DBs may pre-date the text-above-voice ordering invariant.
     normalize_channel_order_();
@@ -535,10 +537,29 @@ void CommunityDb::seed_if_empty_(const std::string& owner,
 }
 
 void CommunityDb::ensure_default_channels_() {
-    // Canonical default channel set. INSERT OR IGNORE on `id` makes this
-    // safe to call on every startup — adding a new default here lights
-    // it up on existing server DBs without touching anything the
-    // operator already configured.
+    // Canonical default channel set, applied exactly once per seed
+    // version and recorded in server_meta. Deleted defaults must stay
+    // deleted across restarts — a CHANNEL_DELETE_REQ is an operator
+    // decision, not a drift to heal — so this is NOT an every-boot
+    // INSERT OR IGNORE:
+    //   - fresh DB (no channels yet): insert the whole set, stamp.
+    //   - DB that pre-dates the stamp (upgraded server): the operator's
+    //     channel list is authoritative; stamp without inserting.
+    //   - future seed additions: bump kSeedChannelsVersion and insert
+    //     only the NEW ids in a targeted branch below.
+    constexpr const char* kSeedChannelsVersion = "1";
+    if (get_meta_("seed_channels_version") == kSeedChannelsVersion) return;
+
+    bool has_channels = false;
+    {
+        Stmt q(db_, "SELECT 1 FROM channels LIMIT 1;");
+        if (q.s && q.step() == SQLITE_ROW) has_channels = true;
+    }
+    if (has_channels) {
+        set_meta_("seed_channels_version", kSeedChannelsVersion);
+        return;
+    }
+
     struct Seed {
         const char* id;
         const char* name;
@@ -564,6 +585,7 @@ void CommunityDb::ensure_default_channels_() {
         ins.bind_int(5, seed.bitrate);
         ins.step();
     }
+    set_meta_("seed_channels_version", kSeedChannelsVersion);
 }
 
 std::string CommunityDb::get_meta_(const std::string& key) const {
@@ -789,9 +811,11 @@ int32_t CommunityDb::max_role_position_unlocked_() const {
     return q.col_int(0);
 }
 
-std::optional<DbRole> CommunityDb::create_role(const std::string& name,
+std::optional<DbRole> CommunityDb::create_role(const std::string& raw_name,
                                                uint32_t color,
                                                uint64_t permissions) {
+    // Clamp here too so no future caller can store a mid-codepoint cut.
+    const std::string name = clamp_utf8(raw_name, kMaxRoleNameBytes);
     if (name.empty()) return std::nullopt;
     std::lock_guard<std::mutex> lock(mutex_);
     exec_sql(db_, "BEGIN IMMEDIATE;");
@@ -819,10 +843,11 @@ std::optional<DbRole> CommunityDb::create_role(const std::string& name,
 }
 
 bool CommunityDb::update_role(int64_t role_id,
-                              const std::string& name,
+                              const std::string& raw_name,
                               uint32_t color,
                               uint64_t permissions,
                               int32_t position) {
+    const std::string name = clamp_utf8(raw_name, kMaxRoleNameBytes);
     std::lock_guard<std::mutex> lock(mutex_);
     auto cur = get_role_unlocked_(role_id);
     if (!cur) return false;
@@ -1243,10 +1268,11 @@ std::string slugify_channel_name(const std::string& name) {
 }
 } // namespace
 
-std::optional<DbChannel> CommunityDb::create_channel(const std::string& name,
+std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name,
                                                      int32_t type,
                                                      int32_t voice_bitrate_kbps,
                                                      const std::string& category_id) {
+    const std::string name = clamp_utf8(raw_name, kMaxChannelNameBytes);
     if (name.empty() || (type != 0 && type != 1 && type != 2)) return std::nullopt;
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -1426,7 +1452,8 @@ bool CommunityDb::reorder_channels(const std::vector<std::string>& ordered_ids) 
 }
 
 bool CommunityDb::rename_channel(const std::string& channel_id,
-                                 const std::string& name) {
+                                 const std::string& raw_name) {
+    const std::string name = clamp_utf8(raw_name, kMaxChannelNameBytes);
     if (name.empty()) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     Stmt q(db_, "UPDATE channels SET name=? WHERE id=?;");
@@ -1506,7 +1533,8 @@ std::optional<CommunityDb::WipeChannelResult> CommunityDb::delete_channel(
 }
 
 bool CommunityDb::set_nickname(const std::string& username,
-                               const std::string& nickname) {
+                               const std::string& raw_nickname) {
+    const std::string nickname = clamp_utf8(raw_nickname, kMaxNicknameBytes);
     std::lock_guard<std::mutex> lock(mutex_);
     Stmt q(db_, "UPDATE members SET nickname=? WHERE username=?;");
     if (!q.s) return false;

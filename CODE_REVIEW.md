@@ -5,6 +5,25 @@
 
 ---
 
+## Fix progress — batch 13 (2026-08-21): community-server review fix batch
+
+Findings + full context: `docs/reviews/2026-08-21-community-server-review.md`.
+**C++ community server — compiled standalone (g++ 15, fetched headers) and e2e-tested against a live instance (43/43 checks in `src/community/tests/e2e.py`; a deliberately-reverted build fails the new ghost-session checks, so they're real guards):**
+- ✅ **Deleted seed channels resurrected on restart** (High, reproduced): `ensure_default_channels_()` ran `INSERT OR IGNORE` on every boot. Now versioned + one-shot via `seed_channels_version` meta key; upgraded DBs are stamped without re-seeding — `db.cpp`
+- ✅ **Synchronous TLS `shutdown()` on the shared io thread** (High): any unauthenticated peer that completed a handshake on 8085, got its response and went silent froze chat/voice/video/auth for everyone. Now `async_shutdown` with a 2 s deadline — `attachment_http.cpp`
+- ✅ **Mid-UTF-8 truncation poisoned broadcasts** (High): `resize(64/32)` on role/channel names + nicknames produced invalid UTF-8 that prost rejects, making `MEMBER_LIST_RES` / `CHANNEL_LIST_UPDATE` / `COMMUNITY_AUTH_RES` undecodable for every client. New `clamp_utf8()` (codepoint-boundary cut, control chars stripped) applied in the handlers *and* the DB layer — `db.hpp`, `db.cpp`, `main.cpp`
+- ✅ **Live JWT leak** (High): `CHANNEL_MSG` / `STREAM_THUMBNAIL_UPDATE` / `STREAM_CODEC_CHANGED_NOTIFY` were forwarded as verbatim copies of the client packet, and the client puts its JWT in `Packet.auth_token` on every packet → every member received the sender's bearer token with every message. `strip_client_envelope()` on all forward paths — `main.cpp`
+- ✅ **Kick/ban closed only one session per user** (High): new `sessions_by_user_` index; `force_disconnect` hits every session and returns the count; membership is re-validated on every post-auth packet (one PK lookup) so a session whose member row vanished by any path is dropped — `main.cpp`. The index also replaces the O(sessions) scans in `relay_keyframe_request` / `relay_nack` / `find_session_by_username`.
+- ✅ **Role assignment bypassed the escalation guard** (Med): `MEMBER_ROLES_UPDATE_REQ` now requires every *added* role to carry only bits the actor holds (mirrors ROLE_CREATE/UPDATE) — `main.cpp`
+- ✅ **Switching voice channels while streaming left a ghost stream** (Med): `JOIN_VOICE_REQ` stops the stream in the old channel first — `main.cpp`
+- ✅ **Kicking/banning an offline member never refreshed rosters** (Med): explicit `broadcast_members()` when `force_disconnect` found no session — `main.cpp`
+- ✅ `SessionManager::leave()` is idempotent (read-error + write-error + overflow paths used to double-broadcast and wipe a second session's thumbnail); `force_disconnect` uses `close_after_flush()` (so MEMBERSHIP_REVOKED reliably arrives), which gained a 3 s hard deadline, ignores in-flight frames, and detaches via `finish_close()` — `main.cpp`
+
+**Native Rust — `cargo check` clean, warning count unchanged (83):**
+- ✅ **Reconnect loop never stopped after kick/ban/leave/rejected auth** (High): `CommunityClient.terminated` flag set on a failed `COMMUNITY_AUTH_RES`, on `MEMBERSHIP_REVOKED`, and on a successful `ModActionRes{leave}`; the read loop then retires the client (emits `connection_lost`, removes it from `AppState.communities`) instead of re-auth-and-toast every 30 s — `net/community.rs`
+
+**Still open from that review (next batch):** B9 timeouts + accept backoff, B10 caps cap, B11 rate limiting, B12 `prune_attachments` IN-list, B14 `last_keyframe_relay_` growth, B15 env-owned name/description, client B16/B17, P1 roster deltas, P2 permission/statement cache, P4 central-sync worker; then the `authorize()` abstraction + per-channel overwrites (§5 of the review doc).
+
 ## Fix progress — batch 1 (2026-07-22): safe, self-contained wins
 
 **Native Rust — built clean (`cargo build`), 23 video tests pass:**

@@ -147,6 +147,40 @@ constexpr uint64_t kKnownMask =
 constexpr uint64_t kDefaultEveryone = kSendMessages | kConnectVoice | kStream;
 } // namespace perms
 
+// Bounds a user-supplied display string (role/channel name, nickname) to
+// at most `max_bytes` WITHOUT cutting through a UTF-8 sequence, and strips
+// ASCII control characters (incl. CR/LF, which would corrupt log lines and
+// any future audit rendering). A plain std::string::resize() used to be
+// applied here: it can leave a dangling lead byte, C++ protobuf still
+// serialises that (it only logs), and the client's prost decoder then
+// rejects the WHOLE packet — one 33-byte emoji nickname made every
+// MEMBER_LIST_RES undecodable for every client, and a long channel
+// rename poisoned COMMUNITY_AUTH_RES (it embeds the channel list) so
+// nobody could authenticate until the DB was hand-edited.
+inline std::string clamp_utf8(const std::string& in, size_t max_bytes) {
+    std::string out;
+    out.reserve(in.size() < max_bytes ? in.size() : max_bytes);
+    for (unsigned char c : in) {
+        if (c < 0x20 || c == 0x7F) continue;
+        out.push_back(static_cast<char>(c));
+    }
+    if (out.size() <= max_bytes) return out;
+    // out[max_bytes] is the first byte we drop. If it is a continuation
+    // byte (10xxxxxx) the sequence it belongs to straddles the boundary:
+    // walk back to that sequence's lead byte and drop the whole sequence.
+    // (Input is valid UTF-8 — protobuf rejects invalid proto3 strings at
+    // parse time — so this is the only way the cut can land mid-sequence.)
+    size_t cut = max_bytes;
+    while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) --cut;
+    out.resize(cut);
+    return out;
+}
+
+// Byte caps shared by the wire handlers and the DB layer.
+constexpr size_t kMaxRoleNameBytes    = 64;
+constexpr size_t kMaxChannelNameBytes = 64;
+constexpr size_t kMaxNicknameBytes    = 32;
+
 // Reason an invite cannot be redeemed.
 enum class InviteResult {
     Ok,
