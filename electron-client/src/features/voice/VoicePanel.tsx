@@ -13,12 +13,15 @@ import { CodecBadge } from "./CodecBadge";
 import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
 import { canWatchStream } from "../../utils/canWatchStream";
 import { useStreamThumbnails } from "./useStreamThumbnails";
+import { PERM, useChannelPermission } from "../servers/permissions";
 
 const EMPTY_CHANNELS: never[] = [];
 
 export default function VoicePanel() {
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
+  // Permissions v2: STREAM is resolved per channel by the server.
+  const canStream = useChannelPermission(connectedServerId, connectedChannelId, PERM.STREAM);
   const participants = useVoiceStore((s) => s.participants);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
   // Note: no top-level speakingUsers subscription — the per-card
@@ -449,6 +452,7 @@ export default function VoicePanel() {
             </svg>
             {isDeafened ? "Undeafen" : "Deafen"}
           </button>
+          {(canStream || isStreaming) && (
           <button
             onClick={isStreaming ? handleStopSharing : () => setShowPicker(true)}
             className={`flex items-center gap-[7px] rounded-md border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
@@ -490,6 +494,7 @@ export default function VoicePanel() {
             </svg>
             {isStreaming ? "Stop" : "Stream"}
           </button>
+          )}
           <button
             onClick={handleDisconnect}
             className="flex items-center gap-[7px] rounded-md border border-error/20 bg-error/10 px-[18px] py-[9px] text-[13px] font-medium text-error transition-colors hover:bg-error/[0.18]"

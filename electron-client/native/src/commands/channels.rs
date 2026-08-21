@@ -355,6 +355,63 @@ pub async fn rename_channel(args: RenameChannelArgs) -> napi::Result<()> {
 }
 
 #[napi(object)]
+pub struct SetChannelOverwriteArgs {
+    pub server_id: String,
+    pub channel_id: String,
+    /// "role" | "member"
+    pub target_type: String,
+    /// Role id (decimal string) or username.
+    pub target_id: String,
+    pub allow: i64,
+    pub deny: i64,
+}
+
+/// Permissions v2: set (or, with allow == deny == 0, clear) one
+/// per-channel overwrite. Result arrives as channel_action_responded with
+/// action "overwrite"; the server then re-pushes channel_list_updated
+/// (with refreshed myPermissions) and channel_overwrites_received.
+#[napi]
+pub async fn set_channel_overwrite(args: SetChannelOverwriteArgs) -> napi::Result<()> {
+    let target_type = if args.target_type == "member" {
+        channel_overwrite::TargetType::Member
+    } else {
+        channel_overwrite::TargetType::Role
+    };
+    send_for_server(
+        &args.server_id,
+        packet::Type::ChannelOverwriteSetReq,
+        packet::Payload::ChannelOverwriteSetReq(ChannelOverwriteSetRequest {
+            overwrite: Some(ChannelOverwrite {
+                channel_id: args.channel_id,
+                target_type: target_type as i32,
+                target_id: args.target_id,
+                allow: args.allow.max(0) as u64,
+                deny: args.deny.max(0) as u64,
+            }),
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct ListChannelOverwritesArgs {
+    pub server_id: String,
+    pub channel_id: String,
+}
+
+#[napi]
+pub async fn list_channel_overwrites(args: ListChannelOverwritesArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::ChannelOverwritesReq,
+        packet::Payload::ChannelOverwritesReq(ChannelOverwritesRequest {
+            channel_id: args.channel_id,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
 pub struct DeleteChannelArgs {
     pub server_id: String,
     pub channel_id: String,

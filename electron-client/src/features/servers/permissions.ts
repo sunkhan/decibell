@@ -20,11 +20,15 @@ export const PERM = {
   SEND_MESSAGES: 1024,
   CONNECT_VOICE: 2048,
   STREAM: 4096,
+  // permissions v2 (per-channel overwrites)
+  VIEW_CHANNEL: 8192,
+  READ_HISTORY: 16384,
+  ATTACH_FILES: 32768,
 } as const;
 
-/// The permission bits surfaced in role editors, in display order.
-/// The reserved default-on bits (send/connect/stream) are hidden until
-/// the server actually enforces them.
+/// The permission bits surfaced in role editors and the per-channel
+/// overwrite editor, in display order. Since permissions v2 every bit
+/// here is enforced server-side.
 export const EDITABLE_PERMISSIONS: Array<{
   bit: number;
   label: string;
@@ -75,7 +79,55 @@ export const EDITABLE_PERMISSIONS: Array<{
     label: "Manage Nicknames",
     description: "Change lower-ranked members' nicknames.",
   },
+  {
+    bit: PERM.VIEW_CHANNEL,
+    label: "View Channel",
+    description: "See the channel and receive its messages and presence.",
+  },
+  {
+    bit: PERM.READ_HISTORY,
+    label: "Read Message History",
+    description: "Load messages sent before joining the channel view.",
+  },
+  {
+    bit: PERM.SEND_MESSAGES,
+    label: "Send Messages",
+    description: "Post in text channels.",
+  },
+  {
+    bit: PERM.ATTACH_FILES,
+    label: "Attach Files",
+    description: "Upload files and images with messages.",
+  },
+  {
+    bit: PERM.CONNECT_VOICE,
+    label: "Connect",
+    description: "Join voice channels.",
+  },
+  {
+    bit: PERM.STREAM,
+    label: "Stream",
+    description: "Share the screen in voice channels.",
+  },
 ];
+
+/// The subset that makes sense as a per-channel overwrite (everything
+/// that is channel-scoped on the server).
+export const CHANNEL_OVERWRITE_PERMISSIONS = EDITABLE_PERMISSIONS.filter((p) =>
+  (
+    [
+      PERM.VIEW_CHANNEL,
+      PERM.READ_HISTORY,
+      PERM.SEND_MESSAGES,
+      PERM.ATTACH_FILES,
+      PERM.CONNECT_VOICE,
+      PERM.STREAM,
+      PERM.MANAGE_CHANNELS,
+      PERM.MANAGE_MESSAGES,
+      PERM.MANAGE_ROLES,
+    ] as number[]
+  ).includes(p.bit),
+);
 
 /// "Every permission": all 53 exactly-representable bits. What owners
 /// and ADMINISTRATOR holders resolve to.
@@ -148,6 +200,30 @@ export function usePermission(serverId: string | null, perm: number): boolean {
   const me = members?.find((m) => m.username === localUsername);
   const perms = computeEffectivePermissions(roles, me?.roleIds);
   return hasBits(perms, perm);
+}
+
+/// True when the local user holds `perm` in one specific channel, from
+/// the server-resolved `ChannelInfo.myPermissions` (permissions v2). The
+/// owner always passes. Channels from a legacy server carry no
+/// myPermissions → no gating (matching that server's behavior).
+export function useChannelPermission(
+  serverId: string | null,
+  channelId: string | null,
+  perm: number,
+): boolean {
+  const localUsername = useAuthStore((s) => s.username);
+  const owner = useChatStore((s) =>
+    serverId ? s.serverOwner[serverId] : undefined,
+  );
+  const mine = useChatStore((s) => {
+    if (!serverId || !channelId) return undefined;
+    return s.channelsByServer[serverId]?.find((c) => c.id === channelId)
+      ?.myPermissions;
+  });
+  if (!serverId || !channelId) return false;
+  if (!!owner && owner === localUsername) return true;
+  if (mine === undefined || mine === 0) return true; // legacy server
+  return hasBits(mine, perm);
 }
 
 /// Hierarchy context for moderation UI: the local user's level, their

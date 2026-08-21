@@ -14,6 +14,7 @@ interface AttachmentTargetResult {
 }
 import type {
   ChannelInfo,
+  ChannelOverwritesReceivedPayload,
   ChannelUpdatedPayload,
   ConnectionEventPayload,
   CommunityAuthRespondedPayload,
@@ -307,6 +308,18 @@ export function useServerEvents() {
       },
     );
 
+    const unlistenOverwrites = listen<ChannelOverwritesReceivedPayload>(
+      "channel_overwrites_received",
+      (event) => {
+        const { serverId, channelId, success, overwrites } = event.payload;
+        if (success) {
+          useChatStore
+            .getState()
+            .setOverwritesForChannel(serverId, channelId, overwrites);
+        }
+      },
+    );
+
     const unlistenRoleAction = listen<RoleActionRespondedPayload>(
       "role_action_responded",
       (event) => {
@@ -569,6 +582,7 @@ export function useServerEvents() {
       unlistenChannelList.then((fn) => fn());
       unlistenChannelAction.then((fn) => fn());
       unlistenRoleList.then((fn) => fn());
+      unlistenOverwrites.then((fn) => fn());
       unlistenRoleAction.then((fn) => fn());
       unlistenMod.then((fn) => fn());
       unlistenRevoked.then((fn) => fn());

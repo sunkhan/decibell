@@ -4,7 +4,8 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { toast } from "../../stores/toastStore";
 import { useEscapeToClose } from "../../hooks/useEscapeToClose";
-import { PERM, usePermission } from "./permissions";
+import { PERM, useChannelPermission } from "./permissions";
+import { ChannelPermissionsSection } from "./ChannelPermissionsSection";
 import type { ChannelInfo } from "../../types";
 
 type RetentionField =
@@ -115,8 +116,13 @@ export default function ChannelSettingsModal() {
   }, [activeServerId, targetChannelId, channelsByServer]);
 
   // Mirrors the server-side gates: retention/rename/delete/wipe are all
-  // MANAGE_CHANNELS (owner implicitly included).
-  const canManage = usePermission(activeServerId, PERM.MANAGE_CHANNELS);
+  // MANAGE_CHANNELS *in this channel* (permissions v2: an overwrite can
+  // grant it per channel; owner implicitly included).
+  const canManage = useChannelPermission(
+    activeServerId,
+    targetChannelId,
+    PERM.MANAGE_CHANNELS,
+  );
   // Categories are grouping headers: no messages → no retention, no
   // wipe. Just rename + delete.
   const isCategory = channel?.type === "category";
@@ -503,6 +509,10 @@ export default function ChannelSettingsModal() {
             <p className="mt-3 text-[12px] text-text-muted">
               You need the Manage Channels permission to edit these.
             </p>
+          )}
+
+          {activeServerId && (
+            <ChannelPermissionsSection serverId={activeServerId} channel={channel} />
           )}
 
           {canManage && (

@@ -22,6 +22,7 @@ import { chunkSourceFromPath } from "./chunkSource";
 import WelcomeState from "./WelcomeState";
 import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
 import { useCanDeleteOthers } from "../servers/useCanDeleteOthers";
+import { PERM, useChannelPermission } from "../servers/permissions";
 import type { Message } from "../../types";
 
 // How close (in messages) the rendered window's top edge may get to the
@@ -57,6 +58,10 @@ export default function ChatPanel() {
   const activeModal = useUiStore((s) => s.activeModal);
   const openModal = useUiStore((s) => s.openModal);
   const canDeleteOthers = useCanDeleteOthers(activeServerId);
+  // Permissions v2: gate the composer on the server-resolved per-channel
+  // bits (read-only channels, muted members). Server stays authoritative.
+  const canSend = useChannelPermission(activeServerId, activeChannelId, PERM.SEND_MESSAGES);
+  const canAttach = useChannelPermission(activeServerId, activeChannelId, PERM.ATTACH_FILES);
 
   // Local state for which message is being deleted; the modal reads
   // this when it confirms. Tracked locally rather than in uiStore so
@@ -665,6 +670,13 @@ export default function ChatPanel() {
           so adding files visibly expands the bar upward (Discord pattern).
           Drop-target wiring: the bar lights up while a drag is in flight,
           saturated state when the cursor is over the bar. */}
+      {!canSend ? (
+        <div className="px-3 py-2">
+          <div className="flex min-h-[54px] items-center rounded-lg border border-border bg-bg-light px-3.5 py-2.5 text-[13px] text-text-muted">
+            You don't have permission to send messages in #{channelName ?? "channel"}.
+          </div>
+        </div>
+      ) : (
       <div className="px-3 py-2" data-drop-target="active-input">
         <div
           onDragOver={suppressDrop}
@@ -697,6 +709,7 @@ export default function ChatPanel() {
                 </span>
               </div>
             )}
+            {canAttach && (
             <button
               onClick={handlePickFiles}
               title="Attach files"
@@ -708,6 +721,7 @@ export default function ChatPanel() {
                 <line x1="8" y1="12" x2="16" y2="12" />
               </svg>
             </button>
+            )}
             <RichInput
               ref={editorRef}
               onChange={(value) => {
@@ -767,6 +781,7 @@ export default function ChatPanel() {
           </div>
         </div>
       </div>
+      )}
 
       {activeModal === "delete-message-confirm" && pendingDeleteTarget && (
         <DeleteMessageConfirmModal

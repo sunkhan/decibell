@@ -8,7 +8,8 @@ import VoiceParticipantList from "../voice/VoiceParticipantList";
 import ServerActionsDropdown from "../servers/ServerActionsDropdown";
 import ServerSettingsModal from "../servers/ServerSettingsModal";
 import LeaveServerConfirmModal from "../../components/LeaveServerConfirmModal";
-import { PERM, usePermission } from "../servers/permissions";
+import { PERM, hasBits, usePermission } from "../servers/permissions";
+import { toast } from "../../stores/toastStore";
 import CreateChannelModal from "./CreateChannelModal";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { useSidebarResize } from "./useSidebarResize";
@@ -106,6 +107,14 @@ export default function ServerChannelsSidebar() {
   );
   const canInvite = usePermission(activeServerId, PERM.MANAGE_INVITES);
   const canManageChannels = usePermission(activeServerId, PERM.MANAGE_CHANNELS);
+  // Permissions v2: a per-channel overwrite can grant Manage Channels /
+  // Manage Roles for one channel only — the gear must follow the
+  // server-resolved ChannelInfo.myPermissions, not just the server-wide bit.
+  const rowManageable = (ch: ChannelInfo) =>
+    canManageChannels ||
+    (!!ch.myPermissions &&
+      (hasBits(ch.myPermissions, PERM.MANAGE_CHANNELS) ||
+        hasBits(ch.myPermissions, PERM.MANAGE_ROLES)));
   const activeModal = useUiStore((s) => s.activeModal);
 
   // Close the channel-list context menu on any outside click / Esc.
@@ -322,6 +331,13 @@ export default function ServerChannelsSidebar() {
       setActiveView("voice");
       return;
     }
+    // Permissions v2: CONNECT_VOICE resolved per channel by the server
+    // (ChannelInfo.myPermissions; legacy servers send none → no gate).
+    const ch = (channelsByServer[activeServerId] ?? []).find((c) => c.id === channelId);
+    if (ch?.myPermissions && !hasBits(ch.myPermissions, PERM.CONNECT_VOICE)) {
+      toast.error("You don't have permission to join this voice channel.");
+      return;
+    }
     joinVoiceChannel(activeServerId, channelId).catch(console.error);
     setActiveView("voice");
   };
@@ -422,7 +438,7 @@ export default function ServerChannelsSidebar() {
                   presence={channelPresence[ch.id] ?? []}
                   connectedChannelId={connectedChannelId}
                   activeView={activeView}
-                  canManage={canManageChannels}
+                  canManage={rowManageable(ch)}
                   onClick={() => handleVoiceChannelClick(ch.id)}
                 />
               ) : (
@@ -430,7 +446,7 @@ export default function ServerChannelsSidebar() {
                   serverId={activeServerId}
                   channelId={ch.id}
                   channelName={ch.name}
-                  canManage={canManageChannels}
+                  canManage={rowManageable(ch)}
                 />
               )}
             </div>
@@ -494,7 +510,7 @@ export default function ServerChannelsSidebar() {
                           presence={channelPresence[ch.id] ?? []}
                           connectedChannelId={connectedChannelId}
                           activeView={activeView}
-                          canManage={canManageChannels}
+                          canManage={rowManageable(ch)}
                           onClick={() => handleVoiceChannelClick(ch.id)}
                         />
                       ) : (
@@ -502,7 +518,7 @@ export default function ServerChannelsSidebar() {
                           serverId={activeServerId}
                           channelId={ch.id}
                           channelName={ch.name}
-                          canManage={canManageChannels}
+                          canManage={rowManageable(ch)}
                         />
                       )}
                     </div>

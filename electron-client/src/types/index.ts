@@ -282,6 +282,31 @@ export interface ChannelInfo {
   retentionDaysVideo: number;
   retentionDaysDocument: number;
   retentionDaysAudio: number;
+  /// The local user's resolved permissions in this channel (permissions
+  /// v2: server-wide role bits with the channel's overwrites applied;
+  /// owner/ADMINISTRATOR = everything). Channel lists arrive
+  /// per-recipient and only contain channels the user can VIEW. Gate
+  /// composer / attach / voice-join / history UI from this — the server
+  /// is authoritative. 0 / undefined on legacy servers (→ no gating).
+  myPermissions?: number;
+}
+
+/// One per-channel permission overwrite (permissions v2).
+export interface ChannelOverwrite {
+  channelId: string;
+  targetType: "role" | "member";
+  /// Role id (decimal string) or username.
+  targetId: string;
+  allow: number;
+  deny: number;
+}
+
+export interface ChannelOverwritesReceivedPayload {
+  serverId: string;
+  success: boolean;
+  message: string;
+  channelId: string;
+  overwrites: ChannelOverwrite[];
 }
 
 export interface CommunityAuthRespondedPayload {

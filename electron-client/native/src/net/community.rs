@@ -38,6 +38,7 @@ fn channel_info_payload(c: ChannelInfo) -> events::ChannelInfoPayload {
         retention_days_video: c.retention_days_video,
         retention_days_document: c.retention_days_document,
         retention_days_audio: c.retention_days_audio,
+        my_permissions: c.my_permissions,
     }
 }
 
@@ -662,6 +663,30 @@ impl CommunityClient {
                         message: resp.message,
                         username: resp.username,
                         action: resp.action,
+                    });
+                }
+                Some(packet::Payload::ChannelOverwritesRes(resp)) => {
+                    let overwrites = resp
+                        .overwrites
+                        .into_iter()
+                        .map(|o| events::ChannelOverwritePayload {
+                            channel_id: o.channel_id,
+                            target_type: match channel_overwrite::TargetType::try_from(o.target_type) {
+                                Ok(channel_overwrite::TargetType::Member) => "member",
+                                _ => "role",
+                            }
+                            .to_string(),
+                            target_id: o.target_id,
+                            allow: o.allow,
+                            deny: o.deny,
+                        })
+                        .collect();
+                    events::emit_channel_overwrites_received(events::ChannelOverwritesReceivedPayload {
+                        server_id: server_id.clone(),
+                        success: resp.success,
+                        message: resp.message,
+                        channel_id: resp.channel_id,
+                        overwrites,
                     });
                 }
                 Some(packet::Payload::RoleListRes(resp)) => {

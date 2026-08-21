@@ -215,6 +215,7 @@ pub const MEMBER_LIST_RECEIVED: &str = "member_list_received";
 pub const MOD_ACTION_RESPONDED: &str = "mod_action_responded";
 pub const MEMBERSHIP_REVOKED: &str = "membership_revoked";
 pub const ROLE_LIST_RECEIVED: &str = "role_list_received";
+pub const CHANNEL_OVERWRITES_RECEIVED: &str = "channel_overwrites_received";
 pub const ROLE_ACTION_RESPONDED: &str = "role_action_responded";
 pub const CHANNEL_LIST_UPDATED: &str = "channel_list_updated";
 pub const CHANNEL_ACTION_RESPONDED: &str = "channel_action_responded";
@@ -317,6 +318,32 @@ pub struct ChannelInfoPayload {
     pub retention_days_video: i32,
     pub retention_days_document: i32,
     pub retention_days_audio: i32,
+    /// The local user's resolved permissions in this channel (permissions
+    /// v2: server-wide role bits with the channel's overwrites applied;
+    /// owner/ADMINISTRATOR = everything). Bits sit far below 2^53.
+    pub my_permissions: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelOverwritePayload {
+    pub channel_id: String,
+    /// "role" | "member"
+    pub target_type: String,
+    /// Role id (decimal string) or username.
+    pub target_id: String,
+    pub allow: u64,
+    pub deny: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelOverwritesReceivedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub channel_id: String,
+    pub overwrites: Vec<ChannelOverwritePayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -699,6 +726,10 @@ pub struct RoleActionRespondedPayload {
 
 pub fn emit_role_list_received(payload: RoleListReceivedPayload) {
     send(ROLE_LIST_RECEIVED, payload);
+}
+
+pub fn emit_channel_overwrites_received(payload: ChannelOverwritesReceivedPayload) {
+    send(CHANNEL_OVERWRITES_RECEIVED, payload);
 }
 
 pub fn emit_role_action_responded(payload: RoleActionRespondedPayload) {

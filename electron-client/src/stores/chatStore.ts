@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type {
   ChannelInfo,
+  ChannelOverwrite,
   CommunityServer,
   Message,
   PendingInvite,
@@ -53,6 +54,11 @@ interface ChatState {
   /// empty for legacy servers that predate roles — permission hooks
   /// fall back to owner-only gating in that case.
   rolesByServer: Record<string, ServerRole[]>;
+  /// Per-channel permission overwrites, keyed by ChannelKey. Only
+  /// populated for channels whose overwrites the local user may view
+  /// (MANAGE_ROLES / MANAGE_CHANNELS there); refreshed by the server
+  /// push after any change.
+  overwritesByChannel: Record<string, ChannelOverwrite[]>;
   invitesByServer: Record<string, ServerInvite[]>;
   pendingInvite: PendingInvite | null;
   /// Attachment HTTP endpoint advertised by each connected server.
@@ -127,6 +133,11 @@ interface ChatState {
   setServerOwner: (serverId: string, owner: string) => void;
   setMembersForServer: (serverId: string, members: ServerMember[], bans: string[]) => void;
   setRolesForServer: (serverId: string, roles: ServerRole[]) => void;
+  setOverwritesForChannel: (
+    serverId: string,
+    channelId: string,
+    overwrites: ChannelOverwrite[],
+  ) => void;
   setInvitesForServer: (serverId: string, invites: ServerInvite[]) => void;
   upsertInvite: (serverId: string, invite: ServerInvite) => void;
   removeInvite: (serverId: string, code: string) => void;
@@ -292,6 +303,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   membersByServer: {},
   bansByServer: {},
   rolesByServer: {},
+  overwritesByChannel: {},
   invitesByServer: {},
   pendingInvite: null,
   serverAttachmentConfig: {},
@@ -432,6 +444,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setRolesForServer: (serverId, roles) =>
     set((state) => ({
       rolesByServer: { ...state.rolesByServer, [serverId]: roles },
+    })),
+
+  setOverwritesForChannel: (serverId, channelId, overwrites) =>
+    set((state) => ({
+      overwritesByChannel: {
+        ...state.overwritesByChannel,
+        [channelKey(serverId, channelId)]: overwrites,
+      },
     })),
 
   setInvitesForServer: (serverId, invites) =>
@@ -679,6 +699,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       historyFetched: {},
       scrollPositionsByChannel: {},
       channelAccessOrder: [],
+      overwritesByChannel: {},
       invitesByServer: {},
       pendingInvite: null,
     }),
