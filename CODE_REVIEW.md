@@ -5,6 +5,16 @@
 
 ---
 
+## Fix progress — batch 18 (2026-08-22): relay/FTS/keep-alive perf + central B29/B30
+
+**C++ community server — 163/163 e2e (new: UDP echo, audio fan-out with sender rewrite, 50-packet burst, server-mute drop, keep-alive across requests, FTS gone):**
+- ✅ **P5 UDP relay**: both sockets user-level non-blocking; each reactor wakeup drains up to 256 queued datagrams before re-arming; all fan-outs (`broadcast_to_voice_channel`, `broadcast_to_watchers[_voice]`, keyframe/NACK relay, PING echo) use synchronous `send_to` (drop on would_block) with a reusable target vector — no per-datagram heap buffer, no per-recipient completion handler — `main.cpp`
+- ✅ **P6 FTS**: the `messages_fts` table and its three triggers are dropped once (`fts_dropped_v8` meta); message writes, wipes, prunes and ban purges no longer tokenise. Re-enable with `'rebuild'` when search ships — `db.cpp`
+- ✅ **P8 HTTP keep-alive**: the attachment listener serves multiple requests per TLS connection (HTTP/1.1 default; `Connection: close`, HTTP/1.0, error responses and unconsumed bodies close); a 100 MB upload no longer pays one handshake per PATCH — `attachment_http.cpp`
+**C++ central server — syntax-checked against fetched libpqxx/libpq headers (the only diagnostics are the pre-existing `pqxx::binarystring` uses vs. libpqxx 8 on the mirror; the project targets 7.x); NOT runtime-tested here (no PostgreSQL):**
+- ✅ **B29 ghost sessions**: `SessionManager::leave()` now closes the socket (`Session::close_connection`), so kicked / swept sessions actually end instead of staying authenticated-but-invisible — `src/server/main.cpp`
+- ✅ **B30 directory + identity**: `SERVER_LIST_RES` only lists servers with a heartbeat in the last 5 minutes; `ServerHeartbeat.server_id` / `SyncServerPictureReq.server_id` let a community keep its central row (and every membership) when its public IP or port changes — central updates the row by id and evicts a stale row squatting on the new address; falls back to the `(host_ip, port)` upsert when the id is unknown — `src/server/{main.cpp,auth_manager.{hpp,cpp}}`, `src/community/main.cpp`, `proto`
+
 ## Fix progress — batch 17 (2026-08-22): server management + moderation (items 1–7)
 
 Design: `docs/superpowers/specs/2026-08-22-server-management-moderation-design.md`. Review §4 D3/D4/D5 + B15.

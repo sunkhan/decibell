@@ -258,11 +258,19 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         
-        // Fetch up to 50 public community servers sorted by member count
+        // Fetch up to 50 LIVE public community servers sorted by member
+        // count. Communities heartbeat every 60 s; a row without one for
+        // 5 minutes is down (or gone for good) and used to sit in the
+        // directory forever, since last_heartbeat was written but never
+        // read. Memberships (getUserCommunities) are deliberately NOT
+        // filtered — a member's server that's temporarily offline is
+        // still their server.
         pqxx::result res = txn.exec(
             "SELECT id, name, description, host_ip, port, member_count, "
             "       COALESCE(picture_version, '') "
-            "FROM community_servers ORDER BY member_count DESC LIMIT 50"
+            "FROM community_servers "
+            "WHERE last_heartbeat > NOW() - INTERVAL '5 minutes' "
+            "ORDER BY member_count DESC LIMIT 50"
         );
 
         for (auto row : res) {
@@ -282,10 +290,36 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
     return servers;
 }
 
-int AuthManager::upsertCommunityServer(const std::string& name, const std::string& description, const std::string& host_ip, int port, int member_count) {
+int AuthManager::upsertCommunityServer(const std::string& name, const std::string& description,
+                                       const std::string& host_ip, int port, int member_count,
+                                       int64_t known_id) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
+        if (known_id > 0) {
+            // Identity by id: the community moved (new public IP / port)
+            // or simply restarted. Any OTHER row already holding the new
+            // address is a stale former identity that no longer
+            // heartbeats — drop it so the UNIQUE(host_ip, port) update
+            // can land. (A shared-secret holder could already overwrite
+            // any (host, port) row before this; Theme A separates the
+            // secrets.)
+            txn.exec_params(
+                "DELETE FROM community_servers WHERE host_ip = $1 AND port = $2 AND id <> $3",
+                host_ip, port, known_id);
+            pqxx::result up = txn.exec_params(
+                "UPDATE community_servers "
+                "SET name = $1, description = $2, host_ip = $3, port = $4, "
+                "    member_count = $5, last_heartbeat = NOW() "
+                "WHERE id = $6 RETURNING id",
+                name, description, host_ip, port, member_count, known_id);
+            if (!up.empty()) {
+                txn.commit();
+                return up[0][0].as<int>();
+            }
+            // Unknown id (central DB was reset): fall through and mint a
+            // new row keyed by address; the community re-caches the id.
+        }
         // Schema for community_servers (incl. the picture columns) is
         // created once in initializeDatabase — no DDL on the heartbeat path.
         pqxx::result rs = txn.exec_params(
@@ -815,6 +849,36 @@ AuthManager::getUserCommunities(const std::string& username) {
 
 // --- Custom server pictures ---
 // (see docs/superpowers/specs/2026-05-15-custom-server-pictures-design.md)
+
+int AuthManager::setServerPicture(const std::string& host_ip, int port,
+                                    const std::string& data,
+                                    const std::string& version,
+                                    int64_t known_id) {
+    // Prefer the stable id (see upsertCommunityServer); fall back to the
+    // address for communities that haven't learned their id yet.
+    if (known_id > 0) {
+        try {
+            pqxx::connection conn(db_conn_str_);
+            pqxx::work txn(conn);
+            pqxx::result rs;
+            if (data.empty()) {
+                rs = txn.exec_params(
+                    "UPDATE community_servers SET picture = NULL, picture_version = '' "
+                    "WHERE id = $1 RETURNING id", known_id);
+            } else {
+                rs = txn.exec_params(
+                    "UPDATE community_servers SET picture = $1, picture_version = $2 "
+                    "WHERE id = $3 RETURNING id",
+                    pqxx::binarystring(data.data(), data.size()), version, known_id);
+            }
+            txn.commit();
+            if (!rs.empty()) return rs[0][0].as<int>();
+        } catch (const std::exception& e) {
+            std::cerr << "[DB Error] setServerPicture(id): " << e.what() << "\n";
+        }
+    }
+    return setServerPicture(host_ip, port, data, version);
+}
 
 int AuthManager::setServerPicture(const std::string& host_ip, int port,
                                     const std::string& data,

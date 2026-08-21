@@ -17,7 +17,8 @@ class Authorizer;
 
 // HTTP/TLS endpoint for resumable attachment upload/download. Runs alongside
 // the chat TCP/TLS listener on port+3 — reusing the same certificate. Speaks
-// a minimal subset of HTTP/1.1 (no keepalive, no chunked transfer-encoding):
+// a minimal subset of HTTP/1.1 (persistent connections, no chunked
+// transfer-encoding):
 //
 //   POST /attachments/init                — create pending attachment row
 //   PATCH /attachments/<id>               — append chunk at Upload-Offset

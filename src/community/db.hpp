@@ -543,9 +543,8 @@ public:
     bool can_delete_others(const std::string& username) const;
     // Delete every message + attachment row for `channel_id`, returning
     // the counts and the storage paths whose blobs (and thumbnails) the
-    // server should unlink. The AFTER DELETE trigger on messages mirrors
-    // the deletes into the FTS5 index. Wrapped in a transaction so a
-    // failure mid-way leaves the channel intact.
+    // server should unlink. Wrapped in a transaction so a failure mid-way
+    // leaves the channel intact.
     WipeChannelResult wipe_channel(const std::string& channel_id);
 
     // --- ban purge ---

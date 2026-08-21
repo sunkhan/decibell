@@ -923,6 +923,12 @@ message ServerHeartbeat {
   string host_ip = 3;
   int32 port = 4;
   int32 member_count = 5;
+  // The central-assigned id this community learned from an earlier
+  // SERVER_HEARTBEAT_RES (cached in its DB across restarts); 0 = unknown.
+  // Lets central keep the SAME row (and every user_communities membership)
+  // when the community's public IP or port changes, instead of creating a
+  // new (host_ip, port) row and orphaning the old memberships.
+  int64 server_id = 6;
 }
 
 // --- Invites + Membership ---
@@ -1519,6 +1525,7 @@ message SyncServerPictureReq {
   int32  port = 2;
   bytes  data = 3;
   string version = 4;   // pre-computed by community
+  int64  server_id = 5; // preferred identity when known (see ServerHeartbeat)
 }
 
 message FetchServerPictureReq {

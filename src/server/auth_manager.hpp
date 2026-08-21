@@ -39,7 +39,13 @@ public:
     /// the heartbeat handler to ack the community with its
     /// central-side id via SERVER_HEARTBEAT_RES so it can later
     /// populate Membership{Register,Revoke}Req packets.
-    int upsertCommunityServer(const std::string& name, const std::string& description, const std::string& host_ip, int port, int member_count);
+    // `known_id` > 0 (the id the community cached from an earlier heartbeat
+    // response) updates THAT row — host/port included — so an IP or port
+    // change keeps the server's identity and every membership row. 0 falls
+    // back to the (host_ip, port) upsert.
+    int upsertCommunityServer(const std::string& name, const std::string& description,
+                              const std::string& host_ip, int port, int member_count,
+                              int64_t known_id = 0);
 
     // Invite lookup (community servers register invites here so clients can
     // redeem a raw code without knowing the hosting server's host:port).
@@ -159,6 +165,10 @@ public:
     /// assigned id, or 0 if no matching row exists yet (the
     /// community's first heartbeat hasn't landed). Empty `data`
     /// means removal: column is set NULL, version becomes ''.
+    int setServerPicture(const std::string& host_ip, int port,
+                         const std::string& data,
+                         const std::string& version,
+                         int64_t known_id);
     int setServerPicture(const std::string& host_ip, int port,
                           const std::string& data,
                           const std::string& version);

@@ -82,6 +82,18 @@ public:
     }
 
     std::string username() const { return username_; }
+
+    /// Cancel in-flight I/O and close the socket. SessionManager::leave()
+    /// calls this: removing the session from the set was never enough —
+    /// the pending async_read kept the Session alive, so a kicked or
+    /// swept session stayed `authenticated_`, could still send DMs and
+    /// friend actions, yet was invisible to presence / send_private and
+    /// never swept again (sweep iterates sessions_).
+    void close_connection() {
+        boost::system::error_code ec;
+        socket_.lowest_layer().cancel(ec);
+        socket_.lowest_layer().close(ec);
+    }
     /// The user's current avatar_version, loaded at login and
     /// refreshed inline on UPDATE_AVATAR_REQ. broadcast_presence
     /// reads this so each UserPresence entry carries the version
@@ -662,7 +674,8 @@ private:
             auto& hb = packet.server_heartbeat();
             std::cout << "[Server] Heartbeat from community server: " << hb.name() << " at " << hb.host_ip() << ":" << hb.port() << "\n";
             int server_id = auth_manager_.upsertCommunityServer(
-                hb.name(), hb.description(), hb.host_ip(), hb.port(), hb.member_count());
+                hb.name(), hb.description(), hb.host_ip(), hb.port(), hb.member_count(),
+                hb.server_id());
 
             // Auto-rejoin: reply with the assigned server_id so the
             // community can populate Membership{Register,Revoke}Req on
@@ -751,7 +764,7 @@ private:
             }
             const auto& req = packet.sync_server_picture_req();
             int server_id = auth_manager_.setServerPicture(
-                req.host(), req.port(), req.data(), req.version());
+                req.host(), req.port(), req.data(), req.version(), req.server_id());
 
             if (server_id == 0) {
                 std::cout << "[Server] Dropped sync_server_picture - unknown community "
@@ -897,6 +910,9 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
     }
     
     if (removed) {
+        // Actually end the connection. Idempotent on an already-closed
+        // socket (the read/write error paths arrive here too).
+        session->close_connection();
         std::cout << "[Manager] Session left. Total: " << total << "\n";
         if (!user.empty()) {
             broadcast_presence();  

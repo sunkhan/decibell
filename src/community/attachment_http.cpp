@@ -94,6 +94,7 @@ std::optional<std::string> verify_jwt(const std::string& token, const std::strin
 
 struct HttpRequest {
     std::string method;
+    std::string version;                                 // "HTTP/1.1" / "HTTP/1.0"
     std::string path;                                    // path only, no query
     std::unordered_map<std::string, std::string> query;
     std::unordered_map<std::string, std::string> headers; // lowercased keys
@@ -119,6 +120,7 @@ bool HttpRequest::parse_head(const std::string& head) {
     auto sp2 = line.find(' ', sp1 + 1);
     if (sp2 == std::string::npos) return false;
     method = line.substr(0, sp1);
+    version = line.substr(sp2 + 1);
     std::string raw_path = line.substr(sp1 + 1, sp2 - sp1 - 1);
 
     // Split query string.
@@ -289,6 +291,23 @@ private:
     }
 
     void on_head_ready() {
+        // HTTP/1.1 keep-alive (P8): one TLS handshake per *connection*
+        // instead of per request — a 100 MB upload in 256 KB PATCHes used
+        // to pay ~400 handshakes. HTTP/1.1 defaults to persistent unless
+        // `Connection: close`; HTTP/1.0 only with an explicit keep-alive.
+        // Any error response or a request whose body we don't consume
+        // forces a close (we can't resync the stream), see force_close_.
+        {
+            const std::string conn = lower(req_.header("connection"));
+            keep_alive_ = req_.version == "HTTP/1.0" ? conn == "keep-alive"
+                                                     : conn != "close";
+            force_close_ = false;
+            // Bodies on GET/HEAD/DELETE are never read — don't reuse then.
+            if ((req_.method == "GET" || req_.method == "HEAD" || req_.method == "DELETE") &&
+                req_.content_length > 0) {
+                force_close_ = true;
+            }
+        }
         // All endpoints require an Authorization header. Single failure path
         // keeps the dispatch below clean.
         if (req_.authorization_token.empty()) { send_error(401, "Unauthorized"); return; }
@@ -566,10 +585,10 @@ private:
         // Respond 204 with Upload-Offset so the client knows where we are.
         std::string resp =
             "HTTP/1.1 204 No Content\r\n"
-            "Upload-Offset: " + std::to_string(patch_final_) + "\r\n"
-            "Connection: close\r\n"
+            "Upload-Offset: " + std::to_string(patch_final_) + "\r\n" +
+            conn_header() +
             "Content-Length: 0\r\n\r\n";
-        send_raw_and_close(std::move(resp));
+        send_response(std::move(resp));
     }
 
     // ---- endpoint: HEAD /attachments/<id> ----
@@ -596,10 +615,10 @@ private:
             "HTTP/1.1 200 OK\r\n"
             "Upload-Offset: " + std::to_string(offset) + "\r\n"
             "Upload-Length: " + std::to_string(att->expected_size) + "\r\n"
-            "Upload-Status: " + att->upload_status + "\r\n"
-            "Connection: close\r\n"
+            "Upload-Status: " + att->upload_status + "\r\n" +
+            conn_header() +
             "Content-Length: 0\r\n\r\n";
-        send_raw_and_close(std::move(resp));
+        send_response(std::move(resp));
     }
 
     // ---- endpoint: POST /attachments/<id>/complete ----
@@ -740,8 +759,8 @@ private:
             std::string thumb_headers =
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: image/jpeg\r\n"
-                "Content-Length: " + std::to_string(thumb_total) + "\r\n"
-                "Connection: close\r\n\r\n";
+                "Content-Length: " + std::to_string(thumb_total) + "\r\n" +
+                conn_header() + "\r\n";
             auto self_t = shared_from_this();
             auto hdr_t = std::make_shared<std::string>(std::move(thumb_headers));
             boost::asio::async_write(socket_, boost::asio::buffer(*hdr_t),
@@ -802,7 +821,7 @@ private:
         headers += "Content-Disposition: attachment\r\n";
         headers += "Content-Length: " + std::to_string(body_len) + "\r\n";
         headers += "Accept-Ranges: bytes\r\n";
-        headers += "Connection: close\r\n\r\n";
+        headers += conn_header() + "\r\n";
 
         auto self = shared_from_this();
         auto hdr = std::make_shared<std::string>(std::move(headers));
@@ -921,20 +940,23 @@ private:
         if (!ok) {
             send_error(500, "Internal Server Error"); return;
         }
-        send_raw_and_close(
-            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        send_response("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n" + conn_header() + "\r\n");
     }
 
     void send_file_body(std::shared_ptr<std::FILE*> fp, int64_t remaining) {
         if (remaining == 0) {
             if (fp && *fp) { std::fclose(*fp); *fp = nullptr; }
+            finish_request();
             return;
         }
         const size_t want = static_cast<size_t>(std::min<int64_t>(remaining, GET_BUF_SIZE));
         auto buf = std::make_shared<std::vector<char>>(want);
         const size_t got = std::fread(buf->data(), 1, want, *fp);
         if (got == 0) {
+            // Short read mid-body: the declared Content-Length can't be
+            // honoured, so the connection must not be reused.
             if (fp && *fp) { std::fclose(*fp); *fp = nullptr; }
+            graceful_close();
             return;
         }
         buf->resize(got);
@@ -963,32 +985,56 @@ private:
         std::filesystem::remove(*path + ".thumb-320px.jpg", ec);
         std::filesystem::remove(*path + ".thumb-640px.jpg", ec);
         std::filesystem::remove(*path + ".thumb-1280px.jpg", ec);
-        send_raw_and_close("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        send_response("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n" + conn_header() + "\r\n");
     }
 
     // ---- response helpers ----
+
+    bool will_keep_alive() const { return keep_alive_ && !force_close_; }
+    std::string conn_header() const {
+        return will_keep_alive() ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+    }
 
     void send_json(int status, const std::string& reason, const std::string& body) {
         std::string resp =
             "HTTP/1.1 " + std::to_string(status) + " " + reason + "\r\n"
             "Content-Type: application/json\r\n"
-            "Content-Length: " + std::to_string(body.size()) + "\r\n"
-            "Connection: close\r\n\r\n" + body;
-        send_raw_and_close(std::move(resp));
+            "Content-Length: " + std::to_string(body.size()) + "\r\n" +
+            conn_header() + "\r\n" + body;
+        send_response(std::move(resp));
     }
 
+    // Errors may be sent before a request body was consumed, so the
+    // stream can't be reused afterwards.
     void send_error(int status, const std::string& reason) {
+        force_close_ = true;
         const std::string body = "{\"error\":\"" + reason + "\"}";
         send_json(status, reason, body);
     }
 
-    void send_raw_and_close(std::string data) {
+    // Write a complete response, then either serve the next request on
+    // this connection (keep-alive) or close.
+    void send_response(std::string data) {
         auto self = shared_from_this();
         auto buf = std::make_shared<std::string>(std::move(data));
         boost::asio::async_write(socket_, boost::asio::buffer(*buf),
-            [this, self, buf](const boost::system::error_code&, std::size_t) {
-                graceful_close();
+            [this, self, buf](const boost::system::error_code& ec, std::size_t) {
+                if (ec) { graceful_close(); return; }
+                finish_request();
             });
+    }
+
+    void finish_request() {
+        if (!will_keep_alive()) { graceful_close(); return; }
+        // Reset per-request state; head_buf_ may already hold the start
+        // of a pipelined next request, which async_read_until consumes.
+        req_ = HttpRequest{};
+        username_.clear();
+        body_.clear();
+        patch_id_ = 0; patch_final_ = 0; patch_remain_ = 0; patch_fp_.reset(); patch_chunk_.clear();
+        thumb_id_ = 0; thumb_remain_ = 0; thumb_size_px_ = 0; thumb_path_.clear(); thumb_buf_.clear();
+        arm_deadline();
+        read_head();
     }
 
     // TLS close_notify, asynchronously and with a deadline. This used to
@@ -997,9 +1043,9 @@ private:
     // thread shared with chat, auth and both UDP relays. Any peer that
     // completed a TLS handshake (no credentials needed), received its
     // response and simply went silent froze the whole server until it
-    // hung up. Every response is Connection: close with a Content-Length,
-    // so a peer that doesn't answer the close_notify within the deadline
-    // loses nothing when we just drop the socket.
+    // hung up. Every response carries a Content-Length, so a peer that
+    // doesn't answer the close_notify within the deadline loses nothing
+    // when we just drop the socket.
     void graceful_close() {
         auto self = shared_from_this();
         deadline_timer_.cancel();
@@ -1037,6 +1083,8 @@ private:
     boost::asio::streambuf head_buf_{16 * 1024};
     HttpRequest req_;
     std::string username_;
+    bool keep_alive_ = false;
+    bool force_close_ = false;
     std::vector<char> body_; // small-body JSON endpoints only
 
     // PATCH streaming state

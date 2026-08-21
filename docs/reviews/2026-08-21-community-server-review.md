@@ -82,8 +82,8 @@ Client ──TLS 8080──▶ Central   auth/JWT, friends, DMs, presence, direc
 | B26 ✅ | Low | `main.cpp:3360` voice UDP; `:808` | AUDIO path doesn't validate `payload_size` vs `bytes_recvd` like VIDEO does; `STOP_WATCHING_REQ` fires `LEFT` notify for never-subscribed watchers. |
 | B27 ✅ | Low | `main.cpp:2614` `CHANNEL_PRUNED` | One id per pruned row; enabling text retention on a channel with 1M old messages = one multi-MB packet. Send `pruned_before_id` instead. |
 | B28 | Low | `main.cpp:822` | `FETCH_STREAM_THUMBNAIL_REQ` works for any member regardless of voice-channel membership. |
-| B29 | Low (central) | `src/server/main.cpp:888-905` | Central `SessionManager::leave` never closes the socket — kicked/swept central sessions become ghosts that can still send DMs (same class batch 11 fixed community-side). |
-| B30 | Low (central) | `auth_manager.cpp:262`, `:291` | Directory never expires (`last_heartbeat` never read); a community whose public IP changes gets a new `server_id` and orphans every `user_communities` row. |
+| B29 ✅ | Low (central) | `src/server/main.cpp:888-905` | Central `SessionManager::leave` never closes the socket — kicked/swept central sessions become ghosts that can still send DMs (same class batch 11 fixed community-side). |
+| B30 ✅ | Low (central) | `auth_manager.cpp:262`, `:291` | Directory never expires (`last_heartbeat` never read); a community whose public IP changes gets a new `server_id` and orphans every `user_communities` row. |
 
 ## 3. Performance / scalability
 
@@ -93,10 +93,10 @@ Client ──TLS 8080──▶ Central   auth/JWT, friends, DMs, presence, direc
 | P2 ✅ | Med **[×2]** | `has_permission()`/`member_level()` = 2–3 `sqlite3_prepare_v2` each incl. `get_meta_("owner")`; no prepared-statement cache anywhere (`Stmt` re-prepares every call; `create_channel`/`normalize_channel_order_` prepare one UPDATE per row in a loop). Cache owner in memory, cache per-user effective perms + level (invalidate on role/member-role/ban change), cache statements. Mandatory once `SEND_MESSAGES` is checked on every message. |
 | P3 ✅ | Med **[×2]** | `find_session_by_username`, `relay_keyframe_request`, `relay_nack` are O(sessions) linear scans under `mutex_` — NACKs and watcher notifies are hot-path. A `username → sessions` index fixes this and B4 together. |
 | P4 ✅ | Med **[×2]** | Every `sync_*` spawns a detached thread + a fresh TLS handshake to central. A restart-driven reconnect storm = N threads, N simultaneous TLS connections, up to 5 s each. The heartbeat thread captures `&manager` and can outlive `run()`. One worker thread + bounded queue (also gives ordering: a revoke can't overtake its register). |
-| P5 | Med | UDP relay: 2 + N heap allocations per relayed datagram (`make_shared<vector>` copy, `targets` vector, one `async_send_to` completion per recipient) and one datagram per reactor wakeup. For 10 voice users at 50 pps ≈ 4,500 heap-allocated sends/s. Non-blocking sync `send_to` (drop on EWOULDBLOCK), `thread_local` target buffer, drain the socket in a loop per wakeup. |
-| P6 | Low | FTS5 triggers double every message write and make wipe/prune row-by-row tokenise-and-delete, for a search UI that doesn't exist yet. Either ship search or drop the triggers and `rebuild` when you do. |
+| P5 ✅ | Med | UDP relay: 2 + N heap allocations per relayed datagram (`make_shared<vector>` copy, `targets` vector, one `async_send_to` completion per recipient) and one datagram per reactor wakeup. For 10 voice users at 50 pps ≈ 4,500 heap-allocated sends/s. Non-blocking sync `send_to` (drop on EWOULDBLOCK), `thread_local` target buffer, drain the socket in a loop per wakeup. |
+| P6 ✅ | Low | FTS5 triggers double every message write and make wipe/prune row-by-row tokenise-and-delete, for a search UI that doesn't exist yet. Either ship search or drop the triggers and `rebuild` when you do. |
 | P7 ✅ | Low **[×2]** | No index on `attachments(channel_id)` (wipe/delete_channel full-scan); legacy rows have `channel_id=''` and are orphaned by wipe/delete. `member_count()` loads every row per heartbeat. `send_initial_voice_presences` re-serialises per joiner under the lock. 8 copies of the framing code (`create_framed_packet` exists). |
-| P8 | Low | Attachment HTTP is `Connection: close`; each PATCH chunk pays a TLS handshake. 2 MiB UDP socket buffers are silently capped by `net.core.rmem_max` — log the effective size. |
+| P8 ✅ | Low | Attachment HTTP is `Connection: close`; each PATCH chunk pays a TLS handshake. 2 MiB UDP socket buffers are silently capped by `net.core.rmem_max` — log the effective size. |
 
 ## 4. Design smells that will fight the roles / management / moderation work
 
@@ -144,6 +144,10 @@ MEMBER_REMOVE deltas with a revision, separate ban list (109 e2e checks).
 Batch 17 (2026-08-22): server management + moderation — rename,
 audit log, timeouts, ban expiry/purge, slowmode, voice moderation,
 ownership transfer (B15, D3, D4, D5 ✅; 151 e2e checks).
+
+Batch 18 (2026-08-22): P5 relay, P6 FTS, P8 keep-alive, central B29/B30 ✅
+(163 e2e checks). Remaining from this review: B22/B24/B28 (cosmetic),
+Theme A.
 
 ## 5. Suggested order of work
 

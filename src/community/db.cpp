@@ -458,32 +458,20 @@ void CommunityDb::migrate_to_v2_() {
         "WHERE channel_id = '' AND message_id > 0 "
         "  AND EXISTS (SELECT 1 FROM messages WHERE messages.id = attachments.message_id);");
 
-    // FTS5 virtual table shadowing messages.content. Populated/kept in sync
-    // via triggers so search is ready the moment we ship a search UI.
-    // `content='messages'` keeps FTS5 content-less (stored in the source
-    // table) to halve overhead vs. a fully-materialized FTS copy.
-    exec_sql(db_,
-        "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5("
-        "  content, sender UNINDEXED, channel_id UNINDEXED,"
-        "  content='messages', content_rowid='id'"
-        ");");
-    exec_sql(db_,
-        "CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN "
-        "  INSERT INTO messages_fts(rowid, content, sender, channel_id) "
-        "  VALUES (new.id, new.content, new.sender, new.channel_id);"
-        "END;");
-    exec_sql(db_,
-        "CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN "
-        "  INSERT INTO messages_fts(messages_fts, rowid, content, sender, channel_id) "
-        "  VALUES('delete', old.id, old.content, old.sender, old.channel_id);"
-        "END;");
-    exec_sql(db_,
-        "CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN "
-        "  INSERT INTO messages_fts(messages_fts, rowid, content, sender, channel_id) "
-        "  VALUES('delete', old.id, old.content, old.sender, old.channel_id);"
-        "  INSERT INTO messages_fts(rowid, content, sender, channel_id) "
-        "  VALUES (new.id, new.content, new.sender, new.channel_id);"
-        "END;");
+    // Message search (FTS5) is NOT maintained yet (P6): the previous
+    // schema mirrored every message into a content-less FTS5 table via
+    // AFTER INSERT/DELETE/UPDATE triggers, which doubled every write and
+    // made wipes / prunes / ban purges tokenise and delete row by row —
+    // for a search UI that doesn't exist. Drop the triggers and the table
+    // once; when search ships, recreate them and backfill with
+    //   INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
+    if (get_meta_("fts_dropped_v8").empty()) {
+        exec_sql(db_, "DROP TRIGGER IF EXISTS messages_ai;");
+        exec_sql(db_, "DROP TRIGGER IF EXISTS messages_ad;");
+        exec_sql(db_, "DROP TRIGGER IF EXISTS messages_au;");
+        exec_sql(db_, "DROP TABLE IF EXISTS messages_fts;");
+        set_meta_("fts_dropped_v8", "1");
+    }
 
     set_meta_("schema_version", "3");
 
@@ -1925,7 +1913,6 @@ std::optional<CommunityDb::WipeChannelResult> CommunityDb::delete_channel(
         }
     }
     if (ok) {
-        // FTS5 mirror rows follow via the AFTER DELETE trigger.
         Stmt del(db_, "DELETE FROM messages WHERE channel_id=?;");
         ok = del.s != nullptr;
         if (ok) {
@@ -2437,8 +2424,7 @@ CommunityDb::WipeChannelResult CommunityDb::wipe_channel(const std::string& chan
 
     // Wrap the destructive bit in a transaction so a failure mid-way
     // doesn't leave us with messages without their attachments (or vice
-    // versa). The AFTER DELETE trigger on messages mirrors deletes into
-    // FTS5 row-by-row.
+    // versa).
     if (!exec_sql(db_, "BEGIN;")) return out;
 
     auto rollback_and_return = [&](WipeChannelResult& r) -> WipeChannelResult& {
@@ -2521,8 +2507,7 @@ CommunityDb::DeleteMessageResult CommunityDb::delete_message(
         if (q.step() != SQLITE_DONE) { rollback(); return result; }
     }
 
-    // Delete the message row. FTS5 mirror trigger handles the index
-    // sync — no manual FTS DELETE needed (same as in wipe_channel).
+    // Delete the message row.
     bool deleted = false;
     {
         Stmt q(db_, "DELETE FROM messages WHERE id=? AND channel_id=?;");

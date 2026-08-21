@@ -1065,6 +1065,108 @@ def test_voice_moderation():
     dee.close(); owner.close()
 
 
+def udp_audio_packet(jwt_token, seq, payload):
+    sid = jwt_token[-31:].encode().ljust(32, b"\0")
+    return bytes([0]) + sid + struct.pack("<HH", seq, len(payload)) + payload
+
+
+def test_udp_relay():
+    print("[udp] voice relay: ping echo, audio fan-out, server-mute drop, media ping")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ann = join("ann", owner); bob = join("bobby", owner)
+    for c in (ann, bob):
+        c.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "bobby" in p.voice_presence_update.active_users)
+    ua = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ua.bind((HOST, 0)); ua.settimeout(2)
+    ub = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ub.bind((HOST, 0)); ub.settimeout(2)
+    # PING echo on the voice socket
+    ping = bytes([5]) + b"\0" * 32 + struct.pack("<I", 1234)
+    ua.sendto(ping, (HOST, 8083))
+    check("voice PING echoed", ua.recv(2048) == ping)
+    # register endpoints: each sends one AUDIO packet (relayed to the other)
+    ub.sendto(udp_audio_packet(bob.jwt, 1, b"b0"), (HOST, 8083))
+    ua.sendto(udp_audio_packet(ann.jwt, 1, b"a0"), (HOST, 8083))
+    try:
+        got = ub.recv(2048)
+    except socket.timeout:
+        got = b""
+    check("audio relayed to the other member with sender rewritten", got[1:33].rstrip(b"\0") == b"ann" and got[-2:] == b"a0")
+    # burst: 50 packets, all delivered (drain-per-wakeup path)
+    for i in range(50):
+        ua.sendto(udp_audio_packet(ann.jwt, 2 + i, b"x" * 100), (HOST, 8083))
+    n = 0
+    ub.settimeout(0.5)
+    try:
+        while True:
+            ub.recv(2048); n += 1
+    except socket.timeout:
+        pass
+    check("burst of 50 relayed (drained per wakeup)", n == 50, f"got {n}")
+    # server-mute ann → her audio is dropped at the relay
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="ann", action=pb.VoiceModRequest.SERVER_MUTE))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
+    time.sleep(0.3)
+    ua.sendto(udp_audio_packet(ann.jwt, 99, b"muted"), (HOST, 8083))
+    ub.settimeout(1.0)
+    try:
+        ub.recv(2048); dropped = False
+    except socket.timeout:
+        dropped = True
+    check("server-muted member's audio dropped by the relay", dropped)
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="ann", action=pb.VoiceModRequest.SERVER_UNMUTE))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
+    # media socket PING echo (also registers the media endpoint)
+    um = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); um.bind((HOST, 0)); um.settimeout(2)
+    mping = bytes([5]) + ann.jwt[-31:].encode().ljust(32, b"\0") + struct.pack("<I", 7)
+    um.sendto(mping, (HOST, 8084))
+    check("media PING echoed", um.recv(2048) == mping)
+    for sk in (ua, ub, um): sk.close()
+    ann.close(); bob.close(); owner.close()
+
+
+def test_http_keepalive_and_fts():
+    print("[http] keep-alive on the attachment listener; FTS dropped")
+    check("messages_fts table gone", sql("select count(*) from sqlite_master where name='messages_fts'") == [(0,)])
+    check("FTS triggers gone", sql("select count(*) from sqlite_master where type='trigger' and name like 'messages_a%'") == [(0,)])
+    now = int(time.time())
+    mid = sql("insert into messages(channel_id, sender, content, timestamp) values('general','alice','ka',?) returning id", now)[0][0]
+    path = os.path.join(RUN, "att", "ka.bin"); os.makedirs(os.path.dirname(path), exist_ok=True); open(path, "wb").write(b"0123456789")
+    aid = sql("insert into attachments(message_id, kind, filename, mime, size_bytes, storage_path, position, created_at, upload_status, uploader, channel_id) "
+              "values(?,2,'ka.bin','application/octet-stream',10,?,0,?,'ready','alice','general') returning id", mid, path, now)[0][0]
+    sk = raw_tls(8085)
+    def request(extra=""):
+        sk.sendall(f"GET /attachments/{aid} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {jwt('alice')}\r\n{extra}\r\n".encode())
+        sk.settimeout(3); data = b""
+        while b"\r\n\r\n" not in data:
+            data += sk.recv(4096)
+        head, body = data.split(b"\r\n\r\n", 1)
+        clen = int([l for l in head.split(b"\r\n") if l.lower().startswith(b"content-length:")][0].split(b":")[1])
+        while len(body) < clen:
+            body += sk.recv(4096)
+        return head, body
+    h1, b1 = request()
+    check("first GET on connection: 200 + keep-alive", h1.startswith(b"HTTP/1.1 200") and b"keep-alive" in h1.lower() and b1 == b"0123456789")
+    h2, b2 = request()
+    check("second GET on the SAME connection served", h2.startswith(b"HTTP/1.1 200") and b2 == b"0123456789")
+    h3, b3 = request("Connection: close\r\n")
+    check("Connection: close honoured", h3.startswith(b"HTTP/1.1 200") and b"connection: close" in h3.lower())
+    check("server closed after it", socket_closed(sk, 3.0))
+    sk.close()
+    # an error response closes too
+    sk = raw_tls(8085)
+    sk.sendall(b"GET /attachments/999999 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer " + jwt("alice").encode() + b"\r\n\r\n")
+    sk.settimeout(3); data = b""
+    try:
+        while True:
+            chunk = sk.recv(4096)
+            if not chunk: break
+            data += chunk
+    except socket.timeout:
+        pass
+    check("error response carries Connection: close and closes", data.startswith(b"HTTP/1.1 404") and b"connection: close" in data.lower())
+    sk.close()
+
+
 def test_auth_failure_closes():
     print("[regression] failed auth still delivers response then closes")
     c = Client("nobody")
@@ -1104,6 +1206,8 @@ if __name__ == "__main__":
         test_ban_expiry_and_purge()
         test_slowmode()
         test_voice_moderation()
+        test_udp_relay()
+        test_http_keepalive_and_fts()
     finally:
         stop_server(proc)
     test_b9_timeouts()

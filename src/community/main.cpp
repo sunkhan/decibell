@@ -333,6 +333,7 @@ public:
                                      const std::string& sender_username);
     void broadcast_to_watchers(const char* data, size_t length, const std::string& channel_id, const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket);
     void broadcast_to_watchers_voice(const char* data, size_t length, const std::string& channel_id, const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket);
+    void send_udp_to_targets(const char* data, size_t length, boost::asio::ip::udp::socket& udp_socket);
     void set_udp_socket(boost::asio::ip::udp::socket* sock) { udp_socket_ptr_ = sock; }
     void set_media_udp_socket(boost::asio::ip::udp::socket* sock) { media_udp_socket_ptr_ = sock; }
     // Index an authenticated session by its udp_key (UDP sender lookup)
@@ -461,6 +462,9 @@ private:
         last_keyframe_relay_;
 
     uint32_t max_streams_per_channel_ = 8;  // 0 = unlimited
+    // Reusable fan-out scratch (io thread only). Avoids a heap allocation
+    // per relayed datagram.
+    std::vector<boost::asio::ip::udp::endpoint> udp_targets_;
     boost::asio::ip::udp::socket* udp_socket_ptr_ = nullptr;
     boost::asio::ip::udp::socket* media_udp_socket_ptr_ = nullptr;
 
@@ -3617,17 +3621,25 @@ void SessionManager::broadcast_to_voice_channel_tcp(const chatproj::Packet& pack
     }
 }
 
-void SessionManager::broadcast_to_voice_channel(const char* data, size_t length, const std::string& channel_id, std::shared_ptr<Session> sender, boost::asio::ip::udp::socket& udp_socket) {
-    // Copy the data into a shared buffer so it remains valid for the async sends,
-    // since the caller's udp_buffer_ will be overwritten by the next received packet.
-    auto buffer = std::make_shared<std::vector<char>>(data, data + length);
+void SessionManager::send_udp_to_targets(const char* data, size_t length,
+                                         boost::asio::ip::udp::socket& udp_socket) {
+    // Synchronous sends on a non-blocking socket: the kernel copies the
+    // datagram immediately (or reports would_block, in which case we drop
+    // — it's real-time media, a late packet is worse than a lost one). No
+    // per-datagram heap buffer, no per-recipient completion handler.
+    for (const auto& ep : udp_targets_) {
+        boost::system::error_code ec;
+        udp_socket.send_to(boost::asio::buffer(data, length), ep, 0, ec);
+    }
+}
 
-    // Snapshot recipient endpoints under the lock, then release it before
-    // issuing async_send_to calls. Holding the SessionManager mutex across
-    // per-recipient iteration serialized every other voice-channel operation
-    // (joins, leaves, state updates) behind the fanout loop — the dominant
-    // cause of voice glitches when more than two users shared a channel.
-    std::vector<boost::asio::ip::udp::endpoint> targets;
+void SessionManager::broadcast_to_voice_channel(const char* data, size_t length, const std::string& channel_id, std::shared_ptr<Session> sender, boost::asio::ip::udp::socket& udp_socket) {
+    // Snapshot recipient endpoints under the lock into the reusable
+    // scratch vector, release, then send. Holding the SessionManager mutex
+    // across the fan-out serialized every other voice-channel operation
+    // behind it — the dominant cause of voice glitches with >2 users.
+    auto& targets = udp_targets_;
+    targets.clear();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = voice_channels_.find(channel_id);
@@ -3647,14 +3659,7 @@ void SessionManager::broadcast_to_voice_channel(const char* data, size_t length,
             }
         }
     }
-
-    for (auto& ep : targets) {
-        udp_socket.async_send_to(
-            boost::asio::buffer(*buffer), ep,
-            [buffer](boost::system::error_code /*ec*/, std::size_t /*bytes_sent*/) {
-                // buffer captured to extend its lifetime until send completes
-            });
-    }
+    send_udp_to_targets(data, length, udp_socket);
 }
 
 void SessionManager::relay_keyframe_request(const std::string& target_username, boost::asio::ip::udp::socket& udp_socket) {
@@ -3685,11 +3690,9 @@ void SessionManager::relay_keyframe_request(const std::string& target_username, 
     }
     for (auto& session : it->second) {
         if (session->get_udp_media_endpoint().port() != 0) {
-            auto buffer = std::make_shared<std::vector<char>>(reinterpret_cast<const char*>(&req),
-                                                               reinterpret_cast<const char*>(&req) + sizeof(req));
-            udp_socket.async_send_to(
-                boost::asio::buffer(*buffer), session->get_udp_media_endpoint(),
-                [buffer](boost::system::error_code, std::size_t) {});
+            boost::system::error_code ec;
+            udp_socket.send_to(boost::asio::buffer(&req, sizeof(req)),
+                               session->get_udp_media_endpoint(), 0, ec);
             return;
         }
     }
@@ -3701,10 +3704,9 @@ void SessionManager::relay_nack(const char* data, size_t length, const std::stri
     if (it == sessions_by_user_.end()) return;
     for (auto& session : it->second) {
         if (session->get_udp_media_endpoint().port() != 0) {
-            auto buffer = std::make_shared<std::vector<char>>(data, data + length);
-            udp_socket.async_send_to(
-                boost::asio::buffer(*buffer), session->get_udp_media_endpoint(),
-                [buffer](boost::system::error_code, std::size_t) {});
+            boost::system::error_code ec;
+            udp_socket.send_to(boost::asio::buffer(data, length),
+                               session->get_udp_media_endpoint(), 0, ec);
             return;
         }
     }
@@ -3812,12 +3814,11 @@ bool SessionManager::remove_watcher(std::shared_ptr<Session> watcher, const std:
 
 void SessionManager::broadcast_to_watchers(const char* data, size_t length, const std::string& channel_id,
                                             const std::string& streamer_username, boost::asio::ip::udp::socket& udp_socket) {
-    auto buffer = std::make_shared<std::vector<char>>(data, data + length);
-
     // Snapshot watcher endpoints under the lock, release, then send. Same
     // rationale as broadcast_to_voice_channel — keeps the manager mutex free
     // for joins/leaves while the video/audio fanout is in flight.
-    std::vector<boost::asio::ip::udp::endpoint> targets;
+    auto& targets = udp_targets_;
+    targets.clear();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto ch_it = stream_watchers_.find(channel_id);
@@ -3831,12 +3832,7 @@ void SessionManager::broadcast_to_watchers(const char* data, size_t length, cons
             }
         }
     }
-
-    for (auto& ep : targets) {
-        udp_socket.async_send_to(
-            boost::asio::buffer(*buffer), ep,
-            [buffer](boost::system::error_code, std::size_t) {});
-    }
+    send_udp_to_targets(data, length, udp_socket);
 }
 
 void SessionManager::broadcast_to_watchers_voice(const char* data, size_t length, const std::string& channel_id,
@@ -3849,8 +3845,8 @@ void SessionManager::broadcast_to_watchers_voice(const char* data, size_t length
     // loop — which only knows VIDEO / FEC and silently drops everything
     // else, the bug that left watchers hearing nothing despite the
     // streamer's encode loop chugging along.
-    auto buffer = std::make_shared<std::vector<char>>(data, data + length);
-    std::vector<boost::asio::ip::udp::endpoint> targets;
+    auto& targets = udp_targets_;
+    targets.clear();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto ch_it = stream_watchers_.find(channel_id);
@@ -3864,11 +3860,7 @@ void SessionManager::broadcast_to_watchers_voice(const char* data, size_t length
             }
         }
     }
-    for (auto& ep : targets) {
-        udp_socket.async_send_to(
-            boost::asio::buffer(*buffer), ep,
-            [buffer](boost::system::error_code, std::size_t) {});
-    }
+    send_udp_to_targets(data, length, udp_socket);
 }
 
 void SessionManager::relay_keyframe_request_internal(const std::string& target_username) {
@@ -4257,6 +4249,7 @@ void SessionManager::sync_server_picture(const std::string& data,
     req->set_port(community_port_);
     req->set_data(data);
     req->set_version(version);
+    req->set_server_id(server_id());
 
     std::string serialized;
     packet.SerializeToString(&serialized);
@@ -4343,6 +4336,12 @@ public:
         ssl_context_.use_certificate_chain_file("server.crt");
         ssl_context_.use_private_key_file("server.key", ssl::context::pem);
 
+        // User-level non-blocking: the relay uses synchronous send_to /
+        // receive_from (drop on would_block) instead of one heap-allocated
+        // async operation per datagram per recipient.
+        udp_socket_.non_blocking(true);
+        media_udp_socket_.non_blocking(true);
+
         // Voice UDP socket buffers
         udp_socket_.set_option(boost::asio::socket_base::receive_buffer_size(2 * 1024 * 1024));
         udp_socket_.set_option(boost::asio::socket_base::send_buffer_size(2 * 1024 * 1024));
@@ -4391,17 +4390,31 @@ private:
         udp_socket_.async_receive_from(
             boost::asio::buffer(udp_buffer_, sizeof(udp_buffer_)), udp_sender_endpoint_,
             [this](boost::system::error_code ec, std::size_t bytes_recvd) {
-                if (!ec && bytes_recvd >= 1) {
+                if (!ec) handle_voice_datagram(bytes_recvd);
+                // Drain everything else that's already queued in the
+                // kernel before yielding back to the reactor: one datagram
+                // per epoll wakeup was the dominant per-packet cost under
+                // load. Bounded so TCP handlers still get the thread.
+                for (int i = 0; i < kMaxDrainPerWakeup; ++i) {
+                    boost::system::error_code dec;
+                    const std::size_t n = udp_socket_.receive_from(
+                        boost::asio::buffer(udp_buffer_, sizeof(udp_buffer_)), udp_sender_endpoint_, 0, dec);
+                    if (dec) break;   // would_block = drained
+                    handle_voice_datagram(n);
+                }
+                do_receive_voice_udp();
+            });
+    }
+
+    void handle_voice_datagram(std::size_t bytes_recvd) {
+                if (bytes_recvd >= 1) {
                     uint8_t packet_type = static_cast<uint8_t>(udp_buffer_[0]);
 
                     // PING: echo back immediately
                     if (packet_type == chatproj::UdpPacketType::PING) {
-                        auto echo_buf = std::make_shared<std::vector<uint8_t>>(
-                            udp_buffer_, udp_buffer_ + bytes_recvd);
-                        udp_socket_.async_send_to(
-                            boost::asio::buffer(*echo_buf), udp_sender_endpoint_,
-                            [echo_buf](boost::system::error_code, std::size_t) {});
-                        do_receive_voice_udp();
+                        boost::system::error_code sec;
+                        udp_socket_.send_to(boost::asio::buffer(udp_buffer_, bytes_recvd),
+                                            udp_sender_endpoint_, 0, sec);
                         return;
                     }
 
@@ -4459,8 +4472,6 @@ private:
                         }
                     }
                 }
-                do_receive_voice_udp();
-            });
     }
 
     // ── Media UDP receive chain (VIDEO, FEC, KEYFRAME_REQUEST, NACK) ────────
@@ -4468,7 +4479,24 @@ private:
         media_udp_socket_.async_receive_from(
             boost::asio::buffer(media_udp_buffer_, sizeof(media_udp_buffer_)), media_udp_sender_endpoint_,
             [this](boost::system::error_code ec, std::size_t bytes_recvd) {
-                if (!ec && bytes_recvd >= 1) {
+                if (!ec) handle_media_datagram(bytes_recvd);
+                // Drain everything else that's already queued in the
+                // kernel before yielding back to the reactor: one datagram
+                // per epoll wakeup was the dominant per-packet cost under
+                // load. Bounded so TCP handlers still get the thread.
+                for (int i = 0; i < kMaxDrainPerWakeup; ++i) {
+                    boost::system::error_code dec;
+                    const std::size_t n = media_udp_socket_.receive_from(
+                        boost::asio::buffer(media_udp_buffer_, sizeof(media_udp_buffer_)), media_udp_sender_endpoint_, 0, dec);
+                    if (dec) break;   // would_block = drained
+                    handle_media_datagram(n);
+                }
+                do_receive_media_udp();
+            });
+    }
+
+    void handle_media_datagram(std::size_t bytes_recvd) {
+                if (bytes_recvd >= 1) {
                     uint8_t packet_type = static_cast<uint8_t>(media_udp_buffer_[0]);
                     constexpr int SID = chatproj::SENDER_ID_SIZE;
 
@@ -4491,12 +4519,9 @@ private:
                                 session->set_udp_media_endpoint(media_udp_sender_endpoint_);
                             }
                         }
-                        auto echo_buf = std::make_shared<std::vector<uint8_t>>(
-                            media_udp_buffer_, media_udp_buffer_ + bytes_recvd);
-                        media_udp_socket_.async_send_to(
-                            boost::asio::buffer(*echo_buf), media_udp_sender_endpoint_,
-                            [echo_buf](boost::system::error_code, std::size_t) {});
-                        do_receive_media_udp();
+                        boost::system::error_code sec;
+                        media_udp_socket_.send_to(boost::asio::buffer(media_udp_buffer_, bytes_recvd),
+                                                  media_udp_sender_endpoint_, 0, sec);
                         return;
                     }
 
@@ -4517,7 +4542,6 @@ private:
                         }
                         if (requester_token.empty() ||
                             !manager_.find_session_by_token(requester_token, jwt_secret_)) {
-                            do_receive_media_udp();
                             return;
                         }
                         std::string target;
@@ -4528,7 +4552,6 @@ private:
                         if (!target.empty()) {
                             manager_.relay_keyframe_request(target, media_udp_socket_);
                         }
-                        do_receive_media_udp();
                         return;
                     }
 
@@ -4547,7 +4570,6 @@ private:
                         }
                         if (requester_token.empty() ||
                             !manager_.find_session_by_token(requester_token, jwt_secret_)) {
-                            do_receive_media_udp();
                             return;
                         }
                         std::string target;
@@ -4558,7 +4580,6 @@ private:
                         if (!target.empty()) {
                             manager_.relay_nack(media_udp_buffer_, bytes_recvd, target, media_udp_socket_);
                         }
-                        do_receive_media_udp();
                         return;
                     }
 
@@ -4586,7 +4607,6 @@ private:
                             if (bytes_recvd < VIDEO_HEADER ||
                                 static_cast<size_t>(packet->payload_size) >
                                     bytes_recvd - VIDEO_HEADER) {
-                                do_receive_media_udp();
                                 return;
                             }
                         }
@@ -4616,10 +4636,9 @@ private:
                         }
                     }
                 }
-                do_receive_media_udp();
-            });
     }
 
+    static constexpr int kMaxDrainPerWakeup = 256;
     tcp::acceptor acceptor_;
     boost::asio::steady_timer accept_backoff_;
     boost::asio::ip::udp::socket udp_socket_;
@@ -4651,6 +4670,8 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
     hb->set_host_ip(public_ip);
     hb->set_port(community_port);
     hb->set_member_count(static_cast<int>(manager.member_count()));
+    // Stable identity across IP/port changes (0 until first learned).
+    hb->set_server_id(manager.server_id());
 
     std::string serialized;
     packet.SerializeToString(&serialized);
