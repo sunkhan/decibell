@@ -11,16 +11,47 @@ import {
 
 type Corner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
-const WIDTH = 320;
-const HEIGHT = 180;
 const MARGIN = 16;
+// The mini is aspect-locked to 16:9; the user resizes its width between these
+// bounds (height follows). The chosen width lives in uiStore.pipWidth so it
+// survives re-mounts and view switches.
+const MIN_WIDTH = 240;
+const MAX_WIDTH = 640;
+const ASPECT = 9 / 16; // height / width
+const heightFor = (w: number) => Math.round(w * ASPECT);
 // How far the pointer must move before a press counts as a drag (vs a click).
 const DRAG_THRESHOLD = 4;
+
+// The resize grip lives on the box corner facing the screen interior (opposite
+// the corner it's docked to), so dragging it grows the box inward while the
+// docked corner stays pinned. `rot` orients the grip glyph toward that corner.
+const OPPOSITE_CORNER: Record<Corner, Corner> = {
+  "top-left": "bottom-right",
+  "top-right": "bottom-left",
+  "bottom-left": "top-right",
+  "bottom-right": "top-left",
+};
+const HANDLE: Record<Corner, { pos: string; cursor: string; rot: number }> = {
+  "top-left": { pos: "left-0 top-0", cursor: "cursor-nwse-resize", rot: 180 },
+  "top-right": { pos: "right-0 top-0", cursor: "cursor-nesw-resize", rot: 270 },
+  "bottom-left": { pos: "bottom-0 left-0", cursor: "cursor-nesw-resize", rot: 90 },
+  "bottom-right": { pos: "bottom-0 right-0", cursor: "cursor-nwse-resize", rot: 0 },
+};
 // Drag-release spring: STIFFNESS pulls toward the corner, RETENTION keeps most
 // of the frame's velocity so a flick carries momentum and overshoots a touch
 // (the bounce) before settling.
 const SPRING_STIFFNESS = 0.02;
 const SPRING_RETENTION = 0.85;
+// A "throw": if the (smoothed) release SPEED (magnitude across both axes) clears
+// this many px per frame, the flick's DIRECTION picks the corner instead of the
+// box's position — so a hard fling reaches the corner it was thrown toward even
+// if the cursor never crossed the midline. Gentler releases stay position-based.
+const FLICK_SPEED = 7;
+// Using magnitude (not per-axis) means a 45° diagonal counts even though each
+// axis carries only ~70% of the speed. An axis then joins the throw only if it
+// carries at least this share of it — so a mostly-sideways fling doesn't also
+// flip the near-still vertical axis, but a real diagonal engages both.
+const FLICK_AXIS_SHARE = 0.4;
 const ENTRANCE_MS = 340;
 // Slightly overshooting ease → the mini bounces as it shrinks into place.
 const ENTRANCE_EASE = "cubic-bezier(0.34, 1.32, 0.64, 1)";
@@ -39,19 +70,19 @@ function chromeInsets(): { top: number; left: number } {
   };
 }
 
-function cornerTopLeft(corner: Corner): { x: number; y: number } {
+function cornerTopLeft(corner: Corner, w: number, h: number): { x: number; y: number } {
   const isTop = corner.startsWith("top");
   const isLeft = corner.endsWith("left");
   const insets = chromeInsets();
   // Left corners (top AND bottom) clear the DM rail but may cover the channel
   // list. Top corners sit below the top bar. Right corners keep to the window
   // edge (may cover the members list). Bottom edge is unconstrained vertically.
-  const x = isLeft ? insets.left + MARGIN : window.innerWidth - WIDTH - MARGIN;
-  const y = isTop ? insets.top + MARGIN : window.innerHeight - HEIGHT - MARGIN;
+  const x = isLeft ? insets.left + MARGIN : window.innerWidth - w - MARGIN;
+  const y = isTop ? insets.top + MARGIN : window.innerHeight - h - MARGIN;
   // Clamp so a narrow/short window can't push the box off-screen.
   return {
-    x: Math.max(MARGIN, Math.min(x, window.innerWidth - WIDTH - MARGIN)),
-    y: Math.max(MARGIN, Math.min(y, window.innerHeight - HEIGHT - MARGIN)),
+    x: Math.max(MARGIN, Math.min(x, window.innerWidth - w - MARGIN)),
+    y: Math.max(MARGIN, Math.min(y, window.innerHeight - h - MARGIN)),
   };
 }
 
@@ -65,7 +96,10 @@ export default function MiniStreamPlayer() {
   const activeView = useUiStore((s) => s.activeView);
   const pipCorner = useUiStore((s) => s.pipCorner);
   const setPipCorner = useUiStore((s) => s.setPipCorner);
+  const pipWidth = useUiStore((s) => s.pipWidth);
+  const setPipWidth = useUiStore((s) => s.setPipWidth);
   const setActiveView = useUiStore((s) => s.setActiveView);
+  const pipHeight = heightFor(pipWidth);
 
   const ownUsername = useAuthStore((s) => s.username);
   const pipStream = useVoiceStore((s) => s.pipStream);
@@ -97,11 +131,11 @@ export default function MiniStreamPlayer() {
   const applyRestingPos = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
-    const { x, y } = cornerTopLeft(pipCorner);
+    const { x, y } = cornerTopLeft(pipCorner, pipWidth, pipHeight);
     el.style.left = `${x}px`;
     el.style.top = `${y}px`;
     recordMiniRect(el);
-  }, [pipCorner]);
+  }, [pipCorner, pipWidth, pipHeight]);
 
   // Reparent the shared video node into this slot when showing.
   useLayoutEffect(() => {
@@ -141,11 +175,11 @@ export default function MiniStreamPlayer() {
     const el = containerRef.current;
     const from = getFullViewRect();
     if (!el || !from || from.width < 1) return;
-    const { x, y } = cornerTopLeft(pipCorner);
+    const { x, y } = cornerTopLeft(pipCorner, pipWidth, pipHeight);
     const dx = from.left - x;
     const dy = from.top - y;
-    const sx = from.width / WIDTH;
-    const sy = from.height / HEIGHT;
+    const sx = from.width / pipWidth;
+    const sy = from.height / pipHeight;
     if (Math.abs(dx) < 2 && Math.abs(dy) < 2 && Math.abs(sx - 1) < 0.02) return;
     el.style.transformOrigin = "top left";
     el.style.transition = "none";
@@ -187,6 +221,10 @@ export default function MiniStreamPlayer() {
       let y = rect.top;
       let vx = 0;
       let vy = 0;
+      // Lightly smoothed velocity (EMA) used only to detect a throw, so a soft
+      // final frame at release doesn't drop a genuine flick below the threshold.
+      let flingVX = 0;
+      let flingVY = 0;
       let didMove = false;
       draggingRef.current = true;
 
@@ -195,6 +233,8 @@ export default function MiniStreamPlayer() {
         const ny = ev.clientY - grabY;
         vx = nx - x; // per-frame delta = velocity for the release spring
         vy = ny - y;
+        flingVX = flingVX * 0.6 + vx * 0.4;
+        flingVY = flingVY * 0.6 + vy * 0.4;
         x = nx;
         y = ny;
         if (
@@ -220,12 +260,31 @@ export default function MiniStreamPlayer() {
         }
         // Snap to the nearest corner, springing from the release point with the
         // flick's momentum so it glides and bounces into place.
-        const cx = x + WIDTH / 2;
-        const cy = y + HEIGHT / 2;
-        const vert = cy > window.innerHeight / 2 ? "bottom" : "top";
-        const horiz = cx > window.innerWidth / 2 ? "right" : "left";
+        // A real throw (total speed over threshold) picks the corner in the
+        // fling's direction; each axis joins only if it carries a real share of
+        // the motion. Otherwise fall back to whichever half the center sits in.
+        const cx = x + pipWidth / 2;
+        const cy = y + pipHeight / 2;
+        const speed = Math.hypot(flingVX, flingVY);
+        const throwing = speed > FLICK_SPEED;
+        const horiz =
+          throwing && Math.abs(flingVX) > speed * FLICK_AXIS_SHARE
+            ? flingVX > 0
+              ? "right"
+              : "left"
+            : cx > window.innerWidth / 2
+              ? "right"
+              : "left";
+        const vert =
+          throwing && Math.abs(flingVY) > speed * FLICK_AXIS_SHARE
+            ? flingVY > 0
+              ? "bottom"
+              : "top"
+            : cy > window.innerHeight / 2
+              ? "bottom"
+              : "top";
         const targetCorner = `${vert}-${horiz}` as Corner;
-        const target = cornerTopLeft(targetCorner);
+        const target = cornerTopLeft(targetCorner, pipWidth, pipHeight);
 
         const tick = () => {
           vx += (target.x - x) * SPRING_STIFFNESS;
@@ -257,10 +316,64 @@ export default function MiniStreamPlayer() {
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [setActiveView, setPipCorner, stopSpring],
+    [pipWidth, pipHeight, setActiveView, setPipCorner, stopSpring],
+  );
+
+  // Resize by dragging the interior-corner grip. The docked corner stays pinned
+  // to its screen anchor; we translate the pointer's distance from that anchor
+  // into a new width (16:9-locked), clamped to [MIN_WIDTH, MAX_WIDTH] and to the
+  // room available before the box would run off-screen. We only push pipWidth to
+  // the store — the resting layout effect re-pins position for the new size, so
+  // the docked corner doesn't move.
+  const onResizePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const el = containerRef.current;
+      if (!el) return;
+      stopSpring();
+      // Cancel any entrance transform so geometry reads the true resting rect.
+      el.style.transition = "";
+      el.style.transform = "";
+
+      const insets = chromeInsets();
+      const isRight = pipCorner.endsWith("right");
+      const isBottom = pipCorner.startsWith("bottom");
+      const anchorX = isRight ? window.innerWidth - MARGIN : insets.left + MARGIN;
+      const anchorY = isBottom ? window.innerHeight - MARGIN : insets.top + MARGIN;
+      const availW = isRight
+        ? anchorX - (insets.left + MARGIN)
+        : window.innerWidth - MARGIN - anchorX;
+      const availH = isBottom
+        ? anchorY - (insets.top + MARGIN)
+        : window.innerHeight - MARGIN - anchorY;
+      const hi = Math.max(
+        MIN_WIDTH,
+        Math.min(MAX_WIDTH, availW, availH / ASPECT),
+      );
+
+      const onMove = (ev: PointerEvent) => {
+        const wFromX = isRight ? anchorX - ev.clientX : ev.clientX - anchorX;
+        const wFromY = (isBottom ? anchorY - ev.clientY : ev.clientY - anchorY) / ASPECT;
+        const w = Math.max(wFromX, wFromY);
+        setPipWidth(Math.round(Math.min(hi, Math.max(MIN_WIDTH, w))));
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        const el2 = containerRef.current;
+        if (el2) recordMiniRect(el2);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [pipCorner, setPipWidth, stopSpring],
   );
 
   if (!visible || !pipStream) return null;
+
+  // Grip sits on the corner facing the screen interior (opposite the dock).
+  const grip = HANDLE[OPPOSITE_CORNER[pipCorner]];
 
   const handleExpand = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -287,8 +400,8 @@ export default function MiniStreamPlayer() {
     <div
       ref={containerRef}
       onPointerDown={onPointerDown}
-      className="fixed z-40 cursor-grab select-none overflow-hidden rounded-lg border border-white/10 bg-black shadow-modal active:cursor-grabbing"
-      style={{ width: WIDTH, height: HEIGHT, touchAction: "none" }}
+      className="group/pip fixed z-40 cursor-grab select-none overflow-hidden rounded-lg border border-white/10 bg-black shadow-modal active:cursor-grabbing"
+      style={{ width: pipWidth, height: pipHeight, touchAction: "none" }}
       title="Drag to move · click to return to the stream"
     >
       {/* The shared persistent stream player is reparented in here (it is
@@ -333,6 +446,28 @@ export default function MiniStreamPlayer() {
       <div className="pointer-events-none absolute bottom-1.5 left-1.5 z-10 flex items-center gap-1 rounded-sm bg-black/55 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-red-400">
         <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
         Live
+      </div>
+
+      {/* Resize grip — on the interior-facing corner. Faint until hovered. */}
+      <div
+        data-pip-control
+        onPointerDown={onResizePointerDown}
+        title="Drag to resize"
+        style={{ touchAction: "none" }}
+        className={`absolute z-20 flex h-5 w-5 items-center justify-center text-white/40 opacity-60 transition-opacity hover:text-white group-hover/pip:opacity-100 ${grip.pos} ${grip.cursor}`}
+      >
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          style={{ transform: `rotate(${grip.rot}deg)` }}
+        >
+          <path d="M14 6 L6 14 M14 11 L11 14" />
+        </svg>
       </div>
     </div>
   );

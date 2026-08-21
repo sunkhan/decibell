@@ -112,6 +112,10 @@ interface UiState {
   /// Which corner the floating pop-out stream player snaps to.
   pipCorner: "top-left" | "top-right" | "bottom-left" | "bottom-right";
   setPipCorner: (c: "top-left" | "top-right" | "bottom-left" | "bottom-right") => void;
+  /// Width (px) of the floating pop-out stream player. Height is derived 16:9.
+  /// The user can resize it between MIN and MAX (clamped in the component).
+  pipWidth: number;
+  setPipWidth: (w: number) => void;
   membersPanelVisible: boolean;
   dmFriendsPanelVisible: boolean;
   authError: AuthErrorNotice | null;
@@ -202,6 +206,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   activeView: "home",
   pipCorner: "bottom-right",
   setPipCorner: (c) => set({ pipCorner: c }),
+  pipWidth: 320,
+  setPipWidth: (w) => set({ pipWidth: w }),
   membersPanelVisible: true,
   dmFriendsPanelVisible: true,
   authError: null,
