@@ -266,6 +266,9 @@ pub fn run_audio_pipeline(
     // peers the listener has boosted.
     const GATE_TAIL_FRAMES: u32 = 3; // 60ms
     let mut gate_tail_remaining: u32 = 0;
+    // The most recent processed frame that was NOT transmitted; sent as
+    // pre-roll when the gate opens so a word's attack isn't chopped.
+    let mut gate_pre_roll: Option<[i16; FRAME_SIZE]> = None;
 
     let mut sequence: u16 = 0;
     // Silence-transmission keepalive. When we are not actively transmitting
@@ -779,7 +782,9 @@ pub fn run_audio_pipeline(
                     }
                 }
                 let transmit_voice = gate_open;
-                if gate_was_open && !gate_open {
+                let gate_opened = !gate_was_open && gate_open;
+                let gate_closed = gate_was_open && !gate_open;
+                if gate_closed {
                     gate_tail_remaining = GATE_TAIL_FRAMES;
                 }
 
@@ -797,6 +802,54 @@ pub fn run_audio_pipeline(
                         event_tx.send(VoiceEvent::SpeakingChanged("__local__".to_string(), state));
                 }
 
+                // ── Gate edges ───────────────────────────────────────────
+                // A 20ms-grid gate chops the waveform at its edges, and the
+                // codec only smooths ~2.5ms of that:
+                //  - Opening: the frame that crossed the threshold is already
+                //    loud (a word's attack rises 30dB inside one frame), so the
+                //    listener gets silence → loud with the attack cut off — a
+                //    pop at every word start. Fix: pre-roll. Send the previous,
+                //    sub-threshold frame first (one frame of lookahead paid
+                //    only at talkspurt starts, never in steady state) with a
+                //    10ms fade-in on it, so the natural attack is transmitted.
+                //  - Closing: after the hang the signal is the room's noise
+                //    floor, often lifted by AGC; a zero frame after it is a
+                //    step. Fix: the three tail frames are the real signal
+                //    faded out over 60ms, not encoded silence.
+                const GATE_FADE_IN: usize = 480; // 10ms
+                let mut pre_roll_frame: Option<[i16; FRAME_SIZE]> = None;
+                if gate_opened {
+                    match gate_pre_roll.take() {
+                        Some(mut pr) => {
+                            for (i, s) in pr.iter_mut().take(GATE_FADE_IN).enumerate() {
+                                *s = (*s as f32 * (i as f32 / GATE_FADE_IN as f32)) as i16;
+                            }
+                            pre_roll_frame = Some(pr);
+                        }
+                        None => {
+                            // Nothing held back (previous frame was sent as a
+                            // tail frame, or first frame ever): ramp this one.
+                            for (i, s) in frame.iter_mut().take(GATE_FADE_IN).enumerate() {
+                                *s = (*s as f32 * (i as f32 / GATE_FADE_IN as f32)) as i16;
+                            }
+                        }
+                    }
+                }
+                let tail_index = if !transmit_voice && gate_tail_remaining > 0 {
+                    Some(GATE_TAIL_FRAMES - gate_tail_remaining) // 0, 1, 2
+                } else {
+                    None
+                };
+                if let Some(t) = tail_index {
+                    let n = frame.len() as f32;
+                    let g0 = 1.0 - t as f32 / GATE_TAIL_FRAMES as f32;
+                    let g1 = 1.0 - (t + 1) as f32 / GATE_TAIL_FRAMES as f32;
+                    for (i, s) in frame.iter_mut().enumerate() {
+                        let g = g0 + (g1 - g0) * (i as f32 / n);
+                        *s = (*s as f32 * g) as i16;
+                    }
+                }
+
                 // ── Silence-transmission gating ──────────────────────────
                 // When actively transmitting voice, send every 20ms frame.
                 // Otherwise (muted, VAD gate closed, or the speech tail ended)
@@ -808,9 +861,7 @@ pub fn run_audio_pipeline(
                 let should_send = if transmit_voice {
                     last_voice_send = loop_start;
                     true
-                } else if gate_tail_remaining > 0 {
-                    // Gate just closed: a short run of encoded silence at
-                    // cadence so the listener's decoder fades us out cleanly.
+                } else if tail_index.is_some() {
                     gate_tail_remaining -= 1;
                     last_voice_send = loop_start;
                     true
@@ -820,34 +871,46 @@ pub fn run_audio_pipeline(
                 } else {
                     false
                 };
+                // Hold back an unsent frame as next talkspurt's pre-roll.
+                gate_pre_roll = if transmit_voice || tail_index.is_some() { None } else { Some(frame) };
 
                 if should_send {
-                    // Encode voice when transmitting, true silence otherwise so
-                    // a keepalive never leaks residual audio. Opus DTX keeps
-                    // silence frames tiny.
-                    let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
-                    let encode_result = if transmit_voice {
-                        encoder.encode(&frame, &mut opus_out)
-                    } else {
-                        encoder.encode_silence(&mut opus_out)
-                    };
-
-                    match encode_result {
-                        Ok(len) => {
-                            // Prepend flags byte: muted | deafened | silence
-                            let flags = if muted { FLAG_MUTED } else { 0 }
-                                | if deafened { FLAG_DEAFENED } else { 0 }
-                                | if transmit_voice { 0 } else { FLAG_SILENCE };
-                            let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
-                            flagged[0] = flags;
-                            flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
-                            let packet =
-                                UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len]);
-                            let _ = socket.send(&packet.to_bytes());
-                            sequence = sequence.wrapping_add(1);
-                        }
-                        Err(e) => {
-                            let _ = event_tx.send(VoiceEvent::Error(format!("Encode error: {}", e)));
+                    if let Some(d) = audio_dump.as_mut() {
+                        if gate_opened { d.event(&format!("TX gate open rms={:.0}dB pre_roll={}", rms_db, pre_roll_frame.is_some())); }
+                        if tail_index == Some(0) { d.event(&format!("TX gate close (60ms fade) rms={:.0}dB", rms_db)); }
+                    }
+                    // Flags byte: muted | deafened | silence (tail / keepalive)
+                    let flags = if muted { FLAG_MUTED } else { 0 }
+                        | if deafened { FLAG_DEAFENED } else { 0 }
+                        | if transmit_voice { 0 } else { FLAG_SILENCE };
+                    // Pre-roll goes out first, then this frame; both as voice.
+                    let frames_to_send: [Option<(&[i16; FRAME_SIZE], bool)>; 2] = [
+                        pre_roll_frame.as_ref().map(|f| (f, true)),
+                        Some((&frame, transmit_voice || tail_index.is_some())),
+                    ];
+                    for (f, carries_audio) in frames_to_send.into_iter().flatten() {
+                        // Encode real audio for voice and tail frames; true
+                        // silence for keepalives so nothing leaks and Opus
+                        // DTX keeps them tiny.
+                        let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
+                        let encode_result = if carries_audio {
+                            encoder.encode(f, &mut opus_out)
+                        } else {
+                            encoder.encode_silence(&mut opus_out)
+                        };
+                        match encode_result {
+                            Ok(len) => {
+                                let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
+                                flagged[0] = flags;
+                                flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
+                                let packet =
+                                    UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len]);
+                                let _ = socket.send(&packet.to_bytes());
+                                sequence = sequence.wrapping_add(1);
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(VoiceEvent::Error(format!("Encode error: {}", e)));
+                            }
                         }
                     }
                 }
@@ -1114,6 +1177,24 @@ pub fn run_audio_pipeline(
                     Frame::Idle => unreachable!(),
                 };
                 if !decode_ok { continue; }
+                // Last voice frame before the sender's gate closed (the next
+                // buffered packet is a flagged tail frame): fade it out over
+                // the frame. Senders from 0.7.5 fade their own tail, but a
+                // 0.7.4 sender follows its noise floor with a hard zero frame
+                // — audible as a tick after the person stops, especially on a
+                // boosted peer — and this smooths it on the listening side.
+                if matches!(frame, Frame::Packet(_))
+                    && !peer.voice_jitter.last_was_silence()
+                    && peer.voice_jitter.next_is_silence() == Some(true)
+                {
+                    let n = pcm.len() as f32;
+                    for (i, s) in pcm.iter_mut().enumerate() {
+                        *s = (*s as f32 * (1.0 - i as f32 / n)) as i16;
+                    }
+                    if let Some(d) = audio_dump.as_mut() {
+                        d.event(&format!("{} last voice frame (fade-out)", username));
+                    }
+                }
                 // Fade PLC expansion to silence across the episode: Opus PLC
                 // alone keeps a voiced tail pitch-repeating at useful level for
                 // 100ms+, which — when a pre-0.7.4 sender simply stops — is
@@ -1151,10 +1232,13 @@ pub fn run_audio_pipeline(
                     }
                     // Talkspurt onset into an empty ring: the sender's VAD
                     // gate opened on a 20ms frame boundary, so the waveform
-                    // can start anywhere. Ramp the first few ms so the
-                    // listener doesn't get a step from digital silence.
+                    // can start anywhere — and a 0.7.4 sender's first frame
+                    // is already mid-attack. Ramp the whole first frame so
+                    // the listener never gets a step (or an 8ms click-length
+                    // ramp) out of digital silence. Senders from 0.7.5 send a
+                    // pre-roll frame first, so this only shapes quiet audio.
                     if peer.onset_pending && peer.ring_len() == 0 {
-                        const FADE: usize = 144; // 3ms @ 48kHz
+                        const FADE: usize = 960; // 20ms @ 48kHz — the whole first frame
                         for (i, s) in f32_frame.iter_mut().take(FADE).enumerate() {
                             *s *= i as f32 / FADE as f32;
                         }

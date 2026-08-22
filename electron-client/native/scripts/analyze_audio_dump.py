@@ -101,12 +101,56 @@ def find_zero_splices(x, rate):
     return out
 
 
+def write_wav(path, rate, x):
+    import struct
+    pcm = np.clip(x * 32767.0, -32768, 32767).astype("<i2").tobytes()
+    hdr = b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16) + b"data" + struct.pack("<I", len(pcm))
+    open(path, "wb").write(hdr + pcm)
+
+
+def snippets(d, ev, out_dir, pad_ms=500):
+    """Cut a clip around every talkspurt stop (idle) and start (onset) from
+    output.wav, named with the event and the largest sample step within
+    ±30ms of it. Listen to them to identify which moments actually pop."""
+    os.makedirs(out_dir, exist_ok=True)
+    rate, x = load(os.path.join(d, "output.wav"))
+    n = 0
+    for t, line in ev:
+        kind = None
+        if " idle " in " " + line + " ":
+            kind = "stop"
+        elif "onset" in line:
+            kind = "start"
+        elif "TX gate" in line:
+            kind = "tx-open" if "open" in line else "tx-close"
+        if not kind:
+            continue
+        i = int(t / 1000 * rate)
+        a, b = max(0, i - int(pad_ms / 1000 * rate)), min(len(x), i + int(pad_ms / 1000 * rate))
+        if b - a < rate // 10:
+            continue
+        w = x[max(0, i - int(0.03 * rate)):i + int(0.03 * rate)]
+        step = 20 * np.log10(np.max(np.abs(np.diff(w))) + 1e-9) if len(w) > 1 else -99
+        name = f"clip-{t/1000:07.2f}s-{kind}-step{step:+05.0f}dB.wav"
+        write_wav(os.path.join(out_dir, name), rate, x[a:b])
+        n += 1
+    print(f"\nwrote {n} clips to {out_dir} (the event sits at +{pad_ms} ms in each clip)")
+
+
 def main():
-    if len(sys.argv) != 2:
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    snip = None
+    for a in sys.argv[1:]:
+        if a.startswith("--snippets="):
+            snip = a.split("=", 1)[1]
+    if len(args) != 1:
         print(__doc__)
+        print("    --snippets=DIR   also cut ±500ms clips around every stop/start into DIR")
         sys.exit(2)
-    d = sys.argv[1]
+    d = args[0]
     ev = load_events(os.path.join(d, "events.log"))
+    if snip:
+        snippets(d, ev, snip)
     for name in sorted(os.listdir(d)):
         if not name.endswith(".wav"):
             continue

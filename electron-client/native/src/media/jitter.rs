@@ -444,6 +444,16 @@ impl JitterBuffer {
         // Keep jitter estimate — network conditions don't change on reset.
     }
 
+    /// Whether the frame most recently handed out was silence-flagged.
+    pub fn last_was_silence(&self) -> bool { self.last_dequeued_silence }
+
+    /// Whether the packet at the play cursor (the one `drain` returns next)
+    /// is buffered and silence-flagged — i.e. the frame just handed out was
+    /// the sender's last voice frame before its gate closed.
+    pub fn next_is_silence(&self) -> Option<bool> {
+        self.packets.get(&self.next_seq).map(|(_, s)| *s)
+    }
+
     /// Peek at the next packet (next_seq) without consuming it.
     /// Used for FEC: when current packet is missing, check if the next
     /// packet is available to decode with fec=true.
