@@ -189,9 +189,10 @@ standalone build + e2e harness (now 188 checks; new `test_m1_m4_timeout`,
   (`DECIBELL_MIN_FREE_BYTES`) on first boot. Client: `get_storage_info` /
   `set_storage_min_free` commands, a `storage_info_received` event, and `StorageTab.tsx`
   (usage bar, footprint, by-type/by-channel/largest, editable headroom).
-- Related honest-failure companion still open: X8 (`finish_patch` ignores `fflush`/`fclose`
-  errors) — worth folding in so a disk-full slip past the 507 fails loudly rather than
-  reporting a short write as success.
+- **X8 ✅** (2026-08-25): `finish_patch` now checks `fflush`/`fclose` and returns 500
+  instead of a 204 that lied about the stored offset — a disk-full write that slips past the
+  507 (fwrite only buffers; ENOSPC surfaces at flush/close) now fails loudly, and the client
+  re-HEADs and resumes from the real on-disk offset. Partial file left intact for resume.
 
 ## 5. Suggested order of work
 

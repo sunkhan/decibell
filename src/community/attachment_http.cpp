@@ -613,10 +613,24 @@ private:
     }
 
     void finish_patch() {
+        // fwrite() only buffers; a full disk (ENOSPC) surfaces at fflush /
+        // fclose, not at the earlier fwrite. Ignoring those return values
+        // made the 204 lie — it reported patch_final_ bytes stored when
+        // fewer actually reached disk, so the client happily advanced and
+        // later "completed" a short file (X8). Check both and fail with 500
+        // instead; the partial file is left intact so the client can re-HEAD
+        // and resume from the real on-disk offset.
+        bool write_ok = true;
         if (patch_fp_ && *patch_fp_) {
-            std::fflush(*patch_fp_);
-            std::fclose(*patch_fp_);
+            if (std::fflush(*patch_fp_) != 0) write_ok = false;
+            if (std::fclose(*patch_fp_) != 0) write_ok = false;
             *patch_fp_ = nullptr;
+        }
+        if (!write_ok) {
+            std::cerr << "[AttachmentHttp] patch: flush/close failed (disk full?) for id "
+                      << patch_id_ << "\n";
+            send_error(500, "Internal Server Error");
+            return;
         }
         // Respond 204 with Upload-Offset so the client knows where we are.
         std::string resp =
