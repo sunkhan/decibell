@@ -104,6 +104,45 @@ pub async fn list_audit_log(args: ListAuditLogArgs) -> napi::Result<()> {
 }
 
 #[napi(object)]
+pub struct StorageInfoArgs {
+    pub server_id: String,
+}
+
+/// MANAGE_SERVER: fetch host disk state + this server's footprint. Result
+/// arrives as storage_info_received.
+#[napi]
+pub async fn get_storage_info(args: StorageInfoArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::StorageInfoReq,
+        packet::Payload::StorageInfoReq(StorageInfoRequest {}),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct SetStorageMinFreeArgs {
+    pub server_id: String,
+    /// Minimum free bytes to keep on the store's volume; clamped server-side
+    /// to [0, volume capacity].
+    pub min_free_bytes: i64,
+}
+
+/// MANAGE_SERVER: set the upload headroom. Server replies with a fresh
+/// storage_info_received reflecting the applied (clamped) value.
+#[napi]
+pub async fn set_storage_min_free(args: SetStorageMinFreeArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::StorageConfigSetReq,
+        packet::Payload::StorageConfigSetReq(StorageConfigSetRequest {
+            min_free_bytes: args.min_free_bytes,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
 pub struct TimeoutMemberArgs {
     pub server_id: String,
     pub username: String,

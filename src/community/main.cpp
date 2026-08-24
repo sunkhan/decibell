@@ -446,6 +446,19 @@ public:
     }
     int attachment_port() const { return attachment_port_; }
     int64_t max_attachment_bytes() const { return max_attachment_bytes_; }
+    // Paths for the Storage tab: the attachment store's volume (free/total)
+    // and the SQLite file sizes. Set once at startup.
+    void set_storage_paths(std::string db_path, std::string attachments_root) {
+        db_path_ = std::move(db_path);
+        attachments_root_ = std::move(attachments_root);
+    }
+    // Fills a StorageInfoResponse: DB-derived footprint + host volume space
+    // (std::filesystem) + SQLite file size. Sets success=true.
+    void fill_storage_info(chatproj::StorageInfoResponse* res);
+    // Capacity of the attachment store's volume, or 0 if unknown. Used to
+    // clamp the min-free headroom — requiring more free space than the disk
+    // physically holds is nonsensical.
+    int64_t volume_capacity() const;
 
 private:
     std::set<std::shared_ptr<Session>> sessions_;
@@ -529,6 +542,8 @@ private:
 
     int attachment_port_ = 0;
     int64_t max_attachment_bytes_ = 0;
+    std::string db_path_;
+    std::string attachments_root_;
     int auth_timeout_seconds_ = 10;
     int idle_timeout_seconds_ = 90;
 
@@ -2790,6 +2805,56 @@ private:
             manager_.broadcast_bans();
             std::cout << "[Community] Ownership transferred from " << old_owner << " to " << new_owner << "\n";
         }
+
+        // --- STORAGE INFO (MANAGE_SERVER) ---
+        else if (packet.type() == chatproj::Packet::STORAGE_INFO_REQ) {
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::STORAGE_INFO_RES);
+            auto* res = p.mutable_storage_info_res();
+            if (auto a = manager_.authz().check(chatproj::Action::ManageServer, {username_, "", ""}); !a) {
+                res->set_success(false);
+                res->set_message(a.reason);
+                send_packet(p);
+                return;
+            }
+            manager_.fill_storage_info(res);   // sets success + all figures
+            send_packet(p);
+        }
+
+        // --- STORAGE CONFIG (MANAGE_SERVER): set the min-free headroom ---
+        else if (packet.type() == chatproj::Packet::STORAGE_CONFIG_SET_REQ) {
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::STORAGE_INFO_RES);
+            auto* res = p.mutable_storage_info_res();
+            if (auto a = manager_.authz().check(chatproj::Action::ManageServer, {username_, "", ""}); !a) {
+                res->set_success(false);
+                res->set_message(a.reason);
+                send_packet(p);
+                return;
+            }
+            auto* db = manager_.db();
+            if (!db) {
+                res->set_success(false);
+                res->set_message("Server misconfigured.");
+                send_packet(p);
+                return;
+            }
+            int64_t v = packet.storage_config_set_req().min_free_bytes();
+            // Clamp to [0, volume capacity]: requiring more free space than the
+            // disk holds is nonsensical. Fall back to a 1 TiB ceiling if the
+            // volume can't be queried.
+            const int64_t cap = manager_.volume_capacity();
+            const int64_t ceiling = cap > 0 ? cap : (1024LL * 1024 * 1024 * 1024);
+            if (v < 0) v = 0;
+            if (v > ceiling) v = ceiling;
+            const int64_t applied = db->set_min_free_bytes(v);
+            db->add_audit(username_, "storage_min_free", "", "", std::to_string(applied));
+            // Reply with a fresh snapshot so the tab reflects the new threshold.
+            manager_.fill_storage_info(res);
+            send_packet(p);
+            std::cout << "[Community] " << username_ << " set min-free headroom to "
+                      << applied << " bytes\n";
+        }
     }
 
     // Helper used by moderation paths to send a short response (KICK/BAN/LEAVE
@@ -2866,6 +2931,8 @@ private:
             case T::TIMEOUT_MEMBER_REQ:
             case T::VOICE_MOD_REQ:
             case T::TRANSFER_OWNERSHIP_REQ:
+            case T::STORAGE_INFO_REQ:
+            case T::STORAGE_CONFIG_SET_REQ:
                 return admin_bucket_.try_take();
             default:
                 return true;
@@ -3546,6 +3613,57 @@ size_t SessionManager::disconnect_from_voice(const std::string& username, const 
         ++n;
     }
     return n;
+}
+
+void SessionManager::fill_storage_info(chatproj::StorageInfoResponse* res) {
+    if (!db_) { res->set_success(false); res->set_message("Server misconfigured."); return; }
+    // DB-derived footprint (cheap SUM/COUNT queries, no filesystem walk).
+    auto u = db_->storage_usage(/*max_channels=*/16, /*max_largest=*/12);
+    res->set_attachments_bytes(u.attachments_bytes);
+    res->set_thumbnails_bytes(u.thumbnails_bytes);
+    res->set_attachment_count(u.attachment_count);
+    res->set_min_free_bytes(db_->min_free_bytes());
+    for (const auto& k : u.by_kind) {
+        auto* o = res->add_by_kind();
+        o->set_kind(k.kind); o->set_bytes(k.bytes); o->set_count(k.count);
+    }
+    for (const auto& c : u.by_channel) {
+        auto* o = res->add_by_channel();
+        o->set_channel_id(c.channel_id); o->set_bytes(c.bytes); o->set_count(c.count);
+    }
+    for (const auto& l : u.largest) {
+        auto* o = res->add_largest();
+        o->set_attachment_id(l.id); o->set_filename(l.filename);
+        o->set_size_bytes(l.size_bytes); o->set_channel_id(l.channel_id); o->set_kind(l.kind);
+    }
+    // Host volume holding the attachment store (cross-platform; ec overload
+    // so a stat failure never throws on the io thread).
+    if (!attachments_root_.empty()) {
+        std::error_code ec;
+        const auto info = std::filesystem::space(attachments_root_, ec);
+        if (!ec) {
+            res->set_volume_total_bytes(static_cast<int64_t>(info.capacity));
+            res->set_volume_available_bytes(static_cast<int64_t>(info.available));
+        }
+    }
+    // SQLite file + WAL + SHM.
+    int64_t db_bytes = 0;
+    if (!db_path_.empty()) {
+        for (const char* suffix : {"", "-wal", "-shm"}) {
+            std::error_code ec;
+            const auto sz = std::filesystem::file_size(db_path_ + suffix, ec);
+            if (!ec) db_bytes += static_cast<int64_t>(sz);
+        }
+    }
+    res->set_database_bytes(db_bytes);
+    res->set_success(true);
+}
+
+int64_t SessionManager::volume_capacity() const {
+    if (attachments_root_.empty()) return 0;
+    std::error_code ec;
+    const auto info = std::filesystem::space(attachments_root_, ec);
+    return ec ? 0 : static_cast<int64_t>(info.capacity);
 }
 
 int64_t SessionManager::slowmode_remaining(const std::string& username,
@@ -5087,6 +5205,15 @@ int main() {
         // Attachment HTTP/TLS listener. port+3 (= 8085 by default).
         const int attachment_port = 8082 + 3;
         manager.set_attachment_config(attachment_port, max_attachment_bytes);
+        manager.set_storage_paths(db_path, attachments_root);
+        // Seed the min-free headroom from the env var while it's still at the
+        // built-in default; the Storage tab is the source of truth thereafter
+        // (same DB-wins pattern as server name).
+        if (const char* mf = std::getenv("DECIBELL_MIN_FREE_BYTES")) {
+            if (db.min_free_bytes() == chatproj::kDefaultMinFreeBytes) {
+                try { db.set_min_free_bytes(std::stoll(mf)); } catch (...) {}
+            }
+        }
         CommunityServer s(io_context, 8082, manager, jwt_public_pem);
         AttachmentHttpServer attachment_server(io_context,
                                                static_cast<unsigned short>(attachment_port),

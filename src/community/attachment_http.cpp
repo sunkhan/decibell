@@ -433,6 +433,30 @@ private:
             }
         }
 
+        // Disk headroom: refuse an upload that would leave the store's
+        // volume with less than the configured minimum free space (H1).
+        // Cross-platform via std::filesystem::space (statvfs /
+        // GetDiskFreeSpaceEx); the ec overload keeps a stat failure off the
+        // throwing path. On query failure we allow (log) rather than break
+        // uploads. `available` is what's usable by this process.
+        {
+            std::error_code space_ec;
+            const auto info = std::filesystem::space(storage_root_, space_ec);
+            if (!space_ec) {
+                const int64_t min_free = db_.min_free_bytes();
+                const int64_t avail = static_cast<int64_t>(info.available);
+                if (avail - size < min_free) {
+                    std::cerr << "[AttachmentHttp] init: refusing " << size
+                              << "B upload from " << username_ << " — only " << avail
+                              << "B free, keep >= " << min_free << "B\n";
+                    send_error(507, "Insufficient Storage"); return;
+                }
+            } else {
+                std::cerr << "[AttachmentHttp] init: filesystem::space('" << storage_root_
+                          << "') failed: " << space_ec.message() << " — allowing upload\n";
+            }
+        }
+
         const std::string safe_name = sanitize_filename(filename);
         const int kind = kind_from_mime(mime);
 

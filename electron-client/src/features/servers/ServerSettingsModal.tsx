@@ -10,6 +10,7 @@ import MembersTab from "./tabs/MembersTab";
 import RolesTab from "./tabs/RolesTab";
 import BansTab from "./tabs/BansTab";
 import AuditLogTab from "./tabs/AuditLogTab";
+import StorageTab from "./tabs/StorageTab";
 
 interface Props {
   serverId: string;
@@ -43,6 +44,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
   const canManageRoles = usePermission(serverId, PERM.MANAGE_ROLES);
   const canBan = usePermission(serverId, PERM.BAN_MEMBERS);
   const canAudit = usePermission(serverId, PERM.VIEW_AUDIT_LOG);
+  const canManageServer = usePermission(serverId, PERM.MANAGE_SERVER);
 
   const tabs = [
     {
@@ -105,6 +107,21 @@ export default function ServerSettingsModal({ serverId }: Props) {
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <circle cx="12" cy="12" r="10" />
                 <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+              </svg>
+            ),
+          },
+        ]
+      : []),
+    ...(canManageServer
+      ? [
+          {
+            id: "storage",
+            label: "Storage",
+            icon: (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <ellipse cx="12" cy="5" rx="9" ry="3" />
+                <path d="M3 5v14a9 3 0 0 0 18 0V5" />
+                <path d="M3 12a9 3 0 0 0 18 0" />
               </svg>
             ),
           },
@@ -261,6 +278,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
             {effectiveTab === "roles" && <RolesTab serverId={serverId} />}
             {effectiveTab === "bans" && <BansTab serverId={serverId} />}
             {effectiveTab === "audit" && <AuditLogTab serverId={serverId} />}
+            {effectiveTab === "storage" && <StorageTab serverId={serverId} />}
           </div>
         </div>
       </div>

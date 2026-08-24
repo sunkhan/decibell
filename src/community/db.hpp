@@ -112,6 +112,23 @@ struct DbBan {
     int64_t expires_at = 0;   // 0 = permanent
 };
 
+// Storage-usage aggregation for the Storage settings tab. All byte counts
+// are computed from the DB (SUM over live, non-purged rows), never a
+// filesystem walk. The volume total/available and DB file size are filled in
+// by the caller (main.cpp) via std::filesystem.
+struct StorageUsage {
+    int64_t attachments_bytes = 0;   // SUM(size_bytes) where purged_at=0
+    int64_t thumbnails_bytes = 0;    // SUM(thumbnail_size_bytes) where purged_at=0
+    int64_t attachment_count = 0;    // COUNT(*) where purged_at=0
+    struct Kind    { int32_t kind = 0; int64_t bytes = 0; int64_t count = 0; };
+    struct Channel { std::string channel_id; int64_t bytes = 0; int64_t count = 0; };
+    struct Largest { int64_t id = 0; std::string filename; int64_t size_bytes = 0;
+                     std::string channel_id; int32_t kind = 0; };
+    std::vector<Kind> by_kind;        // any order
+    std::vector<Channel> by_channel;  // highest bytes first
+    std::vector<Largest> largest;     // highest bytes first, capped by caller
+};
+
 struct DbAuditEntry {
     int64_t id = 0;
     int64_t timestamp = 0;
@@ -213,6 +230,11 @@ inline std::string clamp_utf8(const std::string& in, size_t max_bytes) {
 constexpr size_t kMaxRoleNameBytes    = 64;
 constexpr size_t kMaxChannelNameBytes = 64;
 constexpr size_t kMaxNicknameBytes    = 32;
+
+// Default upload headroom: refuse uploads that would leave the store's
+// volume with less than this much free space, until an operator changes it
+// (env seed / Storage tab). 2 GiB.
+constexpr int64_t kDefaultMinFreeBytes = 2LL * 1024 * 1024 * 1024;
 
 // One per-channel permission overwrite (Discord model). target_type 0 =
 // role (target_id = role id as decimal text), 1 = member (username).
@@ -581,6 +603,19 @@ public:
     };
     PurgedMessages delete_messages_by_sender_since(const std::string& sender,
                                                    int64_t since_ts);
+
+    // --- storage ---
+    // Aggregates this community's attachment footprint from the DB.
+    // `max_channels` / `max_largest` cap the by_channel / largest lists
+    // (<=0 = omit that list). Cheap: three grouped SUM queries + one
+    // ORDER BY … LIMIT, all over the attachments table.
+    StorageUsage storage_usage(int max_channels, int max_largest) const;
+    // Minimum free bytes to keep on the store's volume — uploads that would
+    // cross it are refused (507). Persisted in server_meta; a fresh DB
+    // returns the built-in default until set. set_min_free_bytes clamps < 0
+    // to 0 and returns the stored value.
+    int64_t min_free_bytes() const;
+    int64_t set_min_free_bytes(int64_t bytes);
 
     // --- audit log ---
     void add_audit(const std::string& actor, const std::string& action,

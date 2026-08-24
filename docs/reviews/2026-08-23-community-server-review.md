@@ -173,6 +173,26 @@ standalone build + e2e harness (now 188 checks; new `test_m1_m4_timeout`,
   the same slug no longer leaves a stale "channel doesn't exist → 0" negative that hides
   the new channel from a user who probed the id in between. (`db.cpp`.)
 
+**Storage feature (2026-08-25) ✅** — H1's headroom half + a Storage settings tab
+(cross-stack: proto → C++ → Rust → React; server side covered by 7 new e2e checks, 195 total):
+
+- **Upload headroom (H1)**: `attachment_http` init queries `std::filesystem::space`
+  (cross-platform: statvfs / GetDiskFreeSpaceEx, `ec` overload so it never throws on the
+  io thread) and refuses with `507 Insufficient Storage` when a declared upload would leave
+  the store's volume below the configured minimum free. Per-user quota was **not** added
+  (owner's call — headroom only).
+- **Storage tab** (MANAGE_SERVER): new `STORAGE_INFO_REQ/RES` + `STORAGE_CONFIG_SET_REQ`.
+  Server reports the store volume's total/available (`filesystem::space`) plus this
+  community's footprint from the DB (`SUM(size_bytes)`/thumbnails/SQLite file sizes, by-kind,
+  by-channel, largest — no filesystem walk). The min-free threshold is editable in the tab,
+  persisted in `server_meta`, clamped to `[0, volume capacity]`, audited, and env-seeded
+  (`DECIBELL_MIN_FREE_BYTES`) on first boot. Client: `get_storage_info` /
+  `set_storage_min_free` commands, a `storage_info_received` event, and `StorageTab.tsx`
+  (usage bar, footprint, by-type/by-channel/largest, editable headroom).
+- Related honest-failure companion still open: X8 (`finish_patch` ignores `fflush`/`fclose`
+  errors) — worth folding in so a disk-full slip past the 507 fails loudly rather than
+  reporting a short write as success.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

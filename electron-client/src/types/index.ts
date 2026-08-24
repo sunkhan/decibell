@@ -384,6 +384,42 @@ export interface AuditLogReceivedPayload {
   hasMore: boolean;
 }
 
+// Mirrors StorageInfoReceivedPayload in native/src/events.rs (← StorageInfoResponse
+// in proto/messages.proto). Byte counts are int64 on the wire; JS numbers hold
+// them exactly well past any realistic disk size.
+export interface StorageKindUsage {
+  kind: number; // Attachment.Kind: 0 image, 1 video, 2 document, 3 audio
+  bytes: number;
+  count: number;
+}
+export interface StorageChannelUsage {
+  channelId: string;
+  bytes: number;
+  count: number;
+}
+export interface StorageLargestItem {
+  attachmentId: number;
+  filename: string;
+  sizeBytes: number;
+  channelId: string;
+  kind: number;
+}
+export interface StorageInfoReceivedPayload {
+  serverId: string;
+  success: boolean;
+  message: string;
+  volumeTotalBytes: number;
+  volumeAvailableBytes: number;
+  attachmentsBytes: number;
+  thumbnailsBytes: number;
+  databaseBytes: number;
+  attachmentCount: number;
+  minFreeBytes: number;
+  byKind: StorageKindUsage[];
+  byChannel: StorageChannelUsage[];
+  largest: StorageLargestItem[];
+}
+
 export interface VoiceForceNotifyPayload {
   serverId: string;
   action: "moved" | "disconnected";

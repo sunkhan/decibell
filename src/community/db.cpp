@@ -2740,6 +2740,80 @@ CommunityDb::PurgedMessages CommunityDb::delete_messages_by_sender_since(
     return out;
 }
 
+StorageUsage CommunityDb::storage_usage(int max_channels, int max_largest) const {
+    StorageUsage out;
+    std::lock_guard<std::mutex> lock(mutex_);
+    {
+        Stmt q(db_,
+            "SELECT COALESCE(SUM(size_bytes),0), COALESCE(SUM(thumbnail_size_bytes),0), COUNT(*) "
+            "FROM attachments WHERE purged_at=0;");
+        if (q.s && q.step() == SQLITE_ROW) {
+            out.attachments_bytes = q.col_int64(0);
+            out.thumbnails_bytes  = q.col_int64(1);
+            out.attachment_count  = q.col_int64(2);
+        }
+    }
+    {
+        Stmt q(db_,
+            "SELECT kind, COALESCE(SUM(size_bytes),0), COUNT(*) "
+            "FROM attachments WHERE purged_at=0 GROUP BY kind;");
+        if (q.s) {
+            while (q.step() == SQLITE_ROW) {
+                out.by_kind.push_back({ q.col_int(0), q.col_int64(1), q.col_int64(2) });
+            }
+        }
+    }
+    if (max_channels > 0) {
+        Stmt q(db_,
+            "SELECT channel_id, COALESCE(SUM(size_bytes),0) AS b, COUNT(*) "
+            "FROM attachments WHERE purged_at=0 GROUP BY channel_id "
+            "ORDER BY b DESC LIMIT ?;");
+        if (q.s) {
+            q.bind_int(1, max_channels);
+            while (q.step() == SQLITE_ROW) {
+                StorageUsage::Channel c;
+                c.channel_id = q.col_text(0);
+                c.bytes = q.col_int64(1);
+                c.count = q.col_int64(2);
+                out.by_channel.push_back(std::move(c));
+            }
+        }
+    }
+    if (max_largest > 0) {
+        Stmt q(db_,
+            "SELECT id, filename, size_bytes, channel_id, kind "
+            "FROM attachments WHERE purged_at=0 ORDER BY size_bytes DESC LIMIT ?;");
+        if (q.s) {
+            q.bind_int(1, max_largest);
+            while (q.step() == SQLITE_ROW) {
+                StorageUsage::Largest l;
+                l.id = q.col_int64(0);
+                l.filename = q.col_text(1);
+                l.size_bytes = q.col_int64(2);
+                l.channel_id = q.col_text(3);
+                l.kind = q.col_int(4);
+                out.largest.push_back(std::move(l));
+            }
+        }
+    }
+    return out;
+}
+
+int64_t CommunityDb::min_free_bytes() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string v = get_meta_("min_free_bytes");
+    if (v.empty()) return kDefaultMinFreeBytes;
+    try { return std::max<int64_t>(0, std::stoll(v)); }
+    catch (...) { return kDefaultMinFreeBytes; }
+}
+
+int64_t CommunityDb::set_min_free_bytes(int64_t bytes) {
+    if (bytes < 0) bytes = 0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    set_meta_("min_free_bytes", std::to_string(bytes));
+    return bytes;
+}
+
 void CommunityDb::add_audit(const std::string& actor, const std::string& action,
                             const std::string& target, const std::string& channel_id,
                             const std::string& details) {

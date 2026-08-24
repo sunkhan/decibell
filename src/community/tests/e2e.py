@@ -1304,6 +1304,55 @@ def test_c2_username_reuse():
     renamed.close(); owner.close()
 
 
+def test_storage():
+    print("[storage] MANAGE_SERVER-gated info; editable headroom; 507 when below it")
+    owner = Client("alice"); assert auth_ok(owner)[0]; owner.flush(0.5)
+
+    # A non-privileged member is denied.
+    stu = join("stu", owner); stu.flush(0.5)
+    stu.send(pb.Packet.STORAGE_INFO_REQ, storage_info_req=pb.StorageInfoRequest())
+    r = stu.wait(pb.Packet.STORAGE_INFO_RES, timeout=2)
+    check("non-admin denied storage info", r is not None and not r.storage_info_res.success)
+    stu.close()
+
+    # Owner gets real numbers.
+    owner.send(pb.Packet.STORAGE_INFO_REQ, storage_info_req=pb.StorageInfoRequest())
+    r = owner.wait(pb.Packet.STORAGE_INFO_RES, timeout=2)
+    si = r.storage_info_res if r else None
+    check("owner gets storage info", si is not None and si.success)
+    check("volume total/available reported", si is not None and si.volume_total_bytes > 0 and si.volume_available_bytes > 0)
+    check("database size reported", si is not None and si.database_bytes > 0)
+    total = si.volume_total_bytes if si else 0
+
+    # Set the headroom to the whole volume (clamped to capacity) and read it back.
+    owner.send(pb.Packet.STORAGE_CONFIG_SET_REQ, storage_config_set_req=pb.StorageConfigSetRequest(min_free_bytes=total))
+    r = owner.wait(pb.Packet.STORAGE_INFO_RES, timeout=2)
+    check("min-free updated and echoed (clamped to capacity)", r is not None and r.storage_info_res.min_free_bytes == total)
+    check("audit records the change", sql("select count(*) from audit_log where action='storage_min_free'")[0][0] >= 1)
+
+    # With headroom == capacity, any upload init is refused before touching disk.
+    sk = raw_tls(8085)
+    body = json.dumps({"channelId": "general", "filename": "big.bin",
+                       "mime": "application/octet-stream", "size": 1024}).encode()
+    sk.sendall(b"POST /attachments/init HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer " + jwt("alice").encode() +
+               b"\r\nContent-Type: application/json\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+    sk.settimeout(3); data = b""
+    try:
+        while b"\r\n\r\n" not in data:
+            chunk = sk.recv(4096)
+            if not chunk: break
+            data += chunk
+    except socket.timeout:
+        pass
+    check("upload refused with 507 when below headroom", data.startswith(b"HTTP/1.1 507"), data[:40])
+    sk.close()
+
+    # Restore a permissive headroom so later tests can upload.
+    owner.send(pb.Packet.STORAGE_CONFIG_SET_REQ, storage_config_set_req=pb.StorageConfigSetRequest(min_free_bytes=0))
+    owner.wait(pb.Packet.STORAGE_INFO_RES, timeout=2)
+    owner.close()
+
+
 def test_m1_m4_timeout():
     print("[M1/M4] timeout ejects from voice and suspends the member's powers")
     owner = Client("alice"); assert auth_ok(owner)[0]
@@ -1435,6 +1484,7 @@ if __name__ == "__main__":
         test_voice_moderation()
         test_udp_relay()
         test_http_keepalive_and_fts()
+        test_storage()
         test_theme_a_tokens_and_uid()
     finally:
         stop_server(proc)

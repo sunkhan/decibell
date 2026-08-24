@@ -739,6 +739,52 @@ impl CommunityClient {
                         has_more: resp.has_more,
                     });
                 }
+                Some(packet::Payload::StorageInfoRes(resp)) => {
+                    let by_kind = resp
+                        .by_kind
+                        .into_iter()
+                        .map(|k| events::StorageKindUsagePayload {
+                            kind: k.kind,
+                            bytes: k.bytes,
+                            count: k.count,
+                        })
+                        .collect();
+                    let by_channel = resp
+                        .by_channel
+                        .into_iter()
+                        .map(|c| events::StorageChannelUsagePayload {
+                            channel_id: c.channel_id,
+                            bytes: c.bytes,
+                            count: c.count,
+                        })
+                        .collect();
+                    let largest = resp
+                        .largest
+                        .into_iter()
+                        .map(|l| events::StorageLargestItemPayload {
+                            attachment_id: l.attachment_id,
+                            filename: l.filename,
+                            size_bytes: l.size_bytes,
+                            channel_id: l.channel_id,
+                            kind: l.kind,
+                        })
+                        .collect();
+                    events::emit_storage_info_received(events::StorageInfoReceivedPayload {
+                        server_id: server_id.clone(),
+                        success: resp.success,
+                        message: resp.message,
+                        volume_total_bytes: resp.volume_total_bytes,
+                        volume_available_bytes: resp.volume_available_bytes,
+                        attachments_bytes: resp.attachments_bytes,
+                        thumbnails_bytes: resp.thumbnails_bytes,
+                        database_bytes: resp.database_bytes,
+                        attachment_count: resp.attachment_count,
+                        min_free_bytes: resp.min_free_bytes,
+                        by_kind,
+                        by_channel,
+                        largest,
+                    });
+                }
                 Some(packet::Payload::VoiceForceNotify(n)) => {
                     events::emit_voice_force_notify(events::VoiceForceNotifyPayload {
                         server_id: server_id.clone(),

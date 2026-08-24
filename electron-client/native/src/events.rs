@@ -221,6 +221,7 @@ pub const BAN_LIST_RECEIVED: &str = "ban_list_received";
 pub const SERVER_META_UPDATED: &str = "server_meta_updated";
 pub const SERVER_UPDATE_RESPONDED: &str = "server_update_responded";
 pub const AUDIT_LOG_RECEIVED: &str = "audit_log_received";
+pub const STORAGE_INFO_RECEIVED: &str = "storage_info_received";
 pub const VOICE_FORCE_NOTIFY: &str = "voice_force_notify";
 pub const CHANNEL_OVERWRITES_RECEIVED: &str = "channel_overwrites_received";
 pub const ROLE_ACTION_RESPONDED: &str = "role_action_responded";
@@ -773,6 +774,50 @@ pub struct AuditLogReceivedPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct StorageKindUsagePayload {
+    pub kind: i32,
+    pub bytes: i64,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageChannelUsagePayload {
+    pub channel_id: String,
+    pub bytes: i64,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageLargestItemPayload {
+    pub attachment_id: i64,
+    pub filename: String,
+    pub size_bytes: i64,
+    pub channel_id: String,
+    pub kind: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageInfoReceivedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    pub volume_total_bytes: i64,
+    pub volume_available_bytes: i64,
+    pub attachments_bytes: i64,
+    pub thumbnails_bytes: i64,
+    pub database_bytes: i64,
+    pub attachment_count: i64,
+    pub min_free_bytes: i64,
+    pub by_kind: Vec<StorageKindUsagePayload>,
+    pub by_channel: Vec<StorageChannelUsagePayload>,
+    pub largest: Vec<StorageLargestItemPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VoiceForceNotifyPayload {
     pub server_id: String,
     /// "moved" | "disconnected"
@@ -855,6 +900,10 @@ pub fn emit_server_update_responded(payload: ServerUpdateRespondedPayload) {
 
 pub fn emit_audit_log_received(payload: AuditLogReceivedPayload) {
     send(AUDIT_LOG_RECEIVED, payload);
+}
+
+pub fn emit_storage_info_received(payload: StorageInfoReceivedPayload) {
+    send(STORAGE_INFO_RECEIVED, payload);
 }
 
 pub fn emit_voice_force_notify(payload: VoiceForceNotifyPayload) {
