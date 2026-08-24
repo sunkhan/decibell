@@ -107,7 +107,29 @@ public:
         return out;
     }
 
+    // Purely passive actions stay available while timed out — a benched
+    // member can still read. Everything else is suppressed (M4).
+    static bool is_passive_action(Action a) {
+        switch (a) {
+            case Action::ViewChannel:
+            case Action::ReadHistory:
+            case Action::ViewBans:
+            case Action::ViewAuditLog:
+            case Action::ViewOverwrites:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     AuthResult check(Action action, const AuthCtx& ctx) const {
+        // A timed-out member is benched: every non-passive action is denied
+        // while the timeout is active — not just sending/voice, but any
+        // management or moderation power they hold (M4). The owner can never
+        // be timed out (can_moderate forbids it), so no bypass is needed.
+        if (!is_passive_action(action)) {
+            if (auto t = timed_out(ctx)) return *t;
+        }
         switch (action) {
             // ---- server-wide ----
             case Action::ManageServer:
@@ -170,18 +192,14 @@ public:
             case Action::ViewChannel:
                 return channel(ctx, perms::kViewChannel, "You can't see this channel.");
             case Action::SendMessage:
-                if (auto t = timed_out(ctx)) return *t;
                 return channel(ctx, perms::kSendMessages, "You don't have permission to send messages here.");
             case Action::AttachFiles:
-                if (auto t = timed_out(ctx)) return *t;
                 return channel(ctx, perms::kAttachFiles, "You don't have permission to attach files here.");
             case Action::ReadHistory:
                 return channel(ctx, perms::kReadHistory, "You don't have permission to read this channel's history.");
             case Action::ConnectVoice:
-                if (auto t = timed_out(ctx)) return *t;
                 return channel(ctx, perms::kConnectVoice, "You don't have permission to join this voice channel.");
             case Action::Stream:
-                if (auto t = timed_out(ctx)) return *t;
                 return channel(ctx, perms::kStream, "You don't have permission to stream here.");
             case Action::ManageChannel:
                 return channel(ctx, perms::kManageChannels, "You don't have permission to edit this channel.");

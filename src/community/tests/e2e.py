@@ -1255,6 +1255,150 @@ def test_auth_failure_closes():
     c.close()
 
 
+def test_c2_username_reuse():
+    print("[C2] reused username must not inherit roles; a central rename keeps them")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.flush(0.5)
+    owner.send(pb.Packet.ROLE_CREATE_REQ,
+               role_create_req=pb.RoleCreateRequest(name="C2Marker", color=0, permissions=pb.PERM_MANAGE_CHANNELS))
+    role = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
+
+    # A member joins and is granted the role.
+    victim_uid = uid_for("c2victim")
+    victim = join("c2victim", owner)
+    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ,
+               member_roles_update_req=pb.MemberRolesUpdateRequest(username="c2victim", role_ids=[role.id]))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
+    check("victim granted the role", sql("select role_id from member_roles where username='c2victim'") == [(role.id,)])
+    check("victim row stamped with its uid", sql("select uid from members where username='c2victim'") == [(victim_uid,)])
+    victim.close()
+
+    # A DIFFERENT central account (new uid) grabs the freed username and joins via invite.
+    impostor = Client("c2victim", invite=make_invite(owner), uid=victim_uid + 500000)
+    ok, r = auth_ok(impostor)
+    check("reused username admitted as a fresh member", ok, r.community_auth_res.error_code if r else None)
+    check("reused username inherited NO roles",
+          sql("select role_id from member_roles where username='c2victim'") == [])
+    check("member row now carries the new identity's uid",
+          sql("select uid from members where username='c2victim'") == [(victim_uid + 500000,)])
+    impostor.close()
+
+    # Rename: same uid, new display name → membership + roles follow the identity.
+    bob_uid = uid_for("c2bob")
+    bob = join("c2bob", owner)
+    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ,
+               member_roles_update_req=pb.MemberRolesUpdateRequest(username="c2bob", role_ids=[role.id]))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
+    check("bob granted the role", sql("select role_id from member_roles where username='c2bob'") == [(role.id,)])
+    bob.close()
+
+    # Reconnect under a new name with the SAME uid — no invite needed (member by identity).
+    renamed = Client("c2bob_renamed", uid=bob_uid)
+    ok, r = auth_ok(renamed)
+    check("renamed account admitted without an invite", ok, r.community_auth_res.error_code if r else None)
+    check("rename moved the row to the new name",
+          sql("select uid from members where username='c2bob_renamed'") == [(bob_uid,)])
+    check("old name no longer present", sql("select count(*) from members where username='c2bob'") == [(0,)])
+    check("renamed account kept its role",
+          sql("select role_id from member_roles where username='c2bob_renamed'") == [(role.id,)])
+    renamed.close(); owner.close()
+
+
+def test_m1_m4_timeout():
+    print("[M1/M4] timeout ejects from voice and suspends the member's powers")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.flush(0.5)
+    owner.send(pb.Packet.ROLE_CREATE_REQ,
+               role_create_req=pb.RoleCreateRequest(name="Builder2", color=0, permissions=pb.PERM_MANAGE_CHANNELS))
+    role = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
+    mia = join("mia", owner)
+    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ,
+               member_roles_update_req=pb.MemberRolesUpdateRequest(username="mia", role_ids=[role.id]))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
+    mia.flush(0.5); owner.flush(0.5)
+
+    # mia joins voice; sanity-check she can use her MANAGE_CHANNELS power first.
+    mia.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "mia" in p.voice_presence_update.active_users)
+    mia.flush(0.3)
+    mia.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="mia-pre", type=pb.ChannelInfo.TEXT))
+    r = mia.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    check("privileged member can create a channel before timeout", r is not None and r.channel_action_res.success)
+
+    # Owner times mia out.
+    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ,
+               timeout_member_req=pb.TimeoutMemberRequest(username="mia", until=int(time.time()) + 60))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
+    # M1: mia is force-disconnected from voice.
+    fn = mia.wait(pb.Packet.VOICE_FORCE_NOTIFY, timeout=2,
+                  pred=lambda p: p.voice_force_notify.action == pb.VoiceForceNotify.DISCONNECTED)
+    check("timeout ejects the member from voice (M1)", fn is not None)
+
+    # M4: management power is suspended while timed out.
+    mia.flush(0.5)
+    mia.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="mia-during", type=pb.ChannelInfo.TEXT))
+    r = mia.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    check("timed-out member's manage power is suspended (M4)", r is not None and not r.channel_action_res.success)
+    check("no channel created during timeout", sql("select count(*) from channels where name='mia-during'") == [(0,)])
+
+    # Clearing the timeout restores the power.
+    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="mia", until=0))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
+    mia.flush(0.5)
+    mia.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="mia-post", type=pb.ChannelInfo.TEXT))
+    r = mia.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    check("manage power restored after clearing the timeout (M4)", r is not None and r.channel_action_res.success)
+    mia.close(); owner.close()
+
+
+def test_m3_slowmode_per_user():
+    print("[M3] slowmode is per-user (survives reconnect); only a delivered message consumes the window")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    nate = join("nate", owner); owner.flush(0.5); nate.flush(0.5)
+    owner.send(pb.Packet.CHANNEL_UPDATE_REQ, channel_update_req=pb.ChannelUpdateRequest(channel_id="general", slowmode_seconds=30))
+    assert owner.wait(pb.Packet.CHANNEL_UPDATE_RES).channel_update_res.success
+    owner.flush(0.5); nate.flush(0.5)
+
+    # An oversized message is rejected before it can stamp the window...
+    nate.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="x" * (64 * 1024 + 1)))
+    # ...so the next valid message must still go through.
+    nate.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="valid1"))
+    got = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.content == "valid1" and p.channel_msg.sender == "nate")
+    check("a rejected (oversized) message does not consume the window", got is not None)
+
+    # The delivered message DID consume it.
+    nate.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="valid2"))
+    r = nate.wait(pb.Packet.MOD_ACTION_RES, timeout=2, pred=lambda p: p.mod_action_res.action == "message")
+    check("second delivered message within the window is rejected", r is not None and "Slowmode" in r.mod_action_res.message)
+
+    # A reconnect (fresh session, same uid) must not reset the window.
+    nate.close()
+    nate2 = Client("nate", uid=uid_for("nate")); assert auth_ok(nate2)[0]
+    nate2.flush(0.5)
+    nate2.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="afterreconnect"))
+    r = nate2.wait(pb.Packet.MOD_ACTION_RES, timeout=2, pred=lambda p: p.mod_action_res.action == "message")
+    check("slowmode survives a reconnect (per-user, not per-session)", r is not None and "Slowmode" in r.mod_action_res.message)
+
+    owner.send(pb.Packet.CHANNEL_UPDATE_REQ, channel_update_req=pb.ChannelUpdateRequest(channel_id="general", slowmode_seconds=0))
+    owner.wait(pb.Packet.CHANNEL_UPDATE_RES)
+    nate2.close(); owner.close()
+
+
+def test_m3_session_cap():
+    print("[M3] concurrent sessions per user are capped; the oldest is evicted")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    first = join("seso", owner)            # 1st session (via invite)
+    extra = []
+    for _ in range(8):                     # 8 more with the same uid → 9 total, cap is 8
+        c = Client("seso", uid=uid_for("seso")); ok, _ = auth_ok(c); assert ok
+        extra.append(c)
+    check("oldest session evicted once the cap is exceeded", first.is_closed())
+    check("newest session stays connected", not extra[-1].is_closed(0.3))
+    first.close()
+    for c in extra: c.close()
+    owner.close()
+
+
 if __name__ == "__main__":
     test_b1_seed_resurrection()
     proc = start_server()
@@ -1265,6 +1409,7 @@ if __name__ == "__main__":
         test_b21_jwt_leak()
         test_b4_multi_session_ban()
         test_role_assign_guard()
+        test_c2_username_reuse()
         test_ghost_stream()
         test_offline_kick_roster()
         test_no_ghost_after_leave_or_ban()
@@ -1282,8 +1427,11 @@ if __name__ == "__main__":
         test_server_update_and_transfer()
         test_audit_log()
         test_timeouts()
+        test_m1_m4_timeout()
         test_ban_expiry_and_purge()
         test_slowmode()
+        test_m3_slowmode_per_user()
+        test_m3_session_cap()
         test_voice_moderation()
         test_udp_relay()
         test_http_keepalive_and_fts()

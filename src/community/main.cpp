@@ -231,6 +231,14 @@ public:
     // through this so a private channel's traffic never reaches members
     // who can't see it.
     void broadcast_to_channel(const chatproj::Packet& packet, const std::string& channel_id);
+    // Batched CHANNEL_MESSAGE_DELETED fan-out for a bulk purge (ban-with-
+    // purge, future bulk delete). Frames each tombstone once, snapshots the
+    // session list once and resolves each viewer's channel access once —
+    // instead of a full sessions_ scan + permission resolve per message,
+    // which stalled the single io thread when purging a prolific spammer (A2).
+    void broadcast_message_deletions(
+        const std::string& deleted_by, int64_t deleted_at,
+        const std::vector<std::pair<std::string, int64_t>>& messages);
     // Push CHANNEL_OVERWRITES_RES for a channel to every session allowed
     // to view them (MANAGE_ROLES / MANAGE_CHANNELS there).
     void broadcast_overwrites(const std::string& channel_id);
@@ -246,6 +254,14 @@ public:
     size_t move_to_voice_channel(const std::string& username, const std::string& channel_id,
                                  const std::string& actor);
     size_t disconnect_from_voice(const std::string& username, const std::string& actor);
+    // Slowmode, keyed by USERNAME (not session) so a second connection or a
+    // reconnect can't reset the window (M3). Split check/record so a message
+    // that is ultimately rejected (oversized, empty, persist failure) doesn't
+    // consume the window: slowmode_remaining() only reads, slowmode_record()
+    // stamps the accept. `remaining` returns 0 when a message is allowed now.
+    int64_t slowmode_remaining(const std::string& username, const std::string& channel_id,
+                               int32_t slowmode_seconds);
+    void slowmode_record(const std::string& username, const std::string& channel_id);
     // Roster deltas (see "Roster protocol" in messages.proto). The full
     // roster used to be re-pushed to every session on every change —
     // O(members × online) per event. Now one MemberInfo goes out per
@@ -448,6 +464,12 @@ private:
         uint32_t height = 0;
         chatproj::VideoCodec current_codec = chatproj::CODEC_H264_HW;
         chatproj::VideoCodec enforced_codec = chatproj::CODEC_UNKNOWN;
+        // Session that started this stream. On a reconnect the same username
+        // re-registers a stream under a new session; the stale session's
+        // leave() must not tear the live one down (I1) — user-keyed state is
+        // only erased when this weak_ptr locks to the acting session (or is
+        // expired). Mirrors the udp_key_index_ identity guard.
+        std::weak_ptr<Session> owner;
     };
     std::unordered_map<std::string, std::unordered_map<std::string, StreamInfo>> active_streams_;
 
@@ -481,6 +503,18 @@ private:
     // the linear scans of sessions_ on the NACK/keyframe relay path and
     // lets kick/ban reach all of a user's sessions, not just the first.
     std::unordered_map<std::string, std::vector<std::shared_ptr<Session>>> sessions_by_user_;
+    // Max live authenticated sessions per user. Beyond this the oldest is
+    // evicted — bounds the per-session rate-limit / slowmode multiplication
+    // (M3) while leaving room for a few genuine devices.
+    static constexpr size_t kMaxSessionsPerUser = 8;
+
+    // username → channel → last accepted-message time (slowmode; M3). Guarded
+    // by its own mutex — it's on the hot chat path and shouldn't contend on
+    // mutex_. Survives reconnects on purpose; cleared wholesale if it ever
+    // grows past a sane bound (mirrors overwrites_cache_).
+    std::mutex slowmode_mutex_;
+    std::unordered_map<std::string,
+        std::unordered_map<std::string, std::chrono::steady_clock::time_point>> slowmode_last_;
 
     chatproj::CommunityDb* db_ = nullptr;
     const chatproj::Authorizer* authz_ = nullptr;
@@ -844,7 +878,34 @@ private:
                 return;
             }
 
-            bool member = db->is_member(candidate_username);
+            // Step 2b: resolve membership by the stable uid, not the
+            // (reusable) username. A username freed at central and
+            // re-registered by someone else must NOT inherit the previous
+            // holder's member row / roles (this was C2); a member renamed at
+            // central keeps theirs.
+            bool member = false;
+            if (candidate_uid > 0) {
+                if (auto by_uid = db->get_member_by_uid(candidate_uid)) {
+                    if (by_uid->username != candidate_username) {
+                        // Same account, new display name — carry roles over.
+                        db->rename_member(by_uid->username, candidate_username);
+                        std::cout << "[Community] uid " << candidate_uid << " renamed "
+                                  << by_uid->username << " -> " << candidate_username << "\n";
+                    }
+                    member = true;
+                } else if (auto by_name = db->get_member(candidate_username);
+                           by_name && by_name->uid == 0) {
+                    // Pre-Theme-A row reclaiming its identity via TOFU.
+                    db->set_member_uid(candidate_username, candidate_uid);
+                    member = true;
+                }
+                // A row under this name with a different nonzero uid is a
+                // reused username — not this member; fall through to invite,
+                // where add_member() evicts the stale row without inheritance.
+            } else {
+                // Legacy token with no uid claim: the name is all we have.
+                member = db->is_member(candidate_username);
+            }
             if (!member) {
                 if (invite_code.empty()) {
                     send_auth_response(false,
@@ -1240,6 +1301,11 @@ private:
                     return;
                 }
             }
+            // Set once the message passes slowmode and is about to be
+            // accepted — the window is stamped only AFTER a successful
+            // persist (below), so an oversized / empty / unsaved message
+            // never consumes it (M3).
+            bool record_slowmode = false;
             // Permissions v2: SEND_MESSAGES (and ATTACH_FILES when the
             // message carries attachments) resolved for this channel.
             {
@@ -1254,23 +1320,22 @@ private:
                     return;
                 }
                 // Slowmode: one message per `slowmode_seconds` per channel
-                // unless the sender may MANAGE_MESSAGES there.
+                // unless the sender may MANAGE_MESSAGES there. Keyed per user
+                // in the manager (not per session) so a second connection or
+                // a reconnect can't reset it.
                 std::optional<chatproj::DbChannel> sm;
                 if (auto* db = manager_.db()) sm = db->get_channel(msg->channel_id());
                 if (sm && sm->slowmode_seconds > 0 &&
                     !(manager_.authz().channel_permissions(username_, msg->channel_id()) & chatproj::perms::kManageMessages)) {
-                    const auto now = std::chrono::steady_clock::now();
-                    auto it = last_message_at_.find(msg->channel_id());
-                    if (it != last_message_at_.end()) {
-                        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - it->second).count();
-                        if (elapsed < sm->slowmode_seconds) {
-                            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                "Slowmode is on — wait " + std::to_string(sm->slowmode_seconds - elapsed) + "s.",
-                                username_, "message");
-                            return;
-                        }
+                    const int64_t wait = manager_.slowmode_remaining(
+                        username_, msg->channel_id(), sm->slowmode_seconds);
+                    if (wait > 0) {
+                        send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
+                            "Slowmode is on — wait " + std::to_string(wait) + "s.",
+                            username_, "message");
+                        return;
                     }
-                    last_message_at_[msg->channel_id()] = now;
+                    record_slowmode = true;
                 }
             }
             // Size cap — the 2 MB frame cap alone would let one message
@@ -1325,6 +1390,8 @@ private:
                     return;
                 }
             }
+            // Message accepted — now stamp the slowmode window (M3).
+            if (record_slowmode) manager_.slowmode_record(username_, msg->channel_id());
 
             // Bind any pre-uploaded attachments the client referenced. Only
             // the client's own ready uploads for this channel bind; anything
@@ -1930,16 +1997,11 @@ private:
                         std::filesystem::remove(path + ".thumb-640px.jpg", ec);
                         std::filesystem::remove(path + ".thumb-1280px.jpg", ec);
                     }
-                    for (const auto& [ch, mid] : purged.messages) {
-                        chatproj::Packet bcast;
-                        bcast.set_type(chatproj::Packet::CHANNEL_MESSAGE_DELETED);
-                        auto* bw = bcast.mutable_channel_message_deleted();
-                        bw->set_channel_id(ch);
-                        bw->set_message_id(mid);
-                        bw->set_deleted_at(now_ts);
-                        bw->set_deleted_by(username_);
-                        manager_.broadcast_to_channel(bcast, ch);
-                    }
+                    // One batched fan-out for the whole purge — a per-message
+                    // broadcast_to_channel re-scanned every session and
+                    // re-resolved permissions per message, stalling the io
+                    // thread when purging a prolific spammer (A2).
+                    manager_.broadcast_message_deletions(username_, now_ts, purged.messages);
                     details += (details.empty() ? "" : "; ") + std::to_string(purged.messages.size()) + " messages purged";
                 }
                 db->add_audit(username_, "ban", target, "", details);
@@ -2623,6 +2685,11 @@ private:
             }
             send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, true, "", target, "timeout");
             manager_.emit_member_upsert(target);
+            // Bench them immediately: a member timed out mid-call must be
+            // pulled out of voice (which also stops any stream they're
+            // running) — not left talking until they leave on their own
+            // (M1). Only on an actual timeout, not when clearing one.
+            if (until > now_ts) manager_.disconnect_from_voice(target, username_);
             db->add_audit(username_, until ? "timeout" : "timeout_clear", target, "",
                           until ? "until " + format_utc(until) + (req.reason().empty() ? "" : "; reason: " + req.reason())
                                 : "");
@@ -2891,8 +2958,6 @@ private:
     bool is_deafened_ = false;
     bool server_muted_ = false;
     bool server_deafened_ = false;
-    // Slowmode: last accepted message time per channel.
-    std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_message_at_;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
     std::mutex write_mutex_;
     chatproj::ClientCapabilities capabilities_;
@@ -2910,6 +2975,10 @@ void SessionManager::join(std::shared_ptr<Session> session) {
 void SessionManager::leave(std::shared_ptr<Session> session) {
     std::vector<std::string> affected_voice_channels;
     std::vector<std::string> affected_stream_channels;
+    // Did THIS session own the user's live stream? Gates the streamer-side
+    // watcher-set + thumbnail teardown so a sibling session's disconnect
+    // can't strand a reconnected session's stream (I1).
+    bool owns_live_stream = false;
     // Capture auth state before erasing so we know whether to push a roster
     // refresh to the rest of the server. Kicks/bans/self-leaves all funnel
     // through here via force_disconnect → socket close → read error → leave.
@@ -2956,22 +3025,34 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
             it = it->second.empty() ? voice_channels_.erase(it) : std::next(it);
         }
         for (auto it = active_streams_.begin(); it != active_streams_.end();) {
-            if (it->second.erase(username) > 0) {
-                affected_stream_channels.push_back(it->first);
+            auto su = it->second.find(username);
+            if (su != it->second.end()) {
+                // Only tear the stream down if THIS session owns it. On a
+                // reconnect the same username re-registers a stream under a
+                // new session; the stale session's leave must leave the live
+                // one alone. Expired owner = the owning session is already
+                // gone, so cleanup is safe.
+                auto owner = su->second.owner.lock();
+                if (!owner || owner == session) {
+                    it->second.erase(su);
+                    owns_live_stream = true;
+                    affected_stream_channels.push_back(it->first);
+                }
             }
             it = it->second.empty() ? active_streams_.erase(it) : std::next(it);
         }
         // Clean up watcher state in both directions: entries where this
-        // session watches someone, AND the watcher set of this session's
-        // own stream — a disconnected streamer's set would otherwise
-        // survive and resume relaying to stale watchers if they came
-        // back and streamed again (stop_stream clears it; leave didn't).
+        // session watches someone (always — session-keyed), AND the watcher
+        // set of this session's OWN stream, but only when this session
+        // actually owned it (owns_live_stream) — otherwise a sibling
+        // session's disconnect would strand a reconnected stream's viewers.
         for (auto ch_it = stream_watchers_.begin(); ch_it != stream_watchers_.end();) {
             auto& streamers = ch_it->second;
             bool watcher_removed = false;
             for (auto st_it = streamers.begin(); st_it != streamers.end();) {
                 if (st_it->second.erase(session) > 0) watcher_removed = true;
-                if (st_it->first == username || st_it->second.empty()) {
+                const bool own_stream_entry = (st_it->first == username && owns_live_stream);
+                if (own_stream_entry || st_it->second.empty()) {
                     st_it = streamers.erase(st_it);
                 } else {
                     ++st_it;
@@ -2986,9 +3067,10 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
         }
         std::cout << "[Community] Session " << username << " left. Total: " << sessions_.size() << "\n";
     }
-    // Stream may have been active when this user dropped; clear the
-    // popup-preview cache regardless. Idempotent on non-streamers.
-    erase_thumbnail_cache(session->get_username());
+    // Clear the popup-preview cache only if this session owned the live
+    // stream — wiping it for any sibling disconnect would blank a
+    // reconnected session's thumbnail until its next ~1 Hz push (I1).
+    if (owns_live_stream) erase_thumbnail_cache(session->get_username());
     // Broadcast updated presence to remaining clients (outside lock to avoid deadlock)
     for (const auto& ch : affected_voice_channels) {
         broadcast_voice_presence(ch);
@@ -3027,6 +3109,7 @@ void SessionManager::start_stream(std::shared_ptr<Session> session, const std::s
         info.height = height;
         info.current_codec = chosen_codec;
         info.enforced_codec = enforced_codec;
+        info.owner = session;
         active_streams_[channel_id][session->get_username()] = info;
     }
     broadcast_stream_presence(channel_id);
@@ -3038,25 +3121,36 @@ void SessionManager::stop_stream(std::shared_ptr<Session> session, const std::st
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = active_streams_.find(channel_id);
         if (it != active_streams_.end()) {
-            if (it->second.erase(session->get_username()) > 0) {
-                removed = true;
+            auto su = it->second.find(session->get_username());
+            if (su != it->second.end()) {
+                // Only the owning session (or an expired owner) tears the
+                // stream down — a stale session must not stop a reconnected
+                // session's live stream (I1).
+                auto owner = su->second.owner.lock();
+                if (!owner || owner == session) {
+                    it->second.erase(su);
+                    removed = true;
+                }
             }
             if (it->second.empty()) active_streams_.erase(it);
         }
-        // Clean up watchers for this stream
-        auto wch = stream_watchers_.find(channel_id);
-        if (wch != stream_watchers_.end()) {
-            wch->second.erase(session->get_username());
-            if (wch->second.empty()) stream_watchers_.erase(wch);
+        // Clean up watchers + keyframe throttle only when we actually stopped
+        // this session's stream, so a no-op stop from a stale session leaves
+        // the live stream's watcher set intact.
+        if (removed) {
+            auto wch = stream_watchers_.find(channel_id);
+            if (wch != stream_watchers_.end()) {
+                wch->second.erase(session->get_username());
+                if (wch->second.empty()) stream_watchers_.erase(wch);
+            }
+            last_keyframe_relay_.erase(session->get_username());
         }
-        last_keyframe_relay_.erase(session->get_username());
     }
-    // Drop any cached thumbnail for this streamer; popup viewers
-    // will now get an empty response (and they'll stop polling
-    // once the next stream-presence event removes the entry from
-    // their streamsByUser map).
-    erase_thumbnail_cache(session->get_username());
     if (removed) {
+        // Drop any cached thumbnail for this streamer; popup viewers will now
+        // get an empty response and stop polling once the next stream-presence
+        // event removes the entry from their streamsByUser map.
+        erase_thumbnail_cache(session->get_username());
         broadcast_stream_presence(channel_id);
     }
 }
@@ -3454,6 +3548,30 @@ size_t SessionManager::disconnect_from_voice(const std::string& username, const 
     return n;
 }
 
+int64_t SessionManager::slowmode_remaining(const std::string& username,
+                                           const std::string& channel_id,
+                                           int32_t slowmode_seconds) {
+    if (slowmode_seconds <= 0) return 0;
+    std::lock_guard<std::mutex> lock(slowmode_mutex_);
+    auto uit = slowmode_last_.find(username);
+    if (uit == slowmode_last_.end()) return 0;
+    auto cit = uit->second.find(channel_id);
+    if (cit == uit->second.end()) return 0;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - cit->second).count();
+    return elapsed < slowmode_seconds ? (slowmode_seconds - elapsed) : 0;
+}
+
+void SessionManager::slowmode_record(const std::string& username,
+                                     const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(slowmode_mutex_);
+    // Wholesale reset if it ever grows unreasonable — entries are tiny and
+    // stale ones (older than any slowmode window) are harmless, so a rare
+    // clear just grants one free message, never a correctness problem.
+    if (slowmode_last_.size() > 8192) slowmode_last_.clear();
+    slowmode_last_[username][channel_id] = std::chrono::steady_clock::now();
+}
+
 void SessionManager::broadcast_to_channel(const chatproj::Packet& packet, const std::string& channel_id) {
     if (!authz_) { broadcast_to_members(packet); return; }
     auto framed = frame_packet(packet);
@@ -3467,6 +3585,41 @@ void SessionManager::broadcast_to_channel(const chatproj::Packet& packet, const 
     for (const auto& [session, user] : targets) {
         if (authz_->channel_permissions(user, channel_id) & chatproj::perms::kViewChannel) {
             session->deliver(framed);
+        }
+    }
+}
+
+void SessionManager::broadcast_message_deletions(
+    const std::string& deleted_by, int64_t deleted_at,
+    const std::vector<std::pair<std::string, int64_t>>& messages) {
+    if (messages.empty() || !authz_) return;
+    // Frame each tombstone once, grouped by channel.
+    std::unordered_map<std::string,
+        std::vector<std::shared_ptr<std::vector<uint8_t>>>> by_channel;
+    for (const auto& [ch, mid] : messages) {
+        chatproj::Packet bcast;
+        bcast.set_type(chatproj::Packet::CHANNEL_MESSAGE_DELETED);
+        auto* bw = bcast.mutable_channel_message_deleted();
+        bw->set_channel_id(ch);
+        bw->set_message_id(mid);
+        bw->set_deleted_at(deleted_at);
+        bw->set_deleted_by(deleted_by);
+        by_channel[ch].push_back(frame_packet(bcast));
+    }
+    std::vector<std::pair<std::shared_ptr<Session>, std::string>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& s : sessions_) {
+            if (s->is_authenticated()) targets.emplace_back(s, s->get_username());
+        }
+    }
+    // One cached channel-permission lookup per (viewer, channel), then deliver
+    // all of that channel's tombstones to the viewer.
+    for (const auto& [session, user] : targets) {
+        for (const auto& [ch, frames] : by_channel) {
+            if (authz_->channel_permissions(user, ch) & chatproj::perms::kViewChannel) {
+                for (const auto& f : frames) session->deliver(f);
+            }
         }
     }
 }
@@ -4015,12 +4168,26 @@ void SessionManager::send_initial_voice_presences(std::shared_ptr<Session> sessi
 }
 
 void SessionManager::register_authenticated(std::shared_ptr<Session> session) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    udp_key_index_[session->get_udp_key()] = session;
-    auto& vec = sessions_by_user_[session->get_username()];
-    if (std::find(vec.begin(), vec.end(), session) == vec.end()) {
-        vec.push_back(session);
+    std::vector<std::shared_ptr<Session>> evict;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        udp_key_index_[session->get_udp_key()] = session;
+        auto& vec = sessions_by_user_[session->get_username()];
+        if (std::find(vec.begin(), vec.end(), session) == vec.end()) {
+            vec.push_back(session);
+        }
+        // Cap concurrent sessions per user (M3): an unbounded fan-out let one
+        // JWT multiply every per-session rate limit and reset slowmode per
+        // connection. Evict the oldest beyond the cap; the same-JWT udp_key
+        // was just re-pointed at the new session, so the evicted session's
+        // leave() won't touch the live routing (identity guard).
+        while (vec.size() > kMaxSessionsPerUser) {
+            evict.push_back(vec.front());
+            vec.erase(vec.begin());
+        }
     }
+    // Close evicted sessions outside the lock (close_after_flush queues work).
+    for (auto& s : evict) s->close_after_flush();
 }
 
 void SessionManager::unregister_udp_key(const std::string& udp_key) {
@@ -4425,9 +4592,17 @@ private:
         acceptor_.async_accept(
             [this](boost::system::error_code ec, tcp::socket socket) {
                 if (!ec) {
-                    auto session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_, jwt_secret_);
-                    manager_.join(session);
-                    session->start();
+                    // A throw while standing up the session must not skip the
+                    // re-arm below, or the accept chain dies silently (R1).
+                    try {
+                        auto session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_, jwt_secret_);
+                        manager_.join(session);
+                        session->start();
+                    } catch (const std::exception& e) {
+                        std::cerr << "[Community] accept handler threw: " << e.what() << " — continuing\n";
+                    } catch (...) {
+                        std::cerr << "[Community] accept handler threw (unknown) — continuing\n";
+                    }
                     do_accept();
                     return;
                 }
@@ -4449,17 +4624,27 @@ private:
         udp_socket_.async_receive_from(
             boost::asio::buffer(udp_buffer_, sizeof(udp_buffer_)), udp_sender_endpoint_,
             [this](boost::system::error_code ec, std::size_t bytes_recvd) {
-                if (!ec) handle_voice_datagram(bytes_recvd);
-                // Drain everything else that's already queued in the
-                // kernel before yielding back to the reactor: one datagram
-                // per epoll wakeup was the dominant per-packet cost under
-                // load. Bounded so TCP handlers still get the thread.
-                for (int i = 0; i < kMaxDrainPerWakeup; ++i) {
-                    boost::system::error_code dec;
-                    const std::size_t n = udp_socket_.receive_from(
-                        boost::asio::buffer(udp_buffer_, sizeof(udp_buffer_)), udp_sender_endpoint_, 0, dec);
-                    if (dec) break;   // would_block = drained
-                    handle_voice_datagram(n);
+                // A throw in datagram handling (e.g. bad_alloc in a fan-out
+                // serialize) must not skip the tail re-arm — that used to
+                // kill the voice receive chain silently for the whole
+                // process while it "kept serving" (R1).
+                try {
+                    if (!ec) handle_voice_datagram(bytes_recvd);
+                    // Drain everything else already queued in the kernel
+                    // before yielding to the reactor: one datagram per epoll
+                    // wakeup was the dominant per-packet cost under load.
+                    // Bounded so TCP handlers still get the thread.
+                    for (int i = 0; i < kMaxDrainPerWakeup; ++i) {
+                        boost::system::error_code dec;
+                        const std::size_t n = udp_socket_.receive_from(
+                            boost::asio::buffer(udp_buffer_, sizeof(udp_buffer_)), udp_sender_endpoint_, 0, dec);
+                        if (dec) break;   // would_block = drained
+                        handle_voice_datagram(n);
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "[Community] voice datagram handler threw: " << e.what() << " — continuing\n";
+                } catch (...) {
+                    std::cerr << "[Community] voice datagram handler threw (unknown) — continuing\n";
                 }
                 do_receive_voice_udp();
             });
@@ -4538,17 +4723,26 @@ private:
         media_udp_socket_.async_receive_from(
             boost::asio::buffer(media_udp_buffer_, sizeof(media_udp_buffer_)), media_udp_sender_endpoint_,
             [this](boost::system::error_code ec, std::size_t bytes_recvd) {
-                if (!ec) handle_media_datagram(bytes_recvd);
-                // Drain everything else that's already queued in the
-                // kernel before yielding back to the reactor: one datagram
-                // per epoll wakeup was the dominant per-packet cost under
-                // load. Bounded so TCP handlers still get the thread.
-                for (int i = 0; i < kMaxDrainPerWakeup; ++i) {
-                    boost::system::error_code dec;
-                    const std::size_t n = media_udp_socket_.receive_from(
-                        boost::asio::buffer(media_udp_buffer_, sizeof(media_udp_buffer_)), media_udp_sender_endpoint_, 0, dec);
-                    if (dec) break;   // would_block = drained
-                    handle_media_datagram(n);
+                // See do_receive_voice_udp: guarantee the tail re-arm even if
+                // a datagram handler throws, so the media chain never dies
+                // silently (R1).
+                try {
+                    if (!ec) handle_media_datagram(bytes_recvd);
+                    // Drain everything else already queued in the kernel
+                    // before yielding to the reactor: one datagram per epoll
+                    // wakeup was the dominant per-packet cost under load.
+                    // Bounded so TCP handlers still get the thread.
+                    for (int i = 0; i < kMaxDrainPerWakeup; ++i) {
+                        boost::system::error_code dec;
+                        const std::size_t n = media_udp_socket_.receive_from(
+                            boost::asio::buffer(media_udp_buffer_, sizeof(media_udp_buffer_)), media_udp_sender_endpoint_, 0, dec);
+                        if (dec) break;   // would_block = drained
+                        handle_media_datagram(n);
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "[Community] media datagram handler threw: " << e.what() << " — continuing\n";
+                } catch (...) {
+                    std::cerr << "[Community] media datagram handler threw (unknown) — continuing\n";
                 }
                 do_receive_media_udp();
             });

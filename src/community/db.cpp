@@ -234,6 +234,15 @@ void CommunityDb::migrate_to_v8_uid_() {
     if (!column_exists(db_, "bans", "uid"))
         exec_sql(db_, "ALTER TABLE bans ADD COLUMN uid INTEGER NOT NULL DEFAULT 0;");
     exec_sql(db_, "CREATE INDEX IF NOT EXISTS idx_bans_uid ON bans(uid) WHERE uid > 0;");
+    // Identity is one row per central uid. The partial unique index enforces
+    // that going forward (many pre-Theme-A rows legitimately share uid=0, so
+    // it is scoped to uid<>0). Creation fails only if a legacy DB already
+    // holds a duplicate nonzero uid from before the C2 fix — log and carry
+    // on; get_member_by_uid still resolves deterministically via LIMIT 1.
+    if (!exec_sql(db_, "CREATE UNIQUE INDEX IF NOT EXISTS idx_members_uid ON members(uid) WHERE uid <> 0;")) {
+        std::cerr << "[DB] idx_members_uid not created (pre-existing duplicate uid?); "
+                     "uid resolution falls back to LIMIT 1\n";
+    }
     set_meta_("schema_version", "8");
 }
 
@@ -811,25 +820,98 @@ bool CommunityDb::is_member(const std::string& username) const {
 
 bool CommunityDb::add_member(const std::string& username, int64_t uid) {
     std::lock_guard<std::mutex> lock(mutex_);
-    Stmt q(db_,
-        "INSERT OR IGNORE INTO members(username, joined_at, nickname, uid) "
-        "VALUES(?, ?, '', ?);");
-    if (!q.s) return false;
-    q.bind_text(1, username);
-    q.bind_int64(2, now_seconds());
-    q.bind_int64(3, uid);
-    return q.step() == SQLITE_DONE;
+    // A row may still occupy this username under a DIFFERENT identity — the
+    // previous holder was renamed at central and someone re-registered the
+    // freed name. It can't be a live member of this name (the caller
+    // verified this user's token holds it now), so drop it and its roles /
+    // overwrites; the newcomer must never inherit them (this was C2).
+    invalidate_user_perms_(username);
+    overwrites_cache_.clear();
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    {
+        Stmt q(db_, "DELETE FROM channel_overwrites WHERE target_type=1 AND target_id=?;");
+        if (q.s) { q.bind_text(1, username); q.step(); }
+    }
+    {
+        Stmt q(db_, "DELETE FROM member_roles WHERE username=?;");
+        if (q.s) { q.bind_text(1, username); q.step(); }
+    }
+    {
+        Stmt q(db_, "DELETE FROM members WHERE username=?;");
+        if (q.s) { q.bind_text(1, username); q.step(); }
+    }
+    bool inserted = false;
+    {
+        Stmt q(db_,
+            "INSERT INTO members(username, joined_at, nickname, uid) "
+            "VALUES(?, ?, '', ?);");
+        if (q.s) {
+            q.bind_text(1, username);
+            q.bind_int64(2, now_seconds());
+            q.bind_int64(3, uid);
+            inserted = (q.step() == SQLITE_DONE) && sqlite3_changes(db_) > 0;
+        }
+    }
+    exec_sql(db_, inserted ? "COMMIT;" : "ROLLBACK;");
+    return inserted;
 }
 
 void CommunityDb::set_member_uid(const std::string& username, int64_t uid) {
     if (uid <= 0) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    Stmt q(db_, "UPDATE members SET uid=? WHERE username=? AND uid<>?;");
+    // Back-fill only: stamp identity onto a pre-Theme-A row (uid still 0),
+    // never overwrite an already-known uid. Overwriting was the second half
+    // of C2 — a reused username re-stamped the row and erased the evidence.
+    Stmt q(db_, "UPDATE members SET uid=? WHERE username=? AND uid=0;");
     if (!q.s) return;
     q.bind_int64(1, uid);
     q.bind_text(2, username);
-    q.bind_int64(3, uid);
     q.step();
+}
+
+bool CommunityDb::rename_member(const std::string& old_username,
+                               const std::string& new_username) {
+    if (new_username.empty() || old_username == new_username) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    invalidate_user_perms_(old_username);
+    invalidate_user_perms_(new_username);
+    overwrites_cache_.clear();
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    // Evict any stale row squatting on the target name (its owner no longer
+    // holds this username at central — usernames are unique among live
+    // accounts and this member's token proves they hold it now).
+    {
+        Stmt q(db_, "DELETE FROM channel_overwrites WHERE target_type=1 AND target_id=?;");
+        if (q.s) { q.bind_text(1, new_username); q.step(); }
+    }
+    {
+        Stmt q(db_, "DELETE FROM member_roles WHERE username=?;");
+        if (q.s) { q.bind_text(1, new_username); q.step(); }
+    }
+    {
+        Stmt q(db_, "DELETE FROM members WHERE username=?;");
+        if (q.s) { q.bind_text(1, new_username); q.step(); }
+    }
+    // Move the identity's rows onto the new name.
+    bool ok = false;
+    {
+        Stmt q(db_, "UPDATE members SET username=? WHERE username=?;");
+        if (q.s) {
+            q.bind_text(1, new_username);
+            q.bind_text(2, old_username);
+            ok = (q.step() == SQLITE_DONE) && sqlite3_changes(db_) > 0;
+        }
+    }
+    if (ok) {
+        Stmt q(db_, "UPDATE member_roles SET username=? WHERE username=?;");
+        if (q.s) { q.bind_text(1, new_username); q.bind_text(2, old_username); q.step(); }
+    }
+    if (ok) {
+        Stmt q(db_, "UPDATE channel_overwrites SET target_id=? WHERE target_type=1 AND target_id=?;");
+        if (q.s) { q.bind_text(1, new_username); q.bind_text(2, old_username); q.step(); }
+    }
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    return ok;
 }
 
 bool CommunityDb::remove_member(const std::string& username) {
@@ -887,6 +969,29 @@ std::optional<DbMember> CommunityDb::get_member(const std::string& username) con
         "FROM members WHERE username=?;");
     if (!q.s) return std::nullopt;
     q.bind_text(1, username);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    DbMember m;
+    m.username = q.col_text(0);
+    m.joined_at = q.col_int64(1);
+    m.nickname = q.col_text(2);
+    m.timed_out_until = q.col_int64(3);
+    m.server_muted = q.col_int(4) != 0;
+    m.server_deafened = q.col_int(5) != 0;
+    m.uid = q.col_int64(6);
+    return m;
+}
+
+std::optional<DbMember> CommunityDb::get_member_by_uid(int64_t uid) const {
+    if (uid <= 0) return std::nullopt;
+    std::lock_guard<std::mutex> lock(mutex_);
+    // A unique index on uid (where uid<>0) keeps this to at most one row;
+    // LIMIT 1 + ORDER BY is belt-and-suspenders for legacy DBs that pre-date
+    // the index and may hold a duplicate from before the C2 fix.
+    Stmt q(db_,
+        "SELECT username, joined_at, nickname, timed_out_until, server_muted, server_deafened, uid "
+        "FROM members WHERE uid=? ORDER BY joined_at ASC LIMIT 1;");
+    if (!q.s) return std::nullopt;
+    q.bind_int64(1, uid);
     if (q.step() != SQLITE_ROW) return std::nullopt;
     DbMember m;
     m.username = q.col_text(0);
@@ -1578,12 +1683,22 @@ InviteResult CommunityDb::redeem_invite(const std::string& code,
     if (ban_active_unlocked(db_, redeeming_user, redeeming_uid, nullptr)) return InviteResult::Banned;
 
     // If already a member, the invite code is moot — treat as success and skip
-    // the uses increment so invites aren't wasted on double-joins.
+    // the uses increment so invites aren't wasted on double-joins. But
+    // "already a member" is an IDENTITY question, not a name one: a row under
+    // this username carrying a DIFFERENT stable uid belongs to a previous
+    // holder who was renamed at central, not to this account. Fall through so
+    // the caller's add_member() evicts that stale row instead of admitting the
+    // newcomer into it with its roles (C2). uid==0 on either side is the
+    // pre-Theme-A / legacy-token case and still matches by name.
     {
-        Stmt q(db_, "SELECT 1 FROM members WHERE username=?;");
+        Stmt q(db_, "SELECT uid FROM members WHERE username=?;");
         if (q.s) {
             q.bind_text(1, redeeming_user);
-            if (q.step() == SQLITE_ROW) return InviteResult::AlreadyMember;
+            if (q.step() == SQLITE_ROW) {
+                const int64_t row_uid = q.col_int64(0);
+                if (redeeming_uid <= 0 || row_uid == 0 || row_uid == redeeming_uid)
+                    return InviteResult::AlreadyMember;
+            }
         }
     }
 
@@ -1812,6 +1927,12 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
     if (!ok) return std::nullopt;
     normalize_channel_order_();
+    // Drop cached channel-permission resolutions: any user who probed this
+    // slug before it existed cached a "(user, id) → 0" (VIEW denied) entry,
+    // which would keep the freshly-created channel invisible to them until an
+    // unrelated cache-clearing mutation. A delete+recreate under the same
+    // slug is the common trigger (D1).
+    channel_perm_cache_.clear();
 
     DbChannel c;
     c.id = id;

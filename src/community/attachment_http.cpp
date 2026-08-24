@@ -262,9 +262,14 @@ private:
     static constexpr auto kInactivity = std::chrono::seconds(30);
     void arm_deadline() {
         auto self = shared_from_this();
+        // Generation guard: expires_after() cannot cancel a wait whose
+        // completion is already queued — it fires with ec == success even
+        // though we just re-armed. Stamping each arming and checking it here
+        // makes such a stale completion a no-op instead of a spurious close.
+        const uint64_t gen = ++deadline_gen_;
         deadline_timer_.expires_after(kInactivity);
-        deadline_timer_.async_wait([this, self](const boost::system::error_code& ec) {
-            if (ec) return;
+        deadline_timer_.async_wait([this, self, gen](const boost::system::error_code& ec) {
+            if (ec || gen != deadline_gen_) return;
             if (patch_fp_ && *patch_fp_) { std::fclose(*patch_fp_); *patch_fp_ = nullptr; }
             boost::system::error_code ignore;
             socket_.lowest_layer().close(ignore);
@@ -566,6 +571,12 @@ private:
                     if (patch_fp_ && *patch_fp_) { std::fclose(*patch_fp_); *patch_fp_ = nullptr; }
                     return;
                 }
+                // The inactivity deadline can fire and close us (nulling the
+                // FILE*) between this read being queued and running — the
+                // timer handler and this completion may sit in the same
+                // reactor batch. Bail before touching *patch_fp_; writing to
+                // the nulled stream used to SIGSEGV the whole server (A1).
+                if (!patch_fp_ || !*patch_fp_) return;
                 arm_deadline();
                 if (std::fwrite(patch_chunk_.data(), 1, n, *patch_fp_) != n) {
                     std::fclose(*patch_fp_); *patch_fp_ = nullptr;
@@ -1071,6 +1082,7 @@ private:
     ssl::stream<tcp::socket> socket_;
     boost::asio::steady_timer shutdown_timer_;
     boost::asio::steady_timer deadline_timer_;
+    uint64_t deadline_gen_ = 0;  // stamps each arm_deadline() (stale-completion guard)
     chatproj::CommunityDb& db_;
     const chatproj::Authorizer* authz_;
     std::string jwt_secret_;

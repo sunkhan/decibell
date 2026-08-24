@@ -276,12 +276,27 @@ public:
 
     // --- membership ---
     bool is_member(const std::string& username) const;
+    // Records a new membership. If the username slot is held by a stale row
+    // of a DIFFERENT identity (previous holder renamed at central), that row
+    // and its roles/overwrites are evicted first so the newcomer never
+    // inherits them. Returns true only if a row was actually inserted.
     bool add_member(const std::string& username, int64_t uid = 0);
-    // Records the stable uid on an existing member row (no-op if 0).
+    // Back-fills the stable uid on a pre-Theme-A member row (one whose uid is
+    // still 0). Never overwrites an already-stamped uid — identity, once
+    // learned, is immutable; a different uid claiming the same name is a
+    // reused username, not an update.
     void set_member_uid(const std::string& username, int64_t uid);
     bool remove_member(const std::string& username);
+    // Moves a member's identity to a new display name (central renamed the
+    // account), carrying roles, overwrites and nickname. Any stale row under
+    // the target name is evicted first. Keyed by the caller having resolved
+    // identity via uid. False if the source row is missing or on DB error.
+    bool rename_member(const std::string& old_username, const std::string& new_username);
     std::vector<DbMember> list_members() const;
     std::optional<DbMember> get_member(const std::string& username) const;
+    // Resolves a member by their stable central uid (the identity anchor),
+    // independent of the current display name. nullopt if uid <= 0 or no row.
+    std::optional<DbMember> get_member_by_uid(int64_t uid) const;
     int64_t count_members() const;
     // Timeout (unix seconds; 0 clears). False if not a member.
     bool set_timeout(const std::string& username, int64_t until);
