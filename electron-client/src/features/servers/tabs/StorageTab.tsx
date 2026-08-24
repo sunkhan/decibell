@@ -49,12 +49,45 @@ export default function StorageTab({ serverId }: { serverId: string }) {
         return;
       }
       setError(null);
-      setInfo(p);
+      // i64 fields cross the native→JS bridge as BigInt once they exceed
+      // int32 (disk sizes are ~1e11); coerce every numeric field to Number so
+      // arithmetic (Math.max/min, division, formatFileSize) works. Byte
+      // counts stay far under 2^53, so no precision is lost.
+      const norm: StorageInfoReceivedPayload = {
+        serverId: p.serverId,
+        success: p.success,
+        message: p.message,
+        volumeTotalBytes: Number(p.volumeTotalBytes),
+        volumeAvailableBytes: Number(p.volumeAvailableBytes),
+        attachmentsBytes: Number(p.attachmentsBytes),
+        thumbnailsBytes: Number(p.thumbnailsBytes),
+        databaseBytes: Number(p.databaseBytes),
+        attachmentCount: Number(p.attachmentCount),
+        minFreeBytes: Number(p.minFreeBytes),
+        byKind: p.byKind.map((k) => ({
+          kind: Number(k.kind),
+          bytes: Number(k.bytes),
+          count: Number(k.count),
+        })),
+        byChannel: p.byChannel.map((c) => ({
+          channelId: c.channelId,
+          bytes: Number(c.bytes),
+          count: Number(c.count),
+        })),
+        largest: p.largest.map((l) => ({
+          attachmentId: Number(l.attachmentId),
+          filename: l.filename,
+          sizeBytes: Number(l.sizeBytes),
+          channelId: l.channelId,
+          kind: Number(l.kind),
+        })),
+      };
+      setInfo(norm);
       // storage_info_received only ever arrives as a reply to this tab's own
       // fetch or save (never an unsolicited broadcast), so syncing the field
       // to the authoritative value here can't clobber in-progress typing and
       // correctly reflects a server-side clamp after a save.
-      setMinFreeGb((p.minFreeBytes / GIB).toFixed(1));
+      setMinFreeGb((norm.minFreeBytes / GIB).toFixed(1));
     });
     return () => {
       un.then((fn) => fn());
