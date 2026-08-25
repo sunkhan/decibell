@@ -140,6 +140,7 @@ impl CentralClient {
                 // after insertDm; outbound from client is always 0.
                 id: 0,
                 edited_at: 0,
+                reply_to: 0,
             }),
             token,
         );
@@ -357,6 +358,7 @@ impl CentralClient {
                         attachments: Vec::new(),
                         nonce: String::new(),
                         edited_at: msg.edited_at,
+                        reply_to: msg.reply_to,
                     });
                 }
                 Some(packet::Payload::PresenceUpdate(update)) => {
@@ -478,6 +480,7 @@ impl CentralClient {
                             content: m.content,
                             timestamp: m.timestamp,
                             edited_at: m.edited_at,
+                            reply_to: m.reply_to,
                         })
                         .collect();
                     events::emit_dm_history_received(events::DmHistoryReceivedPayload {

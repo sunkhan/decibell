@@ -433,6 +433,8 @@ message DirectMessage {
   int64 id = 5;
   // Unix seconds of the last edit; 0 = never edited.
   int64 edited_at = 6;
+  // Id of the DM this one replies to; 0 = not a reply.
+  int64 reply_to = 7;
 }
 
 message UserPresence {
@@ -609,6 +611,10 @@ message ChannelMessage {
   // Unix seconds of the last edit; 0 = never edited. Drives the "(edited)"
   // indicator. Set on history fetch and on CHANNEL_MESSAGE_EDITED.
   int64 edited_at = 8;
+  // Id of the message this one replies to; 0 = not a reply. Persisted and
+  // echoed on broadcast + history. The client renders a quoted preview by
+  // resolving this id against its loaded messages.
+  int64 reply_to = 9;
 }
 
 message Attachment {
@@ -1521,6 +1527,7 @@ message DmHistoryMessage {
   string content = 3;
   int64  timestamp = 4;
   int64  edited_at = 5;   // unix seconds; 0 = never edited
+  int64  reply_to = 6;    // id of the DM this replies to; 0 = not a reply
 }
 message DmHistoryRes {
   string peer = 1;

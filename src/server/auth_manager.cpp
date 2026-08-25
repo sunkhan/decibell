@@ -61,13 +61,18 @@ void AuthManager::initializeDatabase() {
             "  recipient VARCHAR(32) NOT NULL,"
             "  content TEXT NOT NULL,"
             "  sent_at BIGINT NOT NULL,"
-            "  edited_at BIGINT NOT NULL DEFAULT 0"
+            "  edited_at BIGINT NOT NULL DEFAULT 0,"
+            "  reply_to BIGINT NOT NULL DEFAULT 0"
             ")"
         );
-        // edited_at added later — backfill on existing deployments.
+        // edited_at / reply_to added later — backfill on existing deployments.
         txn.exec(
             "ALTER TABLE dm_messages "
             "ADD COLUMN IF NOT EXISTS edited_at BIGINT NOT NULL DEFAULT 0"
+        );
+        txn.exec(
+            "ALTER TABLE dm_messages "
+            "ADD COLUMN IF NOT EXISTS reply_to BIGINT NOT NULL DEFAULT 0"
         );
         // Two-direction lookup ("messages between A and B" hits the
         // same B-tree regardless of who sent which). The LEAST /
@@ -674,14 +679,15 @@ std::string AuthManager::getAvatarVersion(const std::string& username) {
 int64_t AuthManager::insertDm(const std::string& sender,
                                const std::string& recipient,
                                const std::string& content,
-                               int64_t sent_at) {
+                               int64_t sent_at,
+                               int64_t reply_to) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
-            "INSERT INTO dm_messages (sender, recipient, content, sent_at) "
-            "VALUES ($1, $2, $3, $4) RETURNING id",
-            sender, recipient, content, sent_at);
+            "INSERT INTO dm_messages (sender, recipient, content, sent_at, reply_to) "
+            "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            sender, recipient, content, sent_at, reply_to < 0 ? 0 : reply_to);
         txn.commit();
         if (rs.empty()) return 0;
         return rs[0][0].as<int64_t>();
@@ -705,7 +711,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
         // before_id=0 means "latest". For real cursoring we filter on
         // id < before_id. Either way the pair_idx covers the predicate.
         const char* sql =
-            "SELECT id, sender, content, sent_at, edited_at FROM dm_messages "
+            "SELECT id, sender, content, sent_at, edited_at, reply_to FROM dm_messages "
             "WHERE LEAST(sender, recipient) = LEAST($1, $2) "
             "  AND GREATEST(sender, recipient) = GREATEST($1, $2) "
             "  AND ($3 = 0 OR id < $3) "
@@ -721,6 +727,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
                 row[2].as<std::string>(),
                 row[3].as<int64_t>(),
                 row[4].as<int64_t>(),
+                row[5].as<int64_t>(),
             };
             out.push_back(std::move(r));
         }

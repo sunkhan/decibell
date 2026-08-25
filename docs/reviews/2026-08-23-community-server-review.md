@@ -244,6 +244,23 @@ central directory → client), server side covered by 7 new e2e checks (205 tota
   latest own message (`RichInput.onArrowUpEmpty`). Works in both server channels and DMs
   via the shared MessageBubble. (Central compiled by inspection — no local libpqxx.)
 
+**Message replies (2026-08-25) ✅** — reply-to in channels + DMs, cross-stack, community
+side covered by 7 new e2e checks (220 total):
+
+- Just an optional `reply_to` (parent message id) on the normal send path — no new packet
+  types. Added to `ChannelMessage` / `DirectMessage` / `DmHistoryMessage`; persisted in
+  `messages.reply_to` (SQLite) and `dm_messages.reply_to` (Postgres), idempotent migrations.
+- Community validates `reply_to` points at a real message in the same channel, else stores
+  0 (drops stale/cross-channel/forged refs); reflected on the broadcast. Echoed on
+  broadcast + history.
+- Client: `send_channel_message` / `send_private_message` carry `reply_to`; `replyTo`
+  threaded through message/history ingestion. UI (shared MessageBubble): a reply hover
+  action, a "Replying to @user" bar above the composer (Escape/✕ to cancel), and a quoted
+  preview above a reply (author + one-line snippet) resolved client-side from loaded
+  messages (falls back to "Original message" when the parent isn't loaded/was deleted).
+  Replies are force-ungrouped so each shows its own header + preview. (Central compiled by
+  inspection — no local libpqxx.)
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

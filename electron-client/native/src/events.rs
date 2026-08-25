@@ -407,6 +407,7 @@ pub struct ChannelMessagePayload {
     pub attachments: Vec<AttachmentPayload>,
     pub nonce: String,
     pub edited_at: i64,
+    pub reply_to: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -427,6 +428,7 @@ pub struct MessageReceivedPayload {
     pub attachments: Vec<AttachmentPayload>,
     pub nonce: String,
     pub edited_at: i64,
+    pub reply_to: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1262,6 +1264,7 @@ pub struct DmHistoryMessagePayload {
     pub content: String,
     pub timestamp: i64,
     pub edited_at: i64,
+    pub reply_to: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

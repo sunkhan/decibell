@@ -53,6 +53,7 @@ struct DbMessage {
     std::string content;
     int64_t timestamp = 0;
     int64_t edited_at = 0;   // unix seconds; 0 = never edited
+    int64_t reply_to = 0;    // parent message id; 0 = not a reply
 };
 
 struct DbAttachment {
@@ -478,10 +479,13 @@ public:
 
     // --- messages ---
     // Insert a new message, return its autoincrement id (0 on failure).
+    // `reply_to` is the parent message id (0 = not a reply); it's stored only
+    // if it points at an existing message in the same channel, else 0.
     int64_t insert_message(const std::string& channel_id,
                            const std::string& sender,
                            const std::string& content,
-                           int64_t timestamp);
+                           int64_t timestamp,
+                           int64_t reply_to = 0);
     // Newest-first page. `before_id = 0` means "most recent". Results are
     // ordered newest→oldest; caller reverses if they want oldest→newest.
     // `has_more` is set to true if more messages exist older than the page.

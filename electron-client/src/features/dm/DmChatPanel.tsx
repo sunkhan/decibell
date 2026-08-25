@@ -163,6 +163,26 @@ export default function DmChatPanel() {
     : null;
   const messages = conversation?.messages ?? [];
 
+  // --- Replies ---
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const startReply = useCallback((m: Message) => {
+    if (typeof m.id === "number" && m.id > 0) {
+      setReplyingTo(m);
+      editorRef.current?.focus();
+    }
+  }, []);
+  const cancelReply = useCallback(() => setReplyingTo(null), []);
+  const messagesById = useMemo(() => {
+    const map = new Map<number, DmMessage>();
+    for (const m of messages) if (typeof m.id === "number" && m.id > 0) map.set(m.id, m);
+    return map;
+  }, [messages]);
+  // Reset transient composer state when switching conversations.
+  useEffect(() => {
+    setReplyingTo(null);
+    setEditingMessageId(null);
+  }, [activeDmUser]);
+
   // Map DmMessages to Message shape for MessageBubble compatibility.
   // Preserve the real server-assigned id when present (persistent-DMs)
   // — the delete flow keys on it. Legacy / synthetic preview entries
@@ -327,15 +347,18 @@ export default function DmChatPanel() {
     if (!value.trim() || !activeDmUser) return;
     setSending(true);
     setSendError(null);
+    const replyToId = replyingTo?.id && replyingTo.id > 0 ? replyingTo.id : undefined;
     try {
       await invoke("send_private_message", {
         recipient: activeDmUser,
         message: value.trim(),
+        replyTo: replyToId,
       });
       editorRef.current?.clear();
       setInput("");
       useDraftsStore.getState().clearDmDraft(activeDmUser);
       setPickerOpen(false);
+      setReplyingTo(null);
     } catch (err) {
       setSendError(String(err));
     } finally {
@@ -517,10 +540,10 @@ export default function DmChatPanel() {
             return (
               <MessageBubble
                 message={msg}
-                grouped={shouldGroup(
-                  i > 0 ? bubbleMessages[i - 1] : undefined,
-                  msg,
-                )}
+                grouped={
+                  shouldGroup(i > 0 ? bubbleMessages[i - 1] : undefined, msg) &&
+                  !msg.replyTo
+                }
                 paddingLeft={12}
                 canDelete={
                   typeof msg.id === "number" &&
@@ -537,6 +560,14 @@ export default function DmChatPanel() {
                 onStartEdit={startEdit}
                 onSubmitEdit={submitEdit}
                 onCancelEdit={cancelEdit}
+                canReply={typeof msg.id === "number" && msg.id > 0}
+                onReply={startReply}
+                replyToSender={
+                  msg.replyTo ? messagesById.get(msg.replyTo)?.sender : undefined
+                }
+                replyToContent={
+                  msg.replyTo ? messagesById.get(msg.replyTo)?.content : undefined
+                }
               />
             );
           }}
@@ -551,6 +582,24 @@ export default function DmChatPanel() {
           ChatPanel's spacing. */}
       <div className="px-3 py-2">
         <div className="relative flex min-h-[54px] flex-col gap-2.5 rounded-lg border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-ring">
+          {replyingTo && (
+            <div className="flex items-center justify-between gap-2 text-meta text-text-muted">
+              <span className="min-w-0 truncate">
+                Replying to{" "}
+                <span className="font-medium text-text-secondary">@{replyingTo.sender}</span>
+              </span>
+              <button
+                onClick={cancelReply}
+                title="Cancel reply"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-text-muted hover:bg-row-hover hover:text-text-primary"
+              >
+                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+          )}
           <MessagePreview draft={input} />
           <div className="flex items-center gap-2.5">
           <RichInput

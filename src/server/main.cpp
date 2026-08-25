@@ -292,7 +292,7 @@ private:
             // sender as a generic "couldn't deliver" — the message
             // is genuinely lost in that branch (rare).
             int64_t new_id = auth_manager_.insertDm(
-                username_, dmsg->recipient(), dmsg->content(), current_time);
+                username_, dmsg->recipient(), dmsg->content(), current_time, dmsg->reply_to());
             if (new_id == 0) {
                 chatproj::Packet error_packet;
                 error_packet.set_type(chatproj::Packet::DIRECT_MSG);
@@ -384,6 +384,7 @@ private:
                 msg->set_content(r.content);
                 msg->set_timestamp(r.timestamp);
                 msg->set_edited_at(r.edited_at);
+                msg->set_reply_to(r.reply_to);
             }
 
             std::string s;

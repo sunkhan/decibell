@@ -386,11 +386,14 @@ void CommunityDb::migrate_to_v2_() {
         "  sender TEXT NOT NULL,"
         "  content TEXT NOT NULL,"
         "  timestamp INTEGER NOT NULL,"
-        "  edited_at INTEGER NOT NULL DEFAULT 0"
+        "  edited_at INTEGER NOT NULL DEFAULT 0,"
+        "  reply_to INTEGER NOT NULL DEFAULT 0"
         ");");
-    // edited_at added later — backfill on existing message tables.
+    // edited_at / reply_to added later — backfill on existing message tables.
     if (!column_exists(db_, "messages", "edited_at"))
         exec_sql(db_, "ALTER TABLE messages ADD COLUMN edited_at INTEGER NOT NULL DEFAULT 0;");
+    if (!column_exists(db_, "messages", "reply_to"))
+        exec_sql(db_, "ALTER TABLE messages ADD COLUMN reply_to INTEGER NOT NULL DEFAULT 0;");
     exec_sql(db_,
         "CREATE INDEX IF NOT EXISTS idx_messages_channel_id "
         "ON messages(channel_id, id DESC);");
@@ -2205,16 +2208,30 @@ bool CommunityDb::update_channel_retention(const std::string& channel_id,
 int64_t CommunityDb::insert_message(const std::string& channel_id,
                                     const std::string& sender,
                                     const std::string& content,
-                                    int64_t timestamp) {
+                                    int64_t timestamp,
+                                    int64_t reply_to) {
     std::lock_guard<std::mutex> lock(mutex_);
+    // Only accept a reply_to that points at a real message in THIS channel;
+    // otherwise store 0 (ignore a stale/cross-channel/forged reference).
+    if (reply_to > 0) {
+        Stmt chk(db_, "SELECT 1 FROM messages WHERE id=? AND channel_id=?;");
+        bool ok = false;
+        if (chk.s) {
+            chk.bind_int64(1, reply_to);
+            chk.bind_text(2, channel_id);
+            ok = chk.step() == SQLITE_ROW;
+        }
+        if (!ok) reply_to = 0;
+    }
     Stmt q(db_,
-        "INSERT INTO messages(channel_id, sender, content, timestamp) "
-        "VALUES(?, ?, ?, ?);");
+        "INSERT INTO messages(channel_id, sender, content, timestamp, reply_to) "
+        "VALUES(?, ?, ?, ?, ?);");
     if (!q.s) return 0;
     q.bind_text(1, channel_id);
     q.bind_text(2, sender);
     q.bind_text(3, content);
     q.bind_int64(4, timestamp);
+    q.bind_int64(5, reply_to);
     if (q.step() != SQLITE_DONE) return 0;
     return sqlite3_last_insert_rowid(db_);
 }
@@ -2235,9 +2252,9 @@ std::vector<DbMessage> CommunityDb::fetch_messages(const std::string& channel_id
     std::vector<DbMessage> out;
     Stmt q(db_,
         before_id > 0
-            ? "SELECT id, channel_id, sender, content, timestamp, edited_at FROM messages "
+            ? "SELECT id, channel_id, sender, content, timestamp, edited_at, reply_to FROM messages "
               "WHERE channel_id=? AND id<? ORDER BY id DESC LIMIT ?;"
-            : "SELECT id, channel_id, sender, content, timestamp, edited_at FROM messages "
+            : "SELECT id, channel_id, sender, content, timestamp, edited_at, reply_to FROM messages "
               "WHERE channel_id=? ORDER BY id DESC LIMIT ?;");
     if (!q.s) return out;
     q.bind_text(1, channel_id);
@@ -2255,6 +2272,7 @@ std::vector<DbMessage> CommunityDb::fetch_messages(const std::string& channel_id
         m.content = q.col_text(3);
         m.timestamp = q.col_int64(4);
         m.edited_at = q.col_int64(5);
+        m.reply_to = q.col_int64(6);
         out.push_back(std::move(m));
     }
 

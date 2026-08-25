@@ -1343,6 +1343,40 @@ def test_public_join():
     owner.close()
 
 
+def test_message_reply():
+    print("[reply] reply_to persists + echoes on broadcast/history; invalid dropped")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    rp = join("rpr", owner); owner.flush(0.5); rp.flush(0.5)
+
+    # Post a parent message; capture its id.
+    owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="parent"))
+    parent = rp.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.content == "parent")
+    pid = parent.channel_msg.id
+    check("parent posted", pid > 0)
+    check("parent has reply_to=0", parent.channel_msg.reply_to == 0)
+    owner.flush(0.3); rp.flush(0.3)
+
+    # Reply to it.
+    rp.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="a reply", reply_to=pid))
+    bc = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.content == "a reply")
+    check("reply broadcast carries reply_to", bc is not None and bc.channel_msg.reply_to == pid)
+    check("reply_to persisted", sql("select reply_to from messages where id=?", bc.channel_msg.id) == [(pid,)])
+
+    # A reply_to pointing at a nonexistent message is dropped to 0.
+    rp.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="bad ref", reply_to=999999))
+    bc = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.content == "bad ref")
+    check("invalid reply_to dropped on broadcast", bc is not None and bc.channel_msg.reply_to == 0)
+    check("invalid reply_to not persisted", sql("select reply_to from messages where id=?", bc.channel_msg.id) == [(0,)])
+
+    # History reflects reply_to.
+    rp.flush(0.3)
+    rp.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", limit=50))
+    h = rp.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2)
+    replies = [m for m in h.channel_history_res.messages if m.content == "a reply"]
+    check("history shows reply_to", len(replies) == 1 and replies[0].reply_to == pid)
+    rp.close(); owner.close()
+
+
 def test_message_edit():
     print("[edit] own channel message edits; others rejected; (edited) via edited_at")
     owner = Client("alice"); assert auth_ok(owner)[0]
@@ -1616,6 +1650,7 @@ if __name__ == "__main__":
         test_udp_relay()
         test_http_keepalive_and_fts()
         test_message_edit()
+        test_message_reply()
         test_storage()
         test_x3_upload_membership_recheck()
         test_theme_a_tokens_and_uid()

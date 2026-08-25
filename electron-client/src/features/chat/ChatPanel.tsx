@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useVirtuosoPrepend } from "./useVirtuosoPrepend";
 import { prefetchAround } from "./attachmentPrefetch";
@@ -388,6 +388,7 @@ export default function ChatPanel() {
     const serverId = activeServerId;
     const channelId = activeChannelId;
 
+    const replyToId = replyingTo?.id && replyingTo.id > 0 ? replyingTo.id : undefined;
     const nonce = generateNonce();
     useChatStore.getState().addMessage(serverId, {
       id: 0,
@@ -398,9 +399,11 @@ export default function ChatPanel() {
       attachments: [],
       nonce,
       pendingAttachmentIds: pendingIds.length > 0 ? pendingIds : undefined,
+      replyTo: replyToId,
     });
     editorRef.current?.clear();
     setDraft("");
+    setReplyingTo(null);
     useDraftsStore.getState().clearChannelDraft(serverId, channelId);
 
     // Kick off the actual byte transfer for every queued attachment.
@@ -463,6 +466,7 @@ export default function ChatPanel() {
         message: content,
         attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         nonce,
+        replyTo: replyToId,
       });
       // Message went out (with whatever uploaded). Surface any partial
       // upload failures instead of dropping their chips silently.
@@ -606,6 +610,27 @@ export default function ChatPanel() {
   // Type anywhere in the channel to start composing; ArrowUp edits the latest.
   useTypeToFocusComposer(editorRef, editLatestOwn);
 
+  // --- Replies ---
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const startReply = useCallback((m: Message) => {
+    if (typeof m.id === "number" && m.id > 0) {
+      setReplyingTo(m);
+      editorRef.current?.focus();
+    }
+  }, []);
+  const cancelReply = useCallback(() => setReplyingTo(null), []);
+  // Resolve reply previews: parent message by id, for the loaded page.
+  const messagesById = useMemo(() => {
+    const map = new Map<number, Message>();
+    for (const m of messages) if (m.id > 0) map.set(m.id, m);
+    return map;
+  }, [messages]);
+  // Reset transient composer state when switching channels.
+  useEffect(() => {
+    setReplyingTo(null);
+    setEditingMessageId(null);
+  }, [activeKey]);
+
   if (!activeServerId) {
     return (
       <div className="flex flex-1 items-center justify-center bg-bg-mid text-sm text-text-muted">
@@ -701,10 +726,10 @@ export default function ChatPanel() {
               return (
               <MessageBubble
                 message={message}
-                grouped={shouldGroup(
-                  i > 0 ? messages[i - 1] : undefined,
-                  message,
-                )}
+                grouped={
+                  shouldGroup(i > 0 ? messages[i - 1] : undefined, message) &&
+                  !message.replyTo
+                }
                 serverId={activeServerId}
                 isLast={i === messages.length - 1}
                 // Align avatar's left edge with the input bar card's
@@ -726,6 +751,14 @@ export default function ChatPanel() {
                 onStartEdit={startEdit}
                 onSubmitEdit={submitEdit}
                 onCancelEdit={cancelEdit}
+                canReply={typeof message.id === "number" && message.id > 0}
+                onReply={startReply}
+                replyToSender={
+                  message.replyTo ? messagesById.get(message.replyTo)?.sender : undefined
+                }
+                replyToContent={
+                  message.replyTo ? messagesById.get(message.replyTo)?.content : undefined
+                }
               />
               );
             }}
@@ -759,6 +792,24 @@ export default function ChatPanel() {
                 : "border-border"
           }`}
         >
+          {replyingTo && (
+            <div className="flex items-center justify-between gap-2 text-meta text-text-muted">
+              <span className="min-w-0 truncate">
+                Replying to{" "}
+                <span className="font-medium text-text-secondary">@{replyingTo.sender}</span>
+              </span>
+              <button
+                onClick={cancelReply}
+                title="Cancel reply"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-text-muted hover:bg-row-hover hover:text-text-primary"
+              >
+                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+          )}
           <MessagePreview draft={draft} />
           <PendingAttachmentsRow />
           <div className="flex items-center gap-2.5">

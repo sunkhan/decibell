@@ -61,6 +61,7 @@ export function useChatEvents() {
         attachments: (p.attachments ?? []).map(mapAttachment),
         nonce: p.nonce || undefined,
         editedAt: p.editedAt || undefined,
+        replyTo: p.replyTo || undefined,
       });
     });
 
@@ -80,6 +81,7 @@ export function useChatEvents() {
             attachments: (m.attachments ?? []).map(mapAttachment),
             nonce: m.nonce || undefined,
             editedAt: m.editedAt || undefined,
+            replyTo: m.replyTo || undefined,
           })),
           hasMore,
         );

@@ -101,6 +101,7 @@ public:
         std::string content;
         int64_t timestamp;
         int64_t edited_at;
+        int64_t reply_to;
     };
     struct DmConversationPreviewRow {
         std::string peer;
@@ -117,7 +118,8 @@ public:
     int64_t insertDm(const std::string& sender,
                      const std::string& recipient,
                      const std::string& content,
-                     int64_t sent_at);
+                     int64_t sent_at,
+                     int64_t reply_to = 0);
 
     /// Fetch a page of messages between user_a and user_b, ordered
     /// newest first. before_id = 0 means "latest". limit is clamped

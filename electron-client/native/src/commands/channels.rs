@@ -157,6 +157,9 @@ pub struct SendChannelMessageArgs {
     /// it in the broadcast so the sending client can match the real
     /// message back to its own optimistic placeholder.
     pub nonce: Option<String>,
+    /// Id of the message being replied to (0/absent = not a reply). Server
+    /// validates it points at a message in this channel, else stores 0.
+    pub reply_to: Option<i64>,
 }
 
 #[napi]
@@ -169,6 +172,7 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
         message,
         attachment_ids,
         nonce,
+        reply_to,
     } = args;
 
     let (write_tx, data) = {
@@ -226,6 +230,7 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
                 attachments,
                 nonce: nonce.unwrap_or_default(),
                 edited_at: 0,
+                reply_to: reply_to.unwrap_or(0),
             }),
             Some(&client.jwt),
         );

@@ -34,6 +34,7 @@ export function useDmEvents() {
           // both — 0 is just ineligible for mark-read.
           id: p.id || undefined,
           editedAt: p.editedAt || undefined,
+          replyTo: p.replyTo || undefined,
         },
         isFromSelf,
       );
@@ -64,6 +65,7 @@ export function useDmEvents() {
         content: string;
         timestamp: number;
         editedAt: number;
+        replyTo: number;
       }[];
       hasMore: boolean;
     }>("dm_history_received", (event) => {

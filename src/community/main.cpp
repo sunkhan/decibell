@@ -1403,9 +1403,16 @@ private:
             int64_t new_id = 0;
             if (auto* db = manager_.db()) {
                 new_id = db->insert_message(
-                    msg->channel_id(), username_, msg->content(), now_ts);
+                    msg->channel_id(), username_, msg->content(), now_ts, msg->reply_to());
                 if (new_id > 0) {
                     msg->set_id(new_id);
+                    // insert_message drops an invalid reply_to (missing / wrong
+                    // channel); reflect the stored value in the broadcast so
+                    // clients don't render a preview for a reference we ignored.
+                    if (msg->reply_to() > 0) {
+                        auto stored = db->get_message_sender(msg->channel_id(), msg->reply_to());
+                        if (!stored) msg->set_reply_to(0);
+                    }
                 } else {
                     // Don't broadcast a message that isn't in history:
                     // clients would get an id=0 row they can never
@@ -1519,6 +1526,7 @@ private:
                 cm->set_content(it->content);
                 cm->set_timestamp(it->timestamp);
                 cm->set_edited_at(it->edited_at);
+                cm->set_reply_to(it->reply_to);
                 auto atts_it = by_msg.find(it->id);
                 if (atts_it != by_msg.end()) {
                     for (const auto* a : atts_it->second) {

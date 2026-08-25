@@ -58,6 +58,7 @@ interface HistoryMessageInput {
   content: string;
   timestamp: number;
   editedAt?: number;
+  replyTo?: number;
 }
 
 interface DmState {
@@ -242,6 +243,7 @@ export const useDmStore = create<DmState>((set, get) => ({
           timestamp: String(m.timestamp),
           id: m.id,
           editedAt: m.editedAt || undefined,
+          replyTo: m.replyTo || undefined,
         }));
       const merged: DmMessage[] = [...incoming, ...existing];
       const lastMessageTime =

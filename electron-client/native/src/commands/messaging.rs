@@ -11,6 +11,8 @@ use crate::state;
 pub struct SendPrivateMessageArgs {
     pub recipient: String,
     pub message: String,
+    /// Id of the DM being replied to (0/absent = not a reply).
+    pub reply_to: Option<i64>,
 }
 
 #[napi]
@@ -49,6 +51,7 @@ pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<
                 // after insertDm; outbound from client is always 0.
                 id: 0,
                 edited_at: 0,
+                reply_to: args.reply_to.unwrap_or(0),
             }),
             token.as_deref(),
         );

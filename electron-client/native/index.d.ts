@@ -107,6 +107,11 @@ export interface SendChannelMessageArgs {
    * message back to its own optimistic placeholder.
    */
   nonce?: string
+  /**
+   * Id of the message being replied to (0/absent = not a reply). Server
+   * validates it points at a message in this channel, else stores 0.
+   */
+  replyTo?: number
 }
 export declare function sendChannelMessage(args: SendChannelMessageArgs): Promise<void>
 export interface DeleteChannelMessageArgs {
@@ -424,6 +429,8 @@ export declare function sendFriendAction(args: SendFriendActionArgs): Promise<vo
 export interface SendPrivateMessageArgs {
   recipient: string
   message: string
+  /** Id of the DM being replied to (0/absent = not a reply). */
+  replyTo?: number
 }
 export declare function sendPrivateMessage(args: SendPrivateMessageArgs): Promise<void>
 /**

@@ -142,6 +142,15 @@ interface Props {
   onSubmitEdit?: (message: Message, content: string) => void;
   /// Leave edit mode without saving.
   onCancelEdit?: () => void;
+  /// True iff the local user may reply to this message (any real message).
+  canReply?: boolean;
+  /// Start replying to this message (clicked the reply arrow).
+  onReply?: (message: Message) => void;
+  /// Resolved parent (for message.replyTo) — the quoted-preview author and a
+  /// one-line content snippet. Undefined when the parent isn't loaded /
+  /// was deleted → a generic fallback is shown.
+  replyToSender?: string;
+  replyToContent?: string;
 }
 
 function MessageBubble({
@@ -157,6 +166,10 @@ function MessageBubble({
   onStartEdit,
   onSubmitEdit,
   onCancelEdit,
+  canReply = false,
+  onReply,
+  replyToSender,
+  replyToContent,
 }: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
@@ -214,9 +227,21 @@ function MessageBubble({
   // Hover actions (edit + delete). Hidden while editing. `topClass` aligns the
   // button cluster with each branch's top padding.
   const renderActions = (topClass: string) => {
-    if (editing || (!canEdit && !(canDelete && onDelete))) return null;
+    if (editing || (!canReply && !canEdit && !(canDelete && onDelete))) return null;
     return (
       <div className={`absolute right-2 ${topClass} hidden gap-1 group-hover:flex`}>
+        {canReply && onReply && (
+          <button
+            onClick={() => onReply(message)}
+            title="Reply"
+            className="flex h-6 w-6 items-center justify-center rounded-sm bg-bg-secondary text-text-muted hover:bg-row-hover hover:text-text-primary"
+          >
+            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 17 4 12 9 7" />
+              <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+            </svg>
+          </button>
+        )}
         {canEdit && onStartEdit && (
           <button
             onClick={() => onStartEdit(message)}
@@ -247,6 +272,26 @@ function MessageBubble({
     );
   };
 
+  // Quoted preview of the parent message, shown above a reply's content.
+  const renderReplyPreview = () => {
+    if (!message.replyTo) return null;
+    const snippet = replyToContent
+      ? replyToContent.replace(/\s+/g, " ").trim()
+      : "";
+    return (
+      <div className="mb-0.5 flex min-w-0 items-center gap-1 text-meta text-text-muted">
+        <svg className="h-3 w-3 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="9 17 4 12 9 7" />
+          <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+        </svg>
+        <span className="shrink-0 font-medium text-text-secondary">
+          {replyToSender ? `@${replyToSender}` : "Original message"}
+        </span>
+        {snippet && <span className="truncate opacity-80">{snippet}</span>}
+      </div>
+    );
+  };
+
   if (grouped) {
     return (
       <div
@@ -263,6 +308,7 @@ function MessageBubble({
           </span>
         </div>
         <div className="select-text min-w-0 flex-1">
+          {renderReplyPreview()}
           {/* div, not p: rich text renders block children (pre code
               blocks, display math) and a block inside <p> is invalid
               HTML — the browser force-closes the paragraph around it. */}
@@ -294,6 +340,7 @@ function MessageBubble({
       </div>
 
       <div className="select-text min-w-0 flex-1">
+        {renderReplyPreview()}
         <div className="flex items-baseline gap-2">
           <span
             className="cursor-pointer font-channel text-sender font-emphasis hover:underline"
