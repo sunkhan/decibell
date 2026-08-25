@@ -114,6 +114,9 @@ function ServerBrowseCard({
 export default function ServerBrowseView() {
   const servers = useChatStore((s) => s.servers);
   const connectedServers = useChatStore((s) => s.connectedServers);
+  const pendingMembershipServerIds = useChatStore(
+    (s) => s.pendingMembershipServerIds,
+  );
   const setActiveServer = useChatStore((s) => s.setActiveServer);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const authError = useUiStore((s) => s.authError);
@@ -148,10 +151,16 @@ export default function ServerBrowseView() {
       .finally(() => setIsLoadingList(false));
   }, []);
 
+  // Discover lists servers you could JOIN — exclude ones you're already in
+  // (or joining). Those live in `servers` alongside the discovery results
+  // because the ServerBar reads the same array; without this, your own
+  // servers (including private ones the directory never lists) show up here.
   const filtered = servers.filter(
     (s) =>
-      s.name.toLowerCase().includes(search.toLowerCase()) ||
-      s.description.toLowerCase().includes(search.toLowerCase()),
+      !connectedServers.has(s.id) &&
+      !pendingMembershipServerIds.has(s.id) &&
+      (s.name.toLowerCase().includes(search.toLowerCase()) ||
+        s.description.toLowerCase().includes(search.toLowerCase())),
   );
 
   const handleConnect = async (serverId: string, host: string, port: number) => {
