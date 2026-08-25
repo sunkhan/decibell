@@ -130,6 +130,8 @@ export default function ChatPanel() {
   // and stash the target here; the effect that watches `messages` lands on it
   // once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
+  // Post-animation settle-correction for smooth jumps (see jumpToMessage).
+  const jumpSettleTimerRef = useRef<number | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
@@ -414,6 +416,11 @@ export default function ChatPanel() {
     const channelId = activeChannelId;
     setJumpWindow(null);
     pendingJumpIdRef.current = null;
+    if (jumpSettleTimerRef.current) {
+      // A late settle-snap would land on a stale index after the reload.
+      window.clearTimeout(jumpSettleTimerRef.current);
+      jumpSettleTimerRef.current = null;
+    }
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -749,6 +756,10 @@ export default function ChatPanel() {
     setJumpWindow(null);
     setScrolledUp(false);
     pendingJumpIdRef.current = null;
+    if (jumpSettleTimerRef.current) {
+      window.clearTimeout(jumpSettleTimerRef.current);
+      jumpSettleTimerRef.current = null;
+    }
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
   }, [activeKey]);
@@ -801,6 +812,17 @@ export default function ChatPanel() {
             align: "center",
             behavior: "smooth",
           });
+          // Settle correction: the browser eases to a pixel offset computed
+          // up front, but rows that mount/measure during the animation shift
+          // the true target offset — so the glide can land off (first-click
+          // overshoot). Snap to the exact center once the animation is done;
+          // by then the target row is measured, and when the drift is small
+          // the snap is imperceptible.
+          if (jumpSettleTimerRef.current) window.clearTimeout(jumpSettleTimerRef.current);
+          jumpSettleTimerRef.current = window.setTimeout(() => {
+            jumpSettleTimerRef.current = null;
+            virtuosoRef.current?.scrollToIndex({ index: pos, align: "center" });
+          }, 550);
           // Catch-up: if the animation settled near the top boundary, run
           // the eager page the pause window swallowed.
           window.setTimeout(() => {
@@ -848,6 +870,7 @@ export default function ChatPanel() {
   }, [messages, flash]);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+    if (jumpSettleTimerRef.current) window.clearTimeout(jumpSettleTimerRef.current);
   }, []);
 
   if (!activeServerId) {

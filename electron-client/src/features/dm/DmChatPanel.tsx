@@ -87,6 +87,8 @@ export default function DmChatPanel() {
   // When a jump target isn't loaded, we request an around-window and stash the
   // target here; the landing effect lands on it once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
+  // Post-animation settle-correction for smooth jumps (see ChatPanel).
+  const jumpSettleTimerRef = useRef<number | null>(null);
   // A just-applied jump context window (see ChatPanel for the rationale): epoch
   // bumps on each jump so Virtuoso remounts centered on targetId. null = normal.
   const [jumpWindow, setJumpWindow] = useState<{ epoch: number; targetId: number } | null>(null);
@@ -215,6 +217,10 @@ export default function DmChatPanel() {
     setScrolledUp(false);
     setPresentLoading(false);
     pendingJumpIdRef.current = null;
+    if (jumpSettleTimerRef.current) {
+      window.clearTimeout(jumpSettleTimerRef.current);
+      jumpSettleTimerRef.current = null;
+    }
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
   }, [activeDmUser]);
@@ -361,6 +367,11 @@ export default function DmChatPanel() {
     const peer = activeDmUser;
     setJumpWindow(null);
     pendingJumpIdRef.current = null;
+    if (jumpSettleTimerRef.current) {
+      // A late settle-snap would land on a stale index after the reload.
+      window.clearTimeout(jumpSettleTimerRef.current);
+      jumpSettleTimerRef.current = null;
+    }
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -554,6 +565,13 @@ export default function DmChatPanel() {
             align: "center",
             behavior: "smooth",
           });
+          // Settle correction — see ChatPanel: snap to the exact center after
+          // the animation, since rows measuring mid-glide shift the target.
+          if (jumpSettleTimerRef.current) window.clearTimeout(jumpSettleTimerRef.current);
+          jumpSettleTimerRef.current = window.setTimeout(() => {
+            jumpSettleTimerRef.current = null;
+            virtuosoRef.current?.scrollToIndex({ index: pos, align: "center" });
+          }, 550);
           window.setTimeout(() => {
             if (topIndexRef.current < HISTORY_EAGER_THRESHOLD)
               maybeLoadOlderRef.current(false);
@@ -596,6 +614,7 @@ export default function DmChatPanel() {
   }, [bubbleMessages, flash]);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+    if (jumpSettleTimerRef.current) window.clearTimeout(jumpSettleTimerRef.current);
   }, []);
 
   const initialIndex = (() => {
