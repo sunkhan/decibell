@@ -639,8 +639,11 @@ export default function ChatPanel() {
     (id: number) => {
       const pos = messages.findIndex((m) => m.id === id);
       if (pos < 0) return;
+      // scrollToIndex uses the raw 0-based data index (like
+      // initialTopMostItemIndex) — NOT the firstItemIndex-adjusted index that
+      // itemContent / rangeChanged report.
       virtuosoRef.current?.scrollToIndex({
-        index: firstItemIndex + pos,
+        index: pos,
         align: "center",
         behavior: "smooth",
       });
@@ -648,7 +651,7 @@ export default function ChatPanel() {
       setHighlightId(id);
       highlightTimer.current = window.setTimeout(() => setHighlightId(null), 1600);
     },
-    [messages, firstItemIndex],
+    [messages],
   );
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);

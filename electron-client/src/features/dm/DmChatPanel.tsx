@@ -410,8 +410,10 @@ export default function DmChatPanel() {
     (id: number) => {
       const pos = bubbleMessages.findIndex((m) => m.id === id);
       if (pos < 0) return;
+      // scrollToIndex uses the raw 0-based data index (like
+      // initialTopMostItemIndex), NOT the firstItemIndex-adjusted index.
       virtuosoRef.current?.scrollToIndex({
-        index: firstItemIndex + pos,
+        index: pos,
         align: "center",
         behavior: "smooth",
       });
@@ -419,7 +421,7 @@ export default function DmChatPanel() {
       setHighlightId(id);
       highlightTimer.current = window.setTimeout(() => setHighlightId(null), 1600);
     },
-    [bubbleMessages, firstItemIndex],
+    [bubbleMessages],
   );
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
