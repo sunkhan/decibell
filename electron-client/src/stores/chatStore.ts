@@ -28,7 +28,16 @@ import { channelKey, type ChannelKey } from "../lib/channelKey";
 
 interface ChatState {
   // Connection state
+  /// Servers the user is a MEMBER of — the ServerBar's source. Populated from
+  /// LOGIN_RES memberships and COMMUNITY_AUTH backfill (mergeServers); never
+  /// from the discovery directory. Keep this separate from
+  /// `discoverableServers` so a directory refresh can't add/remove the user's
+  /// own tiles (and private servers, which the directory never lists, still
+  /// appear in the bar).
   servers: CommunityServer[];
+  /// Public discovery-directory results — the Discover/browse view's source.
+  /// Populated only by server_list_received; wholesale-replaced each refresh.
+  discoverableServers: CommunityServer[];
   onlineUsers: string[];
   activeServerId: string | null;
   activeChannelId: string | null;
@@ -106,7 +115,6 @@ interface ChatState {
   channelAccessOrder: ChannelKey[];
 
   // Mutators
-  setServers: (servers: CommunityServer[]) => void;
   setOnlineUsers: (users: string[]) => void;
   setActiveServer: (serverId: string | null) => void;
   setActiveChannel: (channelId: string | null) => void;
@@ -127,16 +135,12 @@ interface ChatState {
   /// serverPictureVersions[serverId] — a stale fetch landing after
   /// a newer version-changed event is dropped silently.
   setServerPictureData: (serverId: string, version: string, dataUrl: string) => void;
-  /// De-duplicating union of the existing servers list with the new
-  /// entries. Used by useServerEvents on memberships_received to
-  /// backfill any servers not yet covered by server_list_received.
+  /// De-duplicating union into the MEMBER `servers` list. Used on
+  /// memberships_received and COMMUNITY_AUTH backfill.
   mergeServers: (entries: CommunityServer[]) => void;
-  /// Apply a discovery-directory refresh. The directory only lists PUBLIC
-  /// servers, so this keeps the servers the user is connected to / has a
-  /// pending membership for (their own, possibly private) and replaces only
-  /// the rest with the fresh list — a blind replace would drop the user's
-  /// servers from the bar.
-  setDiscoveredServers: (discovered: CommunityServer[]) => void;
+  /// Replace the discovery-directory results (Discover view source). Safe to
+  /// wholesale-replace: member servers live in `servers`, not here.
+  setDiscoverableServers: (entries: CommunityServer[]) => void;
   setServerMeta: (
     serverId: string,
     meta: { name: string; description: string },
@@ -315,6 +319,7 @@ function mergeMessage(existing: Message[], incoming: Message): Message[] {
 
 export const useChatStore = create<ChatState>((set, get) => ({
   servers: [],
+  discoverableServers: [],
   onlineUsers: [],
   activeServerId: null,
   activeChannelId: null,
@@ -342,8 +347,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   scrollPositionsByChannel: {},
   chatViewSize: null,
   channelAccessOrder: [],
-
-  setServers: (servers) => set({ servers }),
   setOnlineUsers: (users) => set({ onlineUsers: users }),
   setActiveServer: (serverId) => set({ activeServerId: serverId }),
   setActiveChannel: (channelId) =>
@@ -455,19 +458,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return { servers: Array.from(byId.values()) };
     }),
 
-  setDiscoveredServers: (discovered) =>
-    set((state) => {
-      // Servers the user belongs to (connected or joining) must survive a
-      // discovery refresh even though the directory only lists public ones.
-      const mine = state.servers.filter(
-        (s) =>
-          state.connectedServers.has(s.id) ||
-          state.pendingMembershipServerIds.has(s.id),
-      );
-      const mineIds = new Set(mine.map((s) => s.id));
-      const rest = discovered.filter((s) => !mineIds.has(s.id));
-      return { servers: [...mine, ...rest] };
-    }),
+  setDiscoverableServers: (entries) => set({ discoverableServers: entries }),
 
   setServerMeta: (serverId, meta) =>
     set((state) => ({ serverMeta: { ...state.serverMeta, [serverId]: meta } })),
@@ -793,6 +784,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   resetForLogout: () =>
     set({
       servers: [],
+      discoverableServers: [],
       onlineUsers: [],
       activeServerId: null,
       activeChannelId: null,

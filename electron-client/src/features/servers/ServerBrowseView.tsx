@@ -112,7 +112,7 @@ function ServerBrowseCard({
 }
 
 export default function ServerBrowseView() {
-  const servers = useChatStore((s) => s.servers);
+  const discoverableServers = useChatStore((s) => s.discoverableServers);
   const connectedServers = useChatStore((s) => s.connectedServers);
   const pendingMembershipServerIds = useChatStore(
     (s) => s.pendingMembershipServerIds,
@@ -151,11 +151,10 @@ export default function ServerBrowseView() {
       .finally(() => setIsLoadingList(false));
   }, []);
 
-  // Discover lists servers you could JOIN — exclude ones you're already in
-  // (or joining). Those live in `servers` alongside the discovery results
-  // because the ServerBar reads the same array; without this, your own
-  // servers (including private ones the directory never lists) show up here.
-  const filtered = servers.filter(
+  // Discover lists servers you could JOIN — the public directory results,
+  // minus any you're already in / joining (a public server you belong to is
+  // in both lists).
+  const filtered = discoverableServers.filter(
     (s) =>
       !connectedServers.has(s.id) &&
       !pendingMembershipServerIds.has(s.id) &&
@@ -320,7 +319,7 @@ export default function ServerBrowseView() {
       {error && <p className="px-8 pt-3 text-sm text-error">{error}</p>}
 
       <div className="flex-1 overflow-y-auto px-8 py-6">
-        {isLoadingList && servers.length === 0 ? (
+        {isLoadingList && discoverableServers.length === 0 ? (
           <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,360px))]">
             {[1, 2, 3, 4, 5, 6].map((i) => (
               <div
