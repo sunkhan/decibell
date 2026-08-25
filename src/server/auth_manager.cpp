@@ -749,13 +749,6 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
     has_more_before = false;
     has_more_after = false;
     std::vector<DmHistoryRow> out;
-    auto toRow = [](const auto& row) {
-        return DmHistoryRow{
-            row[0].as<int64_t>(), row[1].as<std::string>(),
-            row[2].as<std::string>(), row[3].as<int64_t>(),
-            row[4].as<int64_t>(), row[5].as<int64_t>(),
-        };
-    };
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
@@ -781,7 +774,13 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
 
         std::vector<DmHistoryRow> older_vec;
         older_vec.reserve(older.size());
-        for (const auto& row : older) older_vec.push_back(toRow(row));
+        for (const auto& row : older) {
+            older_vec.push_back(DmHistoryRow{
+                row[0].as<int64_t>(), row[1].as<std::string>(),
+                row[2].as<std::string>(), row[3].as<int64_t>(),
+                row[4].as<int64_t>(), row[5].as<int64_t>(),
+            });
+        }
         if (static_cast<int32_t>(older_vec.size()) > clamped) {
             older_vec.pop_back();
             has_more_before = true;
@@ -791,7 +790,13 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
 
         std::vector<DmHistoryRow> newer_vec;
         newer_vec.reserve(newer.size());
-        for (const auto& row : newer) newer_vec.push_back(toRow(row));
+        for (const auto& row : newer) {
+            newer_vec.push_back(DmHistoryRow{
+                row[0].as<int64_t>(), row[1].as<std::string>(),
+                row[2].as<std::string>(), row[3].as<int64_t>(),
+                row[4].as<int64_t>(), row[5].as<int64_t>(),
+            });
+        }
         if (static_cast<int32_t>(newer_vec.size()) > clamped) {
             newer_vec.pop_back();
             has_more_after = true;
