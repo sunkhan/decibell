@@ -335,6 +335,12 @@ intervening history. Community side covered by 8 new e2e checks (228 total):
      center once measured. Switched to `align:"start"`: anchoring the target's own top
      edge uses no estimates and cannot drift (Discord lands jumped messages near the top
      too — their list keeps the loaded chunk as real DOM, so they never estimate at all).
+     Round 7: one case remained — code blocks BELOW the target. At mount the rows below
+     are still estimates; when they under-estimate, Virtuoso thinks the content below is
+     less than a viewport and CLAMPS the scroll upward instead of honoring
+     `initialTopMostItemIndex`, and the clamp sticks once they measure tall. Fix: a ~1s
+     post-jump assertion window — `totalListHeightChanged` re-pins the target at the top
+     on every height change until real heights land (`jumpAssertUntilRef`).
   5. *Jump-to-present pill polish* — restyled to the client's accent-button idiom
      (`rounded-md bg-accent text-on-accent hover:bg-accent-hover`), so its radius tracks
      the theme scale (flat on console, soft on default) instead of the hardcoded

@@ -132,6 +132,14 @@ export default function ChatPanel() {
   // and stash the target here; the effect that watches `messages` lands on it
   // once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
+  // For ~1s after a jump remount, totalListHeightChanged re-pins the target
+  // at the top. At mount, rows BELOW the target are still height-estimates;
+  // when they under-estimate (code blocks), Virtuoso thinks the content
+  // below is less than a viewport and clamps the scroll upward instead of
+  // honoring initialTopMostItemIndex — then the rows measure tall and the
+  // clamped anchor sticks, leaving the target mis-placed. Re-asserting on
+  // each height change settles to exact as real heights land.
+  const jumpAssertUntilRef = useRef(0);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
@@ -787,6 +795,7 @@ export default function ChatPanel() {
         // loop all glitched) — while a transform slide never touches scroll
         // geometry, so it cannot mis-land.
         setJumpDir(pos < topIndexRef.current ? "up" : "down");
+        jumpAssertUntilRef.current = Date.now() + 1000;
         setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
         flash(id);
         return;
@@ -824,6 +833,7 @@ export default function ChatPanel() {
     // An around-window target is (virtually) always older than what was
     // loaded — arrive with the upward-travel slide.
     setJumpDir("up");
+    jumpAssertUntilRef.current = Date.now() + 1000;
     setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
     flash(id);
   }, [messages, flash]);
@@ -892,6 +902,13 @@ export default function ChatPanel() {
             increaseViewportBy={{ top: 600, bottom: 600 }}
             startReached={() => maybeLoadOlderHistory(true)}
             endReached={() => maybeLoadNewerHistory()}
+            totalListHeightChanged={() => {
+              // Landing assertion — see jumpAssertUntilRef.
+              if (Date.now() > jumpAssertUntilRef.current || !jumpWindow) return;
+              const p = messages.findIndex((m) => m.id === jumpWindow.targetId);
+              if (p >= 0)
+                virtuosoRef.current?.scrollToIndex({ index: p, align: "start" });
+            }}
             rangeChanged={(range) => {
               // Absolute, like itemContent's — rebase before it is used
               // as a position in `messages`. Storing it raw meant the

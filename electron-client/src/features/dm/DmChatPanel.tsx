@@ -83,6 +83,8 @@ export default function DmChatPanel() {
   // When a jump target isn't loaded, we request an around-window and stash the
   // target here; the landing effect lands on it once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
+  // Post-jump landing assertion window — see ChatPanel's jumpAssertUntilRef.
+  const jumpAssertUntilRef = useRef(0);
   // A just-applied jump context window (see ChatPanel for the rationale): epoch
   // bumps on each jump so Virtuoso remounts centered on targetId. null = normal.
   const [jumpWindow, setJumpWindow] = useState<{ epoch: number; targetId: number } | null>(null);
@@ -534,6 +536,7 @@ export default function DmChatPanel() {
         // — see ChatPanel's jumpToMessage for why scroll-driven animation
         // can't be made clean in a virtualized list.
         setJumpDir(pos < topIndexRef.current ? "up" : "down");
+        jumpAssertUntilRef.current = Date.now() + 1000;
         setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
         flash(id);
         return;
@@ -568,6 +571,7 @@ export default function DmChatPanel() {
     // An around-window target is (virtually) always older — arrive with the
     // upward-travel slide.
     setJumpDir("up");
+    jumpAssertUntilRef.current = Date.now() + 1000;
     setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
     flash(id);
   }, [bubbleMessages, flash]);
@@ -700,6 +704,13 @@ export default function DmChatPanel() {
           increaseViewportBy={{ top: 600, bottom: 600 }}
           startReached={() => maybeLoadOlderHistory(true)}
           endReached={() => maybeLoadNewerHistory()}
+          totalListHeightChanged={() => {
+            // Landing assertion — see ChatPanel's jumpAssertUntilRef.
+            if (Date.now() > jumpAssertUntilRef.current || !jumpWindow) return;
+            const p = bubbleMessages.findIndex((m) => m.id === jumpWindow.targetId);
+            if (p >= 0)
+              virtuosoRef.current?.scrollToIndex({ index: p, align: "start" });
+          }}
           rangeChanged={(range) => {
             // Absolute — see ChatPanel.
             const start = range.startIndex - firstItemIndex;
