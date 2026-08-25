@@ -131,6 +131,12 @@ interface ChatState {
   /// entries. Used by useServerEvents on memberships_received to
   /// backfill any servers not yet covered by server_list_received.
   mergeServers: (entries: CommunityServer[]) => void;
+  /// Apply a discovery-directory refresh. The directory only lists PUBLIC
+  /// servers, so this keeps the servers the user is connected to / has a
+  /// pending membership for (their own, possibly private) and replaces only
+  /// the rest with the fresh list — a blind replace would drop the user's
+  /// servers from the bar.
+  setDiscoveredServers: (discovered: CommunityServer[]) => void;
   setServerMeta: (
     serverId: string,
     meta: { name: string; description: string },
@@ -447,6 +453,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (!byId.has(s.id)) byId.set(s.id, s);
       }
       return { servers: Array.from(byId.values()) };
+    }),
+
+  setDiscoveredServers: (discovered) =>
+    set((state) => {
+      // Servers the user belongs to (connected or joining) must survive a
+      // discovery refresh even though the directory only lists public ones.
+      const mine = state.servers.filter(
+        (s) =>
+          state.connectedServers.has(s.id) ||
+          state.pendingMembershipServerIds.has(s.id),
+      );
+      const mineIds = new Set(mine.map((s) => s.id));
+      const rest = discovered.filter((s) => !mineIds.has(s.id));
+      return { servers: [...mine, ...rest] };
     }),
 
   setServerMeta: (serverId, meta) =>

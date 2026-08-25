@@ -58,7 +58,10 @@ export function useAuthEvents() {
           memberCount: s.memberCount,
         }));
         const chat = useChatStore.getState();
-        chat.setServers(servers);
+        // Preserve the user's own (possibly private) servers — the discovery
+        // directory only lists public ones, so a blind replace would drop
+        // them from the ServerBar.
+        chat.setDiscoveredServers(servers);
         // Propagate picture_version so the ServerBar tile / browse
         // view knows up-front whether to lazy-fetch a picture.
         for (const s of event.payload.servers as Array<
