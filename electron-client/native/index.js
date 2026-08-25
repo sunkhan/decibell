@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { login, register, logout, uploadAvatar, fetchAvatar, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, deleteChannelMessage, createChannel, reorderChannels, renameChannel, setChannelOverwrite, listChannelOverwrites, deleteChannel, listMembers, updateServer, listAuditLog, getStorageInfo, setStorageMinFree, timeoutMember, voiceMod, transferOwnership, listBans, kickMember, banMember, leaveServer, createInvite, listInvites, revokeInvite, listRoles, createRole, updateRole, deleteRole, setMemberRoles, unbanMember, setNickname, requestDmConversations, requestDmHistory, markDmRead, deleteDmMessage, requestFriendList, sendFriendAction, sendPrivateMessage, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, trustCertificate, requestDropMembership, updateServerPicture, fetchServerPicture, loadConfig, saveSettings, setDmPrivacy, setTransferLimits, listAudioDevices, startScreenShare, stopScreenShare, moveStreamToChannel, sendVideoFrame, watchStream, stopWatching, fetchStreamThumbnail, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, probeNativeEncoders, forceKeyframe, requestStreamKeyframe, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setVoiceBitrate, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, init, shutdown, ping, pingAsync } = nativeBinding
+const { login, register, logout, uploadAvatar, fetchAvatar, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, deleteChannelMessage, editChannelMessage, createChannel, reorderChannels, renameChannel, setChannelOverwrite, listChannelOverwrites, deleteChannel, listMembers, updateServer, listAuditLog, getStorageInfo, setStorageMinFree, timeoutMember, voiceMod, transferOwnership, listBans, kickMember, banMember, leaveServer, createInvite, listInvites, revokeInvite, listRoles, createRole, updateRole, deleteRole, setMemberRoles, unbanMember, setNickname, requestDmConversations, requestDmHistory, markDmRead, deleteDmMessage, editDmMessage, requestFriendList, sendFriendAction, sendPrivateMessage, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, trustCertificate, requestDropMembership, updateServerPicture, fetchServerPicture, loadConfig, saveSettings, setDmPrivacy, setTransferLimits, listAudioDevices, startScreenShare, stopScreenShare, moveStreamToChannel, sendVideoFrame, watchStream, stopWatching, fetchStreamThumbnail, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, probeNativeEncoders, forceKeyframe, requestStreamKeyframe, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setVoiceBitrate, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, init, shutdown, ping, pingAsync } = nativeBinding
 
 module.exports.login = login
 module.exports.register = register
@@ -322,6 +322,7 @@ module.exports.wipeChannelHistory = wipeChannelHistory
 module.exports.updateChannelRetention = updateChannelRetention
 module.exports.sendChannelMessage = sendChannelMessage
 module.exports.deleteChannelMessage = deleteChannelMessage
+module.exports.editChannelMessage = editChannelMessage
 module.exports.createChannel = createChannel
 module.exports.reorderChannels = reorderChannels
 module.exports.renameChannel = renameChannel
@@ -354,6 +355,7 @@ module.exports.requestDmConversations = requestDmConversations
 module.exports.requestDmHistory = requestDmHistory
 module.exports.markDmRead = markDmRead
 module.exports.deleteDmMessage = deleteDmMessage
+module.exports.editDmMessage = editDmMessage
 module.exports.requestFriendList = requestFriendList
 module.exports.sendFriendAction = sendFriendAction
 module.exports.sendPrivateMessage = sendPrivateMessage

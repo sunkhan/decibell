@@ -1343,6 +1343,46 @@ def test_public_join():
     owner.close()
 
 
+def test_message_edit():
+    print("[edit] own channel message edits; others rejected; (edited) via edited_at")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ed = join("edr", owner); owner.flush(0.5); ed.flush(0.5)
+
+    # A member posts a message; capture its id from the broadcast.
+    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="orig"))
+    bc = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.content == "orig" and p.channel_msg.sender == "edr")
+    mid = bc.channel_msg.id
+    check("message posted", mid > 0)
+    check("fresh message has edited_at=0", bc.channel_msg.edited_at == 0)
+    owner.flush(0.3); ed.flush(0.3)
+
+    # Owner (not the author) can't edit someone else's message.
+    owner.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id="general", message_id=mid, content="hijacked"))
+    r = owner.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
+    check("editing another's message rejected", r is not None and not r.message_edit_res.success)
+
+    # Author edits their own message.
+    ed.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id="general", message_id=mid, content="edited!"))
+    r = ed.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
+    check("author edit accepted", r is not None and r.message_edit_res.success, r.message_edit_res.message if r else None)
+    e = owner.wait(pb.Packet.CHANNEL_MESSAGE_EDITED, timeout=2, pred=lambda p: p.channel_message_edited.message_id == mid)
+    check("CHANNEL_MESSAGE_EDITED broadcast with new content", e is not None and e.channel_message_edited.content == "edited!" and e.channel_message_edited.edited_at > 0)
+    check("row persisted", sql("select content, edited_at>0 from messages where id=?", mid) == [("edited!", 1)])
+
+    # Empty edit rejected.
+    ed.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id="general", message_id=mid, content=""))
+    r = ed.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
+    check("empty edit rejected", r is not None and not r.message_edit_res.success)
+
+    # History reflects the edit + edited_at.
+    ed.flush(0.3)
+    ed.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", limit=50))
+    h = ed.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2)
+    row = next((m for m in h.channel_history_res.messages if m.id == mid), None)
+    check("history shows edited content + edited_at", row is not None and row.content == "edited!" and row.edited_at > 0)
+    ed.close(); owner.close()
+
+
 def test_storage():
     print("[storage] MANAGE_SERVER-gated info; editable headroom; 507 when below it")
     owner = Client("alice"); assert auth_ok(owner)[0]; owner.flush(0.5)
@@ -1575,6 +1615,7 @@ if __name__ == "__main__":
         test_voice_moderation()
         test_udp_relay()
         test_http_keepalive_and_fts()
+        test_message_edit()
         test_storage()
         test_x3_upload_membership_recheck()
         test_theme_a_tokens_and_uid()

@@ -519,6 +519,7 @@ impl CommunityClient {
                         id,
                         attachments,
                         nonce,
+                        edited_at: msg.edited_at,
                     });
                 }
                 Some(packet::Payload::ChannelHistoryRes(resp)) => {
@@ -533,6 +534,7 @@ impl CommunityClient {
                             timestamp: m.timestamp,
                             attachments: m.attachments.into_iter().map(map_attachment).collect(),
                             nonce: m.nonce,
+                            edited_at: m.edited_at,
                         })
                         .collect();
                     events::emit_channel_history_received(events::ChannelHistoryReceivedPayload {
@@ -595,6 +597,29 @@ impl CommunityClient {
                             message_id: b.message_id,
                             deleted_at: b.deleted_at,
                             deleted_by: b.deleted_by,
+                        },
+                    );
+                }
+                Some(packet::Payload::MessageEditRes(resp)) => {
+                    events::emit_channel_message_edit_responded(
+                        events::ChannelMessageEditRespondedPayload {
+                            success: resp.success,
+                            message: resp.message,
+                            server_id: server_id.clone(),
+                            channel_id: resp.channel_id,
+                            message_id: resp.message_id,
+                        },
+                    );
+                }
+                Some(packet::Payload::ChannelMessageEdited(b)) => {
+                    events::emit_channel_message_edited(
+                        events::ChannelMessageEditedPayload {
+                            server_id: server_id.clone(),
+                            channel_id: b.channel_id,
+                            message_id: b.message_id,
+                            content: b.content,
+                            edited_at: b.edited_at,
+                            editor: b.editor,
                         },
                     );
                 }

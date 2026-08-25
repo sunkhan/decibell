@@ -48,6 +48,7 @@ pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<
                 // Server stamps the persisted id on the routed packet
                 // after insertDm; outbound from client is always 0.
                 id: 0,
+                edited_at: 0,
             }),
             token.as_deref(),
         );

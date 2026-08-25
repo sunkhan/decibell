@@ -618,6 +618,34 @@ export function useServerEvents() {
       chat.clearPendingDeletion(serverId, channelId, messageId);
     });
 
+    // Edit is non-optimistic: the composer sends the edit, this broadcast
+    // applies it (mine or anyone's), and _edit_responded only surfaces
+    // failures.
+    const unlistenChannelEditRes = listen<{
+      success: boolean;
+      message: string;
+      serverId: string;
+      channelId: string;
+      messageId: number;
+    }>("channel_message_edit_responded", (event) => {
+      const p = event.payload;
+      if (!p.success) {
+        toast.error("Couldn't edit message", p.message || "Server rejected the request.");
+      }
+    });
+
+    const unlistenChannelEdited = listen<{
+      serverId: string;
+      channelId: string;
+      messageId: number;
+      content: string;
+      editedAt: number;
+      editor: string;
+    }>("channel_message_edited", (event) => {
+      const { serverId, channelId, messageId, content, editedAt } = event.payload;
+      useChatStore.getState().applyEdit(serverId, channelId, messageId, content, editedAt);
+    });
+
     const unlistenServerPictureUpdateRes = listen<{
       success: boolean;
       message: string;
@@ -665,6 +693,8 @@ export function useServerEvents() {
       unlistenAuth.then((fn) => fn());
       unlistenChannelDeleteRes.then((fn) => fn());
       unlistenChannelDeleted.then((fn) => fn());
+      unlistenChannelEditRes.then((fn) => fn());
+      unlistenChannelEdited.then((fn) => fn());
       unlistenServerPictureUpdateRes.then((fn) => fn());
       unlistenServerPictureChanged.then((fn) => fn());
       unlistenServerPictureReceived.then((fn) => fn());

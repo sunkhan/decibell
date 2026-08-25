@@ -33,6 +33,7 @@ export function useDmEvents() {
           // came from a pre-persistence server. The store handles
           // both — 0 is just ineligible for mark-read.
           id: p.id || undefined,
+          editedAt: p.editedAt || undefined,
         },
         isFromSelf,
       );
@@ -62,6 +63,7 @@ export function useDmEvents() {
         sender: string;
         content: string;
         timestamp: number;
+        editedAt: number;
       }[];
       hasMore: boolean;
     }>("dm_history_received", (event) => {
@@ -99,12 +101,38 @@ export function useDmEvents() {
       dm.clearPendingDmDeletion(peer, messageId);
     });
 
+    // Edit is non-optimistic (matches DM sends): the broadcast applies it,
+    // _edit_responded only surfaces failures.
+    const unlistenDmEditRes = listen<{
+      success: boolean;
+      message: string;
+      peer: string;
+      messageId: number;
+    }>("dm_message_edit_responded", (event) => {
+      const p = event.payload;
+      if (!p.success) {
+        toast.error("Couldn't edit message", p.message || "Server rejected the request.");
+      }
+    });
+
+    const unlistenDmEdited = listen<{
+      peer: string;
+      messageId: number;
+      content: string;
+      editedAt: number;
+    }>("dm_message_edited", (event) => {
+      const { peer, messageId, content, editedAt } = event.payload;
+      useDmStore.getState().applyDmEdit(peer, messageId, content, editedAt);
+    });
+
     return () => {
       unlisten.then((fn) => fn());
       unlistenConv.then((fn) => fn());
       unlistenHist.then((fn) => fn());
       unlistenDmDeleteRes.then((fn) => fn());
       unlistenDmDeleted.then((fn) => fn());
+      unlistenDmEditRes.then((fn) => fn());
+      unlistenDmEdited.then((fn) => fn());
     };
   }, []);
 }

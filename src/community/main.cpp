@@ -1518,6 +1518,7 @@ private:
                 cm->set_channel_id(it->channel_id);
                 cm->set_content(it->content);
                 cm->set_timestamp(it->timestamp);
+                cm->set_edited_at(it->edited_at);
                 auto atts_it = by_msg.find(it->id);
                 if (atts_it != by_msg.end()) {
                     for (const auto* a : atts_it->second) {
@@ -1767,6 +1768,65 @@ private:
                       << " in #" << req.channel_id()
                       << " deleted by " << username_
                       << " (" << del.unlink_paths.size() << " attachments)\n";
+        }
+
+        // --- MESSAGE_EDIT_REQ ---
+        // Edit your OWN message only (ownership enforced in the DB UPDATE).
+        // Requires SEND_MESSAGES in the channel (which also blocks a timed-out
+        // editor). Broadcasts CHANNEL_MESSAGE_EDITED on success.
+        else if (packet.type() == chatproj::Packet::MESSAGE_EDIT_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.message_edit_req();
+
+            // Always echo a RES so the renderer can settle its optimistic edit.
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::MESSAGE_EDIT_RES);
+            auto* res = rsp.mutable_message_edit_res();
+            res->set_channel_id(req.channel_id());
+            res->set_message_id(req.message_id());
+            auto fail = [&](const std::string& m) {
+                res->set_success(false); res->set_message(m); send_packet(rsp);
+            };
+
+            if (!db) { fail("Server misconfigured."); return; }
+            if (req.channel_id().empty() || req.message_id() == 0) { fail("Invalid request."); return; }
+
+            // Content bounds: same 64 KB cap as CHANNEL_MSG; empty rejected
+            // (deleting is a separate action). Clamp is unnecessary — the
+            // client's prost decodes what we store, and the cap guards size.
+            const std::string& content = req.content();
+            if (content.empty()) { fail("Message can't be empty."); return; }
+            if (content.size() > 64 * 1024) { fail("Message too long."); return; }
+
+            // Must be able to send here (permission + not timed out).
+            if (auto a = manager_.authz().check(chatproj::Action::SendMessage,
+                                                {username_, req.channel_id(), ""}); !a) {
+                fail(a.reason); return;
+            }
+
+            const int64_t edited_at = static_cast<int64_t>(std::time(nullptr));
+            // Ownership is enforced inside edit_message (sender must match).
+            if (!db->edit_message(req.channel_id(), req.message_id(), username_, content, edited_at)) {
+                fail("You can only edit your own messages.");
+                return;
+            }
+
+            res->set_success(true);
+            res->set_message("");
+            send_packet(rsp);
+
+            chatproj::Packet bcast;
+            bcast.set_type(chatproj::Packet::CHANNEL_MESSAGE_EDITED);
+            auto* ed = bcast.mutable_channel_message_edited();
+            ed->set_channel_id(req.channel_id());
+            ed->set_message_id(req.message_id());
+            ed->set_content(content);
+            ed->set_edited_at(edited_at);
+            ed->set_editor(username_);
+            manager_.broadcast_to_channel(bcast, req.channel_id());
+
+            std::cout << "[Community] message " << req.message_id()
+                      << " in #" << req.channel_id() << " edited by " << username_ << "\n";
         }
 
         // --- UPDATE_SERVER_PICTURE_REQ ---
@@ -2913,6 +2973,7 @@ private:
         using T = chatproj::Packet;
         switch (type) {
             case T::CHANNEL_MSG:
+            case T::MESSAGE_EDIT_REQ:
                 return msg_bucket_.try_take();
             case T::STREAM_THUMBNAIL_UPDATE:
                 return thumb_bucket_.try_take();

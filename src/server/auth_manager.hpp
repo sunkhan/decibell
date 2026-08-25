@@ -100,6 +100,7 @@ public:
         std::string sender;
         std::string content;
         int64_t timestamp;
+        int64_t edited_at;
     };
     struct DmConversationPreviewRow {
         std::string peer;
@@ -147,6 +148,15 @@ public:
     bool deleteDmMessage(const std::string& sender,
                          const std::string& peer,
                          int64_t message_id);
+
+    /// Sender-enforced atomic edit. Like deleteDmMessage, the WHERE clause is
+    /// the authorization check — only the row's sender may edit it. Stamps
+    /// edited_at. Returns true iff exactly one row was updated.
+    bool editDmMessage(const std::string& sender,
+                       const std::string& peer,
+                       int64_t message_id,
+                       const std::string& content,
+                       int64_t edited_at);
 
     // --- Auto-rejoin community memberships ---
     // (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)

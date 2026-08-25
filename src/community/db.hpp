@@ -52,6 +52,7 @@ struct DbMessage {
     std::string sender;
     std::string content;
     int64_t timestamp = 0;
+    int64_t edited_at = 0;   // unix seconds; 0 = never edited
 };
 
 struct DbAttachment {
@@ -583,6 +584,13 @@ public:
     /// or nullopt if no such row exists.
     std::optional<std::string> get_message_sender(
         const std::string& channel_id, int64_t message_id) const;
+
+    /// Edits a message's content in place, enforcing ownership in SQL
+    /// (sender must equal `editor`). Stamps edited_at. Returns true only if a
+    /// row was updated (exists, in this channel, owned by editor).
+    bool edit_message(const std::string& channel_id, int64_t message_id,
+                      const std::string& editor, const std::string& content,
+                      int64_t edited_at);
 
     /// Hard-deletes the message + its bound attachments in one
     /// transaction. Returns storage_paths the caller should unlink

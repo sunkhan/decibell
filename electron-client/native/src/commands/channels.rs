@@ -225,6 +225,7 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
                 id: 0, // server assigns on persist
                 attachments,
                 nonce: nonce.unwrap_or_default(),
+                edited_at: 0,
             }),
             Some(&client.jwt),
         );
@@ -262,6 +263,37 @@ pub async fn delete_channel_message(args: DeleteChannelMessageArgs) -> napi::Res
         packet::Payload::MessageDeleteReq(MessageDeleteReq {
             channel_id,
             message_id,
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct EditChannelMessageArgs {
+    pub server_id: String,
+    pub channel_id: String,
+    pub message_id: i64,
+    pub content: String,
+}
+
+/// Sends MESSAGE_EDIT_REQ over the community session. The ack arrives as
+/// `channel_message_edit_responded`; on success the broadcast arrives as
+/// `channel_message_edited`. Server enforces own-message-only.
+#[napi]
+pub async fn edit_channel_message(args: EditChannelMessageArgs) -> napi::Result<()> {
+    let EditChannelMessageArgs {
+        server_id,
+        channel_id,
+        message_id,
+        content,
+    } = args;
+    send_for_server(
+        &server_id,
+        packet::Type::MessageEditReq,
+        packet::Payload::MessageEditReq(MessageEditReq {
+            channel_id,
+            message_id,
+            content,
         }),
     )
     .await

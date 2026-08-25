@@ -60,6 +60,7 @@ export function useChatEvents() {
         channelId: p.context,
         attachments: (p.attachments ?? []).map(mapAttachment),
         nonce: p.nonce || undefined,
+        editedAt: p.editedAt || undefined,
       });
     });
 
@@ -78,6 +79,7 @@ export function useChatEvents() {
             channelId: m.channelId,
             attachments: (m.attachments ?? []).map(mapAttachment),
             nonce: m.nonce || undefined,
+            editedAt: m.editedAt || undefined,
           })),
           hasMore,
         );

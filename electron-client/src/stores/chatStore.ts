@@ -200,6 +200,15 @@ interface ChatState {
   /// Idempotent. Same handler runs for "my delete succeeded" and
   /// "someone else deleted this message".
   removeMessage: (serverId: string, channelId: string, messageId: number) => void;
+  /// Apply an edit broadcast: replace content + set editedAt on the matching
+  /// message. No-op if the message isn't in the cache.
+  applyEdit: (
+    serverId: string,
+    channelId: string,
+    messageId: number,
+    content: string,
+    editedAt: number,
+  ) => void;
   /// Remove an optimistic (id === 0) message by its nonce. Used when a
   /// send is abandoned (nothing left to send after all uploads failed) or
   /// the send call rejects, so the placeholder bubble doesn't linger
@@ -697,6 +706,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...state.messagesByChannel,
           [key]: next,
         },
+      };
+    }),
+
+  applyEdit: (serverId, channelId, messageId, content, editedAt) =>
+    set((state) => {
+      const key = channelKey(serverId, channelId);
+      const list = state.messagesByChannel[key];
+      if (!list) return {};
+      let changed = false;
+      const next = list.map((m) => {
+        if (m.id !== messageId) return m;
+        changed = true;
+        return { ...m, content, editedAt };
+      });
+      if (!changed) return {};
+      return {
+        messagesByChannel: { ...state.messagesByChannel, [key]: next },
       };
     }),
 

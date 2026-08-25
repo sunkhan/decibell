@@ -383,6 +383,7 @@ private:
                 msg->set_sender(r.sender);
                 msg->set_content(r.content);
                 msg->set_timestamp(r.timestamp);
+                msg->set_edited_at(r.edited_at);
             }
 
             std::string s;
@@ -464,6 +465,64 @@ private:
             rb->set_peer(username_);       // from recipient's POV, peer = sender
             rb->set_message_id(req.message_id());
             rb->set_deleted_at(now_ts);
+            manager_.send_private(recv_bcast, req.peer());
+        }
+
+        // --- DM_EDIT_REQ ---
+        // Sender-only edit; the SQL WHERE clause is the authorization check.
+        else if (packet.type() == chatproj::Packet::DM_EDIT_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.dm_edit_req();
+
+            auto build_res = [&](bool success, const std::string& msg) {
+                chatproj::Packet rsp;
+                rsp.set_type(chatproj::Packet::DM_EDIT_RES);
+                auto* res = rsp.mutable_dm_edit_res();
+                res->set_success(success);
+                res->set_message(msg);
+                res->set_peer(req.peer());
+                res->set_message_id(req.message_id());
+                std::string serialized;
+                rsp.SerializeToString(&serialized);
+                deliver(std::make_shared<std::vector<uint8_t>>(
+                    chatproj::create_framed_packet(serialized)));
+            };
+
+            if (req.peer().empty() || req.message_id() == 0) {
+                build_res(false, "Invalid request.");
+                return;
+            }
+            const std::string& content = req.content();
+            if (content.empty()) { build_res(false, "Message can't be empty."); return; }
+            if (content.size() > 64 * 1024) { build_res(false, "Message too long."); return; }
+
+            const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
+            bool ok = auth_manager_.editDmMessage(
+                username_, req.peer(), req.message_id(), content, now_ts);
+            build_res(ok, ok ? "" : "Message not found or not editable.");
+            if (!ok) return;
+
+            // Broadcast DM_MESSAGE_EDITED to both sessions, peer rewritten
+            // per recipient (same convention as DM_MESSAGE_DELETED).
+            chatproj::Packet sender_bcast;
+            sender_bcast.set_type(chatproj::Packet::DM_MESSAGE_EDITED);
+            auto* sb = sender_bcast.mutable_dm_message_edited();
+            sb->set_peer(req.peer());      // sender's POV: peer = recipient
+            sb->set_message_id(req.message_id());
+            sb->set_content(content);
+            sb->set_edited_at(now_ts);
+            std::string sender_ser;
+            sender_bcast.SerializeToString(&sender_ser);
+            deliver(std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(sender_ser)));
+
+            chatproj::Packet recv_bcast;
+            recv_bcast.set_type(chatproj::Packet::DM_MESSAGE_EDITED);
+            auto* rb = recv_bcast.mutable_dm_message_edited();
+            rb->set_peer(username_);       // recipient's POV: peer = sender
+            rb->set_message_id(req.message_id());
+            rb->set_content(content);
+            rb->set_edited_at(now_ts);
             manager_.send_private(recv_bcast, req.peer());
         }
 

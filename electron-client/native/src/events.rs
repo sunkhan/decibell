@@ -255,6 +255,10 @@ pub const DM_MESSAGE_DELETE_RESPONDED: &str = "dm_message_delete_responded";
 pub const DM_MESSAGE_DELETED: &str = "dm_message_deleted";
 pub const CHANNEL_MESSAGE_DELETE_RESPONDED: &str = "channel_message_delete_responded";
 pub const CHANNEL_MESSAGE_DELETED: &str = "channel_message_deleted";
+pub const DM_MESSAGE_EDIT_RESPONDED: &str = "dm_message_edit_responded";
+pub const DM_MESSAGE_EDITED: &str = "dm_message_edited";
+pub const CHANNEL_MESSAGE_EDIT_RESPONDED: &str = "channel_message_edit_responded";
+pub const CHANNEL_MESSAGE_EDITED: &str = "channel_message_edited";
 
 // --- Custom server pictures ---
 pub const SERVER_PICTURE_UPDATE_RESPONDED: &str = "server_picture_update_responded";
@@ -402,6 +406,7 @@ pub struct ChannelMessagePayload {
     pub timestamp: i64,
     pub attachments: Vec<AttachmentPayload>,
     pub nonce: String,
+    pub edited_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -421,6 +426,7 @@ pub struct MessageReceivedPayload {
     pub id: i64,
     pub attachments: Vec<AttachmentPayload>,
     pub nonce: String,
+    pub edited_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1255,6 +1261,7 @@ pub struct DmHistoryMessagePayload {
     pub sender: String,
     pub content: String,
     pub timestamp: i64,
+    pub edited_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1326,6 +1333,63 @@ pub fn emit_channel_message_delete_responded(payload: ChannelMessageDeleteRespon
 
 pub fn emit_channel_message_deleted(payload: ChannelMessageDeletedPayload) {
     send(CHANNEL_MESSAGE_DELETED, payload);
+}
+
+// --- Message editing (mirrors delete) ---
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmMessageEditRespondedPayload {
+    pub success: bool,
+    pub message: String,
+    pub peer: String,
+    pub message_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmMessageEditedPayload {
+    pub peer: String,
+    pub message_id: i64,
+    pub content: String,
+    pub edited_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMessageEditRespondedPayload {
+    pub success: bool,
+    pub message: String,
+    pub server_id: String,
+    pub channel_id: String,
+    pub message_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMessageEditedPayload {
+    pub server_id: String,
+    pub channel_id: String,
+    pub message_id: i64,
+    pub content: String,
+    pub edited_at: i64,
+    pub editor: String,
+}
+
+pub fn emit_dm_message_edit_responded(payload: DmMessageEditRespondedPayload) {
+    send(DM_MESSAGE_EDIT_RESPONDED, payload);
+}
+
+pub fn emit_dm_message_edited(payload: DmMessageEditedPayload) {
+    send(DM_MESSAGE_EDITED, payload);
+}
+
+pub fn emit_channel_message_edit_responded(payload: ChannelMessageEditRespondedPayload) {
+    send(CHANNEL_MESSAGE_EDIT_RESPONDED, payload);
+}
+
+pub fn emit_channel_message_edited(payload: ChannelMessageEditedPayload) {
+    send(CHANNEL_MESSAGE_EDITED, payload);
 }
 
 // --- Custom server pictures ---

@@ -139,6 +139,7 @@ impl CentralClient {
                 // Server stamps the persisted id on the routed packet
                 // after insertDm; outbound from client is always 0.
                 id: 0,
+                edited_at: 0,
             }),
             token,
         );
@@ -355,6 +356,7 @@ impl CentralClient {
                         id: msg.id,
                         attachments: Vec::new(),
                         nonce: String::new(),
+                        edited_at: msg.edited_at,
                     });
                 }
                 Some(packet::Payload::PresenceUpdate(update)) => {
@@ -475,6 +477,7 @@ impl CentralClient {
                             sender: m.sender,
                             content: m.content,
                             timestamp: m.timestamp,
+                            edited_at: m.edited_at,
                         })
                         .collect();
                     events::emit_dm_history_received(events::DmHistoryReceivedPayload {
@@ -498,6 +501,24 @@ impl CentralClient {
                         peer: b.peer,
                         message_id: b.message_id,
                         deleted_at: b.deleted_at,
+                    });
+                }
+                Some(packet::Payload::DmEditRes(resp)) => {
+                    events::emit_dm_message_edit_responded(
+                        events::DmMessageEditRespondedPayload {
+                            success: resp.success,
+                            message: resp.message,
+                            peer: resp.peer,
+                            message_id: resp.message_id,
+                        },
+                    );
+                }
+                Some(packet::Payload::DmMessageEdited(b)) => {
+                    events::emit_dm_message_edited(events::DmMessageEditedPayload {
+                        peer: b.peer,
+                        message_id: b.message_id,
+                        content: b.content,
+                        edited_at: b.edited_at,
                     });
                 }
                 Some(packet::Payload::FetchServerPictureRes(resp)) => {

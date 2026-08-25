@@ -121,6 +121,18 @@ export interface DeleteChannelMessageArgs {
  * Server-side handler enforces self-or-can_delete_others.
  */
 export declare function deleteChannelMessage(args: DeleteChannelMessageArgs): Promise<void>
+export interface EditChannelMessageArgs {
+  serverId: string
+  channelId: string
+  messageId: number
+  content: string
+}
+/**
+ * Sends MESSAGE_EDIT_REQ over the community session. The ack arrives as
+ * `channel_message_edit_responded`; on success the broadcast arrives as
+ * `channel_message_edited`. Server enforces own-message-only.
+ */
+export declare function editChannelMessage(args: EditChannelMessageArgs): Promise<void>
 export interface CreateChannelArgs {
   serverId: string
   name: string
@@ -388,6 +400,17 @@ export interface DeleteDmMessageArgs {
  * land in useDmEvents on the renderer side.
  */
 export declare function deleteDmMessage(args: DeleteDmMessageArgs): Promise<void>
+export interface EditDmMessageArgs {
+  peer: string
+  messageId: number
+  content: string
+}
+/**
+ * Sends DM_EDIT_REQ over the JWT-authed central session. The ack arrives as
+ * `dm_message_edit_responded`; on success the broadcast arrives as
+ * `dm_message_edited`. Central enforces own-message-only.
+ */
+export declare function editDmMessage(args: EditDmMessageArgs): Promise<void>
 export declare function requestFriendList(): Promise<void>
 export interface SendFriendActionArgs {
   /**

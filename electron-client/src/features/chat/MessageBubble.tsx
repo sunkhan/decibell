@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { Message } from "../../types";
 import { stringToColor } from "../../utils/colors";
 import { useUiStore } from "../../stores/uiStore";
@@ -8,6 +8,62 @@ import MessageText from "./MessageText";
 import AttachmentList from "./AttachmentList";
 import BubbleInflightAttachments from "./BubbleInflightAttachments";
 import { useRowHeightAudit } from "./devRowHeightAudit";
+
+// Inline edit box shown in place of a message's content. Plain textarea over
+// the raw wire string (MessageText re-renders it on save). Enter submits,
+// Shift+Enter inserts a newline, Escape cancels. Auto-sized + auto-focused
+// with the caret at the end.
+function InlineEditor({
+  initialContent,
+  onSubmit,
+  onCancel,
+}: {
+  initialContent: string;
+  onSubmit: (content: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initialContent);
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, []);
+
+  return (
+    <div className="mt-0.5">
+      <textarea
+        ref={ref}
+        value={value}
+        onChange={(e) => {
+          setValue(e.target.value);
+          e.target.style.height = "auto";
+          e.target.style.height = `${e.target.scrollHeight}px`;
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            const trimmed = value.trim();
+            if (trimmed) onSubmit(trimmed);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        rows={1}
+        className="w-full resize-none rounded-md border border-border bg-bg-lighter px-3 py-2 text-body leading-body text-text-primary outline-none focus:border-accent"
+      />
+      <div className="mt-1 text-meta text-text-muted">
+        escape to <button className="text-accent hover:underline" onClick={onCancel}>cancel</button>
+        {" • "}enter to <span className="text-accent">save</span>
+      </div>
+    </div>
+  );
+}
 
 function parseTimestamp(ts: string): Date {
   const asEpoch = parseInt(ts, 10);
@@ -76,6 +132,16 @@ interface Props {
     message: Message,
     options?: { skipConfirm?: boolean },
   ) => void;
+  /// True iff the local user may edit this message (sender-only, real id).
+  canEdit?: boolean;
+  /// True while THIS message is being edited — swaps content for an editor.
+  editing?: boolean;
+  /// Enter edit mode for this message (clicked the pencil).
+  onStartEdit?: (message: Message) => void;
+  /// Commit the edit with the new content.
+  onSubmitEdit?: (message: Message, content: string) => void;
+  /// Leave edit mode without saving.
+  onCancelEdit?: () => void;
 }
 
 function MessageBubble({
@@ -86,6 +152,11 @@ function MessageBubble({
   paddingLeft = 8,
   canDelete = false,
   onDelete,
+  canEdit = false,
+  editing = false,
+  onStartEdit,
+  onSubmitEdit,
+  onCancelEdit,
 }: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
@@ -112,6 +183,70 @@ function MessageBubble({
     openContextMenu(message.sender, { x: e.clientX, y: e.clientY }, serverId);
   };
 
+  // Content = inline editor when editing this message, else the rendered text
+  // with an "(edited)" indicator. `marginClass` differs per branch (grouped
+  // rows have no top margin; the first row in a group does).
+  const renderContent = (marginClass: string) => {
+    if (editing) {
+      return (
+        <InlineEditor
+          initialContent={message.content}
+          onSubmit={(c) => onSubmitEdit?.(message, c)}
+          onCancel={() => onCancelEdit?.()}
+        />
+      );
+    }
+    if (!message.content) return null;
+    return (
+      <div
+        className={`${marginClass} whitespace-pre-wrap break-all text-body leading-body text-text-primary [overflow-wrap:anywhere]`}
+      >
+        <MessageText content={message.content} />
+        {message.editedAt ? (
+          <span className="ml-1 select-none align-baseline text-meta text-text-muted">
+            (edited)
+          </span>
+        ) : null}
+      </div>
+    );
+  };
+
+  // Hover actions (edit + delete). Hidden while editing. `topClass` aligns the
+  // button cluster with each branch's top padding.
+  const renderActions = (topClass: string) => {
+    if (editing || (!canEdit && !(canDelete && onDelete))) return null;
+    return (
+      <div className={`absolute right-2 ${topClass} hidden gap-1 group-hover:flex`}>
+        {canEdit && onStartEdit && (
+          <button
+            onClick={() => onStartEdit(message)}
+            title="Edit message"
+            className="flex h-6 w-6 items-center justify-center rounded-sm bg-bg-secondary text-text-muted hover:bg-row-hover hover:text-text-primary"
+          >
+            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+            </svg>
+          </button>
+        )}
+        {canDelete && onDelete && (
+          <button
+            onClick={(e) => onDelete(message, { skipConfirm: e.shiftKey })}
+            title="Delete message (Shift+click to skip confirmation)"
+            className="flex h-6 w-6 items-center justify-center rounded-sm bg-bg-secondary text-error hover:bg-error/10"
+          >
+            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6" />
+              <path d="M10 11v6M14 11v6" />
+              <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+            </svg>
+          </button>
+        )}
+      </div>
+    );
+  };
+
   if (grouped) {
     return (
       <div
@@ -131,38 +266,13 @@ function MessageBubble({
           {/* div, not p: rich text renders block children (pre code
               blocks, display math) and a block inside <p> is invalid
               HTML — the browser force-closes the paragraph around it. */}
-          {message.content && (
-            <div className="whitespace-pre-wrap break-all text-body leading-body text-text-primary [overflow-wrap:anywhere]">
-              <MessageText content={message.content} />
-            </div>
-          )}
+          {renderContent("")}
           <AttachmentList attachments={message.attachments} serverId={serverId ?? null} />
           {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
             <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
           )}
         </div>
-        {canDelete && onDelete && (
-          <button
-            onClick={(e) => onDelete(message, { skipConfirm: e.shiftKey })}
-            title="Delete message (Shift+click to skip confirmation)"
-            className="absolute right-2 top-0 hidden h-6 w-6 items-center justify-center rounded-sm bg-bg-secondary text-error hover:bg-error/10 group-hover:flex"
-          >
-            <svg
-              className="h-3.5 w-3.5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <polyline points="3 6 5 6 21 6" />
-              <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6" />
-              <path d="M10 11v6M14 11v6" />
-              <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-            </svg>
-          </button>
-        )}
+        {renderActions("top-0")}
       </div>
     );
   }
@@ -198,38 +308,13 @@ function MessageBubble({
           </span>
         </div>
         {/* div, not p — see the grouped branch above. */}
-        {message.content && (
-          <div className="mt-0.5 whitespace-pre-wrap break-all text-body leading-body text-text-primary [overflow-wrap:anywhere]">
-            <MessageText content={message.content} />
-          </div>
-        )}
+        {renderContent("mt-0.5")}
         <AttachmentList attachments={message.attachments} serverId={serverId ?? null} />
         {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
           <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
         )}
       </div>
-      {canDelete && onDelete && (
-        <button
-          onClick={(e) => onDelete(message, { skipConfirm: e.shiftKey })}
-          title="Delete message (Shift+click to skip confirmation)"
-          className="absolute right-2 top-1 hidden h-6 w-6 items-center justify-center rounded-sm bg-bg-secondary text-error hover:bg-error/10 group-hover:flex"
-        >
-          <svg
-            className="h-3.5 w-3.5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <polyline points="3 6 5 6 21 6" />
-            <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6" />
-            <path d="M10 11v6M14 11v6" />
-            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-          </svg>
-        </button>
-      )}
+      {renderActions("top-1")}
     </div>
   );
 }

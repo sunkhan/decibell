@@ -570,6 +570,38 @@ export default function ChatPanel() {
     [handleDeleteChannelMessage, openModal],
   );
 
+  // --- Message editing (own messages only) ---
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+  const startEdit = useCallback((message: Message) => {
+    if (typeof message.id === "number" && message.id > 0) setEditingMessageId(message.id);
+  }, []);
+  const cancelEdit = useCallback(() => setEditingMessageId(null), []);
+  const submitEdit = useCallback((message: Message, content: string) => {
+    const { activeServerId, activeChannelId } = useChatStore.getState();
+    setEditingMessageId(null);
+    if (!activeServerId || !activeChannelId || typeof message.id !== "number") return;
+    if (content === message.content) return; // no change → skip round-trip
+    invoke("edit_channel_message", {
+      serverId: activeServerId,
+      channelId: activeChannelId,
+      messageId: message.id,
+      content,
+    }).catch((err) => console.error("edit_channel_message:", err));
+  }, []);
+  // ArrowUp on an empty composer → edit the latest own message in view.
+  const editLatestOwn = useCallback(() => {
+    const { activeServerId, activeChannelId, messagesByChannel: byCh } = useChatStore.getState();
+    if (!activeServerId || !activeChannelId || !username) return;
+    const key = channelKey(activeServerId, activeChannelId);
+    const list = byCh[key] ?? [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i].sender === username && list[i].id > 0) {
+        setEditingMessageId(list[i].id);
+        return;
+      }
+    }
+  }, [username]);
+
   if (!activeServerId) {
     return (
       <div className="flex flex-1 items-center justify-center bg-bg-mid text-sm text-text-muted">
@@ -681,6 +713,15 @@ export default function ChatPanel() {
                   (message.sender === username || canDeleteOthers)
                 }
                 onDelete={requestDeleteChannelMessage}
+                canEdit={
+                  typeof message.id === "number" &&
+                  message.id > 0 &&
+                  message.sender === username
+                }
+                editing={editingMessageId === message.id && message.id > 0}
+                onStartEdit={startEdit}
+                onSubmitEdit={submitEdit}
+                onCancelEdit={cancelEdit}
               />
               );
             }}
@@ -757,6 +798,7 @@ export default function ChatPanel() {
                     .setChannelDraft(activeServerId, activeChannelId, value);
               }}
               onEnter={handleSend}
+              onArrowUpEmpty={editLatestOwn}
               placeholder={
                 channel?.slowmodeSeconds && !canBypassSlowmode
                   ? `Message #${channelName ?? "channel"} · slowmode ${formatRemaining(channel.slowmodeSeconds)}`

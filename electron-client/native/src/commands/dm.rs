@@ -14,7 +14,7 @@
 //! caller of last resort, not a pending future.
 
 use crate::net::connection::build_packet;
-use crate::net::proto::{packet, DmConversationsReq, DmDeleteReq, DmHistoryReq, DmMarkReadReq};
+use crate::net::proto::{packet, DmConversationsReq, DmDeleteReq, DmEditReq, DmHistoryReq, DmMarkReadReq};
 use crate::state;
 
 #[napi]
@@ -146,6 +146,47 @@ pub async fn delete_dm_message(args: DeleteDmMessageArgs) -> napi::Result<()> {
             packet::Payload::DmDeleteReq(DmDeleteReq {
                 peer: args.peer,
                 message_id: args.message_id,
+            }),
+            token.as_deref(),
+        );
+        (tx, pkt)
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
+        Err(_) => Err(napi::Error::from_reason("Send timed out")),
+    }
+}
+
+#[napi(object)]
+pub struct EditDmMessageArgs {
+    pub peer: String,
+    pub message_id: i64,
+    pub content: String,
+}
+
+/// Sends DM_EDIT_REQ over the JWT-authed central session. The ack arrives as
+/// `dm_message_edit_responded`; on success the broadcast arrives as
+/// `dm_message_edited`. Central enforces own-message-only.
+#[napi]
+pub async fn edit_dm_message(args: EditDmMessageArgs) -> napi::Result<()> {
+    let state_arc = state::shared();
+    let (write_tx, data) = {
+        let s = state_arc.lock().await;
+        let central = s.central.as_ref().ok_or_else(|| {
+            napi::Error::from_reason("Not connected to central server")
+        })?;
+        let tx = central.connection_write_tx().ok_or_else(|| {
+            napi::Error::from_reason("Central connection lost")
+        })?;
+        let token = s.token.clone();
+        let pkt = build_packet(
+            packet::Type::DmEditReq,
+            packet::Payload::DmEditReq(DmEditReq {
+                peer: args.peer,
+                message_id: args.message_id,
+                content: args.content,
             }),
             token.as_deref(),
         );

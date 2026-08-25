@@ -212,6 +212,12 @@ message Packet {
     STORAGE_INFO_RES       = 119;  // community→requester
     STORAGE_CONFIG_SET_REQ = 120;  // client→community (MANAGE_SERVER): set min-free
                                    // headroom; replies with a fresh STORAGE_INFO_RES
+    DM_EDIT_REQ             = 121;  // client→central; JWT-authed (own DM only)
+    DM_EDIT_RES            = 122;   // central→editor
+    DM_MESSAGE_EDITED      = 123;   // central→sender + recipient (success only)
+    MESSAGE_EDIT_REQ       = 124;   // client→community (own channel message only)
+    MESSAGE_EDIT_RES       = 125;   // community→editor
+    CHANNEL_MESSAGE_EDITED = 126;   // community→channel viewers (success only)
   }
 
   Type type = 1;
@@ -375,6 +381,12 @@ message Packet {
     StorageInfoRequest       storage_info_req       = 120;
     StorageInfoResponse      storage_info_res       = 121;
     StorageConfigSetRequest  storage_config_set_req = 122;
+    DmEditReq                dm_edit_req            = 123;
+    DmEditRes                dm_edit_res            = 124;
+    DmMessageEdited          dm_message_edited      = 125;
+    MessageEditReq           message_edit_req       = 126;
+    MessageEditRes           message_edit_res       = 127;
+    ChannelMessageEdited     channel_message_edited = 128;
   }
 }
 
@@ -419,6 +431,8 @@ message DirectMessage {
   // Old clients ignore the unknown field; new clients use it as the
   // `up_to_id` cursor in DmMarkReadReq.
   int64 id = 5;
+  // Unix seconds of the last edit; 0 = never edited.
+  int64 edited_at = 6;
 }
 
 message UserPresence {
@@ -592,6 +606,9 @@ message ChannelMessage {
   // CHANNEL_MSG arrival. Empty for messages re-fetched from history
   // (the originating client is long gone, no optimistic to dedup).
   string nonce = 7;
+  // Unix seconds of the last edit; 0 = never edited. Drives the "(edited)"
+  // indicator. Set on history fetch and on CHANNEL_MESSAGE_EDITED.
+  int64 edited_at = 8;
 }
 
 message Attachment {
@@ -1503,6 +1520,7 @@ message DmHistoryMessage {
   string sender = 2;
   string content = 3;
   int64  timestamp = 4;
+  int64  edited_at = 5;   // unix seconds; 0 = never edited
 }
 message DmHistoryRes {
   string peer = 1;
@@ -1561,6 +1579,27 @@ message DmMessageDeleted {
   int64  deleted_at = 3;
 }
 
+message DmEditReq {
+  string peer = 1;
+  int64  message_id = 2;
+  string content = 3;   // new body; central enforces sender == editor
+}
+
+message DmEditRes {
+  bool   success = 1;
+  string message = 2;
+  string peer = 3;
+  int64  message_id = 4;
+}
+
+// Peer rewritten per recipient, like DmMessageDeleted.
+message DmMessageEdited {
+  string peer = 1;
+  int64  message_id = 2;
+  string content = 3;
+  int64  edited_at = 4;
+}
+
 message MessageDeleteReq {
   string channel_id = 1;
   int64  message_id = 2;
@@ -1579,6 +1618,27 @@ message ChannelMessageDeleted {
   int64  deleted_at = 3;
   // For future audit-log surfacing; not consumed by current UI.
   string deleted_by = 4;
+}
+
+message MessageEditReq {
+  string channel_id = 1;
+  int64  message_id = 2;
+  string content = 3;   // new body; community enforces sender == editor
+}
+
+message MessageEditRes {
+  bool   success = 1;
+  string message = 2;
+  string channel_id = 3;
+  int64  message_id = 4;
+}
+
+message ChannelMessageEdited {
+  string channel_id = 1;
+  int64  message_id = 2;
+  string content = 3;
+  int64  edited_at = 4;
+  string editor = 5;    // the message's sender (who edited it)
 }
 
 // --- Custom server pictures ---

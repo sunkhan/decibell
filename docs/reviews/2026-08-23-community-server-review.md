@@ -226,6 +226,24 @@ central directory → client), server side covered by 7 new e2e checks (205 tota
   server is now join-on-click; only public servers appear in the list, so every tile is
   joinable. (Central compiled by inspection here — no local libpqxx.)
 
+**Message editing (2026-08-25) ✅** — own-message edit in channels + DMs, cross-stack
+(proto → community + central → Rust → React), community side covered by 8 new e2e checks
+(213 total):
+
+- Wire: `MESSAGE_EDIT_REQ/RES` + `CHANNEL_MESSAGE_EDITED` (community) and
+  `DM_EDIT_REQ/RES` + `DM_MESSAGE_EDITED` (central), plus an `edited_at` field on
+  `ChannelMessage` / `DirectMessage` / `DmHistoryMessage`. Mirrors the delete flow.
+- Ownership enforced in SQL (`UPDATE … WHERE id=? AND sender=?`), so a forged id is a
+  no-op; edits require SEND_MESSAGES in the channel (also blocks a timed-out editor);
+  empty/oversized rejected; `edited_at` stamped and returned on history.
+- Client: `edit_channel_message` / `edit_dm_message` commands, edit event listeners
+  (non-optimistic — the broadcast applies the edit, `_edit_responded` surfaces failures),
+  `applyEdit`/`applyDmEdit` store setters, `edited_at` threaded through message + history
+  ingestion. UI: a pencil hover-action + inline textarea editor on own messages (Enter
+  saves, Esc cancels), an "(edited)" indicator, and ArrowUp-on-empty-composer to edit the
+  latest own message (`RichInput.onArrowUpEmpty`). Works in both server channels and DMs
+  via the shared MessageBubble. (Central compiled by inspection — no local libpqxx.)
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

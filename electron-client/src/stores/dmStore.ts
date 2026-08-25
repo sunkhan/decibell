@@ -57,6 +57,7 @@ interface HistoryMessageInput {
   sender: string;
   content: string;
   timestamp: number;
+  editedAt?: number;
 }
 
 interface DmState {
@@ -90,6 +91,8 @@ interface DmState {
   markRead: (peer: string, upToId: number) => void;
   /// Remove a DM from a peer's visible message list. Idempotent.
   removeDmMessage: (peer: string, messageId: number) => void;
+  /// Apply a DM edit broadcast: replace content + set editedAt on the match.
+  applyDmEdit: (peer: string, messageId: number, content: string, editedAt: number) => void;
   /// Snapshot + remove for optimistic delete; returns the snapshot.
   snapshotAndRemoveDm: (peer: string, messageId: number) => DmMessage | undefined;
   /// Re-insert a snapshotted DM (rejection path). Sorted by id.
@@ -238,6 +241,7 @@ export const useDmStore = create<DmState>((set, get) => ({
           // shape (matches DIRECT_MSG event payload). Convert here.
           timestamp: String(m.timestamp),
           id: m.id,
+          editedAt: m.editedAt || undefined,
         }));
       const merged: DmMessage[] = [...incoming, ...existing];
       const lastMessageTime =
@@ -288,6 +292,25 @@ export const useDmStore = create<DmState>((set, get) => ({
       if (!conv) return {};
       const next = conv.messages.filter((m) => m.id !== messageId);
       if (next.length === conv.messages.length) return {};
+      return {
+        conversations: {
+          ...state.conversations,
+          [peer]: { ...conv, messages: next },
+        },
+      };
+    }),
+
+  applyDmEdit: (peer, messageId, content, editedAt) =>
+    set((state) => {
+      const conv = state.conversations[peer];
+      if (!conv) return {};
+      let changed = false;
+      const next = conv.messages.map((m) => {
+        if (m.id !== messageId) return m;
+        changed = true;
+        return { ...m, content, editedAt };
+      });
+      if (!changed) return {};
       return {
         conversations: {
           ...state.conversations,

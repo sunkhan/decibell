@@ -385,8 +385,12 @@ void CommunityDb::migrate_to_v2_() {
         "  channel_id TEXT NOT NULL,"
         "  sender TEXT NOT NULL,"
         "  content TEXT NOT NULL,"
-        "  timestamp INTEGER NOT NULL"
+        "  timestamp INTEGER NOT NULL,"
+        "  edited_at INTEGER NOT NULL DEFAULT 0"
         ");");
+    // edited_at added later — backfill on existing message tables.
+    if (!column_exists(db_, "messages", "edited_at"))
+        exec_sql(db_, "ALTER TABLE messages ADD COLUMN edited_at INTEGER NOT NULL DEFAULT 0;");
     exec_sql(db_,
         "CREATE INDEX IF NOT EXISTS idx_messages_channel_id "
         "ON messages(channel_id, id DESC);");
@@ -2231,9 +2235,9 @@ std::vector<DbMessage> CommunityDb::fetch_messages(const std::string& channel_id
     std::vector<DbMessage> out;
     Stmt q(db_,
         before_id > 0
-            ? "SELECT id, channel_id, sender, content, timestamp FROM messages "
+            ? "SELECT id, channel_id, sender, content, timestamp, edited_at FROM messages "
               "WHERE channel_id=? AND id<? ORDER BY id DESC LIMIT ?;"
-            : "SELECT id, channel_id, sender, content, timestamp FROM messages "
+            : "SELECT id, channel_id, sender, content, timestamp, edited_at FROM messages "
               "WHERE channel_id=? ORDER BY id DESC LIMIT ?;");
     if (!q.s) return out;
     q.bind_text(1, channel_id);
@@ -2250,6 +2254,7 @@ std::vector<DbMessage> CommunityDb::fetch_messages(const std::string& channel_id
         m.sender = q.col_text(2);
         m.content = q.col_text(3);
         m.timestamp = q.col_int64(4);
+        m.edited_at = q.col_int64(5);
         out.push_back(std::move(m));
     }
 
@@ -2659,6 +2664,26 @@ std::optional<std::string> CommunityDb::get_message_sender(
         return q.col_text(0);
     }
     return std::nullopt;
+}
+
+bool CommunityDb::edit_message(const std::string& channel_id, int64_t message_id,
+                               const std::string& editor, const std::string& content,
+                               int64_t edited_at) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Ownership is enforced in the WHERE: the row updates only if it exists in
+    // this channel AND was sent by `editor`. changes()==0 → not found or not
+    // the owner (indistinguishable to the caller, which is fine).
+    Stmt q(db_,
+        "UPDATE messages SET content=?, edited_at=? "
+        "WHERE id=? AND channel_id=? AND sender=?;");
+    if (!q.s) return false;
+    q.bind_text(1, content);
+    q.bind_int64(2, edited_at);
+    q.bind_int64(3, message_id);
+    q.bind_text(4, channel_id);
+    q.bind_text(5, editor);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
 }
 
 CommunityDb::DeleteMessageResult CommunityDb::delete_message(

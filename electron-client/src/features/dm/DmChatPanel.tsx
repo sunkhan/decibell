@@ -125,6 +125,35 @@ export default function DmChatPanel() {
     [handleDeleteDmMessage, openModal],
   );
 
+  // --- Message editing (own DMs only) ---
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+  const startEdit = useCallback((message: Message) => {
+    if (typeof message.id === "number" && message.id > 0) setEditingMessageId(message.id);
+  }, []);
+  const cancelEdit = useCallback(() => setEditingMessageId(null), []);
+  const submitEdit = useCallback((message: Message, content: string) => {
+    const peer = useDmStore.getState().activeDmUser;
+    setEditingMessageId(null);
+    if (!peer || typeof message.id !== "number" || message.id <= 0) return;
+    if (content === message.content) return; // no change → skip
+    invoke("edit_dm_message", { peer, messageId: message.id, content }).catch((err) =>
+      console.error("edit_dm_message:", err),
+    );
+  }, []);
+  // ArrowUp on an empty composer → edit the latest own message.
+  const editLatestOwn = useCallback(() => {
+    const peer = useDmStore.getState().activeDmUser;
+    if (!peer || !localUsername) return;
+    const list = useDmStore.getState().conversations[peer]?.messages ?? [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m.sender === localUsername && typeof m.id === "number" && m.id > 0) {
+        setEditingMessageId(m.id);
+        return;
+      }
+    }
+  }, [localUsername]);
+
   const conversation = activeDmUser
     ? conversations[activeDmUser]
     : null;
@@ -495,6 +524,15 @@ export default function DmChatPanel() {
                   msg.sender === localUsername
                 }
                 onDelete={requestDeleteDmMessage}
+                canEdit={
+                  typeof msg.id === "number" &&
+                  msg.id > 0 &&
+                  msg.sender === localUsername
+                }
+                editing={editingMessageId === msg.id && msg.id > 0}
+                onStartEdit={startEdit}
+                onSubmitEdit={submitEdit}
+                onCancelEdit={cancelEdit}
               />
             );
           }}
@@ -515,6 +553,7 @@ export default function DmChatPanel() {
             ref={editorRef}
             onChange={handleInputChange}
             onEnter={handleSend}
+            onArrowUpEmpty={editLatestOwn}
             disabled={sending}
             placeholder={`Message @${activeDmUser}`}
             className="flex-1 bg-transparent text-sm leading-snug text-text-primary"

@@ -60,8 +60,14 @@ void AuthManager::initializeDatabase() {
             "  sender VARCHAR(32) NOT NULL,"
             "  recipient VARCHAR(32) NOT NULL,"
             "  content TEXT NOT NULL,"
-            "  sent_at BIGINT NOT NULL"
+            "  sent_at BIGINT NOT NULL,"
+            "  edited_at BIGINT NOT NULL DEFAULT 0"
             ")"
+        );
+        // edited_at added later — backfill on existing deployments.
+        txn.exec(
+            "ALTER TABLE dm_messages "
+            "ADD COLUMN IF NOT EXISTS edited_at BIGINT NOT NULL DEFAULT 0"
         );
         // Two-direction lookup ("messages between A and B" hits the
         // same B-tree regardless of who sent which). The LEAST /
@@ -699,7 +705,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
         // before_id=0 means "latest". For real cursoring we filter on
         // id < before_id. Either way the pair_idx covers the predicate.
         const char* sql =
-            "SELECT id, sender, content, sent_at FROM dm_messages "
+            "SELECT id, sender, content, sent_at, edited_at FROM dm_messages "
             "WHERE LEAST(sender, recipient) = LEAST($1, $2) "
             "  AND GREATEST(sender, recipient) = GREATEST($1, $2) "
             "  AND ($3 = 0 OR id < $3) "
@@ -714,6 +720,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
                 row[1].as<std::string>(),
                 row[2].as<std::string>(),
                 row[3].as<int64_t>(),
+                row[4].as<int64_t>(),
             };
             out.push_back(std::move(r));
         }
@@ -824,6 +831,27 @@ bool AuthManager::deleteDmMessage(const std::string& sender,
         return rs.affected_rows() == 1;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] deleteDmMessage: " << e.what() << "\n";
+        return false;
+    }
+}
+
+bool AuthManager::editDmMessage(const std::string& sender,
+                                const std::string& peer,
+                                int64_t message_id,
+                                const std::string& content,
+                                int64_t edited_at) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        // WHERE enforces sender-only + correct pair + existence atomically.
+        pqxx::result rs = txn.exec_params(
+            "UPDATE dm_messages SET content = $4, edited_at = $5 "
+            "WHERE id = $1 AND sender = $2 AND recipient = $3",
+            message_id, sender, peer, content, edited_at);
+        txn.commit();
+        return rs.affected_rows() == 1;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] editDmMessage: " << e.what() << "\n";
         return false;
     }
 }

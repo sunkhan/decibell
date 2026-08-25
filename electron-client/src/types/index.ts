@@ -52,6 +52,8 @@ export interface DmMessage {
   sender: string;
   content: string;
   timestamp: string;
+  /// Unix seconds of the last edit; 0/absent = never edited. Drives "(edited)".
+  editedAt?: number;
   /// Server-assigned id from DirectMessage.id. Present on messages
   /// that came via DIRECT_MSG after the persistent-DMs feature
   /// shipped, and on every message in DmHistoryRes. Optional /
@@ -271,6 +273,8 @@ export interface Message {
   /// echoes the broadcast back. Only populated on outgoing
   /// (id === 0) bubbles.
   pendingAttachmentIds?: string[];
+  /// Unix seconds of the last edit; 0/absent = never edited. Drives "(edited)".
+  editedAt?: number;
 }
 
 export interface ChannelInfo {
@@ -476,6 +480,7 @@ export interface MessageReceivedPayload {
   id: number;
   attachments: WireAttachment[];
   nonce: string;
+  editedAt: number;
 }
 
 export interface ChannelHistoryReceivedPayload {
@@ -489,6 +494,7 @@ export interface ChannelHistoryReceivedPayload {
     timestamp: number;
     attachments: WireAttachment[];
     nonce: string;
+    editedAt: number;
   }>;
   hasMore: boolean;
 }
