@@ -66,6 +66,9 @@ export default function DmChatPanel() {
   const topIndexRef = useRef<number>(0);
   const endIndexRef = useRef<number>(0);
   const atBottomRef = useRef<boolean>(true);
+  // While a smooth jump animation is running, auto-pagination is paused until
+  // this timestamp — see ChatPanel's pauseAutoPagingUntilRef.
+  const pauseAutoPagingUntilRef = useRef(0);
   // Single-flight guard for the scroll-up paginator so rapid scroll
   // doesn't fire parallel page loads.
   const loadMoreInFlightRef = useRef(false);
@@ -303,6 +306,11 @@ export default function DmChatPanel() {
       });
   };
 
+  // Latest-render closure of maybeLoadOlderHistory, for the settle-timeout in
+  // jumpToMessage (a stale closure there would page the wrong peer).
+  const maybeLoadOlderRef = useRef<(force: boolean) => void>(() => {});
+  maybeLoadOlderRef.current = maybeLoadOlderHistory;
+
   // Downward paginator — mirror of maybeLoadOlderHistory, active only while
   // windowed (newer messages exist below the jump slice). Virtuoso's endReached
   // fires it; it no-ops at present (hasMoreAfter false).
@@ -509,21 +517,39 @@ export default function DmChatPanel() {
     setHighlightId(id);
     highlightTimer.current = window.setTimeout(() => setHighlightId(null), 1600);
   }, []);
+  // Identity-stable (reads the store at call time) — a memo(MessageBubble)
+  // prop; see ChatPanel's jumpToMessage for the regression this avoids.
+  // bubbleMessages maps 1:1 from conv.messages, so an index into the store
+  // list is a valid Virtuoso data index.
   const jumpToMessage = useCallback(
     (id: number) => {
-      const pos = bubbleMessages.findIndex((m) => m.id === id);
+      const dm = useDmStore.getState();
+      const peer = dm.activeDmUser;
+      if (!peer) return;
+      const list = dm.conversations[peer]?.messages ?? [];
+      const pos = list.findIndex((m) => m.id === id);
       if (pos >= 0) {
-        // Nearby: smooth-scroll. Far: remount centered — smooth scrollToIndex
-        // over unmeasured rows is approximate and lands wrong (see ChatPanel).
+        // Nearby with no prepend in flight: smooth-scroll, with older-history
+        // paging paused for the animation. Far or page in flight: remount
+        // centered — exact (see ChatPanel).
         // scrollToIndex uses the raw 0-based data index (like
         // initialTopMostItemIndex), NOT the firstItemIndex-adjusted index.
         const NEAR = 5;
-        if (pos >= topIndexRef.current - NEAR && pos <= endIndexRef.current + NEAR) {
+        if (
+          !loadMoreInFlightRef.current &&
+          pos >= topIndexRef.current - NEAR &&
+          pos <= endIndexRef.current + NEAR
+        ) {
+          pauseAutoPagingUntilRef.current = Date.now() + 900;
           virtuosoRef.current?.scrollToIndex({
             index: pos,
             align: "center",
             behavior: "smooth",
           });
+          window.setTimeout(() => {
+            if (topIndexRef.current < HISTORY_EAGER_THRESHOLD)
+              maybeLoadOlderRef.current(false);
+          }, 950);
         } else {
           setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
         }
@@ -532,7 +558,6 @@ export default function DmChatPanel() {
       }
       // Not loaded — fetch a window centered on it. Already requesting this
       // exact target? Wait for the landing effect.
-      if (!activeDmUser) return;
       if (pendingJumpIdRef.current === id) return;
       pendingJumpIdRef.current = id;
       loadMoreInFlightRef.current = false;
@@ -540,7 +565,7 @@ export default function DmChatPanel() {
       loadNewerInFlightRef.current = false;
       lastRequestedAfterIdRef.current = 0;
       invoke("request_dm_history", {
-        peer: activeDmUser,
+        peer,
         beforeId: 0,
         aroundId: id,
         limit: 25,
@@ -549,7 +574,7 @@ export default function DmChatPanel() {
         pendingJumpIdRef.current = null;
       });
     },
-    [bubbleMessages, activeDmUser, flash],
+    [flash],
   );
   // Landing effect: once the requested around-window is in the loaded slice,
   // remount the list centered on the target (bump epoch) and flash it.
@@ -678,7 +703,10 @@ export default function DmChatPanel() {
           // Same rationale as ChatPanel: settle off-screen so rows
           // scroll in already correct.
           increaseViewportBy={{ top: 600, bottom: 600 }}
-          startReached={() => maybeLoadOlderHistory(true)}
+          startReached={() => {
+            if (Date.now() >= pauseAutoPagingUntilRef.current)
+              maybeLoadOlderHistory(true);
+          }}
           endReached={() => maybeLoadNewerHistory()}
           rangeChanged={(range) => {
             // Absolute — see ChatPanel.
@@ -686,7 +714,11 @@ export default function DmChatPanel() {
             topIndexRef.current = start;
             endIndexRef.current = range.endIndex - firstItemIndex;
             // Eager pagination — see ChatPanel's rangeChanged.
-            if (start < HISTORY_EAGER_THRESHOLD) maybeLoadOlderHistory(false);
+            if (
+              start < HISTORY_EAGER_THRESHOLD &&
+              Date.now() >= pauseAutoPagingUntilRef.current
+            )
+              maybeLoadOlderHistory(false);
           }}
           atBottomStateChange={(atBottom) => {
             atBottomRef.current = atBottom;

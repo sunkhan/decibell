@@ -306,6 +306,16 @@ intervening history. Community side covered by 8 new e2e checks (228 total):
      the target is within ~5 rows of the rendered range and otherwise remount Virtuoso
      centered on the target (epoch key + `initialTopMostItemIndex`) — exact, like the
      windowed-jump landing.
+  3. *Round 2 (2026-08-25): attachment-scroll glitch regression + smooth-jump fighting* —
+     `jumpToMessage` is a `memo(MessageBubble)` prop (`onJumpToReply`) and had `messages`
+     in its `useCallback` deps, so every history prepend / live arrival gave it a fresh
+     identity and re-rendered every visible bubble mid-scroll — undoing the 2026-08-15
+     attachment-scroll work. Now identity-stable (reads the store at call time, deps
+     `[flash]` only). Separately, the smooth near-jump glitched back and forth because the
+     eager paginator prepended a page mid-animation, shifting every index under the
+     in-flight `scrollToIndex`: auto-paging is now paused for the animation window
+     (`pauseAutoPagingUntilRef`, 900ms + settle catch-up), and a near-jump falls back to
+     the exact remount path when a prepend is already in flight. Both panels.
 
 ## 5. Suggested order of work
 

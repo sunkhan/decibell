@@ -209,6 +209,10 @@ export default function ChatPanel() {
   const topIndexRef = useRef(0);
   const endIndexRef = useRef(0);
   const atBottomRef = useRef(true);
+  // While a smooth jump animation is running, auto-pagination is paused until
+  // this timestamp — a page prepending mid-animation shifts every index under
+  // the in-flight scrollToIndex and visibly fights the scroll anchoring.
+  const pauseAutoPagingUntilRef = useRef(0);
 
   // Keeps the viewport anchored when older history pages in at the top. The
   // reset key folds in the jump epoch so a jump-window remount also resets the
@@ -351,6 +355,11 @@ export default function ChatPanel() {
         loadMoreInFlightRef.current = false;
       });
   };
+
+  // Latest-render closure of maybeLoadOlderHistory, for the settle-timeout in
+  // jumpToMessage (a stale closure there would page the wrong channel).
+  const maybeLoadOlderRef = useRef<(force: boolean) => void>(() => {});
+  maybeLoadOlderRef.current = maybeLoadOlderHistory;
 
   // Downward paginator — the mirror of maybeLoadOlderHistory, active only
   // while windowed (newer messages exist below the jump slice). Virtuoso's
@@ -747,25 +756,49 @@ export default function ChatPanel() {
     setHighlightId(id);
     highlightTimer.current = window.setTimeout(() => setHighlightId(null), 1600);
   }, []);
+  // Identity-stable (reads the store at call time). This is a
+  // memo(MessageBubble) prop: depending on `messages` gave it a fresh
+  // identity on every prepend / live arrival, which re-rendered every
+  // visible bubble exactly while the user was scrolling — the cause of the
+  // attachment-scroll glitch regression.
   const jumpToMessage = useCallback(
     (id: number) => {
-      const pos = messages.findIndex((m) => m.id === id);
+      const chat = useChatStore.getState();
+      const serverId = chat.activeServerId;
+      const channelId = chat.activeChannelId;
+      if (!serverId || !channelId) return;
+      const list = chat.messagesByChannel[channelKey(serverId, channelId)] ?? [];
+      const pos = list.findIndex((m) => m.id === id);
       if (pos >= 0) {
-        // Nearby (rendered or almost): smooth-scroll — pleasant for short
-        // hops. Far: smooth scrollToIndex over unmeasured rows is
-        // approximate (Virtuoso estimates unrendered heights), which landed
-        // wrong on the first click — remount centered on the target instead
-        // (exact, same mechanism as the windowed-jump landing).
+        // Nearby (rendered or almost) with no prepend in flight:
+        // smooth-scroll — pleasant for short hops. Older-history paging is
+        // paused for the animation (pauseAutoPagingUntilRef): a page landing
+        // mid-animation shifts every index under the scroller and fights the
+        // anchoring back and forth. Far, or a page already in flight:
+        // remount centered on the target instead (exact — the same
+        // mechanism as the windowed-jump landing; smooth scrollToIndex over
+        // unmeasured rows is approximate anyway).
         // scrollToIndex uses the raw 0-based data index (like
         // initialTopMostItemIndex) — NOT the firstItemIndex-adjusted index
         // that itemContent / rangeChanged report.
         const NEAR = 5;
-        if (pos >= topIndexRef.current - NEAR && pos <= endIndexRef.current + NEAR) {
+        if (
+          !loadMoreInFlightRef.current &&
+          pos >= topIndexRef.current - NEAR &&
+          pos <= endIndexRef.current + NEAR
+        ) {
+          pauseAutoPagingUntilRef.current = Date.now() + 900;
           virtuosoRef.current?.scrollToIndex({
             index: pos,
             align: "center",
             behavior: "smooth",
           });
+          // Catch-up: if the animation settled near the top boundary, run
+          // the eager page the pause window swallowed.
+          window.setTimeout(() => {
+            if (topIndexRef.current < HISTORY_EAGER_THRESHOLD)
+              maybeLoadOlderRef.current(false);
+          }, 950);
         } else {
           setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
         }
@@ -774,28 +807,26 @@ export default function ChatPanel() {
       }
       // Not loaded — fetch a window centered on it. Already requesting this
       // exact target? Wait for the landing effect.
-      if (!activeServerId || !activeChannelId) return;
       if (pendingJumpIdRef.current === id) return;
       pendingJumpIdRef.current = id;
       loadMoreInFlightRef.current = false;
       lastRequestedBeforeIdRef.current = 0;
       loadNewerInFlightRef.current = false;
       lastRequestedAfterIdRef.current = 0;
-      useChatStore.getState().setHistoryLoading(activeServerId, activeChannelId, true);
+      chat.setHistoryLoading(serverId, channelId, true);
       invoke("request_channel_history", {
-        serverId: activeServerId,
-        channelId: activeChannelId,
+        serverId,
+        channelId,
         beforeId: 0,
         aroundId: id,
         limit: 25,
       }).catch((err) => {
         console.error("request_channel_history (around):", err);
         pendingJumpIdRef.current = null;
-        if (activeServerId && activeChannelId)
-          useChatStore.getState().setHistoryLoading(activeServerId, activeChannelId, false);
+        useChatStore.getState().setHistoryLoading(serverId, channelId, false);
       });
     },
-    [messages, activeServerId, activeChannelId, flash],
+    [flash],
   );
   // Landing effect: once the requested around-window is in `messages`, remount
   // the list centered on the target (bump epoch) and flash it.
@@ -870,7 +901,10 @@ export default function ChatPanel() {
             // frame landing — happens off-screen and the row scrolls in
             // already correct.
             increaseViewportBy={{ top: 600, bottom: 600 }}
-            startReached={() => maybeLoadOlderHistory(true)}
+            startReached={() => {
+              if (Date.now() >= pauseAutoPagingUntilRef.current)
+                maybeLoadOlderHistory(true);
+            }}
             endReached={() => maybeLoadNewerHistory()}
             rangeChanged={(range) => {
               // Absolute, like itemContent's — rebase before it is used
@@ -896,7 +930,11 @@ export default function ChatPanel() {
               // group-flip resize (see maybeLoadOlderHistory) happens
               // off-screen. Small channels eagerly load exactly one
               // extra page on open, then the guard stops it.
-              if (start < HISTORY_EAGER_THRESHOLD) maybeLoadOlderHistory(false);
+              if (
+                start < HISTORY_EAGER_THRESHOLD &&
+                Date.now() >= pauseAutoPagingUntilRef.current
+              )
+                maybeLoadOlderHistory(false);
             }}
             atBottomStateChange={(atBottom) => {
               atBottomRef.current = atBottom;
