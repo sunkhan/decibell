@@ -151,6 +151,11 @@ interface Props {
   /// was deleted → a generic fallback is shown.
   replyToSender?: string;
   replyToContent?: string;
+  /// Jump to the replied-to message (clicking the quoted preview). Given the
+  /// parent id; a no-op if the parent isn't in the loaded window.
+  onJumpToReply?: (messageId: number) => void;
+  /// Briefly flag this row (a jump target) so it flashes a highlight.
+  highlighted?: boolean;
 }
 
 function MessageBubble({
@@ -170,6 +175,8 @@ function MessageBubble({
   onReply,
   replyToSender,
   replyToContent,
+  onJumpToReply,
+  highlighted = false,
 }: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
@@ -278,8 +285,19 @@ function MessageBubble({
     const snippet = replyToContent
       ? replyToContent.replace(/\s+/g, " ").trim()
       : "";
+    const parentId = message.replyTo;
+    // Only clickable when the parent is actually resolvable in the loaded
+    // window (we have its author) — otherwise a jump would be a no-op.
+    const jumpable = !!onJumpToReply && !!replyToSender;
     return (
-      <div className="mb-0.5 flex min-w-0 items-center gap-1 text-meta text-text-muted">
+      <button
+        type="button"
+        disabled={!jumpable}
+        onClick={jumpable ? () => onJumpToReply!(parentId) : undefined}
+        className={`mb-0.5 flex min-w-0 max-w-full items-center gap-1 text-meta text-text-muted ${
+          jumpable ? "cursor-pointer hover:text-text-secondary" : "cursor-default"
+        }`}
+      >
         <svg className="h-3 w-3 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="9 17 4 12 9 7" />
           <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
@@ -288,7 +306,7 @@ function MessageBubble({
           {replyToSender ? `@${replyToSender}` : "Original message"}
         </span>
         {snippet && <span className="truncate opacity-80">{snippet}</span>}
-      </div>
+      </button>
     );
   };
 
@@ -296,7 +314,9 @@ function MessageBubble({
     return (
       <div
         ref={auditRef}
-        className="group relative flex gap-3 rounded-lg py-px pr-2 hover:bg-row-hover"
+        className={`group relative flex gap-3 rounded-lg py-px pr-2 transition-colors ${
+          highlighted ? "bg-accent-soft" : "hover:bg-row-hover"
+        }`}
         style={{ paddingLeft }}
       >
         <div className="flex w-[38px] shrink-0 items-baseline justify-end">
@@ -326,9 +346,9 @@ function MessageBubble({
   return (
     <div
       ref={auditRef}
-      className={`group relative flex gap-3 rounded-lg pr-2 pt-2.5 pb-0.5 hover:bg-row-hover${
-        isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""
-      }`}
+      className={`group relative flex gap-3 rounded-lg pr-2 pt-2.5 pb-0.5 transition-colors ${
+        highlighted ? "bg-accent-soft" : "hover:bg-row-hover"
+      }${isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""}`}
       style={{ paddingLeft }}
     >
       <div

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
-import { Virtuoso } from "react-virtuoso";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useVirtuosoPrepend } from "../chat/useVirtuosoPrepend";
 import { invoke } from "../../lib/ipc";
 import { useDmStore } from "../../stores/dmStore";
@@ -51,6 +51,7 @@ export default function DmChatPanel() {
   const [pendingDeleteTarget, setPendingDeleteTarget] =
     useState<DmMessage | null>(null);
   const editorRef = useRef<RichInputHandle>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   // Per-peer scroll state. Saved on conversation switch via the
   // cleanup of the activeDmUser effect; restored on Virtuoso mount
@@ -402,6 +403,28 @@ export default function DmChatPanel() {
   // Keeps the viewport anchored when older history pages in at the top.
   const firstItemIndex = useVirtuosoPrepend(bubbleMessages, messageKey, activeDmUser);
 
+  // Jump to a replied-to message + flash it. No-op if the parent isn't loaded.
+  const [highlightId, setHighlightId] = useState<number | null>(null);
+  const highlightTimer = useRef<number | null>(null);
+  const jumpToMessage = useCallback(
+    (id: number) => {
+      const pos = bubbleMessages.findIndex((m) => m.id === id);
+      if (pos < 0) return;
+      virtuosoRef.current?.scrollToIndex({
+        index: firstItemIndex + pos,
+        align: "center",
+        behavior: "smooth",
+      });
+      if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+      setHighlightId(id);
+      highlightTimer.current = window.setTimeout(() => setHighlightId(null), 1600);
+    },
+    [bubbleMessages, firstItemIndex],
+  );
+  useEffect(() => () => {
+    if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+  }, []);
+
   const initialIndex = (() => {
     const last = Math.max(0, bubbleMessages.length - 1);
     if (!activeDmUser) return last;
@@ -484,6 +507,7 @@ export default function DmChatPanel() {
         </div>
       ) : (
         <Virtuoso
+          ref={virtuosoRef}
           // Re-mount when the active peer changes so
           // initialTopMostItemIndex applies fresh — Virtuoso reuses
           // its instance across data swaps and ignores subsequent
@@ -568,6 +592,8 @@ export default function DmChatPanel() {
                 replyToContent={
                   msg.replyTo ? messagesById.get(msg.replyTo)?.content : undefined
                 }
+                onJumpToReply={jumpToMessage}
+                highlighted={highlightId === msg.id && msg.id > 0}
               />
             );
           }}

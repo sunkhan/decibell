@@ -631,6 +631,29 @@ export default function ChatPanel() {
     setEditingMessageId(null);
   }, [activeKey]);
 
+  // Jump to a replied-to message + flash it. No-op if the parent isn't in the
+  // loaded window (client-side resolution only).
+  const [highlightId, setHighlightId] = useState<number | null>(null);
+  const highlightTimer = useRef<number | null>(null);
+  const jumpToMessage = useCallback(
+    (id: number) => {
+      const pos = messages.findIndex((m) => m.id === id);
+      if (pos < 0) return;
+      virtuosoRef.current?.scrollToIndex({
+        index: firstItemIndex + pos,
+        align: "center",
+        behavior: "smooth",
+      });
+      if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+      setHighlightId(id);
+      highlightTimer.current = window.setTimeout(() => setHighlightId(null), 1600);
+    },
+    [messages, firstItemIndex],
+  );
+  useEffect(() => () => {
+    if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+  }, []);
+
   if (!activeServerId) {
     return (
       <div className="flex flex-1 items-center justify-center bg-bg-mid text-sm text-text-muted">
@@ -759,6 +782,8 @@ export default function ChatPanel() {
                 replyToContent={
                   message.replyTo ? messagesById.get(message.replyTo)?.content : undefined
                 }
+                onJumpToReply={jumpToMessage}
+                highlighted={highlightId === message.id && message.id > 0}
               />
               );
             }}
