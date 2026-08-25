@@ -286,8 +286,11 @@ function MessageBubble({
       ? replyToContent.replace(/\s+/g, " ").trim()
       : "";
     const parentId = message.replyTo;
-    // Only clickable when the parent is actually resolvable in the loaded
-    // window (we have its author) — otherwise a jump would be a no-op.
+    // The panels resolve replyToSender from the loaded window, falling back
+    // to the server-embedded parent preview — so an unresolvable sender means
+    // the parent was deleted (or a pre-embed server): render the tombstone,
+    // not clickable. Everything else is jumpable; the panels' jumpToMessage
+    // fetches an around-window when the target isn't loaded.
     const jumpable = !!onJumpToReply && !!replyToSender;
     return (
       <button
@@ -303,7 +306,7 @@ function MessageBubble({
           <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
         </svg>
         <span className="shrink-0 font-medium text-text-secondary">
-          {replyToSender ? `@${replyToSender}` : "Original message"}
+          {replyToSender ? `@${replyToSender}` : "Original message was deleted"}
         </span>
         {snippet && <span className="truncate opacity-80">{snippet}</span>}
       </button>

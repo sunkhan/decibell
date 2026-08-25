@@ -35,6 +35,8 @@ export function useDmEvents() {
           id: p.id || undefined,
           editedAt: p.editedAt || undefined,
           replyTo: p.replyTo || undefined,
+          replyToSender: p.replyToSender || undefined,
+          replyToContent: p.replyToContent || undefined,
         },
         isFromSelf,
       );
@@ -66,6 +68,8 @@ export function useDmEvents() {
         timestamp: number;
         editedAt: number;
         replyTo: number;
+        replyToSender: string;
+        replyToContent: string;
       }[];
       hasMore: boolean;
       hasMoreAfter: boolean;

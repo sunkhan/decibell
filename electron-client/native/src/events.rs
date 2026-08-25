@@ -408,6 +408,10 @@ pub struct ChannelMessagePayload {
     pub nonce: String,
     pub edited_at: i64,
     pub reply_to: i64,
+    /// Embedded parent preview (server-resolved). Empty sender with
+    /// reply_to>0 = parent was deleted.
+    pub reply_to_sender: String,
+    pub reply_to_content: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -429,6 +433,10 @@ pub struct MessageReceivedPayload {
     pub nonce: String,
     pub edited_at: i64,
     pub reply_to: i64,
+    /// Embedded parent preview (server-resolved). Empty sender with
+    /// reply_to>0 = parent was deleted.
+    pub reply_to_sender: String,
+    pub reply_to_content: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1268,6 +1276,10 @@ pub struct DmHistoryMessagePayload {
     pub timestamp: i64,
     pub edited_at: i64,
     pub reply_to: i64,
+    /// Embedded parent preview (server-resolved). Empty sender with
+    /// reply_to>0 = parent was deleted.
+    pub reply_to_sender: String,
+    pub reply_to_content: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

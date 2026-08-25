@@ -521,6 +521,8 @@ impl CommunityClient {
                         nonce,
                         edited_at: msg.edited_at,
                         reply_to: msg.reply_to,
+                        reply_to_sender: msg.reply_to_sender,
+                        reply_to_content: msg.reply_to_content,
                     });
                 }
                 Some(packet::Payload::ChannelHistoryRes(resp)) => {
@@ -537,6 +539,8 @@ impl CommunityClient {
                             nonce: m.nonce,
                             edited_at: m.edited_at,
                             reply_to: m.reply_to,
+                            reply_to_sender: m.reply_to_sender,
+                            reply_to_content: m.reply_to_content,
                         })
                         .collect();
                     events::emit_channel_history_received(events::ChannelHistoryReceivedPayload {

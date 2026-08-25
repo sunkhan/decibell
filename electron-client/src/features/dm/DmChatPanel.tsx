@@ -64,6 +64,7 @@ export default function DmChatPanel() {
   // Live cursors written by Virtuoso's rangeChanged / atBottomStateChange.
   // Persisted into savedPositionsRef on conversation switch.
   const topIndexRef = useRef<number>(0);
+  const endIndexRef = useRef<number>(0);
   const atBottomRef = useRef<boolean>(true);
   // Single-flight guard for the scroll-up paginator so rapid scroll
   // doesn't fire parallel page loads.
@@ -512,13 +513,20 @@ export default function DmChatPanel() {
     (id: number) => {
       const pos = bubbleMessages.findIndex((m) => m.id === id);
       if (pos >= 0) {
+        // Nearby: smooth-scroll. Far: remount centered — smooth scrollToIndex
+        // over unmeasured rows is approximate and lands wrong (see ChatPanel).
         // scrollToIndex uses the raw 0-based data index (like
         // initialTopMostItemIndex), NOT the firstItemIndex-adjusted index.
-        virtuosoRef.current?.scrollToIndex({
-          index: pos,
-          align: "center",
-          behavior: "smooth",
-        });
+        const NEAR = 5;
+        if (pos >= topIndexRef.current - NEAR && pos <= endIndexRef.current + NEAR) {
+          virtuosoRef.current?.scrollToIndex({
+            index: pos,
+            align: "center",
+            behavior: "smooth",
+          });
+        } else {
+          setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
+        }
         flash(id);
         return;
       }
@@ -676,6 +684,7 @@ export default function DmChatPanel() {
             // Absolute — see ChatPanel.
             const start = range.startIndex - firstItemIndex;
             topIndexRef.current = start;
+            endIndexRef.current = range.endIndex - firstItemIndex;
             // Eager pagination — see ChatPanel's rangeChanged.
             if (start < HISTORY_EAGER_THRESHOLD) maybeLoadOlderHistory(false);
           }}
@@ -733,10 +742,16 @@ export default function DmChatPanel() {
                 canReply={typeof msg.id === "number" && msg.id > 0}
                 onReply={startReply}
                 replyToSender={
-                  msg.replyTo ? messagesById.get(msg.replyTo)?.sender : undefined
+                  msg.replyTo
+                    ? messagesById.get(msg.replyTo)?.sender ??
+                      (msg.replyToSender || undefined)
+                    : undefined
                 }
                 replyToContent={
-                  msg.replyTo ? messagesById.get(msg.replyTo)?.content : undefined
+                  msg.replyTo
+                    ? messagesById.get(msg.replyTo)?.content ??
+                      (msg.replyToContent || undefined)
+                    : undefined
                 }
                 onJumpToReply={jumpToMessage}
                 highlighted={highlightId === msg.id && msg.id > 0}

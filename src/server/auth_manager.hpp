@@ -102,6 +102,10 @@ public:
         int64_t timestamp;
         int64_t edited_at;
         int64_t reply_to;
+        // Embedded parent preview, resolved by LEFT JOIN at fetch time.
+        // Empty sender with reply_to>0 = parent was deleted.
+        std::string reply_to_sender;
+        std::string reply_to_content;
     };
     struct DmConversationPreviewRow {
         std::string peer;
@@ -153,6 +157,13 @@ public:
                                                   int64_t after_id,
                                                   int32_t limit,
                                                   bool& has_more_after);
+
+    /// (sender, content) of one DM, constrained to the user_a↔user_b
+    /// conversation — a forged reply_to must not leak another
+    /// conversation's content. nullopt = not found / not this pair.
+    /// Used to validate + embed the reply parent preview on send.
+    std::optional<std::pair<std::string, std::string>> fetchDmPreview(
+        const std::string& user_a, const std::string& user_b, int64_t message_id);
 
     /// One row per conversation the user is part of, with the most
     /// recent message preview + unread count (messages from peer

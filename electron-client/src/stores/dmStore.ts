@@ -65,6 +65,8 @@ interface HistoryMessageInput {
   timestamp: number;
   editedAt?: number;
   replyTo?: number;
+  replyToSender?: string;
+  replyToContent?: string;
 }
 
 interface DmState {
@@ -279,6 +281,8 @@ export const useDmStore = create<DmState>((set, get) => ({
           id: m.id,
           editedAt: m.editedAt || undefined,
           replyTo: m.replyTo || undefined,
+          replyToSender: m.replyToSender || undefined,
+          replyToContent: m.replyToContent || undefined,
         }));
       const merged: DmMessage[] = [...incoming, ...existing];
       const lastMessageTime =
@@ -317,6 +321,8 @@ export const useDmStore = create<DmState>((set, get) => ({
           id: m.id,
           editedAt: m.editedAt || undefined,
           replyTo: m.replyTo || undefined,
+          replyToSender: m.replyToSender || undefined,
+          replyToContent: m.replyToContent || undefined,
         }))
         .sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
       return {
@@ -355,6 +361,8 @@ export const useDmStore = create<DmState>((set, get) => ({
           id: m.id,
           editedAt: m.editedAt || undefined,
           replyTo: m.replyTo || undefined,
+          replyToSender: m.replyToSender || undefined,
+          replyToContent: m.replyToContent || undefined,
         }));
       const merged =
         incoming.length > 0

@@ -52,6 +52,9 @@ pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<
                 id: 0,
                 edited_at: 0,
                 reply_to: args.reply_to.unwrap_or(0),
+                // Server-resolved on broadcast; never set by the client.
+                reply_to_sender: String::new(),
+                reply_to_content: String::new(),
             }),
             token.as_deref(),
         );

@@ -239,6 +239,9 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
                 nonce: nonce.unwrap_or_default(),
                 edited_at: 0,
                 reply_to: reply_to.unwrap_or(0),
+                // Server-resolved on broadcast; never set by the client.
+                reply_to_sender: String::new(),
+                reply_to_content: String::new(),
             }),
             Some(&client.jwt),
         );

@@ -288,6 +288,24 @@ intervening history. Community side covered by 8 new e2e checks (228 total):
   LEAST/GREATEST conversation pair, stitched oldest→newest) and `fetchDmHistoryAfter`; the
   `DM_HISTORY_REQ` handler branches on the mode. (Central compiled by inspection — no local
   libpqxx; community channel path re-verified at 228/228 after the shared-proto change.)
+- Live-test fixes (2026-08-25, after Hetzner testing ✅):
+  1. *Unloaded parents rendered an unclickable "Original message"* — the client could only
+     resolve reply previews from its loaded window, so the around-fetch never fired.
+     Discord-style fix: the server now embeds the parent's author + content on every reply
+     (`reply_to_sender`/`reply_to_content` on `ChannelMessage`/`DirectMessage`/
+     `DmHistoryMessage`), resolved via LEFT JOIN on history fetches and a parent lookup on
+     the send path (community `get_message_preview`, central `fetchDmPreview` — the DM
+     lookup is constrained to the sender↔recipient pair so a forged reply_to can't leak
+     another conversation's content; central also validates DM reply_to before persist
+     now). Previews always render + are clickable; a deleted parent comes back with an
+     empty embedded sender and renders as an unclickable "Original message was deleted"
+     tombstone. 3 new e2e checks (231 total).
+  2. *First jump to a far-but-loaded message landed wrong* — `scrollToIndex` with smooth
+     behavior estimates unmeasured row heights, so long hops are approximate (second click
+     worked because the first pass measured them). Both panels now smooth-scroll only when
+     the target is within ~5 rows of the rendered range and otherwise remount Virtuoso
+     centered on the target (epoch key + `initialTopMostItemIndex`) — exact, like the
+     windowed-jump landing.
 
 ## 5. Suggested order of work
 

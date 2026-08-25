@@ -2236,6 +2236,33 @@ int64_t CommunityDb::insert_message(const std::string& channel_id,
     return sqlite3_last_insert_rowid(db_);
 }
 
+namespace {
+// Canonical message SELECT: the 7 message columns plus the reply parent's
+// sender/content via LEFT JOIN (COALESCEd to '' when not a reply or when the
+// parent was deleted). Kept as one constant so every fetch path returns the
+// same shape — read_message_row expects exactly this column order.
+constexpr const char* kMessageSelect =
+    "SELECT m.id, m.channel_id, m.sender, m.content, m.timestamp, m.edited_at, m.reply_to, "
+    "COALESCE(p.sender, ''), COALESCE(p.content, '') "
+    "FROM messages m LEFT JOIN messages p "
+    "ON p.id = m.reply_to AND p.channel_id = m.channel_id ";
+
+// Reads the 9 columns of kMessageSelect (in order) into a DbMessage.
+DbMessage read_message_row(Stmt& q) {
+    DbMessage m;
+    m.id = q.col_int64(0);
+    m.channel_id = q.col_text(1);
+    m.sender = q.col_text(2);
+    m.content = q.col_text(3);
+    m.timestamp = q.col_int64(4);
+    m.edited_at = q.col_int64(5);
+    m.reply_to = q.col_int64(6);
+    m.reply_to_sender = q.col_text(7);
+    m.reply_to_content = q.col_text(8);
+    return m;
+}
+} // namespace
+
 std::vector<DbMessage> CommunityDb::fetch_messages(const std::string& channel_id,
                                                    int64_t before_id,
                                                    int32_t limit,
@@ -2250,12 +2277,13 @@ std::vector<DbMessage> CommunityDb::fetch_messages(const std::string& channel_id
 
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<DbMessage> out;
-    Stmt q(db_,
+    const std::string sql =
         before_id > 0
-            ? "SELECT id, channel_id, sender, content, timestamp, edited_at, reply_to FROM messages "
-              "WHERE channel_id=? AND id<? ORDER BY id DESC LIMIT ?;"
-            : "SELECT id, channel_id, sender, content, timestamp, edited_at, reply_to FROM messages "
-              "WHERE channel_id=? ORDER BY id DESC LIMIT ?;");
+            ? std::string(kMessageSelect) +
+                  "WHERE m.channel_id=? AND m.id<? ORDER BY m.id DESC LIMIT ?;"
+            : std::string(kMessageSelect) +
+                  "WHERE m.channel_id=? ORDER BY m.id DESC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
     if (!q.s) return out;
     q.bind_text(1, channel_id);
     int next_idx = 2;
@@ -2264,17 +2292,7 @@ std::vector<DbMessage> CommunityDb::fetch_messages(const std::string& channel_id
     }
     q.bind_int(next_idx, fetch);
 
-    while (q.step() == SQLITE_ROW) {
-        DbMessage m;
-        m.id = q.col_int64(0);
-        m.channel_id = q.col_text(1);
-        m.sender = q.col_text(2);
-        m.content = q.col_text(3);
-        m.timestamp = q.col_int64(4);
-        m.edited_at = q.col_int64(5);
-        m.reply_to = q.col_int64(6);
-        out.push_back(std::move(m));
-    }
+    while (q.step() == SQLITE_ROW) out.push_back(read_message_row(q));
 
     if (static_cast<int32_t>(out.size()) > limit) {
         out.pop_back();
@@ -2282,21 +2300,6 @@ std::vector<DbMessage> CommunityDb::fetch_messages(const std::string& channel_id
     }
     return out;
 }
-
-namespace {
-// Reads the 7 message columns (in the canonical SELECT order) into a DbMessage.
-DbMessage read_message_row(Stmt& q) {
-    DbMessage m;
-    m.id = q.col_int64(0);
-    m.channel_id = q.col_text(1);
-    m.sender = q.col_text(2);
-    m.content = q.col_text(3);
-    m.timestamp = q.col_int64(4);
-    m.edited_at = q.col_int64(5);
-    m.reply_to = q.col_int64(6);
-    return m;
-}
-} // namespace
 
 std::vector<DbMessage> CommunityDb::fetch_messages_around(const std::string& channel_id,
                                                          int64_t around_id,
@@ -2312,9 +2315,9 @@ std::vector<DbMessage> CommunityDb::fetch_messages_around(const std::string& cha
     // The target and older, newest-first; one extra to detect more older.
     std::vector<DbMessage> older;  // desc: around_id, then older
     {
-        Stmt q(db_,
-            "SELECT id, channel_id, sender, content, timestamp, edited_at, reply_to FROM messages "
-            "WHERE channel_id=? AND id<=? ORDER BY id DESC LIMIT ?;");
+        const std::string sql = std::string(kMessageSelect) +
+            "WHERE m.channel_id=? AND m.id<=? ORDER BY m.id DESC LIMIT ?;";
+        Stmt q(db_, sql.c_str());
         if (q.s) {
             q.bind_text(1, channel_id);
             q.bind_int64(2, around_id);
@@ -2330,9 +2333,9 @@ std::vector<DbMessage> CommunityDb::fetch_messages_around(const std::string& cha
     // Strictly newer, oldest-first; one extra to detect more newer.
     std::vector<DbMessage> newer;  // asc
     {
-        Stmt q(db_,
-            "SELECT id, channel_id, sender, content, timestamp, edited_at, reply_to FROM messages "
-            "WHERE channel_id=? AND id>? ORDER BY id ASC LIMIT ?;");
+        const std::string sql = std::string(kMessageSelect) +
+            "WHERE m.channel_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?;";
+        Stmt q(db_, sql.c_str());
         if (q.s) {
             q.bind_text(1, channel_id);
             q.bind_int64(2, around_id);
@@ -2362,9 +2365,9 @@ std::vector<DbMessage> CommunityDb::fetch_messages_after(const std::string& chan
     if (limit > 200) limit = 200;
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<DbMessage> out;  // asc = oldest→newest
-    Stmt q(db_,
-        "SELECT id, channel_id, sender, content, timestamp, edited_at, reply_to FROM messages "
-        "WHERE channel_id=? AND id>? ORDER BY id ASC LIMIT ?;");
+    const std::string sql = std::string(kMessageSelect) +
+        "WHERE m.channel_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
     if (!q.s) return out;
     q.bind_text(1, channel_id);
     q.bind_int64(2, after_id);
@@ -2774,6 +2777,19 @@ std::optional<std::string> CommunityDb::get_message_sender(
     q.bind_text(2, channel_id);
     if (q.step() == SQLITE_ROW) {
         return q.col_text(0);
+    }
+    return std::nullopt;
+}
+
+std::optional<std::pair<std::string, std::string>> CommunityDb::get_message_preview(
+    const std::string& channel_id, int64_t message_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "SELECT sender, content FROM messages WHERE id=? AND channel_id=?;");
+    if (!q.s) return std::nullopt;
+    q.bind_int64(1, message_id);
+    q.bind_text(2, channel_id);
+    if (q.step() == SQLITE_ROW) {
+        return std::make_pair(q.col_text(0), q.col_text(1));
     }
     return std::nullopt;
 }

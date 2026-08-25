@@ -62,6 +62,8 @@ export function useChatEvents() {
         nonce: p.nonce || undefined,
         editedAt: p.editedAt || undefined,
         replyTo: p.replyTo || undefined,
+        replyToSender: p.replyToSender || undefined,
+        replyToContent: p.replyToContent || undefined,
       });
     });
 
@@ -80,6 +82,8 @@ export function useChatEvents() {
           nonce: m.nonce || undefined,
           editedAt: m.editedAt || undefined,
           replyTo: m.replyTo || undefined,
+          replyToSender: m.replyToSender || undefined,
+          replyToContent: m.replyToContent || undefined,
         }));
         const store = useChatStore.getState();
         // Route by the request mode the server echoed back:

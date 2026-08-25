@@ -435,6 +435,10 @@ message DirectMessage {
   int64 edited_at = 6;
   // Id of the DM this one replies to; 0 = not a reply.
   int64 reply_to = 7;
+  // Embedded parent preview — see ChannelMessage.reply_to_sender/-content.
+  // Empty sender with reply_to>0 = parent was deleted.
+  string reply_to_sender = 8;
+  string reply_to_content = 9;
 }
 
 message UserPresence {
@@ -615,6 +619,12 @@ message ChannelMessage {
   // echoed on broadcast + history. The client renders a quoted preview by
   // resolving this id against its loaded messages.
   int64 reply_to = 9;
+  // Embedded parent preview (Discord-style referenced message): the parent's
+  // author + content, resolved server-side on broadcast and history so the
+  // client can render the quoted preview even when the parent is far outside
+  // the loaded window. Empty sender with reply_to>0 = parent was deleted.
+  string reply_to_sender = 10;
+  string reply_to_content = 11;
 }
 
 message Attachment {
@@ -1545,6 +1555,10 @@ message DmHistoryMessage {
   int64  timestamp = 4;
   int64  edited_at = 5;   // unix seconds; 0 = never edited
   int64  reply_to = 6;    // id of the DM this replies to; 0 = not a reply
+  // Embedded parent preview — see ChannelMessage.reply_to_sender/-content.
+  // Empty sender with reply_to>0 = parent was deleted.
+  string reply_to_sender = 7;
+  string reply_to_content = 8;
 }
 message DmHistoryRes {
   string peer = 1;

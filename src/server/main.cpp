@@ -288,6 +288,22 @@ private:
                 return;
             }
 
+            // Validate + resolve the reply parent within THIS conversation
+            // before persisting — a forged reply_to must neither persist nor
+            // leak another conversation's content. Not found → not a reply.
+            // When valid, embed the parent's author + content so both sides
+            // render the quoted preview without needing the parent loaded.
+            if (dmsg->reply_to() > 0) {
+                auto parent = auth_manager_.fetchDmPreview(
+                    username_, dmsg->recipient(), dmsg->reply_to());
+                if (!parent) {
+                    dmsg->set_reply_to(0);
+                } else {
+                    dmsg->set_reply_to_sender(parent->first);
+                    dmsg->set_reply_to_content(parent->second);
+                }
+            }
+
             // Persist before delivery. On DB failure, surface to
             // sender as a generic "couldn't deliver" — the message
             // is genuinely lost in that branch (rare).
@@ -403,6 +419,8 @@ private:
                 msg->set_timestamp(r.timestamp);
                 msg->set_edited_at(r.edited_at);
                 msg->set_reply_to(r.reply_to);
+                msg->set_reply_to_sender(r.reply_to_sender);
+                msg->set_reply_to_content(r.reply_to_content);
             }
 
             std::string s;

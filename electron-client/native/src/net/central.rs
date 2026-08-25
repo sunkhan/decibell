@@ -141,6 +141,9 @@ impl CentralClient {
                 id: 0,
                 edited_at: 0,
                 reply_to: 0,
+                // Server-resolved on broadcast; never set by the client.
+                reply_to_sender: String::new(),
+                reply_to_content: String::new(),
             }),
             token,
         );
@@ -359,6 +362,8 @@ impl CentralClient {
                         nonce: String::new(),
                         edited_at: msg.edited_at,
                         reply_to: msg.reply_to,
+                        reply_to_sender: msg.reply_to_sender,
+                        reply_to_content: msg.reply_to_content,
                     });
                 }
                 Some(packet::Payload::PresenceUpdate(update)) => {
@@ -481,6 +486,8 @@ impl CentralClient {
                             timestamp: m.timestamp,
                             edited_at: m.edited_at,
                             reply_to: m.reply_to,
+                            reply_to_sender: m.reply_to_sender,
+                            reply_to_content: m.reply_to_content,
                         })
                         .collect();
                     events::emit_dm_history_received(events::DmHistoryReceivedPayload {

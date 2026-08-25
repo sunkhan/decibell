@@ -56,6 +56,11 @@ export interface DmMessage {
   editedAt?: number;
   /// Id of the DM this replies to; 0/absent = not a reply.
   replyTo?: number;
+  /// Server-embedded parent preview (author + content), so the quoted reply
+  /// renders even when the parent isn't in the loaded window. Absent with
+  /// replyTo>0 = parent was deleted (or a pre-embed server).
+  replyToSender?: string;
+  replyToContent?: string;
   /// Server-assigned id from DirectMessage.id. Present on messages
   /// that came via DIRECT_MSG after the persistent-DMs feature
   /// shipped, and on every message in DmHistoryRes. Optional /
@@ -279,6 +284,11 @@ export interface Message {
   editedAt?: number;
   /// Id of the message this replies to; 0/absent = not a reply.
   replyTo?: number;
+  /// Server-embedded parent preview (author + content), so the quoted reply
+  /// renders even when the parent isn't in the loaded window. Absent with
+  /// replyTo>0 = parent was deleted (or a pre-embed server).
+  replyToSender?: string;
+  replyToContent?: string;
 }
 
 export interface ChannelInfo {
@@ -486,6 +496,9 @@ export interface MessageReceivedPayload {
   nonce: string;
   editedAt: number;
   replyTo: number;
+  /// Server-embedded parent preview. Empty sender with replyTo>0 = deleted.
+  replyToSender: string;
+  replyToContent: string;
 }
 
 export interface ChannelHistoryReceivedPayload {
@@ -501,6 +514,9 @@ export interface ChannelHistoryReceivedPayload {
     nonce: string;
     editedAt: number;
     replyTo: number;
+    /// Server-embedded parent preview. Empty sender with replyTo>0 = deleted.
+    replyToSender: string;
+    replyToContent: string;
   }>;
   hasMore: boolean;
   hasMoreAfter: boolean;

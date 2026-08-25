@@ -1404,6 +1404,8 @@ def test_message_reply():
     bc = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.content == "a reply")
     check("reply broadcast carries reply_to", bc is not None and bc.channel_msg.reply_to == pid)
     check("reply_to persisted", sql("select reply_to from messages where id=?", bc.channel_msg.id) == [(pid,)])
+    check("broadcast embeds parent preview",
+          bc.channel_msg.reply_to_sender == "alice" and bc.channel_msg.reply_to_content == "parent")
 
     # A reply_to pointing at a nonexistent message is dropped to 0.
     rp.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="bad ref", reply_to=999999))
@@ -1417,6 +1419,20 @@ def test_message_reply():
     h = rp.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2)
     replies = [m for m in h.channel_history_res.messages if m.content == "a reply"]
     check("history shows reply_to", len(replies) == 1 and replies[0].reply_to == pid)
+    check("history embeds parent preview",
+          len(replies) == 1 and replies[0].reply_to_sender == "alice"
+          and replies[0].reply_to_content == "parent")
+
+    # Deleted parent → history still carries reply_to but the embedded sender
+    # comes back empty (the client renders an unclickable tombstone).
+    sql("delete from messages where id=?", pid)
+    rp.flush(0.3)
+    rp.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", limit=50))
+    h = rp.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2)
+    replies = [m for m in h.channel_history_res.messages if m.content == "a reply"]
+    check("deleted parent -> empty embedded sender",
+          len(replies) == 1 and replies[0].reply_to == pid
+          and replies[0].reply_to_sender == "" and replies[0].reply_to_content == "")
     rp.close(); owner.close()
 
 

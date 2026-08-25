@@ -54,6 +54,11 @@ struct DbMessage {
     int64_t timestamp = 0;
     int64_t edited_at = 0;   // unix seconds; 0 = never edited
     int64_t reply_to = 0;    // parent message id; 0 = not a reply
+    // Embedded parent preview, resolved by LEFT JOIN at fetch time so reply
+    // previews render even when the parent is outside the client's loaded
+    // window. Empty sender with reply_to>0 = parent was deleted.
+    std::string reply_to_sender;
+    std::string reply_to_content;
 };
 
 struct DbAttachment {
@@ -602,6 +607,12 @@ public:
     /// Returns the sender username of the given message in this channel,
     /// or nullopt if no such row exists.
     std::optional<std::string> get_message_sender(
+        const std::string& channel_id, int64_t message_id) const;
+
+    /// (sender, content) of the given message in this channel, or nullopt if
+    /// no such row exists. Used to validate a reply_to and embed the parent
+    /// preview on the CHANNEL_MSG broadcast.
+    std::optional<std::pair<std::string, std::string>> get_message_preview(
         const std::string& channel_id, int64_t message_id) const;
 
     /// Edits a message's content in place, enforcing ownership in SQL

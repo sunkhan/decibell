@@ -207,6 +207,7 @@ export default function ChatPanel() {
   // channel-switch effect to persist the OUTGOING channel's position
   // before activeChannelId flips.
   const topIndexRef = useRef(0);
+  const endIndexRef = useRef(0);
   const atBottomRef = useRef(true);
 
   // Keeps the viewport anchored when older history pages in at the top. The
@@ -750,14 +751,24 @@ export default function ChatPanel() {
     (id: number) => {
       const pos = messages.findIndex((m) => m.id === id);
       if (pos >= 0) {
+        // Nearby (rendered or almost): smooth-scroll — pleasant for short
+        // hops. Far: smooth scrollToIndex over unmeasured rows is
+        // approximate (Virtuoso estimates unrendered heights), which landed
+        // wrong on the first click — remount centered on the target instead
+        // (exact, same mechanism as the windowed-jump landing).
         // scrollToIndex uses the raw 0-based data index (like
         // initialTopMostItemIndex) — NOT the firstItemIndex-adjusted index
         // that itemContent / rangeChanged report.
-        virtuosoRef.current?.scrollToIndex({
-          index: pos,
-          align: "center",
-          behavior: "smooth",
-        });
+        const NEAR = 5;
+        if (pos >= topIndexRef.current - NEAR && pos <= endIndexRef.current + NEAR) {
+          virtuosoRef.current?.scrollToIndex({
+            index: pos,
+            align: "center",
+            behavior: "smooth",
+          });
+        } else {
+          setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
+        }
         flash(id);
         return;
       }
@@ -870,6 +881,7 @@ export default function ChatPanel() {
               const start = range.startIndex - firstItemIndex;
               const end = range.endIndex - firstItemIndex;
               topIndexRef.current = start;
+              endIndexRef.current = end;
               // Warm the previews either side of the window so a row's
               // image is already cached by the time it mounts.
               prefetchAround(
@@ -927,10 +939,16 @@ export default function ChatPanel() {
                 canReply={typeof message.id === "number" && message.id > 0}
                 onReply={startReply}
                 replyToSender={
-                  message.replyTo ? messagesById.get(message.replyTo)?.sender : undefined
+                  message.replyTo
+                    ? messagesById.get(message.replyTo)?.sender ??
+                      (message.replyToSender || undefined)
+                    : undefined
                 }
                 replyToContent={
-                  message.replyTo ? messagesById.get(message.replyTo)?.content : undefined
+                  message.replyTo
+                    ? messagesById.get(message.replyTo)?.content ??
+                      (message.replyToContent || undefined)
+                    : undefined
                 }
                 onJumpToReply={jumpToMessage}
                 highlighted={highlightId === message.id && message.id > 0}

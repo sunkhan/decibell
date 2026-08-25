@@ -711,11 +711,15 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
         // before_id=0 means "latest". For real cursoring we filter on
         // id < before_id. Either way the pair_idx covers the predicate.
         const char* sql =
-            "SELECT id, sender, content, sent_at, edited_at, reply_to FROM dm_messages "
-            "WHERE LEAST(sender, recipient) = LEAST($1, $2) "
-            "  AND GREATEST(sender, recipient) = GREATEST($1, $2) "
-            "  AND ($3 = 0 OR id < $3) "
-            "ORDER BY id DESC LIMIT $4";
+            "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
+            "COALESCE(p.sender, ''), COALESCE(p.content, '') "
+            "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
+            "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
+            "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
+            "WHERE LEAST(m.sender, m.recipient) = LEAST($1, $2) "
+            "  AND GREATEST(m.sender, m.recipient) = GREATEST($1, $2) "
+            "  AND ($3 = 0 OR m.id < $3) "
+            "ORDER BY m.id DESC LIMIT $4";
         pqxx::result rs = txn.exec_params(sql, user_a, user_b, before_id, fetch_n);
         txn.commit();
 
@@ -728,6 +732,8 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
                 row[3].as<int64_t>(),
                 row[4].as<int64_t>(),
                 row[5].as<int64_t>(),
+                row[6].as<std::string>(),
+                row[7].as<std::string>(),
             };
             out.push_back(std::move(r));
         }
@@ -756,19 +762,27 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
         const int32_t fetch_n = clamped + 1;
         // Older side incl. target (id <= around), newest-first.
         const char* sql_older =
-            "SELECT id, sender, content, sent_at, edited_at, reply_to FROM dm_messages "
-            "WHERE LEAST(sender, recipient) = LEAST($1, $2) "
-            "  AND GREATEST(sender, recipient) = GREATEST($1, $2) "
-            "  AND id <= $3 "
-            "ORDER BY id DESC LIMIT $4";
+            "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
+            "COALESCE(p.sender, ''), COALESCE(p.content, '') "
+            "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
+            "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
+            "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
+            "WHERE LEAST(m.sender, m.recipient) = LEAST($1, $2) "
+            "  AND GREATEST(m.sender, m.recipient) = GREATEST($1, $2) "
+            "  AND m.id <= $3 "
+            "ORDER BY m.id DESC LIMIT $4";
         pqxx::result older = txn.exec_params(sql_older, user_a, user_b, around_id, fetch_n);
         // Newer side (id > around), oldest-first.
         const char* sql_newer =
-            "SELECT id, sender, content, sent_at, edited_at, reply_to FROM dm_messages "
-            "WHERE LEAST(sender, recipient) = LEAST($1, $2) "
-            "  AND GREATEST(sender, recipient) = GREATEST($1, $2) "
-            "  AND id > $3 "
-            "ORDER BY id ASC LIMIT $4";
+            "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
+            "COALESCE(p.sender, ''), COALESCE(p.content, '') "
+            "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
+            "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
+            "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
+            "WHERE LEAST(m.sender, m.recipient) = LEAST($1, $2) "
+            "  AND GREATEST(m.sender, m.recipient) = GREATEST($1, $2) "
+            "  AND m.id > $3 "
+            "ORDER BY m.id ASC LIMIT $4";
         pqxx::result newer = txn.exec_params(sql_newer, user_a, user_b, around_id, fetch_n);
         txn.commit();
 
@@ -779,6 +793,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
                 row[0].as<int64_t>(), row[1].as<std::string>(),
                 row[2].as<std::string>(), row[3].as<int64_t>(),
                 row[4].as<int64_t>(), row[5].as<int64_t>(),
+                row[6].as<std::string>(), row[7].as<std::string>(),
             });
         }
         if (static_cast<int32_t>(older_vec.size()) > clamped) {
@@ -795,6 +810,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
                 row[0].as<int64_t>(), row[1].as<std::string>(),
                 row[2].as<std::string>(), row[3].as<int64_t>(),
                 row[4].as<int64_t>(), row[5].as<int64_t>(),
+                row[6].as<std::string>(), row[7].as<std::string>(),
             });
         }
         if (static_cast<int32_t>(newer_vec.size()) > clamped) {
@@ -820,11 +836,15 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
         const int32_t clamped = limit > 0 ? std::min(limit, 200) : 50;
         const int32_t fetch_n = clamped + 1;
         const char* sql =
-            "SELECT id, sender, content, sent_at, edited_at, reply_to FROM dm_messages "
-            "WHERE LEAST(sender, recipient) = LEAST($1, $2) "
-            "  AND GREATEST(sender, recipient) = GREATEST($1, $2) "
-            "  AND id > $3 "
-            "ORDER BY id ASC LIMIT $4";
+            "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
+            "COALESCE(p.sender, ''), COALESCE(p.content, '') "
+            "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
+            "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
+            "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
+            "WHERE LEAST(m.sender, m.recipient) = LEAST($1, $2) "
+            "  AND GREATEST(m.sender, m.recipient) = GREATEST($1, $2) "
+            "  AND m.id > $3 "
+            "ORDER BY m.id ASC LIMIT $4";
         pqxx::result rs = txn.exec_params(sql, user_a, user_b, after_id, fetch_n);
         txn.commit();
 
@@ -834,6 +854,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
                 row[0].as<int64_t>(), row[1].as<std::string>(),
                 row[2].as<std::string>(), row[3].as<int64_t>(),
                 row[4].as<int64_t>(), row[5].as<int64_t>(),
+                row[6].as<std::string>(), row[7].as<std::string>(),
             });
         }
         if (static_cast<int32_t>(out.size()) > clamped) {
@@ -844,6 +865,26 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] fetchDmHistoryAfter: " << e.what() << "\n";
         return {};
+    }
+}
+
+std::optional<std::pair<std::string, std::string>> AuthManager::fetchDmPreview(
+    const std::string& user_a, const std::string& user_b, int64_t message_id) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "SELECT sender, content FROM dm_messages "
+            "WHERE id = $3 "
+            "  AND LEAST(sender, recipient) = LEAST($1, $2) "
+            "  AND GREATEST(sender, recipient) = GREATEST($1, $2)",
+            user_a, user_b, message_id);
+        txn.commit();
+        if (rs.empty()) return std::nullopt;
+        return std::make_pair(rs[0][0].as<std::string>(), rs[0][1].as<std::string>());
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] fetchDmPreview: " << e.what() << "\n";
+        return std::nullopt;
     }
 }
 
