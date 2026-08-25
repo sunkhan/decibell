@@ -74,6 +74,29 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
     }
   };
 
+  // Public listing (MANAGE_SERVER): discovery + invite-less join. Reflected
+  // from the store, which the server_meta_updated broadcast keeps live.
+  const publicListing = useChatStore((s) => s.serverPublicListing[serverId] ?? false);
+  const [savingPublic, setSavingPublic] = useState(false);
+  const togglePublic = async () => {
+    if (!canManageServer || savingPublic) return;
+    setSavingPublic(true);
+    try {
+      // Send the current authoritative name/description so flipping visibility
+      // never commits an unsaved rename or blanks the name.
+      await invoke("update_server", {
+        serverId,
+        name: serverName,
+        description: serverDescription,
+        publicListing: !publicListing,
+      });
+    } catch (err) {
+      toast.error("Couldn't update visibility", String(err));
+    } finally {
+      setSavingPublic(false);
+    }
+  };
+
   // Ownership transfer (owner only, typed confirmation).
   const [transferTarget, setTransferTarget] = useState("");
   const [transferConfirm, setTransferConfirm] = useState("");
@@ -170,6 +193,30 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
                   className="rounded-md bg-accent px-4 py-2 text-[13px] font-medium text-on-accent transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {savingMeta ? "Saving…" : "Save"}
+                </button>
+              </div>
+              <div className="mt-1 flex items-start justify-between gap-3 border-t border-border-divider pt-3">
+                <div className="min-w-0">
+                  <div className="text-[13px] font-medium text-text-primary">Public listing</div>
+                  <div className="mt-0.5 text-[12px] leading-[1.45] text-text-muted">
+                    List this server in Discover so anyone can find and join it without an
+                    invite. Off keeps it hidden and invite-only.
+                  </div>
+                </div>
+                <button
+                  role="switch"
+                  aria-checked={publicListing}
+                  onClick={togglePublic}
+                  disabled={savingPublic}
+                  className={`relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+                    publicListing ? "bg-accent" : "bg-bg-lighter"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+                      publicListing ? "translate-x-[18px]" : "translate-x-0.5"
+                    }`}
+                  />
                 </button>
               </div>
             </>

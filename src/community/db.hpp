@@ -282,6 +282,12 @@ public:
     // In-app server rename (MANAGE_SERVER). The DB is the source of truth;
     // env vars only seed a fresh DB.
     void set_server_meta(const std::string& name, const std::string& description);
+    // Public listing (MANAGE_SERVER): when true the server opts into the
+    // central discovery directory and accepts invite-less joins; when false
+    // it's hidden and invite-only. Persisted in server_meta; defaults false
+    // (invite-only) on a fresh/upgraded DB.
+    bool public_listing() const;
+    void set_public_listing(bool on);
     // Ownership transfer: new owner must be a member. Invalidates all
     // permission caches (owner is resolved from server_meta).
     bool transfer_ownership(const std::string& new_owner);

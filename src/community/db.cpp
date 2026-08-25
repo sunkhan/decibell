@@ -806,6 +806,16 @@ void CommunityDb::set_server_meta(const std::string& name, const std::string& de
     set_meta_("server_description", description);
 }
 
+bool CommunityDb::public_listing() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return get_meta_("public_listing") == "1";
+}
+
+void CommunityDb::set_public_listing(bool on) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    set_meta_("public_listing", on ? "1" : "0");
+}
+
 bool CommunityDb::transfer_ownership(const std::string& new_owner) {
     std::lock_guard<std::mutex> lock(mutex_);
     {

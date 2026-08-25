@@ -198,10 +198,16 @@ export interface UpdateServerArgs {
   serverId: string
   name: string
   description: string
+  /**
+   * Optional public-listing toggle; omit to leave it unchanged on a
+   * name/description-only edit.
+   */
+  publicListing?: boolean
 }
 /**
- * MANAGE_SERVER: rename / re-describe the server. Result arrives as
- * server_update_responded; everyone gets server_meta_updated.
+ * MANAGE_SERVER: rename / re-describe the server and/or toggle public
+ * listing. Result arrives as server_update_responded; everyone gets
+ * server_meta_updated.
  */
 export declare function updateServer(args: UpdateServerArgs): Promise<void>
 export interface ListAuditLogArgs {
@@ -211,6 +217,27 @@ export interface ListAuditLogArgs {
   limit?: number
 }
 export declare function listAuditLog(args: ListAuditLogArgs): Promise<void>
+export interface StorageInfoArgs {
+  serverId: string
+}
+/**
+ * MANAGE_SERVER: fetch host disk state + this server's footprint. Result
+ * arrives as storage_info_received.
+ */
+export declare function getStorageInfo(args: StorageInfoArgs): Promise<void>
+export interface SetStorageMinFreeArgs {
+  serverId: string
+  /**
+   * Minimum free bytes to keep on the store's volume; clamped server-side
+   * to [0, volume capacity].
+   */
+  minFreeBytes: number
+}
+/**
+ * MANAGE_SERVER: set the upload headroom. Server replies with a fresh
+ * storage_info_received reflecting the applied (clamped) value.
+ */
+export declare function setStorageMinFree(args: SetStorageMinFreeArgs): Promise<void>
 export interface TimeoutMemberArgs {
   serverId: string
   username: string

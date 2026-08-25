@@ -570,6 +570,10 @@ message CommunityAuthResponse {
   // central directory / memberships use, so the server doesn't exist
   // twice in the UI. 0 = not yet learned (client keeps its own key).
   int64 server_id = 10;
+  // Whether this server is in the public directory + accepts invite-less
+  // joins. Only actionable by MANAGE_SERVER holders (the settings toggle),
+  // but sent to everyone so the state is consistent.
+  bool public_listing = 11;
 }
 
 message ChannelMessage {
@@ -946,6 +950,10 @@ message ServerHeartbeat {
   // sha256-hex of this community's TLS certificate (DER). Central stores
   // it and hands it to clients so they can pin the community connection.
   string cert_fingerprint = 7;
+  // When true the community opts into the public directory (discovery list)
+  // and accepts invite-less joins; when false central hides it from the
+  // directory and it stays invite-only. Owner-controlled, DB source of truth.
+  bool public_listing = 8;
 }
 
 // --- Invites + Membership ---
@@ -1215,6 +1223,7 @@ message ServerMetaUpdate {
   string server_name = 1;
   string server_description = 2;
   string owner_username = 3;
+  bool public_listing = 4;
 }
 
 message MembershipRevoked {
@@ -1231,6 +1240,9 @@ message MembershipRevoked {
 message ServerUpdateRequest {
   string name = 1;          // ≤ 64 bytes, non-empty
   string description = 2;   // ≤ 512 bytes
+  // Optional so a name/description edit doesn't reset it; present only when
+  // the public-listing toggle is being changed.
+  optional bool public_listing = 3;
 }
 
 message ServerUpdateResponse {

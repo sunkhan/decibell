@@ -923,45 +923,60 @@ private:
             }
             if (!member) {
                 if (invite_code.empty()) {
-                    send_auth_response(false,
-                        "Membership required. An invite code is needed to join this server.",
-                        "not_member");
-                    manager_.leave(shared_from_this());
-                    close_after_flush();
-                    return;
-                }
-                chatproj::DbInvite consumed;
-                auto result = db->redeem_invite(invite_code, candidate_username, candidate_uid, &consumed);
-                switch (result) {
-                    case chatproj::InviteResult::Ok:
-                        if (!db->add_member(candidate_username, candidate_uid)) {
-                            send_auth_response(false, "Failed to record membership.", "auth");
+                    // Public servers accept invite-less joins straight from the
+                    // discovery list; private servers stay invite-only. (Bans
+                    // were already rejected above, so a public join can't admit
+                    // a banned user.)
+                    if (!db->public_listing()) {
+                        send_auth_response(false,
+                            "Membership required. An invite code is needed to join this server.",
+                            "not_member");
+                        manager_.leave(shared_from_this());
+                        close_after_flush();
+                        return;
+                    }
+                    if (!db->add_member(candidate_username, candidate_uid)) {
+                        send_auth_response(false, "Failed to record membership.", "auth");
+                        manager_.leave(shared_from_this());
+                        close_after_flush();
+                        return;
+                    }
+                    std::cout << "[Community] " << candidate_username
+                              << " joined public server directly\n";
+                } else {
+                    chatproj::DbInvite consumed;
+                    auto result = db->redeem_invite(invite_code, candidate_username, candidate_uid, &consumed);
+                    switch (result) {
+                        case chatproj::InviteResult::Ok:
+                            if (!db->add_member(candidate_username, candidate_uid)) {
+                                send_auth_response(false, "Failed to record membership.", "auth");
+                                manager_.leave(shared_from_this());
+                                close_after_flush();
+                                return;
+                            }
+                            std::cout << "[Community] " << candidate_username
+                                      << " joined via invite " << invite_code << "\n";
+                            break;
+                        case chatproj::InviteResult::AlreadyMember:
+                            // Race — someone was added between is_member and redeem.
+                            // Accept the connection; nothing more to do.
+                            break;
+                        case chatproj::InviteResult::Banned:
+                            send_auth_response(false, "You are banned from this server.", "banned");
                             manager_.leave(shared_from_this());
                             close_after_flush();
                             return;
-                        }
-                        std::cout << "[Community] " << candidate_username
-                                  << " joined via invite " << invite_code << "\n";
-                        break;
-                    case chatproj::InviteResult::AlreadyMember:
-                        // Race — someone was added between is_member and redeem.
-                        // Accept the connection; nothing more to do.
-                        break;
-                    case chatproj::InviteResult::Banned:
-                        send_auth_response(false, "You are banned from this server.", "banned");
-                        manager_.leave(shared_from_this());
-                        close_after_flush();
-                        return;
-                    case chatproj::InviteResult::Unknown:
-                    case chatproj::InviteResult::Expired:
-                    case chatproj::InviteResult::Exhausted:
-                    default:
-                        send_auth_response(false,
-                            "Invite code is invalid, expired, or has been used up.",
-                            "invalid_invite");
-                        manager_.leave(shared_from_this());
-                        close_after_flush();
-                        return;
+                        case chatproj::InviteResult::Unknown:
+                        case chatproj::InviteResult::Expired:
+                        case chatproj::InviteResult::Exhausted:
+                        default:
+                            send_auth_response(false,
+                                "Invite code is invalid, expired, or has been used up.",
+                                "invalid_invite");
+                            manager_.leave(shared_from_this());
+                            close_after_flush();
+                            return;
+                    }
                 }
             }
 
@@ -2646,11 +2661,23 @@ private:
             const std::string desc = chatproj::clamp_utf8(req.description(), 512);
             if (name.empty()) { fail("Server name can't be empty."); return; }
             db->set_server_meta(name, desc);
-            db->add_audit(username_, "server_update", "", "", "name: " + name);
+            std::string details = "name: " + name;
+            // Optional public-listing toggle (absent on a name/description-only
+            // edit, so it isn't reset). Takes effect in the central directory
+            // within one heartbeat; the auth gate reads it live.
+            if (req.has_public_listing()) {
+                db->set_public_listing(req.public_listing());
+                details += req.public_listing() ? "; public: on" : "; public: off";
+            }
+            db->add_audit(username_, "server_update", "", "", details);
             res->set_success(true);
             send_packet(p);
             manager_.broadcast_server_meta();
-            std::cout << "[Community] Server renamed to '" << name << "' by " << username_ << "\n";
+            std::cout << "[Community] Server updated ('" << name << "'"
+                      << (req.has_public_listing()
+                              ? (req.public_listing() ? ", public on" : ", public off")
+                              : "")
+                      << ") by " << username_ << "\n";
         }
 
         // --- AUDIT LOG ---
@@ -2971,6 +2998,7 @@ private:
                 res->set_server_name(db->server_name());
                 res->set_server_description(db->server_description());
                 res->set_owner_username(db->owner());
+                res->set_public_listing(db->public_listing());
             }
             res->set_max_attachment_bytes(manager_.max_attachment_bytes());
             res->set_attachment_port(manager_.attachment_port());
@@ -3559,6 +3587,7 @@ void SessionManager::broadcast_server_meta() {
     m->set_server_name(db_->server_name());
     m->set_server_description(db_->server_description());
     m->set_owner_username(db_->owner());
+    m->set_public_listing(db_->public_listing());
     broadcast_to_members(p);
 }
 
@@ -5037,6 +5066,7 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
     if (auto* db = manager.db()) {
         hb->set_name(db->server_name());
         hb->set_description(db->server_description());
+        hb->set_public_listing(db->public_listing());
     }
     hb->set_host_ip(public_ip);
     hb->set_port(community_port);

@@ -193,6 +193,7 @@ export function useServerEvents() {
           description: p.serverDescription,
         });
         useChatStore.getState().setServerOwner(p.serverId, p.ownerUsername);
+        useChatStore.getState().setServerPublicListing(p.serverId, p.publicListing);
         useChatStore.getState().setServerAttachmentConfig(
           p.serverId,
           p.attachmentPort,
@@ -306,6 +307,7 @@ export function useServerEvents() {
         const chat = useChatStore.getState();
         chat.setServerMeta(p.serverId, { name: p.serverName, description: p.serverDescription });
         chat.setServerOwner(p.serverId, p.ownerUsername);
+        chat.setServerPublicListing(p.serverId, p.publicListing);
         // Keep the ServerBar tile's name in sync too.
         useChatStore.setState((state) => ({
           servers: state.servers.map((srv) =>

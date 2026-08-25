@@ -134,6 +134,13 @@ void AuthManager::initializeDatabase() {
             "ADD COLUMN IF NOT EXISTS cert_fingerprint VARCHAR(64) "
             "NOT NULL DEFAULT ''"
         );
+        // Public-listing opt-in reported in the heartbeat. Only servers with
+        // is_public = TRUE appear in the discovery directory; default FALSE so
+        // a server is invite-only until its owner opts in.
+        txn.exec(
+            "ALTER TABLE community_servers "
+            "ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT FALSE"
+        );
 
         txn.commit();
     } catch (const std::exception& e) {
@@ -302,7 +309,8 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
             "SELECT id, name, description, host_ip, port, member_count, "
             "       COALESCE(picture_version, ''), COALESCE(cert_fingerprint, '') "
             "FROM community_servers "
-            "WHERE last_heartbeat > NOW() - INTERVAL '5 minutes' "
+            "WHERE is_public = TRUE "
+            "  AND last_heartbeat > NOW() - INTERVAL '5 minutes' "
             "ORDER BY member_count DESC LIMIT 50"
         );
 
@@ -326,7 +334,8 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
 
 int AuthManager::upsertCommunityServer(const std::string& name, const std::string& description,
                                        const std::string& host_ip, int port, int member_count,
-                                       int64_t known_id, const std::string& cert_fingerprint) {
+                                       int64_t known_id, const std::string& cert_fingerprint,
+                                       bool is_public) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
@@ -344,9 +353,10 @@ int AuthManager::upsertCommunityServer(const std::string& name, const std::strin
             pqxx::result up = txn.exec_params(
                 "UPDATE community_servers "
                 "SET name = $1, description = $2, host_ip = $3, port = $4, "
-                "    member_count = $5, last_heartbeat = NOW(), cert_fingerprint = $7 "
+                "    member_count = $5, last_heartbeat = NOW(), cert_fingerprint = $7, "
+                "    is_public = $8 "
                 "WHERE id = $6 RETURNING id",
-                name, description, host_ip, port, member_count, known_id, cert_fingerprint);
+                name, description, host_ip, port, member_count, known_id, cert_fingerprint, is_public);
             if (!up.empty()) {
                 txn.commit();
                 return up[0][0].as<int>();
@@ -357,14 +367,15 @@ int AuthManager::upsertCommunityServer(const std::string& name, const std::strin
         // Schema for community_servers (incl. the picture columns) is
         // created once in initializeDatabase — no DDL on the heartbeat path.
         pqxx::result rs = txn.exec_params(
-            "INSERT INTO community_servers (name, description, host_ip, port, member_count, last_heartbeat, cert_fingerprint) "
-            "VALUES ($1, $2, $3, $4, $5, NOW(), $6) "
+            "INSERT INTO community_servers (name, description, host_ip, port, member_count, last_heartbeat, cert_fingerprint, is_public) "
+            "VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7) "
             "ON CONFLICT (host_ip, port) DO UPDATE SET "
             "name = EXCLUDED.name, description = EXCLUDED.description, "
             "member_count = EXCLUDED.member_count, last_heartbeat = NOW(), "
-            "cert_fingerprint = EXCLUDED.cert_fingerprint "
+            "cert_fingerprint = EXCLUDED.cert_fingerprint, "
+            "is_public = EXCLUDED.is_public "
             "RETURNING id",
-            name, description, host_ip, port, member_count, cert_fingerprint
+            name, description, host_ip, port, member_count, cert_fingerprint, is_public
         );
         txn.commit();
         if (rs.empty()) return 0;

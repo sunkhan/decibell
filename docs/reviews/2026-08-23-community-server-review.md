@@ -209,6 +209,23 @@ standalone build + e2e harness (now 188 checks; new `test_m1_m4_timeout`,
 - **X4**: `HEAD` on a ready attachment now applies the same `VIEW_CHANNEL` gate as `GET`, so an
   overwrite-hidden channel's attachments can't be probed for existence/size via HEAD.
 
+**Public-listing / discovery join (2026-08-25) ✅** — cross-stack (proto → community →
+central directory → client), server side covered by 7 new e2e checks (205 total):
+
+- Each community has a **public listing** toggle (owner/MANAGE_SERVER), persisted in
+  `server_meta`, default **off** (invite-only). Reported in the heartbeat.
+- Central stores it as `community_servers.is_public` and the discovery directory
+  (`getCommunityServers`) now returns **only** public, live servers.
+- Community auth gate: when a non-member connects with no invite and the server is public,
+  they **join directly** (bans still rejected); private servers stay invite-only
+  (`not_member`). Extends `ServerUpdateRequest` with `optional public_listing`; carried on
+  `ServerHeartbeat`, `ServerMetaUpdate`, `CommunityAuthResponse`.
+- Client: a toggle in the Overview settings tab (`update_server` with `publicListing`), a
+  `serverPublicListing` store slice fed by `community_auth_responded` / `server_meta_updated`.
+  The browse-view tile click already calls `connect_to_community` with no invite, so a public
+  server is now join-on-click; only public servers appear in the list, so every tile is
+  joinable. (Central compiled by inspection here — no local libpqxx.)
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

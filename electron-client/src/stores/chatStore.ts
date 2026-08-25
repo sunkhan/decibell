@@ -50,6 +50,7 @@ interface ChatState {
   serverPictures: Record<string, string>;
   serverMeta: Record<string, { name: string; description: string }>;
   serverOwner: Record<string, string>;
+  serverPublicListing: Record<string, boolean>;
   membersByServer: Record<string, ServerMember[]>;
   bansByServer: Record<string, BanInfo[]>;
   /// Paging / revision state for membersByServer (roster protocol).
@@ -135,6 +136,7 @@ interface ChatState {
     meta: { name: string; description: string },
   ) => void;
   setServerOwner: (serverId: string, owner: string) => void;
+  setServerPublicListing: (serverId: string, on: boolean) => void;
   /// Apply one roster page. The first page replaces the list (it carries
   /// every online member); later pages append offline members.
   applyMemberPage: (
@@ -316,6 +318,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   serverPictures: {},
   serverMeta: {},
   serverOwner: {},
+  serverPublicListing: {},
   membersByServer: {},
   bansByServer: {},
   memberRosterMeta: {},
@@ -451,6 +454,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setServerOwner: (serverId, owner) =>
     set((state) => ({ serverOwner: { ...state.serverOwner, [serverId]: owner } })),
+
+  setServerPublicListing: (serverId, on) =>
+    set((state) => ({
+      serverPublicListing: { ...state.serverPublicListing, [serverId]: on },
+    })),
 
   applyMemberPage: (serverId, members, meta) =>
     set((state) => {
@@ -774,6 +782,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       serverPictures: {},
       serverMeta: {},
       serverOwner: {},
+      serverPublicListing: {},
       membersByServer: {},
       bansByServer: {},
       memberRosterMeta: {},

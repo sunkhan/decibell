@@ -51,7 +51,8 @@ public:
     int upsertCommunityServer(const std::string& name, const std::string& description,
                               const std::string& host_ip, int port, int member_count,
                               int64_t known_id = 0,
-                              const std::string& cert_fingerprint = "");
+                              const std::string& cert_fingerprint = "",
+                              bool is_public = false);
 
     // Invite lookup (community servers register invites here so clients can
     // redeem a raw code without knowing the hosting server's host:port).

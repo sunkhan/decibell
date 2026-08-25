@@ -518,6 +518,7 @@ pub struct CommunityAuthRespondedPayload {
     pub owner_username: String,
     pub attachment_port: i32,
     pub max_attachment_bytes: i64,
+    pub public_listing: bool,
 }
 
 // ── Emit helpers ──────────────────────────────────────────────────
@@ -740,6 +741,7 @@ pub struct ServerMetaUpdatedPayload {
     pub server_name: String,
     pub server_description: String,
     pub owner_username: String,
+    pub public_listing: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -501,6 +501,7 @@ impl CommunityClient {
                         owner_username: resp.owner_username,
                         attachment_port: resp.attachment_port,
                         max_attachment_bytes: resp.max_attachment_bytes,
+                        public_listing: resp.public_listing,
                     });
                 }
                 Some(packet::Payload::ChannelMsg(msg)) => {
@@ -708,6 +709,7 @@ impl CommunityClient {
                         server_name: m.server_name,
                         server_description: m.server_description,
                         owner_username: m.owner_username,
+                        public_listing: m.public_listing,
                     });
                 }
                 Some(packet::Payload::ServerUpdateRes(resp)) => {

@@ -65,10 +65,14 @@ pub struct UpdateServerArgs {
     pub server_id: String,
     pub name: String,
     pub description: String,
+    /// Optional public-listing toggle; omit to leave it unchanged on a
+    /// name/description-only edit.
+    pub public_listing: Option<bool>,
 }
 
-/// MANAGE_SERVER: rename / re-describe the server. Result arrives as
-/// server_update_responded; everyone gets server_meta_updated.
+/// MANAGE_SERVER: rename / re-describe the server and/or toggle public
+/// listing. Result arrives as server_update_responded; everyone gets
+/// server_meta_updated.
 #[napi]
 pub async fn update_server(args: UpdateServerArgs) -> napi::Result<()> {
     send_for_server(
@@ -77,6 +81,7 @@ pub async fn update_server(args: UpdateServerArgs) -> napi::Result<()> {
         packet::Payload::ServerUpdateReq(ServerUpdateRequest {
             name: args.name,
             description: args.description,
+            public_listing: args.public_listing,
         }),
     )
     .await

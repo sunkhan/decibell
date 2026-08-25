@@ -1304,6 +1304,45 @@ def test_c2_username_reuse():
     renamed.close(); owner.close()
 
 
+def test_public_join():
+    print("[public] public servers accept invite-less joins; private stay invite-only")
+    owner = Client("alice"); assert auth_ok(owner)[0]; owner.flush(0.3)
+
+    # Default (private): a non-member without an invite is rejected.
+    c = Client("pubj1"); ok, r = auth_ok(c)
+    check("private server rejects invite-less join",
+          not ok and r.community_auth_res.error_code == "not_member"); c.close()
+
+    # Owner turns public listing on.
+    owner.send(pb.Packet.SERVER_UPDATE_REQ,
+               server_update_req=pb.ServerUpdateRequest(name="alice server", description="", public_listing=True))
+    r = owner.wait(pb.Packet.SERVER_UPDATE_RES)
+    check("public listing enabled", r is not None and r.server_update_res.success)
+
+    # A non-member now joins directly, no invite.
+    c = Client("pubj2"); ok, r = auth_ok(c)
+    check("public server accepts invite-less join", ok, r.community_auth_res.error_code if r else None)
+    check("auth response reports public_listing", ok and r.community_auth_res.public_listing is True)
+    check("joiner became a member", sql("select count(*) from members where username='pubj2'") == [(1,)])
+    c.close()
+
+    # Bans still win over public join.
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="pubj2", reason=""))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
+    c = Client("pubj2"); ok, r = auth_ok(c)
+    check("banned user rejected even on a public server",
+          not ok and r.community_auth_res.error_code == "banned"); c.close()
+
+    # Turn it back off → invite-only again.
+    owner.send(pb.Packet.SERVER_UPDATE_REQ,
+               server_update_req=pb.ServerUpdateRequest(name="alice server", description="", public_listing=False))
+    owner.wait(pb.Packet.SERVER_UPDATE_RES)
+    c = Client("pubj3"); ok, r = auth_ok(c)
+    check("private again rejects invite-less join",
+          not ok and r.community_auth_res.error_code == "not_member"); c.close()
+    owner.close()
+
+
 def test_storage():
     print("[storage] MANAGE_SERVER-gated info; editable headroom; 507 when below it")
     owner = Client("alice"); assert auth_ok(owner)[0]; owner.flush(0.5)
@@ -1524,6 +1563,7 @@ if __name__ == "__main__":
         test_v2_private_channel()
         test_v2_overwrite_guards()
         test_roster_deltas()
+        test_public_join()
         test_server_update_and_transfer()
         test_audit_log()
         test_timeouts()

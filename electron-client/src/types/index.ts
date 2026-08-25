@@ -364,6 +364,7 @@ export interface ServerMetaUpdatedPayload {
   serverName: string;
   serverDescription: string;
   ownerUsername: string;
+  publicListing: boolean;
 }
 
 export interface AuditEntry {
@@ -452,6 +453,7 @@ export interface CommunityAuthRespondedPayload {
   ownerUsername: string;
   attachmentPort: number;
   maxAttachmentBytes: number;
+  publicListing: boolean;
 }
 
 export interface ConnectionEventPayload {

@@ -676,7 +676,7 @@ private:
             std::cout << "[Server] Heartbeat from community server: " << hb.name() << " at " << hb.host_ip() << ":" << hb.port() << "\n";
             int server_id = auth_manager_.upsertCommunityServer(
                 hb.name(), hb.description(), hb.host_ip(), hb.port(), hb.member_count(),
-                hb.server_id(), hb.cert_fingerprint());
+                hb.server_id(), hb.cert_fingerprint(), hb.public_listing());
 
             // Auto-rejoin: reply with the assigned server_id so the
             // community can populate Membership{Register,Revoke}Req on
