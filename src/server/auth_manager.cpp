@@ -742,6 +742,106 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
     }
 }
 
+std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
+    const std::string& user_a, const std::string& user_b,
+    int64_t around_id, int32_t limit,
+    bool& has_more_before, bool& has_more_after) {
+    has_more_before = false;
+    has_more_after = false;
+    std::vector<DmHistoryRow> out;
+    auto toRow = [](const auto& row) {
+        return DmHistoryRow{
+            row[0].as<int64_t>(), row[1].as<std::string>(),
+            row[2].as<std::string>(), row[3].as<int64_t>(),
+            row[4].as<int64_t>(), row[5].as<int64_t>(),
+        };
+    };
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        const int32_t clamped = limit > 0 ? std::min(limit, 100) : 25;
+        const int32_t fetch_n = clamped + 1;
+        // Older side incl. target (id <= around), newest-first.
+        const char* sql_older =
+            "SELECT id, sender, content, sent_at, edited_at, reply_to FROM dm_messages "
+            "WHERE LEAST(sender, recipient) = LEAST($1, $2) "
+            "  AND GREATEST(sender, recipient) = GREATEST($1, $2) "
+            "  AND id <= $3 "
+            "ORDER BY id DESC LIMIT $4";
+        pqxx::result older = txn.exec_params(sql_older, user_a, user_b, around_id, fetch_n);
+        // Newer side (id > around), oldest-first.
+        const char* sql_newer =
+            "SELECT id, sender, content, sent_at, edited_at, reply_to FROM dm_messages "
+            "WHERE LEAST(sender, recipient) = LEAST($1, $2) "
+            "  AND GREATEST(sender, recipient) = GREATEST($1, $2) "
+            "  AND id > $3 "
+            "ORDER BY id ASC LIMIT $4";
+        pqxx::result newer = txn.exec_params(sql_newer, user_a, user_b, around_id, fetch_n);
+        txn.commit();
+
+        std::vector<DmHistoryRow> older_vec;
+        older_vec.reserve(older.size());
+        for (const auto& row : older) older_vec.push_back(toRow(row));
+        if (static_cast<int32_t>(older_vec.size()) > clamped) {
+            older_vec.pop_back();
+            has_more_before = true;
+        }
+        // older_vec is newest→oldest; reverse into oldest→newest.
+        out.assign(older_vec.rbegin(), older_vec.rend());
+
+        std::vector<DmHistoryRow> newer_vec;
+        newer_vec.reserve(newer.size());
+        for (const auto& row : newer) newer_vec.push_back(toRow(row));
+        if (static_cast<int32_t>(newer_vec.size()) > clamped) {
+            newer_vec.pop_back();
+            has_more_after = true;
+        }
+        for (auto& r : newer_vec) out.push_back(std::move(r));
+        return out;  // oldest→newest, target included
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] fetchDmHistoryAround: " << e.what() << "\n";
+        return {};
+    }
+}
+
+std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
+    const std::string& user_a, const std::string& user_b,
+    int64_t after_id, int32_t limit, bool& has_more_after) {
+    has_more_after = false;
+    std::vector<DmHistoryRow> out;
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        const int32_t clamped = limit > 0 ? std::min(limit, 200) : 50;
+        const int32_t fetch_n = clamped + 1;
+        const char* sql =
+            "SELECT id, sender, content, sent_at, edited_at, reply_to FROM dm_messages "
+            "WHERE LEAST(sender, recipient) = LEAST($1, $2) "
+            "  AND GREATEST(sender, recipient) = GREATEST($1, $2) "
+            "  AND id > $3 "
+            "ORDER BY id ASC LIMIT $4";
+        pqxx::result rs = txn.exec_params(sql, user_a, user_b, after_id, fetch_n);
+        txn.commit();
+
+        out.reserve(rs.size());
+        for (const auto& row : rs) {
+            out.push_back(DmHistoryRow{
+                row[0].as<int64_t>(), row[1].as<std::string>(),
+                row[2].as<std::string>(), row[3].as<int64_t>(),
+                row[4].as<int64_t>(), row[5].as<int64_t>(),
+            });
+        }
+        if (static_cast<int32_t>(out.size()) > clamped) {
+            out.pop_back();
+            has_more_after = true;
+        }
+        return out;  // oldest→newest
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] fetchDmHistoryAfter: " << e.what() << "\n";
+        return {};
+    }
+}
+
 std::vector<AuthManager::DmConversationPreviewRow>
 AuthManager::fetchDmConversations(const std::string& user) {
     std::vector<DmConversationPreviewRow> out;

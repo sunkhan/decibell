@@ -391,6 +391,10 @@ export interface RequestDmHistoryArgs {
   peer: string
   beforeId: number
   limit: number
+  /** >0: fetch a context window centered on this DM id (windowed jump). */
+  aroundId?: number
+  /** >0: page newer than this DM id (downward pagination). */
+  afterId?: number
 }
 export declare function requestDmHistory(args: RequestDmHistoryArgs): Promise<void>
 export interface MarkDmReadArgs {

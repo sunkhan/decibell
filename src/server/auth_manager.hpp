@@ -131,6 +131,29 @@ public:
                                               int32_t limit,
                                               bool& has_more);
 
+    /// Fetch a context window centered on `around_id` (the target DM):
+    /// up to `limit` messages with id <= around (target included) and up
+    /// to `limit` with id > around. Returned oldest→newest. limit defaults
+    /// to 25 and clamps to [1, 100] per side. has_more_before/after report
+    /// whether messages exist beyond each edge of the window. Used by the
+    /// windowed jump-to-message flow.
+    std::vector<DmHistoryRow> fetchDmHistoryAround(const std::string& user_a,
+                                                   const std::string& user_b,
+                                                   int64_t around_id,
+                                                   int32_t limit,
+                                                   bool& has_more_before,
+                                                   bool& has_more_after);
+
+    /// Fetch up to `limit` messages newer than `after_id` (id > after_id),
+    /// ordered oldest→newest. limit defaults to 50, clamps to [1, 200].
+    /// Downward pagination for the windowed jump flow. has_more_after is
+    /// set if still-newer messages exist.
+    std::vector<DmHistoryRow> fetchDmHistoryAfter(const std::string& user_a,
+                                                  const std::string& user_b,
+                                                  int64_t after_id,
+                                                  int32_t limit,
+                                                  bool& has_more_after);
+
     /// One row per conversation the user is part of, with the most
     /// recent message preview + unread count (messages from peer
     /// with id > dm_read_state.last_read_id).

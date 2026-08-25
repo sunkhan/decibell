@@ -1535,6 +1535,8 @@ message DmHistoryReq {
   string peer = 1;
   int64  before_id = 2;   // 0 = latest
   int32  limit = 3;       // server clamps to 200
+  int64  around_id = 4;   // >0: context window centered on this DM id
+  int64  after_id  = 5;   // >0: page newer than this DM id
 }
 message DmHistoryMessage {
   int64  id = 1;
@@ -1546,8 +1548,11 @@ message DmHistoryMessage {
 }
 message DmHistoryRes {
   string peer = 1;
-  repeated DmHistoryMessage messages = 2;  // newest first
-  bool   has_more = 3;
+  repeated DmHistoryMessage messages = 2;  // newest first (older/present); oldest→newest for around/after windows
+  bool   has_more = 3;         // older messages exist above the returned slice
+  bool   has_more_after = 4;   // newer messages exist below the returned slice
+  int64  around_id = 5;        // echoes the request mode so the client routes the reply
+  int64  after_id  = 6;
 }
 
 message DmMarkReadReq {

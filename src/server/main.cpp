@@ -368,15 +368,33 @@ private:
             if (limit <= 0) limit = 50;
             if (limit > 200) limit = 200;
 
+            // Route by request mode, mirroring the community channel-history
+            // handler: around_id>0 → context window (replace on the client);
+            // after_id>0 → newer page (append); else → older/most-recent page
+            // (prepend). The DB helpers clamp their own limits.
             bool has_more = false;
-            auto rows = auth_manager_.fetchDmHistory(
-                username_, peer, req.before_id(), limit, has_more);
+            bool has_more_after = false;
+            std::vector<AuthManager::DmHistoryRow> rows;
+            if (req.around_id() > 0) {
+                rows = auth_manager_.fetchDmHistoryAround(
+                    username_, peer, req.around_id(), req.limit(),
+                    has_more, has_more_after);
+            } else if (req.after_id() > 0) {
+                rows = auth_manager_.fetchDmHistoryAfter(
+                    username_, peer, req.after_id(), req.limit(), has_more_after);
+            } else {
+                rows = auth_manager_.fetchDmHistory(
+                    username_, peer, req.before_id(), limit, has_more);
+            }
 
             chatproj::Packet response;
             response.set_type(chatproj::Packet::DM_HISTORY_RES);
             auto* res = response.mutable_dm_history_res();
             res->set_peer(peer);
             res->set_has_more(has_more);
+            res->set_has_more_after(has_more_after);
+            res->set_around_id(req.around_id());
+            res->set_after_id(req.after_id());
             for (const auto& r : rows) {
                 auto* msg = res->add_messages();
                 msg->set_id(r.id);

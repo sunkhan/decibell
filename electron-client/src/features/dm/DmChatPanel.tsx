@@ -72,6 +72,20 @@ export default function DmChatPanel() {
   // response arrives via event, not the invoke promise, so the
   // in-flight guard alone can't stop a re-request of the same page.
   const lastRequestedBeforeIdRef = useRef(0);
+  // Downward-pagination twins of the older-history guards, for fetching
+  // NEWER messages (after_id) around a jump target.
+  const loadNewerInFlightRef = useRef(false);
+  const lastRequestedAfterIdRef = useRef(0);
+  // When a jump target isn't loaded, we request an around-window and stash the
+  // target here; the landing effect lands on it once the window arrives.
+  const pendingJumpIdRef = useRef<number | null>(null);
+  // A just-applied jump context window (see ChatPanel for the rationale): epoch
+  // bumps on each jump so Virtuoso remounts centered on targetId. null = normal.
+  const [jumpWindow, setJumpWindow] = useState<{ epoch: number; targetId: number } | null>(null);
+  // True while jump-to-present has cleared the slice and is awaiting the newest
+  // page — shows a loading placeholder instead of the "beginning of
+  // conversation" welcome during the brief refetch.
+  const [presentLoading, setPresentLoading] = useState(false);
 
   // Fire the delete flow for a DM message. Optimistic: snapshot
   // into pendingDmDeletions, remove from the view, fire the native
@@ -163,6 +177,10 @@ export default function DmChatPanel() {
     ? conversations[activeDmUser]
     : null;
   const messages = conversation?.messages ?? [];
+  // "Windowed" = viewing a jumped slice with newer messages below (not at the
+  // live bottom). Drives the jump-to-present pill, followOutput gating, and
+  // downward pagination.
+  const windowed = conversation?.hasMoreAfter === true;
 
   // --- Replies ---
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -178,11 +196,21 @@ export default function DmChatPanel() {
     for (const m of messages) if (typeof m.id === "number" && m.id > 0) map.set(m.id, m);
     return map;
   }, [messages]);
-  // Reset transient composer state when switching conversations.
+  // Reset transient composer + jump state when switching conversations.
   useEffect(() => {
     setReplyingTo(null);
     setEditingMessageId(null);
+    setJumpWindow(null);
+    setPresentLoading(false);
+    pendingJumpIdRef.current = null;
+    lastRequestedAfterIdRef.current = 0;
+    loadNewerInFlightRef.current = false;
   }, [activeDmUser]);
+
+  // Clear the jump-to-present loading placeholder once the reloaded page lands.
+  useEffect(() => {
+    if (presentLoading && messages.length > 0) setPresentLoading(false);
+  }, [presentLoading, messages.length]);
 
   // Map DmMessages to Message shape for MessageBubble compatibility.
   // Preserve the real server-assigned id when present (persistent-DMs)
@@ -274,6 +302,60 @@ export default function DmChatPanel() {
       });
   };
 
+  // Downward paginator — mirror of maybeLoadOlderHistory, active only while
+  // windowed (newer messages exist below the jump slice). Virtuoso's endReached
+  // fires it; it no-ops at present (hasMoreAfter false).
+  const maybeLoadNewerHistory = () => {
+    if (!activeDmUser) return;
+    const conv = useDmStore.getState().conversations[activeDmUser];
+    if (!conv?.hasMoreAfter) return;
+    if (loadNewerInFlightRef.current) return;
+    let afterId = 0;
+    for (let i = conv.messages.length - 1; i >= 0; i--) {
+      const m = conv.messages[i];
+      if (typeof m.id === "number" && m.id > 0) {
+        afterId = m.id;
+        break;
+      }
+    }
+    if (afterId === 0 || afterId === lastRequestedAfterIdRef.current) return;
+    loadNewerInFlightRef.current = true;
+    lastRequestedAfterIdRef.current = afterId;
+    invoke("request_dm_history", {
+      peer: activeDmUser,
+      beforeId: 0,
+      afterId,
+      limit: 50,
+    })
+      .catch((err) => {
+        console.error(err);
+        lastRequestedAfterIdRef.current = 0;
+      })
+      .finally(() => {
+        loadNewerInFlightRef.current = false;
+      });
+  };
+
+  // "Jump to present": drop the windowed slice and reload the newest page,
+  // like a fresh conversation entry. Clearing first guarantees no gap between
+  // the old window and the tail and flips hasMoreAfter back to false.
+  const jumpToPresent = () => {
+    if (!activeDmUser) return;
+    const peer = activeDmUser;
+    setJumpWindow(null);
+    pendingJumpIdRef.current = null;
+    loadMoreInFlightRef.current = false;
+    lastRequestedBeforeIdRef.current = 0;
+    loadNewerInFlightRef.current = false;
+    lastRequestedAfterIdRef.current = 0;
+    setPresentLoading(true);
+    useDmStore.getState().resetDmForJump(peer);
+    invoke("request_dm_history", { peer, beforeId: 0, limit: 50 }).catch((err) => {
+      console.error(err);
+      setPresentLoading(false);
+    });
+  };
+
   // Persist the outgoing peer's scroll state at the moment we leave
   // it. Cleanup runs BEFORE the next setup with the new activeDmUser,
   // so the closure-captured peer is the one we're leaving. Also fires
@@ -346,6 +428,13 @@ export default function DmChatPanel() {
   const handleSend = async () => {
     const value = editorRef.current?.getValue() ?? input;
     if (!value.trim() || !activeDmUser) return;
+    // Sending while viewing a jumped slice would drop the new message past a
+    // hidden gap (addDmMessage guards against it). Snap to present first and
+    // keep the draft — the next Enter sends normally at the bottom.
+    if (useDmStore.getState().conversations[activeDmUser]?.hasMoreAfter) {
+      jumpToPresent();
+      return;
+    }
     setSending(true);
     setSendError(null);
     const replyToId = replyingTo?.id && replyingTo.id > 0 ? replyingTo.id : undefined;
@@ -400,35 +489,81 @@ export default function DmChatPanel() {
   // atBottom: user was caught up — land them at LAST so newer messages
   // received while away are visible. Otherwise restore the saved
   // topmost index. Defensive clamps against eviction.
-  // Keeps the viewport anchored when older history pages in at the top.
-  const firstItemIndex = useVirtuosoPrepend(bubbleMessages, messageKey, activeDmUser);
+  // Keeps the viewport anchored when older history pages in at the top. The
+  // reset key folds in the jump epoch so a jump-window remount also resets the
+  // prepend offset (matching the Virtuoso key= below).
+  const prependResetKey = activeDmUser
+    ? `${activeDmUser}:${jumpWindow?.epoch ?? 0}`
+    : null;
+  const firstItemIndex = useVirtuosoPrepend(bubbleMessages, messageKey, prependResetKey);
 
-  // Jump to a replied-to message + flash it. No-op if the parent isn't loaded.
+  // Jump to a replied-to message + flash it. If the parent is loaded we scroll
+  // straight to it; otherwise (Discord-style) fetch a context window around it
+  // and let the landing effect center on it once it arrives — without pulling
+  // in all the intervening history.
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const highlightTimer = useRef<number | null>(null);
+  const flash = useCallback((id: number) => {
+    if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+    setHighlightId(id);
+    highlightTimer.current = window.setTimeout(() => setHighlightId(null), 1600);
+  }, []);
   const jumpToMessage = useCallback(
     (id: number) => {
       const pos = bubbleMessages.findIndex((m) => m.id === id);
-      if (pos < 0) return;
-      // scrollToIndex uses the raw 0-based data index (like
-      // initialTopMostItemIndex), NOT the firstItemIndex-adjusted index.
-      virtuosoRef.current?.scrollToIndex({
-        index: pos,
-        align: "center",
-        behavior: "smooth",
+      if (pos >= 0) {
+        // scrollToIndex uses the raw 0-based data index (like
+        // initialTopMostItemIndex), NOT the firstItemIndex-adjusted index.
+        virtuosoRef.current?.scrollToIndex({
+          index: pos,
+          align: "center",
+          behavior: "smooth",
+        });
+        flash(id);
+        return;
+      }
+      // Not loaded — fetch a window centered on it. Already requesting this
+      // exact target? Wait for the landing effect.
+      if (!activeDmUser) return;
+      if (pendingJumpIdRef.current === id) return;
+      pendingJumpIdRef.current = id;
+      loadMoreInFlightRef.current = false;
+      lastRequestedBeforeIdRef.current = 0;
+      loadNewerInFlightRef.current = false;
+      lastRequestedAfterIdRef.current = 0;
+      invoke("request_dm_history", {
+        peer: activeDmUser,
+        beforeId: 0,
+        aroundId: id,
+        limit: 25,
+      }).catch((err) => {
+        console.error("request_dm_history (around):", err);
+        pendingJumpIdRef.current = null;
       });
-      if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
-      setHighlightId(id);
-      highlightTimer.current = window.setTimeout(() => setHighlightId(null), 1600);
     },
-    [bubbleMessages],
+    [bubbleMessages, activeDmUser, flash],
   );
+  // Landing effect: once the requested around-window is in the loaded slice,
+  // remount the list centered on the target (bump epoch) and flash it.
+  useEffect(() => {
+    const id = pendingJumpIdRef.current;
+    if (id == null) return;
+    if (!bubbleMessages.some((m) => m.id === id)) return;
+    pendingJumpIdRef.current = null;
+    setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
+    flash(id);
+  }, [bubbleMessages, flash]);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
   }, []);
 
   const initialIndex = (() => {
     const last = Math.max(0, bubbleMessages.length - 1);
+    // A just-applied jump window: mount centered on the target message.
+    if (jumpWindow) {
+      const pos = bubbleMessages.findIndex((m) => m.id === jumpWindow.targetId);
+      if (pos >= 0) return { index: pos, align: "center" as const };
+    }
     if (!activeDmUser) return last;
     const saved = savedPositionsRef.current[activeDmUser];
     if (!saved || saved.atBottom) return last;
@@ -486,7 +621,12 @@ export default function DmChatPanel() {
       </div>
 
       {/* Messages */}
-      {messages.length === 0 ? (
+      <div className="relative flex min-h-0 flex-1 flex-col">
+      {messages.length === 0 && presentLoading ? (
+        <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
+          Loading…
+        </div>
+      ) : messages.length === 0 ? (
         <div className="flex-1 overflow-y-auto pr-4 py-4">
           <div className="animate-[fadeUp_0.4s_ease_both] pl-4">
             <div className="border-b border-border pb-5 mb-5">
@@ -514,13 +654,16 @@ export default function DmChatPanel() {
           // initialTopMostItemIndex applies fresh — Virtuoso reuses
           // its instance across data swaps and ignores subsequent
           // changes to the initial-position prop.
-          key={activeDmUser}
+          key={`${activeDmUser}:${jumpWindow?.epoch ?? 0}`}
           className="flex-1 pr-4"
           data={bubbleMessages}
           firstItemIndex={firstItemIndex}
           computeItemKey={(index, m) => messageKey(m) || `i:${index}`}
           initialTopMostItemIndex={initialIndex}
-          followOutput="smooth"
+          // No auto-scroll-to-bottom while windowed: live messages are dropped
+          // (they'd land past a hidden gap) and downward paging shouldn't yank
+          // the viewport to the freshly-appended tail.
+          followOutput={windowed ? false : "smooth"}
           // Discord-style: stack messages from the bottom up against
           // the input bar when total content height is below viewport.
           alignToBottom={true}
@@ -528,6 +671,7 @@ export default function DmChatPanel() {
           // scroll in already correct.
           increaseViewportBy={{ top: 600, bottom: 600 }}
           startReached={() => maybeLoadOlderHistory(true)}
+          endReached={() => maybeLoadNewerHistory()}
           rangeChanged={(range) => {
             // Absolute — see ChatPanel.
             const start = range.startIndex - firstItemIndex;
@@ -601,6 +745,31 @@ export default function DmChatPanel() {
           }}
         />
       )}
+
+      {/* Jump-to-present pill — appears only while viewing a jumped slice with
+          newer messages below. Clicking reloads the newest page. */}
+      {windowed && (
+        <button
+          onClick={jumpToPresent}
+          title="Jump to present"
+          className="absolute bottom-3 right-4 z-20 flex items-center gap-1.5 rounded-full border border-border bg-bg-light/95 px-3 py-1.5 text-meta font-medium text-text-secondary shadow-float backdrop-blur-sm transition-colors hover:bg-row-hover hover:text-text-primary"
+        >
+          Jump to present
+          <svg
+            className="h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="7 6 12 11 17 6" />
+            <polyline points="7 13 12 18 17 13" />
+          </svg>
+        </button>
+      )}
+      </div>
 
       {sendError && (
         <p className="px-4 text-xs text-error">{sendError}</p>

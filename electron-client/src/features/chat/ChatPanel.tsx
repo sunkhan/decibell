@@ -374,6 +374,7 @@ export default function ChatPanel() {
     invoke("request_channel_history", {
       serverId: activeServerId,
       channelId: activeChannelId,
+      beforeId: 0,
       afterId,
       limit: 50,
     })
@@ -773,6 +774,7 @@ export default function ChatPanel() {
       invoke("request_channel_history", {
         serverId: activeServerId,
         channelId: activeChannelId,
+        beforeId: 0,
         aroundId: id,
         limit: 25,
       }).catch((err) => {

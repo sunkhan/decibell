@@ -1276,6 +1276,12 @@ pub struct DmHistoryReceivedPayload {
     pub peer: String,
     pub messages: Vec<DmHistoryMessagePayload>,
     pub has_more: bool,
+    pub has_more_after: bool,
+    /// Echoes the request mode so the renderer routes the reply:
+    /// around_id>0 → replace window; after_id>0 → append newer; both 0 →
+    /// older/most-recent prepend.
+    pub around_id: i64,
+    pub after_id: i64,
 }
 
 pub fn emit_dm_conversations_received(payload: DmConversationsReceivedPayload) {

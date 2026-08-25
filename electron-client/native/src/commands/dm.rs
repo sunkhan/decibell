@@ -51,6 +51,10 @@ pub struct RequestDmHistoryArgs {
     pub peer: String,
     pub before_id: i64,
     pub limit: i32,
+    /// >0: fetch a context window centered on this DM id (windowed jump).
+    pub around_id: Option<i64>,
+    /// >0: page newer than this DM id (downward pagination).
+    pub after_id: Option<i64>,
 }
 
 #[napi]
@@ -71,6 +75,8 @@ pub async fn request_dm_history(args: RequestDmHistoryArgs) -> napi::Result<()> 
                 peer: args.peer,
                 before_id: args.before_id,
                 limit: args.limit,
+                around_id: args.around_id.unwrap_or(0),
+                after_id: args.after_id.unwrap_or(0),
             }),
             token.as_deref(),
         );

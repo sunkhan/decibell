@@ -18,6 +18,12 @@ interface DmConversation {
   /// Server says there are older messages available before the
   /// oldest currently-loaded one. Drives the scroll-up paginator.
   hasMoreHistory: boolean;
+  /// Newer messages exist below the loaded window — true only after a
+  /// jump-to-message (around) / downward (after) fetch leaves the view NOT at
+  /// the live bottom. Drives the "jump to present" pill, downward pagination,
+  /// and the live-append guard (an incoming DM while true is dropped, not
+  /// stitched past the gap). Mirrors chatStore.hasMoreAfter for channels.
+  hasMoreAfter: boolean;
   /// Set to true once we've received a DmHistoryRes for this peer.
   /// `false` means "messages[] is purely from live events; no
   /// server hydration yet". Drives the on-mount fetch decision.
@@ -87,6 +93,25 @@ interface DmState {
     messages: HistoryMessageInput[],
     hasMore: boolean,
   ) => void;
+  /// Jump-to-message: REPLACE a peer's loaded messages with a context window
+  /// (drops the preview placeholder / stale live tail), setting both the
+  /// older and newer "has more" flags. Input may be any order — sorted by id.
+  setDmWindow: (
+    peer: string,
+    messages: HistoryMessageInput[],
+    hasMoreOlder: boolean,
+    hasMoreNewer: boolean,
+  ) => void;
+  /// Downward pagination: append a newer page (oldest→newest), updating
+  /// hasMoreAfter. Dedupes by id.
+  appendNewerDm: (
+    peer: string,
+    messages: HistoryMessageInput[],
+    hasMoreNewer: boolean,
+  ) => void;
+  /// Jump-to-present: clear the loaded slice so the caller can reload the
+  /// newest page from scratch (hasMoreAfter → false, historyLoaded → false).
+  resetDmForJump: (peer: string) => void;
   /// Optimistically zero the unread count and bump lastReadId.
   /// Called from DmChatPanel when the conversation becomes visible.
   markRead: (peer: string, upToId: number) => void;
@@ -110,6 +135,7 @@ function emptyConversation(username: string): DmConversation {
     unreadCount: 0,
     lastReadId: 0,
     hasMoreHistory: false,
+    hasMoreAfter: false,
     historyLoaded: false,
     createdAt: Date.now(),
   };
@@ -132,6 +158,14 @@ export const useDmStore = create<DmState>((set, get) => ({
       // message.id is truthy only for real (server-assigned) ids; 0 /
       // undefined are optimistic and handled by nonce reconciliation.
       if (message.id && existing?.messages.some((m) => m.id === message.id)) {
+        return {};
+      }
+      // While viewing a jumped/windowed slice (newer messages hidden below),
+      // a live real-id DM belongs past the gap — drop it to keep the window
+      // contiguous. It loads when the user returns to present / pages down.
+      // No optimistic send reaches here in that state: the composer snaps to
+      // present before sending.
+      if (existing?.hasMoreAfter && typeof message.id === "number" && message.id > 0) {
         return {};
       }
       const timestamp = parseInt(message.timestamp, 10);
@@ -213,6 +247,7 @@ export const useDmStore = create<DmState>((set, get) => ({
           // (which sets hasMoreHistory authoritatively from the
           // server's flag).
           hasMoreHistory: true,
+          hasMoreAfter: existing?.hasMoreAfter ?? false,
           historyLoaded: existing?.historyLoaded ?? false,
           // Hydrated conversations always carry a real last message, so
           // this is never consulted — 0 keeps it out of the way.
@@ -266,6 +301,87 @@ export const useDmStore = create<DmState>((set, get) => ({
             lastMessageTime,
             hasMoreHistory: hasMore,
             historyLoaded: true,
+          },
+        },
+      };
+    }),
+
+  setDmWindow: (peer, messages, hasMoreOlder, hasMoreNewer) =>
+    set((state) => {
+      const conv = state.conversations[peer];
+      const list: DmMessage[] = messages
+        .map((m) => ({
+          sender: m.sender,
+          content: m.content,
+          timestamp: String(m.timestamp),
+          id: m.id,
+          editedAt: m.editedAt || undefined,
+          replyTo: m.replyTo || undefined,
+        }))
+        .sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+      return {
+        conversations: {
+          ...state.conversations,
+          [peer]: {
+            ...emptyConversation(peer),
+            ...conv,
+            username: peer,
+            // Replace wholesale — a jump window is a fresh, discontinuous
+            // slice. lastMessageTime is left as-is (the window may not include
+            // the newest message; don't reorder the sidebar downward).
+            messages: list,
+            hasMoreHistory: hasMoreOlder,
+            hasMoreAfter: hasMoreNewer,
+            historyLoaded: true,
+          },
+        },
+      };
+    }),
+
+  appendNewerDm: (peer, messages, hasMoreNewer) =>
+    set((state) => {
+      const conv = state.conversations[peer];
+      if (!conv) return {};
+      const existingIds = new Set<number>();
+      for (const m of conv.messages) {
+        if (typeof m.id === "number" && m.id > 0) existingIds.add(m.id);
+      }
+      const incoming: DmMessage[] = messages
+        .filter((m) => !existingIds.has(m.id))
+        .map((m) => ({
+          sender: m.sender,
+          content: m.content,
+          timestamp: String(m.timestamp),
+          id: m.id,
+          editedAt: m.editedAt || undefined,
+          replyTo: m.replyTo || undefined,
+        }));
+      const merged =
+        incoming.length > 0
+          ? [...conv.messages, ...incoming].sort((a, b) => (a.id ?? 0) - (b.id ?? 0))
+          : conv.messages;
+      return {
+        conversations: {
+          ...state.conversations,
+          [peer]: { ...conv, messages: merged, hasMoreAfter: hasMoreNewer },
+        },
+      };
+    }),
+
+  resetDmForJump: (peer) =>
+    set((state) => {
+      const conv = state.conversations[peer];
+      return {
+        conversations: {
+          ...state.conversations,
+          [peer]: {
+            ...emptyConversation(peer),
+            ...conv,
+            username: peer,
+            messages: [],
+            hasMoreHistory: true,
+            hasMoreAfter: false,
+            historyLoaded: false,
           },
         },
       };

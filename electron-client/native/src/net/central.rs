@@ -487,6 +487,9 @@ impl CentralClient {
                         peer: res.peer,
                         messages,
                         has_more: res.has_more,
+                        has_more_after: res.has_more_after,
+                        around_id: res.around_id,
+                        after_id: res.after_id,
                     });
                 }
                 Some(packet::Payload::DmDeleteRes(resp)) => {

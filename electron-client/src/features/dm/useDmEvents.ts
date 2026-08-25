@@ -68,9 +68,23 @@ export function useDmEvents() {
         replyTo: number;
       }[];
       hasMore: boolean;
+      hasMoreAfter: boolean;
+      aroundId: number;
+      afterId: number;
     }>("dm_history_received", (event) => {
-      const { peer, messages, hasMore } = event.payload;
-      useDmStore.getState().appendHistory(peer, messages, hasMore);
+      const { peer, messages, hasMore, hasMoreAfter, aroundId, afterId } = event.payload;
+      const dm = useDmStore.getState();
+      // Route by the request mode the server echoed (mirrors useChatEvents):
+      //  aroundId>0 → jump context window → replace the loaded slice.
+      //  afterId>0  → downward pagination → append newer.
+      //  both 0     → older page / most-recent → prepend (existing path).
+      if (aroundId > 0) {
+        dm.setDmWindow(peer, messages, hasMore, hasMoreAfter);
+      } else if (afterId > 0) {
+        dm.appendNewerDm(peer, messages, hasMoreAfter);
+      } else {
+        dm.appendHistory(peer, messages, hasMore);
+      }
     });
 
     const unlistenDmDeleteRes = listen<{

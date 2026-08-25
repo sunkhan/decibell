@@ -273,15 +273,21 @@ intervening history. Community side covered by 8 new e2e checks (228 total):
   stitches them oldest→newest with the target included, reporting both `has_more_before`
   and `has_more_after`; `db.fetch_messages_after` pages `id>after ASC`. The
   `CHANNEL_HISTORY_REQ` handler branches on which id is set.
-- Client (channels only for now): a `hasMoreAfter` store slice + `setChannelWindow`
-  (replace), `appendNewer` (down-page), and `resetChannelForJump` (present) setters;
-  `addMessage` drops live messages while windowed (they'd land past a hidden gap).
-  `useChatEvents` routes the reply by the echoed mode. ChatPanel's `jumpToMessage` fetches
-  an around-window when the target isn't loaded and remounts Virtuoso centered on it (epoch
-  key + `initialTopMostItemIndex`), `endReached` pages newer, and a "Jump to present" pill
-  reloads the newest page. Sending while windowed snaps to present first.
-- DMs jump remains loaded-window-only (central Postgres would need around/after queries) —
-  noted follow-up. (Central compiled by inspection — no local libpqxx.)
+- Client: a `hasMoreAfter` store slice (chatStore for channels, per-conversation on
+  dmStore) + window setters `setChannelWindow`/`setDmWindow` (replace),
+  `appendNewer`/`appendNewerDm` (down-page), and `resetChannelForJump`/`resetDmForJump`
+  (present); `addMessage`/`addDmMessage` drop live messages while windowed (they'd land
+  past a hidden gap). `useChatEvents`/`useDmEvents` route the reply by the echoed mode.
+  Both ChatPanel and DmChatPanel: `jumpToMessage` fetches an around-window when the target
+  isn't loaded and remounts Virtuoso centered on it (epoch key + `initialTopMostItemIndex`),
+  `endReached` pages newer, and a "Jump to present" pill reloads the newest page. Sending
+  while windowed snaps to present first.
+- DMs (central, 2026-08-25 follow-up ✅): same design ported to Postgres —
+  `DmHistoryReq.around_id/after_id`, `DmHistoryRes.has_more_after` + echoed ids;
+  `AuthManager::fetchDmHistoryAround` (id<=around DESC + id>around ASC over the
+  LEAST/GREATEST conversation pair, stitched oldest→newest) and `fetchDmHistoryAfter`; the
+  `DM_HISTORY_REQ` handler branches on the mode. (Central compiled by inspection — no local
+  libpqxx; community channel path re-verified at 228/228 after the shared-proto change.)
 
 ## 5. Suggested order of work
 
