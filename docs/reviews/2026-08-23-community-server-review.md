@@ -316,12 +316,17 @@ intervening history. Community side covered by 8 new e2e checks (228 total):
      in-flight `scrollToIndex`: auto-paging is now paused for the animation window
      (`pauseAutoPagingUntilRef`, 900ms + settle catch-up), and a near-jump falls back to
      the exact remount path when a prepend is already in flight. Both panels.
-  4. *Smooth jump abandoned (round 3)* — even with paging paused and a post-animation
-     settle-snap, the animated near-jump kept mis-landing on first use: the browser eases
-     toward a pixel offset computed from estimated row heights, and rows measuring
-     mid-animation shift the true target under it. All loaded-target jumps now use the
-     exact remount path (epoch key + `initialTopMostItemIndex` + highlight flash — what
-     Discord does); the pause/settle machinery was removed. Both panels.
+  4. *Animated jump, the Discord way (rounds 3-4)* — native smooth `scrollToIndex` kept
+     mis-landing on first use no matter what (paging paused, post-animation settle-snap):
+     it eases toward a pixel computed ONCE from estimated row heights, and rows measuring
+     mid-flight shift the true target under it. Replaced with Discord's technique
+     (`features/chat/animateJump.ts`): when the target row is in the DOM (found via a
+     `data-mid` attribute on MessageBubble roots, through Virtuoso's `scrollerRef`), a rAF
+     loop eases scrollTop toward a destination *re-derived from the row's live rect every
+     frame* — mid-flight resizes and prepends are absorbed, so it converges exactly
+     (~270ms exponential ease). Rows not in the DOM take the instant remount path
+     (Discord teleports far jumps too). The pause/settle machinery was removed. Both
+     panels.
   5. *Jump-to-present pill polish* — restyled to the client's accent-button idiom
      (`rounded-md bg-accent text-on-accent hover:bg-accent-hover`), so its radius tracks
      the theme scale (flat on console, soft on default) instead of the hardcoded

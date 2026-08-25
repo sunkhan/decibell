@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useVirtuosoPrepend } from "../chat/useVirtuosoPrepend";
+import { animateJumpToElement } from "../chat/animateJump";
 import { invoke } from "../../lib/ipc";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
@@ -56,6 +57,10 @@ export default function DmChatPanel() {
     useState<DmMessage | null>(null);
   const editorRef = useRef<RichInputHandle>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // Virtuoso's scroller element + in-flight animated-jump cancel — see
+  // ChatPanel's scrollerElRef / jumpAnimCancelRef.
+  const scrollerElRef = useRef<HTMLElement | null>(null);
+  const jumpAnimCancelRef = useRef<(() => void) | null>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   // Per-peer scroll state. Saved on conversation switch via the
   // cleanup of the activeDmUser effect; restored on Virtuoso mount
@@ -211,6 +216,8 @@ export default function DmChatPanel() {
     setScrolledUp(false);
     setPresentLoading(false);
     pendingJumpIdRef.current = null;
+    jumpAnimCancelRef.current?.();
+    jumpAnimCancelRef.current = null;
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
   }, [activeDmUser]);
@@ -352,6 +359,8 @@ export default function DmChatPanel() {
     const peer = activeDmUser;
     setJumpWindow(null);
     pendingJumpIdRef.current = null;
+    jumpAnimCancelRef.current?.();
+    jumpAnimCancelRef.current = null;
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -528,10 +537,20 @@ export default function DmChatPanel() {
       const list = dm.conversations[peer]?.messages ?? [];
       const pos = list.findIndex((m) => m.id === id);
       if (pos >= 0) {
-        // Land via a remount centered on the target — exact regardless of
-        // measurement state; see ChatPanel's jumpToMessage for why animated
-        // scrollToIndex can't be trusted here.
-        setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
+        // Discord-style animated jump when the row is in the DOM, exact
+        // remount otherwise — see ChatPanel's jumpToMessage.
+        jumpAnimCancelRef.current?.();
+        jumpAnimCancelRef.current = null;
+        const scroller = scrollerElRef.current;
+        const findEl = () =>
+          scroller?.querySelector<HTMLElement>(`[data-mid="${id}"]`) ?? null;
+        if (scroller && findEl()) {
+          jumpAnimCancelRef.current = animateJumpToElement(scroller, findEl, () => {
+            jumpAnimCancelRef.current = null;
+          });
+        } else {
+          setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
+        }
         flash(id);
         return;
       }
@@ -567,6 +586,7 @@ export default function DmChatPanel() {
   }, [bubbleMessages, flash]);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+    jumpAnimCancelRef.current?.();
   }, []);
 
   const initialIndex = (() => {
@@ -662,6 +682,9 @@ export default function DmChatPanel() {
       ) : (
         <Virtuoso
           ref={virtuosoRef}
+          scrollerRef={(el) => {
+            scrollerElRef.current = el instanceof HTMLElement ? el : null;
+          }}
           // Re-mount when the active peer changes so
           // initialTopMostItemIndex applies fresh — Virtuoso reuses
           // its instance across data swaps and ignores subsequent

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useVirtuosoPrepend } from "./useVirtuosoPrepend";
+import { animateJumpToElement } from "./animateJump";
 import { prefetchAround } from "./attachmentPrefetch";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
@@ -131,6 +132,11 @@ export default function ChatPanel() {
   // once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // Virtuoso's scroller element (via scrollerRef) — the animated jump drives
+  // its scrollTop directly.
+  const scrollerElRef = useRef<HTMLElement | null>(null);
+  // Cancel fn of the in-flight animated jump, if any.
+  const jumpAnimCancelRef = useRef<(() => void) | null>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
 
@@ -404,6 +410,8 @@ export default function ChatPanel() {
     const channelId = activeChannelId;
     setJumpWindow(null);
     pendingJumpIdRef.current = null;
+    jumpAnimCancelRef.current?.();
+    jumpAnimCancelRef.current = null;
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -739,6 +747,8 @@ export default function ChatPanel() {
     setJumpWindow(null);
     setScrolledUp(false);
     pendingJumpIdRef.current = null;
+    jumpAnimCancelRef.current?.();
+    jumpAnimCancelRef.current = null;
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
   }, [activeKey]);
@@ -768,14 +778,26 @@ export default function ChatPanel() {
       const list = chat.messagesByChannel[channelKey(serverId, channelId)] ?? [];
       const pos = list.findIndex((m) => m.id === id);
       if (pos >= 0) {
-        // Land via a remount centered on the target (epoch key +
-        // initialTopMostItemIndex) — exact regardless of measurement state.
-        // Animated scrollToIndex was tried (twice, plus a settle-correction
-        // pass) and always mis-landed on first use: the browser eases toward
-        // a pixel offset computed from estimated row heights, and rows
-        // measuring mid-animation shift the true target under it. Instant
-        // jump + highlight flash is also what Discord does.
-        setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
+        // Discord-style: if the target row is currently in the DOM
+        // (rendered window incl. overscan), run our own eased scroll that
+        // re-derives the destination from the row's live rect EVERY frame —
+        // immune to rows measuring mid-flight, unlike native smooth
+        // scrollToIndex, which eases toward a pixel computed once from
+        // estimated heights and kept mis-landing. Otherwise: instant
+        // remount centered on the target (exact) — Discord teleports far
+        // jumps too.
+        jumpAnimCancelRef.current?.();
+        jumpAnimCancelRef.current = null;
+        const scroller = scrollerElRef.current;
+        const findEl = () =>
+          scroller?.querySelector<HTMLElement>(`[data-mid="${id}"]`) ?? null;
+        if (scroller && findEl()) {
+          jumpAnimCancelRef.current = animateJumpToElement(scroller, findEl, () => {
+            jumpAnimCancelRef.current = null;
+          });
+        } else {
+          setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
+        }
         flash(id);
         return;
       }
@@ -814,6 +836,7 @@ export default function ChatPanel() {
   }, [messages, flash]);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+    jumpAnimCancelRef.current?.();
   }, []);
 
   if (!activeServerId) {
@@ -856,6 +879,9 @@ export default function ChatPanel() {
             // ignores any change to the initial-position prop.
             key={`${activeKey ?? "none"}:${jumpWindow?.epoch ?? 0}`}
             ref={virtuosoRef}
+            scrollerRef={(el) => {
+              scrollerElRef.current = el instanceof HTMLElement ? el : null;
+            }}
             data={messages}
             firstItemIndex={firstItemIndex}
             computeItemKey={(index, m) => messageKey(m) || `i:${index}`}
