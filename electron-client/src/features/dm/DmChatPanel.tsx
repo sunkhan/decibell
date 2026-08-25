@@ -68,11 +68,7 @@ export default function DmChatPanel() {
   // Live cursors written by Virtuoso's rangeChanged / atBottomStateChange.
   // Persisted into savedPositionsRef on conversation switch.
   const topIndexRef = useRef<number>(0);
-  const endIndexRef = useRef<number>(0);
   const atBottomRef = useRef<boolean>(true);
-  // While a smooth jump animation is running, auto-pagination is paused until
-  // this timestamp — see ChatPanel's pauseAutoPagingUntilRef.
-  const pauseAutoPagingUntilRef = useRef(0);
   // Single-flight guard for the scroll-up paginator so rapid scroll
   // doesn't fire parallel page loads.
   const loadMoreInFlightRef = useRef(false);
@@ -87,8 +83,6 @@ export default function DmChatPanel() {
   // When a jump target isn't loaded, we request an around-window and stash the
   // target here; the landing effect lands on it once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
-  // Post-animation settle-correction for smooth jumps (see ChatPanel).
-  const jumpSettleTimerRef = useRef<number | null>(null);
   // A just-applied jump context window (see ChatPanel for the rationale): epoch
   // bumps on each jump so Virtuoso remounts centered on targetId. null = normal.
   const [jumpWindow, setJumpWindow] = useState<{ epoch: number; targetId: number } | null>(null);
@@ -217,10 +211,6 @@ export default function DmChatPanel() {
     setScrolledUp(false);
     setPresentLoading(false);
     pendingJumpIdRef.current = null;
-    if (jumpSettleTimerRef.current) {
-      window.clearTimeout(jumpSettleTimerRef.current);
-      jumpSettleTimerRef.current = null;
-    }
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
   }, [activeDmUser]);
@@ -320,11 +310,6 @@ export default function DmChatPanel() {
       });
   };
 
-  // Latest-render closure of maybeLoadOlderHistory, for the settle-timeout in
-  // jumpToMessage (a stale closure there would page the wrong peer).
-  const maybeLoadOlderRef = useRef<(force: boolean) => void>(() => {});
-  maybeLoadOlderRef.current = maybeLoadOlderHistory;
-
   // Downward paginator — mirror of maybeLoadOlderHistory, active only while
   // windowed (newer messages exist below the jump slice). Virtuoso's endReached
   // fires it; it no-ops at present (hasMoreAfter false).
@@ -367,11 +352,6 @@ export default function DmChatPanel() {
     const peer = activeDmUser;
     setJumpWindow(null);
     pendingJumpIdRef.current = null;
-    if (jumpSettleTimerRef.current) {
-      // A late settle-snap would land on a stale index after the reload.
-      window.clearTimeout(jumpSettleTimerRef.current);
-      jumpSettleTimerRef.current = null;
-    }
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -548,37 +528,10 @@ export default function DmChatPanel() {
       const list = dm.conversations[peer]?.messages ?? [];
       const pos = list.findIndex((m) => m.id === id);
       if (pos >= 0) {
-        // Nearby with no prepend in flight: smooth-scroll, with older-history
-        // paging paused for the animation. Far or page in flight: remount
-        // centered — exact (see ChatPanel).
-        // scrollToIndex uses the raw 0-based data index (like
-        // initialTopMostItemIndex), NOT the firstItemIndex-adjusted index.
-        const NEAR = 5;
-        if (
-          !loadMoreInFlightRef.current &&
-          pos >= topIndexRef.current - NEAR &&
-          pos <= endIndexRef.current + NEAR
-        ) {
-          pauseAutoPagingUntilRef.current = Date.now() + 900;
-          virtuosoRef.current?.scrollToIndex({
-            index: pos,
-            align: "center",
-            behavior: "smooth",
-          });
-          // Settle correction — see ChatPanel: snap to the exact center after
-          // the animation, since rows measuring mid-glide shift the target.
-          if (jumpSettleTimerRef.current) window.clearTimeout(jumpSettleTimerRef.current);
-          jumpSettleTimerRef.current = window.setTimeout(() => {
-            jumpSettleTimerRef.current = null;
-            virtuosoRef.current?.scrollToIndex({ index: pos, align: "center" });
-          }, 550);
-          window.setTimeout(() => {
-            if (topIndexRef.current < HISTORY_EAGER_THRESHOLD)
-              maybeLoadOlderRef.current(false);
-          }, 950);
-        } else {
-          setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
-        }
+        // Land via a remount centered on the target — exact regardless of
+        // measurement state; see ChatPanel's jumpToMessage for why animated
+        // scrollToIndex can't be trusted here.
+        setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
         flash(id);
         return;
       }
@@ -614,7 +567,6 @@ export default function DmChatPanel() {
   }, [bubbleMessages, flash]);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
-    if (jumpSettleTimerRef.current) window.clearTimeout(jumpSettleTimerRef.current);
   }, []);
 
   const initialIndex = (() => {
@@ -730,25 +682,17 @@ export default function DmChatPanel() {
           // Same rationale as ChatPanel: settle off-screen so rows
           // scroll in already correct.
           increaseViewportBy={{ top: 600, bottom: 600 }}
-          startReached={() => {
-            if (Date.now() >= pauseAutoPagingUntilRef.current)
-              maybeLoadOlderHistory(true);
-          }}
+          startReached={() => maybeLoadOlderHistory(true)}
           endReached={() => maybeLoadNewerHistory()}
           rangeChanged={(range) => {
             // Absolute — see ChatPanel.
             const start = range.startIndex - firstItemIndex;
             topIndexRef.current = start;
             const end = range.endIndex - firstItemIndex;
-            endIndexRef.current = end;
             // Far enough above the live bottom → surface the pill.
             setScrolledUp(bubbleMessages.length - 1 - end > JUMP_PILL_ROWS);
             // Eager pagination — see ChatPanel's rangeChanged.
-            if (
-              start < HISTORY_EAGER_THRESHOLD &&
-              Date.now() >= pauseAutoPagingUntilRef.current
-            )
-              maybeLoadOlderHistory(false);
+            if (start < HISTORY_EAGER_THRESHOLD) maybeLoadOlderHistory(false);
           }}
           atBottomStateChange={(atBottom) => {
             atBottomRef.current = atBottom;

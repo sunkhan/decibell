@@ -130,8 +130,6 @@ export default function ChatPanel() {
   // and stash the target here; the effect that watches `messages` lands on it
   // once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
-  // Post-animation settle-correction for smooth jumps (see jumpToMessage).
-  const jumpSettleTimerRef = useRef<number | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
@@ -216,12 +214,7 @@ export default function ChatPanel() {
   // channel-switch effect to persist the OUTGOING channel's position
   // before activeChannelId flips.
   const topIndexRef = useRef(0);
-  const endIndexRef = useRef(0);
   const atBottomRef = useRef(true);
-  // While a smooth jump animation is running, auto-pagination is paused until
-  // this timestamp — a page prepending mid-animation shifts every index under
-  // the in-flight scrollToIndex and visibly fights the scroll anchoring.
-  const pauseAutoPagingUntilRef = useRef(0);
 
   // Keeps the viewport anchored when older history pages in at the top. The
   // reset key folds in the jump epoch so a jump-window remount also resets the
@@ -365,11 +358,6 @@ export default function ChatPanel() {
       });
   };
 
-  // Latest-render closure of maybeLoadOlderHistory, for the settle-timeout in
-  // jumpToMessage (a stale closure there would page the wrong channel).
-  const maybeLoadOlderRef = useRef<(force: boolean) => void>(() => {});
-  maybeLoadOlderRef.current = maybeLoadOlderHistory;
-
   // Downward paginator — the mirror of maybeLoadOlderHistory, active only
   // while windowed (newer messages exist below the jump slice). Virtuoso's
   // endReached fires it; it no-ops at present (hasMoreAfter false), so it's
@@ -416,11 +404,6 @@ export default function ChatPanel() {
     const channelId = activeChannelId;
     setJumpWindow(null);
     pendingJumpIdRef.current = null;
-    if (jumpSettleTimerRef.current) {
-      // A late settle-snap would land on a stale index after the reload.
-      window.clearTimeout(jumpSettleTimerRef.current);
-      jumpSettleTimerRef.current = null;
-    }
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -756,10 +739,6 @@ export default function ChatPanel() {
     setJumpWindow(null);
     setScrolledUp(false);
     pendingJumpIdRef.current = null;
-    if (jumpSettleTimerRef.current) {
-      window.clearTimeout(jumpSettleTimerRef.current);
-      jumpSettleTimerRef.current = null;
-    }
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
   }, [activeKey]);
@@ -789,49 +768,14 @@ export default function ChatPanel() {
       const list = chat.messagesByChannel[channelKey(serverId, channelId)] ?? [];
       const pos = list.findIndex((m) => m.id === id);
       if (pos >= 0) {
-        // Nearby (rendered or almost) with no prepend in flight:
-        // smooth-scroll — pleasant for short hops. Older-history paging is
-        // paused for the animation (pauseAutoPagingUntilRef): a page landing
-        // mid-animation shifts every index under the scroller and fights the
-        // anchoring back and forth. Far, or a page already in flight:
-        // remount centered on the target instead (exact — the same
-        // mechanism as the windowed-jump landing; smooth scrollToIndex over
-        // unmeasured rows is approximate anyway).
-        // scrollToIndex uses the raw 0-based data index (like
-        // initialTopMostItemIndex) — NOT the firstItemIndex-adjusted index
-        // that itemContent / rangeChanged report.
-        const NEAR = 5;
-        if (
-          !loadMoreInFlightRef.current &&
-          pos >= topIndexRef.current - NEAR &&
-          pos <= endIndexRef.current + NEAR
-        ) {
-          pauseAutoPagingUntilRef.current = Date.now() + 900;
-          virtuosoRef.current?.scrollToIndex({
-            index: pos,
-            align: "center",
-            behavior: "smooth",
-          });
-          // Settle correction: the browser eases to a pixel offset computed
-          // up front, but rows that mount/measure during the animation shift
-          // the true target offset — so the glide can land off (first-click
-          // overshoot). Snap to the exact center once the animation is done;
-          // by then the target row is measured, and when the drift is small
-          // the snap is imperceptible.
-          if (jumpSettleTimerRef.current) window.clearTimeout(jumpSettleTimerRef.current);
-          jumpSettleTimerRef.current = window.setTimeout(() => {
-            jumpSettleTimerRef.current = null;
-            virtuosoRef.current?.scrollToIndex({ index: pos, align: "center" });
-          }, 550);
-          // Catch-up: if the animation settled near the top boundary, run
-          // the eager page the pause window swallowed.
-          window.setTimeout(() => {
-            if (topIndexRef.current < HISTORY_EAGER_THRESHOLD)
-              maybeLoadOlderRef.current(false);
-          }, 950);
-        } else {
-          setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
-        }
+        // Land via a remount centered on the target (epoch key +
+        // initialTopMostItemIndex) — exact regardless of measurement state.
+        // Animated scrollToIndex was tried (twice, plus a settle-correction
+        // pass) and always mis-landed on first use: the browser eases toward
+        // a pixel offset computed from estimated row heights, and rows
+        // measuring mid-animation shift the true target under it. Instant
+        // jump + highlight flash is also what Discord does.
+        setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
         flash(id);
         return;
       }
@@ -870,7 +814,6 @@ export default function ChatPanel() {
   }, [messages, flash]);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
-    if (jumpSettleTimerRef.current) window.clearTimeout(jumpSettleTimerRef.current);
   }, []);
 
   if (!activeServerId) {
@@ -932,10 +875,7 @@ export default function ChatPanel() {
             // frame landing — happens off-screen and the row scrolls in
             // already correct.
             increaseViewportBy={{ top: 600, bottom: 600 }}
-            startReached={() => {
-              if (Date.now() >= pauseAutoPagingUntilRef.current)
-                maybeLoadOlderHistory(true);
-            }}
+            startReached={() => maybeLoadOlderHistory(true)}
             endReached={() => maybeLoadNewerHistory()}
             rangeChanged={(range) => {
               // Absolute, like itemContent's — rebase before it is used
@@ -946,7 +886,6 @@ export default function ChatPanel() {
               const start = range.startIndex - firstItemIndex;
               const end = range.endIndex - firstItemIndex;
               topIndexRef.current = start;
-              endIndexRef.current = end;
               // Far enough above the live bottom → surface the pill. React
               // bails out when the value is unchanged, so this is cheap.
               setScrolledUp(messages.length - 1 - end > JUMP_PILL_ROWS);
@@ -964,11 +903,7 @@ export default function ChatPanel() {
               // group-flip resize (see maybeLoadOlderHistory) happens
               // off-screen. Small channels eagerly load exactly one
               // extra page on open, then the guard stops it.
-              if (
-                start < HISTORY_EAGER_THRESHOLD &&
-                Date.now() >= pauseAutoPagingUntilRef.current
-              )
-                maybeLoadOlderHistory(false);
+              if (start < HISTORY_EAGER_THRESHOLD) maybeLoadOlderHistory(false);
             }}
             atBottomStateChange={(atBottom) => {
               atBottomRef.current = atBottom;
