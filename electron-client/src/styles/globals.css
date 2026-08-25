@@ -906,6 +906,19 @@ html, body, #root {
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* Jump-to-message arrival. The list is remounted already centered on the
+   target (structurally exact); this short slide supplies the sense of
+   travel. "Up" = jumped to an older message, so content settles downward.
+   Transform-only: never touches scroll geometry, so it cannot mis-land. */
+@keyframes jumpArriveUp {
+  from { transform: translateY(-28px); opacity: 0.65; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+@keyframes jumpArriveDown {
+  from { transform: translateY(28px); opacity: 0.65; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
 @keyframes dropIn {
   from { opacity: 0; transform: translateY(-4px) scale(0.97); }
   to   { opacity: 1; transform: translateY(0) scale(1); }

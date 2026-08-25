@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useVirtuosoPrepend } from "../chat/useVirtuosoPrepend";
-import { animateJumpToElement } from "../chat/animateJump";
 import { invoke } from "../../lib/ipc";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
@@ -57,10 +56,6 @@ export default function DmChatPanel() {
     useState<DmMessage | null>(null);
   const editorRef = useRef<RichInputHandle>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  // Virtuoso's scroller element + in-flight animated-jump cancel — see
-  // ChatPanel's scrollerElRef / jumpAnimCancelRef.
-  const scrollerElRef = useRef<HTMLElement | null>(null);
-  const jumpAnimCancelRef = useRef<(() => void) | null>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   // Per-peer scroll state. Saved on conversation switch via the
   // cleanup of the activeDmUser effect; restored on Virtuoso mount
@@ -91,6 +86,8 @@ export default function DmChatPanel() {
   // A just-applied jump context window (see ChatPanel for the rationale): epoch
   // bumps on each jump so Virtuoso remounts centered on targetId. null = normal.
   const [jumpWindow, setJumpWindow] = useState<{ epoch: number; targetId: number } | null>(null);
+  // Travel direction of the last jump — picks the arrival slide's keyframe.
+  const [jumpDir, setJumpDir] = useState<"up" | "down">("up");
   // True while the user has scrolled more than JUMP_PILL_ROWS above the live
   // bottom — shows the jump-to-present pill even without a jump window.
   const [scrolledUp, setScrolledUp] = useState(false);
@@ -216,8 +213,6 @@ export default function DmChatPanel() {
     setScrolledUp(false);
     setPresentLoading(false);
     pendingJumpIdRef.current = null;
-    jumpAnimCancelRef.current?.();
-    jumpAnimCancelRef.current = null;
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
   }, [activeDmUser]);
@@ -359,8 +354,6 @@ export default function DmChatPanel() {
     const peer = activeDmUser;
     setJumpWindow(null);
     pendingJumpIdRef.current = null;
-    jumpAnimCancelRef.current?.();
-    jumpAnimCancelRef.current = null;
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -537,20 +530,11 @@ export default function DmChatPanel() {
       const list = dm.conversations[peer]?.messages ?? [];
       const pos = list.findIndex((m) => m.id === id);
       if (pos >= 0) {
-        // Discord-style animated jump when the row is in the DOM, exact
-        // remount otherwise — see ChatPanel's jumpToMessage.
-        jumpAnimCancelRef.current?.();
-        jumpAnimCancelRef.current = null;
-        const scroller = scrollerElRef.current;
-        const findEl = () =>
-          scroller?.querySelector<HTMLElement>(`[data-mid="${id}"]`) ?? null;
-        if (scroller && findEl()) {
-          jumpAnimCancelRef.current = animateJumpToElement(scroller, findEl, () => {
-            jumpAnimCancelRef.current = null;
-          });
-        } else {
-          setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
-        }
+        // Structural jump first (exact remount), then the CSS arrival slide
+        // — see ChatPanel's jumpToMessage for why scroll-driven animation
+        // can't be made clean in a virtualized list.
+        setJumpDir(pos < topIndexRef.current ? "up" : "down");
+        setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
         flash(id);
         return;
       }
@@ -581,12 +565,14 @@ export default function DmChatPanel() {
     if (id == null) return;
     if (!bubbleMessages.some((m) => m.id === id)) return;
     pendingJumpIdRef.current = null;
+    // An around-window target is (virtually) always older — arrive with the
+    // upward-travel slide.
+    setJumpDir("up");
     setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
     flash(id);
   }, [bubbleMessages, flash]);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
-    jumpAnimCancelRef.current?.();
   }, []);
 
   const initialIndex = (() => {
@@ -653,7 +639,7 @@ export default function DmChatPanel() {
       </div>
 
       {/* Messages */}
-      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
       {messages.length === 0 && presentLoading ? (
         <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
           Loading…
@@ -682,15 +668,19 @@ export default function DmChatPanel() {
       ) : (
         <Virtuoso
           ref={virtuosoRef}
-          scrollerRef={(el) => {
-            scrollerElRef.current = el instanceof HTMLElement ? el : null;
-          }}
           // Re-mount when the active peer changes so
           // initialTopMostItemIndex applies fresh — Virtuoso reuses
           // its instance across data swaps and ignores subsequent
           // changes to the initial-position prop.
           key={`${activeDmUser}:${jumpWindow?.epoch ?? 0}`}
-          className="flex-1 pr-4"
+          // Arrival slide replays per jump (epoch in key= → fresh element).
+          className={`flex-1 pr-4 ${
+            jumpWindow
+              ? jumpDir === "up"
+                ? "animate-[jumpArriveUp_0.26s_ease-out_both]"
+                : "animate-[jumpArriveDown_0.26s_ease-out_both]"
+              : ""
+          }`}
           data={bubbleMessages}
           firstItemIndex={firstItemIndex}
           computeItemKey={(index, m) => messageKey(m) || `i:${index}`}

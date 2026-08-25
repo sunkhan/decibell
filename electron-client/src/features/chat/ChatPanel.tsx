@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useVirtuosoPrepend } from "./useVirtuosoPrepend";
-import { animateJumpToElement } from "./animateJump";
 import { prefetchAround } from "./attachmentPrefetch";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
@@ -107,6 +106,8 @@ export default function ChatPanel() {
   // replace path jumped to a stale anchor first, then corrected). null when
   // viewing normally / at present.
   const [jumpWindow, setJumpWindow] = useState<{ epoch: number; targetId: number } | null>(null);
+  // Travel direction of the last jump — picks the arrival slide's keyframe.
+  const [jumpDir, setJumpDir] = useState<"up" | "down">("up");
   // True while the user has scrolled more than JUMP_PILL_ROWS above the live
   // bottom — shows the jump-to-present pill even without a jump window.
   const [scrolledUp, setScrolledUp] = useState(false);
@@ -132,11 +133,6 @@ export default function ChatPanel() {
   // once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  // Virtuoso's scroller element (via scrollerRef) — the animated jump drives
-  // its scrollTop directly.
-  const scrollerElRef = useRef<HTMLElement | null>(null);
-  // Cancel fn of the in-flight animated jump, if any.
-  const jumpAnimCancelRef = useRef<(() => void) | null>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
 
@@ -410,8 +406,6 @@ export default function ChatPanel() {
     const channelId = activeChannelId;
     setJumpWindow(null);
     pendingJumpIdRef.current = null;
-    jumpAnimCancelRef.current?.();
-    jumpAnimCancelRef.current = null;
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -747,8 +741,6 @@ export default function ChatPanel() {
     setJumpWindow(null);
     setScrolledUp(false);
     pendingJumpIdRef.current = null;
-    jumpAnimCancelRef.current?.();
-    jumpAnimCancelRef.current = null;
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
   }, [activeKey]);
@@ -778,26 +770,17 @@ export default function ChatPanel() {
       const list = chat.messagesByChannel[channelKey(serverId, channelId)] ?? [];
       const pos = list.findIndex((m) => m.id === id);
       if (pos >= 0) {
-        // Discord-style: if the target row is currently in the DOM
-        // (rendered window incl. overscan), run our own eased scroll that
-        // re-derives the destination from the row's live rect EVERY frame —
-        // immune to rows measuring mid-flight, unlike native smooth
-        // scrollToIndex, which eases toward a pixel computed once from
-        // estimated heights and kept mis-landing. Otherwise: instant
-        // remount centered on the target (exact) — Discord teleports far
-        // jumps too.
-        jumpAnimCancelRef.current?.();
-        jumpAnimCancelRef.current = null;
-        const scroller = scrollerElRef.current;
-        const findEl = () =>
-          scroller?.querySelector<HTMLElement>(`[data-mid="${id}"]`) ?? null;
-        if (scroller && findEl()) {
-          jumpAnimCancelRef.current = animateJumpToElement(scroller, findEl, () => {
-            jumpAnimCancelRef.current = null;
-          });
-        } else {
-          setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
-        }
+        // Structural jump first, visual motion second: remount centered on
+        // the target (exact — everything around it mounts measured), then a
+        // short CSS slide on the fresh list conveys the travel direction
+        // (jumpArriveUp/Down in globals.css). Animating the real scroll
+        // position through a virtualized list cannot be made clean — rows
+        // measuring mid-flight re-anchor the scroller under the animation
+        // (native smooth, paused paging, settle-snap, and a live-rect rAF
+        // loop all glitched) — while a transform slide never touches scroll
+        // geometry, so it cannot mis-land.
+        setJumpDir(pos < topIndexRef.current ? "up" : "down");
+        setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
         flash(id);
         return;
       }
@@ -831,12 +814,14 @@ export default function ChatPanel() {
     if (id == null) return;
     if (!messages.some((m) => m.id === id)) return;
     pendingJumpIdRef.current = null;
+    // An around-window target is (virtually) always older than what was
+    // loaded — arrive with the upward-travel slide.
+    setJumpDir("up");
     setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
     flash(id);
   }, [messages, flash]);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
-    jumpAnimCancelRef.current?.();
   }, []);
 
   if (!activeServerId) {
@@ -862,7 +847,7 @@ export default function ChatPanel() {
         {channelName}
       </div>
 
-      <div ref={chatViewRef} className="relative flex flex-1 flex-col">
+      <div ref={chatViewRef} className="relative flex flex-1 flex-col overflow-hidden">
         {loading && messages.length === 0 ? (
           <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
             Loading history…
@@ -879,9 +864,6 @@ export default function ChatPanel() {
             // ignores any change to the initial-position prop.
             key={`${activeKey ?? "none"}:${jumpWindow?.epoch ?? 0}`}
             ref={virtuosoRef}
-            scrollerRef={(el) => {
-              scrollerElRef.current = el instanceof HTMLElement ? el : null;
-            }}
             data={messages}
             firstItemIndex={firstItemIndex}
             computeItemKey={(index, m) => messageKey(m) || `i:${index}`}
@@ -989,7 +971,15 @@ export default function ChatPanel() {
               />
               );
             }}
-            className="flex-1"
+            // Arrival slide replays per jump: the epoch in key= makes each
+            // jump a fresh element, so the mount animation runs again.
+            className={`flex-1 ${
+              jumpWindow
+                ? jumpDir === "up"
+                  ? "animate-[jumpArriveUp_0.26s_ease-out_both]"
+                  : "animate-[jumpArriveDown_0.26s_ease-out_both]"
+                : ""
+            }`}
           />
         )}
 

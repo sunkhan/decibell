@@ -317,9 +317,6 @@ function MessageBubble({
     return (
       <div
         ref={auditRef}
-        // Lets the panels' animated jump locate this row in the DOM by
-        // message id (see animateJump.ts).
-        data-mid={message.id}
         className={`group relative flex gap-3 rounded-lg py-px pr-2 transition-colors ${
           highlighted ? "bg-accent-soft" : "hover:bg-row-hover"
         }`}
@@ -352,9 +349,6 @@ function MessageBubble({
   return (
     <div
       ref={auditRef}
-      // Lets the panels' animated jump locate this row in the DOM by
-      // message id (see animateJump.ts).
-      data-mid={message.id}
       className={`group relative flex gap-3 rounded-lg pr-2 pt-2.5 pb-0.5 transition-colors ${
         highlighted ? "bg-accent-soft" : "hover:bg-row-hover"
       }${isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""}`}
