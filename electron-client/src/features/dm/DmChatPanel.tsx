@@ -12,6 +12,7 @@ import { toast } from "../../stores/toastStore";
 import { stringToColor } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import MessageBubble, { shouldGroup } from "../chat/MessageBubble";
+import { useTypeToFocusComposer } from "../chat/useTypeToFocusComposer";
 import MessagePreview from "../chat/MessagePreview";
 import RichComposer from "../chat/RichComposer";
 import EmojiPicker from "../chat/EmojiPicker";
@@ -153,6 +154,9 @@ export default function DmChatPanel() {
       }
     }
   }, [localUsername]);
+
+  // Type anywhere in the conversation to start composing; ArrowUp edits latest.
+  useTypeToFocusComposer(editorRef, editLatestOwn);
 
   const conversation = activeDmUser
     ? conversations[activeDmUser]

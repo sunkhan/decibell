@@ -597,7 +597,20 @@ const RichInput = forwardRef<RichInputHandle, RichInputProps>(function RichInput
         notifyChange();
       },
       focus: () => {
-        editorRef.current?.focus();
+        const el = editorRef.current;
+        if (!el) return;
+        el.focus();
+        // Place the caret at the end so a "type anywhere to compose"
+        // keystroke appends rather than landing at the start of an existing
+        // draft. (el.focus() alone leaves the caret at the start.)
+        const sel = window.getSelection();
+        if (sel) {
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          range.collapse(false);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
       },
       getValue: () => {
         const el = editorRef.current;

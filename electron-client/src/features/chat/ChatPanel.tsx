@@ -11,6 +11,7 @@ import { useDraftsStore } from "../../stores/draftsStore";
 import { channelKey } from "../../lib/channelKey";
 import { toast } from "../../stores/toastStore";
 import MessageBubble, { shouldGroup } from "./MessageBubble";
+import { useTypeToFocusComposer } from "./useTypeToFocusComposer";
 import PendingAttachmentsRow from "./PendingAttachmentsRow";
 import MessagePreview from "./MessagePreview";
 import RichComposer from "./RichComposer";
@@ -601,6 +602,9 @@ export default function ChatPanel() {
       }
     }
   }, [username]);
+
+  // Type anywhere in the channel to start composing; ArrowUp edits the latest.
+  useTypeToFocusComposer(editorRef, editLatestOwn);
 
   if (!activeServerId) {
     return (
