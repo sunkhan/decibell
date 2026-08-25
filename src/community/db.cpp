@@ -155,6 +155,14 @@ bool CommunityDb::open(const std::string& path,
     exec_sql(db_, "PRAGMA journal_mode=WAL;");
     exec_sql(db_, "PRAGMA foreign_keys=ON;");
     exec_sql(db_, "PRAGMA synchronous=NORMAL;");
+    // Wait (retrying) up to 2 s for the write lock instead of failing
+    // instantly with SQLITE_BUSY. All in-process access is already
+    // serialized by mutex_, so this only matters when a SECOND process
+    // touches the file (operator sqlite3 CLI, a backup / WAL-copy tool):
+    // without it, BEGIN IMMEDIATE (and even single writes) would fail on
+    // sight, and an unchecked BEGIN then degraded into autocommit partial
+    // writes (DB1). Paired with begin_tx_() below.
+    sqlite3_busy_timeout(db_, 2000);
 
     init_schema_();
     seed_if_empty_(owner_username, server_name, server_description);
@@ -827,7 +835,7 @@ bool CommunityDb::add_member(const std::string& username, int64_t uid) {
     // overwrites; the newcomer must never inherit them (this was C2).
     invalidate_user_perms_(username);
     overwrites_cache_.clear();
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
     {
         Stmt q(db_, "DELETE FROM channel_overwrites WHERE target_type=1 AND target_id=?;");
         if (q.s) { q.bind_text(1, username); q.step(); }
@@ -876,7 +884,7 @@ bool CommunityDb::rename_member(const std::string& old_username,
     invalidate_user_perms_(old_username);
     invalidate_user_perms_(new_username);
     overwrites_cache_.clear();
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1: don't degrade to autocommit
     // Evict any stale row squatting on the target name (its owner no longer
     // holds this username at central — usernames are unique among live
     // accounts and this member's token proves they hold it now).
@@ -918,7 +926,7 @@ bool CommunityDb::remove_member(const std::string& username) {
     std::lock_guard<std::mutex> lock(mutex_);
     invalidate_user_perms_(username);
     overwrites_cache_.clear();
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
     {
         Stmt q(db_, "DELETE FROM channel_overwrites WHERE target_type=1 AND target_id=?;");
         if (q.s) { q.bind_text(1, username); q.step(); }
@@ -1085,7 +1093,7 @@ bool CommunityDb::add_ban(const std::string& username,
         if (q.s) { q.bind_text(1, username); if (q.step() == SQLITE_ROW) uid = q.col_int64(0); }
     }
     // Remove membership (and role assignments) and insert ban atomically.
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
     {
         Stmt del(db_, "DELETE FROM channel_overwrites WHERE target_type=1 AND target_id=?;");
         if (del.s) { del.bind_text(1, username); del.step(); }
@@ -1217,7 +1225,7 @@ std::optional<DbRole> CommunityDb::create_role(const std::string& raw_name,
     if (name.empty()) return std::nullopt;
     std::lock_guard<std::mutex> lock(mutex_);
     invalidate_perm_cache_();   // positions shift for every role
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return std::nullopt;   // DB1
     // New roles land at position 1, directly above `everyone`; existing
     // roles shift up one to stay dense.
     exec_sql(db_, "UPDATE roles SET position = position + 1 WHERE is_default = 0;");
@@ -1268,7 +1276,7 @@ bool CommunityDb::update_role(int64_t role_id,
     if (new_pos < 1) new_pos = 1;
     if (new_pos > max_pos) new_pos = max_pos;
 
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
     bool ok = true;
     if (new_pos != cur->position) {
         // Standard list-move: close the gap at the old slot, open one at
@@ -1320,7 +1328,7 @@ bool CommunityDb::delete_role(int64_t role_id) {
     invalidate_perm_cache_();
     overwrites_cache_.clear();
 
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
     bool ok = true;
     {
         Stmt q(db_, "DELETE FROM channel_overwrites WHERE target_type=0 AND target_id=?;");
@@ -1386,7 +1394,7 @@ bool CommunityDb::set_member_roles(const std::string& username,
         if (!r || r->is_default) return false;
     }
     invalidate_user_perms_(username);
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
     bool ok = true;
     {
         Stmt q(db_, "DELETE FROM member_roles WHERE username=?;");
@@ -1702,6 +1710,10 @@ InviteResult CommunityDb::redeem_invite(const std::string& code,
         }
     }
 
+    // Not guarded like the other transactions (DB1): each path here performs a
+    // single mutation (one UPDATE or one DELETE), so an unchecked BEGIN can't
+    // leave partial state, and with the busy_timeout the statement still lands
+    // atomically under external contention rather than failing spuriously.
     exec_sql(db_, "BEGIN IMMEDIATE;");
 
     DbInvite inv;
@@ -1897,7 +1909,7 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name
         }
     }
 
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return std::nullopt;   // DB1
     bool ok = true;
     // Dense renumber around the insertion point: rows before idx keep
     // 0..idx-1, rows from idx on move to idx+1.., the new row takes idx.
@@ -1978,7 +1990,7 @@ void CommunityDb::normalize_channel_order_() {
     }
     flush_group(group_start, rows.size());
 
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return;   // DB1
     bool ok = true;
     for (size_t i = 0; i < out.size() && ok; ++i) {
         Stmt upd(db_, "UPDATE channels SET position=? WHERE id=?;");
@@ -2008,7 +2020,7 @@ bool CommunityDb::reorder_channels(const std::vector<std::string>& ordered_ids) 
         if (current != requested) return false;
     }
 
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
     bool ok = true;
     for (size_t i = 0; i < ordered_ids.size() && ok; ++i) {
         Stmt upd(db_, "UPDATE channels SET position=? WHERE id=?;");
@@ -2471,7 +2483,7 @@ std::vector<int64_t> CommunityDb::bind_attachments(const std::vector<int64_t>& a
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return {};   // DB1
     // Collect the ids that are actually eligible for binding. A UPDATE ...
     // RETURNING would do this in one shot but we stay portable to older SQLite.
     {
@@ -2725,7 +2737,7 @@ CommunityDb::PurgedMessages CommunityDb::delete_messages_by_sender_since(
             while (q.step() == SQLITE_ROW) out.unlink_paths.push_back(q.col_text(0));
         }
     }
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return {};   // DB1
     {
         Stmt q(db_,
             "DELETE FROM attachments WHERE message_id IN "
@@ -2913,7 +2925,7 @@ CommunityDb::PrunedTextResult CommunityDb::prune_text_messages(
     // then the messages themselves. We do this manually now that the FK +
     // CASCADE between attachments and messages has been dropped (FK was
     // incompatible with the message_id=0 sentinel for pending uploads).
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return {};   // DB1
     {
         Stmt q(db_,
             "DELETE FROM attachments "

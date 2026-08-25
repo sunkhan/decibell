@@ -1353,6 +1353,57 @@ def test_storage():
     owner.close()
 
 
+def test_x3_upload_membership_recheck():
+    print("[X3] a member kicked/banned mid-upload can't drive PATCH/DELETE")
+    owner = Client("alice"); assert auth_ok(owner)[0]; owner.flush(0.3)
+    upl = join("upl", owner); upl.flush(0.3)
+    tok = jwt("upl")
+
+    def http(method, path, extra_headers="", body=b""):
+        sk = raw_tls(8085)
+        sk.sendall((f"{method} {path} HTTP/1.1\r\nHost: x\r\n"
+                    f"Authorization: Bearer {tok}\r\n{extra_headers}"
+                    f"Content-Length: {len(body)}\r\n\r\n").encode() + body)
+        sk.settimeout(3); data = b""
+        try:
+            while b"\r\n\r\n" not in data:
+                chunk = sk.recv(4096)
+                if not chunk: break
+                data += chunk
+        except socket.timeout:
+            pass
+        head, _, rest = data.partition(b"\r\n\r\n")
+        clen = 0
+        for line in head.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                try: clen = int(line.split(b":", 1)[1])
+                except Exception: clen = 0
+        while len(rest) < clen:
+            try:
+                chunk = sk.recv(4096)
+                if not chunk: break
+                rest += chunk
+            except socket.timeout:
+                break
+        sk.close()
+        return head, rest
+
+    init_body = json.dumps({"channelId": "general", "filename": "x.bin",
+                            "mime": "application/octet-stream", "size": 4}).encode()
+    head, body = http("POST", "/attachments/init", "Content-Type: application/json\r\n", init_body)
+    check("init accepted for a member", head.startswith(b"HTTP/1.1 201"), head[:40])
+    aid = json.loads(body.decode() or "{}").get("id")
+
+    # Membership revoked out-of-band, exactly as a kick/ban removes the row.
+    sql("delete from members where username='upl'")
+
+    head, _ = http("PATCH", f"/attachments/{aid}", "Upload-Offset: 0\r\n", b"ab")
+    check("PATCH refused after membership revoked (X3)", head.startswith(b"HTTP/1.1 403"), head[:40])
+    head, _ = http("DELETE", f"/attachments/{aid}")
+    check("DELETE refused after membership revoked (X3)", head.startswith(b"HTTP/1.1 403"), head[:40])
+    upl.close(); owner.close()
+
+
 def test_m1_m4_timeout():
     print("[M1/M4] timeout ejects from voice and suspends the member's powers")
     owner = Client("alice"); assert auth_ok(owner)[0]
@@ -1485,6 +1536,7 @@ if __name__ == "__main__":
         test_udp_relay()
         test_http_keepalive_and_fts()
         test_storage()
+        test_x3_upload_membership_recheck()
         test_theme_a_tokens_and_uid()
     finally:
         stop_server(proc)

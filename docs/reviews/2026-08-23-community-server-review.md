@@ -194,6 +194,21 @@ standalone build + e2e harness (now 188 checks; new `test_m1_m4_timeout`,
   507 (fwrite only buffers; ENOSPC surfaces at flush/close) now fails loudly, and the client
   re-HEADs and resumes from the real on-disk offset. Partial file left intact for resume.
 
+**Hardening batch (2026-08-25) ✅** — DB1 + X3 + X4 (198 e2e checks, 3 new):
+
+- **DB1**: `sqlite3_busy_timeout(db_, 2000)` at open (in-process access is already
+  mutex-serialized; this only matters for an external writer — operator `sqlite3` CLI,
+  backup/WAL-copy tool), and every multi-statement write now checks the `BEGIN IMMEDIATE`
+  return and bails cleanly instead of degrading into autocommit partial state (member+banned,
+  stripped roles, etc.). 14 transaction sites guarded; `redeem_invite` left unguarded on
+  purpose (single-mutation per path — safe under autocommit, and still lands atomically under
+  contention thanks to the busy_timeout).
+- **X3**: `handle_patch` / `handle_complete` / `handle_thumbnail_upload` / `handle_delete` now
+  re-check `is_member` (cheap PK lookup), so a user kicked/banned mid-upload with a still-valid
+  JWT can't drive the upload to completion — matching the chat path's per-packet re-check.
+- **X4**: `HEAD` on a ready attachment now applies the same `VIEW_CHANNEL` gate as `GET`, so an
+  overwrite-hidden channel's attachments can't be probed for existence/size via HEAD.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

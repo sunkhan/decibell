@@ -516,6 +516,7 @@ private:
         if (!att)                                { send_error(404, "Not Found"); return; }
         if (att->upload_status != "uploading")   { send_error(409, "Conflict"); return; }
         if (att->uploader != username_)          { send_error(403, "Forbidden"); return; }
+        if (!db_.is_member(username_))            { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
 
         int64_t offset = 0;
         try { offset = std::stoll(req_.header("upload-offset")); }
@@ -652,6 +653,12 @@ private:
         if (att->upload_status == "ready" && !db_.is_member(username_)) {
             send_error(403, "Forbidden"); return;
         }
+        // X4: a ready file in an overwrite-hidden channel must not be probed
+        // for existence/size via HEAD either — mirror GET's VIEW_CHANNEL gate.
+        if (att->upload_status == "ready" && authz_ && !att->channel_id.empty() &&
+            !authz_->check(chatproj::Action::ViewChannel, {username_, att->channel_id, ""})) {
+            send_error(403, "Forbidden"); return;
+        }
         int64_t offset = 0;
         if (att->upload_status == "uploading") {
             const std::string partial = att->storage_path + ".partial";
@@ -678,6 +685,7 @@ private:
         if (!att)                              { send_error(404, "Not Found"); return; }
         if (att->upload_status != "uploading") { send_error(409, "Conflict"); return; }
         if (att->uploader != username_)        { send_error(403, "Forbidden"); return; }
+        if (!db_.is_member(username_))          { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
 
         const std::string partial = att->storage_path + ".partial";
         std::error_code ec;
@@ -896,6 +904,7 @@ private:
         if (!att)                            { send_error(404, "Not Found"); return; }
         if (att->upload_status != "ready")   { send_error(409, "Conflict"); return; }
         if (att->uploader != username_)      { send_error(403, "Forbidden"); return; }
+        if (!db_.is_member(username_))        { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
         if (req_.content_length <= 0 ||
             req_.content_length > MAX_THUMB_BYTES) {
             send_error(413, "Payload Too Large"); return;
@@ -1026,6 +1035,7 @@ private:
         if (!att)                              { send_error(404, "Not Found"); return; }
         if (att->upload_status != "uploading") { send_error(409, "Conflict"); return; }
         if (att->uploader != username_)        { send_error(403, "Forbidden"); return; }
+        if (!db_.is_member(username_))          { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
 
         auto path = db_.abort_pending_attachment(id);
         if (!path) { send_error(500, "Internal Server Error"); return; }
