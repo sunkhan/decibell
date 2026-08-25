@@ -2283,6 +2283,100 @@ std::vector<DbMessage> CommunityDb::fetch_messages(const std::string& channel_id
     return out;
 }
 
+namespace {
+// Reads the 7 message columns (in the canonical SELECT order) into a DbMessage.
+DbMessage read_message_row(Stmt& q) {
+    DbMessage m;
+    m.id = q.col_int64(0);
+    m.channel_id = q.col_text(1);
+    m.sender = q.col_text(2);
+    m.content = q.col_text(3);
+    m.timestamp = q.col_int64(4);
+    m.edited_at = q.col_int64(5);
+    m.reply_to = q.col_int64(6);
+    return m;
+}
+} // namespace
+
+std::vector<DbMessage> CommunityDb::fetch_messages_around(const std::string& channel_id,
+                                                         int64_t around_id,
+                                                         int32_t limit,
+                                                         bool* has_more_before,
+                                                         bool* has_more_after) const {
+    if (has_more_before) *has_more_before = false;
+    if (has_more_after) *has_more_after = false;
+    if (limit <= 0) limit = 25;
+    if (limit > 100) limit = 100;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // The target and older, newest-first; one extra to detect more older.
+    std::vector<DbMessage> older;  // desc: around_id, then older
+    {
+        Stmt q(db_,
+            "SELECT id, channel_id, sender, content, timestamp, edited_at, reply_to FROM messages "
+            "WHERE channel_id=? AND id<=? ORDER BY id DESC LIMIT ?;");
+        if (q.s) {
+            q.bind_text(1, channel_id);
+            q.bind_int64(2, around_id);
+            q.bind_int(3, limit + 1);
+            while (q.step() == SQLITE_ROW) older.push_back(read_message_row(q));
+        }
+    }
+    if (static_cast<int32_t>(older.size()) > limit) {
+        older.pop_back();
+        if (has_more_before) *has_more_before = true;
+    }
+
+    // Strictly newer, oldest-first; one extra to detect more newer.
+    std::vector<DbMessage> newer;  // asc
+    {
+        Stmt q(db_,
+            "SELECT id, channel_id, sender, content, timestamp, edited_at, reply_to FROM messages "
+            "WHERE channel_id=? AND id>? ORDER BY id ASC LIMIT ?;");
+        if (q.s) {
+            q.bind_text(1, channel_id);
+            q.bind_int64(2, around_id);
+            q.bind_int(3, limit + 1);
+            while (q.step() == SQLITE_ROW) newer.push_back(read_message_row(q));
+        }
+    }
+    if (static_cast<int32_t>(newer.size()) > limit) {
+        newer.pop_back();
+        if (has_more_after) *has_more_after = true;
+    }
+
+    // Combine oldest→newest: reverse(older) then newer.
+    std::vector<DbMessage> out;
+    out.reserve(older.size() + newer.size());
+    out.assign(older.rbegin(), older.rend());
+    for (auto& m : newer) out.push_back(std::move(m));
+    return out;
+}
+
+std::vector<DbMessage> CommunityDb::fetch_messages_after(const std::string& channel_id,
+                                                        int64_t after_id,
+                                                        int32_t limit,
+                                                        bool* has_more_after) const {
+    if (has_more_after) *has_more_after = false;
+    if (limit <= 0) limit = 50;
+    if (limit > 200) limit = 200;
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<DbMessage> out;  // asc = oldest→newest
+    Stmt q(db_,
+        "SELECT id, channel_id, sender, content, timestamp, edited_at, reply_to FROM messages "
+        "WHERE channel_id=? AND id>? ORDER BY id ASC LIMIT ?;");
+    if (!q.s) return out;
+    q.bind_text(1, channel_id);
+    q.bind_int64(2, after_id);
+    q.bind_int(3, limit + 1);
+    while (q.step() == SQLITE_ROW) out.push_back(read_message_row(q));
+    if (static_cast<int32_t>(out.size()) > limit) {
+        out.pop_back();
+        if (has_more_after) *has_more_after = true;
+    }
+    return out;
+}
+
 std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
     const std::vector<int64_t>& message_ids) const {
     std::vector<DbAttachment> out;

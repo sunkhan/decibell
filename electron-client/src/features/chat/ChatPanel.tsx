@@ -95,6 +95,13 @@ export default function ChatPanel() {
 
   const [draft, setDraft] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  // A just-applied jump context window. `epoch` bumps on each jump so the
+  // Virtuoso instance remounts and lands centered on `targetId` via
+  // initialTopMostItemIndex — a fresh mount has no stale scroll anchor, so
+  // the target is on screen the first time (the old scrollToIndex-after-
+  // replace path jumped to a stale anchor first, then corrected). null when
+  // viewing normally / at present.
+  const [jumpWindow, setJumpWindow] = useState<{ epoch: number; targetId: number } | null>(null);
   const editorRef = useRef<RichInputHandle>(null);
   // pendingIds already claimed by an in-flight send, so a second Enter
   // pressed while uploads are still running can't re-send the same
@@ -108,6 +115,14 @@ export default function ChatPanel() {
   // re-requesting the same page in the window between invoke resolving
   // and the data landing.
   const lastRequestedBeforeIdRef = useRef(0);
+  // Downward-pagination twins of the older-history guards above, for
+  // fetching NEWER messages (after_id) around a jump target.
+  const loadNewerInFlightRef = useRef(false);
+  const lastRequestedAfterIdRef = useRef(0);
+  // When a jump target isn't in the loaded slice, we request an around-window
+  // and stash the target here; the effect that watches `messages` lands on it
+  // once the window arrives.
+  const pendingJumpIdRef = useRef<number | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
@@ -161,6 +176,11 @@ export default function ChatPanel() {
       : null;
   const messages = activeKey ? messagesByChannel[activeKey] ?? [] : [];
   const loading = activeKey ? historyLoading[activeKey] === true : false;
+  // "Windowed" = viewing a jumped slice with newer messages below (not at the
+  // live bottom). Drives the jump-to-present pill, disables followOutput's
+  // auto-scroll, and enables downward pagination via endReached.
+  const hasMoreAfterMap = useChatStore((s) => s.hasMoreAfter);
+  const windowed = activeKey ? hasMoreAfterMap[activeKey] === true : false;
   const dropHoveredHere = dragHoveredKey === "active-input";
 
   // Live "are there any non-failed pendings for this channel" — drives
@@ -189,8 +209,11 @@ export default function ChatPanel() {
   const topIndexRef = useRef(0);
   const atBottomRef = useRef(true);
 
-  // Keeps the viewport anchored when older history pages in at the top.
-  const firstItemIndex = useVirtuosoPrepend(messages, messageKey, activeKey);
+  // Keeps the viewport anchored when older history pages in at the top. The
+  // reset key folds in the jump epoch so a jump-window remount also resets the
+  // prepend offset (matching the Virtuoso key= below).
+  const prependResetKey = activeKey ? `${activeKey}:${jumpWindow?.epoch ?? 0}` : null;
+  const firstItemIndex = useVirtuosoPrepend(messages, messageKey, prependResetKey);
 
   // Compute Virtuoso's initialTopMostItemIndex from the channel's
   // saved scroll position. This is the *only* mechanism we use to
@@ -203,6 +226,11 @@ export default function ChatPanel() {
   const initialIndex = (() => {
     if (messages.length === 0) return 0;
     const last = messages.length - 1;
+    // A just-applied jump window: mount centered on the target message.
+    if (jumpWindow) {
+      const pos = messages.findIndex((m) => m.id === jumpWindow.targetId);
+      if (pos >= 0) return { index: pos, align: "center" as const };
+    }
     if (!activeKey) return last;
     const saved =
       useChatStore.getState().scrollPositionsByChannel[activeKey];
@@ -323,6 +351,69 @@ export default function ChatPanel() {
       });
   };
 
+  // Downward paginator — the mirror of maybeLoadOlderHistory, active only
+  // while windowed (newer messages exist below the jump slice). Virtuoso's
+  // endReached fires it; it no-ops at present (hasMoreAfter false), so it's
+  // harmless to leave wired in the non-jumped case.
+  const maybeLoadNewerHistory = () => {
+    if (!activeServerId || !activeChannelId || !activeKey) return;
+    const chat = useChatStore.getState();
+    if (!chat.hasMoreAfter[activeKey]) return;
+    if (loadNewerInFlightRef.current) return;
+    const list = chat.messagesByChannel[activeKey] ?? [];
+    let afterId = 0;
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i].id > 0) {
+        afterId = list[i].id;
+        break;
+      }
+    }
+    if (afterId === 0 || afterId === lastRequestedAfterIdRef.current) return;
+    loadNewerInFlightRef.current = true;
+    lastRequestedAfterIdRef.current = afterId;
+    invoke("request_channel_history", {
+      serverId: activeServerId,
+      channelId: activeChannelId,
+      afterId,
+      limit: 50,
+    })
+      .catch((err) => {
+        console.error("request_channel_history (newer):", err);
+        lastRequestedAfterIdRef.current = 0;
+      })
+      .finally(() => {
+        loadNewerInFlightRef.current = false;
+      });
+  };
+
+  // "Jump to present": drop the windowed slice and reload the newest page,
+  // exactly like a fresh channel entry. Clearing first (rather than merging)
+  // guarantees no gap between the old window and the tail, and flips
+  // hasMoreAfter back to false so followOutput/the pill re-sync.
+  const jumpToPresent = () => {
+    if (!activeServerId || !activeChannelId) return;
+    const serverId = activeServerId;
+    const channelId = activeChannelId;
+    setJumpWindow(null);
+    pendingJumpIdRef.current = null;
+    loadMoreInFlightRef.current = false;
+    lastRequestedBeforeIdRef.current = 0;
+    loadNewerInFlightRef.current = false;
+    lastRequestedAfterIdRef.current = 0;
+    const chat = useChatStore.getState();
+    chat.resetChannelForJump(serverId, channelId);
+    chat.setHistoryLoading(serverId, channelId, true);
+    invoke("request_channel_history", {
+      serverId,
+      channelId,
+      beforeId: 0,
+      limit: 50,
+    }).catch((err) => {
+      console.error("request_channel_history (present):", err);
+      useChatStore.getState().setHistoryLoading(serverId, channelId, false);
+    });
+  };
+
 
   // No more pre-computed `bubbles` array. The old code rebuilt it on
   // every messages-reference change — for a 5000-message channel,
@@ -362,6 +453,14 @@ export default function ChatPanel() {
   const handleSend = async () => {
     const content = (editorRef.current?.getValue() ?? "").trim();
     if (!activeServerId || !activeChannelId || !username) return;
+
+    // Sending while viewing a jumped slice would drop the new message past a
+    // hidden gap (addMessage guards against it). Snap to present first and
+    // keep the draft — the next Enter sends normally at the bottom.
+    if (activeKey && useChatStore.getState().hasMoreAfter[activeKey]) {
+      jumpToPresent();
+      return;
+    }
 
     const channelPendings = useAttachmentsStore
       .getState()
@@ -625,34 +724,76 @@ export default function ChatPanel() {
     for (const m of messages) if (m.id > 0) map.set(m.id, m);
     return map;
   }, [messages]);
-  // Reset transient composer state when switching channels.
+  // Reset transient composer + jump state when switching channels.
   useEffect(() => {
     setReplyingTo(null);
     setEditingMessageId(null);
+    setJumpWindow(null);
+    pendingJumpIdRef.current = null;
+    lastRequestedAfterIdRef.current = 0;
+    loadNewerInFlightRef.current = false;
   }, [activeKey]);
 
-  // Jump to a replied-to message + flash it. No-op if the parent isn't in the
-  // loaded window (client-side resolution only).
+  // Jump to a replied-to message + flash it. If the parent is in the loaded
+  // slice we scroll straight to it; otherwise (Discord-style) we fetch a
+  // context window around it and let the landing effect below center on it
+  // once it arrives — without pulling in all the intervening history.
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const highlightTimer = useRef<number | null>(null);
+  const flash = useCallback((id: number) => {
+    if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+    setHighlightId(id);
+    highlightTimer.current = window.setTimeout(() => setHighlightId(null), 1600);
+  }, []);
   const jumpToMessage = useCallback(
     (id: number) => {
       const pos = messages.findIndex((m) => m.id === id);
-      if (pos < 0) return;
-      // scrollToIndex uses the raw 0-based data index (like
-      // initialTopMostItemIndex) — NOT the firstItemIndex-adjusted index that
-      // itemContent / rangeChanged report.
-      virtuosoRef.current?.scrollToIndex({
-        index: pos,
-        align: "center",
-        behavior: "smooth",
+      if (pos >= 0) {
+        // scrollToIndex uses the raw 0-based data index (like
+        // initialTopMostItemIndex) — NOT the firstItemIndex-adjusted index
+        // that itemContent / rangeChanged report.
+        virtuosoRef.current?.scrollToIndex({
+          index: pos,
+          align: "center",
+          behavior: "smooth",
+        });
+        flash(id);
+        return;
+      }
+      // Not loaded — fetch a window centered on it. Already requesting this
+      // exact target? Wait for the landing effect.
+      if (!activeServerId || !activeChannelId) return;
+      if (pendingJumpIdRef.current === id) return;
+      pendingJumpIdRef.current = id;
+      loadMoreInFlightRef.current = false;
+      lastRequestedBeforeIdRef.current = 0;
+      loadNewerInFlightRef.current = false;
+      lastRequestedAfterIdRef.current = 0;
+      useChatStore.getState().setHistoryLoading(activeServerId, activeChannelId, true);
+      invoke("request_channel_history", {
+        serverId: activeServerId,
+        channelId: activeChannelId,
+        aroundId: id,
+        limit: 25,
+      }).catch((err) => {
+        console.error("request_channel_history (around):", err);
+        pendingJumpIdRef.current = null;
+        if (activeServerId && activeChannelId)
+          useChatStore.getState().setHistoryLoading(activeServerId, activeChannelId, false);
       });
-      if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
-      setHighlightId(id);
-      highlightTimer.current = window.setTimeout(() => setHighlightId(null), 1600);
     },
-    [messages],
+    [messages, activeServerId, activeChannelId, flash],
   );
+  // Landing effect: once the requested around-window is in `messages`, remount
+  // the list centered on the target (bump epoch) and flash it.
+  useEffect(() => {
+    const id = pendingJumpIdRef.current;
+    if (id == null) return;
+    if (!messages.some((m) => m.id === id)) return;
+    pendingJumpIdRef.current = null;
+    setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
+    flash(id);
+  }, [messages, flash]);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
   }, []);
@@ -680,7 +821,7 @@ export default function ChatPanel() {
         {channelName}
       </div>
 
-      <div ref={chatViewRef} className="flex flex-1 flex-col">
+      <div ref={chatViewRef} className="relative flex flex-1 flex-col">
         {loading && messages.length === 0 ? (
           <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
             Loading history…
@@ -695,13 +836,16 @@ export default function ChatPanel() {
             // so initialTopMostItemIndex applies fresh — without the
             // key, Virtuoso reuses its instance across data swaps and
             // ignores any change to the initial-position prop.
-            key={activeKey ?? "none"}
+            key={`${activeKey ?? "none"}:${jumpWindow?.epoch ?? 0}`}
             ref={virtuosoRef}
             data={messages}
             firstItemIndex={firstItemIndex}
             computeItemKey={(index, m) => messageKey(m) || `i:${index}`}
             initialTopMostItemIndex={initialIndex}
-            followOutput="smooth"
+            // No auto-scroll-to-bottom while windowed: new live messages are
+            // dropped (they'd land past a hidden gap), and downward paging
+            // shouldn't yank the viewport to the freshly-appended tail.
+            followOutput={windowed ? false : "smooth"}
             // Discord-style: when total content height < viewport,
             // stack messages from the bottom up against the input
             // bar instead of pinning the first message to the top.
@@ -714,6 +858,7 @@ export default function ChatPanel() {
             // already correct.
             increaseViewportBy={{ top: 600, bottom: 600 }}
             startReached={() => maybeLoadOlderHistory(true)}
+            endReached={() => maybeLoadNewerHistory()}
             rangeChanged={(range) => {
               // Absolute, like itemContent's — rebase before it is used
               // as a position in `messages`. Storing it raw meant the
@@ -792,6 +937,30 @@ export default function ChatPanel() {
             }}
             className="flex-1"
           />
+        )}
+
+        {/* Jump-to-present pill — appears only while viewing a jumped slice
+            with newer messages below. Clicking reloads the newest page. */}
+        {windowed && (
+          <button
+            onClick={jumpToPresent}
+            title="Jump to present"
+            className="absolute bottom-3 right-4 z-20 flex items-center gap-1.5 rounded-full border border-border bg-bg-light/95 px-3 py-1.5 text-meta font-medium text-text-secondary shadow-float backdrop-blur-sm transition-colors hover:bg-row-hover hover:text-text-primary"
+          >
+            Jump to present
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="7 6 12 11 17 6" />
+              <polyline points="7 13 12 18 17 13" />
+            </svg>
+          </button>
         )}
       </div>
 

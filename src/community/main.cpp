@@ -1501,9 +1501,25 @@ private:
                 return;
             }
 
-            bool has_more = false;
-            auto msgs = db->fetch_messages(
-                req.channel_id(), req.before_id(), req.limit(), &has_more);
+            bool has_more = false;        // older messages exist (above)
+            bool has_more_after = false;  // newer messages exist (below)
+            std::vector<chatproj::DbMessage> msgs;  // oldest→newest
+            if (req.around_id() > 0) {
+                // Jump-to-message: a window centered on around_id.
+                msgs = db->fetch_messages_around(
+                    req.channel_id(), req.around_id(),
+                    req.limit() > 0 ? req.limit() : 25,
+                    &has_more, &has_more_after);
+            } else if (req.after_id() > 0) {
+                // Downward pagination from a jumped/windowed view.
+                msgs = db->fetch_messages_after(
+                    req.channel_id(), req.after_id(), req.limit(), &has_more_after);
+            } else {
+                // Most-recent / older page (newest-first from the DB → reverse).
+                auto desc = db->fetch_messages(
+                    req.channel_id(), req.before_id(), req.limit(), &has_more);
+                msgs.assign(desc.rbegin(), desc.rend());
+            }
 
             // Load attachments for this page in one query.
             std::vector<int64_t> msg_ids;
@@ -1516,9 +1532,9 @@ private:
                 by_msg[a.message_id].push_back(&a);
             }
 
-            // Reverse so the client receives oldest→newest within the page,
-            // matching the order they'll render.
-            for (auto it = msgs.rbegin(); it != msgs.rend(); ++it) {
+            // msgs is already oldest→newest (the fetch branches normalize it),
+            // matching the order the client renders.
+            for (auto it = msgs.begin(); it != msgs.end(); ++it) {
                 auto* cm = res->add_messages();
                 cm->set_id(it->id);
                 cm->set_sender(it->sender);
@@ -1554,6 +1570,9 @@ private:
                 }
             }
             res->set_has_more(has_more);
+            res->set_has_more_after(has_more_after);
+            res->set_around_id(req.around_id());
+            res->set_after_id(req.after_id());
             send_packet(p);
         }
 

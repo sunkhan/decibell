@@ -1343,6 +1343,49 @@ def test_public_join():
     owner.close()
 
 
+def test_history_around_and_after():
+    print("[jump] history around_id returns a centered window; after_id pages newer")
+    owner = Client("alice"); assert auth_ok(owner)[0]; owner.flush(0.5)
+    # Seed 40 messages directly (history reads from the DB; avoids the
+    # per-session send rate limit). Capture their ids in insertion order.
+    now = int(time.time())
+    ids = []
+    for i in range(40):
+        rid = sql("insert into messages(channel_id, sender, content, timestamp) "
+                  "values('general','alice',?,?) returning id", f"jm{i}", now + i)[0][0]
+        ids.append(rid)
+    target = ids[20]  # a message in the middle
+
+    # Context window around the target: window includes it, both has_more flags set.
+    owner.send(pb.Packet.CHANNEL_HISTORY_REQ,
+               channel_history_req=pb.ChannelHistoryRequest(channel_id="general", around_id=target, limit=10))
+    r = owner.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2, pred=lambda p: p.channel_history_res.around_id == target)
+    msgs = r.channel_history_res.messages
+    got_ids = [m.id for m in msgs]
+    check("window contains the target", target in got_ids)
+    check("window is oldest→newest", got_ids == sorted(got_ids))
+    check("window has messages before the target", any(m.id < target for m in msgs))
+    check("window has messages after the target", any(m.id > target for m in msgs))
+    check("more-before + more-after both set for a middle target",
+          r.channel_history_res.has_more and r.channel_history_res.has_more_after)
+
+    # after_id pages newer (oldest-first), from near the top.
+    owner.send(pb.Packet.CHANNEL_HISTORY_REQ,
+               channel_history_req=pb.ChannelHistoryRequest(channel_id="general", after_id=ids[0], limit=10))
+    r = owner.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2, pred=lambda p: p.channel_history_res.after_id == ids[0])
+    after = [m.id for m in r.channel_history_res.messages]
+    check("after page is the 10 ids right after ids[0]", after == ids[1:11])
+    check("after page reports more newer", r.channel_history_res.has_more_after)
+
+    # after_id near the end → no more newer.
+    owner.send(pb.Packet.CHANNEL_HISTORY_REQ,
+               channel_history_req=pb.ChannelHistoryRequest(channel_id="general", after_id=ids[38], limit=10))
+    r = owner.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2, pred=lambda p: p.channel_history_res.after_id == ids[38])
+    check("after page near end returns the tail, no more newer",
+          [m.id for m in r.channel_history_res.messages] == [ids[39]] and not r.channel_history_res.has_more_after)
+    owner.close()
+
+
 def test_message_reply():
     print("[reply] reply_to persists + echoes on broadcast/history; invalid dropped")
     owner = Client("alice"); assert auth_ok(owner)[0]
@@ -1651,6 +1694,7 @@ if __name__ == "__main__":
         test_http_keepalive_and_fts()
         test_message_edit()
         test_message_reply()
+        test_history_around_and_after()
         test_storage()
         test_x3_upload_membership_recheck()
         test_theme_a_tokens_and_uid()

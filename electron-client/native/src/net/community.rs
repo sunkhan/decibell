@@ -544,6 +544,9 @@ impl CommunityClient {
                         channel_id: resp.channel_id,
                         messages,
                         has_more: resp.has_more,
+                        has_more_after: resp.has_more_after,
+                        around_id: resp.around_id,
+                        after_id: resp.after_id,
                     });
                 }
                 Some(packet::Payload::ChannelPruned(msg)) => {

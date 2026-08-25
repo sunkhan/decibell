@@ -493,6 +493,21 @@ public:
                                           int64_t before_id,
                                           int32_t limit,
                                           bool* has_more) const;
+    // Jump-to-message context window, ordered OLDEST→newest: up to `limit`
+    // messages with id <= around_id (including it) plus up to `limit` with
+    // id > around_id. `has_more_before` / `has_more_after` report whether more
+    // exist beyond each edge of the window.
+    std::vector<DbMessage> fetch_messages_around(const std::string& channel_id,
+                                                 int64_t around_id,
+                                                 int32_t limit,
+                                                 bool* has_more_before,
+                                                 bool* has_more_after) const;
+    // Downward pagination, ordered OLDEST→newest: up to `limit` messages with
+    // id > after_id. `has_more_after` = more newer than the page exist.
+    std::vector<DbMessage> fetch_messages_after(const std::string& channel_id,
+                                                int64_t after_id,
+                                                int32_t limit,
+                                                bool* has_more_after) const;
     // Load all attachments belonging to any of the given message ids.
     // Ordered by (message_id ASC, position ASC).
     std::vector<DbAttachment> fetch_attachments_for_messages(

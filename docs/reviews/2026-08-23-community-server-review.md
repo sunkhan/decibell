@@ -261,6 +261,28 @@ side covered by 7 new e2e checks (220 total):
   Replies are force-ungrouped so each shows its own header + preview. (Central compiled by
   inspection — no local libpqxx.)
 
+**Windowed jump-to-message (2026-08-25) ✅** — Discord-style jump to an out-of-view
+message (e.g. clicking a reply preview to an old parent) without fetching all the
+intervening history. Community side covered by 8 new e2e checks (228 total):
+
+- `ChannelHistoryRequest` gained `around_id` (context window centered on a target) and
+  `after_id` (downward pagination); `ChannelHistoryResponse` gained `has_more_after` plus
+  echoes of `around_id`/`after_id` so the client can route the reply (replace window vs
+  append newer vs the existing older/most-recent prepend).
+- `db.fetch_messages_around` fetches `id<=around DESC` + `id>around ASC` (limit+1 each) and
+  stitches them oldest→newest with the target included, reporting both `has_more_before`
+  and `has_more_after`; `db.fetch_messages_after` pages `id>after ASC`. The
+  `CHANNEL_HISTORY_REQ` handler branches on which id is set.
+- Client (channels only for now): a `hasMoreAfter` store slice + `setChannelWindow`
+  (replace), `appendNewer` (down-page), and `resetChannelForJump` (present) setters;
+  `addMessage` drops live messages while windowed (they'd land past a hidden gap).
+  `useChatEvents` routes the reply by the echoed mode. ChatPanel's `jumpToMessage` fetches
+  an around-window when the target isn't loaded and remounts Virtuoso centered on it (epoch
+  key + `initialTopMostItemIndex`), `endReached` pages newer, and a "Jump to present" pill
+  reloads the newest page. Sending while windowed snaps to present first.
+- DMs jump remains loaded-window-only (central Postgres would need around/after queries) —
+  noted follow-up. (Central compiled by inspection — no local libpqxx.)
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

@@ -50,6 +50,10 @@ export interface RequestChannelHistoryArgs {
   /** 0 means most-recent; non-zero gets older messages for pagination. */
   beforeId: number
   limit: number
+  /** Jump-to-message: fetch a window centered on this id (replaces the view). */
+  aroundId?: number
+  /** Downward pagination: fetch messages newer than this id. */
+  afterId?: number
 }
 export declare function requestChannelHistory(args: RequestChannelHistoryArgs): Promise<void>
 export interface WipeChannelHistoryArgs {

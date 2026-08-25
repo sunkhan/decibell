@@ -503,6 +503,11 @@ export interface ChannelHistoryReceivedPayload {
     replyTo: number;
   }>;
   hasMore: boolean;
+  hasMoreAfter: boolean;
+  /// Echoed from the request: >0 → context window (replace); >0 after → newer
+  /// page (append); both 0 → older page / most-recent (prepend).
+  aroundId: number;
+  afterId: number;
 }
 
 export interface ChannelPrunedPayload {

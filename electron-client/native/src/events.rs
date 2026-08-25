@@ -438,6 +438,9 @@ pub struct ChannelHistoryReceivedPayload {
     pub channel_id: String,
     pub messages: Vec<ChannelMessagePayload>,
     pub has_more: bool,
+    pub has_more_after: bool,
+    pub around_id: i64,
+    pub after_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

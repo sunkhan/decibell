@@ -68,25 +68,33 @@ export function useChatEvents() {
     const unlistenHistory = listen<ChannelHistoryReceivedPayload>(
       "channel_history_received",
       (event) => {
-        const { serverId, channelId, messages, hasMore } = event.payload;
-        useChatStore.getState().prependHistory(
-          serverId,
-          channelId,
-          messages.map((m) => ({
-            id: m.id,
-            sender: m.sender,
-            content: m.content,
-            timestamp: String(m.timestamp),
-            channelId: m.channelId,
-            attachments: (m.attachments ?? []).map(mapAttachment),
-            nonce: m.nonce || undefined,
-            editedAt: m.editedAt || undefined,
-            replyTo: m.replyTo || undefined,
-          })),
-          hasMore,
-        );
-        useChatStore.getState().setHistoryLoading(serverId, channelId, false);
-        useChatStore.getState().markHistoryFetched(serverId, channelId);
+        const { serverId, channelId, messages, hasMore, hasMoreAfter, aroundId, afterId } =
+          event.payload;
+        const mapped = messages.map((m) => ({
+          id: m.id,
+          sender: m.sender,
+          content: m.content,
+          timestamp: String(m.timestamp),
+          channelId: m.channelId,
+          attachments: (m.attachments ?? []).map(mapAttachment),
+          nonce: m.nonce || undefined,
+          editedAt: m.editedAt || undefined,
+          replyTo: m.replyTo || undefined,
+        }));
+        const store = useChatStore.getState();
+        // Route by the request mode the server echoed back:
+        //  aroundId>0 → a jump context window → replace the loaded slice.
+        //  afterId>0  → downward pagination    → append newer.
+        //  both 0     → older page / most-recent → prepend (existing path).
+        if (aroundId > 0) {
+          store.setChannelWindow(serverId, channelId, mapped, hasMore, hasMoreAfter);
+        } else if (afterId > 0) {
+          store.appendNewer(serverId, channelId, mapped, hasMoreAfter);
+        } else {
+          store.prependHistory(serverId, channelId, mapped, hasMore);
+        }
+        store.setHistoryLoading(serverId, channelId, false);
+        store.markHistoryFetched(serverId, channelId);
       },
     );
 

@@ -784,6 +784,12 @@ message ChannelHistoryRequest {
   int64 before_id = 2;
   // Server-enforced cap (hard max regardless of client value).
   int32 limit = 3;
+  // Jump-to-message: fetch a window centered on this id (up to `limit` before
+  // and after). Takes precedence over before_id/after_id. 0 = unused.
+  int64 around_id = 4;
+  // Downward pagination: fetch messages with id > after_id (oldest first).
+  // 0 = unused.
+  int64 after_id = 5;
 }
 
 message ChannelHistoryResponse {
@@ -792,6 +798,15 @@ message ChannelHistoryResponse {
   repeated ChannelMessage messages = 2;
   // True when more messages exist older than the oldest one returned.
   bool has_more = 3;
+  // True when more messages exist newer than the newest one returned. Always
+  // false for a plain "most recent" page (the newest is loaded). Meaningful
+  // after an around/after fetch — drives the "jump to present" affordance.
+  bool has_more_after = 4;
+  // Echoed from the request so the client applies the page correctly:
+  // around_id>0 → this is a context window (replace); after_id>0 → newer page
+  // (append); both 0 → older page (prepend) / most-recent.
+  int64 around_id = 5;
+  int64 after_id = 6;
 }
 
 message ChannelUpdateRequest {

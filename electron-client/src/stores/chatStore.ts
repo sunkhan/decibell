@@ -91,6 +91,12 @@ interface ChatState {
   /// (messageId → Message).
   pendingDeletions: Record<ChannelKey, Map<number, Message>>;
   hasMoreHistory: Record<ChannelKey, boolean>;
+  /// Newer messages exist below the loaded window — true only after a
+  /// jump-to-message (around) / downward (after) fetch leaves the view NOT at
+  /// the live bottom. false = at present (newest is loaded). Drives the
+  /// "jump to present" affordance, downward pagination, and the live-append
+  /// guard (a message_received while true is dropped, not appended past the gap).
+  hasMoreAfter: Record<ChannelKey, boolean>;
   historyLoading: Record<ChannelKey, boolean>;
   historyFetched: Record<ChannelKey, boolean>;
   /// Per-channel saved scroll position so re-entering a still-cached
@@ -183,6 +189,26 @@ interface ChatState {
     messages: Message[],
     hasMore: boolean,
   ) => void;
+  /// Jump-to-message: REPLACE the channel's loaded messages with a context
+  /// window (drops optimistics), setting both older/newer "has more" flags.
+  setChannelWindow: (
+    serverId: string,
+    channelId: string,
+    messages: Message[],
+    hasMoreOlder: boolean,
+    hasMoreNewer: boolean,
+  ) => void;
+  /// Downward pagination: append a newer page, updating hasMoreAfter.
+  appendNewer: (
+    serverId: string,
+    channelId: string,
+    messages: Message[],
+    hasMoreNewer: boolean,
+  ) => void;
+  /// Jump-to-present: clear the loaded slice so the caller can reload the
+  /// newest page from scratch. Resets hasMoreAfter → false (we'll be at the
+  /// live bottom) and historyFetched → false (a fresh fetch is coming).
+  resetChannelForJump: (serverId: string, channelId: string) => void;
   setHistoryLoading: (serverId: string, channelId: string, loading: boolean) => void;
   markHistoryFetched: (serverId: string, channelId: string) => void;
   applyChannelPruned: (
@@ -351,6 +377,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messagesByChannel: {},
   pendingDeletions: {},
   hasMoreHistory: {},
+  hasMoreAfter: {},
   historyLoading: {},
   historyFetched: {},
   scrollPositionsByChannel: {},
@@ -388,6 +415,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         channelAccessOrder: keep,
         messagesByChannel: filter(state.messagesByChannel),
         hasMoreHistory: filter(state.hasMoreHistory),
+        hasMoreAfter: filter(state.hasMoreAfter),
         historyLoading: filter(state.historyLoading),
         historyFetched: filter(state.historyFetched),
         scrollPositionsByChannel: filter(state.scrollPositionsByChannel),
@@ -610,6 +638,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addMessage: (serverId, message) =>
     set((state) => {
       const key = channelKey(serverId, message.channelId);
+      // While viewing a jumped/windowed slice (not at the live bottom), a live
+      // message belongs past a hidden gap — dropping it keeps the window
+      // contiguous. It'll load when the user returns to present / pages down.
+      // Optimistic sends (id=0) never reach here in that state: the composer
+      // jumps to present before sending.
+      if (state.hasMoreAfter[key] && message.id !== 0) return {};
       return {
         messagesByChannel: {
           ...state.messagesByChannel,
@@ -636,6 +670,48 @@ export const useChatStore = create<ChatState>((set, get) => ({
           [key]: [...withId, ...ephemeral],
         },
         hasMoreHistory: { ...state.hasMoreHistory, [key]: hasMore },
+      };
+    }),
+
+  setChannelWindow: (serverId, channelId, messages, hasMoreOlder, hasMoreNewer) =>
+    set((state) => {
+      const key = channelKey(serverId, channelId);
+      // Replace wholesale — a jump window is a fresh, possibly-discontinuous
+      // slice. Drop optimistics (they belong at the live tail, not here) and
+      // sort defensively by id.
+      const list = messages.filter((m) => m.id !== 0).sort((a, b) => a.id - b.id);
+      return {
+        messagesByChannel: { ...state.messagesByChannel, [key]: list },
+        hasMoreHistory: { ...state.hasMoreHistory, [key]: hasMoreOlder },
+        hasMoreAfter: { ...state.hasMoreAfter, [key]: hasMoreNewer },
+        historyFetched: { ...state.historyFetched, [key]: true },
+      };
+    }),
+
+  appendNewer: (serverId, channelId, messages, hasMoreNewer) =>
+    set((state) => {
+      const key = channelKey(serverId, channelId);
+      const existing = state.messagesByChannel[key] ?? [];
+      const existingIds = new Set(existing.filter((m) => m.id !== 0).map((m) => m.id));
+      const fresh = messages.filter((m) => m.id !== 0 && !existingIds.has(m.id));
+      const withId = [...existing.filter((m) => m.id !== 0), ...fresh].sort(
+        (a, b) => a.id - b.id,
+      );
+      const ephemeral = existing.filter((m) => m.id === 0);
+      return {
+        messagesByChannel: { ...state.messagesByChannel, [key]: [...withId, ...ephemeral] },
+        hasMoreAfter: { ...state.hasMoreAfter, [key]: hasMoreNewer },
+      };
+    }),
+
+  resetChannelForJump: (serverId, channelId) =>
+    set((state) => {
+      const key = channelKey(serverId, channelId);
+      return {
+        messagesByChannel: { ...state.messagesByChannel, [key]: [] },
+        hasMoreHistory: { ...state.hasMoreHistory, [key]: true },
+        hasMoreAfter: { ...state.hasMoreAfter, [key]: false },
+        historyFetched: { ...state.historyFetched, [key]: false },
       };
     }),
 
@@ -672,6 +748,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         messagesByChannel: { ...state.messagesByChannel, [key]: [] },
         hasMoreHistory: { ...state.hasMoreHistory, [key]: false },
+        hasMoreAfter: { ...state.hasMoreAfter, [key]: false },
         historyFetched: { ...state.historyFetched, [key]: true },
       };
     }),
@@ -688,6 +765,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         messagesByChannel: drop(state.messagesByChannel),
         hasMoreHistory: drop(state.hasMoreHistory),
+        hasMoreAfter: drop(state.hasMoreAfter),
         historyLoading: drop(state.historyLoading),
         historyFetched: drop(state.historyFetched),
         scrollPositionsByChannel: drop(state.scrollPositionsByChannel),
@@ -830,6 +908,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messagesByChannel: {},
       pendingDeletions: {},
       hasMoreHistory: {},
+      hasMoreAfter: {},
       historyLoading: {},
       historyFetched: {},
       scrollPositionsByChannel: {},
@@ -863,6 +942,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         channelAccessOrder: keep,
         messagesByChannel: filter(state.messagesByChannel),
         hasMoreHistory: filter(state.hasMoreHistory),
+        hasMoreAfter: filter(state.hasMoreAfter),
         historyLoading: filter(state.historyLoading),
         historyFetched: filter(state.historyFetched),
         scrollPositionsByChannel: filter(state.scrollPositionsByChannel),

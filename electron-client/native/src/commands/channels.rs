@@ -43,6 +43,10 @@ pub struct RequestChannelHistoryArgs {
     /// 0 means most-recent; non-zero gets older messages for pagination.
     pub before_id: i64,
     pub limit: i32,
+    /// Jump-to-message: fetch a window centered on this id (replaces the view).
+    pub around_id: Option<i64>,
+    /// Downward pagination: fetch messages newer than this id.
+    pub after_id: Option<i64>,
 }
 
 #[napi]
@@ -52,6 +56,8 @@ pub async fn request_channel_history(args: RequestChannelHistoryArgs) -> napi::R
         channel_id,
         before_id,
         limit,
+        around_id,
+        after_id,
     } = args;
     send_for_server(
         &server_id,
@@ -60,6 +66,8 @@ pub async fn request_channel_history(args: RequestChannelHistoryArgs) -> napi::R
             channel_id,
             before_id,
             limit,
+            around_id: around_id.unwrap_or(0),
+            after_id: after_id.unwrap_or(0),
         }),
     )
     .await
