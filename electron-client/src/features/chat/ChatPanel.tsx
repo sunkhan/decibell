@@ -1025,7 +1025,7 @@ export default function ChatPanel() {
               virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
             }}
             title="Jump to present"
-            className="absolute bottom-3 right-4 z-20 flex items-center gap-1.5 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent shadow-float transition-colors hover:bg-accent-hover"
+            className="absolute bottom-3 right-4 z-20 flex animate-[fadeUp_0.18s_ease_both] items-center gap-1.5 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent shadow-float transition-colors hover:bg-accent-hover"
           >
             Jump to present
             <svg
