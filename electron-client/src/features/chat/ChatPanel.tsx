@@ -235,10 +235,17 @@ export default function ChatPanel() {
   const initialIndex = (() => {
     if (messages.length === 0) return 0;
     const last = messages.length - 1;
-    // A just-applied jump window: mount centered on the target message.
+    // A just-applied jump window: mount with the target as the topmost
+    // visible row. NOT align:"center" — centering makes Virtuoso walk up
+    // from the target, filling half a viewport with ESTIMATED row heights to
+    // pick the actual topmost row, and anchor that; when the surrounding
+    // rows are code blocks (far taller than the estimate) the target gets
+    // pushed well below center once they measure. Anchoring the target's own
+    // top edge involves no estimates, so it cannot drift — and "jumped
+    // message near the top + flash" is also how Discord lands.
     if (jumpWindow) {
       const pos = messages.findIndex((m) => m.id === jumpWindow.targetId);
-      if (pos >= 0) return { index: pos, align: "center" as const };
+      if (pos >= 0) return { index: pos, align: "start" as const };
     }
     if (!activeKey) return last;
     const saved =

@@ -577,10 +577,13 @@ export default function DmChatPanel() {
 
   const initialIndex = (() => {
     const last = Math.max(0, bubbleMessages.length - 1);
-    // A just-applied jump window: mount centered on the target message.
+    // A just-applied jump window: mount with the target as the topmost
+    // visible row — align:"start", not "center"; see ChatPanel's initialIndex
+    // for why centering drifts when nearby rows (code blocks) out-size their
+    // estimates.
     if (jumpWindow) {
       const pos = bubbleMessages.findIndex((m) => m.id === jumpWindow.targetId);
-      if (pos >= 0) return { index: pos, align: "center" as const };
+      if (pos >= 0) return { index: pos, align: "start" as const };
     }
     if (!activeDmUser) return last;
     const saved = savedPositionsRef.current[activeDmUser];

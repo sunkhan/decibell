@@ -329,7 +329,12 @@ intervening history. Community side covered by 8 new e2e checks (228 total):
      highlight flash. The transform never touches scroll geometry, so it cannot mis-land
      or bounce, and near/far/unloaded jumps all share one arrival. All scroll-driving
      machinery (pause refs, settle timer, rAF helper, `data-mid` tags) removed. Both
-     panels.
+     panels. Round 6: the remount itself could still mis-land next to code blocks —
+     `align:"center"` picks the topmost row by walking up from the target with ESTIMATED
+     heights and anchors that row, so under-estimated code blocks push the target off
+     center once measured. Switched to `align:"start"`: anchoring the target's own top
+     edge uses no estimates and cannot drift (Discord lands jumped messages near the top
+     too — their list keeps the loaded chunk as real DOM, so they never estimate at all).
   5. *Jump-to-present pill polish* — restyled to the client's accent-button idiom
      (`rounded-md bg-accent text-on-accent hover:bg-accent-hover`), so its radius tracks
      the theme scale (flat on console, soft on default) instead of the hardcoded
