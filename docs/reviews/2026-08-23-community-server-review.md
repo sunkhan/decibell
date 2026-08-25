@@ -316,6 +316,12 @@ intervening history. Community side covered by 8 new e2e checks (228 total):
      in-flight `scrollToIndex`: auto-paging is now paused for the animation window
      (`pauseAutoPagingUntilRef`, 900ms + settle catch-up), and a near-jump falls back to
      the exact remount path when a prepend is already in flight. Both panels.
+  4. *Jump-to-present pill polish* — restyled to the client's accent-button idiom
+     (`rounded-md bg-accent text-on-accent hover:bg-accent-hover`), so its radius tracks
+     the theme scale (flat on console, soft on default) instead of the hardcoded
+     `rounded-full`. It now also appears on a plain scroll-up of >20 rows above the live
+     bottom (not just while windowed); clicking then scrolls to the bottom directly —
+     no refetch, since the loaded history is contiguous. Both panels.
 
 ## 5. Suggested order of work
 

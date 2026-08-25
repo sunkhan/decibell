@@ -33,6 +33,10 @@ const ERROR_MESSAGES = [
 // rationale, documented there.
 const HISTORY_EAGER_THRESHOLD = 25;
 
+// Rows above the live bottom before the jump-to-present pill appears for a
+// plain scroll-up — keep in sync with ChatPanel's JUMP_PILL_ROWS.
+const JUMP_PILL_ROWS = 20;
+
 export default function DmChatPanel() {
   const activeDmUser = useDmStore((s) => s.activeDmUser);
   const conversations = useDmStore((s) => s.conversations);
@@ -86,6 +90,9 @@ export default function DmChatPanel() {
   // A just-applied jump context window (see ChatPanel for the rationale): epoch
   // bumps on each jump so Virtuoso remounts centered on targetId. null = normal.
   const [jumpWindow, setJumpWindow] = useState<{ epoch: number; targetId: number } | null>(null);
+  // True while the user has scrolled more than JUMP_PILL_ROWS above the live
+  // bottom — shows the jump-to-present pill even without a jump window.
+  const [scrolledUp, setScrolledUp] = useState(false);
   // True while jump-to-present has cleared the slice and is awaiting the newest
   // page — shows a loading placeholder instead of the "beginning of
   // conversation" welcome during the brief refetch.
@@ -205,6 +212,7 @@ export default function DmChatPanel() {
     setReplyingTo(null);
     setEditingMessageId(null);
     setJumpWindow(null);
+    setScrolledUp(false);
     setPresentLoading(false);
     pendingJumpIdRef.current = null;
     lastRequestedAfterIdRef.current = 0;
@@ -712,7 +720,10 @@ export default function DmChatPanel() {
             // Absolute — see ChatPanel.
             const start = range.startIndex - firstItemIndex;
             topIndexRef.current = start;
-            endIndexRef.current = range.endIndex - firstItemIndex;
+            const end = range.endIndex - firstItemIndex;
+            endIndexRef.current = end;
+            // Far enough above the live bottom → surface the pill.
+            setScrolledUp(bubbleMessages.length - 1 - end > JUMP_PILL_ROWS);
             // Eager pagination — see ChatPanel's rangeChanged.
             if (
               start < HISTORY_EAGER_THRESHOLD &&
@@ -722,6 +733,7 @@ export default function DmChatPanel() {
           }}
           atBottomStateChange={(atBottom) => {
             atBottomRef.current = atBottom;
+            if (atBottom) setScrolledUp(false);
           }}
           itemContent={(absoluteIndex, msg) => {
             // See ChatPanel: firstItemIndex makes this index absolute.
@@ -793,13 +805,22 @@ export default function DmChatPanel() {
         />
       )}
 
-      {/* Jump-to-present pill — appears only while viewing a jumped slice with
-          newer messages below. Clicking reloads the newest page. */}
-      {windowed && (
+      {/* Jump-to-present pill — shown while viewing a jumped slice (newer
+          messages hidden below → reloads the newest page) and while merely
+          scrolled well above the live bottom (→ scrolls back down). Accent
+          button styling; rounded-md tracks the theme's radius scale. */}
+      {(windowed || scrolledUp) && (
         <button
-          onClick={jumpToPresent}
+          onClick={() => {
+            if (windowed) {
+              jumpToPresent();
+              return;
+            }
+            // History below is contiguous — just go to the bottom.
+            virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+          }}
           title="Jump to present"
-          className="absolute bottom-3 right-4 z-20 flex items-center gap-1.5 rounded-full border border-border bg-bg-light/95 px-3 py-1.5 text-meta font-medium text-text-secondary shadow-float backdrop-blur-sm transition-colors hover:bg-row-hover hover:text-text-primary"
+          className="absolute bottom-3 right-4 z-20 flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-meta font-semibold text-on-accent shadow-float transition-colors hover:bg-accent-hover"
         >
           Jump to present
           <svg

@@ -41,6 +41,10 @@ import type { Message } from "../../types";
 // shallow enough that idling at the bottom never pages.
 const HISTORY_EAGER_THRESHOLD = 25;
 
+// How many rows below the viewport's bottom edge before the "jump to
+// present" pill appears for a plain scroll-up (no jump window involved).
+const JUMP_PILL_ROWS = 20;
+
 function generateNonce(): string {
   return `n-${Date.now()}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
 }
@@ -102,6 +106,9 @@ export default function ChatPanel() {
   // replace path jumped to a stale anchor first, then corrected). null when
   // viewing normally / at present.
   const [jumpWindow, setJumpWindow] = useState<{ epoch: number; targetId: number } | null>(null);
+  // True while the user has scrolled more than JUMP_PILL_ROWS above the live
+  // bottom — shows the jump-to-present pill even without a jump window.
+  const [scrolledUp, setScrolledUp] = useState(false);
   const editorRef = useRef<RichInputHandle>(null);
   // pendingIds already claimed by an in-flight send, so a second Enter
   // pressed while uploads are still running can't re-send the same
@@ -740,6 +747,7 @@ export default function ChatPanel() {
     setReplyingTo(null);
     setEditingMessageId(null);
     setJumpWindow(null);
+    setScrolledUp(false);
     pendingJumpIdRef.current = null;
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -916,6 +924,9 @@ export default function ChatPanel() {
               const end = range.endIndex - firstItemIndex;
               topIndexRef.current = start;
               endIndexRef.current = end;
+              // Far enough above the live bottom → surface the pill. React
+              // bails out when the value is unchanged, so this is cheap.
+              setScrolledUp(messages.length - 1 - end > JUMP_PILL_ROWS);
               // Warm the previews either side of the window so a row's
               // image is already cached by the time it mounts.
               prefetchAround(
@@ -938,6 +949,7 @@ export default function ChatPanel() {
             }}
             atBottomStateChange={(atBottom) => {
               atBottomRef.current = atBottom;
+              if (atBottom) setScrolledUp(false);
             }}
             itemContent={(index, message) => {
               // firstItemIndex makes `index` absolute (it starts at
@@ -997,13 +1009,23 @@ export default function ChatPanel() {
           />
         )}
 
-        {/* Jump-to-present pill — appears only while viewing a jumped slice
-            with newer messages below. Clicking reloads the newest page. */}
-        {windowed && (
+        {/* Jump-to-present pill — shown while viewing a jumped slice (newer
+            messages hidden below → reloads the newest page) and while merely
+            scrolled well above the live bottom (→ scrolls back down). Styled
+            like the client's accent buttons; rounded-md tracks the theme's
+            radius scale (flat on console, soft on default). */}
+        {(windowed || scrolledUp) && (
           <button
-            onClick={jumpToPresent}
+            onClick={() => {
+              if (windowed) {
+                jumpToPresent();
+                return;
+              }
+              // History below is contiguous — just go to the bottom.
+              virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+            }}
             title="Jump to present"
-            className="absolute bottom-3 right-4 z-20 flex items-center gap-1.5 rounded-full border border-border bg-bg-light/95 px-3 py-1.5 text-meta font-medium text-text-secondary shadow-float backdrop-blur-sm transition-colors hover:bg-row-hover hover:text-text-primary"
+            className="absolute bottom-3 right-4 z-20 flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-meta font-semibold text-on-accent shadow-float transition-colors hover:bg-accent-hover"
           >
             Jump to present
             <svg
