@@ -319,3 +319,30 @@ export function parseRichText(content: string): RichNode[] {
 export function isPlainText(nodes: RichNode[]): boolean {
   return nodes.length === 1 && nodes[0].kind === "text";
 }
+
+/// Flatten to plain text for single-line previews (the DM sidebar's
+/// last-message row): markers dropped, emphasis children inlined, code
+/// and math contents kept verbatim (a fenced block becomes its code,
+/// display math its TeX source). Newlines collapse to spaces so the
+/// truncating row shows as much content as possible.
+export function richTextToPlain(content: string): string {
+  const out: string[] = [];
+  const walk = (nodes: RichNode[]) => {
+    for (const n of nodes) {
+      switch (n.kind) {
+        case "text":
+        case "code":
+        case "codeblock":
+          out.push(n.text);
+          break;
+        case "math":
+          out.push(n.tex);
+          break;
+        default:
+          walk(n.children);
+      }
+    }
+  };
+  walk(parseRichText(content));
+  return out.join("").replace(/\s+/g, " ").trim();
+}

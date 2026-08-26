@@ -3,7 +3,7 @@ import data from "@emoji-mart/data";
 import emojiRegex from "emoji-regex";
 import Twemoji from "../../components/emoji/Twemoji";
 import EmojiInfoPopover from "./EmojiInfoPopover";
-import { parseRichText, isPlainText, type RichNode } from "./richText";
+import { parseRichText, isPlainText, richTextToPlain, type RichNode } from "./richText";
 import CodeBlock from "./CodeBlock";
 import MathTex from "./MathTex";
 
@@ -132,11 +132,13 @@ export default function MessageText({ content, emojiSize, preview }: MessageText
   const tokens = useMemo<(string | JSX.Element)[]>(() => {
     // Preview mode (DM sidebar rows): no rich formatting — a code
     // block or display math inside a 14px single-line preview would
-    // wreck the row, and showing the literal markers there matches
-    // what the message "is". Emoji keep a constant inline size.
+    // wreck the row — but no literal markers either: flatten the rich
+    // tree to plain text (markers dropped, code/TeX contents kept), the
+    // way Discord's conversation list previews read. Emoji keep a
+    // constant inline size.
     if (preview) {
       const size = emojiSize !== undefined ? emojiSize : INLINE_EMOJI_SIZE;
-      return emojiTokens(content, size, "p").tokens;
+      return emojiTokens(richTextToPlain(content), size, "p").tokens;
     }
 
     const nodes = parseRichText(content);
