@@ -1397,6 +1397,10 @@ def test_message_reply():
     pid = parent.channel_msg.id
     check("parent posted", pid > 0)
     check("parent has reply_to=0", parent.channel_msg.reply_to == 0)
+    # Give the parent an attachment so the reply's embedded preview carries its
+    # kind (VIDEO=1) — lets the client label an attachment-only parent.
+    sql("insert into attachments(message_id, kind, filename, created_at) values(?, 1, 'clip.mp4', ?)",
+        pid, int(time.time()))
     owner.flush(0.3); rp.flush(0.3)
 
     # Reply to it.
@@ -1406,6 +1410,8 @@ def test_message_reply():
     check("reply_to persisted", sql("select reply_to from messages where id=?", bc.channel_msg.id) == [(pid,)])
     check("broadcast embeds parent preview",
           bc.channel_msg.reply_to_sender == "alice" and bc.channel_msg.reply_to_content == "parent")
+    check("broadcast embeds parent attachment kinds",
+          list(bc.channel_msg.reply_to_attachment_kinds) == [1])
 
     # A reply_to pointing at a nonexistent message is dropped to 0.
     rp.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="bad ref", reply_to=999999))
@@ -1422,6 +1428,8 @@ def test_message_reply():
     check("history embeds parent preview",
           len(replies) == 1 and replies[0].reply_to_sender == "alice"
           and replies[0].reply_to_content == "parent")
+    check("history embeds parent attachment kinds",
+          len(replies) == 1 and list(replies[0].reply_to_attachment_kinds) == [1])
 
     # Deleted parent → history still carries reply_to but the embedded sender
     # comes back empty (the client renders an unclickable tombstone).

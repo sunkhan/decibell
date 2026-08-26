@@ -2243,11 +2243,34 @@ namespace {
 // same shape — read_message_row expects exactly this column order.
 constexpr const char* kMessageSelect =
     "SELECT m.id, m.channel_id, m.sender, m.content, m.timestamp, m.edited_at, m.reply_to, "
-    "COALESCE(p.sender, ''), COALESCE(p.content, '') "
+    "COALESCE(p.sender, ''), COALESCE(p.content, ''), "
+    // Parent's attachment kinds as "0,1,3" in position order ('' when none /
+    // not a reply) — parsed by parse_kind_list below.
+    "COALESCE((SELECT GROUP_CONCAT(kind, ',') FROM "
+    "  (SELECT kind FROM attachments WHERE message_id = p.id ORDER BY position)), '') "
     "FROM messages m LEFT JOIN messages p "
     "ON p.id = m.reply_to AND p.channel_id = m.channel_id ";
 
-// Reads the 9 columns of kMessageSelect (in order) into a DbMessage.
+// "0,1,3" → {0,1,3}; "" → {}. Digits only, so a malformed token is skipped.
+std::vector<int32_t> parse_kind_list(const std::string& s) {
+    std::vector<int32_t> out;
+    int32_t v = 0;
+    bool any = false;
+    for (char c : s) {
+        if (c >= '0' && c <= '9') {
+            v = v * 10 + (c - '0');
+            any = true;
+        } else if (c == ',') {
+            if (any) out.push_back(v);
+            v = 0;
+            any = false;
+        }
+    }
+    if (any) out.push_back(v);
+    return out;
+}
+
+// Reads the 10 columns of kMessageSelect (in order) into a DbMessage.
 DbMessage read_message_row(Stmt& q) {
     DbMessage m;
     m.id = q.col_int64(0);
@@ -2259,6 +2282,7 @@ DbMessage read_message_row(Stmt& q) {
     m.reply_to = q.col_int64(6);
     m.reply_to_sender = q.col_text(7);
     m.reply_to_content = q.col_text(8);
+    m.reply_to_attachment_kinds = parse_kind_list(q.col_text(9));
     return m;
 }
 } // namespace
@@ -2781,17 +2805,27 @@ std::optional<std::string> CommunityDb::get_message_sender(
     return std::nullopt;
 }
 
-std::optional<std::pair<std::string, std::string>> CommunityDb::get_message_preview(
+std::optional<CommunityDb::MessagePreview> CommunityDb::get_message_preview(
     const std::string& channel_id, int64_t message_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    Stmt q(db_, "SELECT sender, content FROM messages WHERE id=? AND channel_id=?;");
-    if (!q.s) return std::nullopt;
-    q.bind_int64(1, message_id);
-    q.bind_text(2, channel_id);
-    if (q.step() == SQLITE_ROW) {
-        return std::make_pair(q.col_text(0), q.col_text(1));
+    MessagePreview out;
+    {
+        Stmt q(db_, "SELECT sender, content FROM messages WHERE id=? AND channel_id=?;");
+        if (!q.s) return std::nullopt;
+        q.bind_int64(1, message_id);
+        q.bind_text(2, channel_id);
+        if (q.step() != SQLITE_ROW) return std::nullopt;
+        out.sender = q.col_text(0);
+        out.content = q.col_text(1);
     }
-    return std::nullopt;
+    Stmt a(db_, "SELECT kind FROM attachments WHERE message_id=? ORDER BY position;");
+    if (a.s) {
+        a.bind_int64(1, message_id);
+        while (a.step() == SQLITE_ROW) {
+            out.attachment_kinds.push_back(static_cast<int32_t>(a.col_int64(0)));
+        }
+    }
+    return out;
 }
 
 bool CommunityDb::edit_message(const std::string& channel_id, int64_t message_id,

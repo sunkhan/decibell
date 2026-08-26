@@ -17,6 +17,15 @@ function normalizeKind(kind: string): AttachmentKind {
   return "document";
 }
 
+// Wire Attachment.Kind numbers (0 image, 1 video, 2 document, 3 audio) →
+// renderer kind names, for the embedded reply-parent attachment kinds.
+// Empty → undefined so a text-only parent carries no field at all.
+const KIND_BY_NUMBER: AttachmentKind[] = ["image", "video", "document", "audio"];
+function mapReplyKinds(kinds: number[] | undefined): AttachmentKind[] | undefined {
+  if (!kinds || kinds.length === 0) return undefined;
+  return kinds.map((k) => KIND_BY_NUMBER[k] ?? "document");
+}
+
 function mapAttachment(
   a: MessageReceivedPayload["attachments"][number],
 ): Attachment {
@@ -64,6 +73,7 @@ export function useChatEvents() {
         replyTo: p.replyTo || undefined,
         replyToSender: p.replyToSender || undefined,
         replyToContent: p.replyToContent || undefined,
+        replyToAttachmentKinds: mapReplyKinds(p.replyToAttachmentKinds),
       });
     });
 
@@ -84,6 +94,7 @@ export function useChatEvents() {
           replyTo: m.replyTo || undefined,
           replyToSender: m.replyToSender || undefined,
           replyToContent: m.replyToContent || undefined,
+          replyToAttachmentKinds: mapReplyKinds(m.replyToAttachmentKinds),
         }));
         const store = useChatStore.getState();
         // Route by the request mode the server echoed back:

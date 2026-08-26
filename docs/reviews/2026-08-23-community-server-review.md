@@ -341,6 +341,14 @@ intervening history. Community side covered by 8 new e2e checks (228 total):
      `initialTopMostItemIndex`, and the clamp sticks once they measure tall. Fix: a ~1s
      post-jump assertion window — `totalListHeightChanged` re-pins the target at the top
      on every height change until real heights land (`jumpAssertUntilRef`).
+  4b. *Attachment-only reply previews (2026-08-25)* — a reply to a message with only
+     attachments rendered as a bare `@author`. The community server now also embeds the
+     parent's attachment kinds (`ChannelMessage.reply_to_attachment_kinds`, Attachment.Kind
+     in position order — a GROUP_CONCAT subquery on the history JOIN, a second query in
+     `get_message_preview` on the send path); the client labels the preview "Image" /
+     "Video" / "Document" / "Audio" (or "2 Videos" / "3 Attachments"), preferring the
+     loaded parent's live attachments when available. DMs unaffected (no attachments).
+     2 new e2e checks (233 total).
   5. *Jump-to-present pill polish* — restyled to the client's accent-button idiom
      (`rounded-md bg-accent text-on-accent hover:bg-accent-hover`), so its radius tracks
      the theme scale (flat on console, soft on default) instead of the hardcoded

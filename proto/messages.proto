@@ -625,6 +625,10 @@ message ChannelMessage {
   // the loaded window. Empty sender with reply_to>0 = parent was deleted.
   string reply_to_sender = 10;
   string reply_to_content = 11;
+  // Kinds (Attachment.Kind) of the parent's attachments, in position order —
+  // lets the client label an attachment-only parent ("Image", "Video", …)
+  // without having it loaded. Empty when the parent has none.
+  repeated int32 reply_to_attachment_kinds = 12;
 }
 
 message Attachment {

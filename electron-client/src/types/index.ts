@@ -289,6 +289,9 @@ export interface Message {
   /// replyTo>0 = parent was deleted (or a pre-embed server).
   replyToSender?: string;
   replyToContent?: string;
+  /// Kinds of the parent's attachments (position order) — labels an
+  /// attachment-only parent ("Image", "Video", …). Absent/empty = none.
+  replyToAttachmentKinds?: AttachmentKind[];
 }
 
 export interface ChannelInfo {
@@ -499,6 +502,8 @@ export interface MessageReceivedPayload {
   /// Server-embedded parent preview. Empty sender with replyTo>0 = deleted.
   replyToSender: string;
   replyToContent: string;
+  /// Attachment.Kind numbers of the parent's attachments (position order).
+  replyToAttachmentKinds: number[];
 }
 
 export interface ChannelHistoryReceivedPayload {
@@ -517,6 +522,7 @@ export interface ChannelHistoryReceivedPayload {
     /// Server-embedded parent preview. Empty sender with replyTo>0 = deleted.
     replyToSender: string;
     replyToContent: string;
+    replyToAttachmentKinds: number[];
   }>;
   hasMore: boolean;
   hasMoreAfter: boolean;

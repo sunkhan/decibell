@@ -242,6 +242,7 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
                 // Server-resolved on broadcast; never set by the client.
                 reply_to_sender: String::new(),
                 reply_to_content: String::new(),
+                reply_to_attachment_kinds: Vec::new(),
             }),
             Some(&client.jwt),
         );

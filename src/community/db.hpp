@@ -59,6 +59,9 @@ struct DbMessage {
     // window. Empty sender with reply_to>0 = parent was deleted.
     std::string reply_to_sender;
     std::string reply_to_content;
+    // Attachment.Kind of each of the parent's attachments, position order —
+    // labels an attachment-only parent ("Image", "Video", …) on the client.
+    std::vector<int32_t> reply_to_attachment_kinds;
 };
 
 struct DbAttachment {
@@ -609,10 +612,15 @@ public:
     std::optional<std::string> get_message_sender(
         const std::string& channel_id, int64_t message_id) const;
 
-    /// (sender, content) of the given message in this channel, or nullopt if
-    /// no such row exists. Used to validate a reply_to and embed the parent
+    struct MessagePreview {
+        std::string sender;
+        std::string content;
+        std::vector<int32_t> attachment_kinds;  // Attachment.Kind, position order
+    };
+    /// Parent-preview fields of the given message in this channel, or nullopt
+    /// if no such row exists. Used to validate a reply_to and embed the parent
     /// preview on the CHANNEL_MSG broadcast.
-    std::optional<std::pair<std::string, std::string>> get_message_preview(
+    std::optional<MessagePreview> get_message_preview(
         const std::string& channel_id, int64_t message_id) const;
 
     /// Edits a message's content in place, enforcing ownership in SQL

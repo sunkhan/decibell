@@ -1417,8 +1417,10 @@ private:
                         if (!parent) {
                             msg->set_reply_to(0);
                         } else {
-                            msg->set_reply_to_sender(parent->first);
-                            msg->set_reply_to_content(parent->second);
+                            msg->set_reply_to_sender(parent->sender);
+                            msg->set_reply_to_content(parent->content);
+                            for (int32_t k : parent->attachment_kinds)
+                                msg->add_reply_to_attachment_kinds(k);
                         }
                     }
                 } else {
@@ -1553,6 +1555,8 @@ private:
                 cm->set_reply_to(it->reply_to);
                 cm->set_reply_to_sender(it->reply_to_sender);
                 cm->set_reply_to_content(it->reply_to_content);
+                for (int32_t k : it->reply_to_attachment_kinds)
+                    cm->add_reply_to_attachment_kinds(k);
                 auto atts_it = by_msg.find(it->id);
                 if (atts_it != by_msg.end()) {
                     for (const auto* a : atts_it->second) {

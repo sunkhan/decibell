@@ -523,6 +523,7 @@ impl CommunityClient {
                         reply_to: msg.reply_to,
                         reply_to_sender: msg.reply_to_sender,
                         reply_to_content: msg.reply_to_content,
+                        reply_to_attachment_kinds: msg.reply_to_attachment_kinds,
                     });
                 }
                 Some(packet::Payload::ChannelHistoryRes(resp)) => {
@@ -541,6 +542,7 @@ impl CommunityClient {
                             reply_to: m.reply_to,
                             reply_to_sender: m.reply_to_sender,
                             reply_to_content: m.reply_to_content,
+                            reply_to_attachment_kinds: m.reply_to_attachment_kinds,
                         })
                         .collect();
                     events::emit_channel_history_received(events::ChannelHistoryReceivedPayload {

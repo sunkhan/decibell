@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import type { Message } from "../../types";
+import type { AttachmentKind, Message } from "../../types";
 import { stringToColor } from "../../utils/colors";
 import { useUiStore } from "../../stores/uiStore";
 import { useDisplayName } from "../../hooks/useDisplayName";
@@ -8,6 +8,22 @@ import MessageText from "./MessageText";
 import AttachmentList from "./AttachmentList";
 import BubbleInflightAttachments from "./BubbleInflightAttachments";
 import { useRowHeightAudit } from "./devRowHeightAudit";
+
+// Label for a reply whose parent has attachments but no text — Discord
+// shows "Click to see attachment"; we name the kind(s) instead.
+const KIND_LABEL: Record<AttachmentKind, string> = {
+  image: "Image",
+  video: "Video",
+  document: "Document",
+  audio: "Audio",
+};
+function attachmentPreviewLabel(kinds: AttachmentKind[]): string {
+  if (kinds.length === 1) return KIND_LABEL[kinds[0]];
+  const first = kinds[0];
+  return kinds.every((k) => k === first)
+    ? `${kinds.length} ${KIND_LABEL[first]}s`
+    : `${kinds.length} Attachments`;
+}
 
 // Inline edit box shown in place of a message's content. Plain textarea over
 // the raw wire string (MessageText re-renders it on save). Enter submits,
@@ -151,6 +167,9 @@ interface Props {
   /// was deleted → a generic fallback is shown.
   replyToSender?: string;
   replyToContent?: string;
+  /// Kinds of the parent's attachments — labels an attachment-only parent
+  /// ("Image", "2 Videos", "3 Attachments") when it has no text snippet.
+  replyToAttachmentKinds?: AttachmentKind[];
   /// Jump to the replied-to message (clicking the quoted preview). Given the
   /// parent id; a no-op if the parent isn't in the loaded window.
   onJumpToReply?: (messageId: number) => void;
@@ -175,6 +194,7 @@ function MessageBubble({
   onReply,
   replyToSender,
   replyToContent,
+  replyToAttachmentKinds,
   onJumpToReply,
   highlighted = false,
 }: Props) {
@@ -285,6 +305,11 @@ function MessageBubble({
     const snippet = replyToContent
       ? replyToContent.replace(/\s+/g, " ").trim()
       : "";
+    // No text but attachments → name the attachment kind(s) instead.
+    const attachmentLabel =
+      !snippet && replyToAttachmentKinds && replyToAttachmentKinds.length > 0
+        ? attachmentPreviewLabel(replyToAttachmentKinds)
+        : "";
     const parentId = message.replyTo;
     // The panels resolve replyToSender from the loaded window, falling back
     // to the server-embedded parent preview — so an unresolvable sender means
@@ -308,7 +333,11 @@ function MessageBubble({
         <span className="shrink-0 font-medium text-text-secondary">
           {replyToSender ? `@${replyToSender}` : "Original message was deleted"}
         </span>
-        {snippet && <span className="truncate opacity-80">{snippet}</span>}
+        {snippet ? (
+          <span className="truncate opacity-80">{snippet}</span>
+        ) : attachmentLabel ? (
+          <span className="truncate italic opacity-80">{attachmentLabel}</span>
+        ) : null}
       </button>
     );
   };

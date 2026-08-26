@@ -364,6 +364,8 @@ impl CentralClient {
                         reply_to: msg.reply_to,
                         reply_to_sender: msg.reply_to_sender,
                         reply_to_content: msg.reply_to_content,
+                        // DMs carry no attachments.
+                        reply_to_attachment_kinds: Vec::new(),
                     });
                 }
                 Some(packet::Payload::PresenceUpdate(update)) => {

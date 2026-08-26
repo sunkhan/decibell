@@ -990,6 +990,12 @@ export default function ChatPanel() {
                       (message.replyToContent || undefined)
                     : undefined
                 }
+                replyToAttachmentKinds={
+                  message.replyTo
+                    ? messagesById.get(message.replyTo)?.attachments.map((a) => a.kind) ??
+                      message.replyToAttachmentKinds
+                    : undefined
+                }
                 onJumpToReply={jumpToMessage}
                 highlighted={highlightId === message.id && message.id > 0}
               />

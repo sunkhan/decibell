@@ -412,6 +412,8 @@ pub struct ChannelMessagePayload {
     /// reply_to>0 = parent was deleted.
     pub reply_to_sender: String,
     pub reply_to_content: String,
+    /// Attachment.Kind values of the parent's attachments (position order).
+    pub reply_to_attachment_kinds: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -437,6 +439,9 @@ pub struct MessageReceivedPayload {
     /// reply_to>0 = parent was deleted.
     pub reply_to_sender: String,
     pub reply_to_content: String,
+    /// Attachment.Kind values of the parent's attachments (position order).
+    /// Always empty for DMs (no attachments there).
+    pub reply_to_attachment_kinds: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
