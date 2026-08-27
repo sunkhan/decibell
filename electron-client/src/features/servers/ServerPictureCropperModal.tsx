@@ -27,12 +27,12 @@ interface Props {
 
 // Cropper viewport — comfortable working size, ~4.4× the tile width.
 const VIEWPORT_W = 480;
-const VIEWPORT_H = Math.round(VIEWPORT_W / TILE_ASPECT); // 166 at 2.89 aspect
+const VIEWPORT_H = Math.round(VIEWPORT_W / TILE_ASPECT); // 165 at 2.91 aspect
 // Output canvas — 4× the tile width so renderers downscale rather
-// than upscale on retina/HiDPI displays. The tile is 110×38; output
+// than upscale on retina/HiDPI displays. The tile is 128×44; output
 // is 440×152.
 const OUTPUT_W = 440;
-const OUTPUT_H = Math.round(OUTPUT_W / TILE_ASPECT); // 152
+const OUTPUT_H = Math.round(OUTPUT_W / TILE_ASPECT); // 151
 const JPEG_QUALITY = 0.85;
 
 export function ServerPictureCropperModal({

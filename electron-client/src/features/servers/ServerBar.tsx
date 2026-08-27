@@ -257,7 +257,7 @@ export default function ServerBar() {
   };
 
   return (
-    <div className="chrome-scope relative z-10 flex h-[58px] shrink-0 items-center bg-bg-darkest">
+    <div className="chrome-scope relative z-10 flex h-[64px] shrink-0 items-center bg-bg-darkest">
       {/* No bottom separator: the chrome gutter under the bar is the
           separation from the workspace panel. The home button's left edge
           lines up with the panel's (both 8px in from the window edge). */}
@@ -266,14 +266,15 @@ export default function ServerBar() {
             the button never changes size or position. */}
         <button
           onClick={() => { setActiveServer(null); setActiveChannel(null); setActiveView("home"); }}
-          className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-sm transition-colors duration-150 ${
+          className={`flex shrink-0 items-center justify-center rounded-sm transition-colors duration-150 ${
             activeView === "home"
               ? "bg-accent text-on-accent"
               : "bg-surface-active text-text-secondary hover:bg-accent hover:text-on-accent"
           }`}
+          style={{ width: TILE_HEIGHT, height: TILE_HEIGHT }}
           title="Home"
         >
-          <svg className="h-[20px] w-[20px]" viewBox="0 0 24 24" fill="currentColor">
+          <svg className="h-[22px] w-[22px]" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 3l-9.5 8.5c-.3.27-.15.5.25.5H5v8a1 1 0 001 1h4v-5.5a1 1 0 011-1h2a1 1 0 011 1V21h4a1 1 0 001-1v-8h2.25c.4 0 .55-.23.25-.5L12 3z" />
           </svg>
         </button>
@@ -310,14 +311,15 @@ export default function ServerBar() {
 
         <button
           onClick={() => setActiveView("browse")}
-          className={`flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-md text-lg transition-all duration-150 ${
+          className={`flex shrink-0 items-center justify-center rounded-md text-lg transition-all duration-150 ${
             activeView === "browse"
               ? "bg-success text-on-accent"
               : "border-[1.5px] border-dashed border-text-muted text-text-muted hover:border-accent hover:bg-accent-soft hover:text-accent"
           }`}
+          style={{ width: TILE_HEIGHT, height: TILE_HEIGHT }}
           title="Browse servers"
         >
-          <svg className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+          <svg className="h-[20px] w-[20px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
