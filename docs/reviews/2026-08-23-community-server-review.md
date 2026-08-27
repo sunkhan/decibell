@@ -553,8 +553,10 @@ provider-blind except for the attribution the vendors require (placeholder "Sear
 "Search GIPHY", footer "Powered by …"). Config is `resources/gifs.json`
 `{"provider","key"}` — CI: `GIF_API_KEY` secret + `GIF_API_PROVIDER` variable (default
 klipy); dev: the same env vars or the file. Both vendors' error shapes were verified live
-(KLIPY `result:false, errors.message[]`; GIPHY `meta.msg`); a successful search still needs a
-real key to be eyeballed. KLIPY is the recommended default: free production access on request.
+(KLIPY `result:false, errors.message[]`; GIPHY `meta.msg`), and KLIPY end to end with a real
+test key on 2026-08-27 (trending, search, send → animated in chat). KLIPY is the default:
+free production access on request; the key model is one app-level key baked per release
+(the norm for GIF pickers; read-only, no billing attached — see HANDOFF §5.9a).
 
 ## 5. Suggested order of work
 
