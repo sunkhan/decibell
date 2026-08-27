@@ -302,6 +302,10 @@ interface UiState {
   /// plain (still clickable) and no site is contacted until clicked.
   linkPreviewsEnabled: boolean;
   setLinkPreviewsEnabled: (v: boolean) => void;
+  /// GIF search without the provider's content filter (explicit
+  /// content included). Off = the provider's `low` filter.
+  gifUnfiltered: boolean;
+  setGifUnfiltered: (v: boolean) => void;
 }
 
 export const useUiStore = create<UiState>((set, get) => ({
@@ -445,4 +449,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   setCrashReportingInstallId: (v) => set({ crashReportingInstallId: v }),
   linkPreviewsEnabled: true,
   setLinkPreviewsEnabled: (v) => set({ linkPreviewsEnabled: v }),
+  gifUnfiltered: false,
+  setGifUnfiltered: (v) => set({ gifUnfiltered: v }),
 }));

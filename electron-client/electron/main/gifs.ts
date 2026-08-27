@@ -56,8 +56,9 @@ const QUERY_MAX = 200;
 const TIMEOUT_MS = 10_000;
 /// KLIPY content_filter (off | low | medium | high) and the GIPHY
 /// rating (g | pg | pg-13 | r). `low` only drops explicit adult content
-/// — the owner's call: the widest catalogue short of unfiltered (`off`
-/// / no rating). Keep the two in step if changing.
+/// — the owner's call: the widest catalogue short of unfiltered. The
+/// Privacy tab's "Unfiltered GIF search" switches to `off` / no rating
+/// per request. Keep the two vendors in step if changing.
 const KLIPY_CONTENT_FILTER = "low";
 const GIPHY_RATING = "r";
 
@@ -118,11 +119,18 @@ export function registerGifHandlers(): void {
   });
   ipcMain.handle(
     "decibell:gifs:search",
-    (_e, query: unknown, pos: unknown, locale: unknown): Promise<GifSearchResult> =>
+    (
+      _e,
+      query: unknown,
+      pos: unknown,
+      locale: unknown,
+      unfiltered: unknown,
+    ): Promise<GifSearchResult> =>
       search(
         typeof query === "string" ? query.trim().slice(0, QUERY_MAX) : "",
         typeof pos === "string" && pos ? pos : null,
         typeof locale === "string" ? locale : null,
+        unfiltered === true,
       ),
   );
 }
@@ -131,13 +139,14 @@ async function search(
   q: string,
   pos: string | null,
   locale: string | null,
+  unfiltered: boolean,
 ): Promise<GifSearchResult> {
   const c = loadConfig();
   if (!c) return { ok: false, error: "not-configured" };
   try {
     return c.provider === "klipy"
-      ? await searchKlipy(c.key, q, pos, locale)
-      : await searchGiphy(c.key, q, pos, locale);
+      ? await searchKlipy(c.key, q, pos, locale, unfiltered)
+      : await searchGiphy(c.key, q, pos, locale, unfiltered);
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
@@ -239,6 +248,7 @@ async function searchKlipy(
   q: string,
   pos: string | null,
   locale: string | null,
+  unfiltered: boolean,
 ): Promise<GifSearchResult> {
   const page = Math.max(1, cursorInt(pos, 1));
   const u = new URL(
@@ -246,7 +256,7 @@ async function searchKlipy(
   );
   u.searchParams.set("page", String(page));
   u.searchParams.set("per_page", String(PAGE_SIZE));
-  u.searchParams.set("content_filter", KLIPY_CONTENT_FILTER);
+  u.searchParams.set("content_filter", unfiltered ? "off" : KLIPY_CONTENT_FILTER);
   u.searchParams.set("format_filter", "gif");
   if (q) u.searchParams.set("q", q);
   const { region } = localeParts(locale);
@@ -327,13 +337,14 @@ async function searchGiphy(
   q: string,
   pos: string | null,
   locale: string | null,
+  unfiltered: boolean,
 ): Promise<GifSearchResult> {
   const offset = cursorInt(pos, 0);
   const u = new URL(`https://api.giphy.com/v1/gifs/${q ? "search" : "trending"}`);
   u.searchParams.set("api_key", key);
   u.searchParams.set("limit", String(PAGE_SIZE));
   u.searchParams.set("offset", String(offset));
-  u.searchParams.set("rating", GIPHY_RATING);
+  if (!unfiltered) u.searchParams.set("rating", GIPHY_RATING);
   if (q) u.searchParams.set("q", q.slice(0, 50)); // GIPHY caps q at 50 chars
   const { lang } = localeParts(locale);
   if (q && lang) u.searchParams.set("lang", lang);

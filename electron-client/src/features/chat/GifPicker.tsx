@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GIF_PROVIDER_LABEL, type GifProvider, type GifResult } from "../../types";
+import { useUiStore } from "../../stores/uiStore";
 
 // The GIFs tab of the emoji picker. Search box → KLIPY or GIPHY
 // (through main, see electron/main/gifs.ts), results in a two-column
@@ -53,6 +54,9 @@ export default function GifPicker({ onPick }: { onPick: (gif: GifResult) => void
   const [error, setError] = useState<string | null>(null);
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [provider, setProvider] = useState<GifProvider | null>(null);
+  // Privacy-tab preference; part of the request, so flipping it while
+  // the picker is open re-runs the current query.
+  const unfiltered = useUiStore((s) => s.gifUnfiltered);
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Monotonic request id: a stale response (older query, or a page of a
@@ -83,11 +87,11 @@ export default function GifPicker({ onPick }: { onPick: (gif: GifResult) => void
     return () => window.clearTimeout(id);
   }, [query]);
 
-  const load = useCallback(async (q: string, pos: string | null) => {
+  const load = useCallback(async (q: string, pos: string | null, unfilteredNow: boolean) => {
     const seq = ++seqRef.current;
     setLoading(true);
     const r = await window.decibell.gifs
-      .search(q, pos, navigator.language)
+      .search(q, pos, navigator.language, unfilteredNow)
       .catch((e: unknown) => ({ ok: false as const, error: String(e) }));
     if (seq !== seqRef.current) return;
     setLoading(false);
@@ -105,14 +109,14 @@ export default function GifPicker({ onPick }: { onPick: (gif: GifResult) => void
   useEffect(() => {
     if (configured !== true) return;
     scrollRef.current?.scrollTo({ top: 0 });
-    void load(debounced, null);
-  }, [debounced, configured, load]);
+    void load(debounced, null, unfiltered);
+  }, [debounced, configured, unfiltered, load]);
 
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el || loading || !next) return;
     if (el.scrollHeight - el.scrollTop - el.clientHeight < LOAD_MORE_PX) {
-      void load(debounced, next);
+      void load(debounced, next, unfiltered);
     }
   };
 

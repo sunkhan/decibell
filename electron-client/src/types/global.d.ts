@@ -79,6 +79,7 @@ declare global {
           query: string,
           pos: string | null,
           locale: string | null,
+          unfiltered: boolean,
         ) => Promise<GifSearchResult>;
       };
       window: {

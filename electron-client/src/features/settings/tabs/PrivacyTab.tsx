@@ -7,6 +7,7 @@ export default function PrivacyTab() {
   const friendsOnlyDms = useDmStore((s) => s.friendsOnlyDms);
   const crashReportingEnabled = useUiStore((s) => s.crashReportingEnabled);
   const linkPreviewsEnabled = useUiStore((s) => s.linkPreviewsEnabled);
+  const gifUnfiltered = useUiStore((s) => s.gifUnfiltered);
 
   const handleToggleDms = () => {
     const newValue = !friendsOnlyDms;
@@ -17,6 +18,11 @@ export default function PrivacyTab() {
 
   const handleToggleLinkPreviews = () => {
     useUiStore.getState().setLinkPreviewsEnabled(!linkPreviewsEnabled);
+    saveSettings();
+  };
+
+  const handleToggleGifUnfiltered = () => {
+    useUiStore.getState().setGifUnfiltered(!gifUnfiltered);
     saveSettings();
   };
 
@@ -40,6 +46,12 @@ export default function PrivacyTab() {
         description="Fetches a title, description and thumbnail for links in messages. Each site you preview sees your IP address, the same as opening the link would."
         value={linkPreviewsEnabled}
         onToggle={handleToggleLinkPreviews}
+      />
+      <ToggleRow
+        title="Unfiltered GIF search"
+        description="Search GIFs with the provider's content filter switched off, explicit content included. Off hides explicit adult content and nothing else."
+        value={gifUnfiltered}
+        onToggle={handleToggleGifUnfiltered}
       />
       <ToggleRow
         title="Send anonymous crash reports"

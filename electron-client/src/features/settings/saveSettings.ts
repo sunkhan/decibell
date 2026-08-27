@@ -74,6 +74,7 @@ function doSave(): void {
     crash_reporting_install_id: ui.crashReportingInstallId,
     crash_reporting_consent_shown: ui.crashReportingConsentShown,
     link_previews_enabled: ui.linkPreviewsEnabled,
+    gif_unfiltered: ui.gifUnfiltered,
   }).catch((e) => console.error("[saveSettings] failed:", e));
 }
 

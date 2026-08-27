@@ -275,8 +275,19 @@ contextBridge.exposeInMainWorld("decibell", {
     /// Empty query = the provider's trending feed. `pos` is the previous
     /// page's `next` cursor. Never rejects for API failures — those
     /// come back as { ok: false, error }.
-    search: (query: string, pos: string | null, locale: string | null): Promise<GifSearchResult> =>
-      ipcRenderer.invoke("decibell:gifs:search", query, pos, locale) as Promise<GifSearchResult>,
+    search: (
+      query: string,
+      pos: string | null,
+      locale: string | null,
+      unfiltered: boolean,
+    ): Promise<GifSearchResult> =>
+      ipcRenderer.invoke(
+        "decibell:gifs:search",
+        query,
+        pos,
+        locale,
+        unfiltered,
+      ) as Promise<GifSearchResult>,
   },
   window: {
     minimize: () => ipcRenderer.invoke("decibell:window:minimize"),

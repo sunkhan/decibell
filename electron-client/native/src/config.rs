@@ -138,6 +138,12 @@ pub struct AppSettings {
     /// before the field existed deserialises to on.
     #[serde(default = "default_true")]
     pub link_previews_enabled: bool,
+
+    /// GIF search with the provider's content filter switched off
+    /// (explicit content included). Default off = the provider's
+    /// `low` filter.
+    #[serde(default)]
+    pub gif_unfiltered: bool,
 }
 
 fn default_true() -> bool {

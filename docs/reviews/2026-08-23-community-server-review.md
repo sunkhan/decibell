@@ -558,6 +558,13 @@ test key on 2026-08-27 (trending, search, send → animated in chat). KLIPY is t
 free production access on request; the key model is one app-level key baked per release
 (the norm for GIF pickers; read-only, no billing attached — see HANDOFF §5.9a).
 
+**GIF content filter: `low` by default + "Unfiltered GIF search" toggle (2026-08-27) ✅** — the
+picker searches with KLIPY `content_filter=low` / GIPHY `rating=r` (only explicit adult
+content dropped — the owner wants the widest catalogue), and a Privacy-tab toggle
+(`gif_unfiltered` in the native config, default off) sends `off` / no rating instead for
+users who want everything. The preference travels with each `decibell:gifs:search` call, so
+flipping it with the picker open re-runs the current query.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

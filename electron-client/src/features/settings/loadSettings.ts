@@ -61,6 +61,7 @@ interface LoadedConfigShape {
     crash_reporting_install_id: string | null;
     crash_reporting_consent_shown: boolean;
     link_previews_enabled?: boolean;
+    gif_unfiltered?: boolean;
   };
 }
 
@@ -104,6 +105,7 @@ export async function loadSettings(): Promise<void> {
 
   // Link previews. Absent (older native build) → on, matching serde.
   useUiStore.getState().setLinkPreviewsEnabled(settings.link_previews_enabled ?? true);
+  useUiStore.getState().setGifUnfiltered(settings.gif_unfiltered ?? false);
 
   // Voice / audio
   if (settings.voice_threshold_db != null) {
