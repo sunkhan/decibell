@@ -6,6 +6,7 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useInviteResolveStore } from "../../stores/inviteResolveStore";
 import { parseInviteLink } from "../servers/inviteLink";
+import { openServer } from "../servers/openServer";
 import { useFetchServerPictureIfMissing } from "../servers/useServerPicture";
 import { stringToGradient } from "../../utils/colors";
 
@@ -102,8 +103,7 @@ export default function InviteEmbed({ href, sender }: { href: string; sender: st
         port,
         inviteCode: parsed.code,
       });
-      useChatStore.getState().setActiveServer(hostKey);
-      useUiStore.getState().setActiveView("server");
+      openServer(hostKey);
     } catch (err) {
       setJoining(false);
       if (!handleCertMismatch(err, join)) setError(String(err));
@@ -112,8 +112,7 @@ export default function InviteEmbed({ href, sender }: { href: string; sender: st
 
   const open = () => {
     const id = serverId && connectedServers.has(serverId) ? serverId : hostKey;
-    useChatStore.getState().setActiveServer(id);
-    useUiStore.getState().setActiveView("server");
+    openServer(id);
   };
 
   const name = resolved?.serverName || "";

@@ -6,6 +6,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
 import { useFetchServerPictureIfMissing } from "./useServerPicture";
 import { parseInviteLink } from "./inviteLink";
+import { openServer } from "./openServer";
 import type { CommunityServer, ResolvedInvite } from "../../types";
 
 interface ServerBrowseCardProps {
@@ -86,8 +87,6 @@ export default function ServerBrowseView() {
   const pendingMembershipServerIds = useChatStore(
     (s) => s.pendingMembershipServerIds,
   );
-  const setActiveServer = useChatStore((s) => s.setActiveServer);
-  const setActiveView = useUiStore((s) => s.setActiveView);
   const authError = useUiStore((s) => s.authError);
   const setAuthError = useUiStore((s) => s.setAuthError);
 
@@ -136,8 +135,7 @@ export default function ServerBrowseView() {
     setError(null);
     try {
       await invoke("connect_to_community", { serverId, host, port });
-      setActiveServer(serverId);
-      setActiveView("server");
+      openServer(serverId);
     } catch (err) {
       if (!handleCertMismatch(err)) setError(String(err));
     } finally {
@@ -200,8 +198,7 @@ export default function ServerBrowseView() {
         port,
         inviteCode: code,
       });
-      setActiveServer(serverId);
-      setActiveView("server");
+      openServer(serverId);
       setInviteInput("");
       setInviteHost("");
       setInvitePort("");

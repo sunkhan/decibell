@@ -4,6 +4,7 @@ import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useInviteResolveStore } from "../../stores/inviteResolveStore";
+import { openServer } from "./openServer";
 
 // Confirm-then-join for an invite that arrived as a deep link or a
 // clicked chat link. Links carry only the code, so the endpoint comes
@@ -13,8 +14,6 @@ import { useInviteResolveStore } from "../../stores/inviteResolveStore";
 export default function DeepLinkJoinModal() {
   const pendingInvite = useChatStore((s) => s.pendingInvite);
   const setPendingInvite = useChatStore((s) => s.setPendingInvite);
-  const setActiveServer = useChatStore((s) => s.setActiveServer);
-  const setActiveView = useUiStore((s) => s.setActiveView);
   const authError = useUiStore((s) => s.authError);
   const setAuthError = useUiStore((s) => s.setAuthError);
 
@@ -75,8 +74,7 @@ export default function DeepLinkJoinModal() {
         port,
         inviteCode: pendingInvite.code,
       });
-      setActiveServer(serverId);
-      setActiveView("server");
+      openServer(serverId);
       setPendingInvite(null);
     } catch (err) {
       if (!handleCertMismatch(err, handleJoin)) setLocalError(String(err));

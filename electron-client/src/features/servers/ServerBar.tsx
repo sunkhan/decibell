@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { openServer } from "./openServer";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useDmStore, conversationActivityTime } from "../../stores/dmStore";
@@ -241,20 +242,7 @@ export default function ServerBar() {
     [servers, connectedServers, pendingMembershipServerIds],
   );
 
-  const handleServerClick = (serverId: string) => {
-    const currentChannel = useChatStore.getState().activeChannelId;
-    setActiveServer(serverId);
-    setActiveView("server");
-    const channels = useChatStore.getState().channelsByServer[serverId] ?? [];
-    const currentInThisServer = channels.some((ch) => ch.id === currentChannel);
-    if (!currentInThisServer) {
-      setActiveChannel(null);
-      const firstText = channels.find((ch) => ch.type === "text");
-      if (firstText) {
-        setActiveChannel(firstText.id);
-      }
-    }
-  };
+  const handleServerClick = (serverId: string) => openServer(serverId);
 
   return (
     <div className="chrome-scope relative z-10 flex h-[64px] shrink-0 items-center bg-bg-darkest">
