@@ -26,6 +26,19 @@ import { channelKey, type ChannelKey } from "../lib/channelKey";
 // — bare channel ids collide across servers (each has a "general").
 // Actions take serverId + channelId explicitly and compose internally.
 
+/// Saved per-channel scroll position. `atBottom` wins: the user was caught
+/// up, land at the newest message. Otherwise RealMessageList restores to the
+/// message `anchorId` at `offset` px from the viewport top — exact, and it
+/// survives trims/evictions because it keys on a message id, not a pixel or
+/// an index. `topIndex` is the Virtuoso path's topmost item index; removed
+/// with it.
+export interface ScrollPosition {
+  atBottom: boolean;
+  topIndex: number;
+  anchorId?: number;
+  offset?: number;
+}
+
 interface ChatState {
   // Connection state
   /// Servers the user is a MEMBER of — the ServerBar's source. Populated from
@@ -100,13 +113,10 @@ interface ChatState {
   historyLoading: Record<ChannelKey, boolean>;
   historyFetched: Record<ChannelKey, boolean>;
   /// Per-channel saved scroll position so re-entering a still-cached
-  /// channel restores the user to roughly where they left off (Discord-
-  /// style). `topIndex` is the topmost-visible Virtuoso item index;
-  /// `atBottom` is true if the user was scrolled to the latest message
-  /// (in which case we restore by scrolling to LAST so new messages
-  /// arrived during the absence are visible). Pruned alongside
-  /// messagesByChannel via the LRU eviction in setActiveChannel.
-  scrollPositionsByChannel: Record<ChannelKey, { topIndex: number; atBottom: boolean }>;
+  /// channel restores the user to where they left off (Discord-style) —
+  /// see ScrollPosition. Pruned alongside messagesByChannel via the LRU
+  /// eviction in setActiveChannel.
+  scrollPositionsByChannel: Record<ChannelKey, ScrollPosition>;
   /// Live dimensions of the chat panel's viewport. Updated by ChatPanel
   /// via a ResizeObserver. Read by AttachmentList's sqrt-based sizing
   /// so image/video previews scale proportionally to the available
@@ -209,6 +219,17 @@ interface ChatState {
   /// newest page from scratch. Resets hasMoreAfter → false (we'll be at the
   /// live bottom) and historyFetched → false (a fresh fetch is coming).
   resetChannelForJump: (serverId: string, channelId: string) => void;
+  /// Sliding-window trims (RealMessageList): keep the DOM bounded by dropping
+  /// the end of the slice FAR from the viewport when a page-in grows it past
+  /// the cap. trimTail keeps the oldest `keep` rows and flips hasMoreAfter →
+  /// true — the dropped tail is re-fetchable via after_id, live arrivals are
+  /// dropped past the gap and the "jump to present" pill shows: the same
+  /// windowed semantics as a jump. No-op while an optimistic (id 0) row
+  /// exists (never trim a send in flight) and when nothing would drop.
+  trimTail: (serverId: string, channelId: string, keep: number) => void;
+  /// Keeps the newest `keep` rows (optimistics ride along at the tail) and
+  /// flips hasMoreHistory → true. No-op when nothing would drop.
+  trimHead: (serverId: string, channelId: string, keep: number) => void;
   setHistoryLoading: (serverId: string, channelId: string, loading: boolean) => void;
   markHistoryFetched: (serverId: string, channelId: string) => void;
   applyChannelPruned: (
@@ -256,12 +277,14 @@ interface ChatState {
   /// broadcast). No-op if no matching snapshot exists.
   clearPendingDeletion: (serverId: string, channelId: string, messageId: number) => void;
   /// Capture the user's current scroll position for a channel — called
-  /// from ChatPanel on Virtuoso range/atBottom events.
+  /// from ChatPanel when leaving it (see ScrollPosition).
   setScrollPosition: (
     serverId: string,
     channelId: string,
     topIndex: number,
     atBottom: boolean,
+    anchorId?: number,
+    offset?: number,
   ) => void;
   /// Update the live chat viewport dimensions. Called from ChatPanel's
   /// ResizeObserver. Pass `null` on unmount so AttachmentList's sizing
@@ -715,6 +738,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     }),
 
+  trimTail: (serverId, channelId, keep) =>
+    set((state) => {
+      const key = channelKey(serverId, channelId);
+      const list = state.messagesByChannel[key];
+      if (!list || keep <= 0 || keep >= list.length) return {};
+      if (list.some((m) => m.id === 0)) return {};
+      return {
+        messagesByChannel: { ...state.messagesByChannel, [key]: list.slice(0, keep) },
+        hasMoreAfter: { ...state.hasMoreAfter, [key]: true },
+      };
+    }),
+
+  trimHead: (serverId, channelId, keep) =>
+    set((state) => {
+      const key = channelKey(serverId, channelId);
+      const list = state.messagesByChannel[key];
+      if (!list || keep <= 0 || keep >= list.length) return {};
+      return {
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [key]: list.slice(list.length - keep),
+        },
+        hasMoreHistory: { ...state.hasMoreHistory, [key]: true },
+      };
+    }),
+
   setHistoryLoading: (serverId, channelId, loading) =>
     set((state) => ({
       historyLoading: {
@@ -949,11 +998,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     }),
 
-  setScrollPosition: (serverId, channelId, topIndex, atBottom) =>
+  setScrollPosition: (serverId, channelId, topIndex, atBottom, anchorId, offset) =>
     set((state) => ({
       scrollPositionsByChannel: {
         ...state.scrollPositionsByChannel,
-        [channelKey(serverId, channelId)]: { topIndex, atBottom },
+        [channelKey(serverId, channelId)]: { topIndex, atBottom, anchorId, offset },
       },
     })),
 

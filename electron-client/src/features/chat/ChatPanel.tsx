@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useVirtuosoPrepend } from "./useVirtuosoPrepend";
+import RealMessageList, {
+  type JumpTarget,
+  type RealMessageListHandle,
+  type ScrollState,
+} from "./RealMessageList";
+import { USE_REAL_LIST } from "./listFlags";
 import { prefetchAround } from "./attachmentPrefetch";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
@@ -111,6 +117,10 @@ export default function ChatPanel() {
   // True while the user has scrolled more than JUMP_PILL_ROWS above the live
   // bottom — shows the jump-to-present pill even without a jump window.
   const [scrolledUp, setScrolledUp] = useState(false);
+  // Real-DOM list: the pending/landed jump target. Set at click time even
+  // when the target isn't loaded yet; RealMessageList lands on the first
+  // commit whose rows contain it and reports back via onJumpLanded.
+  const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
   const editorRef = useRef<RichInputHandle>(null);
   // pendingIds already claimed by an in-flight send, so a second Enter
   // pressed while uploads are still running can't re-send the same
@@ -141,6 +151,18 @@ export default function ChatPanel() {
   // each height change settles to exact as real heights land.
   const jumpAssertUntilRef = useRef(0);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const listRef = useRef<RealMessageListHandle>(null);
+  // Real-DOM list: latest viewport state (anchor message + offset, atBottom,
+  // visible range). Written by onScrollState; read by the channel-switch
+  // cleanup to persist the outgoing channel's position and by jumpToMessage
+  // for the travel direction.
+  const positionRef = useRef<ScrollState>({
+    anchorId: 0,
+    offset: 0,
+    atBottom: true,
+    firstVisible: 0,
+    lastVisible: -1,
+  });
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
 
@@ -219,10 +241,10 @@ export default function ChatPanel() {
     return false;
   });
 
-  // Live scroll-tracking refs — written by Virtuoso's rangeChanged /
-  // atBottomStateChange callbacks below, read by the cleanup of the
-  // channel-switch effect to persist the OUTGOING channel's position
-  // before activeChannelId flips.
+  // Live scroll-tracking refs (Virtuoso path) — written by rangeChanged /
+  // atBottomStateChange below, read by the cleanup of the channel-switch
+  // effect to persist the OUTGOING channel's position before
+  // activeChannelId flips. The real-DOM list reports through positionRef.
   const topIndexRef = useRef(0);
   const atBottomRef = useRef(true);
 
@@ -276,13 +298,16 @@ export default function ChatPanel() {
     const channelId = activeChannelId;
     return () => {
       if (serverId && channelId) {
+        const p = positionRef.current;
         useChatStore
           .getState()
           .setScrollPosition(
             serverId,
             channelId,
             topIndexRef.current,
-            atBottomRef.current,
+            USE_REAL_LIST ? p.atBottom : atBottomRef.current,
+            p.anchorId,
+            p.offset,
           );
       }
     };
@@ -420,6 +445,10 @@ export default function ChatPanel() {
     const serverId = activeServerId;
     const channelId = activeChannelId;
     setJumpWindow(null);
+    setJumpTarget(null);
+    // The reloaded page mounts a fresh list — it must land at the bottom,
+    // not on a position saved from an earlier visit.
+    positionRef.current = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
     pendingJumpIdRef.current = null;
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
@@ -427,6 +456,7 @@ export default function ChatPanel() {
     lastRequestedAfterIdRef.current = 0;
     const chat = useChatStore.getState();
     chat.resetChannelForJump(serverId, channelId);
+    chat.setScrollPosition(serverId, channelId, 0, true);
     chat.setHistoryLoading(serverId, channelId, true);
     invoke("request_channel_history", {
       serverId,
@@ -754,7 +784,9 @@ export default function ChatPanel() {
     setReplyingTo(null);
     setEditingMessageId(null);
     setJumpWindow(null);
+    setJumpTarget(null);
     setScrolledUp(false);
+    positionRef.current = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
     pendingJumpIdRef.current = null;
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -784,7 +816,19 @@ export default function ChatPanel() {
       if (!serverId || !channelId) return;
       const list = chat.messagesByChannel[channelKey(serverId, channelId)] ?? [];
       const pos = list.findIndex((m) => m.id === id);
-      if (pos >= 0) {
+      if (USE_REAL_LIST) {
+        // Set the target now, loaded or not: the list lands on the first
+        // commit whose rows contain it — for an around-window that is the
+        // very commit that renders the window, so it never paints at a wrong
+        // position first. The flash fires from onJumpLanded.
+        const anchor = positionRef.current.anchorId;
+        setJumpTarget((prev) => ({
+          id,
+          epoch: (prev?.epoch ?? 0) + 1,
+          dir: anchor > 0 && id > anchor ? "down" : "up",
+        }));
+        if (pos >= 0) return;
+      } else if (pos >= 0) {
         // Structural jump first, visual motion second: remount centered on
         // the target (exact — everything around it mounts measured), then a
         // short CSS slide on the fresh list conveys the travel direction
@@ -826,6 +870,7 @@ export default function ChatPanel() {
   // Landing effect: once the requested around-window is in `messages`, remount
   // the list centered on the target (bump epoch) and flash it.
   useEffect(() => {
+    if (USE_REAL_LIST) return; // the list lands itself → onJumpLanded
     const id = pendingJumpIdRef.current;
     if (id == null) return;
     if (!messages.some((m) => m.id === id)) return;
@@ -837,9 +882,98 @@ export default function ChatPanel() {
     setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
     flash(id);
   }, [messages, flash]);
+  // Real-DOM list callbacks.
+  const handleJumpLanded = useCallback(
+    (epoch: number, id: number) => {
+      pendingJumpIdRef.current = null;
+      flash(id);
+      setJumpTarget((prev) => (prev && prev.epoch === epoch ? null : prev));
+    },
+    [flash],
+  );
+  const handleScrollState = useCallback((s: ScrollState) => {
+    positionRef.current = s;
+    const chat = useChatStore.getState();
+    const key =
+      chat.activeServerId && chat.activeChannelId
+        ? channelKey(chat.activeServerId, chat.activeChannelId)
+        : null;
+    const len = key ? chat.messagesByChannel[key]?.length ?? 0 : 0;
+    // Far enough above the live bottom → surface the pill.
+    setScrolledUp(!s.atBottom && len - 1 - s.lastVisible > JUMP_PILL_ROWS);
+  }, []);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
   }, []);
+
+  // One row. Shared by both list paths: RealMessageList calls it with the
+  // data index directly; the Virtuoso path rebases its absolute index first
+  // (firstItemIndex makes `index` absolute — without the rebase every
+  // messages[i - 1] lookup was out of bounds and nothing ever grouped).
+  const renderBubble = (message: Message, i: number) => (
+    <MessageBubble
+      message={message}
+      grouped={
+        shouldGroup(i > 0 ? messages[i - 1] : undefined, message) &&
+        !message.replyTo
+      }
+      serverId={activeServerId}
+      isLast={i === messages.length - 1}
+      // Align avatar's left edge with the input bar card's
+      // left edge: outer wrapper `px-3` = 12px from chat
+      // panel's left. The card's rounded border starts there.
+      paddingLeft={12}
+      canDelete={
+        typeof message.id === "number" &&
+        message.id > 0 &&
+        (message.sender === username || canDeleteOthers)
+      }
+      onDelete={requestDeleteChannelMessage}
+      canEdit={
+        typeof message.id === "number" &&
+        message.id > 0 &&
+        message.sender === username
+      }
+      editing={editingMessageId === message.id && message.id > 0}
+      onStartEdit={startEdit}
+      onSubmitEdit={submitEdit}
+      onCancelEdit={cancelEdit}
+      canReply={typeof message.id === "number" && message.id > 0}
+      onReply={startReply}
+      replyToSender={
+        message.replyTo
+          ? messagesById.get(message.replyTo)?.sender ??
+            (message.replyToSender || undefined)
+          : undefined
+      }
+      replyToContent={
+        message.replyTo
+          ? messagesById.get(message.replyTo)?.content ??
+            (message.replyToContent || undefined)
+          : undefined
+      }
+      replyToAttachmentKinds={
+        message.replyTo
+          ? messagesById.get(message.replyTo)?.attachments.map((a) => a.kind) ??
+            message.replyToAttachmentKinds
+          : undefined
+      }
+      onJumpToReply={jumpToMessage}
+      highlighted={highlightId === message.id && message.id > 0}
+    />
+  );
+
+  // Real-DOM list: mount position for this channel (consumed once, at mount).
+  const savedPosition = activeKey
+    ? useChatStore.getState().scrollPositionsByChannel[activeKey]
+    : undefined;
+  const initialPosition = savedPosition
+    ? {
+        anchorId: savedPosition.anchorId ?? 0,
+        offset: savedPosition.offset ?? 0,
+        atBottom: savedPosition.atBottom,
+      }
+    : undefined;
 
   if (!activeServerId) {
     return (
@@ -873,6 +1007,27 @@ export default function ChatPanel() {
           <div className="flex flex-1 items-center justify-center">
             <WelcomeState channelName={channelName ?? "channel"} />
           </div>
+        ) : USE_REAL_LIST ? (
+          <RealMessageList
+            // Fresh mount per channel: the saved position restores at mount.
+            key={activeKey ?? "none"}
+            ref={listRef}
+            items={messages}
+            keyOf={messageKey}
+            renderItem={renderBubble}
+            windowed={windowed}
+            jumpTarget={jumpTarget}
+            initialPosition={initialPosition}
+            onScrollState={handleScrollState}
+            onNearTop={() => maybeLoadOlderHistory(false)}
+            onNearBottom={maybeLoadNewerHistory}
+            onOverflow={(side, keep) => {
+              const chat = useChatStore.getState();
+              if (side === "tail") chat.trimTail(activeServerId, activeChannelId, keep);
+              else chat.trimHead(activeServerId, activeChannelId, keep);
+            }}
+            onJumpLanded={handleJumpLanded}
+          />
         ) : (
           <Virtuoso
             // Re-mount Virtuoso whenever the active channel changes
@@ -941,66 +1096,7 @@ export default function ChatPanel() {
               atBottomRef.current = atBottom;
               if (atBottom) setScrolledUp(false);
             }}
-            itemContent={(index, message) => {
-              // firstItemIndex makes `index` absolute (it starts at
-              // firstItemIndex, not 0), so it has to be rebased before
-              // it can index `messages`. Without this every lookup was
-              // out of bounds: grouping saw no previous message and
-              // nothing ever grouped.
-              const i = index - firstItemIndex;
-              return (
-              <MessageBubble
-                message={message}
-                grouped={
-                  shouldGroup(i > 0 ? messages[i - 1] : undefined, message) &&
-                  !message.replyTo
-                }
-                serverId={activeServerId}
-                isLast={i === messages.length - 1}
-                // Align avatar's left edge with the input bar card's
-                // left edge: outer wrapper `px-3` = 12px from chat
-                // panel's left. The card's rounded border starts there.
-                paddingLeft={12}
-                canDelete={
-                  typeof message.id === "number" &&
-                  message.id > 0 &&
-                  (message.sender === username || canDeleteOthers)
-                }
-                onDelete={requestDeleteChannelMessage}
-                canEdit={
-                  typeof message.id === "number" &&
-                  message.id > 0 &&
-                  message.sender === username
-                }
-                editing={editingMessageId === message.id && message.id > 0}
-                onStartEdit={startEdit}
-                onSubmitEdit={submitEdit}
-                onCancelEdit={cancelEdit}
-                canReply={typeof message.id === "number" && message.id > 0}
-                onReply={startReply}
-                replyToSender={
-                  message.replyTo
-                    ? messagesById.get(message.replyTo)?.sender ??
-                      (message.replyToSender || undefined)
-                    : undefined
-                }
-                replyToContent={
-                  message.replyTo
-                    ? messagesById.get(message.replyTo)?.content ??
-                      (message.replyToContent || undefined)
-                    : undefined
-                }
-                replyToAttachmentKinds={
-                  message.replyTo
-                    ? messagesById.get(message.replyTo)?.attachments.map((a) => a.kind) ??
-                      message.replyToAttachmentKinds
-                    : undefined
-                }
-                onJumpToReply={jumpToMessage}
-                highlighted={highlightId === message.id && message.id > 0}
-              />
-              );
-            }}
+            itemContent={(index, message) => renderBubble(message, index - firstItemIndex)}
             // Arrival slide replays per jump: the epoch in key= makes each
             // jump a fresh element, so the mount animation runs again.
             className={`flex-1 ${
@@ -1026,7 +1122,8 @@ export default function ChatPanel() {
                 return;
               }
               // History below is contiguous — just go to the bottom.
-              virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+              if (USE_REAL_LIST) listRef.current?.scrollToBottom(true);
+              else virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
             }}
             title="Jump to present"
             className="absolute bottom-3 right-4 z-20 flex animate-[fadeUp_0.18s_ease_both] items-center gap-1.5 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent shadow-float transition-colors hover:bg-accent-hover"
