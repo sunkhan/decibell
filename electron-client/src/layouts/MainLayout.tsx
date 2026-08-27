@@ -37,10 +37,16 @@ import { useUiStore } from "../stores/uiStore";
 // ConversationSidebar on the home / dm views):
 //
 //   ┌─ ServerBar (home · unread DMs · server tabs) ─────────────────┐
-//   ├─ ChannelSidebar ─┬─ Chat / DM / Voice / Browse ────────────────┤
-//   │                  │                                             │
-//   │ [floating UserPanel bottom-left at z-20]                       │
+//   │ ╭─ ChannelSidebar ─┬─ Chat / DM / Voice / Browse ───────────╮ │
+//   │ │                  │                                        │ │
+//   │ │ [floating UserPanel bottom-left at z-20]                  │ │
+//   │ ╰────────────────────────────────────────────────────────────╯ │
 //   └────────────────────────────────────────────────────────────────┘
+//
+// The workspace floats in the chrome: an 8px chrome-toned gutter on the
+// left / right / bottom (the ServerBar's own bottom padding is the top
+// one) and the sidebar + main area sit inside as a rounded, bordered
+// panel — so the frameless window edge reads as a frame, not a cut.
 //
 // PR4-parity stage defers UserPanel (PR5: voice pipeline), VoicePanel
 // (PR5), DmChatPanel (DMs PR), FriendsList / MembersList (friends/
@@ -84,45 +90,57 @@ export default function MainLayout() {
 
       <ServerBar />
 
-      <div className="flex flex-1 overflow-hidden" data-pip-content-row>
-        {activeView === "browse" ? (
-          <ServerBrowseView />
-        ) : (
-          <>
-            {/* Sidebar group: ChannelSidebar with the floating
-                UserPanel anchored bottom-left over it. Browse view
-                above renders no sidebar at all. */}
-            {/* chrome-scope: in `console-split` this whole group —
-                channel sidebar + floating user/voice panel — paints
-                from the dark `console` palette while the chat canvas
-                beside it stays on `console-light`. Inert in the other
-                four themes. */}
-            <div className="chrome-scope relative flex shrink-0">
-              <ChannelSidebar />
-              <div className="absolute bottom-2 left-2 right-2 z-20">
-                <UserPanel />
+      {/* `chrome-ground` paints the gutter from the chrome palette as a
+          background only. Not `chrome-scope`: that re-scopes --color-*
+          for the whole subtree and would drag the chat canvas into the
+          chrome ramp in `console-split`. And not a backdrop with a
+          negative z-index: that needs a stacking context on this root,
+          which would flatten the image viewer / profile popup under the
+          AppLayout-level toasts. */}
+      <div className="chrome-ground flex min-h-0 flex-1 px-2 pb-2">
+        <div
+          className="flex min-w-0 flex-1 overflow-hidden rounded-lg border border-border"
+          data-pip-content-row
+        >
+          {activeView === "browse" ? (
+            <ServerBrowseView />
+          ) : (
+            <>
+              {/* Sidebar group: ChannelSidebar with the floating
+                  UserPanel anchored bottom-left over it. Browse view
+                  above renders no sidebar at all. */}
+              {/* chrome-scope: in `console-split` this whole group —
+                  channel sidebar + floating user/voice panel — paints
+                  from the dark `console` palette while the chat canvas
+                  beside it stays on `console-light`. Inert in the other
+                  four themes. */}
+              <div className="chrome-scope relative flex shrink-0">
+                <ChannelSidebar />
+                <div className="absolute bottom-2 left-2 right-2 z-20">
+                  <UserPanel />
+                </div>
               </div>
-            </div>
-            {activeView === "voice" ? (
-              <VoicePanel />
-            ) : activeView === "dm" ? (
-              <>
-                <DmChatPanel />
-                {dmFriendsPanelVisible && <FriendsList />}
-              </>
-            ) : activeView === "home" ? (
-              // Home gives everything right of the DM list to Friends.
-              // FriendsList — the 260px rail — stays for the `dm` view,
-              // where it sits beside an open conversation.
-              <FriendsPage />
-            ) : (
-              <>
-                <ChatPanel />
-                {membersPanelVisible && <MembersList />}
-              </>
-            )}
-          </>
-        )}
+              {activeView === "voice" ? (
+                <VoicePanel />
+              ) : activeView === "dm" ? (
+                <>
+                  <DmChatPanel />
+                  {dmFriendsPanelVisible && <FriendsList />}
+                </>
+              ) : activeView === "home" ? (
+                // Home gives everything right of the DM list to Friends.
+                // FriendsList — the 260px rail — stays for the `dm` view,
+                // where it sits beside an open conversation.
+                <FriendsPage />
+              ) : (
+                <>
+                  <ChatPanel />
+                  {membersPanelVisible && <MembersList />}
+                </>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
       {/* Owns the single persistent stream player, portaled into a host node

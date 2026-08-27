@@ -56,28 +56,27 @@ const ENTRANCE_MS = 340;
 // Slightly overshooting ease → the mini bounces as it shrinks into place.
 const ENTRANCE_EASE = "cubic-bezier(0.34, 1.32, 0.64, 1)";
 
-// Chrome the mini must clear, measured from the layout (not hardcoded) so it
-// tracks theme/view changes:
-//  - top: below the top bar — the content row's top ([data-pip-content-row]).
-//  - left: the window edge. Nothing on the left is off-limits since the
-//    vertical DM rail went away (2026-08-27); covering the channel list is fine.
-function chromeInsets(): { top: number; left: number } {
+// The workspace panel the mini docks inside ([data-pip-content-row]): below
+// the top bar and inside the chrome gutter on the other three sides. Measured
+// from the layout (not hardcoded) so it tracks theme/view changes; falls back
+// to the window when the panel isn't mounted. Covering the channel list or the
+// members list inside the panel is fine.
+function panelBounds(): { top: number; left: number; right: number; bottom: number } {
   const row = document.querySelector("[data-pip-content-row]");
-  return {
-    top: row ? row.getBoundingClientRect().top : MARGIN,
-    left: 0,
-  };
+  const r = row?.getBoundingClientRect();
+  return r
+    ? { top: r.top, left: r.left, right: r.right, bottom: r.bottom }
+    : { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight };
 }
 
 function cornerTopLeft(corner: Corner, w: number, h: number): { x: number; y: number } {
   const isTop = corner.startsWith("top");
   const isLeft = corner.endsWith("left");
-  const insets = chromeInsets();
-  // Top corners sit below the top bar. Left / right corners keep to the window
-  // edge (may cover the channel list / members list). Bottom edge is
-  // unconstrained vertically.
-  const x = isLeft ? insets.left + MARGIN : window.innerWidth - w - MARGIN;
-  const y = isTop ? insets.top + MARGIN : window.innerHeight - h - MARGIN;
+  const b = panelBounds();
+  // Every corner sits MARGIN inside the panel edge (top corners are therefore
+  // below the top bar).
+  const x = isLeft ? b.left + MARGIN : b.right - w - MARGIN;
+  const y = isTop ? b.top + MARGIN : b.bottom - h - MARGIN;
   // Clamp so a narrow/short window can't push the box off-screen.
   return {
     x: Math.max(MARGIN, Math.min(x, window.innerWidth - w - MARGIN)),
@@ -335,17 +334,17 @@ export default function MiniStreamPlayer() {
       el.style.transition = "";
       el.style.transform = "";
 
-      const insets = chromeInsets();
+      const b = panelBounds();
       const isRight = pipCorner.endsWith("right");
       const isBottom = pipCorner.startsWith("bottom");
-      const anchorX = isRight ? window.innerWidth - MARGIN : insets.left + MARGIN;
-      const anchorY = isBottom ? window.innerHeight - MARGIN : insets.top + MARGIN;
+      const anchorX = isRight ? b.right - MARGIN : b.left + MARGIN;
+      const anchorY = isBottom ? b.bottom - MARGIN : b.top + MARGIN;
       const availW = isRight
-        ? anchorX - (insets.left + MARGIN)
-        : window.innerWidth - MARGIN - anchorX;
+        ? anchorX - (b.left + MARGIN)
+        : b.right - MARGIN - anchorX;
       const availH = isBottom
-        ? anchorY - (insets.top + MARGIN)
-        : window.innerHeight - MARGIN - anchorY;
+        ? anchorY - (b.top + MARGIN)
+        : b.bottom - MARGIN - anchorY;
       const hi = Math.max(
         MIN_WIDTH,
         Math.min(MAX_WIDTH, availW, availH / ASPECT),

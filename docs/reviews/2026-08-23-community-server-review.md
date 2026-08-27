@@ -425,6 +425,22 @@ left inset is the window edge (`[data-pip-dm-rail]` is gone — covering the cha
 already allowed). Not carried over from the rail: presence dots (the tile is a notification,
 not a roster entry — presence lives in `ConversationSidebar`).
 
+**Inset workspace panel (2026-08-27) ✅** — follow-up to the rail removal: with the chrome tone
+no longer running down the left edge, the sidebar's `bg-bg-dark` met the frameless window edge
+directly and the left side read as cut off. The chrome is now the ground and the workspace
+floats in it: `MainLayout` wraps the content row in an 8px chrome-toned gutter (left / right /
+bottom — the ServerBar's own bottom padding is the top one) and the sidebar + main area sit
+inside as a `rounded-lg` panel with a `border-border` ring (12px in the graphite themes, the
+console themes' 4px through the same token). The gutter paints via a new `.chrome-ground` rule
+(`globals.css`) that reads `var(--tc-chrome, var(--t-chrome))` directly — the resolution
+`.chrome-scope` does for `--color-bg-darkest` — as a background only: a `chrome-scope`
+ancestor would re-scope `--color-*` and drag the chat canvas into the chrome ramp in
+`console-split`, and a negative-z backdrop would need `isolate` on `MainLayout`, which would
+flatten the image viewer (z-200) / profile popup under the AppLayout-level toasts (z-90).
+ServerBar: bottom separator dropped (the gap separates), home button left-aligned with the
+panel edge. `MiniStreamPlayer` docks to the panel rect on all four sides (`panelBounds`)
+instead of the window edge.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

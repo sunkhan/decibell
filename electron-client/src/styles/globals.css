@@ -739,6 +739,16 @@
   --color-name-8: var(--tc-name-8, var(--t-name-8));
 }
 
+/* The chrome "ground" the workspace panel floats in (MainLayout's
+   gutter). Reads the chrome palette directly — the same resolution
+   .chrome-scope does for --color-bg-darkest — but as a background only,
+   NOT by re-scoping the --color-* layer: the panel inside must keep the
+   content palette, and in console-split a .chrome-scope ancestor would
+   drag the whole chat canvas into the dark chrome ramp.              */
+.chrome-ground {
+  background-color: var(--tc-chrome, var(--t-chrome));
+}
+
 /* Shadows are the one family Tailwind resolves statically: the
    shadow-* utilities compile to `--tw-shadow: var(--t-shadow-…)` and
    never touch the --shadow-* layer, so an override has to land on the

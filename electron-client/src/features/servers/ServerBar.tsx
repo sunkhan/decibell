@@ -248,16 +248,18 @@ export default function ServerBar() {
 
   return (
     <div className="chrome-scope relative z-10 flex h-[58px] shrink-0 items-center bg-bg-darkest">
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 border-b border-border" />
-      {/* Home button column. 68px is inherited from the DM rail that
-          used to continue below it; kept so the button stays put. */}
-      <div className="flex w-[68px] shrink-0 items-center justify-center">
+      {/* No bottom separator: the chrome gutter under the bar is the
+          separation from the workspace panel. The home button's left edge
+          lines up with the panel's (both 8px in from the window edge). */}
+      <div className="flex shrink-0 items-center px-2">
+        {/* Colour-only states: no ring when active and no hover lift, so
+            the button never changes size or position. */}
         <button
           onClick={() => { setActiveServer(null); setActiveChannel(null); setActiveView("home"); }}
-          className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-sm transition-all duration-150 ${
+          className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-sm transition-colors duration-150 ${
             activeView === "home"
-              ? "bg-accent text-on-accent shadow-[0_0_0_2px_var(--color-accent)]"
-              : "bg-surface-active text-text-secondary hover:bg-accent hover:text-on-accent hover:-translate-y-0.5"
+              ? "bg-accent text-on-accent"
+              : "bg-surface-active text-text-secondary hover:bg-accent hover:text-on-accent"
           }`}
           title="Home"
         >
