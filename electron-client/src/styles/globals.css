@@ -133,6 +133,10 @@
   --font-mono: var(--t-font-code);
   --font-channel: var(--t-font-channel);
   --font-display: var(--t-font-display);
+  /* Server names in the ServerBar tiles: JetBrains Mono in every theme
+     (2026-08-27) — the one place the console themes' terminal face is
+     used as a deliberate accent in graphite, not a per-theme choice. */
+  --font-tile: var(--font-stack-jetbrains);
 
   /* ─── Type scale ───
      Per-theme, because the two families don't share a size. `console*`

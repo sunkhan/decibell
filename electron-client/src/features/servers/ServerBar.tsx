@@ -86,7 +86,7 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
           >
             {server.name.charAt(0).toUpperCase()}
           </div>
-          <span className="min-w-0 flex-1 truncate text-left">{server.name}</span>
+          <span className="min-w-0 flex-1 truncate text-left font-tile">{server.name}</span>
         </button>
       </div>
     );
@@ -125,7 +125,7 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
           }`}
         />
         <span
-          className={`relative max-w-full truncate text-[13px] font-semibold text-white transition-opacity duration-150 ${
+          className={`relative max-w-full truncate font-tile text-[13px] font-semibold text-white transition-opacity duration-150 ${
             isActive ? "opacity-0" : isPending ? "" : "group-hover:opacity-0"
           }`}
         >
