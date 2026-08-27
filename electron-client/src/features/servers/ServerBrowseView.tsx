@@ -5,13 +5,8 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
 import { useFetchServerPictureIfMissing } from "./useServerPicture";
+import { parseInviteLink } from "./inviteLink";
 import type { CommunityServer, ResolvedInvite } from "../../types";
-
-interface ParsedInviteLink {
-  host: string;
-  port: number;
-  code: string;
-}
 
 interface ServerBrowseCardProps {
   server: CommunityServer;
@@ -163,29 +158,35 @@ export default function ServerBrowseView() {
     let port = parseInt(invitePort, 10);
     let code = trimmed;
     const isLink = trimmed.toLowerCase().startsWith("decibell:");
-    const hasManualHost = host.length > 0 && !isNaN(port) && port > 0;
 
     setRedeeming(true);
     try {
       if (isLink) {
-        const parsed = await invoke<ParsedInviteLink>("parse_invite_link", {
-          url: trimmed,
-        });
-        host = parsed.host;
-        port = parsed.port;
+        // Links are code-only; an older host:port link brings its own
+        // endpoint and skips the central lookup below.
+        const parsed = parseInviteLink(trimmed);
+        if (!parsed) {
+          setInviteError("That isn't a valid decibell:// invite link");
+          setRedeeming(false);
+          return;
+        }
         code = parsed.code;
-      } else if (!hasManualHost) {
+        if (parsed.host && parsed.port) {
+          host = parsed.host;
+          port = parsed.port;
+        }
+      }
+      const hasHost = host.length > 0 && !isNaN(port) && port > 0;
+      if (!hasHost) {
         try {
           const resolved = await invoke<ResolvedInvite>("resolve_invite_code", {
-            code: trimmed,
+            code,
           });
           host = resolved.host;
           port = resolved.port;
           code = resolved.code;
         } catch (err) {
-          setInviteError(
-            `${err}. Enter the server's host and port, or paste a full decibell:// link.`,
-          );
+          setInviteError(`${err}. Enter the server's host and port below.`);
           setRedeeming(false);
           return;
         }

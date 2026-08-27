@@ -34,7 +34,6 @@ const JOIN_TIMEOUT_MS = 15_000;
 export default function InviteEmbed({ href, sender }: { href: string; sender: string }) {
   const parsed = useMemo(() => parseInviteLink(href), [href]);
   const code = parsed ? parsed.code.toUpperCase() : "";
-  const hostKey = parsed ? `${parsed.host}:${parsed.port}` : "";
 
   const entry = useInviteResolveStore((s) => (code ? s.entries[code] : undefined));
   useEffect(() => {
@@ -42,6 +41,11 @@ export default function InviteEmbed({ href, sender }: { href: string; sender: st
   }, [code]);
   const resolved = entry?.status === "done" ? entry.resolved : null;
   const invalid = entry?.status === "done" && entry.invalid;
+  // Links carry only the code; the endpoint comes from central. An
+  // older host:port link keeps its own and can join without central.
+  const host = parsed?.host ?? resolved?.host ?? "";
+  const port = parsed?.port ?? resolved?.port ?? 0;
+  const hostKey = host && port ? `${host}:${port}` : "";
   const serverId = resolved && resolved.serverId > 0 ? String(resolved.serverId) : "";
   const pictureVersion = serverId ? resolved!.pictureVersion : "";
 
@@ -87,15 +91,15 @@ export default function InviteEmbed({ href, sender }: { href: string; sender: st
   if (!parsed) return null;
 
   const join = async () => {
-    if (joined || joining || invalid) return;
+    if (joined || joining || invalid || !hostKey) return;
     setJoining(true);
     setError(null);
     useUiStore.getState().setAuthError(null);
     try {
       await invoke("redeem_invite", {
         serverId: hostKey,
-        host: parsed.host,
-        port: parsed.port,
+        host,
+        port,
         inviteCode: parsed.code,
       });
       useChatStore.getState().setActiveServer(hostKey);
@@ -113,9 +117,15 @@ export default function InviteEmbed({ href, sender }: { href: string; sender: st
   };
 
   const name = resolved?.serverName || "";
+  const resolving = !entry || entry.status === "loading";
   const title = invalid
     ? "Invalid invite"
-    : name || (entry && entry.status === "loading" ? "Resolving invite…" : hostKey);
+    : name || hostKey || (resolving ? "Resolving invite…" : "Couldn't resolve invite");
+  // Central unreachable and no endpoint in the link: nothing to join yet.
+  const resolveError =
+    !hostKey && entry?.status === "done" && entry.resolved === null && !invalid
+      ? entry.error
+      : null;
   const description = invalid ? "This invite is unknown, expired, or used up." : resolved?.serverDescription ?? "";
   const members = resolved && resolved.memberCount > 0 ? resolved.memberCount : null;
   const label =
@@ -148,10 +158,10 @@ export default function InviteEmbed({ href, sender }: { href: string; sender: st
             height: BANNER_HEIGHT_PX,
             ...(invalid
               ? {}
-              : { background: stringToGradient(name || hostKey), color: "var(--color-av-fg)" }),
+              : { background: stringToGradient(name || parsed.code), color: "var(--color-av-fg)" }),
           }}
         >
-          {invalid ? "?" : (name || parsed.host).charAt(0).toUpperCase()}
+          {invalid ? "?" : (name || host || parsed.code).charAt(0).toUpperCase()}
         </div>
       )}
 
@@ -196,14 +206,16 @@ export default function InviteEmbed({ href, sender }: { href: string; sender: st
             <button
               type="button"
               onClick={() => void join()}
-              disabled={busy || invalid}
+              disabled={busy || invalid || !hostKey}
               className="shrink-0 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? "Joining…" : "Join"}
             </button>
           )}
         </div>
-        {error && <div className="text-meta text-error">{error}</div>}
+        {(error ?? resolveError) && (
+          <div className="text-meta text-error">{error ?? resolveError}</div>
+        )}
       </div>
     </div>
   );

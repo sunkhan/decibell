@@ -477,9 +477,13 @@ export interface ParsedInviteLink {
 }
 /**
  * Parse a `decibell://` invite URL into its components. Accepted shapes:
+ *   decibell://invite/<code>                 (host "" / port 0: resolve
+ *                                             the code via central)
  *   decibell://invite/<host>:<port>/<code>
  *   decibell://invite/<host>/<port>/<code>
  *   decibell:invite/<host>:<port>/<code>
+ * The renderer parses links itself (features/servers/inviteLink.ts);
+ * this stays for API completeness and older callers.
  */
 export declare function parseInviteLink(args: ParseInviteLinkArgs): ParsedInviteLink
 export interface ResolveInviteCodeArgs {

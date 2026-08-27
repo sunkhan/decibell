@@ -108,13 +108,15 @@ export interface ServerInvite {
   uses: number;
 }
 
-/// A `decibell://invite/<host>:<port>/<code>` URL parsed from a
-/// command-line argument, open-url event, or a link in chat. Stashed
-/// on the chat store; DeepLinkJoinModal consumes it on next render.
+/// A `decibell://invite/<code>` URL parsed from a command-line
+/// argument, open-url event, or a link in chat. Stashed on the chat
+/// store; DeepLinkJoinModal consumes it on next render. host/port are
+/// only present for the older `<host>:<port>/<code>` link shape —
+/// otherwise central resolves the code (resolve_invite_code).
 export interface PendingInvite {
-  host: string;
-  port: number;
   code: string;
+  host?: string;
+  port?: number;
 }
 
 /// `resolve_invite_code` result: the endpoint plus central's directory

@@ -590,6 +590,18 @@ bracketed IPv6 hosts and the `/host/port/code` shape included). Lookups are memo
 failures retry after 30 s so cards heal when central returns. Invite cards ignore the
 link-previews privacy toggle (they talk to our own central, not the linked site).
 
+**Invite links are code-only (2026-08-27) ✅** — the Invites modal now copies
+`decibell://invite/<CODE>`; no host or port in the link. Central already maps codes to the
+community's endpoint (`INVITE_RESOLVE`; communities register every invite and re-register live
+ones on reconnect), so the card, the deep-link modal and the browse view's paste box all take
+the endpoint from `resolve_invite_code` (memoised in `inviteResolveStore`) and join with it.
+The older `<host>:<port>/<code>` and `<host>/<port>/<code>` shapes still parse and still join
+without central. `PendingInvite.host/port` became optional; `DeepLinkJoinModal` shows the
+resolved server name / description / member count instead of a bare `host:port`, and disables
+Accept until the endpoint is known (or the invite is reported invalid). Native
+`parse_invite_link` accepts the code-only shape (host "" / port 0) though the renderer no
+longer calls it.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

@@ -119,9 +119,13 @@ pub struct ParsedInviteLink {
 }
 
 /// Parse a `decibell://` invite URL into its components. Accepted shapes:
+///   decibell://invite/<code>                 (host "" / port 0: resolve
+///                                             the code via central)
 ///   decibell://invite/<host>:<port>/<code>
 ///   decibell://invite/<host>/<port>/<code>
 ///   decibell:invite/<host>:<port>/<code>
+/// The renderer parses links itself (features/servers/inviteLink.ts);
+/// this stays for API completeness and older callers.
 #[napi]
 pub fn parse_invite_link(args: ParseInviteLinkArgs) -> napi::Result<ParsedInviteLink> {
     let trimmed = args.url.trim();
@@ -136,7 +140,7 @@ pub fn parse_invite_link(args: ParseInviteLinkArgs) -> napi::Result<ParsedInvite
 
     let body = body.trim_end_matches('/');
     let parts: Vec<&str> = body.split('/').collect();
-    if parts.len() < 2 {
+    if parts.is_empty() {
         return Err(napi::Error::from_reason("Invite link missing components"));
     }
 
@@ -145,7 +149,9 @@ pub fn parse_invite_link(args: ParseInviteLinkArgs) -> napi::Result<ParsedInvite
         return Err(napi::Error::from_reason("Invite code missing"));
     }
 
-    let (host, port) = if parts.len() == 2 {
+    let (host, port) = if parts.len() == 1 {
+        (String::new(), 0u16)
+    } else if parts.len() == 2 {
         let hp = parts[0];
         match hp.rsplit_once(':') {
             Some((h, p)) => (
@@ -163,7 +169,7 @@ pub fn parse_invite_link(args: ParseInviteLinkArgs) -> napi::Result<ParsedInvite
         (host, port)
     };
 
-    if host.is_empty() {
+    if parts.len() > 1 && host.is_empty() {
         return Err(napi::Error::from_reason("Host missing in invite link"));
     }
 

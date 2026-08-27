@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import type { ServerInvite } from "../../types";
 import { PERM, usePermission } from "./permissions";
+import { buildInviteLink } from "./inviteLink";
 
 const EXPIRY_OPTIONS: { label: string; seconds: number }[] = [
   { label: "1 hour", seconds: 3600 },
@@ -31,7 +32,6 @@ export default function InviteModal() {
   useEscapeToClose(closeModal, activeModal === "invite-manage");
   const activeServerId = useChatStore((s) => s.activeServerId);
   const invitesByServer = useChatStore((s) => s.invitesByServer);
-  const servers = useChatStore((s) => s.servers);
 
   const [expirySec, setExpirySec] = useState(604800);
   const [maxUsesUnlimited, setMaxUsesUnlimited] = useState(true);
@@ -41,10 +41,6 @@ export default function InviteModal() {
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
   const invites = activeServerId ? invitesByServer[activeServerId] ?? [] : [];
-  const server = useMemo(
-    () => servers.find((s) => s.id === activeServerId) ?? null,
-    [servers, activeServerId]
-  );
   // The server gates invite create/list/revoke on MANAGE_INVITES (roles
   // v1); this modal was still owner-only, so a role holder who opened it
   // from the (correctly gated) sidebar entry got a dead "owner only" card.
@@ -87,12 +83,6 @@ export default function InviteModal() {
       </div>
     );
   }
-
-  const buildInviteLink = (code: string): string => {
-    const host = server?.hostIp ?? "";
-    const port = server?.port ?? 0;
-    return `decibell://invite/${host}:${port}/${code}`;
-  };
 
   const handleCopy = async (code: string) => {
     const link = buildInviteLink(code);

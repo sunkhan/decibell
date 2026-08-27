@@ -3,7 +3,13 @@ import { handleCertMismatch } from "../../lib/certMismatch";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useInviteResolveStore } from "../../stores/inviteResolveStore";
 
+// Confirm-then-join for an invite that arrived as a deep link or a
+// clicked chat link. Links carry only the code, so the endpoint comes
+// from central (inviteResolveStore → resolve_invite_code) along with
+// the server's name and description for the preview; an older
+// host:port link can still join even when central is unreachable.
 export default function DeepLinkJoinModal() {
   const pendingInvite = useChatStore((s) => s.pendingInvite);
   const setPendingInvite = useChatStore((s) => s.setPendingInvite);
@@ -11,6 +17,16 @@ export default function DeepLinkJoinModal() {
   const setActiveView = useUiStore((s) => s.setActiveView);
   const authError = useUiStore((s) => s.authError);
   const setAuthError = useUiStore((s) => s.setAuthError);
+
+  const code = pendingInvite ? pendingInvite.code.toUpperCase() : "";
+  const entry = useInviteResolveStore((s) => (code ? s.entries[code] : undefined));
+  useEffect(() => {
+    if (code) useInviteResolveStore.getState().request(code);
+  }, [code]);
+  const resolved = entry?.status === "done" ? entry.resolved : null;
+  const host = pendingInvite?.host ?? resolved?.host ?? "";
+  const port = pendingInvite?.port ?? resolved?.port ?? 0;
+  const serverId = host && port ? `${host}:${port}` : "";
 
   const [joining, setJoining] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -26,17 +42,20 @@ export default function DeepLinkJoinModal() {
   // If the server reports an auth failure for this invite's server, surface
   // it inline and stop the spinner.
   useEffect(() => {
-    if (!pendingInvite || !authError) return;
-    const targetId = `${pendingInvite.host}:${pendingInvite.port}`;
-    if (authError.serverId === targetId) {
-      setJoining(false);
-    }
-  }, [pendingInvite, authError]);
+    if (!pendingInvite || !authError || !serverId) return;
+    if (authError.serverId === serverId) setJoining(false);
+  }, [pendingInvite, authError, serverId]);
 
   if (!pendingInvite) return null;
 
-  const { host, port, code } = pendingInvite;
-  const serverId = `${host}:${port}`;
+  const invalid = entry?.status === "done" && entry.invalid;
+  const resolving = !entry || entry.status === "loading";
+  const resolveError =
+    entry?.status === "done" && entry.resolved === null && !entry.invalid ? entry.error : null;
+  const canJoin = serverId !== "" && !joining && !invalid;
+  const title =
+    resolved?.serverName ||
+    (serverId ? serverId : resolving ? "Resolving invite…" : "Couldn't resolve invite");
 
   const close = () => {
     setPendingInvite(null);
@@ -45,6 +64,7 @@ export default function DeepLinkJoinModal() {
   };
 
   const handleJoin = async () => {
+    if (!serverId) return;
     setJoining(true);
     setLocalError(null);
     setAuthError(null);
@@ -53,13 +73,10 @@ export default function DeepLinkJoinModal() {
         serverId,
         host,
         port,
-        inviteCode: code,
+        inviteCode: pendingInvite.code,
       });
       setActiveServer(serverId);
       setActiveView("server");
-      // Leave the modal open briefly so the user sees success; the
-      // community_auth_responded event will either clear it (success path
-      // triggered via close below) or surface an authError (handled above).
       setPendingInvite(null);
     } catch (err) {
       if (!handleCertMismatch(err, handleJoin)) setLocalError(String(err));
@@ -68,7 +85,12 @@ export default function DeepLinkJoinModal() {
   };
 
   const inlineError =
-    authError && authError.serverId === serverId ? authError : null;
+    authError && serverId && authError.serverId === serverId ? authError : null;
+  const errorText =
+    inlineError?.message ??
+    localError ??
+    (invalid ? "This invite is unknown, expired, or used up." : null) ??
+    (resolveError && !serverId ? resolveError : null);
 
   return (
     <div
@@ -94,19 +116,21 @@ export default function DeepLinkJoinModal() {
           You have been invited to:
         </p>
         <div className="mb-1 rounded-lg border border-border bg-bg-dark px-3 py-2.5">
-          <div className="font-mono text-sm text-text-bright">
-            {host}:{port}
+          <div className={`truncate text-sm font-semibold ${invalid ? "text-text-muted" : "text-text-bright"}`}>
+            {invalid ? "Invalid invite" : title}
           </div>
+          {resolved?.serverDescription && !invalid && (
+            <div className="mt-0.5 line-clamp-2 text-xs text-text-secondary">
+              {resolved.serverDescription}
+            </div>
+          )}
           <div className="mt-1 font-mono text-[11px] tracking-[0.07em] text-text-muted">
-            Code: {code}
+            {resolved && resolved.memberCount > 0 ? `${resolved.memberCount} members · ` : ""}
+            Code: {pendingInvite.code}
           </div>
         </div>
 
-        {(inlineError || localError) && (
-          <p className="mt-3 text-xs text-error">
-            {inlineError?.message ?? localError}
-          </p>
-        )}
+        {errorText && <p className="mt-3 text-xs text-error">{errorText}</p>}
 
         <div className="mt-4 flex gap-2">
           <button
@@ -117,10 +141,10 @@ export default function DeepLinkJoinModal() {
           </button>
           <button
             onClick={handleJoin}
-            disabled={joining}
+            disabled={!canJoin}
             className="flex-1 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-50"
           >
-            {joining ? "Joining..." : "Accept"}
+            {joining ? "Joining..." : resolving && !serverId ? "Resolving…" : "Accept"}
           </button>
         </div>
       </div>
