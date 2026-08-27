@@ -34,7 +34,7 @@
    app with no React re-render and no class churn.
 
    Role vocabulary (unchanged from DS v1, now theme-agnostic):
-     chrome   (titlebar, server bar, DM rail)  → darkest / titlebar / dmbar / primary
+     chrome   (titlebar, server bar)           → darkest / titlebar / dmbar / primary
      sidebar  (channel + member sidebars)      → dark / secondary / tertiary
      content  (chat / main viewport)           → mid
      raised   (cards, composer, popovers)      → light

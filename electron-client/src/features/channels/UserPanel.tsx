@@ -15,7 +15,7 @@ import CaptureSourcePicker from "../voice/CaptureSourcePicker";
 const EMPTY_CHANNELS: never[] = [];
 
 // Floating user-control panel that sits at the bottom-left of the
-// sidebar group (over DmSidebar + ChannelSidebar). Shows the user's
+// sidebar group (over ChannelSidebar). Shows the user's
 // avatar + username, voice status when connected, and the standard
 // quick-action row (mute / deafen / disconnect / device pickers).
 //

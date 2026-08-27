@@ -1,8 +1,11 @@
 import { useEffect, useMemo } from "react";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
+import { useDmStore, conversationActivityTime } from "../../stores/dmStore";
 import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
+import { UserAvatar } from "../../components/UserAvatar";
+import { AVATAR_RADIUS } from "../../components/LetterAvatar";
 import { TILE_WIDTH, TILE_HEIGHT } from "./serverTileDimensions";
 import type { CommunityServer } from "../../types";
 
@@ -143,13 +146,67 @@ function ActiveTileGlow() {
   );
 }
 
+// Unread DMs surface here, between the home button and the server
+// tabs: one avatar tile per peer with unreadCount > 0, most recent
+// activity first (leftmost = newest). A tile lives exactly as long as
+// the conversation is unread — DmChatPanel's mark-read effect zeroes
+// unreadCount as soon as the conversation is on screen, so clicking a
+// tile (which opens the conversation) is what makes it disappear.
+// This replaced the vertical DM rail (2026-08-27), which listed every
+// conversation permanently; the full list is ConversationSidebar on
+// the home / dm views. No store state of its own — it is a filtered
+// view of dmStore.conversations.
+function UnreadDmTiles() {
+  const conversations = useDmStore((s) => s.conversations);
+  const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
+  const setActiveView = useUiStore((s) => s.setActiveView);
+
+  const unread = useMemo(
+    () =>
+      Object.values(conversations)
+        .filter((c) => c.unreadCount > 0)
+        .sort((a, b) => conversationActivityTime(b) - conversationActivityTime(a)),
+    [conversations],
+  );
+  if (unread.length === 0) return null;
+
+  return (
+    <>
+      {unread.map((conv) => {
+        const count = conv.unreadCount > 99 ? "99+" : String(conv.unreadCount);
+        // Radius matches the avatar inside so the hover lift and the
+        // badge cutout stay concentric with it (see LetterAvatar).
+        return (
+          <button
+            key={conv.username}
+            onClick={() => {
+              setActiveDmUser(conv.username);
+              setActiveView("dm");
+            }}
+            title={`${conv.username} — ${count} unread`}
+            className="relative shrink-0 cursor-pointer transition-transform duration-150 animate-[dropIn_150ms_ease-out] hover:-translate-y-px"
+            style={{ borderRadius: AVATAR_RADIUS }}
+          >
+            <UserAvatar username={conv.username} size={TILE_HEIGHT} />
+            <div className="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-[2px] border-bg-darkest bg-error px-1 text-[10px] font-semibold leading-none text-white">
+              {count}
+            </div>
+          </button>
+        );
+      })}
+      <div className="mx-1 h-6 w-px shrink-0 bg-border-divider" />
+    </>
+  );
+}
+
 // Horizontal server tab strip — one tab per server the user is
 // currently connected to OR auto-rejoining as part of post-login
 // fanout. Pending tiles render as "connecting…" until the matching
 // community_auth_responded lands (success → flips to normal, failure
 // → drops + toast via useServerEvents). The home button (left)
 // toggles the home view; the add button (right) opens
-// ServerBrowseView. Servers in `servers` that are neither connected
+// ServerBrowseView. Unread-DM tiles sit between the two (see
+// UnreadDmTiles). Servers in `servers` that are neither connected
 // nor pending live only in ServerBrowseView. Leaving a server is
 // only accessible via the ServerChannelsSidebar dropdown — no
 // inline affordance on the tile itself.
@@ -191,9 +248,9 @@ export default function ServerBar() {
 
   return (
     <div className="chrome-scope relative z-10 flex h-[58px] shrink-0 items-center bg-bg-darkest">
-      {/* Bottom separator starts after the home-button column. */}
-      <div className="pointer-events-none absolute bottom-0 left-[68px] right-0 border-b border-border" />
-      {/* Home button — width matches DM sidebar */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 border-b border-border" />
+      {/* Home button column. 68px is inherited from the DM rail that
+          used to continue below it; kept so the button stays put. */}
       <div className="flex w-[68px] shrink-0 items-center justify-center">
         <button
           onClick={() => { setActiveServer(null); setActiveChannel(null); setActiveView("home"); }}
@@ -212,8 +269,9 @@ export default function ServerBar() {
 
       <div className="h-7 w-px shrink-0 bg-border-divider" />
 
-      {/* Server tabs */}
+      {/* Unread DMs, then server tabs */}
       <div className="flex flex-1 items-center gap-2 px-2">
+        <UnreadDmTiles />
         {visible.map((server) => (
           <ServerTile
             key={server.id}

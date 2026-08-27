@@ -408,6 +408,23 @@ as plain DOM in an `overflow-y:auto` scroller, so every row height is real and p
   unreproduced sighting of landing one row above the newest on a channel switch; DMs not yet
   exercised with a long thread (revert the removal commit if needed).
 
+**Unread-DM tiles in the ServerBar; vertical DM rail removed (2026-08-27) ✅** — the 68px
+avatar column on the far left (`layouts/DmSidebar.tsx`) listed every DM conversation
+permanently and duplicated `ConversationSidebar` (the home / dm views' list). It is gone; the
+ServerBar's home button and server tabs are unchanged. In its place `ServerBar.tsx` renders
+`UnreadDmTiles` immediately right of the home button: one avatar tile per peer with
+`unreadCount > 0`, most-recent activity first (leftmost = newest), with the unread-count
+badge; clicking opens the conversation. A tile exists exactly as long as the conversation is
+unread — the existing `DmChatPanel` mark-read effect zeroes `unreadCount` when the
+conversation is on screen, so the tile drops the moment it is opened. Nothing new in the
+store: the tiles are a filtered view of `dmStore.conversations` (`addDmMessage` already
+declines to bump the count for the conversation being viewed, so a live DM from the open peer
+never spawns a tile). Fallout: the ServerBar's bottom separator now runs full width (it used
+to start after the home column so bar + rail read as one strip); the mini stream player's
+left inset is the window edge (`[data-pip-dm-rail]` is gone — covering the channel list was
+already allowed). Not carried over from the rail: presence dots (the tile is a notification,
+not a roster entry — presence lives in `ConversationSidebar`).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

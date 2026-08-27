@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { invoke } from "../lib/ipc";
-import DmSidebar from "./DmSidebar";
 import ServerBar from "../features/servers/ServerBar";
 import ServerBrowseView from "../features/servers/ServerBrowseView";
 import ChannelSidebar from "../features/channels/ChannelSidebar";
@@ -32,13 +31,15 @@ import { useCentralConnectionStatus } from "../hooks/useCentralConnectionStatus"
 import { useWindowTitle } from "../hooks/useWindowTitle";
 import { useUiStore } from "../stores/uiStore";
 
-// Mirrors tauri-client/src/layouts/MainLayout.tsx structurally:
+// Mirrors tauri-client/src/layouts/MainLayout.tsx structurally, minus
+// the vertical DM rail (removed 2026-08-27: unread DMs surface as avatar
+// tiles in the ServerBar instead, and the full conversation list is the
+// ConversationSidebar on the home / dm views):
 //
-//   ┌─ ServerBar (horizontal tab strip) ────────────────────────────┐
-//   ├─ DmSidebar (left vertical) ─┬─ ChannelSidebar ─┬─ Chat / DM /┤
-//   │                              │                  │ Voice /     │
-//   │                              │                  │ Browse      │
-//   │              [floating UserPanel bottom-left at z-20]         │
+//   ┌─ ServerBar (home · unread DMs · server tabs) ─────────────────┐
+//   ├─ ChannelSidebar ─┬─ Chat / DM / Voice / Browse ────────────────┤
+//   │                  │                                             │
+//   │ [floating UserPanel bottom-left at z-20]                       │
 //   └────────────────────────────────────────────────────────────────┘
 //
 // PR4-parity stage defers UserPanel (PR5: voice pipeline), VoicePanel
@@ -85,23 +86,18 @@ export default function MainLayout() {
 
       <div className="flex flex-1 overflow-hidden" data-pip-content-row>
         {activeView === "browse" ? (
-          <>
-            <DmSidebar />
-            <ServerBrowseView />
-          </>
+          <ServerBrowseView />
         ) : (
           <>
-            {/* Sidebar group: DmSidebar + ChannelSidebar with the
-                floating UserPanel anchored bottom-left over them.
-                Browse view above renders only DmSidebar — no
-                ChannelSidebar — to match tauri-client. */}
+            {/* Sidebar group: ChannelSidebar with the floating
+                UserPanel anchored bottom-left over it. Browse view
+                above renders no sidebar at all. */}
             {/* chrome-scope: in `console-split` this whole group —
-                DM rail, channel sidebar, floating user/voice panel —
-                paints from the dark `console` palette while the chat
-                canvas beside it stays on `console-light`. Inert in
-                the other four themes. */}
+                channel sidebar + floating user/voice panel — paints
+                from the dark `console` palette while the chat canvas
+                beside it stays on `console-light`. Inert in the other
+                four themes. */}
             <div className="chrome-scope relative flex shrink-0">
-              <DmSidebar />
               <ChannelSidebar />
               <div className="absolute bottom-2 left-2 right-2 z-20">
                 <UserPanel />

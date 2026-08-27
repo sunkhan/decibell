@@ -57,16 +57,15 @@ const ENTRANCE_MS = 340;
 const ENTRANCE_EASE = "cubic-bezier(0.34, 1.32, 0.64, 1)";
 
 // Chrome the mini must clear, measured from the layout (not hardcoded) so it
-// tracks theme/width/view changes:
+// tracks theme/view changes:
 //  - top: below the top bar — the content row's top ([data-pip-content-row]).
-//  - left: right of the DM rail only ([data-pip-dm-rail]); covering the channel
-//    list to its right is fine.
+//  - left: the window edge. Nothing on the left is off-limits since the
+//    vertical DM rail went away (2026-08-27); covering the channel list is fine.
 function chromeInsets(): { top: number; left: number } {
   const row = document.querySelector("[data-pip-content-row]");
-  const dmRail = document.querySelector("[data-pip-dm-rail]");
   return {
     top: row ? row.getBoundingClientRect().top : MARGIN,
-    left: dmRail ? dmRail.getBoundingClientRect().right : MARGIN,
+    left: 0,
   };
 }
 
@@ -74,9 +73,9 @@ function cornerTopLeft(corner: Corner, w: number, h: number): { x: number; y: nu
   const isTop = corner.startsWith("top");
   const isLeft = corner.endsWith("left");
   const insets = chromeInsets();
-  // Left corners (top AND bottom) clear the DM rail but may cover the channel
-  // list. Top corners sit below the top bar. Right corners keep to the window
-  // edge (may cover the members list). Bottom edge is unconstrained vertically.
+  // Top corners sit below the top bar. Left / right corners keep to the window
+  // edge (may cover the channel list / members list). Bottom edge is
+  // unconstrained vertically.
   const x = isLeft ? insets.left + MARGIN : window.innerWidth - w - MARGIN;
   const y = isTop ? insets.top + MARGIN : window.innerHeight - h - MARGIN;
   // Clamp so a narrow/short window can't push the box off-screen.

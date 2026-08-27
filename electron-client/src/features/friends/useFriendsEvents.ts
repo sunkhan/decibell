@@ -46,7 +46,7 @@ export function useFriendsEvents() {
     );
 
     // Global online-user list update from central. Updates the chat
-    // store's `onlineUsers` (used by DmSidebar dots) and reconciles
+    // store's `onlineUsers` (ConversationSidebar's presence dots) and reconciles
     // friend statuses (online/offline transitions) without touching
     // pending/blocked rows. Also primes the avatar cache with every
     // online user's current version.
