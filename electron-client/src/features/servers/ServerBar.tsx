@@ -60,16 +60,21 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
         style={{ width: TILE_WIDTH, height: TILE_HEIGHT }}
       >
         {showGlow && <ActiveTileGlow />}
+        {/* Same states as the home button: a surface fill at rest that
+            floods with the accent on hover, and stays accent while
+            active (hover and active share the fill, so hovering an
+            inactive tile never reads as "more selected" than the
+            active one). */}
         <button
           onClick={() => !isPending && onClick(server.id)}
           disabled={isPending}
           title={isPending ? "Connecting…" : server.name}
-          className={`relative flex h-full w-full items-center gap-2 rounded-md px-3 text-[13px] font-semibold transition-all duration-150 ${
+          className={`relative flex h-full w-full items-center gap-2 rounded-md px-3 text-[13px] font-semibold transition-colors duration-150 ${
             isPending
               ? "cursor-wait bg-surface-hover text-text-muted opacity-60"
               : isActive
-                ? "cursor-pointer bg-accent-mid text-accent-bright"
-                : "cursor-pointer text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                ? "cursor-pointer bg-accent text-on-accent"
+                : "cursor-pointer bg-surface-active text-text-secondary hover:bg-accent hover:text-on-accent"
           }`}
         >
           {!isPending && isActive && (
