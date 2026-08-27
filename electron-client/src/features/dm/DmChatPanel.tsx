@@ -22,7 +22,7 @@ import EmojiPicker from "../chat/EmojiPicker";
 import ErrorCard from "../../components/ErrorCard";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
-import type { DmMessage, Message } from "../../types";
+import type { DmMessage, GifResult, Message } from "../../types";
 
 // Canonical reject strings the central server echoes back as a DM
 // from us-to-us. Pattern-matched here so we can render them as a
@@ -491,6 +491,28 @@ export default function DmChatPanel() {
     }
   };
 
+  // See ChatPanel.sendGif — the GIF's URL goes out as its own message,
+  // the typed draft stays, a pending reply target is consumed by it.
+  const sendGif = async (gif: GifResult) => {
+    if (!activeDmUser) return;
+    if (useDmStore.getState().conversations[activeDmUser]?.hasMoreAfter) {
+      jumpToPresent();
+      return;
+    }
+    const replyToId = replyingTo?.id && replyingTo.id > 0 ? replyingTo.id : undefined;
+    setReplyingTo(null);
+    try {
+      await invoke("send_private_message", {
+        recipient: activeDmUser,
+        message: gif.url,
+        replyTo: replyToId,
+      });
+    } catch (err) {
+      console.error("send_private_message (gif):", err);
+      toast.error("Failed to send GIF");
+    }
+  };
+
   // See ChatPanel.insertSnippet — same contract.
   const insertSnippet = useCallback((snippet: string) => {
     const cur = editorRef.current?.getValue() ?? "";
@@ -855,6 +877,7 @@ export default function DmChatPanel() {
               {pickerOpen && (
                 <EmojiPicker
                   onSelect={(emoji) => insertEmoji(emoji)}
+                  onSendGif={(gif) => void sendGif(gif)}
                   onClose={() => setPickerOpen(false)}
                   triggerRef={emojiTriggerRef}
                 />

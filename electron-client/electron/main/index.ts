@@ -14,6 +14,7 @@ import { registerDialogHandlers } from "./dialog";
 import { registerFsHandlers } from "./fs";
 import { registerNetHandlers } from "./netFetch";
 import { registerLinkPreviewHandlers } from "./linkPreview";
+import { registerGifHandlers } from "./gifs";
 import { startMediaServer, stopMediaServer, getMediaServerPort } from "./mediaServer";
 import { initUpdater, kickoffInitialCheck, cancelInitialCheck } from "./update";
 import { sweepStale } from "./fileRegistry";
@@ -593,6 +594,7 @@ app.whenReady().then(async () => {
   registerFsHandlers();
   registerNetHandlers();
   registerLinkPreviewHandlers();
+  registerGifHandlers();
 
   // GC abandoned decibell-file:// registrations (renderer crash or
   // forgotten upload). Entries expire after 1h; sweep every 5 min.

@@ -34,7 +34,7 @@ function formatRemaining(totalSec: number): string {
   if (s < 86400) return `${Math.ceil(s / 3600)}h`;
   return `${Math.ceil(s / 86400)}d`;
 }
-import type { Message } from "../../types";
+import type { GifResult, Message } from "../../types";
 
 // How many rows below the viewport's bottom edge before the "jump to
 // present" pill appears for a plain scroll-up (no jump window involved).
@@ -558,6 +558,48 @@ export default function ChatPanel() {
     }
   };
 
+  // Send a picked GIF as a message of its own — its URL is the text, and
+  // the link preview turns it into the animated image on every client.
+  // Independent of handleSend on purpose: the typed draft and any queued
+  // attachments stay untouched, like Discord's GIF picker. A pending
+  // reply target applies to the GIF and is consumed by it.
+  const sendGif = async (gif: GifResult) => {
+    if (!activeServerId || !activeChannelId || !username) return;
+    if (activeKey && useChatStore.getState().hasMoreAfter[activeKey]) {
+      jumpToPresent();
+      return;
+    }
+    const serverId = activeServerId;
+    const channelId = activeChannelId;
+    const content = gif.url;
+    const replyToId = replyingTo?.id && replyingTo.id > 0 ? replyingTo.id : undefined;
+    const nonce = generateNonce();
+    useChatStore.getState().addMessage(serverId, {
+      id: 0,
+      channelId,
+      sender: username,
+      content,
+      timestamp: String(Math.floor(Date.now() / 1000)),
+      attachments: [],
+      nonce,
+      replyTo: replyToId,
+    });
+    setReplyingTo(null);
+    try {
+      await invoke("send_channel_message", {
+        serverId,
+        channelId,
+        message: content,
+        nonce,
+        replyTo: replyToId,
+      });
+    } catch (err) {
+      console.error("send_channel_message (gif):", err);
+      useChatStore.getState().removeMessageByNonce(serverId, channelId, nonce);
+      toast.error("Failed to send GIF");
+    }
+  };
+
   // Append a composer-built snippet (```lang fence / $$math$$) to the
   // draft. setValue drives RichInput's onChange, so the draft state,
   // drafts store, and the live send-preview all update through the
@@ -1051,6 +1093,7 @@ export default function ChatPanel() {
                       editorRef.current?.insertEmoji(emoji);
                       editorRef.current?.focus();
                     }}
+                    onSendGif={(gif) => void sendGif(gif)}
                     onClose={() => setPickerOpen(false)}
                     triggerRef={emojiTriggerRef}
                   />

@@ -1,7 +1,9 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { AttachmentKind, Message } from "../../types";
 import { stringToColor } from "../../utils/colors";
 import { useUiStore } from "../../stores/uiStore";
+import { useLinkPreviewStore } from "../../stores/linkPreviewStore";
+import { loneLink } from "./richText";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { UserAvatar } from "../../components/UserAvatar";
 import MessageText from "./MessageText";
@@ -208,6 +210,19 @@ function MessageBubble({
   // viewport shifts content unless anchored — candidate glitch causes).
   const auditRef = useRowHeightAudit(message.id > 0 ? message.id : message.nonce ?? "?");
 
+  // A message that is only a media link (a sent GIF, a pasted image URL)
+  // shows just the embed once the link resolves to an image — the URL
+  // text would be noise above its own picture. Until then (and with
+  // previews off, or for a non-image link) the text stays.
+  const lone = useMemo(() => loneLink(message.content), [message.content]);
+  const loneEntry = useLinkPreviewStore((s) => (lone ? s.entries[lone] : undefined));
+  const previewsOn = useUiStore((s) => s.linkPreviewsEnabled);
+  const textHidden =
+    lone !== null &&
+    previewsOn &&
+    loneEntry?.status === "done" &&
+    loneEntry.preview?.kind === "image";
+
   // Shared sender-popup handlers used by both the avatar and the
   // username — clicking either opens the profile popup at the
   // element's right edge; right-click opens the context menu.
@@ -237,7 +252,7 @@ function MessageBubble({
         />
       );
     }
-    if (!message.content) return null;
+    if (!message.content || textHidden) return null;
     return (
       <div
         className={`${marginClass} whitespace-pre-wrap break-all text-body leading-body text-text-primary [overflow-wrap:anywhere]`}

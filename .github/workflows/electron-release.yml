@@ -190,6 +190,19 @@ jobs:
           echo "{\"dsn\":\"$SENTRY_DSN\"}" > resources/sentry.json
           echo "[sentry] DSN written to electron-client/resources/sentry.json"
 
+      - name: Bake Tenor API key
+        # Same shape as the Sentry step: the GIFs tab in the emoji
+        # picker searches Tenor with this key (electron/main/gifs.ts).
+        # Absent secret → no file → the tab explains it isn't configured.
+        if: env.TENOR_API_KEY != ''
+        env:
+          TENOR_API_KEY: ${{ secrets.TENOR_API_KEY }}
+        shell: bash
+        run: |
+          mkdir -p resources
+          echo "{\"key\":\"$TENOR_API_KEY\"}" > resources/tenor.json
+          echo "[tenor] key written to electron-client/resources/tenor.json"
+
       - name: Package
         # Don't expose GH_TOKEN here. electron-builder treats its
         # presence as "implicit GitHub publish provider", then tries

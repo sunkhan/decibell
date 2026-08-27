@@ -518,6 +518,28 @@ ResizeObserver already absorbs. The composer's live preview ignores autolinks
 text. Remote images stay direct `<img src=https:>` (already in the CSP's `img-src`); `http:`
 image references are upgraded to https and simply hide on failure.
 
+**GIFs: picker tab + animated attachments (2026-08-27) ✅** — the emoji picker gained an
+**Emoji | GIFs** tab strip (remembered in `decibell.picker.tab`). The GIFs tab
+(`features/chat/GifPicker.tsx`) is a search box over **Tenor v2** — Discord's provider — with
+Tenor's featured feed while the query is empty, a two-column masonry whose cells reserve their
+height from the preview dimensions, infinite paging on Tenor's `next` cursor, a monotonic
+request id so a stale page can't land on a newer query, and the "Powered by Tenor" attribution
+its terms require. Clicking a GIF **sends it as a message of its own**: the message text is the
+`https://media.tenor.com/….gif` URL, so every client (old ones included) sees a link, and this
+client's link preview renders the animated image. The typed draft and queued attachments are
+untouched; a pending reply target is consumed by the GIF. The search runs in **main**
+(`electron/main/gifs.ts`) so the API key never reaches the renderer and CORS is moot (Tenor's
+error responses carry no ACAO). Key provisioning mirrors the Sentry DSN: CI bakes
+`resources/tenor.json` from a **`TENOR_API_KEY` secret** (new release-workflow step +
+`extraResources` entry); a dev checkout reads `electron-client/resources/tenor.json` or the
+`TENOR_API_KEY` env var; without one the tab says so instead of searching. Two rendering rules
+came with it: (1) a message that is *only* a media link hides its URL text once the link
+resolves to an image embed (`loneLink` in richText.ts; the bubble subscribes to the
+link-preview entry), so a sent GIF is just the GIF, and the DM list previews it as "GIF" /
+"Image" (`mediaLabelFor`) instead of a CDN URL; (2) **uploaded GIFs now animate** —
+`previewUrlFor` returns the original for `image/gif`, since the upload-time thumbnail is a JPEG
+of the first frame and the chat had been showing that frozen frame.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

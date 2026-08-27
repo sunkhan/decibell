@@ -611,3 +611,29 @@ export type LinkPreview =
     }
   /// The URL itself is an image.
   | { kind: "image"; url: string; width: number; height: number };
+
+// ── GIF search (Tenor, via electron/main/gifs.ts) ────────────────────
+
+export interface GifResult {
+  id: string;
+  title: string;
+  /// Full-size GIF — what gets sent as the message text.
+  url: string;
+  width: number;
+  height: number;
+  /// Smaller GIF for the picker grid.
+  preview: string;
+  previewWidth: number;
+  previewHeight: number;
+}
+
+export interface GifPage {
+  results: GifResult[];
+  /// Tenor's opaque cursor for the next page; null when exhausted.
+  next: string | null;
+}
+
+export type GifSearchResult =
+  | { ok: true; page: GifPage }
+  /// `error` is "not-configured" when the build has no Tenor key.
+  | { ok: false; error: string };

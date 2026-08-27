@@ -3,7 +3,14 @@ import data from "@emoji-mart/data";
 import emojiRegex from "emoji-regex";
 import Twemoji from "../../components/emoji/Twemoji";
 import EmojiInfoPopover from "./EmojiInfoPopover";
-import { parseRichText, isPlainText, richTextToPlain, type RichNode } from "./richText";
+import {
+  parseRichText,
+  isPlainText,
+  richTextToPlain,
+  loneLink,
+  mediaLabelFor,
+  type RichNode,
+} from "./richText";
 import CodeBlock from "./CodeBlock";
 import MathTex from "./MathTex";
 import { onLinkClick, onLinkAuxClick } from "../../lib/openExternal";
@@ -139,7 +146,11 @@ export default function MessageText({ content, emojiSize, preview }: MessageText
     // constant inline size.
     if (preview) {
       const size = emojiSize !== undefined ? emojiSize : INLINE_EMOJI_SIZE;
-      return emojiTokens(richTextToPlain(content), size, "p").tokens;
+      // A message that is just a GIF/image link previews as "GIF" /
+      // "Image" rather than a media CDN URL.
+      const lone = loneLink(content);
+      const label = lone ? mediaLabelFor(lone) : null;
+      return emojiTokens(label ?? richTextToPlain(content), size, "p").tokens;
     }
 
     const nodes = parseRichText(content);

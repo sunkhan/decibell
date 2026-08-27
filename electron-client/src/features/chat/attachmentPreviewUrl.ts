@@ -22,6 +22,9 @@ export function previewUrlFor(
 ): string | null {
   const full = buildAttachmentUrl(serverId, attachment);
   if (!full) return null;
+  // A GIF has to be the original: the upload-time thumbnail is a JPEG of
+  // its first frame, and a frozen GIF in the chat is a bug, not a preview.
+  if (attachment.mime === "image/gif") return full;
   const box = reserveBox(attachment, viewSize);
   const targetPx =
     box.width > 0

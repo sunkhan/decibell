@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import data from "@emoji-mart/data";
 import Twemoji from "../../components/emoji/Twemoji";
+import GifPicker from "./GifPicker";
+import type { GifResult } from "../../types";
 
 interface EmojiEntry {
   id: string;
@@ -43,6 +45,27 @@ const CATEGORY_ICONS: Record<string, string> = {
 const RECENT_KEY = "decibell.emoji.recent";
 const RECENT_MAX = 24;
 
+// The picker remembers which tab it was on (Discord does the same): a
+// GIF-heavy user shouldn't have to click GIFs every time.
+type PickerTab = "emoji" | "gifs";
+const TAB_KEY = "decibell.picker.tab";
+
+function loadTab(): PickerTab {
+  try {
+    return localStorage.getItem(TAB_KEY) === "gifs" ? "gifs" : "emoji";
+  } catch {
+    return "emoji";
+  }
+}
+
+function saveTab(tab: PickerTab) {
+  try {
+    localStorage.setItem(TAB_KEY, tab);
+  } catch {
+    // ignore quota errors
+  }
+}
+
 function loadRecent(): string[] {
   try {
     const raw = localStorage.getItem(RECENT_KEY);
@@ -70,9 +93,12 @@ interface EmojiPickerProps {
   onSelect: (emoji: string) => void;
   onClose: () => void;
   triggerRef?: React.RefObject<HTMLElement | null>;
+  /// Enables the GIFs tab. Clicking a GIF sends it as a message on its
+  /// own (the caller does the send); the picker closes itself.
+  onSendGif?: (gif: GifResult) => void;
 }
 
-export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPickerProps) {
+export default function EmojiPicker({ onSelect, onClose, triggerRef, onSendGif }: EmojiPickerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -84,6 +110,11 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
     () => (loadRecent().length ? "frequent" : CATEGORIES[0]?.id ?? "people")
   );
   const [hoveredEmoji, setHoveredEmoji] = useState<{ native: string; name: string; id: string } | null>(null);
+  const [tab, setTab] = useState<PickerTab>(() => (onSendGif ? loadTab() : "emoji"));
+  const switchTab = (next: PickerTab) => {
+    setTab(next);
+    saveTab(next);
+  };
 
   // Close on outside click / Escape
   useEffect(() => {
@@ -111,10 +142,10 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
     };
   }, [onClose, triggerRef]);
 
-  // Autofocus search on mount
+  // Autofocus search when the emoji tab shows (GifPicker focuses its own).
   useEffect(() => {
-    searchRef.current?.focus();
-  }, []);
+    if (tab === "emoji") searchRef.current?.focus();
+  }, [tab]);
 
   const trimmedSearch = search.trim().toLowerCase();
   const searchResults = useMemo<string[]>(() => {
@@ -161,7 +192,7 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
       if (el) observer.observe(el);
     }
     return () => observer.disconnect();
-  }, [trimmedSearch, recent.length]);
+  }, [trimmedSearch, recent.length, tab]);
 
   const scrollToCategory = (id: string) => {
     const el = sectionRefs.current[id];
@@ -180,8 +211,37 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
       ref={containerRef}
       className="absolute bottom-full right-0 z-50 mb-2 flex h-[420px] w-[352px] animate-[pickerIn_0.2s_ease] flex-col overflow-hidden rounded-lg border border-border bg-bg-light shadow-modal"
     >
+      {/* Tabs — only when the host can send GIFs */}
+      {onSendGif && (
+        <div className="flex shrink-0 gap-1 px-3 pt-3">
+          {(["emoji", "gifs"] as const).map((id) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => switchTab(id)}
+              className={`rounded-sm px-3 py-1 text-[12px] font-semibold transition-colors ${
+                tab === id
+                  ? "bg-accent-soft text-text-primary"
+                  : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+              }`}
+            >
+              {id === "emoji" ? "Emoji" : "GIFs"}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === "gifs" && onSendGif ? (
+        <GifPicker
+          onPick={(gif) => {
+            onSendGif(gif);
+            onClose();
+          }}
+        />
+      ) : (
+      <>
       {/* Search */}
-      <div className="shrink-0 px-3 pb-2 pt-3">
+      <div className={`shrink-0 px-3 pb-2 ${onSendGif ? "pt-2" : "pt-3"}`}>
         <div className="flex items-center gap-2 rounded-md border border-border bg-bg-lighter px-3 transition-all focus-within:border-accent focus-within:shadow-ring"
           style={{ height: 36 }}
         >
@@ -301,6 +361,8 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
           <span className="text-[12px] text-text-muted">Hover to preview</span>
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }

@@ -421,6 +421,38 @@ export function hasFormatting(nodes: RichNode[]): boolean {
   return nodes.some((n) => n.kind !== "text" && n.kind !== "link");
 }
 
+/// The href when the whole message is one autolink (whitespace aside) —
+/// a GIF or image pasted on its own. The bubble hides that text once
+/// the link resolves to an image embed, so a sent GIF is just the GIF
+/// (Discord does the same for media links).
+export function loneLink(content: string): string | null {
+  let link: string | null = null;
+  for (const n of parseRichText(content)) {
+    if (n.kind === "link") {
+      if (link !== null || !n.embed) return null;
+      link = n.href;
+    } else if (n.kind === "text") {
+      if (n.text.trim().length > 0) return null;
+    } else {
+      return null;
+    }
+  }
+  return link;
+}
+
+/// What a lone media link reads as in a one-line preview (the DM list):
+/// "GIF" / "Image" by extension, else null → show the URL.
+export function mediaLabelFor(href: string): "GIF" | "Image" | null {
+  try {
+    const p = new URL(href).pathname;
+    if (/\.gif$/i.test(p)) return "GIF";
+    if (/\.(png|jpe?g|webp|avif)$/i.test(p)) return "Image";
+  } catch {
+    /* not a URL */
+  }
+  return null;
+}
+
 /// The URLs eligible for a preview card, in order of appearance:
 /// autolinks outside code and math, not in the `<url>` form, deduped,
 /// at most `max`. Content is immutable, so callers memoise on it.
