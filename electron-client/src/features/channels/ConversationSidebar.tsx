@@ -76,7 +76,9 @@ export default function ConversationSidebar() {
               friends.some(
                 (f) => f.username === conv.username && f.status === "online",
               ) || onlineUsers.includes(conv.username);
-            const lastMsg = conv.messages[conv.messages.length - 1];
+            // lastMessage is slice-independent (jump windows / trims can
+            // leave messages[] ending on an older row).
+            const lastMsg = conv.lastMessage ?? conv.messages[conv.messages.length - 1];
             const isActive = activeDmUser === conv.username;
             return (
               <button

@@ -1,6 +1,12 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useVirtuosoPrepend } from "../chat/useVirtuosoPrepend";
+import RealMessageList, {
+  type JumpTarget,
+  type RealMessageListHandle,
+  type ScrollState,
+} from "../chat/RealMessageList";
+import { USE_REAL_LIST } from "../chat/listFlags";
 import { invoke } from "../../lib/ipc";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
@@ -37,6 +43,22 @@ const HISTORY_EAGER_THRESHOLD = 25;
 // plain scroll-up — keep in sync with ChatPanel's JUMP_PILL_ROWS.
 const JUMP_PILL_ROWS = 20;
 
+// DmMessage has no nonce, so an unsent / legacy row (no real id) has no
+// identity of its own. RealMessageList needs a stable, non-index key per
+// row (React reuses an index-keyed node for a DIFFERENT message under
+// prepend, and the scroll anchor would then point at the wrong row), so
+// mint one per store object — the store keeps message objects stable.
+const syntheticKeys = new WeakMap<object, string>();
+let syntheticSeq = 0;
+function syntheticKey(m: object): string {
+  let k = syntheticKeys.get(m);
+  if (!k) {
+    k = `dm-${++syntheticSeq}`;
+    syntheticKeys.set(m, k);
+  }
+  return k;
+}
+
 export default function DmChatPanel() {
   const activeDmUser = useDmStore((s) => s.activeDmUser);
   const conversations = useDmStore((s) => s.conversations);
@@ -56,6 +78,15 @@ export default function DmChatPanel() {
     useState<DmMessage | null>(null);
   const editorRef = useRef<RichInputHandle>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const listRef = useRef<RealMessageListHandle>(null);
+  // Real-DOM list: latest viewport state — see ChatPanel's positionRef.
+  const positionRef = useRef<ScrollState>({
+    anchorId: 0,
+    offset: 0,
+    atBottom: true,
+    firstVisible: 0,
+    lastVisible: -1,
+  });
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   // Per-peer scroll state. Saved on conversation switch via the
   // cleanup of the activeDmUser effect; restored on Virtuoso mount
@@ -63,7 +94,7 @@ export default function DmChatPanel() {
   // user was caught up; we land them at the latest message so any
   // newer ones that arrived while away are visible.
   const savedPositionsRef = useRef<
-    Record<string, { topIndex: number; atBottom: boolean }>
+    Record<string, { topIndex: number; atBottom: boolean; anchorId?: number; offset?: number }>
   >({});
   // Live cursors written by Virtuoso's rangeChanged / atBottomStateChange.
   // Persisted into savedPositionsRef on conversation switch.
@@ -93,6 +124,8 @@ export default function DmChatPanel() {
   // True while the user has scrolled more than JUMP_PILL_ROWS above the live
   // bottom — shows the jump-to-present pill even without a jump window.
   const [scrolledUp, setScrolledUp] = useState(false);
+  // Real-DOM list: the pending/landed jump target — see ChatPanel.
+  const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
   // True while jump-to-present has cleared the slice and is awaiting the newest
   // page — shows a loading placeholder instead of the "beginning of
   // conversation" welcome during the brief refetch.
@@ -212,8 +245,10 @@ export default function DmChatPanel() {
     setReplyingTo(null);
     setEditingMessageId(null);
     setJumpWindow(null);
+    setJumpTarget(null);
     setScrolledUp(false);
     setPresentLoading(false);
+    positionRef.current = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
     pendingJumpIdRef.current = null;
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -234,13 +269,17 @@ export default function DmChatPanel() {
   // DmMessage has no nonce, so an unsent bubble has no stable identity
   // of its own; computeItemKey falls back to the index for those. They
   // only ever sit at the tail, so a prepend can't shuffle them.
-  const messageKey = useCallback((m: { id: number }) => (m.id > 0 ? m.id : ""), []);
+  const messageKey = useCallback(
+    (m: { id: number; nonce?: string }) => (m.id > 0 ? m.id : m.nonce ?? ""),
+    [],
+  );
 
   const bubbleMessages = useMemo(
     () =>
       messages.map((m) => ({
         ...m,
         id: typeof m.id === "number" ? m.id : 0,
+        nonce: typeof m.id === "number" && m.id > 0 ? undefined : syntheticKey(m),
         channelId: "",
         attachments: [],
       })),
@@ -355,6 +394,11 @@ export default function DmChatPanel() {
     if (!activeDmUser) return;
     const peer = activeDmUser;
     setJumpWindow(null);
+    setJumpTarget(null);
+    // The reloaded page mounts a fresh list — land at the bottom, not on a
+    // position saved from an earlier visit.
+    positionRef.current = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
+    savedPositionsRef.current[peer] = { topIndex: 0, atBottom: true };
     pendingJumpIdRef.current = null;
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
@@ -377,9 +421,12 @@ export default function DmChatPanel() {
     const peer = activeDmUser;
     return () => {
       if (peer) {
+        const p = positionRef.current;
         savedPositionsRef.current[peer] = {
           topIndex: topIndexRef.current,
-          atBottom: atBottomRef.current,
+          atBottom: USE_REAL_LIST ? p.atBottom : atBottomRef.current,
+          anchorId: p.anchorId,
+          offset: p.offset,
         };
       }
     };
@@ -531,7 +578,16 @@ export default function DmChatPanel() {
       if (!peer) return;
       const list = dm.conversations[peer]?.messages ?? [];
       const pos = list.findIndex((m) => m.id === id);
-      if (pos >= 0) {
+      if (USE_REAL_LIST) {
+        // Set the target now, loaded or not — see ChatPanel's jumpToMessage.
+        const anchor = positionRef.current.anchorId;
+        setJumpTarget((prev) => ({
+          id,
+          epoch: (prev?.epoch ?? 0) + 1,
+          dir: anchor > 0 && id > anchor ? "down" : "up",
+        }));
+        if (pos >= 0) return;
+      } else if (pos >= 0) {
         // Structural jump first (exact remount), then the CSS arrival slide
         // — see ChatPanel's jumpToMessage for why scroll-driven animation
         // can't be made clean in a virtualized list.
@@ -564,6 +620,7 @@ export default function DmChatPanel() {
   // Landing effect: once the requested around-window is in the loaded slice,
   // remount the list centered on the target (bump epoch) and flash it.
   useEffect(() => {
+    if (USE_REAL_LIST) return; // the list lands itself → onJumpLanded
     const id = pendingJumpIdRef.current;
     if (id == null) return;
     if (!bubbleMessages.some((m) => m.id === id)) return;
@@ -575,9 +632,106 @@ export default function DmChatPanel() {
     setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
     flash(id);
   }, [bubbleMessages, flash]);
+  // Real-DOM list callbacks.
+  const handleJumpLanded = useCallback(
+    (epoch: number, id: number) => {
+      pendingJumpIdRef.current = null;
+      flash(id);
+      setJumpTarget((prev) => (prev && prev.epoch === epoch ? null : prev));
+    },
+    [flash],
+  );
+  const handleScrollState = useCallback((s: ScrollState) => {
+    positionRef.current = s;
+    const dm = useDmStore.getState();
+    const len = dm.activeDmUser
+      ? dm.conversations[dm.activeDmUser]?.messages.length ?? 0
+      : 0;
+    // Far enough above the live bottom → surface the pill.
+    setScrolledUp(!s.atBottom && len - 1 - s.lastVisible > JUMP_PILL_ROWS);
+  }, []);
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
   }, []);
+
+  // One row. Shared by both list paths: RealMessageList calls it with the
+  // data index directly; the Virtuoso path rebases its absolute index first
+  // (see ChatPanel — firstItemIndex makes the index absolute).
+  const renderRow = (msg: (typeof bubbleMessages)[number], i: number) => {
+    const isError =
+      msg.sender === localUsername &&
+      ERROR_MESSAGES.includes(msg.content);
+    if (isError) {
+      return (
+        <div className="pl-4 pr-2 py-1.5">
+          <ErrorCard>
+            {msg.content === ERROR_MESSAGES[0] ? (
+              <>
+                <span className="font-medium text-warning">User is offline.</span>{" "}
+                Your message could not be delivered. It will be sent when {activeDmUser} comes back online.
+              </>
+            ) : (
+              <>
+                <span className="font-medium text-warning">Can't reach this user.</span>{" "}
+                They only accept direct messages from users in their friends list.
+              </>
+            )}
+          </ErrorCard>
+        </div>
+      );
+    }
+    return (
+      <MessageBubble
+        message={msg}
+        grouped={
+          shouldGroup(i > 0 ? bubbleMessages[i - 1] : undefined, msg) &&
+          !msg.replyTo
+        }
+        paddingLeft={12}
+        canDelete={
+          typeof msg.id === "number" &&
+          msg.id > 0 &&
+          msg.sender === localUsername
+        }
+        onDelete={requestDeleteDmMessage}
+        canEdit={
+          typeof msg.id === "number" &&
+          msg.id > 0 &&
+          msg.sender === localUsername
+        }
+        editing={editingMessageId === msg.id && msg.id > 0}
+        onStartEdit={startEdit}
+        onSubmitEdit={submitEdit}
+        onCancelEdit={cancelEdit}
+        canReply={typeof msg.id === "number" && msg.id > 0}
+        onReply={startReply}
+        replyToSender={
+          msg.replyTo
+            ? messagesById.get(msg.replyTo)?.sender ??
+              (msg.replyToSender || undefined)
+            : undefined
+        }
+        replyToContent={
+          msg.replyTo
+            ? messagesById.get(msg.replyTo)?.content ??
+              (msg.replyToContent || undefined)
+            : undefined
+        }
+        onJumpToReply={jumpToMessage}
+        highlighted={highlightId === msg.id && msg.id > 0}
+      />
+    );
+  };
+
+  // Real-DOM list: mount position for this peer (consumed once, at mount).
+  const savedPosition = savedPositionsRef.current[activeDmUser];
+  const initialPosition = savedPosition
+    ? {
+        anchorId: savedPosition.anchorId ?? 0,
+        offset: savedPosition.offset ?? 0,
+        atBottom: savedPosition.atBottom,
+      }
+    : undefined;
 
   const initialIndex = (() => {
     const last = Math.max(0, bubbleMessages.length - 1);
@@ -672,6 +826,28 @@ export default function DmChatPanel() {
             </div>
           </div>
         </div>
+      ) : USE_REAL_LIST ? (
+        <RealMessageList
+          // Fresh mount per peer: the saved position restores at mount.
+          key={activeDmUser}
+          ref={listRef}
+          items={bubbleMessages}
+          keyOf={messageKey}
+          renderItem={renderRow}
+          windowed={windowed}
+          jumpTarget={jumpTarget}
+          initialPosition={initialPosition}
+          onScrollState={handleScrollState}
+          onNearTop={() => maybeLoadOlderHistory(false)}
+          onNearBottom={maybeLoadNewerHistory}
+          onOverflow={(side, keep) => {
+            const dm = useDmStore.getState();
+            if (side === "tail") dm.trimDmTail(activeDmUser, keep);
+            else dm.trimDmHead(activeDmUser, keep);
+          }}
+          onJumpLanded={handleJumpLanded}
+          className="pr-4"
+        />
       ) : (
         <Virtuoso
           ref={virtuosoRef}
@@ -725,73 +901,7 @@ export default function DmChatPanel() {
             atBottomRef.current = atBottom;
             if (atBottom) setScrolledUp(false);
           }}
-          itemContent={(absoluteIndex, msg) => {
-            // See ChatPanel: firstItemIndex makes this index absolute.
-            const i = absoluteIndex - firstItemIndex;
-            const isError =
-              msg.sender === localUsername &&
-              ERROR_MESSAGES.includes(msg.content);
-            if (isError) {
-              return (
-                <div className="pl-4 pr-2 py-1.5">
-                  <ErrorCard>
-                    {msg.content === ERROR_MESSAGES[0] ? (
-                      <>
-                        <span className="font-medium text-warning">User is offline.</span>{" "}
-                        Your message could not be delivered. It will be sent when {activeDmUser} comes back online.
-                      </>
-                    ) : (
-                      <>
-                        <span className="font-medium text-warning">Can't reach this user.</span>{" "}
-                        They only accept direct messages from users in their friends list.
-                      </>
-                    )}
-                  </ErrorCard>
-                </div>
-              );
-            }
-            return (
-              <MessageBubble
-                message={msg}
-                grouped={
-                  shouldGroup(i > 0 ? bubbleMessages[i - 1] : undefined, msg) &&
-                  !msg.replyTo
-                }
-                paddingLeft={12}
-                canDelete={
-                  typeof msg.id === "number" &&
-                  msg.id > 0 &&
-                  msg.sender === localUsername
-                }
-                onDelete={requestDeleteDmMessage}
-                canEdit={
-                  typeof msg.id === "number" &&
-                  msg.id > 0 &&
-                  msg.sender === localUsername
-                }
-                editing={editingMessageId === msg.id && msg.id > 0}
-                onStartEdit={startEdit}
-                onSubmitEdit={submitEdit}
-                onCancelEdit={cancelEdit}
-                canReply={typeof msg.id === "number" && msg.id > 0}
-                onReply={startReply}
-                replyToSender={
-                  msg.replyTo
-                    ? messagesById.get(msg.replyTo)?.sender ??
-                      (msg.replyToSender || undefined)
-                    : undefined
-                }
-                replyToContent={
-                  msg.replyTo
-                    ? messagesById.get(msg.replyTo)?.content ??
-                      (msg.replyToContent || undefined)
-                    : undefined
-                }
-                onJumpToReply={jumpToMessage}
-                highlighted={highlightId === msg.id && msg.id > 0}
-              />
-            );
-          }}
+          itemContent={(absoluteIndex, msg) => renderRow(msg, absoluteIndex - firstItemIndex)}
         />
       )}
 
@@ -807,7 +917,8 @@ export default function DmChatPanel() {
               return;
             }
             // History below is contiguous — just go to the bottom.
-            virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+            if (USE_REAL_LIST) listRef.current?.scrollToBottom(true);
+            else virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
           }}
           title="Jump to present"
           className="absolute bottom-3 right-4 z-20 flex animate-[fadeUp_0.18s_ease_both] items-center gap-1.5 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent shadow-float transition-colors hover:bg-accent-hover"

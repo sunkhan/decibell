@@ -32,6 +32,28 @@ interface DmConversation {
   /// order a conversation that has no messages yet — see
   /// conversationActivityTime.
   createdAt: number;
+  /// Newest message the client has seen for this peer (highest id) — the
+  /// sidebar preview. Kept apart from `messages` because the loaded slice
+  /// is a WINDOW: a jump replaces it with an older context window and
+  /// RealMessageList trims its tail, so messages[last] is not "the latest".
+  lastMessage: DmMessage | null;
+}
+
+function idOf(m: DmMessage | null | undefined): number {
+  return m && typeof m.id === "number" ? m.id : 0;
+}
+
+/// The newer of two messages by id; ties (id-less rows) go to the candidate.
+function newerOf(current: DmMessage | null, candidate: DmMessage | null | undefined): DmMessage | null {
+  if (!candidate) return current;
+  if (!current) return candidate;
+  return idOf(candidate) >= idOf(current) ? candidate : current;
+}
+
+function newestOf(list: DmMessage[]): DmMessage | null {
+  let best: DmMessage | null = null;
+  for (const m of list) best = newerOf(best, m);
+  return best;
 }
 
 /// Sidebar ordering key. A conversation you just opened with someone
@@ -114,6 +136,15 @@ interface DmState {
   /// Jump-to-present: clear the loaded slice so the caller can reload the
   /// newest page from scratch (hasMoreAfter → false, historyLoaded → false).
   resetDmForJump: (peer: string) => void;
+  /// Sliding-window trims (RealMessageList) — mirror of chatStore's
+  /// trimTail/trimHead on the per-conversation flags. trimDmTail keeps the
+  /// oldest `keep` rows and flips hasMoreAfter → true (the dropped tail is
+  /// re-fetchable via after_id; live DMs are dropped past the gap and the
+  /// "jump to present" pill shows). No-op while a row lacks a real id and
+  /// when nothing would drop.
+  trimDmTail: (peer: string, keep: number) => void;
+  /// Keeps the newest `keep` rows and flips hasMoreHistory → true.
+  trimDmHead: (peer: string, keep: number) => void;
   /// Optimistically zero the unread count and bump lastReadId.
   /// Called from DmChatPanel when the conversation becomes visible.
   markRead: (peer: string, upToId: number) => void;
@@ -140,6 +171,7 @@ function emptyConversation(username: string): DmConversation {
     hasMoreAfter: false,
     historyLoaded: false,
     createdAt: Date.now(),
+    lastMessage: null,
   };
 }
 
@@ -189,17 +221,20 @@ export const useDmStore = create<DmState>((set, get) => ({
       // clears the count when the panel is visible.
       const newUnread = isFromSelf || isViewing ? baseUnread : baseUnread + 1;
 
+      // A live arrival is the newest by definition (even id-less legacy ones).
       const conversation: DmConversation = existing
         ? {
             ...existing,
             messages: [...existing.messages, message],
             lastMessageTime: time,
+            lastMessage: message,
             unreadCount: newUnread,
           }
         : {
             ...emptyConversation(otherUser),
             messages: [message],
             lastMessageTime: time,
+            lastMessage: message,
             unreadCount: newUnread,
           };
 
@@ -251,6 +286,7 @@ export const useDmStore = create<DmState>((set, get) => ({
           hasMoreHistory: true,
           hasMoreAfter: existing?.hasMoreAfter ?? false,
           historyLoaded: existing?.historyLoaded ?? false,
+          lastMessage: newerOf(existing?.lastMessage ?? null, previewMessage),
           // Hydrated conversations always carry a real last message, so
           // this is never consulted — 0 keeps it out of the way.
           createdAt: existing?.createdAt ?? 0,
@@ -303,6 +339,7 @@ export const useDmStore = create<DmState>((set, get) => ({
             username: peer,
             messages: merged,
             lastMessageTime,
+            lastMessage: newerOf(conv?.lastMessage ?? null, newestOf(incoming)),
             hasMoreHistory: hasMore,
             historyLoaded: true,
           },
@@ -336,6 +373,7 @@ export const useDmStore = create<DmState>((set, get) => ({
             // slice. lastMessageTime is left as-is (the window may not include
             // the newest message; don't reorder the sidebar downward).
             messages: list,
+            lastMessage: newerOf(conv?.lastMessage ?? null, newestOf(list)),
             hasMoreHistory: hasMoreOlder,
             hasMoreAfter: hasMoreNewer,
             historyLoaded: true,
@@ -371,7 +409,12 @@ export const useDmStore = create<DmState>((set, get) => ({
       return {
         conversations: {
           ...state.conversations,
-          [peer]: { ...conv, messages: merged, hasMoreAfter: hasMoreNewer },
+          [peer]: {
+            ...conv,
+            messages: merged,
+            hasMoreAfter: hasMoreNewer,
+            lastMessage: newerOf(conv.lastMessage, newestOf(incoming)),
+          },
         },
       };
     }),
@@ -390,6 +433,35 @@ export const useDmStore = create<DmState>((set, get) => ({
             hasMoreHistory: true,
             hasMoreAfter: false,
             historyLoaded: false,
+          },
+        },
+      };
+    }),
+
+  trimDmTail: (peer, keep) =>
+    set((state) => {
+      const conv = state.conversations[peer];
+      if (!conv || keep <= 0 || keep >= conv.messages.length) return {};
+      if (conv.messages.some((m) => !(typeof m.id === "number" && m.id > 0))) return {};
+      return {
+        conversations: {
+          ...state.conversations,
+          [peer]: { ...conv, messages: conv.messages.slice(0, keep), hasMoreAfter: true },
+        },
+      };
+    }),
+
+  trimDmHead: (peer, keep) =>
+    set((state) => {
+      const conv = state.conversations[peer];
+      if (!conv || keep <= 0 || keep >= conv.messages.length) return {};
+      return {
+        conversations: {
+          ...state.conversations,
+          [peer]: {
+            ...conv,
+            messages: conv.messages.slice(conv.messages.length - keep),
+            hasMoreHistory: true,
           },
         },
       };
@@ -421,7 +493,13 @@ export const useDmStore = create<DmState>((set, get) => ({
       return {
         conversations: {
           ...state.conversations,
-          [peer]: { ...conv, messages: next },
+          [peer]: {
+            ...conv,
+            messages: next,
+            // Deleted the newest → best effort: the loaded tail.
+            lastMessage:
+              idOf(conv.lastMessage) === messageId ? next[next.length - 1] ?? null : conv.lastMessage,
+          },
         },
       };
     }),
@@ -440,7 +518,14 @@ export const useDmStore = create<DmState>((set, get) => ({
       return {
         conversations: {
           ...state.conversations,
-          [peer]: { ...conv, messages: next },
+          [peer]: {
+            ...conv,
+            messages: next,
+            lastMessage:
+              idOf(conv.lastMessage) === messageId && conv.lastMessage
+                ? { ...conv.lastMessage, content, editedAt }
+                : conv.lastMessage,
+          },
         },
       };
     }),
@@ -457,6 +542,7 @@ export const useDmStore = create<DmState>((set, get) => ({
       next.set(messageId, snap);
       const updatedConv = s.conversations[peer];
       if (!updatedConv) return {};
+      const remaining = updatedConv.messages.filter((m) => m.id !== messageId);
       return {
         pendingDmDeletions: {
           ...s.pendingDmDeletions,
@@ -466,7 +552,11 @@ export const useDmStore = create<DmState>((set, get) => ({
           ...s.conversations,
           [peer]: {
             ...updatedConv,
-            messages: updatedConv.messages.filter((m) => m.id !== messageId),
+            messages: remaining,
+            lastMessage:
+              idOf(updatedConv.lastMessage) === messageId
+                ? remaining[remaining.length - 1] ?? null
+                : updatedConv.lastMessage,
           },
         },
       };
@@ -507,7 +597,7 @@ export const useDmStore = create<DmState>((set, get) => ({
       return {
         conversations: {
           ...state.conversations,
-          [peer]: { ...conv, messages: restored },
+          [peer]: { ...conv, messages: restored, lastMessage: newerOf(conv.lastMessage, snap) },
         },
         pendingDmDeletions: nextPending,
       };
