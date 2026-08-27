@@ -15,7 +15,7 @@ import {
   GRID_MAX_WIDTH_PX,
   GRID_MIN_WIDTH_PX,
 } from "./attachmentSizing";
-import { previewUrlFor } from "./attachmentPrefetch";
+import { previewUrlFor } from "./attachmentPreviewUrl";
 import { thumbHashToDataUrl } from "./thumbhash";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
@@ -260,11 +260,10 @@ function ImageItem({
         src={previewSrc}
         alt={attachment.filename}
         className={imgClass}
-        // Not loading="lazy": Virtuoso already only mounts rows at or
-        // near the viewport, so lazy adds no saving and defers the
-        // fetch until the row is *already visible* — the image then
-        // pops in a beat after it scrolls in (see increaseViewportBy
-        // on the Virtuoso instances).
+        // Not loading="lazy": rows mount NEAR_PX (800px) before they
+        // scroll into view and their fetch starts then, off-screen —
+        // lazy would defer it until the row is *already visible* and
+        // the image would pop in a beat after it scrolls in.
         //
         // decoding: "sync" for thumbnail variants so the image is
         // presented atomically with its row — "async" guarantees the
@@ -295,8 +294,8 @@ function VideoItem({
   // the visual slot in the message bubble. The actual <video> element
   // lives in `PersistentVideoLayer` (mounted at app level) and is
   // overlaid on top of this placeholder via fixed positioning. That
-  // architecture lets the video keep playing through Virtuoso row
-  // unmounts (scroll-away).
+  // architecture lets the video keep playing through row unmounts
+  // (slice trims, jump windows, channel switches).
   const channelId = useChatStore((s) => s.activeChannelId) ?? "";
   const placeholderRef = useRef<HTMLDivElement | null>(null);
   // Sqrt-scaled reserve box, same helper as ImageItem so a video and
@@ -508,8 +507,8 @@ function AudioItem({
   serverId: string | null;
 }) {
   // Presentational only: the actual <audio> element lives in
-  // PersistentAudioLayer at app level so playback survives Virtuoso
-  // row unmounts. This widget reads playback state from
+  // PersistentAudioLayer at app level so playback survives row
+  // unmounts. This widget reads playback state from
   // useActiveAudioStore and dispatches commands via audioController.
   const channelId = useChatStore((s) => s.activeChannelId) ?? "";
   const activeAttachmentId = useActiveAudioStore((s) => s.active?.attachmentId);

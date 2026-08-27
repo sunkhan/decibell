@@ -77,8 +77,9 @@ lowlight.register({
 // isn't carried by the module import — register it explicitly.
 lowlight.registerAlias({ ini: ["toml"] });
 
-// Highlight cache — Virtuoso remounts rows on every scroll pass and
-// message content is immutable, so cache the HAST per (lang, code).
+// Highlight cache — rows remount on channel switches, jump windows and
+// slice trims, and message content is immutable, so cache the HAST per
+// (lang, code).
 // FIFO trim, same shape as the thumbhash/parse caches.
 const highlighted = new Map<string, Root>();
 const HIGHLIGHTED_MAX = 200;

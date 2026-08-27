@@ -1,13 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import { useVirtuosoPrepend } from "./useVirtuosoPrepend";
 import RealMessageList, {
   type JumpTarget,
   type RealMessageListHandle,
   type ScrollState,
 } from "./RealMessageList";
-import { USE_REAL_LIST } from "./listFlags";
-import { prefetchAround } from "./attachmentPrefetch";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
 import { useChatStore } from "../../stores/chatStore";
@@ -39,13 +35,6 @@ function formatRemaining(totalSec: number): string {
   return `${Math.ceil(s / 86400)}d`;
 }
 import type { Message } from "../../types";
-
-// How close (in messages) the rendered window's top edge may get to the
-// oldest loaded message before the next history page is requested.
-// Half a page: deep enough that the page-boundary group-flip (see
-// maybeLoadOlderHistory) resolves off-screen at normal scroll speeds,
-// shallow enough that idling at the bottom never pages.
-const HISTORY_EAGER_THRESHOLD = 25;
 
 // How many rows below the viewport's bottom edge before the "jump to
 // present" pill appears for a plain scroll-up (no jump window involved).
@@ -105,15 +94,6 @@ export default function ChatPanel() {
 
   const [draft, setDraft] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
-  // A just-applied jump context window. `epoch` bumps on each jump so the
-  // Virtuoso instance remounts and lands centered on `targetId` via
-  // initialTopMostItemIndex — a fresh mount has no stale scroll anchor, so
-  // the target is on screen the first time (the old scrollToIndex-after-
-  // replace path jumped to a stale anchor first, then corrected). null when
-  // viewing normally / at present.
-  const [jumpWindow, setJumpWindow] = useState<{ epoch: number; targetId: number } | null>(null);
-  // Travel direction of the last jump — picks the arrival slide's keyframe.
-  const [jumpDir, setJumpDir] = useState<"up" | "down">("up");
   // True while the user has scrolled more than JUMP_PILL_ROWS above the live
   // bottom — shows the jump-to-present pill even without a jump window.
   const [scrolledUp, setScrolledUp] = useState(false);
@@ -142,15 +122,6 @@ export default function ChatPanel() {
   // and stash the target here; the effect that watches `messages` lands on it
   // once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
-  // For ~1s after a jump remount, totalListHeightChanged re-pins the target
-  // at the top. At mount, rows BELOW the target are still height-estimates;
-  // when they under-estimate (code blocks), Virtuoso thinks the content
-  // below is less than a viewport and clamps the scroll upward instead of
-  // honoring initialTopMostItemIndex — then the rows measure tall and the
-  // clamped anchor sticks, leaving the target mis-placed. Re-asserting on
-  // each height change settles to exact as real heights land.
-  const jumpAssertUntilRef = useRef(0);
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const listRef = useRef<RealMessageListHandle>(null);
   // Real-DOM list: latest viewport state per channel key (anchor message +
   // offset, atBottom, visible range). Written by onScrollState — whose
@@ -163,8 +134,7 @@ export default function ChatPanel() {
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
 
-  // Stable per-message identity, shared by computeItemKey and the
-  // prepend tracker so the two agree on what "the same message" is.
+  // Stable per-message identity for row keys and scroll anchors.
   // Optimistic bubbles have id 0 and carry a client nonce instead.
   const messageKey = useCallback(
     (m: { id: number; nonce?: string }) => (m.id > 0 ? m.id : m.nonce ?? ""),
@@ -238,52 +208,6 @@ export default function ChatPanel() {
     return false;
   });
 
-  // Live scroll-tracking refs (Virtuoso path) — written by rangeChanged /
-  // atBottomStateChange below, read by the cleanup of the channel-switch
-  // effect to persist the OUTGOING channel's position before
-  // activeChannelId flips. The real-DOM list reports through positionsRef.
-  const topIndexRef = useRef(0);
-  const atBottomRef = useRef(true);
-
-  // Keeps the viewport anchored when older history pages in at the top. The
-  // reset key folds in the jump epoch so a jump-window remount also resets the
-  // prepend offset (matching the Virtuoso key= below).
-  const prependResetKey = activeKey ? `${activeKey}:${jumpWindow?.epoch ?? 0}` : null;
-  const firstItemIndex = useVirtuosoPrepend(messages, messageKey, prependResetKey);
-
-  // Compute Virtuoso's initialTopMostItemIndex from the channel's
-  // saved scroll position. This is the *only* mechanism we use to
-  // restore — combined with the `key={activeChannelId}` below, every
-  // channel switch unmounts the previous Virtuoso and mounts a fresh
-  // one with the right starting position. That sidesteps the racey
-  // post-mount `scrollToIndex` we tried first, which Virtuoso would
-  // sometimes silently swallow because its own initial render had
-  // already moved past it.
-  const initialIndex = (() => {
-    if (messages.length === 0) return 0;
-    const last = messages.length - 1;
-    // A just-applied jump window: mount with the target as the topmost
-    // visible row. NOT align:"center" — centering makes Virtuoso walk up
-    // from the target, filling half a viewport with ESTIMATED row heights to
-    // pick the actual topmost row, and anchor that; when the surrounding
-    // rows are code blocks (far taller than the estimate) the target gets
-    // pushed well below center once they measure. Anchoring the target's own
-    // top edge involves no estimates, so it cannot drift — and "jumped
-    // message near the top + flash" is also how Discord lands.
-    if (jumpWindow) {
-      const pos = messages.findIndex((m) => m.id === jumpWindow.targetId);
-      if (pos >= 0) return { index: pos, align: "start" as const };
-    }
-    if (!activeKey) return last;
-    const saved =
-      useChatStore.getState().scrollPositionsByChannel[activeKey];
-    // atBottom: user was caught up — land them at LAST so any messages
-    // arrived during the absence are visible.
-    if (!saved || saved.atBottom) return last;
-    // Defensive clamp against eviction / cache shrink.
-    if (saved.topIndex < 0 || saved.topIndex > last) return last;
-    return saved.topIndex;
-  })();
 
   // Persist the outgoing channel's scroll state at the moment we leave
   // it. Cleanup runs BEFORE the next setup with the new activeChannelId,
@@ -296,16 +220,11 @@ export default function ChatPanel() {
     return () => {
       if (serverId && channelId) {
         const p = positionsRef.current[channelKey(serverId, channelId)];
-        useChatStore
-          .getState()
-          .setScrollPosition(
-            serverId,
-            channelId,
-            topIndexRef.current,
-            USE_REAL_LIST ? p?.atBottom ?? true : atBottomRef.current,
-            p?.anchorId,
-            p?.offset,
-          );
+        useChatStore.getState().setScrollPosition(serverId, channelId, {
+          atBottom: p?.atBottom ?? true,
+          anchorId: p?.anchorId,
+          offset: p?.offset,
+        });
       }
     };
   }, [activeServerId, activeChannelId]);
@@ -353,20 +272,14 @@ export default function ChatPanel() {
     setDraft(stored);
   }, [activeServerId, activeChannelId]);
 
-  // Scroll-up paginator. Two triggers share this: Virtuoso's
-  // startReached (the hard edge, `force` — keeps its retry semantics
-  // if a response is ever lost) and an eager threshold off rangeChanged
-  // (`!force`, deduped per page boundary via lastRequestedBeforeIdRef).
-  //
-  // The eager trigger exists because of a measured glitch (row-audit,
-  // 2026-08-15): the oldest loaded message renders ungrouped — it has
-  // no known predecessor — and when the next page prepends, the same
-  // sender usually continues above it, so it re-renders grouped and
-  // shrinks by the ~23px header. Paging at the startReached edge put
-  // that resize exactly at the viewport edge the user was looking at;
-  // paging ~25 messages early puts it on a row that is unmounted or
-  // far off-screen, where Virtuoso's anchoring absorbs it invisibly.
-  const maybeLoadOlderHistory = (force: boolean) => {
+  // Scroll-up paginator, driven by RealMessageList's onNearTop — fired while
+  // the top edge is within NEAR_PX, on scroll and after every commit, so a
+  // page that doesn't fill the zone pulls the next one and a lost response
+  // is retried on the next scroll. The response arrives via the
+  // channel_history_received event, not the invoke promise, so the in-flight
+  // guard alone can't stop a re-request of the same page: dedup per page
+  // boundary via lastRequestedBeforeIdRef.
+  const maybeLoadOlderHistory = () => {
     if (!activeServerId || !activeChannelId || !activeKey) return;
     const chat = useChatStore.getState();
     if (!chat.hasMoreHistory[activeKey]) return;
@@ -376,7 +289,7 @@ export default function ChatPanel() {
     const list = chat.messagesByChannel[activeKey] ?? [];
     const oldest = list.find((m: { id: number }) => m.id > 0);
     const beforeId = oldest?.id ?? 0;
-    if (!force && beforeId !== 0 && beforeId === lastRequestedBeforeIdRef.current) {
+    if (beforeId !== 0 && beforeId === lastRequestedBeforeIdRef.current) {
       return;
     }
     loadMoreInFlightRef.current = true;
@@ -398,9 +311,10 @@ export default function ChatPanel() {
   };
 
   // Downward paginator — the mirror of maybeLoadOlderHistory, active only
-  // while windowed (newer messages exist below the jump slice). Virtuoso's
-  // endReached fires it; it no-ops at present (hasMoreAfter false), so it's
-  // harmless to leave wired in the non-jumped case.
+  // while windowed (newer messages exist below the jump slice).
+  // RealMessageList's onNearBottom fires it; it no-ops at present
+  // (hasMoreAfter false), so it's harmless to leave wired in the non-jumped
+  // case.
   const maybeLoadNewerHistory = () => {
     if (!activeServerId || !activeChannelId || !activeKey) return;
     const chat = useChatStore.getState();
@@ -441,7 +355,6 @@ export default function ChatPanel() {
     if (!activeServerId || !activeChannelId) return;
     const serverId = activeServerId;
     const channelId = activeChannelId;
-    setJumpWindow(null);
     setJumpTarget(null);
     // The reloaded page mounts a fresh list — it must land at the bottom,
     // not on a position saved from an earlier visit.
@@ -453,7 +366,7 @@ export default function ChatPanel() {
     lastRequestedAfterIdRef.current = 0;
     const chat = useChatStore.getState();
     chat.resetChannelForJump(serverId, channelId);
-    chat.setScrollPosition(serverId, channelId, 0, true);
+    chat.setScrollPosition(serverId, channelId, { atBottom: true });
     chat.setHistoryLoading(serverId, channelId, true);
     invoke("request_channel_history", {
       serverId,
@@ -467,14 +380,9 @@ export default function ChatPanel() {
   };
 
 
-  // No more pre-computed `bubbles` array. The old code rebuilt it on
-  // every messages-reference change — for a 5000-message channel,
-  // that's 5000 wrapper-object allocations on every wire message
-  // arrival just to surface `grouped`/`isLast` to MessageBubble. The
-  // new path passes `messages` directly to Virtuoso and computes
-  // grouped/isLast inside itemContent, which Virtuoso only invokes
-  // for visible rows (~30 at a time). Saves ~99% of the per-arrival
-  // allocation work on long channels without changing visible output.
+  // No pre-computed `bubbles` array: `messages` goes straight to
+  // RealMessageList and grouped/isLast are computed per row in renderBubble;
+  // memo(MessageBubble) keeps unchanged rows from re-rendering.
 
   const handlePickFiles = async () => {
     if (!activeServerId || !activeChannelId) return;
@@ -780,7 +688,6 @@ export default function ChatPanel() {
   useEffect(() => {
     setReplyingTo(null);
     setEditingMessageId(null);
-    setJumpWindow(null);
     setJumpTarget(null);
     setScrolledUp(false);
     pendingJumpIdRef.current = null;
@@ -789,9 +696,9 @@ export default function ChatPanel() {
   }, [activeKey]);
 
   // Jump to a replied-to message + flash it. If the parent is in the loaded
-  // slice we scroll straight to it; otherwise (Discord-style) we fetch a
-  // context window around it and let the landing effect below center on it
-  // once it arrives — without pulling in all the intervening history.
+  // slice the list lands on it in the next commit; otherwise (Discord-style)
+  // we fetch a context window around it and the list lands on the commit
+  // that renders the window — without pulling in the intervening history.
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const highlightTimer = useRef<number | null>(null);
   const flash = useCallback((id: number) => {
@@ -812,35 +719,18 @@ export default function ChatPanel() {
       if (!serverId || !channelId) return;
       const list = chat.messagesByChannel[channelKey(serverId, channelId)] ?? [];
       const pos = list.findIndex((m) => m.id === id);
-      if (USE_REAL_LIST) {
-        // Set the target now, loaded or not: the list lands on the first
-        // commit whose rows contain it — for an around-window that is the
-        // very commit that renders the window, so it never paints at a wrong
-        // position first. The flash fires from onJumpLanded.
-        const anchor =
-          positionsRef.current[channelKey(serverId, channelId)]?.anchorId ?? 0;
-        setJumpTarget((prev) => ({
-          id,
-          epoch: (prev?.epoch ?? 0) + 1,
-          dir: anchor > 0 && id > anchor ? "down" : "up",
-        }));
-        if (pos >= 0) return;
-      } else if (pos >= 0) {
-        // Structural jump first, visual motion second: remount centered on
-        // the target (exact — everything around it mounts measured), then a
-        // short CSS slide on the fresh list conveys the travel direction
-        // (jumpArriveUp/Down in globals.css). Animating the real scroll
-        // position through a virtualized list cannot be made clean — rows
-        // measuring mid-flight re-anchor the scroller under the animation
-        // (native smooth, paused paging, settle-snap, and a live-rect rAF
-        // loop all glitched) — while a transform slide never touches scroll
-        // geometry, so it cannot mis-land.
-        setJumpDir(pos < topIndexRef.current ? "up" : "down");
-        jumpAssertUntilRef.current = Date.now() + 1000;
-        setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
-        flash(id);
-        return;
-      }
+      // Set the target now, loaded or not: the list lands on the first
+      // commit whose rows contain it — for an around-window that is the
+      // very commit that renders the window, so it never paints at a wrong
+      // position first. The flash fires from onJumpLanded.
+      const anchor =
+        positionsRef.current[channelKey(serverId, channelId)]?.anchorId ?? 0;
+      setJumpTarget((prev) => ({
+        id,
+        epoch: (prev?.epoch ?? 0) + 1,
+        dir: anchor > 0 && id > anchor ? "down" : "up",
+      }));
+      if (pos >= 0) return;
       // Not loaded — fetch a window centered on it. Already requesting this
       // exact target? Wait for the landing effect.
       if (pendingJumpIdRef.current === id) return;
@@ -862,23 +752,8 @@ export default function ChatPanel() {
         useChatStore.getState().setHistoryLoading(serverId, channelId, false);
       });
     },
-    [flash],
+    [],
   );
-  // Landing effect: once the requested around-window is in `messages`, remount
-  // the list centered on the target (bump epoch) and flash it.
-  useEffect(() => {
-    if (USE_REAL_LIST) return; // the list lands itself → onJumpLanded
-    const id = pendingJumpIdRef.current;
-    if (id == null) return;
-    if (!messages.some((m) => m.id === id)) return;
-    pendingJumpIdRef.current = null;
-    // An around-window target is (virtually) always older than what was
-    // loaded — arrive with the upward-travel slide.
-    setJumpDir("up");
-    jumpAssertUntilRef.current = Date.now() + 1000;
-    setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
-    flash(id);
-  }, [messages, flash]);
   // Real-DOM list callbacks.
   const handleJumpLanded = useCallback(
     (epoch: number, id: number) => {
@@ -899,10 +774,7 @@ export default function ChatPanel() {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
   }, []);
 
-  // One row. Shared by both list paths: RealMessageList calls it with the
-  // data index directly; the Virtuoso path rebases its absolute index first
-  // (firstItemIndex makes `index` absolute — without the rebase every
-  // messages[i - 1] lookup was out of bounds and nothing ever grouped).
+  // One row; `i` indexes `messages` (grouping looks at messages[i - 1]).
   const renderBubble = (message: Message, i: number) => (
     <MessageBubble
       message={message}
@@ -1000,7 +872,7 @@ export default function ChatPanel() {
           <div className="flex flex-1 items-center justify-center">
             <WelcomeState channelName={channelName ?? "channel"} />
           </div>
-        ) : USE_REAL_LIST ? (
+        ) : (
           <RealMessageList
             // Fresh mount per channel: the saved position restores at mount.
             key={activeKey ?? "none"}
@@ -1012,7 +884,7 @@ export default function ChatPanel() {
             jumpTarget={jumpTarget}
             initialPosition={initialPosition}
             onScrollState={handleScrollState}
-            onNearTop={() => maybeLoadOlderHistory(false)}
+            onNearTop={maybeLoadOlderHistory}
             onNearBottom={maybeLoadNewerHistory}
             onOverflow={(side, keep) => {
               const chat = useChatStore.getState();
@@ -1020,85 +892,6 @@ export default function ChatPanel() {
               else chat.trimHead(activeServerId, activeChannelId, keep);
             }}
             onJumpLanded={handleJumpLanded}
-          />
-        ) : (
-          <Virtuoso
-            // Re-mount Virtuoso whenever the active channel changes
-            // so initialTopMostItemIndex applies fresh — without the
-            // key, Virtuoso reuses its instance across data swaps and
-            // ignores any change to the initial-position prop.
-            key={`${activeKey ?? "none"}:${jumpWindow?.epoch ?? 0}`}
-            ref={virtuosoRef}
-            data={messages}
-            firstItemIndex={firstItemIndex}
-            computeItemKey={(index, m) => messageKey(m) || `i:${index}`}
-            initialTopMostItemIndex={initialIndex}
-            // No auto-scroll-to-bottom while windowed: new live messages are
-            // dropped (they'd land past a hidden gap), and downward paging
-            // shouldn't yank the viewport to the freshly-appended tail.
-            followOutput={windowed ? false : "smooth"}
-            // Discord-style: when total content height < viewport,
-            // stack messages from the bottom up against the input
-            // bar instead of pinning the first message to the top.
-            // Only affects the few-messages case; long histories are
-            // unchanged.
-            alignToBottom={true}
-            // Mount rows well before they reach the edge, so anything
-            // that settles after mount — an image decoding, a poster
-            // frame landing — happens off-screen and the row scrolls in
-            // already correct.
-            increaseViewportBy={{ top: 600, bottom: 600 }}
-            startReached={() => maybeLoadOlderHistory(true)}
-            endReached={() => maybeLoadNewerHistory()}
-            totalListHeightChanged={() => {
-              // Landing assertion — see jumpAssertUntilRef.
-              if (Date.now() > jumpAssertUntilRef.current || !jumpWindow) return;
-              const p = messages.findIndex((m) => m.id === jumpWindow.targetId);
-              if (p >= 0)
-                virtuosoRef.current?.scrollToIndex({ index: p, align: "start" });
-            }}
-            rangeChanged={(range) => {
-              // Absolute, like itemContent's — rebase before it is used
-              // as a position in `messages`. Storing it raw meant the
-              // saved scroll position was ~1e6 and the restore clamp
-              // rejected it, so every channel switch landed at the
-              // bottom.
-              const start = range.startIndex - firstItemIndex;
-              const end = range.endIndex - firstItemIndex;
-              topIndexRef.current = start;
-              // Far enough above the live bottom → surface the pill. React
-              // bails out when the value is unchanged, so this is cheap.
-              setScrolledUp(messages.length - 1 - end > JUMP_PILL_ROWS);
-              // Warm the previews either side of the window so a row's
-              // image is already cached by the time it mounts.
-              prefetchAround(
-                messages,
-                start,
-                end,
-                activeServerId,
-                useChatStore.getState().chatViewSize,
-              );
-              // Eager pagination: fetch the next page while the
-              // boundary row is still far from the viewport, so its
-              // group-flip resize (see maybeLoadOlderHistory) happens
-              // off-screen. Small channels eagerly load exactly one
-              // extra page on open, then the guard stops it.
-              if (start < HISTORY_EAGER_THRESHOLD) maybeLoadOlderHistory(false);
-            }}
-            atBottomStateChange={(atBottom) => {
-              atBottomRef.current = atBottom;
-              if (atBottom) setScrolledUp(false);
-            }}
-            itemContent={(index, message) => renderBubble(message, index - firstItemIndex)}
-            // Arrival slide replays per jump: the epoch in key= makes each
-            // jump a fresh element, so the mount animation runs again.
-            className={`flex-1 ${
-              jumpWindow
-                ? jumpDir === "up"
-                  ? "animate-[jumpArriveUp_0.26s_ease-out_both]"
-                  : "animate-[jumpArriveDown_0.26s_ease-out_both]"
-                : ""
-            }`}
           />
         )}
 
@@ -1115,8 +908,7 @@ export default function ChatPanel() {
                 return;
               }
               // History below is contiguous — just go to the bottom.
-              if (USE_REAL_LIST) listRef.current?.scrollToBottom(true);
-              else virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+              listRef.current?.scrollToBottom(true);
             }}
             title="Jump to present"
             className="absolute bottom-3 right-4 z-20 flex animate-[fadeUp_0.18s_ease_both] items-center gap-1.5 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent shadow-float transition-colors hover:bg-accent-hover"

@@ -101,7 +101,7 @@ function formatTimestamp(ts: string): string {
 }
 
 // Parsed-epoch cache keyed on message identity. shouldGroup runs in
-// Virtuoso's itemContent for every visible row on every list render —
+// the panel's renderItem for every row on every list render —
 // intentionally lazy (see ChatPanel's no-precomputed-array note), but
 // re-parsing the same timestamps each pass wastes Date churn during
 // scroll. Message objects are stable in the stores, so a WeakMap makes
@@ -203,8 +203,8 @@ function MessageBubble({
   // Server nickname (or the username when none / in DMs). Identity visuals
   // (avatar, name color) stay keyed on message.sender.
   const displayName = useDisplayName(serverId, message.sender);
-  // Dev-only: log any post-mount height settle (Virtuoso corrects the
-  // scroll on each one, so these are candidate scroll-glitch causes).
+  // Dev-only: log any post-mount height settle (a settle above the
+  // viewport shifts content unless anchored — candidate glitch causes).
   const auditRef = useRowHeightAudit(message.id > 0 ? message.id : message.nonce ?? "?");
 
   // Shared sender-popup handlers used by both the avatar and the

@@ -1,7 +1,8 @@
 # Message list: Virtuoso jump postmortem + real-DOM (Discord-style) migration plan
 
-**Status:** implemented 2026-08-27 (`RealMessageList.tsx`, both panels, on by default via
-`USE_REAL_LIST`; Virtuoso kept as the fallback until DMs are live-verified, then deleted).
+**Status:** done 2026-08-27 — `RealMessageList.tsx` in both panels; react-virtuoso, the
+toggle and every Virtuoso path removed the same day (revert the removal commit if a DM
+issue surfaces).
 Deviations from §5 found in build/live test: trims cut by pixel distance, not count (a count
 cut can land inside the paging zone and ping-pong); `overflow-anchor` stays auto — Chromium
 anchors prepends because a programmatic `scrollTop` write cancels the compositor wheel

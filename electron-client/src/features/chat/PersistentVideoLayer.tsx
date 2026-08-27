@@ -10,8 +10,8 @@ import {
   updateCachedVideoState,
 } from "./videoPlaybackState";
 
-// Single mounted-once <video> element that survives Virtuoso row
-// unmounts. The chat-side VideoItem becomes a placeholder that
+// Single mounted-once <video> element that survives message-row
+// unmounts (slice trims, jump windows, channel switches). The chat-side VideoItem becomes a placeholder that
 // publishes its bounding rect via `useActiveVideoStore.hostElement`;
 // we follow that rect via ResizeObserver + a RAF-throttled scroll
 // listener and overlay the video on top. When the host unmounts
@@ -571,7 +571,7 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     }
   }
 
-  // When the host is gone (Virtuoso unmounted the placeholder row),
+  // When the host is gone (the placeholder row unmounted),
   // we keep the wrapper at its *last known* geometry and hide it via
   // opacity:0 instead of moving it offscreen at 1×1. Chromium's media
   // pipeline pauses/throttles <video> elements that suddenly become

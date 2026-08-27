@@ -1,12 +1,9 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import { useVirtuosoPrepend } from "../chat/useVirtuosoPrepend";
 import RealMessageList, {
   type JumpTarget,
   type RealMessageListHandle,
   type ScrollState,
 } from "../chat/RealMessageList";
-import { USE_REAL_LIST } from "../chat/listFlags";
 import { invoke } from "../../lib/ipc";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
@@ -34,10 +31,6 @@ const ERROR_MESSAGES = [
   "This user is currently offline. Your message could not be delivered.",
   "This user only accepts direct messages from users in their friends list.",
 ];
-
-// Keep in sync with ChatPanel's HISTORY_EAGER_THRESHOLD — same
-// rationale, documented there.
-const HISTORY_EAGER_THRESHOLD = 25;
 
 // Rows above the live bottom before the jump-to-present pill appears for a
 // plain scroll-up — keep in sync with ChatPanel's JUMP_PILL_ROWS.
@@ -77,24 +70,19 @@ export default function DmChatPanel() {
   const [pendingDeleteTarget, setPendingDeleteTarget] =
     useState<DmMessage | null>(null);
   const editorRef = useRef<RichInputHandle>(null);
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const listRef = useRef<RealMessageListHandle>(null);
   // Real-DOM list: latest viewport state per peer — see ChatPanel's
   // positionsRef for why it is keyed rather than a single slot.
   const positionsRef = useRef<Record<string, ScrollState>>({});
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
-  // Per-peer scroll state. Saved on conversation switch via the
-  // cleanup of the activeDmUser effect; restored on Virtuoso mount
-  // through initialTopMostItemIndex. atBottom === true means the
-  // user was caught up; we land them at the latest message so any
-  // newer ones that arrived while away are visible.
+  // Per-peer scroll state (see chatStore.ScrollPosition). Saved on
+  // conversation switch via the cleanup of the activeDmUser effect; restored
+  // by RealMessageList at mount. atBottom === true means the user was caught
+  // up; they land at the latest message so anything that arrived while away
+  // is visible.
   const savedPositionsRef = useRef<
-    Record<string, { topIndex: number; atBottom: boolean; anchorId?: number; offset?: number }>
+    Record<string, { atBottom: boolean; anchorId?: number; offset?: number }>
   >({});
-  // Live cursors written by Virtuoso's rangeChanged / atBottomStateChange.
-  // Persisted into savedPositionsRef on conversation switch.
-  const topIndexRef = useRef<number>(0);
-  const atBottomRef = useRef<boolean>(true);
   // Single-flight guard for the scroll-up paginator so rapid scroll
   // doesn't fire parallel page loads.
   const loadMoreInFlightRef = useRef(false);
@@ -109,13 +97,6 @@ export default function DmChatPanel() {
   // When a jump target isn't loaded, we request an around-window and stash the
   // target here; the landing effect lands on it once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
-  // Post-jump landing assertion window — see ChatPanel's jumpAssertUntilRef.
-  const jumpAssertUntilRef = useRef(0);
-  // A just-applied jump context window (see ChatPanel for the rationale): epoch
-  // bumps on each jump so Virtuoso remounts centered on targetId. null = normal.
-  const [jumpWindow, setJumpWindow] = useState<{ epoch: number; targetId: number } | null>(null);
-  // Travel direction of the last jump — picks the arrival slide's keyframe.
-  const [jumpDir, setJumpDir] = useState<"up" | "down">("up");
   // True while the user has scrolled more than JUMP_PILL_ROWS above the live
   // bottom — shows the jump-to-present pill even without a jump window.
   const [scrolledUp, setScrolledUp] = useState(false);
@@ -239,7 +220,6 @@ export default function DmChatPanel() {
   useEffect(() => {
     setReplyingTo(null);
     setEditingMessageId(null);
-    setJumpWindow(null);
     setJumpTarget(null);
     setScrolledUp(false);
     setPresentLoading(false);
@@ -260,9 +240,8 @@ export default function DmChatPanel() {
   // appear for those, which is correct (nothing to delete).
   // Memoized: this used to rebuild (and re-allocate) the whole array
   // on every render — keystrokes included — not just message changes.
-  // DmMessage has no nonce, so an unsent bubble has no stable identity
-  // of its own; computeItemKey falls back to the index for those. They
-  // only ever sit at the tail, so a prepend can't shuffle them.
+  // DmMessage has no nonce; unsent / legacy rows get a synthetic key (see
+  // syntheticKey) so row keys and scroll anchors are never index-based.
   const messageKey = useCallback(
     (m: { id: number; nonce?: string }) => (m.id > 0 ? m.id : m.nonce ?? ""),
     [],
@@ -313,12 +292,10 @@ export default function DmChatPanel() {
     }).catch(console.error);
   }, [activeDmUser]);
 
-  // Scroll-up paginator — same two-trigger shape as ChatPanel's
-  // maybeLoadOlderHistory (see the comment there for the measured
-  // group-flip rationale): startReached is the forced hard edge,
-  // rangeChanged fires the eager threshold so the page-boundary
-  // group-flip resize resolves off-screen.
-  const maybeLoadOlderHistory = (force: boolean) => {
+  // Scroll-up paginator — same shape as ChatPanel's maybeLoadOlderHistory
+  // (see the comment there): driven by RealMessageList's onNearTop, deduped
+  // per page boundary via lastRequestedBeforeIdRef.
+  const maybeLoadOlderHistory = () => {
     if (!activeDmUser) return;
     const conv = useDmStore.getState().conversations[activeDmUser];
     if (!conv?.hasMoreHistory) return;
@@ -327,7 +304,7 @@ export default function DmChatPanel() {
       (m): m is typeof m & { id: number } => typeof m.id === "number" && m.id > 0,
     );
     const beforeId = oldest?.id ?? 0;
-    if (!force && beforeId !== 0 && beforeId === lastRequestedBeforeIdRef.current) {
+    if (beforeId !== 0 && beforeId === lastRequestedBeforeIdRef.current) {
       return;
     }
     loadMoreInFlightRef.current = true;
@@ -348,8 +325,8 @@ export default function DmChatPanel() {
   };
 
   // Downward paginator — mirror of maybeLoadOlderHistory, active only while
-  // windowed (newer messages exist below the jump slice). Virtuoso's endReached
-  // fires it; it no-ops at present (hasMoreAfter false).
+  // windowed (newer messages exist below the jump slice). RealMessageList's
+  // onNearBottom fires it; it no-ops at present (hasMoreAfter false).
   const maybeLoadNewerHistory = () => {
     if (!activeDmUser) return;
     const conv = useDmStore.getState().conversations[activeDmUser];
@@ -387,12 +364,11 @@ export default function DmChatPanel() {
   const jumpToPresent = () => {
     if (!activeDmUser) return;
     const peer = activeDmUser;
-    setJumpWindow(null);
     setJumpTarget(null);
     // The reloaded page mounts a fresh list — land at the bottom, not on a
     // position saved from an earlier visit.
     positionsRef.current[peer] = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
-    savedPositionsRef.current[peer] = { topIndex: 0, atBottom: true };
+    savedPositionsRef.current[peer] = { atBottom: true };
     pendingJumpIdRef.current = null;
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
@@ -417,8 +393,7 @@ export default function DmChatPanel() {
       if (peer) {
         const p = positionsRef.current[peer];
         savedPositionsRef.current[peer] = {
-          topIndex: topIndexRef.current,
-          atBottom: USE_REAL_LIST ? p?.atBottom ?? true : atBottomRef.current,
+          atBottom: p?.atBottom ?? true,
           anchorId: p?.anchorId,
           offset: p?.offset,
         };
@@ -538,22 +513,8 @@ export default function DmChatPanel() {
     );
   }
 
-  // Initial Virtuoso position when we mount/re-mount for this peer.
-  // atBottom: user was caught up — land them at LAST so newer messages
-  // received while away are visible. Otherwise restore the saved
-  // topmost index. Defensive clamps against eviction.
-  // Keeps the viewport anchored when older history pages in at the top. The
-  // reset key folds in the jump epoch so a jump-window remount also resets the
-  // prepend offset (matching the Virtuoso key= below).
-  const prependResetKey = activeDmUser
-    ? `${activeDmUser}:${jumpWindow?.epoch ?? 0}`
-    : null;
-  const firstItemIndex = useVirtuosoPrepend(bubbleMessages, messageKey, prependResetKey);
 
-  // Jump to a replied-to message + flash it. If the parent is loaded we scroll
-  // straight to it; otherwise (Discord-style) fetch a context window around it
-  // and let the landing effect center on it once it arrives — without pulling
-  // in all the intervening history.
+  // Jump to a replied-to message + flash it — see ChatPanel's jumpToMessage.
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const highlightTimer = useRef<number | null>(null);
   const flash = useCallback((id: number) => {
@@ -563,8 +524,6 @@ export default function DmChatPanel() {
   }, []);
   // Identity-stable (reads the store at call time) — a memo(MessageBubble)
   // prop; see ChatPanel's jumpToMessage for the regression this avoids.
-  // bubbleMessages maps 1:1 from conv.messages, so an index into the store
-  // list is a valid Virtuoso data index.
   const jumpToMessage = useCallback(
     (id: number) => {
       const dm = useDmStore.getState();
@@ -572,25 +531,14 @@ export default function DmChatPanel() {
       if (!peer) return;
       const list = dm.conversations[peer]?.messages ?? [];
       const pos = list.findIndex((m) => m.id === id);
-      if (USE_REAL_LIST) {
-        // Set the target now, loaded or not — see ChatPanel's jumpToMessage.
-        const anchor = positionsRef.current[peer]?.anchorId ?? 0;
-        setJumpTarget((prev) => ({
-          id,
-          epoch: (prev?.epoch ?? 0) + 1,
-          dir: anchor > 0 && id > anchor ? "down" : "up",
-        }));
-        if (pos >= 0) return;
-      } else if (pos >= 0) {
-        // Structural jump first (exact remount), then the CSS arrival slide
-        // — see ChatPanel's jumpToMessage for why scroll-driven animation
-        // can't be made clean in a virtualized list.
-        setJumpDir(pos < topIndexRef.current ? "up" : "down");
-        jumpAssertUntilRef.current = Date.now() + 1000;
-        setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
-        flash(id);
-        return;
-      }
+      // Set the target now, loaded or not — see ChatPanel's jumpToMessage.
+      const anchor = positionsRef.current[peer]?.anchorId ?? 0;
+      setJumpTarget((prev) => ({
+        id,
+        epoch: (prev?.epoch ?? 0) + 1,
+        dir: anchor > 0 && id > anchor ? "down" : "up",
+      }));
+      if (pos >= 0) return;
       // Not loaded — fetch a window centered on it. Already requesting this
       // exact target? Wait for the landing effect.
       if (pendingJumpIdRef.current === id) return;
@@ -609,23 +557,8 @@ export default function DmChatPanel() {
         pendingJumpIdRef.current = null;
       });
     },
-    [flash],
+    [],
   );
-  // Landing effect: once the requested around-window is in the loaded slice,
-  // remount the list centered on the target (bump epoch) and flash it.
-  useEffect(() => {
-    if (USE_REAL_LIST) return; // the list lands itself → onJumpLanded
-    const id = pendingJumpIdRef.current;
-    if (id == null) return;
-    if (!bubbleMessages.some((m) => m.id === id)) return;
-    pendingJumpIdRef.current = null;
-    // An around-window target is (virtually) always older — arrive with the
-    // upward-travel slide.
-    setJumpDir("up");
-    jumpAssertUntilRef.current = Date.now() + 1000;
-    setJumpWindow((prev) => ({ epoch: (prev?.epoch ?? 0) + 1, targetId: id }));
-    flash(id);
-  }, [bubbleMessages, flash]);
   // Real-DOM list callbacks.
   const handleJumpLanded = useCallback(
     (epoch: number, id: number) => {
@@ -646,9 +579,7 @@ export default function DmChatPanel() {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
   }, []);
 
-  // One row. Shared by both list paths: RealMessageList calls it with the
-  // data index directly; the Virtuoso path rebases its absolute index first
-  // (see ChatPanel — firstItemIndex makes the index absolute).
+  // One row; `i` indexes bubbleMessages (grouping looks at the previous row).
   const renderRow = (msg: (typeof bubbleMessages)[number], i: number) => {
     const isError =
       msg.sender === localUsername &&
@@ -724,23 +655,6 @@ export default function DmChatPanel() {
         atBottom: savedPosition.atBottom,
       }
     : undefined;
-
-  const initialIndex = (() => {
-    const last = Math.max(0, bubbleMessages.length - 1);
-    // A just-applied jump window: mount with the target as the topmost
-    // visible row — align:"start", not "center"; see ChatPanel's initialIndex
-    // for why centering drifts when nearby rows (code blocks) out-size their
-    // estimates.
-    if (jumpWindow) {
-      const pos = bubbleMessages.findIndex((m) => m.id === jumpWindow.targetId);
-      if (pos >= 0) return { index: pos, align: "start" as const };
-    }
-    if (!activeDmUser) return last;
-    const saved = savedPositionsRef.current[activeDmUser];
-    if (!saved || saved.atBottom) return last;
-    if (saved.topIndex < 0 || saved.topIndex > last) return last;
-    return saved.topIndex;
-  })();
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-bg-mid">
@@ -818,7 +732,7 @@ export default function DmChatPanel() {
             </div>
           </div>
         </div>
-      ) : USE_REAL_LIST ? (
+      ) : (
         <RealMessageList
           // Fresh mount per peer: the saved position restores at mount.
           key={activeDmUser}
@@ -830,7 +744,7 @@ export default function DmChatPanel() {
           jumpTarget={jumpTarget}
           initialPosition={initialPosition}
           onScrollState={handleScrollState}
-          onNearTop={() => maybeLoadOlderHistory(false)}
+          onNearTop={maybeLoadOlderHistory}
           onNearBottom={maybeLoadNewerHistory}
           onOverflow={(side, keep) => {
             const dm = useDmStore.getState();
@@ -839,61 +753,6 @@ export default function DmChatPanel() {
           }}
           onJumpLanded={handleJumpLanded}
           className="pr-4"
-        />
-      ) : (
-        <Virtuoso
-          ref={virtuosoRef}
-          // Re-mount when the active peer changes so
-          // initialTopMostItemIndex applies fresh — Virtuoso reuses
-          // its instance across data swaps and ignores subsequent
-          // changes to the initial-position prop.
-          key={`${activeDmUser}:${jumpWindow?.epoch ?? 0}`}
-          // Arrival slide replays per jump (epoch in key= → fresh element).
-          className={`flex-1 pr-4 ${
-            jumpWindow
-              ? jumpDir === "up"
-                ? "animate-[jumpArriveUp_0.26s_ease-out_both]"
-                : "animate-[jumpArriveDown_0.26s_ease-out_both]"
-              : ""
-          }`}
-          data={bubbleMessages}
-          firstItemIndex={firstItemIndex}
-          computeItemKey={(index, m) => messageKey(m) || `i:${index}`}
-          initialTopMostItemIndex={initialIndex}
-          // No auto-scroll-to-bottom while windowed: live messages are dropped
-          // (they'd land past a hidden gap) and downward paging shouldn't yank
-          // the viewport to the freshly-appended tail.
-          followOutput={windowed ? false : "smooth"}
-          // Discord-style: stack messages from the bottom up against
-          // the input bar when total content height is below viewport.
-          alignToBottom={true}
-          // Same rationale as ChatPanel: settle off-screen so rows
-          // scroll in already correct.
-          increaseViewportBy={{ top: 600, bottom: 600 }}
-          startReached={() => maybeLoadOlderHistory(true)}
-          endReached={() => maybeLoadNewerHistory()}
-          totalListHeightChanged={() => {
-            // Landing assertion — see ChatPanel's jumpAssertUntilRef.
-            if (Date.now() > jumpAssertUntilRef.current || !jumpWindow) return;
-            const p = bubbleMessages.findIndex((m) => m.id === jumpWindow.targetId);
-            if (p >= 0)
-              virtuosoRef.current?.scrollToIndex({ index: p, align: "start" });
-          }}
-          rangeChanged={(range) => {
-            // Absolute — see ChatPanel.
-            const start = range.startIndex - firstItemIndex;
-            topIndexRef.current = start;
-            const end = range.endIndex - firstItemIndex;
-            // Far enough above the live bottom → surface the pill.
-            setScrolledUp(bubbleMessages.length - 1 - end > JUMP_PILL_ROWS);
-            // Eager pagination — see ChatPanel's rangeChanged.
-            if (start < HISTORY_EAGER_THRESHOLD) maybeLoadOlderHistory(false);
-          }}
-          atBottomStateChange={(atBottom) => {
-            atBottomRef.current = atBottom;
-            if (atBottom) setScrolledUp(false);
-          }}
-          itemContent={(absoluteIndex, msg) => renderRow(msg, absoluteIndex - firstItemIndex)}
         />
       )}
 
@@ -909,8 +768,7 @@ export default function DmChatPanel() {
               return;
             }
             // History below is contiguous — just go to the bottom.
-            if (USE_REAL_LIST) listRef.current?.scrollToBottom(true);
-            else virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+            listRef.current?.scrollToBottom(true);
           }}
           title="Jump to present"
           className="absolute bottom-3 right-4 z-20 flex animate-[fadeUp_0.18s_ease_both] items-center gap-1.5 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent shadow-float transition-colors hover:bg-accent-hover"

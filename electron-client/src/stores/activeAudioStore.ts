@@ -7,7 +7,7 @@ import { create } from "zustand";
 // The chat-side AudioPlayer becomes a controller widget that reads
 // state from here and sends commands via audioController; the actual
 // <audio> element lives in PersistentAudioLayer at the app level so
-// playback survives Virtuoso row unmounts when the user scrolls.
+// playback survives message-row unmounts (trims, channel switches).
 //
 // Volume + mute are NOT stored here — they live in uiStore so they
 // can be tuned before any audio is bound and persist across restarts

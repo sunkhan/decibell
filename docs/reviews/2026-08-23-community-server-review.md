@@ -395,16 +395,18 @@ as plain DOM in an `overflow-y:auto` scroller, so every row height is real and p
   synthetic key. The DM sidebar preview now reads a slice-independent
   `conversation.lastMessage` (highest id ever seen) — `messages[last]` was already wrong
   after a jump window and would be after a tail trim.
-- *Rollout.* Behind `USE_REAL_LIST` (`features/chat/listFlags.ts`, localStorage
-  `decibell.real_message_list`, default on) with the Virtuoso path intact as the fallback;
-  opt-in placement trace `decibell.real_message_list_debug=1`. Live checklist passed in
-  channels (bottom landing, zero-shift paging incl. the group-flip boundary, trim → pill →
-  present, centered jumps loaded/unloaded, composer growth, edits/deletes above the viewport,
-  video clipping, wheel-during-prepend). One unreproduced sighting of landing one row above
-  the newest on a channel switch — trace flag above if it recurs. DMs pending a peer with a
-  long thread. Follow-up once DMs are verified: delete the Virtuoso branches,
-  `react-virtuoso`, `useVirtuosoPrepend`, `attachmentPrefetch`, the `jumpArrive*` keyframes,
-  HANDOFF §5.8.
+- *Rollout.* Shipped behind a temporary toggle for the live checklist — passed in channels
+  (bottom landing, zero-shift paging incl. the group-flip boundary, trim → pill → present,
+  centered jumps loaded/unloaded, composer growth, edits/deletes above the viewport, video
+  clipping, wheel-during-prepend) — then react-virtuoso and every fallback path were deleted
+  the same day: `useVirtuosoPrepend`, the epoch remount + landing assertion, the
+  `jumpArrive*` keyframes (WAAPI now), the `HISTORY_EAGER_THRESHOLD` eager trigger (the
+  group-flip is compensated in the same commit), `attachmentPrefetch`'s warm-ahead (rows
+  mount ≥ NEAR_PX before they're visible, so their `<img>` fetches are the prefetch; only
+  `previewUrlFor` survives as `attachmentPreviewUrl.ts`), and `topIndex` from
+  `ScrollPosition`. Opt-in placement trace `decibell.real_message_list_debug=1`. One
+  unreproduced sighting of landing one row above the newest on a channel switch; DMs not yet
+  exercised with a long thread (revert the removal commit if needed).
 
 ## 5. Suggested order of work
 

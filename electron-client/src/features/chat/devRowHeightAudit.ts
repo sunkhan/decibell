@@ -1,10 +1,9 @@
 // Dev-only measurement aid for the attachment scroll glitch — suspect
 // #1 in docs/reviews/2026-07-27-frontend-review.md ("row height
-// changing after mount"). Virtuoso re-measures and corrects the scroll
-// offset on every post-mount height change, so if rows are settling
-// late, each settle is a visible jump. This logs every such settle with
-// the message identity and the delta, which is the evidence that
-// hypothesis has never had.
+// changing after mount"). A post-mount height settle above the viewport
+// shifts everything below it (scroll anchoring compensates, but only
+// after the fact), so late-settling rows are visible-glitch candidates.
+// This logs every such settle with the message identity and the delta.
 //
 // Zero cost in production: the flag is compile-time constant, so the
 // observer branch is dead code outside dev builds.
@@ -14,7 +13,7 @@ import { useLayoutEffect, useRef } from "react";
 const ENABLED = import.meta.env.DEV;
 
 /**
- * Attach the returned ref to a Virtuoso row's root element. Any height
+ * Attach the returned ref to a message row's root element. Any height
  * change after the first observed paint logs a warning naming the row.
  */
 export function useRowHeightAudit(label: string | number) {
@@ -32,10 +31,9 @@ export function useRowHeightAudit(label: string | number) {
         return;
       }
       if (Math.abs(h - first) > 0.5) {
-        // A settle on an off-screen row is absorbed by Virtuoso's
-        // anchoring and is benign (the eager-pagination fix works by
-        // pushing the page-boundary group-flip into that category);
-        // only on-screen settles are visible-glitch candidates.
+        // A settle on an off-screen row is absorbed by scroll anchoring
+        // and is benign; only on-screen settles are visible-glitch
+        // candidates.
         const rect = el.getBoundingClientRect();
         const where =
           rect.bottom > 0 && rect.top < window.innerHeight

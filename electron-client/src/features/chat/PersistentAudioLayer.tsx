@@ -6,8 +6,9 @@ import { bindAudioElement } from "./audioController";
 import { saveSettings } from "../settings/saveSettings";
 import { getCachedAudio, updateCachedAudioState } from "./audioPlaybackState";
 
-// App-level <audio> host. Survives Virtuoso row unmounts so audio
-// keeps playing as the user scrolls through the channel. Mirrors
+// App-level <audio> host. Survives message-row unmounts (slice trims,
+// jump windows, channel switches) so audio keeps playing while the user
+// scrolls through the channel. Mirrors
 // element events into useActiveAudioStore so the chat-side controls
 // re-render. Channel switch clears the active audio (see
 // audioPlaybackState.ts's channel-switch listener).

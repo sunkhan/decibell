@@ -292,39 +292,31 @@ output. (See `feedback_napi_cli_version.md` in auto-memory.)
 
 ---
 
-### 5.8 react-virtuoso `firstItemIndex` rewrites other props
+### 5.8 The message list is real DOM — keep it that way
 
-> Applies to the Virtuoso fallback only (`!USE_REAL_LIST`). The default list is
-> `src/features/chat/RealMessageList.tsx` (real DOM, no estimated heights) — see the
-> 2026-08-27 entry in `docs/reviews/2026-08-23-community-server-review.md` for its
-> invariants. This section goes away with the fallback.
+`src/features/chat/RealMessageList.tsx` renders the loaded slice as plain DOM: no
+virtualization, no estimated row height anywhere. react-virtuoso was removed on 2026-08-27
+after seven rounds of estimate-driven jump bugs (postmortem + design:
+`docs/superpowers/specs/2026-08-25-real-dom-message-list-plan.md`; feature-log entry in
+`docs/reviews/2026-08-23-community-server-review.md`). Rules, each learned the hard way:
 
-Both message panels set `firstItemIndex` so paging older history in at
-the top doesn't jump the viewport. It silently changes what other props
-mean, and inconsistently — all three verified by experiment:
+- Measure rows with `offsetTop`/`offsetHeight`, never `getBoundingClientRect` — the
+  arrival slide and the last row's `fadeUp` are transforms and pollute rects.
+- The placement `useLayoutEffect` has no deps; it must run on every commit (a parent
+  re-render can change row heights without a change to `items`).
+- `overflow-anchor` stays `auto`. Chromium anchors prepends and adjusts the running
+  compositor wheel animation in place; a programmatic `scrollTop` write cancels it (a
+  visible stutter on page-in — live-tested). The list's own math is the residual.
+- Trims are triggered by row count (150) but cut by pixel distance (≥ 2×NEAR_PX from the
+  viewport) on the side opposite the growth — a count cut can land inside the paging zone
+  and ping-pong with the paginator.
+- Row keys are message identity only (id, else nonce / synthetic), never index.
+- Scroll positions are `{anchorId, offset, atBottom}`; the panels write them per
+  channel/peer key (`positionsRef`) so a channel switch can't race the persist cleanup.
 
-| prop | basis with `firstItemIndex` set |
-|------|--------------------------------|
-| `itemContent(index, …)` | **absolute** — `data[0]` arrives as `1000000` |
-| `rangeChanged({startIndex})` | **absolute** — `data[150]` reports `1000150` |
-| `initialTopMostItemIndex` | **data-relative** — 150 still means `data[150]` |
+Opt-in placement trace: `localStorage.setItem("decibell.real_message_list_debug", "1")`.
 
-Anything using those indices to reach into the array must rebase first
-(`const i = index - firstItemIndex`). Getting it wrong typechecks fine
-and fails quietly: it broke message grouping outright (every
-`messages[i-1]` was ~1e6 out of bounds, so `shouldGroup` always saw
-`undefined`) and made every channel switch restore to the bottom.
-
-Two more facts, verified against the installed 4.18.6 source
-(2026-08-15, see the review doc's section of that date):
-
-- `rangeChanged` reports the **rendered** range, `increaseViewportBy`
-  included on both edges — so a scroll position saved from its
-  `startIndex` sits ~overscan-height *above* the true viewport top.
-  Widening `increaseViewportBy` widens that restore error.
-- The separate `overscan` prop is **directional**: `{main, reverse}`
-  applies `main` in the current scroll direction, unlike
-  `increaseViewportBy` which is fixed top/bottom.
+---
 
 ### 5.9 `fetch()` in the renderer is CSP-bound; `blob:` is not allowed
 
@@ -424,10 +416,8 @@ Also open, lower priority:
 | File | Role |
 |------|------|
 | `src/features/chat/RealMessageList.tsx` | real-DOM sliding-window list: placement pass, pixel trims, anchor/position reporting |
-| `src/features/chat/listFlags.ts` | `USE_REAL_LIST` toggle (Virtuoso fallback until deleted) |
-| `src/features/chat/ChatPanel.tsx` | channel list host: pagination guards, trims, jump target, position persistence (+ Virtuoso fallback) |
+| `src/features/chat/ChatPanel.tsx` | channel list host: pagination guards, trims, jump target, position persistence |
 | `src/features/dm/DmChatPanel.tsx` | the DM equivalent; same contract |
-| `src/features/chat/useVirtuosoPrepend.ts` | Virtuoso fallback only: derives `firstItemIndex` from prepend deltas |
 | `src/features/chat/AttachmentList.tsx` | image/video/audio/document rendering; reserve boxes |
 | `src/features/chat/attachmentSizing.ts` | sqrt-scaled preview boxes + grid geometry |
 | `src/features/chat/attachmentPrefetch.ts` | warms previews ±15 messages off `rangeChanged` |

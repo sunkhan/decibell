@@ -30,11 +30,9 @@ import { channelKey, type ChannelKey } from "../lib/channelKey";
 /// up, land at the newest message. Otherwise RealMessageList restores to the
 /// message `anchorId` at `offset` px from the viewport top — exact, and it
 /// survives trims/evictions because it keys on a message id, not a pixel or
-/// an index. `topIndex` is the Virtuoso path's topmost item index; removed
-/// with it.
+/// an index.
 export interface ScrollPosition {
   atBottom: boolean;
-  topIndex: number;
   anchorId?: number;
   offset?: number;
 }
@@ -278,14 +276,7 @@ interface ChatState {
   clearPendingDeletion: (serverId: string, channelId: string, messageId: number) => void;
   /// Capture the user's current scroll position for a channel — called
   /// from ChatPanel when leaving it (see ScrollPosition).
-  setScrollPosition: (
-    serverId: string,
-    channelId: string,
-    topIndex: number,
-    atBottom: boolean,
-    anchorId?: number,
-    offset?: number,
-  ) => void;
+  setScrollPosition: (serverId: string, channelId: string, position: ScrollPosition) => void;
   /// Update the live chat viewport dimensions. Called from ChatPanel's
   /// ResizeObserver. Pass `null` on unmount so AttachmentList's sizing
   /// helpers fall back to their fixed defaults.
@@ -998,11 +989,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     }),
 
-  setScrollPosition: (serverId, channelId, topIndex, atBottom, anchorId, offset) =>
+  setScrollPosition: (serverId, channelId, position) =>
     set((state) => ({
       scrollPositionsByChannel: {
         ...state.scrollPositionsByChannel,
-        [channelKey(serverId, channelId)]: { topIndex, atBottom, anchorId, offset },
+        [channelKey(serverId, channelId)]: position,
       },
     })),
 

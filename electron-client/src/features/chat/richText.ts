@@ -8,7 +8,7 @@
 //
 // Deliberately bespoke rather than remark/markdown-it: the grammar is
 // seven markers, general markdown (headings, tables, HTML passthrough)
-// is unwanted surface in chat, and this runs inside Virtuoso rows where
+// is unwanted surface in chat, and this runs inside message rows where
 // per-render cost matters. Parsing is a single left-to-right scan with
 // recursion only into emphasis spans; code and math contents are
 // verbatim leaves.
@@ -291,9 +291,9 @@ function parseRange(src: string, start: number, end: number, depth: number): Ric
   return out;
 }
 
-// Parse cache — chat re-renders the same visible window constantly
-// (Virtuoso row churn, store updates), and message content is
-// immutable, so cache by the content string. FIFO trim like the
+// Parse cache — chat re-renders the same rows constantly (store updates,
+// row remounts on channel switches / jump windows), and message content
+// is immutable, so cache by the content string. FIFO trim like the
 // thumbhash decode cache; a re-parse costs microseconds.
 const parsed = new Map<string, RichNode[]>();
 const PARSED_MAX = 500;
