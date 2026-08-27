@@ -105,7 +105,10 @@ export default function FriendsList() {
 
   return (
     <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-dark">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+      {/* h-12 like every other panel header (DmChatPanel, the sidebars),
+          so this rule lines up with the one under the peer's name in the
+          DM view — padding-driven height drifted with the button. */}
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
         <h2 className="font-display text-title font-emphasis tracking-title text-text-bright">Friends</h2>
         <button
           onClick={() => setShowAdd(!showAdd)}
