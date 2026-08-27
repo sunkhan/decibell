@@ -420,7 +420,7 @@ Also open, lower priority:
 | `src/features/dm/DmChatPanel.tsx` | the DM equivalent; same contract |
 | `src/features/chat/AttachmentList.tsx` | image/video/audio/document rendering; reserve boxes |
 | `src/features/chat/attachmentSizing.ts` | sqrt-scaled preview boxes + grid geometry |
-| `src/features/chat/attachmentPrefetch.ts` | warms previews ±15 messages off `rangeChanged` |
+| `src/features/chat/attachmentPreviewUrl.ts` | `previewUrlFor`: the exact thumbnail/full URL an `<img>`/`<video>` uses (rows mount 800px ahead, so mounting is the prefetch) |
 | `src/features/chat/thumbhash.ts` | placeholder encode (upload) / decode (render) |
 | `src/features/chat/richText.ts` | dependency-free marker parser (Discord conventions + $TeX$); cached per content string |
 | `src/features/chat/CodeBlock.tsx` | lowlight/highlight.js fenced-block renderer — 27 registered grammars, HAST→React (no innerHTML), token colors from the palette vars in globals.css |
