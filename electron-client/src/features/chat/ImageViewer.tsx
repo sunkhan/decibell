@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
@@ -14,6 +14,30 @@ export default function ImageViewer() {
   const dragStart = useRef<{ x: number; y: number; px: number; py: number } | null>(
     null,
   );
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  // The pan is bounded so the image can never show a gap between its
+  // edge and the viewport edge. The bound shrinks with the image, so
+  // zooming out slides a panned image back toward the middle and
+  // reaches exactly (0, 0) — centered — once it fits. Reads the img's
+  // layout box (pre-transform), which is why the zoom effect below is
+  // post-layout: the box changes when zoom crosses 1 (the 90vw/90vh cap
+  // switches off).
+  const clampPan = (p: { x: number; y: number }, z: number) => {
+    const img = imgRef.current;
+    if (!img) return p;
+    const maxX = Math.max(0, (img.offsetWidth * z - window.innerWidth) / 2);
+    const maxY = Math.max(0, (img.offsetHeight * z - window.innerHeight) / 2);
+    const x = Math.max(-maxX, Math.min(maxX, p.x));
+    const y = Math.max(-maxY, Math.min(maxY, p.y));
+    return x === p.x && y === p.y ? p : { x, y };
+  };
+
+  useLayoutEffect(() => {
+    setPan((p) => clampPan(p, zoom));
+    // clampPan reads refs + window only; zoom is the input that matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoom]);
 
   useEffect(() => {
     if (!current) return;
@@ -47,10 +71,15 @@ export default function ImageViewer() {
   const onMouseMove = (e: React.MouseEvent) => {
     const start = dragStart.current;
     if (!start) return;
-    setPan({
-      x: start.px + (e.clientX - start.x),
-      y: start.py + (e.clientY - start.y),
-    });
+    setPan(
+      clampPan(
+        {
+          x: start.px + (e.clientX - start.x),
+          y: start.py + (e.clientY - start.y),
+        },
+        zoom,
+      ),
+    );
   };
 
   const onMouseUp = () => {
@@ -85,6 +114,7 @@ export default function ImageViewer() {
         {current.filename} · {Math.round(zoom * 100)}%
       </div>
       <img
+        ref={imgRef}
         src={current.url}
         alt={current.filename}
         draggable={false}
