@@ -12,6 +12,8 @@ import {
   reserveBoxFor,
 } from "./attachmentSizing";
 import { onLinkClick, onLinkAuxClick } from "../../lib/openExternal";
+import { isInviteLink } from "../servers/inviteLink";
+import InviteEmbed from "./InviteEmbed";
 import type { LinkPreview, LinkPreviewImage } from "../../types";
 
 // Preview cards for the links in a message, rendered under its
@@ -36,15 +38,21 @@ const THUMB_PX = 80;
 
 type SitePreview = Extract<LinkPreview, { kind: "site" }>;
 
-function LinkEmbeds({ content }: { content: string }) {
+function LinkEmbeds({ content, sender }: { content: string; sender: string }) {
   const enabled = useUiStore((s) => s.linkPreviewsEnabled);
   const urls = useMemo(() => extractLinks(content, MAX_EMBEDS), [content]);
-  if (!enabled || urls.length === 0) return null;
+  if (urls.length === 0) return null;
+  // Invite cards resolve against our own central, not the linked site,
+  // so the link-previews privacy toggle doesn't gate them.
   return (
     <>
-      {urls.map((url) => (
-        <LinkEmbed key={url} url={url} />
-      ))}
+      {urls.map((url) =>
+        isInviteLink(url) ? (
+          <InviteEmbed key={url} href={url} sender={sender} />
+        ) : enabled ? (
+          <LinkEmbed key={url} url={url} />
+        ) : null,
+      )}
     </>
   );
 }

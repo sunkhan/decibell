@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { parseInviteLink } from "./inviteLink";
 import { invoke, listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -512,18 +513,12 @@ export function useServerEvents() {
     const unlistenDeepLink = listen<{ url: string }>(
       "deep_link_received",
       (event) => {
-        const m = event.payload.url.match(
-          /^decibell:\/\/invite\/([^:/]+):(\d+)\/([A-Za-z0-9]+)$/i,
-        );
-        if (!m) {
+        const parsed = parseInviteLink(event.payload.url);
+        if (!parsed) {
           console.warn("[deep-link] could not parse:", event.payload.url);
           return;
         }
-        useChatStore.getState().setPendingInvite({
-          host: m[1],
-          port: parseInt(m[2], 10),
-          code: m[3],
-        });
+        useChatStore.getState().setPendingInvite(parsed);
       },
     );
 

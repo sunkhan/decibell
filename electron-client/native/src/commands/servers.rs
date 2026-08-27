@@ -184,12 +184,20 @@ pub struct ResolvedInvite {
     pub host: String,
     pub port: u16,
     pub code: String,
+    /// Pre-join preview (invite cards in chat). 0 / empty when central
+    /// has no directory row for the community, or is an older build.
+    pub server_id: i64,
+    pub server_name: String,
+    pub server_description: String,
+    pub member_count: i32,
+    pub picture_version: String,
 }
 
 /// Ask the central server to resolve a raw invite code to a community
-/// host:port. Returns the resolved endpoint or an error describing why
-/// the code couldn't be resolved (unknown, expired, central not
-/// reachable). Times out after 5 seconds.
+/// host:port, plus the community's directory row for the pre-join
+/// preview. Returns an error describing why the code couldn't be
+/// resolved (unknown, expired, central not reachable). Times out after
+/// 5 seconds.
 #[napi]
 pub async fn resolve_invite_code(args: ResolveInviteCodeArgs) -> napi::Result<ResolvedInvite> {
     let code = args.code.trim().to_uppercase();
@@ -237,6 +245,11 @@ pub async fn resolve_invite_code(args: ResolveInviteCodeArgs) -> napi::Result<Re
                     host: resp.host,
                     port,
                     code: resp.code,
+                    server_id: resp.server_id,
+                    server_name: resp.server_name,
+                    server_description: resp.server_description,
+                    member_count: resp.member_count,
+                    picture_version: resp.picture_version,
                 })
             } else {
                 let msg = if resp.message.is_empty() {

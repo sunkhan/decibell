@@ -921,6 +921,12 @@ private:
                 body->set_host(resolved->host);
                 body->set_port(static_cast<uint32_t>(resolved->port));
                 body->set_cert_fingerprint(resolved->cert_fingerprint);
+                // Pre-join preview for invite cards (see the proto note).
+                body->set_server_id(resolved->server_id);
+                body->set_server_name(resolved->name);
+                body->set_server_description(resolved->description);
+                body->set_member_count(resolved->member_count);
+                body->set_picture_version(resolved->picture_version);
             } else {
                 body->set_success(false);
                 body->set_message("Unknown or expired invite");

@@ -109,12 +109,26 @@ export interface ServerInvite {
 }
 
 /// A `decibell://invite/<host>:<port>/<code>` URL parsed from a
-/// command-line argument or open-url event. Stashed on the chat
-/// store; DeepLinkJoinModal consumes it on next render.
+/// command-line argument, open-url event, or a link in chat. Stashed
+/// on the chat store; DeepLinkJoinModal consumes it on next render.
 export interface PendingInvite {
   host: string;
   port: number;
   code: string;
+}
+
+/// `resolve_invite_code` result: the endpoint plus central's directory
+/// row for the pre-join preview (invite cards). serverId 0 / empty
+/// strings when central has no row for the community or is older.
+export interface ResolvedInvite {
+  host: string;
+  port: number;
+  code: string;
+  serverId: number;
+  serverName: string;
+  serverDescription: string;
+  memberCount: number;
+  pictureVersion: string;
 }
 
 // ── Voice + streaming types ──────────────────────────────────────

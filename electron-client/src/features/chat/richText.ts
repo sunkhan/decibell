@@ -5,6 +5,7 @@
 //   `inline code`   ``inline code with ` inside``
 //   ```lang\nfenced code block```   $inline math$   $$display math$$
 //   https://… autolinks   <https://…> autolinks without a preview card
+//   decibell://invite/… autolinks (rendered as an invite card)
 //   \* escapes any marker character
 //
 // Deliberately bespoke rather than remark/markdown-it: the grammar is
@@ -17,6 +18,8 @@
 // The wire format is untouched — formatting is plain marker syntax in
 // the existing message string, so old clients degrade to showing the
 // literal markers and the C++ server never knows.
+
+import { parseInviteLink } from "../servers/inviteLink";
 
 export type RichNode =
   | { kind: "text"; text: string }
@@ -44,29 +47,39 @@ function isSpaceAt(s: string, i: number): boolean {
 }
 
 // ── Autolinks ────────────────────────────────────────────────────────
-// Scheme-only detection (http:// and https://), like Discord: bare
-// domains stay text so "file.txt" and "e.g." never turn blue. A URL
-// runs to the next whitespace / angle bracket / quote / backtick,
-// then sheds trailing sentence punctuation and any unbalanced closing
-// bracket — "(see https://x.y/z)." links "https://x.y/z" while a wiki
-// path like /Foo_(bar) keeps its parenthesis.
+// Scheme-only detection (http://, https://, and the app's own
+// decibell://invite/), like Discord: bare domains stay text so
+// "file.txt" and "e.g." never turn blue. A URL runs to the next
+// whitespace / angle bracket / quote / backtick, then sheds trailing
+// sentence punctuation and any unbalanced closing bracket — "(see
+// https://x.y/z)." links "https://x.y/z" while a wiki path like
+// /Foo_(bar) keeps its parenthesis.
 
 const URL_MAX_LEN = 2048;
 const URL_STOP = /[\s<>"`]/;
 const URL_TRAIL_PUNCT = /[.,:;!?'"]$/;
 const URL_CLOSERS: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
 
+const INVITE_SCHEME = "decibell://invite/";
+
 function startsWithScheme(s: string, i: number): boolean {
   const c = s[i];
-  if (c !== "h" && c !== "H") return false;
-  const head = s.slice(i, i + 8).toLowerCase();
-  return head.startsWith("https://") || head.startsWith("http://");
+  if (c === "h" || c === "H") {
+    const head = s.slice(i, i + 8).toLowerCase();
+    return head.startsWith("https://") || head.startsWith("http://");
+  }
+  if (c === "d" || c === "D") {
+    return s.slice(i, i + INVITE_SCHEME.length).toLowerCase() === INVITE_SCHEME;
+  }
+  return false;
 }
 
-/// A parseable http(s) URL with a dotted host (or localhost). Anything
-/// else — "http://" alone, "https://foo" — stays literal text.
+/// A parseable http(s) URL with a dotted host (or localhost), or a
+/// well-formed invite link. Anything else — "http://" alone,
+/// "https://foo", "decibell://invite/x" — stays literal text.
 function isLinkable(candidate: string): boolean {
   if (candidate.length > URL_MAX_LEN) return false;
+  if (/^decibell:/i.test(candidate)) return parseInviteLink(candidate) !== null;
   try {
     const u = new URL(candidate);
     if (u.protocol !== "http:" && u.protocol !== "https:") return false;

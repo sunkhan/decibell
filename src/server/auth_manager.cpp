@@ -433,11 +433,18 @@ std::optional<AuthManager::ResolvedInvite> AuthManager::resolveCommunityInvite(c
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
+        // LEFT JOIN, not a subselect: the invite must still resolve to
+        // host:port when the community has no directory row yet. The
+        // upsert keeps (host_ip, port) unique, so LIMIT 1 is belt and
+        // braces.
         pqxx::result res = txn.exec_params(
             "SELECT i.host, i.port, i.expires_at, "
-            "       COALESCE((SELECT cs.cert_fingerprint FROM community_servers cs "
-            "                 WHERE cs.host_ip = i.host AND cs.port = i.port LIMIT 1), '') "
-            "FROM community_invites i WHERE i.code = $1",
+            "       COALESCE(cs.cert_fingerprint, ''), "
+            "       COALESCE(cs.id, 0), COALESCE(cs.name, ''), COALESCE(cs.description, ''), "
+            "       COALESCE(cs.member_count, 0), COALESCE(cs.picture_version, '') "
+            "FROM community_invites i "
+            "LEFT JOIN community_servers cs ON cs.host_ip = i.host AND cs.port = i.port "
+            "WHERE i.code = $1 LIMIT 1",
             code
         );
         if (res.empty()) return std::nullopt;
@@ -468,6 +475,11 @@ std::optional<AuthManager::ResolvedInvite> AuthManager::resolveCommunityInvite(c
         out.host = res[0][0].as<std::string>();
         out.port = res[0][1].as<int>();
         out.cert_fingerprint = res[0][3].as<std::string>();
+        out.server_id = res[0][4].as<int64_t>();
+        out.name = res[0][5].as<std::string>();
+        out.description = res[0][6].as<std::string>();
+        out.member_count = res[0][7].as<int>();
+        out.picture_version = res[0][8].as<std::string>();
         return out;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] resolveCommunityInvite: " << e.what() << "\n";

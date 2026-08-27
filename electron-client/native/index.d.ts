@@ -489,12 +489,22 @@ export interface ResolvedInvite {
   host: string
   port: number
   code: string
+  /**
+   * Pre-join preview (invite cards in chat). 0 / empty when central
+   * has no directory row for the community, or is an older build.
+   */
+  serverId: number
+  serverName: string
+  serverDescription: string
+  memberCount: number
+  pictureVersion: string
 }
 /**
  * Ask the central server to resolve a raw invite code to a community
- * host:port. Returns the resolved endpoint or an error describing why
- * the code couldn't be resolved (unknown, expired, central not
- * reachable). Times out after 5 seconds.
+ * host:port, plus the community's directory row for the pre-join
+ * preview. Returns an error describing why the code couldn't be
+ * resolved (unknown, expired, central not reachable). Times out after
+ * 5 seconds.
  */
 export declare function resolveInviteCode(args: ResolveInviteCodeArgs): Promise<ResolvedInvite>
 export interface GetAttachmentTargetArgs {

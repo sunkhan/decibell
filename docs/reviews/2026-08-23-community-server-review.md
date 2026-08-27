@@ -565,6 +565,30 @@ content dropped — the owner wants the widest catalogue), and a Privacy-tab tog
 users who want everything. The preference travels with each `decibell:gifs:search` call, so
 flipping it with the picker open re-runs the current query.
 
+**Invite cards in chat (2026-08-27) ✅** — a `decibell://invite/<host>:<port>/<code>` link in a
+message now renders Discord's "You've been invited to join a server" card
+(`features/chat/InviteEmbed.tsx`): server picture, name, member count, description, and a
+**Join** button that redeems the invite in place (`redeem_invite`, the DeepLinkJoinModal path
+without the second confirm — the card is the preview); "Joined" once the auth response lands
+(checked under both the `host:port` key the join connects with and the central id it is
+re-keyed onto), "Invalid invite" when central says unknown / expired. The plain link text
+still opens DeepLinkJoinModal. Wire: `InviteResolveResponse` gained `server_id`,
+`server_name`, `server_description`, `member_count`, `picture_version` (fields 7–11) —
+central's `resolveCommunityInvite` LEFT JOINs the invite onto its `community_servers`
+heartbeat row, so a private community previews too (the invite is the authorisation, as on
+Discord); zero / empty from older centrals or a community that never heartbeated, in which
+case the card titles itself `host:port` and Join still works (the community checks the code
+itself). Carried through the three sides: central (`auth_manager` + `main.cpp`), Rust
+(`ResolvedInvite` napi struct, prost regen), renderer (`ResolvedInvite` type). The picture
+comes through the existing public `FETCH_SERVER_PICTURE_REQ` path — `useFetchServerPictureIfMissing`
+was lifted out of ServerBrowseView into `features/servers/useServerPicture.ts` and the card
+registers the version first so `server_picture_received` accepts the bytes. One invite-link
+grammar now lives in `features/servers/inviteLink.ts` (autolinker, card, deep-link receiver;
+bracketed IPv6 hosts and the `/host/port/code` shape included). Lookups are memoised in
+`stores/inviteResolveStore.ts`: definitive answers stick for the session, connectivity
+failures retry after 30 s so cards heal when central returns. Invite cards ignore the
+link-previews privacy toggle (they talk to our own central, not the linked site).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

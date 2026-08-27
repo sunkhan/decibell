@@ -14,6 +14,7 @@ import {
 import CodeBlock from "./CodeBlock";
 import MathTex from "./MathTex";
 import { onLinkClick, onLinkAuxClick } from "../../lib/openExternal";
+import { isInviteLink, openInviteLink } from "../servers/inviteLink";
 
 // Lazily build a shortcode → native-unicode map from the emoji-mart dataset.
 // Same dataset the Picker uses, so `:smile:` here always resolves to the
@@ -190,22 +191,32 @@ export default function MessageText({ content, emojiSize, preview }: MessageText
           case "text":
             out.push(...emojiTokens(node.text, size, key).tokens);
             break;
-          case "link":
-            // Verbatim, not emoji-tokenised: a URL is opaque text, and
-            // the click goes to the OS browser (see openExternal).
+          case "link": {
+            // Verbatim, not emoji-tokenised: a URL is opaque text. Web
+            // links go to the OS browser (openExternal); an invite link
+            // opens the in-app join confirmation.
+            const invite = isInviteLink(node.href);
             out.push(
               <a
                 key={key}
                 href={node.href}
                 rel="noreferrer"
                 className="text-accent hover:underline"
-                onClick={onLinkClick}
-                onAuxClick={onLinkAuxClick}
+                onClick={
+                  invite
+                    ? (e) => {
+                        e.preventDefault();
+                        openInviteLink(node.href);
+                      }
+                    : onLinkClick
+                }
+                onAuxClick={invite ? (e) => e.preventDefault() : onLinkAuxClick}
               >
                 {node.text}
               </a>,
             );
             break;
+          }
           case "bold":
             out.push(<strong key={key}>{renderNodes(node.children, key)}</strong>);
             break;

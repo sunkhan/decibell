@@ -385,7 +385,7 @@ function MessageBubble({
           {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
             <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
           )}
-          {!editing && <LinkEmbeds content={message.content} />}
+          {!editing && <LinkEmbeds content={message.content} sender={message.sender} />}
         </div>
         {renderActions("top-0")}
       </div>
@@ -429,7 +429,7 @@ function MessageBubble({
         {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
           <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
         )}
-        {!editing && <LinkEmbeds content={message.content} />}
+        {!editing && <LinkEmbeds content={message.content} sender={message.sender} />}
       </div>
       {renderActions("top-1")}
     </div>

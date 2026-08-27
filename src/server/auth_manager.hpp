@@ -58,11 +58,19 @@ public:
     // redeem a raw code without knowing the hosting server's host:port).
     void registerCommunityInvite(const std::string& code, const std::string& host, int port, int64_t expires_at);
     void unregisterCommunityInvite(const std::string& code);
-    // Returns (host, port) or nullopt if the code is unknown or expired.
+    // Returns the endpoint (plus the community's directory row for the
+    // pre-join preview) or nullopt if the code is unknown or expired.
     struct ResolvedInvite {
         std::string host;
         int port = 0;
         std::string cert_fingerprint;   // '' if the community hasn't reported one
+        // From community_servers; zero / empty when the community has
+        // never heartbeated (the invite still resolves to host:port).
+        int64_t server_id = 0;
+        std::string name;
+        std::string description;
+        int member_count = 0;
+        std::string picture_version;
     };
     std::optional<ResolvedInvite> resolveCommunityInvite(const std::string& code);
 

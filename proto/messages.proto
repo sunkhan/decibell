@@ -1434,6 +1434,16 @@ message InviteResolveResponse {
   string code = 5;
   // See CommunityServerInfo.cert_fingerprint.
   string cert_fingerprint = 6;
+  // Pre-join preview for invite cards in chat (the invite is the
+  // authorisation to see this much, as on Discord). Populated from the
+  // community's heartbeat row when central knows it; 0 / empty
+  // otherwise and from older centrals, in which case the card shows
+  // host:port. server_id keys FETCH_SERVER_PICTURE_REQ.
+  int64 server_id = 7;
+  string server_name = 8;
+  string server_description = 9;
+  int32 member_count = 10;
+  string picture_version = 11;
 }
 
 // --- Video codec negotiation messages ---

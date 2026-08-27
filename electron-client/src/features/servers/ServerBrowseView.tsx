@@ -4,39 +4,13 @@ import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { stringToGradient } from "../../utils/colors";
-import type { CommunityServer } from "../../types";
+import { useFetchServerPictureIfMissing } from "./useServerPicture";
+import type { CommunityServer, ResolvedInvite } from "../../types";
 
 interface ParsedInviteLink {
   host: string;
   port: number;
   code: string;
-}
-
-interface ResolvedInvite {
-  host: string;
-  port: number;
-  code: string;
-}
-
-// Dedupes in-flight picture fetches across re-renders. Keyed by
-// "<serverId>:<version>" so a new version triggers a fresh fetch.
-// Module-level so it survives component remounts within a session.
-const inflightFetches = new Set<string>();
-
-function useFetchServerPictureIfMissing(
-  serverId: string,
-  version: string,
-  cachedDataUrl: string | undefined,
-) {
-  useEffect(() => {
-    if (!version || cachedDataUrl) return;
-    const key = `${serverId}:${version}`;
-    if (inflightFetches.has(key)) return;
-    inflightFetches.add(key);
-    invoke("fetch_server_picture", { serverId: parseInt(serverId, 10) })
-      .catch(console.error)
-      .finally(() => inflightFetches.delete(key));
-  }, [serverId, version, cachedDataUrl]);
 }
 
 interface ServerBrowseCardProps {
