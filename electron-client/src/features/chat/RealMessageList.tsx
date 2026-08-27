@@ -18,10 +18,15 @@
 //  - The placement effect has NO deps — it must run on every commit. A parent
 //    re-render can change row heights (inline editor, grouping flip) without
 //    a change to `items`.
-//  - overflow-anchor:none — this component is the only thing that adjusts
-//    scrollTop, so Chromium's own anchoring must not double-adjust. That
-//    means we also own settles with no React commit (window resize rewraps
-//    text, upload-progress chips): the inner-wrapper ResizeObserver does it.
+//  - overflow-anchor stays AUTO. Chromium's native scroll anchoring is the
+//    primary adjuster on prepends/trims because it adjusts a running
+//    compositor wheel animation in place, whereas a programmatic scrollTop
+//    write CANCELS that animation — a visible hitch every time a page lands
+//    mid-wheel (live-tested). Our layout-effect math is measured after the
+//    forced layout in which Chromium already anchored, so it is a residual:
+//    it only writes where Chromium doesn't anchor (scroll offset at 0, the
+//    anchor node removed by a slice replacement, bottom-follow, jumps) or
+//    where a settle happened with no React commit (the ResizeObservers).
 //  - Trims cut by pixels, never by count: the trimmed edge stays >= KEEP_PX
 //    from the viewport so it can't land inside the paging zone and ping-pong
 //    (trimTail → nearBottom → appendNewer → trimHead → nearTop → …).
@@ -56,6 +61,18 @@ const ANCHOR_ROWS = 40;
 /// keyframes; WAAPI so nothing remounts and no class needs re-triggering).
 const SLIDE_PX = 28;
 const SLIDE_MS = 260;
+
+/// Opt-in placement trace: localStorage.setItem("decibell.real_message_list_debug", "1").
+const DEBUG = localStorage.getItem("decibell.real_message_list_debug") === "1";
+function dbg(what: string, scroller: HTMLDivElement, extra?: Record<string, unknown>) {
+  if (!DEBUG) return;
+  console.debug("[RealMessageList]", what, {
+    scrollTop: scroller.scrollTop,
+    scrollHeight: scroller.scrollHeight,
+    clientHeight: scroller.clientHeight,
+    ...extra,
+  });
+}
 
 export interface JumpTarget {
   id: number;
@@ -251,7 +268,10 @@ function RealMessageListInner<T>(
       const row = byKey.get(a.key);
       if (!row) continue;
       const delta = row.offsetTop - scroller.scrollTop - a.relTop;
-      if (Math.abs(delta) > 0.5) scroller.scrollTop += delta;
+      if (Math.abs(delta) > 0.5) {
+        scroller.scrollTop += delta;
+        dbg("anchor residual", scroller, { key: a.key, delta });
+      }
       return true;
     }
     return false;
@@ -291,19 +311,25 @@ function RealMessageListInner<T>(
         { duration: SLIDE_MS, easing: "ease-out" },
       );
       onJumpLanded(jt.epoch, jt.id);
+      dbg("jump landed", scroller, { id: jt.id });
     } else if (!mountedRef.current) {
       const ip = initialPosition;
       const row =
         ip && !ip.atBottom && ip.anchorId > 0 ? byKey.get(String(ip.anchorId)) : undefined;
       scroller.scrollTop = row ? row.offsetTop - (ip?.offset ?? 0) : scroller.scrollHeight;
+      dbg(row ? "mount: restored anchor" : "mount: bottom", scroller, { initialPosition: ip, rows: rows.length });
     } else if (atBottomRef.current && !windowed) {
       // Bottom-follow: instant, never smooth. A smooth scroll targets an
       // offset computed at start, so a second append mid-flight lands short
       // (Virtuoso round 1); the last row's fadeUp supplies the motion.
       scroller.scrollTop = scroller.scrollHeight;
+      dbg("bottom pin", scroller, { rows: rows.length });
     } else if (!restoreAnchor(scroller, byKey) && anchorsRef.current.length > 0) {
       // Slice replaced with no jump (present reload) — land at the bottom.
       scroller.scrollTop = scroller.scrollHeight;
+      dbg("slice replaced: bottom", scroller, { rows: rows.length });
+    } else {
+      dbg("anchor held", scroller, { rows: rows.length, windowed, grewHead });
     }
     mountedRef.current = true;
 
@@ -337,6 +363,7 @@ function RealMessageListInner<T>(
     const ro = new ResizeObserver(() => {
       if (atBottomRef.current && !latest.current.windowed) {
         scroller.scrollTop = scroller.scrollHeight;
+        dbg("resize: bottom pin", scroller);
       } else {
         restoreAnchor(scroller, keyMap(inner.children as Rows));
       }
@@ -365,7 +392,6 @@ function RealMessageListInner<T>(
     <div
       ref={scrollerRef}
       className={`relative flex-1 overflow-y-auto ${className ?? ""}`}
-      style={{ overflowAnchor: "none" }}
       onScroll={handleScroll}
     >
       {/* Unpositioned so every row's offsetParent is the scroller (offsetTop
