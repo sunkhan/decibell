@@ -98,12 +98,8 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
         onClick={() => !isPending && onClick(server.id)}
         disabled={isPending}
         title={isPending ? "Connecting…" : server.name}
-        className={`relative flex h-full w-full items-center justify-center overflow-hidden rounded-md px-3 transition-all duration-150 ${
-          isPending
-            ? "cursor-wait opacity-60"
-            : isActive
-              ? "cursor-pointer"
-              : "cursor-pointer"
+        className={`group relative flex h-full w-full items-center justify-center overflow-hidden rounded-md px-3 transition-all duration-150 ${
+          isPending ? "cursor-wait opacity-60" : "cursor-pointer"
         }`}
       >
         <img
@@ -111,16 +107,25 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
           alt={server.name}
           className="absolute inset-0 h-full w-full object-cover"
         />
-        {/* Dim overlay only when inactive */}
-        {!isActive && <div className="absolute inset-0 bg-black/45" />}
-        {/* Name overlay when inactive. Image fills the rectangle via
-            object-cover; tile width is now fixed via TILE_WIDTH, so the
-            name doesn't need to drive sizing. */}
-        {!isActive && (
-          <span className="relative max-w-full truncate text-[13px] font-semibold text-white">
-            {server.name}
-          </span>
-        )}
+        {/* Dim overlay + name sit on inactive tiles and fade out to
+            reveal the picture — on hover, and when the tile becomes
+            active (so the click-to-activate transition animates too).
+            Always mounted: an unmount can't animate. Pending tiles are
+            inert, so they don't react to hover. Image fills the
+            rectangle via object-cover; tile width is fixed via
+            TILE_WIDTH, so the name doesn't drive sizing. */}
+        <div
+          className={`absolute inset-0 bg-black/45 transition-opacity duration-150 ${
+            isActive ? "opacity-0" : isPending ? "" : "group-hover:opacity-0"
+          }`}
+        />
+        <span
+          className={`relative max-w-full truncate text-[13px] font-semibold text-white transition-opacity duration-150 ${
+            isActive ? "opacity-0" : isPending ? "" : "group-hover:opacity-0"
+          }`}
+        >
+          {server.name}
+        </span>
         {!isPending && isActive && (
           <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
         )}
