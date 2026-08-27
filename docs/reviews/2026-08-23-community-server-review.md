@@ -356,6 +356,56 @@ intervening history. Community side covered by 8 new e2e checks (228 total):
      bottom (not just while windowed); clicking then scrolls to the bottom directly —
      no refetch, since the loaded history is contiguous. Both panels.
 
+**Real-DOM message list (2026-08-27) ✅** — react-virtuoso replaced by
+`features/chat/RealMessageList.tsx`, a Discord-style sliding window: the loaded slice renders
+as plain DOM in an `overflow-y:auto` scroller, so every row height is real and placement
+(jump landing, bottom-follow, prepend anchoring) is arithmetic done in one no-deps
+`useLayoutEffect` before paint. Motivation + the postmortem of the seven Virtuoso jump rounds:
+`docs/superpowers/specs/2026-08-25-real-dom-message-list-plan.md`.
+
+- *Bounded DOM.* Past 150 rows the list asks the panel to trim the far end
+  (`onOverflow(side, keep)`), cutting by pixel distance — never within 2×NEAR_PX (1600px) of
+  the viewport, or a trim would land inside the paging zone and ping-pong with the paginator
+  (trimTail → nearBottom → appendNewer → trimHead → nearTop …). New store setters
+  `trimTail`/`trimHead` (chatStore) and `trimDmTail`/`trimDmHead` (dmStore) flip
+  `hasMoreAfter`/`hasMoreHistory`, so the existing windowed machinery re-fetches the dropped
+  end. Behavior change: scrolling up past ~150 rows makes a channel windowed (live arrivals
+  held back, "Jump to present" pill) — as on Discord.
+- *Anchoring.* Chromium's native scroll anchoring stays ON as the primary adjuster: it
+  adjusts a running compositor wheel animation in place, whereas a programmatic `scrollTop`
+  write cancels it (live-tested as a stutter on page-in with `overflow-anchor:none`). The
+  list's own math is measured after the forced layout in which Chromium already anchored, so
+  it is a residual — it writes only where Chromium doesn't anchor (offset 0, slice replaced,
+  bottom-follow, jumps) or on settles with no React commit (ResizeObservers on the inner
+  wrapper and the scroller). Measurement is `offsetTop` only: the arrival slide and the last
+  row's `fadeUp` are transforms and would pollute rects.
+- *Jumps.* `jumpTarget {id, epoch, dir}` is set at click time even before the target is
+  loaded; the list lands (centered — exact, nothing is estimated) on the first commit whose
+  rows contain it, i.e. an around-window paints at the right position on its first frame.
+  Arrival slide via WAAPI on the inner wrapper (no remount); `flash` fires from
+  `onJumpLanded`. The epoch-remount, the `align:"start"` rule and the 1s landing assertion
+  are all unnecessary on this path.
+- *Scroll restore* is `{anchorId, offset, atBottom}` per channel/peer (`ScrollPosition`) — a
+  message id survives trims/evictions where a pixel or index would not. Positions are written
+  per key by the list's `onScrollState` closure (`positionsRef`), so a non-click channel
+  switch (auto-select, deep link — passive effects flush from a scheduler task) can't race
+  the persist cleanup.
+- *Keys.* Rows are keyed by message identity only, never index (React reuses an index-keyed
+  node for a different message under prepend → wrong anchor); id-less DM rows get a WeakMap
+  synthetic key. The DM sidebar preview now reads a slice-independent
+  `conversation.lastMessage` (highest id ever seen) — `messages[last]` was already wrong
+  after a jump window and would be after a tail trim.
+- *Rollout.* Behind `USE_REAL_LIST` (`features/chat/listFlags.ts`, localStorage
+  `decibell.real_message_list`, default on) with the Virtuoso path intact as the fallback;
+  opt-in placement trace `decibell.real_message_list_debug=1`. Live checklist passed in
+  channels (bottom landing, zero-shift paging incl. the group-flip boundary, trim → pill →
+  present, centered jumps loaded/unloaded, composer growth, edits/deletes above the viewport,
+  video clipping, wheel-during-prepend). One unreproduced sighting of landing one row above
+  the newest on a channel switch — trace flag above if it recurs. DMs pending a peer with a
+  long thread. Follow-up once DMs are verified: delete the Virtuoso branches,
+  `react-virtuoso`, `useVirtuosoPrepend`, `attachmentPrefetch`, the `jumpArrive*` keyframes,
+  HANDOFF §5.8.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

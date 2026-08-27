@@ -294,6 +294,11 @@ output. (See `feedback_napi_cli_version.md` in auto-memory.)
 
 ### 5.8 react-virtuoso `firstItemIndex` rewrites other props
 
+> Applies to the Virtuoso fallback only (`!USE_REAL_LIST`). The default list is
+> `src/features/chat/RealMessageList.tsx` (real DOM, no estimated heights) — see the
+> 2026-08-27 entry in `docs/reviews/2026-08-23-community-server-review.md` for its
+> invariants. This section goes away with the fallback.
+
 Both message panels set `firstItemIndex` so paging older history in at
 the top doesn't jump the viewport. It silently changes what other props
 mean, and inconsistently — all three verified by experiment:
@@ -418,9 +423,11 @@ Also open, lower priority:
 ### Chat rendering + scroll (the live work — see §7)
 | File | Role |
 |------|------|
-| `src/features/chat/ChatPanel.tsx` | channel Virtuoso host: pagination, viewport size, prefetch |
-| `src/features/dm/DmChatPanel.tsx` | the DM equivalent; same Virtuoso contract |
-| `src/features/chat/useVirtuosoPrepend.ts` | derives `firstItemIndex` from prepend deltas |
+| `src/features/chat/RealMessageList.tsx` | real-DOM sliding-window list: placement pass, pixel trims, anchor/position reporting |
+| `src/features/chat/listFlags.ts` | `USE_REAL_LIST` toggle (Virtuoso fallback until deleted) |
+| `src/features/chat/ChatPanel.tsx` | channel list host: pagination guards, trims, jump target, position persistence (+ Virtuoso fallback) |
+| `src/features/dm/DmChatPanel.tsx` | the DM equivalent; same contract |
+| `src/features/chat/useVirtuosoPrepend.ts` | Virtuoso fallback only: derives `firstItemIndex` from prepend deltas |
 | `src/features/chat/AttachmentList.tsx` | image/video/audio/document rendering; reserve boxes |
 | `src/features/chat/attachmentSizing.ts` | sqrt-scaled preview boxes + grid geometry |
 | `src/features/chat/attachmentPrefetch.ts` | warms previews ±15 messages off `rangeChanged` |

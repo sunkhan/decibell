@@ -74,9 +74,13 @@ limit is 8 burst / 1.5 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG
   Buttons copy the settings idiom: `rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover`.
 - Server nicknames render through `useDisplayName(serverId, username)`; avatars/colors key
   on the real username.
-- Message list (react-virtuoso, both panels): jump landings stay `align:"start"` — any
-  placement depending on unmounted rows' estimated heights drifts. The plan to replace
-  Virtuoso with a Discord-style real-DOM sliding window is in
+- Message list: `features/chat/RealMessageList.tsx` (real-DOM sliding window, both panels,
+  on by default via `USE_REAL_LIST`). Invariants: measure with `offsetTop`, never rects; the
+  placement `useLayoutEffect` has no deps (runs every commit); `overflow-anchor` stays auto —
+  Chromium anchors prepends (a programmatic `scrollTop` write cancels the wheel animation),
+  the list's math is only the residual; trims cut by pixel distance on the side opposite the
+  growth; rows keyed by message identity, never index. The Virtuoso fallback
+  (`!USE_REAL_LIST`) keeps `align:"start"` landings until it is deleted. Design + postmortem:
   `docs/superpowers/specs/2026-08-25-real-dom-message-list-plan.md`.
 - zustand selectors must return stable refs (`?? []`/`.filter` inside a selector loops);
   never combine two store hooks with `&&`.

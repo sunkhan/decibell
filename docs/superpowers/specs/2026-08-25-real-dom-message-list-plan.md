@@ -1,6 +1,13 @@
 # Message list: Virtuoso jump postmortem + real-DOM (Discord-style) migration plan
 
-**Status:** planned — the user wants to do this soon.
+**Status:** implemented 2026-08-27 (`RealMessageList.tsx`, both panels, on by default via
+`USE_REAL_LIST`; Virtuoso kept as the fallback until DMs are live-verified, then deleted).
+Deviations from §5 found in build/live test: trims cut by pixel distance, not count (a count
+cut can land inside the paging zone and ping-pong); `overflow-anchor` stays auto — Chromium
+anchors prepends because a programmatic `scrollTop` write cancels the compositor wheel
+animation, the list's math is the residual; positions are `{anchorId, offset}` rather than
+raw px; jump landings are centered. Feature-log entry in
+`docs/reviews/2026-08-23-community-server-review.md`.
 **Scope:** renderer-only (`ChatPanel.tsx`, `DmChatPanel.tsx`, a new shared list component,
 small store additions). No server, proto, or native changes required — that side is done.
 
