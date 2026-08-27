@@ -567,8 +567,9 @@ flipping it with the picker open re-runs the current query.
 
 **Invite cards in chat (2026-08-27) ✅** — a `decibell://invite/<host>:<port>/<code>` link in a
 message now renders Discord's "You've been invited to join a server" card
-(`features/chat/InviteEmbed.tsx`): server picture, name, member count, description, and a
-**Join** button that redeems the invite in place (`redeem_invite`, the DeepLinkJoinModal path
+(`features/chat/InviteEmbed.tsx`) in the browse directory's card shape — the server picture as
+a wide banner on top (gradient initial when none), name / description / member count below —
+with a **Join** button that redeems the invite in place (`redeem_invite`, the DeepLinkJoinModal path
 without the second confirm — the card is the preview); "Joined" once the auth response lands
 (checked under both the `host:port` key the join connects with and the central id it is
 re-keyed onto), "Invalid invite" when central says unknown / expired. The plain link text

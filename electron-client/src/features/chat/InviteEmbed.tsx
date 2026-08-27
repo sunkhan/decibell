@@ -10,10 +10,12 @@ import { useFetchServerPictureIfMissing } from "../servers/useServerPicture";
 import { stringToGradient } from "../../utils/colors";
 
 // The invite card under a message that links a `decibell://invite/…`
-// URL — Discord's "You've been invited to join a server": picture,
-// name, member count, description, and a Join button that redeems the
-// invite right there (the card is the preview, so no second confirm;
-// the plain link text still goes through DeepLinkJoinModal).
+// URL — Discord's "You've been invited to join a server" in the shape
+// of the browse directory's server card: the picture as a wide banner
+// on top, name / description / member count below, and a Join button
+// that redeems the invite right there (the card is the preview, so no
+// second confirm; the plain link text still goes through
+// DeepLinkJoinModal).
 //
 // The frame renders immediately from the link alone — host:port is
 // enough to join — and fills in as central resolves the code
@@ -24,6 +26,8 @@ import { stringToGradient } from "../../utils/colors";
 
 /// Discord's 432px column.
 const CARD_MAX_WIDTH_PX = 432;
+/// The browse card's banner band, a touch taller for the wider card.
+const BANNER_HEIGHT_PX = 112;
 /// Give up on "Joining…" if neither an auth response nor an error lands.
 const JOIN_TIMEOUT_MS = 15_000;
 
@@ -121,67 +125,86 @@ export default function InviteEmbed({ href, sender }: { href: string; sender: st
   const busy = joining || rejoining;
 
   return (
-    <div className="mt-1 rounded-md bg-bg-dark p-4" style={{ maxWidth: CARD_MAX_WIDTH_PX }}>
-      <div className="font-meta text-micro font-semibold uppercase tracking-section text-text-muted">
-        {label}
-      </div>
-      <div className="mt-3 flex items-center gap-3">
-        <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl bg-bg-secondary">
-          {pictureDataUrl ? (
-            <img src={pictureDataUrl} alt="" className="h-full w-full object-cover" draggable={false} />
-          ) : (
+    <div
+      className="mt-1 overflow-hidden rounded-xl border border-border bg-bg-dark"
+      style={{ maxWidth: CARD_MAX_WIDTH_PX }}
+    >
+      {/* Banner — the browse card's shape: the picture as a wide band,
+          the gradient initial when there is none. */}
+      {pictureDataUrl && !invalid ? (
+        <img
+          src={pictureDataUrl}
+          alt=""
+          className="w-full object-cover"
+          style={{ height: BANNER_HEIGHT_PX }}
+          draggable={false}
+        />
+      ) : (
+        <div
+          className={`flex w-full items-center justify-center text-4xl font-semibold ${
+            invalid ? "bg-bg-secondary text-text-muted" : ""
+          }`}
+          style={{
+            height: BANNER_HEIGHT_PX,
+            ...(invalid
+              ? {}
+              : { background: stringToGradient(name || hostKey), color: "var(--color-av-fg)" }),
+          }}
+        >
+          {invalid ? "?" : (name || parsed.host).charAt(0).toUpperCase()}
+        </div>
+      )}
+
+      <div className="flex flex-col gap-1 p-4">
+        <div className="font-meta text-micro font-semibold uppercase tracking-section text-text-muted">
+          {label}
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
             <div
-              className="flex h-full w-full items-center justify-center text-lg font-semibold"
-              style={{
-                background: invalid ? undefined : stringToGradient(name || hostKey),
-                color: "var(--color-av-fg)",
-              }}
+              className={`truncate text-body font-semibold ${
+                invalid ? "text-text-muted" : "text-text-bright"
+              }`}
             >
-              {invalid ? "?" : (name || parsed.host).charAt(0).toUpperCase()}
+              {title}
             </div>
-          )}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div
-            className={`truncate text-body font-semibold ${
-              invalid ? "text-text-muted" : "text-text-bright"
-            }`}
-          >
-            {title}
+            {description && (
+              <div className="line-clamp-2 text-meta leading-body text-text-secondary [overflow-wrap:anywhere]">
+                {description}
+              </div>
+            )}
+            {!invalid && (members !== null || joined) && (
+              <div className="mt-0.5 font-meta text-meta text-text-muted">
+                {members !== null ? `${members} ${members === 1 ? "member" : "members"}` : ""}
+                {joined && (
+                  <span className={members !== null ? "ml-1 text-success" : "text-success"}>
+                    {members !== null ? "· Joined" : "Joined"}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
-          {members !== null && !invalid && (
-            <div className="mt-0.5 flex items-center gap-1.5 font-meta text-meta text-text-muted">
-              <span className="inline-block h-2 w-2 rounded-full bg-text-muted" />
-              {members} {members === 1 ? "member" : "members"}
-            </div>
-          )}
-          {description && (
-            <div className="mt-0.5 line-clamp-2 text-meta leading-body text-text-secondary [overflow-wrap:anywhere]">
-              {description}
-            </div>
+          {joined ? (
+            <button
+              type="button"
+              onClick={open}
+              className="shrink-0 rounded-sm border border-border bg-bg-primary px-4 py-2 text-[13px] font-semibold text-text-primary transition-colors hover:bg-surface-hover"
+            >
+              Open
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void join()}
+              disabled={busy || invalid}
+              className="shrink-0 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy ? "Joining…" : "Join"}
+            </button>
           )}
         </div>
-        {joined ? (
-          <button
-            type="button"
-            onClick={open}
-            title="Open server"
-            className="shrink-0 rounded-sm bg-success px-4 py-2 text-[13px] font-semibold text-on-accent hover:opacity-90"
-          >
-            Joined
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => void join()}
-            disabled={busy || invalid}
-            className="shrink-0 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {busy ? "Joining…" : "Join"}
-          </button>
-        )}
+        {error && <div className="text-meta text-error">{error}</div>}
       </div>
-      {error && <div className="mt-2 text-meta text-error">{error}</div>}
     </div>
   );
 }
