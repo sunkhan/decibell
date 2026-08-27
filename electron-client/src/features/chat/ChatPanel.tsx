@@ -1072,14 +1072,15 @@ export default function ChatPanel() {
       </div>
       )}
 
-      {activeModal === "delete-message-confirm" && pendingDeleteTarget && (
-        <DeleteMessageConfirmModal
-          onConfirm={() => {
-            handleDeleteChannelMessage(pendingDeleteTarget);
-            setPendingDeleteTarget(null);
-          }}
-        />
-      )}
+      {/* Always mounted; `open` drives it so the close can animate. */}
+      <DeleteMessageConfirmModal
+        open={activeModal === "delete-message-confirm" && pendingDeleteTarget !== null}
+        onConfirm={() => {
+          if (!pendingDeleteTarget) return;
+          handleDeleteChannelMessage(pendingDeleteTarget);
+          setPendingDeleteTarget(null);
+        }}
+      />
     </div>
   );
 }

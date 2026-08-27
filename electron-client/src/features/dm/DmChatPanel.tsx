@@ -874,14 +874,15 @@ export default function DmChatPanel() {
         </div>
       </div>
 
-      {activeModal === "delete-message-confirm" && pendingDeleteTarget && (
-        <DeleteMessageConfirmModal
-          onConfirm={() => {
-            handleDeleteDmMessage(pendingDeleteTarget);
-            setPendingDeleteTarget(null);
-          }}
-        />
-      )}
+      {/* Always mounted; `open` drives it so the close can animate. */}
+      <DeleteMessageConfirmModal
+        open={activeModal === "delete-message-confirm" && pendingDeleteTarget !== null}
+        onConfirm={() => {
+          if (!pendingDeleteTarget) return;
+          handleDeleteDmMessage(pendingDeleteTarget);
+          setPendingDeleteTarget(null);
+        }}
+      />
     </div>
   );
 }

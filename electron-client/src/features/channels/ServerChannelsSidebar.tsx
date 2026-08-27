@@ -353,10 +353,13 @@ export default function ServerChannelsSidebar() {
         className="relative flex h-12 shrink-0 items-center gap-2 border-b border-border px-4"
         ref={serverMenuRef}
       >
+        {/* Sized to its content (name + chevron), not the header width —
+            the hover fill is the hitbox, and it shouldn't span the empty
+            space before the badge. min-w-0 keeps truncation working. */}
         <button
           onClick={() => activeServerId && setShowServerMenu((v) => !v)}
           disabled={!activeServerId}
-          className="-ml-2 flex flex-1 cursor-pointer items-center gap-1.5 truncate rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-hover disabled:cursor-default disabled:hover:bg-transparent"
+          className="-ml-2 flex min-w-0 cursor-pointer items-center gap-1.5 truncate rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-hover disabled:cursor-default disabled:hover:bg-transparent"
           title={activeServerId ? "Server options" : undefined}
         >
           <span className="truncate font-display text-title font-emphasis tracking-title text-text-bright">
@@ -379,11 +382,11 @@ export default function ServerChannelsSidebar() {
           )}
         </button>
         {servers.some((s) => s.id === activeServerId) ? (
-          <span className="rounded-sm bg-success/15 px-1.5 py-0.5 font-mono text-micro font-medium uppercase leading-none tracking-[0.1em] text-success">
+          <span className="ml-auto rounded-sm bg-success/15 px-1.5 py-0.5 font-mono text-micro font-medium uppercase leading-none tracking-[0.1em] text-success">
             Public
           </span>
         ) : (
-          <span className="rounded-sm bg-text-muted/15 px-1.5 py-0.5 font-mono text-micro font-medium uppercase leading-none tracking-[0.1em] text-text-secondary">
+          <span className="ml-auto rounded-sm bg-text-muted/15 px-1.5 py-0.5 font-mono text-micro font-medium uppercase leading-none tracking-[0.1em] text-text-secondary">
             Private
           </span>
         )}
@@ -660,22 +663,23 @@ export default function ServerChannelsSidebar() {
           skipped the fade-out and forced a from-scratch mount on every
           open. */}
       {activeServerId && <ServerSettingsModal serverId={activeServerId} />}
-      {activeModal === "leave-server-confirm" && leavePending && (
-        <LeaveServerConfirmModal
-          serverName={leavePending.name}
-          onConfirm={() => {
-            invoke("leave_server", { serverId: leavePending.id }).catch(
-              console.error,
-            );
-            useChatStore.getState().removeConnectedServer(leavePending.id);
-            useChatStore.getState().removePendingMembership(leavePending.id);
-            useChatStore.getState().setActiveServer(null);
-            setActiveChannel(null);
-            setActiveView("home");
-            setLeavePending(null);
-          }}
-        />
-      )}
+      {/* Always mounted; `open` drives it so the close can animate. */}
+      <LeaveServerConfirmModal
+        open={activeModal === "leave-server-confirm" && leavePending !== null}
+        serverName={leavePending?.name ?? ""}
+        onConfirm={() => {
+          if (!leavePending) return;
+          invoke("leave_server", { serverId: leavePending.id }).catch(
+            console.error,
+          );
+          useChatStore.getState().removeConnectedServer(leavePending.id);
+          useChatStore.getState().removePendingMembership(leavePending.id);
+          useChatStore.getState().setActiveServer(null);
+          setActiveChannel(null);
+          setActiveView("home");
+          setLeavePending(null);
+        }}
+      />
       {createTarget && activeServerId && (
         <CreateChannelModal
           serverId={activeServerId}

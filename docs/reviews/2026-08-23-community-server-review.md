@@ -457,6 +457,20 @@ DM friends-list toggles are remembered the same way. Also fixed: `ConversationSi
 last-opened conversation highlighted on the home view (sticky `activeDmUser`, no `activeView`
 gate — the removed rail had one).
 
+**Confirm-dialog shell + server-bar polish (2026-08-27) ✅** — `components/ConfirmModal.tsx`
+is the shared shell for the small destructive confirmations (delete message, leave server):
+the settings modals' chrome — plain darkening backdrop (the `backdrop-blur-sm` is gone), 300ms
+fade + scale in and out with the double-rAF start — and Esc / Enter handling in one place.
+The parents render it unconditionally and drive `open`; gating the mount on `activeModal` (the
+old pattern) unmounted it the instant it closed, so there was never a fade-out. The body is
+frozen while closing so a parent clearing its state on confirm doesn't blank the copy
+mid-fade, and only the backdrop's own `transitionend` unmounts (a button's colour transition
+bubbles the same event). `CertMismatchModal` / `DeepLinkJoinModal` still blur — different
+kind of dialog, untouched. Also: no hover lift on the server-bar tiles (server + unread-DM),
+matching the home button; the server-name button in the channels header is sized to its
+content (name + chevron) instead of `flex-1`, with the Public/Private badge kept at the right
+edge via `ml-auto`.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

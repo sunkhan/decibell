@@ -69,7 +69,7 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
               ? "cursor-wait bg-surface-hover text-text-muted opacity-60"
               : isActive
                 ? "cursor-pointer bg-accent-mid text-accent-bright"
-                : "cursor-pointer text-text-secondary hover:bg-surface-hover hover:text-text-primary hover:-translate-y-px"
+                : "cursor-pointer text-text-secondary hover:bg-surface-hover hover:text-text-primary"
           }`}
         >
           {!isPending && isActive && (
@@ -103,7 +103,7 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
             ? "cursor-wait opacity-60"
             : isActive
               ? "cursor-pointer"
-              : "cursor-pointer hover:-translate-y-px"
+              : "cursor-pointer"
         }`}
       >
         <img
@@ -174,8 +174,8 @@ function UnreadDmTiles() {
     <>
       {unread.map((conv) => {
         const count = conv.unreadCount > 99 ? "99+" : String(conv.unreadCount);
-        // Radius matches the avatar inside so the hover lift and the
-        // badge cutout stay concentric with it (see LetterAvatar).
+        // Radius matches the avatar inside so the badge cutout stays
+        // concentric with it (see LetterAvatar).
         return (
           <button
             key={conv.username}
@@ -184,7 +184,7 @@ function UnreadDmTiles() {
               setActiveView("dm");
             }}
             title={`${conv.username} — ${count} unread`}
-            className="relative shrink-0 cursor-pointer transition-transform duration-150 animate-[dropIn_150ms_ease-out] hover:-translate-y-px"
+            className="relative shrink-0 cursor-pointer animate-[dropIn_150ms_ease-out]"
             style={{ borderRadius: AVATAR_RADIUS }}
           >
             <UserAvatar username={conv.username} size={TILE_HEIGHT} />
