@@ -32,6 +32,7 @@ export default function ConversationSidebar() {
   const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
   const friends = useFriendsStore((s) => s.friends);
   const onlineUsers = useChatStore((s) => s.onlineUsers);
+  const activeView = useUiStore((s) => s.activeView);
   const setActiveView = useUiStore((s) => s.setActiveView);
 
   // Sort by last-message recency. Sort itself is O(n log n) but the
@@ -79,7 +80,11 @@ export default function ConversationSidebar() {
             // lastMessage is slice-independent (jump windows / trims can
             // leave messages[] ending on an older row).
             const lastMsg = conv.lastMessage ?? conv.messages[conv.messages.length - 1];
-            const isActive = activeDmUser === conv.username;
+            // activeDmUser is sticky across views (same pattern as
+            // activeServerId) so the conversation survives a trip to
+            // home — but on home the user is looking at the friends
+            // page, not at it, so only highlight it in the dm view.
+            const isActive = activeView === "dm" && activeDmUser === conv.username;
             return (
               <button
                 key={conv.username}

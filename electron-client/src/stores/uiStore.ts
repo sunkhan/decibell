@@ -70,6 +70,8 @@ const PIP_CORNER_DEFAULT: PipCorner = "bottom-right";
 const SIDEBAR_WIDTH_STORAGE_KEY = "decibell.layout.sidebarWidth";
 const PIP_WIDTH_STORAGE_KEY = "decibell.layout.pipWidth";
 const PIP_CORNER_STORAGE_KEY = "decibell.layout.pipCorner";
+const MEMBERS_PANEL_STORAGE_KEY = "decibell.layout.membersPanel";
+const DM_FRIENDS_PANEL_STORAGE_KEY = "decibell.layout.dmFriendsPanel";
 
 function clampPx(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
@@ -80,6 +82,15 @@ function readStoredPx(key: string, min: number, max: number, fallback: number): 
   try {
     const raw = localStorage.getItem(key);
     return raw === null ? fallback : clampPx(parseFloat(raw), min, max, fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+function readStoredBool(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === "1" ? true : raw === "0" ? false : fallback;
   } catch {
     return fallback;
   }
@@ -198,6 +209,9 @@ interface UiState {
   /// remembered per install.
   sidebarWidth: number;
   setSidebarWidth: (w: number) => void;
+  /// Right-hand panel toggles (members list on a server, friends list
+  /// beside an open DM). Remembered per install with the rest of the
+  /// layout memory.
   membersPanelVisible: boolean;
   dmFriendsPanelVisible: boolean;
   authError: AuthErrorNotice | null;
@@ -313,8 +327,8 @@ export const useUiStore = create<UiState>((set, get) => ({
     writeStoredLater(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
     set({ sidebarWidth });
   },
-  membersPanelVisible: true,
-  dmFriendsPanelVisible: true,
+  membersPanelVisible: readStoredBool(MEMBERS_PANEL_STORAGE_KEY, true),
+  dmFriendsPanelVisible: readStoredBool(DM_FRIENDS_PANEL_STORAGE_KEY, true),
   authError: null,
   setAuthError: (err) => set({ authError: err }),
   certMismatch: null,
@@ -387,8 +401,16 @@ export const useUiStore = create<UiState>((set, get) => ({
   setSeparateStreamOutput: (value) => set({ separateStreamOutput: value }),
   setStreamOutputDevice: (device) => set({ streamOutputDevice: device }),
   setSettingsTab: (tab) => set({ settingsTab: tab }),
-  toggleMembersPanel: () => set((state) => ({ membersPanelVisible: !state.membersPanelVisible })),
-  toggleDmFriendsPanel: () => set((state) => ({ dmFriendsPanelVisible: !state.dmFriendsPanelVisible })),
+  toggleMembersPanel: () => {
+    const membersPanelVisible = !get().membersPanelVisible;
+    writeStoredLater(MEMBERS_PANEL_STORAGE_KEY, membersPanelVisible ? "1" : "0");
+    set({ membersPanelVisible });
+  },
+  toggleDmFriendsPanel: () => {
+    const dmFriendsPanelVisible = !get().dmFriendsPanelVisible;
+    writeStoredLater(DM_FRIENDS_PANEL_STORAGE_KEY, dmFriendsPanelVisible ? "1" : "0");
+    set({ dmFriendsPanelVisible });
+  },
   openModal: (modalId) => set({ activeModal: modalId }),
   closeModal: () => set({ activeModal: null }),
   openChannelSettings: (channelId) =>

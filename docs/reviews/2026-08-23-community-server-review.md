@@ -452,7 +452,10 @@ per-key 200ms trailing coalesce (`setPipWidth` fires per pointermove during a re
 sidebar is this wide" is one preference. The bounds (`SIDEBAR_WIDTH_*`, `PIP_WIDTH_*`) moved
 to the store so a stored value is clamped on read too. localStorage rather than the native
 config blob on purpose: per-install view state that must not roam to a machine with a
-different window size (same reasoning as Electron's own window bounds).
+different window size (same reasoning as Electron's own window bounds). The members-list and
+DM friends-list toggles are remembered the same way. Also fixed: `ConversationSidebar` kept the
+last-opened conversation highlighted on the home view (sticky `activeDmUser`, no `activeView`
+gate — the removed rail had one).
 
 ## 5. Suggested order of work
 
