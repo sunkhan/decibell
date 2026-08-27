@@ -55,9 +55,11 @@ const PAGE_SIZE = 24;
 const QUERY_MAX = 200;
 const TIMEOUT_MS = 10_000;
 /// KLIPY content_filter (off | low | medium | high) and the GIPHY
-/// rating (g | pg | pg-13 | r) — both set to the middle of the road.
-const KLIPY_CONTENT_FILTER = "medium";
-const GIPHY_RATING = "pg-13";
+/// rating (g | pg | pg-13 | r). `low` only drops explicit adult content
+/// — the owner's call: the widest catalogue short of unfiltered (`off`
+/// / no rating). Keep the two in step if changing.
+const KLIPY_CONTENT_FILTER = "low";
+const GIPHY_RATING = "r";
 
 // ── Config ───────────────────────────────────────────────────────────
 
