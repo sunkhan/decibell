@@ -318,20 +318,30 @@ Opt-in placement trace: `localStorage.setItem("decibell.real_message_list_debug"
 
 ---
 
-### 5.9a GIF search needs a Tenor key (`resources/tenor.json`)
+### 5.9a GIF search needs a KLIPY or GIPHY key (`resources/gifs.json`)
 
-The picker's GIFs tab searches Tenor v2 from the main process
-(`electron/main/gifs.ts`). The key is provisioned exactly like the
-Sentry DSN: the release workflow writes `resources/tenor.json`
-(`{"key":"…"}`) from the **`TENOR_API_KEY`** repository secret and
+The picker's GIFs tab searches **KLIPY** or **GIPHY** from the main
+process (`electron/main/gifs.ts`) — the two providers Discord moved to
+when Google shut the Tenor API down on 2026-06-30 (Tenor is gone; don't
+bring it back). Provisioning mirrors the Sentry DSN: the release
+workflow writes `resources/gifs.json` (`{"provider":"klipy","key":"…"}`)
+from the **`GIF_API_KEY`** repository secret and the **`GIF_API_PROVIDER`**
+repository variable (`klipy` | `giphy`, default klipy), and
 electron-builder ships it as an extra resource. For a dev checkout,
-create `electron-client/resources/tenor.json` yourself (gitignored) or
-export `TENOR_API_KEY`. A key is a free Google Cloud API key with the
-"Tenor API" enabled. Without one the tab shows a "not set up" notice.
+create `electron-client/resources/gifs.json` yourself (gitignored) or
+export `GIF_API_KEY` (+ `GIF_API_PROVIDER`). Without one the tab shows a
+"not set up" notice.
 
-Sending a GIF sends its `https://media.tenor.com/….gif` URL as the
-message text — no proto/server change; the link preview renders it and
-the bubble hides the URL text for a lone media link (`loneLink`).
+Keys: KLIPY — sign up at partner.klipy.com → API Keys → Add Platform
+(test key immediately, 100 calls/hour; production access on request,
+free). GIPHY — developers.giphy.com/dashboard (beta key immediately,
+100 calls/hour; production keys are reviewed). Attribution: the search
+placeholder reads "Search KLIPY" / "Search GIPHY" and the footer
+"Powered by …" — KLIPY requires the placeholder, GIPHY the mark.
+
+Sending a GIF sends its https URL as the message text — no
+proto/server change; the link preview renders it and the bubble hides
+the URL text for a lone media link (`loneLink`).
 
 ### 5.9 `fetch()` in the renderer is CSP-bound; `blob:` is not allowed
 
@@ -444,8 +454,8 @@ Also open, lower priority:
 | `src/features/chat/RichComposer.tsx` | code/math composer panels (button beside emoji picker) — textarea with Tab indent + auto-indent, live KaTeX preview; inserts marker syntax into the draft |
 | `src/features/chat/PersistentVideoLayer.tsx` | the fixed-position video overlaid on its placeholder |
 | `src/features/chat/LinkEmbeds.tsx` | link-preview cards under a bubble (≤3): site card / direct image; boxes reserved from declared or probed dimensions |
-| `src/features/chat/EmojiPicker.tsx` / `GifPicker.tsx` | the picker's Emoji \| GIFs tabs; GIF search + featured feed over Tenor, click sends the GIF's URL as its own message |
-| `electron/main/gifs.ts` | Tenor v2 client (key from `resources/tenor.json` / `TENOR_API_KEY`); `decibell:gifs:status` / `search` |
+| `src/features/chat/EmojiPicker.tsx` / `GifPicker.tsx` | the picker's Emoji \| GIFs tabs; GIF search + trending feed over KLIPY / GIPHY, click sends the GIF's URL as its own message |
+| `electron/main/gifs.ts` | KLIPY / GIPHY client (provider + key from `resources/gifs.json` / `GIF_API_KEY`); `decibell:gifs:status` / `search` |
 | `src/stores/linkPreviewStore.ts` | renderer memo of unfurls keyed by URL (main holds the TTL cache) |
 | `electron/main/linkPreview.ts` | the unfurler: OG/Twitter/title + oEmbed fallback, image dimension probe, private-network guard, caps, cache; also `decibell:shell:openExternal` |
 

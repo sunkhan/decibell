@@ -190,18 +190,22 @@ jobs:
           echo "{\"dsn\":\"$SENTRY_DSN\"}" > resources/sentry.json
           echo "[sentry] DSN written to electron-client/resources/sentry.json"
 
-      - name: Bake Tenor API key
+      - name: Bake GIF search key
         # Same shape as the Sentry step: the GIFs tab in the emoji
-        # picker searches Tenor with this key (electron/main/gifs.ts).
-        # Absent secret → no file → the tab explains it isn't configured.
-        if: env.TENOR_API_KEY != ''
+        # picker searches KLIPY or GIPHY with this key
+        # (electron/main/gifs.ts). GIF_API_PROVIDER is a repository
+        # *variable* ("klipy" or "giphy", default klipy); GIF_API_KEY a
+        # secret. Absent secret → no file → the tab says it isn't
+        # configured.
+        if: env.GIF_API_KEY != ''
         env:
-          TENOR_API_KEY: ${{ secrets.TENOR_API_KEY }}
+          GIF_API_KEY: ${{ secrets.GIF_API_KEY }}
+          GIF_API_PROVIDER: ${{ vars.GIF_API_PROVIDER || 'klipy' }}
         shell: bash
         run: |
           mkdir -p resources
-          echo "{\"key\":\"$TENOR_API_KEY\"}" > resources/tenor.json
-          echo "[tenor] key written to electron-client/resources/tenor.json"
+          echo "{\"provider\":\"$GIF_API_PROVIDER\",\"key\":\"$GIF_API_KEY\"}" > resources/gifs.json
+          echo "[gifs] $GIF_API_PROVIDER key written to electron-client/resources/gifs.json"
 
       - name: Package
         # Don't expose GH_TOKEN here. electron-builder treats its

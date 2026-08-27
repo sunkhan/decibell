@@ -612,7 +612,14 @@ export type LinkPreview =
   /// The URL itself is an image.
   | { kind: "image"; url: string; width: number; height: number };
 
-// ── GIF search (Tenor, via electron/main/gifs.ts) ────────────────────
+// ── GIF search (KLIPY / GIPHY, via electron/main/gifs.ts) ────────────
+
+export type GifProvider = "klipy" | "giphy";
+
+export const GIF_PROVIDER_LABEL: Record<GifProvider, string> = {
+  klipy: "KLIPY",
+  giphy: "GIPHY",
+};
 
 export interface GifResult {
   id: string;
@@ -629,11 +636,11 @@ export interface GifResult {
 
 export interface GifPage {
   results: GifResult[];
-  /// Tenor's opaque cursor for the next page; null when exhausted.
+  /// Opaque cursor for the next page; null when exhausted.
   next: string | null;
 }
 
 export type GifSearchResult =
   | { ok: true; page: GifPage }
-  /// `error` is "not-configured" when the build has no Tenor key.
+  /// `error` is "not-configured" when the build has no GIF API key.
   | { ok: false; error: string };

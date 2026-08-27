@@ -540,6 +540,22 @@ link-preview entry), so a sent GIF is just the GIF, and the DM list previews it 
 `previewUrlFor` returns the original for `image/gif`, since the upload-time thumbnail is a JPEG
 of the first frame and the chat had been showing that frozen frame.
 
+**GIF provider: Tenor → KLIPY / GIPHY (2026-08-27) ✅** — the entry above shipped against Tenor
+v2, which Google discontinued on 2026-06-30 (no new keys since 2026-01-13); Discord moved to
+GIPHY and KLIPY. `electron/main/gifs.ts` is now a provider layer over both vendors' **native**
+APIs (not their Tenor-compatibility shims, which are second-class — GIPHY's documents "partial
+support for mapped rendition names only"): KLIPY `api/v1/{key}/gifs/{search|trending}`
+(page-numbered, `data.data[].file.{hd,md,sm,xs}.gif`, `has_next`; `content_filter=medium`,
+`format_filter=gif`, `locale` = the region of `navigator.language`) and GIPHY
+`v1/gifs/{search|trending}` (offset-paged, `images.{original,fixed_width,…}`, `rating=pg-13`,
+`lang`). Both normalise to the same `GifResult` and an opaque `next` cursor, so the picker is
+provider-blind except for the attribution the vendors require (placeholder "Search KLIPY" /
+"Search GIPHY", footer "Powered by …"). Config is `resources/gifs.json`
+`{"provider","key"}` — CI: `GIF_API_KEY` secret + `GIF_API_PROVIDER` variable (default
+klipy); dev: the same env vars or the file. Both vendors' error shapes were verified live
+(KLIPY `result:false, errors.message[]`; GIPHY `meta.msg`); a successful search still needs a
+real key to be eyeballed. KLIPY is the recommended default: free production access on request.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

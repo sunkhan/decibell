@@ -20,5 +20,5 @@ public/twemoji/
 
 # Sentry DSN baked by CI on release builds — never tracked.
 resources/sentry.json
-# Tenor API key for GIF search, same arrangement (TENOR_API_KEY secret).
-resources/tenor.json
+# GIF search provider + key, same arrangement (GIF_API_KEY secret).
+resources/gifs.json

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { GifResult } from "../../types";
+import { GIF_PROVIDER_LABEL, type GifProvider, type GifResult } from "../../types";
 
-// The GIFs tab of the emoji picker. Search box → Tenor (through main,
-// see electron/main/gifs.ts), results in a two-column masonry, click
-// sends. An empty query shows Tenor's featured feed so the tab is never
-// blank; scrolling near the bottom pages in more.
+// The GIFs tab of the emoji picker. Search box → KLIPY or GIPHY
+// (through main, see electron/main/gifs.ts), results in a two-column
+// masonry, click sends. An empty query shows the provider's trending
+// feed so the tab is never blank; scrolling near the bottom pages in
+// more. The placeholder ("Search KLIPY") and the "Powered by" line are
+// the vendors' attribution requirements.
 //
 // Each cell reserves its height from the preview's dimensions so the
 // grid doesn't reflow as GIFs stream in.
@@ -50,6 +52,7 @@ export default function GifPicker({ onPick }: { onPick: (gif: GifResult) => void
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [configured, setConfigured] = useState<boolean | null>(null);
+  const [provider, setProvider] = useState<GifProvider | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Monotonic request id: a stale response (older query, or a page of a
@@ -63,7 +66,11 @@ export default function GifPicker({ onPick }: { onPick: (gif: GifResult) => void
   useEffect(() => {
     let alive = true;
     window.decibell.gifs.status().then(
-      (s) => alive && setConfigured(s.configured),
+      (s) => {
+        if (!alive) return;
+        setProvider(s.provider);
+        setConfigured(s.configured);
+      },
       () => alive && setConfigured(false),
     );
     return () => {
@@ -110,6 +117,7 @@ export default function GifPicker({ onPick }: { onPick: (gif: GifResult) => void
   };
 
   const columns = intoColumns(results);
+  const label = provider ? GIF_PROVIDER_LABEL[provider] : "GIFs";
 
   return (
     <>
@@ -127,7 +135,7 @@ export default function GifPicker({ onPick }: { onPick: (gif: GifResult) => void
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search Tenor..."
+            placeholder={`Search ${label}`}
             disabled={configured === false}
             className="flex-1 bg-transparent text-[13px] text-text-primary outline-none placeholder:text-text-muted disabled:cursor-not-allowed"
           />
@@ -153,8 +161,8 @@ export default function GifPicker({ onPick }: { onPick: (gif: GifResult) => void
       >
         {configured === false ? (
           <Notice title="GIF search isn't set up for this build">
-            Add a Tenor API key to <code className="font-mono">resources/tenor.json</code>{" "}
-            or set <code className="font-mono">TENOR_API_KEY</code> — see HANDOFF.md.
+            Put a KLIPY or GIPHY key in <code className="font-mono">resources/gifs.json</code>{" "}
+            or set <code className="font-mono">GIF_API_KEY</code> — see HANDOFF.md.
           </Notice>
         ) : error ? (
           <Notice title="GIF search failed">{error}</Notice>
@@ -189,10 +197,11 @@ export default function GifPicker({ onPick }: { onPick: (gif: GifResult) => void
         )}
       </div>
 
-      {/* Tenor's API terms require visible "Powered by Tenor" attribution. */}
+      {/* GIPHY's terms require a visible "Powered by GIPHY" mark; KLIPY
+          asks for the same (and requires the search placeholder). */}
       <div className="flex h-[34px] shrink-0 items-center justify-end border-t border-border-divider px-3.5 font-meta text-[11px] text-text-muted">
         {loading && results.length > 0 ? <span className="mr-auto">Loading…</span> : null}
-        Powered by Tenor
+        {provider ? `Powered by ${label}` : ""}
       </div>
     </>
   );

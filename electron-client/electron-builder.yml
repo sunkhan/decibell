@@ -69,11 +69,11 @@ extraResources:
   # if the syntactically-valid value just means "include everything".
   - from: resources/sentry.json
     to: sentry.json
-  # Tenor API key for the picker's GIF search — same arrangement:
-  # CI writes it from the TENOR_API_KEY secret; absent = the GIFs tab
-  # says it isn't configured (electron/main/gifs.ts).
-  - from: resources/tenor.json
-    to: tenor.json
+  # GIF search provider + key for the picker's GIFs tab — same
+  # arrangement: CI writes it from the GIF_API_KEY secret; absent = the
+  # tab says it isn't configured (electron/main/gifs.ts).
+  - from: resources/gifs.json
+    to: gifs.json
 
 linux:
   # Without this, electron-builder names the binary after package.json's

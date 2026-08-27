@@ -264,10 +264,15 @@ contextBridge.exposeInMainWorld("decibell", {
       ipcRenderer.invoke("decibell:linkPreview:fetch", url) as Promise<LinkPreview | null>,
   },
   gifs: {
-    /// Whether a Tenor key is baked into this build / checkout.
-    status: (): Promise<{ configured: boolean }> =>
-      ipcRenderer.invoke("decibell:gifs:status") as Promise<{ configured: boolean }>,
-    /// Empty query = Tenor's featured feed. `pos` is the previous
+    /// Whether a GIF API key is baked into this build / checkout, and
+    /// which provider it is for (drives the "Search KLIPY" placeholder
+    /// and the attribution line).
+    status: (): Promise<{ configured: boolean; provider: "klipy" | "giphy" | null }> =>
+      ipcRenderer.invoke("decibell:gifs:status") as Promise<{
+        configured: boolean;
+        provider: "klipy" | "giphy" | null;
+      }>,
+    /// Empty query = the provider's trending feed. `pos` is the previous
     /// page's `next` cursor. Never rejects for API failures — those
     /// come back as { ok: false, error }.
     search: (query: string, pos: string | null, locale: string | null): Promise<GifSearchResult> =>

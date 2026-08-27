@@ -1,5 +1,5 @@
 import type { Event, UnlistenFn } from "../lib/ipc";
-import type { CaptureSource, GifSearchResult, LinkPreview } from "./index";
+import type { CaptureSource, GifProvider, GifSearchResult, LinkPreview } from "./index";
 
 declare global {
   interface Window {
@@ -74,7 +74,7 @@ declare global {
         fetch: (url: string) => Promise<LinkPreview | null>;
       };
       gifs: {
-        status: () => Promise<{ configured: boolean }>;
+        status: () => Promise<{ configured: boolean; provider: GifProvider | null }>;
         search: (
           query: string,
           pos: string | null,
