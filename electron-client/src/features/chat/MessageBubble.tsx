@@ -6,6 +6,7 @@ import { useDisplayName } from "../../hooks/useDisplayName";
 import { UserAvatar } from "../../components/UserAvatar";
 import MessageText from "./MessageText";
 import AttachmentList from "./AttachmentList";
+import LinkEmbeds from "./LinkEmbeds";
 import BubbleInflightAttachments from "./BubbleInflightAttachments";
 import { useRowHeightAudit } from "./devRowHeightAudit";
 
@@ -369,6 +370,7 @@ function MessageBubble({
           {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
             <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
           )}
+          {!editing && <LinkEmbeds content={message.content} />}
         </div>
         {renderActions("top-0")}
       </div>
@@ -412,6 +414,7 @@ function MessageBubble({
         {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
           <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
         )}
+        {!editing && <LinkEmbeds content={message.content} />}
       </div>
       {renderActions("top-1")}
     </div>

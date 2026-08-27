@@ -132,6 +132,12 @@ pub struct AppSettings {
     /// (have we told the user? vs. is it on?).
     #[serde(default)]
     pub crash_reporting_consent_shown: bool,
+
+    /// Unfurl links in messages into preview cards (title, description,
+    /// thumbnail fetched by the client). Default on; a config written
+    /// before the field existed deserialises to on.
+    #[serde(default = "default_true")]
+    pub link_previews_enabled: bool,
 }
 
 fn default_true() -> bool {

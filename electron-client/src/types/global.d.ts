@@ -1,5 +1,5 @@
 import type { Event, UnlistenFn } from "../lib/ipc";
-import type { CaptureSource } from "./index";
+import type { CaptureSource, LinkPreview } from "./index";
 
 declare global {
   interface Window {
@@ -67,6 +67,12 @@ declare global {
         headers: Record<string, string>;
         body: ArrayBuffer;
       }>;
+      shell: {
+        openExternal: (url: string) => Promise<void>;
+      };
+      linkPreview: {
+        fetch: (url: string) => Promise<LinkPreview | null>;
+      };
       window: {
         minimize: () => Promise<void>;
         maximize: () => Promise<void>;

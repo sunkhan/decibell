@@ -487,6 +487,37 @@ address input, type-to-confirm names, `<kbd>` and the stream stats overlay stay 
 Graphite's meta / micro / section sizes sit 0.5px above their Plex values (Inter's glyphs are
 narrower, so the same px reads lighter); console is untouched.
 
+**Hyperlinks + link previews (2026-08-27) ✅** — links in messages were plain text. Now:
+(1) the rich-text parser autolinks `http(s)://` URLs — recognised *before* the emphasis
+markers so a URL's own `_` / `*` / `~` (wiki paths, query strings) can never open a span; a
+URL runs to whitespace / `<>"` / backtick, then sheds trailing sentence punctuation and any
+unbalanced closing bracket (`/Foo_(bar)` keeps its paren, `(see https://x.y/z).` doesn't);
+scheme-only like Discord so `file.txt` never turns blue; `<https://…>` is the link-without-a-
+card form. Links render as `<a>` and open in the OS browser through a new validated
+`decibell:shell:openExternal` IPC (the renderer never navigates — `hardenNavigation`).
+(2) Previews are unfurled by **main** (`electron/main/linkPreview.ts`; the renderer's fetch is
+CORS/CSP-bound): OpenGraph → Twitter card → `<title>` / `description`, with an oEmbed
+discovery fallback for the YouTube/Vimeo class, direct-image URLs as image embeds, and a
+header-only PNG/GIF/WebP/JPEG dimension probe so every image box is reserved before the
+pixels land (the attachment list's no-pop rule). Guards, since this is main-process HTTP
+driven by other people's message text: http(s) only, no userinfo, redirects followed by hand
+(≤5, each hop re-validated), hostnames resolved and refused when any address is loopback /
+private / link-local / CGNAT / multicast, 512 KiB page + 64 KiB image read caps, 8 s
+timeout, 4 in flight, cache (30 min hit / 5 min miss) + in-flight dedup. Client-side rather
+than server-side on purpose: no proto/server work, works against every server version, and
+the trade — the linked site sees the reader's IP, as clicking would — is the new Privacy-tab
+toggle **Show link previews** (`link_previews_enabled` in the native config, default on).
+(3) `features/chat/LinkEmbeds.tsx` renders up to three cards under a message's attachments:
+site card (site name / title / description, side thumbnail or — for `summary_large_image`,
+player and video pages — a full-width image, theme-color edge) and direct images sized by
+the same sqrt-scaled `reserveBoxFor` the attachment list uses, opening the lightbox on click.
+No skeleton: a card appears once its data is in (a skeleton that later vanishes is a second
+layout change for nothing); the one growth when it lands is the settle `RealMessageList`'s
+ResizeObserver already absorbs. The composer's live preview ignores autolinks
+(`hasFormatting`) so typing a URL doesn't summon it; DM-list previews flatten links to their
+text. Remote images stay direct `<img src=https:>` (already in the CSP's `img-src`); `http:`
+image references are upgraded to https and simply hide on failure.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

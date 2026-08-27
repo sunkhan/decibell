@@ -1,7 +1,7 @@
 // Live send-preview for the message input. Appears inside the input
 // card only when the draft actually contains rich-text formatting —
-// plain messages (including plain multiline and emoji) get no preview
-// because it would add nothing. Rendering goes through the same
+// plain messages (including plain multiline, emoji and bare links) get
+// no preview because it would add nothing. Rendering goes through the same
 // MessageText the bubbles use, so what you see is exactly what will be
 // sent, code highlighting, KaTeX and all.
 //
@@ -10,7 +10,7 @@
 // intermediate states typed on the way to a finished block.
 
 import { useMemo, useState } from "react";
-import { parseRichText, isPlainText } from "./richText";
+import { parseRichText, hasFormatting } from "./richText";
 import MessageText from "./MessageText";
 
 export default function MessagePreview({ draft }: { draft: string }) {
@@ -18,8 +18,8 @@ export default function MessagePreview({ draft }: { draft: string }) {
 
   const formatted = useMemo(() => {
     if (!draft) return false;
-    const nodes = parseRichText(draft);
-    return nodes.length > 0 && !isPlainText(nodes);
+    // Autolinks alone don't count: a bare URL renders as itself.
+    return hasFormatting(parseRichText(draft));
   }, [draft]);
 
   if (!formatted) return null;

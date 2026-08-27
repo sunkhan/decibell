@@ -4,6 +4,7 @@
 //   **bold**   *italic* / _italic_   __underline__   ~~strikethrough~~
 //   `inline code`   ``inline code with ` inside``
 //   ```lang\nfenced code block```   $inline math$   $$display math$$
+//   https://… autolinks   <https://…> autolinks without a preview card
 //   \* escapes any marker character
 //
 // Deliberately bespoke rather than remark/markdown-it: the grammar is
@@ -19,6 +20,10 @@
 
 export type RichNode =
   | { kind: "text"; text: string }
+  /// An autolinked URL. `text` is what the sender typed (the href
+  /// verbatim; angle brackets stripped); `embed` is false for the
+  /// `<url>` form, which Discord defines as "link, but no preview".
+  | { kind: "link"; href: string; text: string; embed: boolean }
   | { kind: "bold" | "italic" | "underline" | "strike"; children: RichNode[] }
   | { kind: "code"; text: string }
   | { kind: "codeblock"; lang: string | null; text: string }
@@ -36,6 +41,66 @@ function isWord(s: string, i: number): boolean {
 
 function isSpaceAt(s: string, i: number): boolean {
   return i < 0 || i >= s.length || /\s/.test(s[i]);
+}
+
+// ── Autolinks ────────────────────────────────────────────────────────
+// Scheme-only detection (http:// and https://), like Discord: bare
+// domains stay text so "file.txt" and "e.g." never turn blue. A URL
+// runs to the next whitespace / angle bracket / quote / backtick,
+// then sheds trailing sentence punctuation and any unbalanced closing
+// bracket — "(see https://x.y/z)." links "https://x.y/z" while a wiki
+// path like /Foo_(bar) keeps its parenthesis.
+
+const URL_MAX_LEN = 2048;
+const URL_STOP = /[\s<>"`]/;
+const URL_TRAIL_PUNCT = /[.,:;!?'"]$/;
+const URL_CLOSERS: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+
+function startsWithScheme(s: string, i: number): boolean {
+  const c = s[i];
+  if (c !== "h" && c !== "H") return false;
+  const head = s.slice(i, i + 8).toLowerCase();
+  return head.startsWith("https://") || head.startsWith("http://");
+}
+
+/// A parseable http(s) URL with a dotted host (or localhost). Anything
+/// else — "http://" alone, "https://foo" — stays literal text.
+function isLinkable(candidate: string): boolean {
+  if (candidate.length > URL_MAX_LEN) return false;
+  try {
+    const u = new URL(candidate);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    return u.hostname.includes(".") || u.hostname === "localhost";
+  } catch {
+    return false;
+  }
+}
+
+/// Length of the autolink starting at `src[i]` (which must satisfy
+/// startsWithScheme), bounded by `end`; 0 when nothing linkable.
+function urlExtent(src: string, i: number, end: number): number {
+  let j = i;
+  while (j < end && !URL_STOP.test(src[j])) j++;
+  let candidate = src.slice(i, j);
+  // Trim until stable: "…/Foo_(bar))." sheds ".", then the unbalanced
+  // ")", and keeps the balanced one.
+  for (;;) {
+    const before = candidate;
+    if (URL_TRAIL_PUNCT.test(candidate)) candidate = candidate.slice(0, -1);
+    const last = candidate[candidate.length - 1];
+    const opener = last !== undefined ? URL_CLOSERS[last] : undefined;
+    if (opener !== undefined) {
+      let opens = 0;
+      let closes = 0;
+      for (const ch of candidate) {
+        if (ch === opener) opens++;
+        else if (ch === last) closes++;
+      }
+      if (closes > opens) candidate = candidate.slice(0, -1);
+    }
+    if (candidate === before) break;
+  }
+  return isLinkable(candidate) ? candidate.length : 0;
 }
 
 /// Find the next unescaped occurrence of `marker` at or after `from`.
@@ -97,6 +162,34 @@ function parseRange(src: string, start: number, end: number, depth: number): Ric
       i += 2;
       plainFrom = i;
       continue;
+    }
+
+    // Links come before every marker so a URL's own `_`, `*` and `~`
+    // (wiki paths, query strings) can never open an emphasis span.
+    // `<https://…>` is the no-preview form; the brackets are dropped.
+    if (c === "<" && startsWithScheme(src, i + 1)) {
+      const close = src.indexOf(">", i + 1);
+      if (close !== -1 && close < end) {
+        const inner = src.slice(i + 1, close);
+        if (!/\s/.test(inner) && isLinkable(inner)) {
+          flush(i);
+          out.push({ kind: "link", href: inner, text: inner, embed: false });
+          i = close + 1;
+          plainFrom = i;
+          continue;
+        }
+      }
+    }
+    if (startsWithScheme(src, i) && !isWord(src, i - 1)) {
+      const len = urlExtent(src, i, end);
+      if (len > 0) {
+        flush(i);
+        const href = src.slice(i, i + len);
+        out.push({ kind: "link", href, text: href, embed: true });
+        i += len;
+        plainFrom = i;
+        continue;
+      }
     }
 
     // Code first — code spans protect their contents from every other
@@ -320,6 +413,37 @@ export function isPlainText(nodes: RichNode[]): boolean {
   return nodes.length === 1 && nodes[0].kind === "text";
 }
 
+/// True when the message carries formatting worth previewing while
+/// typing — anything beyond plain text and autolinks. A draft that is
+/// just "look at https://…" reads the same rendered as typed, so the
+/// composer's live preview stays out of the way for it.
+export function hasFormatting(nodes: RichNode[]): boolean {
+  return nodes.some((n) => n.kind !== "text" && n.kind !== "link");
+}
+
+/// The URLs eligible for a preview card, in order of appearance:
+/// autolinks outside code and math, not in the `<url>` form, deduped,
+/// at most `max`. Content is immutable, so callers memoise on it.
+export function extractLinks(content: string, max: number): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const walk = (nodes: RichNode[]) => {
+    for (const n of nodes) {
+      if (out.length >= max) return;
+      if (n.kind === "link") {
+        if (n.embed && !seen.has(n.href)) {
+          seen.add(n.href);
+          out.push(n.href);
+        }
+      } else if ("children" in n) {
+        walk(n.children);
+      }
+    }
+  };
+  walk(parseRichText(content));
+  return out;
+}
+
 /// Flatten to plain text for single-line previews (the DM sidebar's
 /// last-message row): markers dropped, emphasis children inlined, code
 /// and math contents kept verbatim (a fenced block becomes its code,
@@ -333,6 +457,7 @@ export function richTextToPlain(content: string): string {
         case "text":
         case "code":
         case "codeblock":
+        case "link":
           out.push(n.text);
           break;
         case "math":

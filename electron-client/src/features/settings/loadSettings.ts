@@ -60,6 +60,7 @@ interface LoadedConfigShape {
     crash_reporting_enabled: boolean;
     crash_reporting_install_id: string | null;
     crash_reporting_consent_shown: boolean;
+    link_previews_enabled?: boolean;
   };
 }
 
@@ -100,6 +101,9 @@ export async function loadSettings(): Promise<void> {
   useUiStore.getState().setCrashReportingEnabled(settings.crash_reporting_enabled);
   useUiStore.getState().setCrashReportingInstallId(settings.crash_reporting_install_id);
   useUiStore.getState().setCrashReportingConsentShown(settings.crash_reporting_consent_shown);
+
+  // Link previews. Absent (older native build) → on, matching serde.
+  useUiStore.getState().setLinkPreviewsEnabled(settings.link_previews_enabled ?? true);
 
   // Voice / audio
   if (settings.voice_threshold_db != null) {

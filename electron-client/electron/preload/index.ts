@@ -74,6 +74,19 @@ type UpdateSnapshot = {
   currentVersion: string;
 };
 
+type LinkPreview =
+  | {
+      kind: "site";
+      url: string;
+      siteName: string | null;
+      title: string | null;
+      description: string | null;
+      image: { url: string; width: number; height: number } | null;
+      largeImage: boolean;
+      color: string | null;
+    }
+  | { kind: "image"; url: string; width: number; height: number };
+
 type CaptureSource = {
   id: string;
   name: string;
@@ -223,6 +236,19 @@ contextBridge.exposeInMainWorld("decibell", {
     headers: Record<string, string>;
     body: ArrayBuffer;
   }>,
+  shell: {
+    /// Open an http(s) URL in the OS browser. Main validates the
+    /// scheme again; anything else is dropped there.
+    openExternal: (url: string): Promise<void> =>
+      ipcRenderer.invoke("decibell:shell:openExternal", url) as Promise<void>,
+  },
+  linkPreview: {
+    /// Unfurl a URL from main (the renderer's fetch is CORS- and
+    /// CSP-bound). Resolves null when there is nothing to show; never
+    /// rejects for ordinary network failures. Cached in main.
+    fetch: (url: string): Promise<LinkPreview | null> =>
+      ipcRenderer.invoke("decibell:linkPreview:fetch", url) as Promise<LinkPreview | null>,
+  },
   window: {
     minimize: () => ipcRenderer.invoke("decibell:window:minimize"),
     maximize: () => ipcRenderer.invoke("decibell:window:maximize"),

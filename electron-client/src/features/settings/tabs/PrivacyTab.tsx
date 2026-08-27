@@ -6,11 +6,17 @@ import { saveSettings } from "../saveSettings";
 export default function PrivacyTab() {
   const friendsOnlyDms = useDmStore((s) => s.friendsOnlyDms);
   const crashReportingEnabled = useUiStore((s) => s.crashReportingEnabled);
+  const linkPreviewsEnabled = useUiStore((s) => s.linkPreviewsEnabled);
 
   const handleToggleDms = () => {
     const newValue = !friendsOnlyDms;
     useDmStore.getState().setFriendsOnlyDms(newValue);
     invoke("set_dm_privacy", { friendsOnly: newValue }).catch(console.error);
+    saveSettings();
+  };
+
+  const handleToggleLinkPreviews = () => {
+    useUiStore.getState().setLinkPreviewsEnabled(!linkPreviewsEnabled);
     saveSettings();
   };
 
@@ -28,6 +34,12 @@ export default function PrivacyTab() {
         description="When enabled, only users in your friends list can send you direct messages"
         value={friendsOnlyDms}
         onToggle={handleToggleDms}
+      />
+      <ToggleRow
+        title="Show link previews"
+        description="Fetches a title, description and thumbnail for links in messages. Each site you preview sees your IP address, the same as opening the link would."
+        value={linkPreviewsEnabled}
+        onToggle={handleToggleLinkPreviews}
       />
       <ToggleRow
         title="Send anonymous crash reports"

@@ -428,6 +428,9 @@ Also open, lower priority:
 | `src/features/chat/MessagePreview.tsx` | live send-preview in both input cards — appears only when the draft parses as formatted; renders through MessageText for fidelity |
 | `src/features/chat/RichComposer.tsx` | code/math composer panels (button beside emoji picker) — textarea with Tab indent + auto-indent, live KaTeX preview; inserts marker syntax into the draft |
 | `src/features/chat/PersistentVideoLayer.tsx` | the fixed-position video overlaid on its placeholder |
+| `src/features/chat/LinkEmbeds.tsx` | link-preview cards under a bubble (≤3): site card / direct image; boxes reserved from declared or probed dimensions |
+| `src/stores/linkPreviewStore.ts` | renderer memo of unfurls keyed by URL (main holds the TTL cache) |
+| `electron/main/linkPreview.ts` | the unfurler: OG/Twitter/title + oEmbed fallback, image dimension probe, private-network guard, caps, cache; also `decibell:shell:openExternal` |
 
 ### Theming
 | File | Role |

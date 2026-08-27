@@ -298,6 +298,10 @@ interface UiState {
   setCrashReportingEnabled: (v: boolean) => void;
   setCrashReportingConsentShown: (v: boolean) => void;
   setCrashReportingInstallId: (v: string | null) => void;
+  /// Unfurl links in messages into preview cards. Off = links stay
+  /// plain (still clickable) and no site is contacted until clicked.
+  linkPreviewsEnabled: boolean;
+  setLinkPreviewsEnabled: (v: boolean) => void;
 }
 
 export const useUiStore = create<UiState>((set, get) => ({
@@ -439,4 +443,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   setCrashReportingEnabled: (v) => set({ crashReportingEnabled: v }),
   setCrashReportingConsentShown: (v) => set({ crashReportingConsentShown: v }),
   setCrashReportingInstallId: (v) => set({ crashReportingInstallId: v }),
+  linkPreviewsEnabled: true,
+  setLinkPreviewsEnabled: (v) => set({ linkPreviewsEnabled: v }),
 }));

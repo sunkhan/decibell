@@ -57,8 +57,16 @@ export function reserveBox(
   attachment: Attachment,
   viewSize: ChatViewSize | null,
 ): { width: number; height: number; known: boolean } {
-  const w = attachment.width;
-  const h = attachment.height;
+  return reserveBoxFor(attachment.width, attachment.height, viewSize);
+}
+
+/// Same box from bare dimensions — link-preview images carry no
+/// Attachment, only the size the page declared (or the probe found).
+export function reserveBoxFor(
+  w: number,
+  h: number,
+  viewSize: ChatViewSize | null,
+): { width: number; height: number; known: boolean } {
   if (w <= 0 || h <= 0) {
     return { width: PREVIEW_FALLBACK_W, height: PREVIEW_FALLBACK_H, known: false };
   }

@@ -581,3 +581,33 @@ interface WireAttachment {
   /// base64 ThumbHash; absent on servers that predate the field.
   placeholder?: string;
 }
+
+// ── Link previews ────────────────────────────────────────────────────
+// Mirror of the shape electron/main/linkPreview.ts returns over IPC
+// (preload can't import from src/, so the type is declared twice).
+
+export interface LinkPreviewImage {
+  /// https: only — the renderer's CSP allows no other remote scheme.
+  url: string;
+  /// 0 when neither the page nor the byte probe could tell.
+  width: number;
+  height: number;
+}
+
+export type LinkPreview =
+  /// A page: OpenGraph / Twitter-card / <title> metadata.
+  | {
+      kind: "site";
+      url: string;
+      siteName: string | null;
+      title: string | null;
+      description: string | null;
+      image: LinkPreviewImage | null;
+      /// Render the image full-width under the text (video pages,
+      /// summary_large_image cards) instead of as a side thumbnail.
+      largeImage: boolean;
+      /// The page's theme-color as a #hex string, for the card's edge.
+      color: string | null;
+    }
+  /// The URL itself is an image.
+  | { kind: "image"; url: string; width: number; height: number };
