@@ -79,14 +79,9 @@ export default function DmChatPanel() {
   const editorRef = useRef<RichInputHandle>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const listRef = useRef<RealMessageListHandle>(null);
-  // Real-DOM list: latest viewport state — see ChatPanel's positionRef.
-  const positionRef = useRef<ScrollState>({
-    anchorId: 0,
-    offset: 0,
-    atBottom: true,
-    firstVisible: 0,
-    lastVisible: -1,
-  });
+  // Real-DOM list: latest viewport state per peer — see ChatPanel's
+  // positionsRef for why it is keyed rather than a single slot.
+  const positionsRef = useRef<Record<string, ScrollState>>({});
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   // Per-peer scroll state. Saved on conversation switch via the
   // cleanup of the activeDmUser effect; restored on Virtuoso mount
@@ -248,7 +243,6 @@ export default function DmChatPanel() {
     setJumpTarget(null);
     setScrolledUp(false);
     setPresentLoading(false);
-    positionRef.current = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
     pendingJumpIdRef.current = null;
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -397,7 +391,7 @@ export default function DmChatPanel() {
     setJumpTarget(null);
     // The reloaded page mounts a fresh list — land at the bottom, not on a
     // position saved from an earlier visit.
-    positionRef.current = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
+    positionsRef.current[peer] = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
     savedPositionsRef.current[peer] = { topIndex: 0, atBottom: true };
     pendingJumpIdRef.current = null;
     loadMoreInFlightRef.current = false;
@@ -421,12 +415,12 @@ export default function DmChatPanel() {
     const peer = activeDmUser;
     return () => {
       if (peer) {
-        const p = positionRef.current;
+        const p = positionsRef.current[peer];
         savedPositionsRef.current[peer] = {
           topIndex: topIndexRef.current,
-          atBottom: USE_REAL_LIST ? p.atBottom : atBottomRef.current,
-          anchorId: p.anchorId,
-          offset: p.offset,
+          atBottom: USE_REAL_LIST ? p?.atBottom ?? true : atBottomRef.current,
+          anchorId: p?.anchorId,
+          offset: p?.offset,
         };
       }
     };
@@ -580,7 +574,7 @@ export default function DmChatPanel() {
       const pos = list.findIndex((m) => m.id === id);
       if (USE_REAL_LIST) {
         // Set the target now, loaded or not — see ChatPanel's jumpToMessage.
-        const anchor = positionRef.current.anchorId;
+        const anchor = positionsRef.current[peer]?.anchorId ?? 0;
         setJumpTarget((prev) => ({
           id,
           epoch: (prev?.epoch ?? 0) + 1,
@@ -641,15 +635,13 @@ export default function DmChatPanel() {
     },
     [flash],
   );
-  const handleScrollState = useCallback((s: ScrollState) => {
-    positionRef.current = s;
-    const dm = useDmStore.getState();
-    const len = dm.activeDmUser
-      ? dm.conversations[dm.activeDmUser]?.messages.length ?? 0
-      : 0;
+  // Per render on purpose: the closure pins the peer this list instance was
+  // rendered for (see positionsRef).
+  const handleScrollState = (s: ScrollState) => {
+    positionsRef.current[activeDmUser] = s;
     // Far enough above the live bottom → surface the pill.
-    setScrolledUp(!s.atBottom && len - 1 - s.lastVisible > JUMP_PILL_ROWS);
-  }, []);
+    setScrolledUp(!s.atBottom && bubbleMessages.length - 1 - s.lastVisible > JUMP_PILL_ROWS);
+  };
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
   }, []);

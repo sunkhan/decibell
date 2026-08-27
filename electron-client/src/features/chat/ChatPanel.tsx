@@ -152,17 +152,14 @@ export default function ChatPanel() {
   const jumpAssertUntilRef = useRef(0);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const listRef = useRef<RealMessageListHandle>(null);
-  // Real-DOM list: latest viewport state (anchor message + offset, atBottom,
-  // visible range). Written by onScrollState; read by the channel-switch
-  // cleanup to persist the outgoing channel's position and by jumpToMessage
-  // for the travel direction.
-  const positionRef = useRef<ScrollState>({
-    anchorId: 0,
-    offset: 0,
-    atBottom: true,
-    firstVisible: 0,
-    lastVisible: -1,
-  });
+  // Real-DOM list: latest viewport state per channel key (anchor message +
+  // offset, atBottom, visible range). Written by onScrollState — whose
+  // closure captures the key it was rendered for — read by the
+  // channel-switch cleanup to persist the outgoing channel and by
+  // jumpToMessage for the travel direction. Keyed, not a single slot: the
+  // incoming channel's first emission must not be able to overwrite the
+  // outgoing one's before the cleanup reads it.
+  const positionsRef = useRef<Record<string, ScrollState>>({});
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const chatViewRef = useRef<HTMLDivElement>(null);
 
@@ -244,7 +241,7 @@ export default function ChatPanel() {
   // Live scroll-tracking refs (Virtuoso path) — written by rangeChanged /
   // atBottomStateChange below, read by the cleanup of the channel-switch
   // effect to persist the OUTGOING channel's position before
-  // activeChannelId flips. The real-DOM list reports through positionRef.
+  // activeChannelId flips. The real-DOM list reports through positionsRef.
   const topIndexRef = useRef(0);
   const atBottomRef = useRef(true);
 
@@ -298,16 +295,16 @@ export default function ChatPanel() {
     const channelId = activeChannelId;
     return () => {
       if (serverId && channelId) {
-        const p = positionRef.current;
+        const p = positionsRef.current[channelKey(serverId, channelId)];
         useChatStore
           .getState()
           .setScrollPosition(
             serverId,
             channelId,
             topIndexRef.current,
-            USE_REAL_LIST ? p.atBottom : atBottomRef.current,
-            p.anchorId,
-            p.offset,
+            USE_REAL_LIST ? p?.atBottom ?? true : atBottomRef.current,
+            p?.anchorId,
+            p?.offset,
           );
       }
     };
@@ -448,7 +445,7 @@ export default function ChatPanel() {
     setJumpTarget(null);
     // The reloaded page mounts a fresh list — it must land at the bottom,
     // not on a position saved from an earlier visit.
-    positionRef.current = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
+    positionsRef.current[channelKey(serverId, channelId)] = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
     pendingJumpIdRef.current = null;
     loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
@@ -786,7 +783,6 @@ export default function ChatPanel() {
     setJumpWindow(null);
     setJumpTarget(null);
     setScrolledUp(false);
-    positionRef.current = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
     pendingJumpIdRef.current = null;
     lastRequestedAfterIdRef.current = 0;
     loadNewerInFlightRef.current = false;
@@ -821,7 +817,8 @@ export default function ChatPanel() {
         // commit whose rows contain it — for an around-window that is the
         // very commit that renders the window, so it never paints at a wrong
         // position first. The flash fires from onJumpLanded.
-        const anchor = positionRef.current.anchorId;
+        const anchor =
+          positionsRef.current[channelKey(serverId, channelId)]?.anchorId ?? 0;
         setJumpTarget((prev) => ({
           id,
           epoch: (prev?.epoch ?? 0) + 1,
@@ -891,17 +888,13 @@ export default function ChatPanel() {
     },
     [flash],
   );
-  const handleScrollState = useCallback((s: ScrollState) => {
-    positionRef.current = s;
-    const chat = useChatStore.getState();
-    const key =
-      chat.activeServerId && chat.activeChannelId
-        ? channelKey(chat.activeServerId, chat.activeChannelId)
-        : null;
-    const len = key ? chat.messagesByChannel[key]?.length ?? 0 : 0;
+  // Per render on purpose: the closure pins the key this list instance was
+  // rendered for (see positionsRef).
+  const handleScrollState = (s: ScrollState) => {
+    if (activeKey) positionsRef.current[activeKey] = s;
     // Far enough above the live bottom → surface the pill.
-    setScrolledUp(!s.atBottom && len - 1 - s.lastVisible > JUMP_PILL_ROWS);
-  }, []);
+    setScrolledUp(!s.atBottom && messages.length - 1 - s.lastVisible > JUMP_PILL_ROWS);
+  };
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
   }, []);
