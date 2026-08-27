@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
-import { useUiStore } from "../../stores/uiStore";
+import { useUiStore, PIP_WIDTH_MIN, PIP_WIDTH_MAX, type PipCorner } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import {
   getFullViewRect,
@@ -9,14 +9,15 @@ import {
   recordMiniRect,
 } from "./streamPipHost";
 
-type Corner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+type Corner = PipCorner;
 
 const MARGIN = 16;
 // The mini is aspect-locked to 16:9; the user resizes its width between these
-// bounds (height follows). The chosen width lives in uiStore.pipWidth so it
-// survives re-mounts and view switches.
-const MIN_WIDTH = 240;
-const MAX_WIDTH = 640;
+// bounds (height follows). The chosen width and corner live in uiStore
+// (pipWidth / pipCorner), which owns the bounds, clamps what it reads back
+// from localStorage, and remembers both per install.
+const MIN_WIDTH = PIP_WIDTH_MIN;
+const MAX_WIDTH = PIP_WIDTH_MAX;
 const ASPECT = 9 / 16; // height / width
 const heightFor = (w: number) => Math.round(w * ASPECT);
 // How far the pointer must move before a press counts as a drag (vs a click).

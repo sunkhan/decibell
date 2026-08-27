@@ -433,7 +433,7 @@ Also open, lower priority:
 | File | Role |
 |------|------|
 | `src/styles/globals.css` | the whole token system: `--t-*` palettes, type scale, `.chrome-scope` |
-| `src/stores/uiStore.ts` | `theme`, `textSizePx`, `rowScale` + the `data-theme` plumbing |
+| `src/stores/uiStore.ts` | `theme`, `textSizePx`, `rowScale` + the `data-theme` plumbing; layout memory (`sidebarWidth`, `pipWidth`, `pipCorner` — localStorage `decibell.layout.*`) |
 | `src/features/settings/tabs/AppearanceTab.tsx` | palette picker + the two scale sliders |
 | `public/theme-boot.js` | pre-mount theme/scale application (separate file: CSP) |
 

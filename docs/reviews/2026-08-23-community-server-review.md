@@ -441,6 +441,19 @@ ServerBar: bottom separator dropped (the gap separates), home button left-aligne
 panel edge. `MiniStreamPlayer` docks to the panel rect on all four sides (`panelBounds`)
 instead of the window edge.
 
+**Layout memory (2026-08-27) ✅** — the left sidebar's width was per-component React state in
+`useSidebarResize`, so it reset not only on restart but on every home ↔ server switch
+(`ConversationSidebar` and `ServerChannelsSidebar` are different mounts); the mini stream
+player's width and docked corner were unpersisted `uiStore` fields. All three are now
+`uiStore` fields read from localStorage at store creation (`decibell.layout.*` — synchronous,
+so the first `MainLayout` paint already has the width) and written by their setters through a
+per-key 200ms trailing coalesce (`setPipWidth` fires per pointermove during a resize).
+`sidebarWidth` is one value shared by both sidebars — only one is mounted at a time and "the
+sidebar is this wide" is one preference. The bounds (`SIDEBAR_WIDTH_*`, `PIP_WIDTH_*`) moved
+to the store so a stored value is clamped on read too. localStorage rather than the native
+config blob on purpose: per-install view state that must not roam to a machine with a
+different window size (same reasoning as Electron's own window bounds).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

@@ -49,6 +49,71 @@ export const DEFAULT_ROW_SCALE = 1;
 export const TEXT_SIZE_STORAGE_KEY = "decibell.textSizePx";
 export const ROW_SCALE_STORAGE_KEY = "decibell.rowScale";
 
+/// Layout memory — the resizable left sidebar's width and the mini
+/// stream player's width + docked corner. Per-install view state, so it
+/// lives in localStorage only, not the native config blob: it isn't a
+/// choice made in Settings, and it must not roam to a machine with a
+/// different window size. Read once at store creation (synchronously,
+/// so MainLayout's first paint already has the width); written by the
+/// setters. The bounds live here, not in the components, because a
+/// stored value is clamped on read too.
+export const SIDEBAR_WIDTH_MIN = 180;
+export const SIDEBAR_WIDTH_MAX = 480;
+export const SIDEBAR_WIDTH_DEFAULT = 240;
+export const PIP_WIDTH_MIN = 240;
+export const PIP_WIDTH_MAX = 640;
+export const PIP_WIDTH_DEFAULT = 320;
+export type PipCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+const PIP_CORNERS: readonly string[] = ["top-left", "top-right", "bottom-left", "bottom-right"];
+const PIP_CORNER_DEFAULT: PipCorner = "bottom-right";
+
+const SIDEBAR_WIDTH_STORAGE_KEY = "decibell.layout.sidebarWidth";
+const PIP_WIDTH_STORAGE_KEY = "decibell.layout.pipWidth";
+const PIP_CORNER_STORAGE_KEY = "decibell.layout.pipCorner";
+
+function clampPx(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.round(Math.min(max, Math.max(min, value)));
+}
+
+function readStoredPx(key: string, min: number, max: number, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : clampPx(parseFloat(raw), min, max, fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+function readStoredCorner(): PipCorner {
+  try {
+    const raw = localStorage.getItem(PIP_CORNER_STORAGE_KEY);
+    return raw !== null && PIP_CORNERS.includes(raw) ? (raw as PipCorner) : PIP_CORNER_DEFAULT;
+  } catch {
+    return PIP_CORNER_DEFAULT;
+  }
+}
+
+/// Trailing-coalesced per key: setPipWidth fires on every pointermove
+/// of a mini-player resize, and the sidebar drag commits once on
+/// mouseup — either way one write per gesture is plenty.
+const pendingLayoutWrites = new Map<string, number>();
+function writeStoredLater(key: string, value: string): void {
+  const prev = pendingLayoutWrites.get(key);
+  if (prev !== undefined) window.clearTimeout(prev);
+  pendingLayoutWrites.set(
+    key,
+    window.setTimeout(() => {
+      pendingLayoutWrites.delete(key);
+      try {
+        localStorage.setItem(key, value);
+      } catch {
+        // Private mode / quota — the layout still applies this session.
+      }
+    }, 200),
+  );
+}
+
 /// Rounded to 2dp because the sliders step in fractions and float
 /// drift would otherwise write 1.0500000000000003 into the config.
 export function clampScale(value: number, min: number, max: number, fallback: number): number {
@@ -119,13 +184,20 @@ interface UiState {
   openChannelSettings: (channelId: string) => void;
   connectionStatus: "connected" | "reconnecting" | "disconnected";
   activeView: "home" | "server" | "browse" | "voice" | "dm";
-  /// Which corner the floating pop-out stream player snaps to.
-  pipCorner: "top-left" | "top-right" | "bottom-left" | "bottom-right";
-  setPipCorner: (c: "top-left" | "top-right" | "bottom-left" | "bottom-right") => void;
+  /// Which corner the floating pop-out stream player snaps to. Remembered
+  /// per install (see the layout-memory block above).
+  pipCorner: PipCorner;
+  setPipCorner: (c: PipCorner) => void;
   /// Width (px) of the floating pop-out stream player. Height is derived 16:9.
-  /// The user can resize it between MIN and MAX (clamped in the component).
+  /// Clamped to [PIP_WIDTH_MIN, PIP_WIDTH_MAX]; remembered per install.
   pipWidth: number;
   setPipWidth: (w: number) => void;
+  /// Width (px) of the resizable left sidebar — one value shared by
+  /// ServerChannelsSidebar and ConversationSidebar (only one is mounted
+  /// at a time). Clamped to [SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX];
+  /// remembered per install.
+  sidebarWidth: number;
+  setSidebarWidth: (w: number) => void;
   membersPanelVisible: boolean;
   dmFriendsPanelVisible: boolean;
   authError: AuthErrorNotice | null;
@@ -219,10 +291,28 @@ export const useUiStore = create<UiState>((set, get) => ({
   channelSettingsChannelId: null,
   connectionStatus: "connected",
   activeView: "home",
-  pipCorner: "bottom-right",
-  setPipCorner: (c) => set({ pipCorner: c }),
-  pipWidth: 320,
-  setPipWidth: (w) => set({ pipWidth: w }),
+  pipCorner: readStoredCorner(),
+  setPipCorner: (c) => {
+    writeStoredLater(PIP_CORNER_STORAGE_KEY, c);
+    set({ pipCorner: c });
+  },
+  pipWidth: readStoredPx(PIP_WIDTH_STORAGE_KEY, PIP_WIDTH_MIN, PIP_WIDTH_MAX, PIP_WIDTH_DEFAULT),
+  setPipWidth: (w) => {
+    const pipWidth = clampPx(w, PIP_WIDTH_MIN, PIP_WIDTH_MAX, PIP_WIDTH_DEFAULT);
+    writeStoredLater(PIP_WIDTH_STORAGE_KEY, String(pipWidth));
+    set({ pipWidth });
+  },
+  sidebarWidth: readStoredPx(
+    SIDEBAR_WIDTH_STORAGE_KEY,
+    SIDEBAR_WIDTH_MIN,
+    SIDEBAR_WIDTH_MAX,
+    SIDEBAR_WIDTH_DEFAULT,
+  ),
+  setSidebarWidth: (w) => {
+    const sidebarWidth = clampPx(w, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_DEFAULT);
+    writeStoredLater(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
+    set({ sidebarWidth });
+  },
   membersPanelVisible: true,
   dmFriendsPanelVisible: true,
   authError: null,
