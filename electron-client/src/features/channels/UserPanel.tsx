@@ -143,7 +143,7 @@ export default function UserPanel() {
             Update ready
             {updateStatus.state === "downloaded" ? ` — ${updateStatus.version}` : ""}
           </span>
-          <span className="shrink-0 font-mono text-micro font-semibold uppercase tracking-[0.1em]">
+          <span className="shrink-0 font-meta text-micro font-semibold uppercase tracking-[0.1em]">
             Restart
           </span>
         </button>

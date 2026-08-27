@@ -352,7 +352,7 @@ function MessageBubble({
         style={{ paddingLeft }}
       >
         <div className="flex w-[38px] shrink-0 items-baseline justify-end">
-          <span className="font-mono text-meta font-normal leading-none tabular-nums text-text-muted opacity-0 group-hover:opacity-100">
+          <span className="font-meta text-meta font-normal leading-none tabular-nums text-text-muted opacity-0 group-hover:opacity-100">
             {parseTimestamp(message.timestamp).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
@@ -402,7 +402,7 @@ function MessageBubble({
           >
             {displayName}
           </span>
-          <span className="font-mono text-meta font-normal tabular-nums text-text-muted">
+          <span className="font-meta text-meta font-normal tabular-nums text-text-muted">
             {formatTimestamp(message.timestamp)}
           </span>
         </div>

@@ -396,7 +396,7 @@ export default function ChannelSettingsModal() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="rounded-sm bg-bg-lighter px-2 py-1 font-mono text-[12px] font-medium text-text-primary">
+                    <span className="rounded-sm bg-bg-lighter px-2 py-1 font-meta text-[12px] font-medium text-text-primary">
                       {bitrateDraft === 0
                         ? "Default (64 kbps)"
                         : `${bitrateDraft} kbps`}

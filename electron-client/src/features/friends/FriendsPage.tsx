@@ -232,7 +232,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
         <div className="truncate font-channel text-body font-medium text-text-primary">
           {username}
         </div>
-        <div className="font-mono text-micro text-text-muted">{STATUS_LABEL[status]}</div>
+        <div className="font-meta text-micro text-text-muted">{STATUS_LABEL[status]}</div>
       </div>
       <div
         className={`flex shrink-0 items-center gap-1.5 transition-opacity ${
@@ -273,7 +273,7 @@ function Segment({
       {label}
       {count !== undefined && count > 0 && (
         <span
-          className={`rounded-sm px-1.5 font-mono text-micro tabular-nums ${
+          className={`rounded-sm px-1.5 font-meta text-micro tabular-nums ${
             alert
               ? "bg-error text-white"
               : active
@@ -359,7 +359,7 @@ export default function FriendsPage() {
         <h2 className="font-display text-title font-emphasis tracking-title text-text-bright">
           Friends
         </h2>
-        <span className="font-mono text-micro tabular-nums text-text-muted">
+        <span className="font-meta text-micro tabular-nums text-text-muted">
           {counts.accepted}
         </span>
         <div className="ml-auto flex items-center gap-0.5" role="tablist" aria-label="Filter friends">
@@ -415,7 +415,7 @@ export default function FriendsPage() {
         <div className="shrink-0 animate-[dropIn_0.16s_ease_both] border-b border-border-divider bg-bg-light px-5 py-3.5">
           <label
             htmlFor="add-friend-username"
-            className="mb-1.5 block font-mono text-micro uppercase tracking-[0.1em] text-text-muted"
+            className="mb-1.5 block font-meta text-micro uppercase tracking-[0.1em] text-text-muted"
           >
             Send a friend request
           </label>
@@ -438,7 +438,7 @@ export default function FriendsPage() {
               Send request
             </button>
           </div>
-          <p className="mt-1.5 font-mono text-micro text-text-muted">
+          <p className="mt-1.5 font-meta text-micro text-text-muted">
             Usernames are case-sensitive.
           </p>
           {addError && <p className="mt-1.5 text-micro text-error">{addError}</p>}
@@ -466,7 +466,7 @@ export default function FriendsPage() {
             {/* With one status selected the segment above already says
                 what you're looking at, so the header is noise. */}
             {filter === "all" && (
-              <h3 className="mb-1 flex items-center gap-2 px-2 font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted">
+              <h3 className="mb-1 flex items-center gap-2 px-2 font-meta text-section font-medium uppercase leading-none tracking-section text-text-muted">
                 {section.label}
                 <span className="tabular-nums opacity-75">{section.items.length}</span>
               </h3>
@@ -482,7 +482,7 @@ export default function FriendsPage() {
             <strong className="font-channel text-body font-medium text-text-secondary">
               {friends.length === 0 ? "No friends yet" : "Nothing here"}
             </strong>
-            <span className="font-mono text-micro text-text-muted">
+            <span className="font-meta text-micro text-text-muted">
               {friends.length === 0
                 ? "Add someone with the button above"
                 : "No friends match this filter"}

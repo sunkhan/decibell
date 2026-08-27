@@ -122,7 +122,15 @@
   --default-transition-duration: 0ms;
 
   --font-sans: var(--t-font-ui);
-  --font-mono: var(--t-font-meta);
+  /* `font-meta` is the metadata face — timestamps, statuses, counts,
+     uppercase group labels, value readouts — and is each theme's
+     choice: Inter in graphite (2026-08-27; it was IBM Plex Mono, which
+     read as a terminal font against the Inter chrome), JetBrains Mono
+     in console. `font-mono` is real monospace in every theme — code,
+     fingerprints, invite codes, addresses, <kbd> — and never follows
+     the theme's taste. */
+  --font-meta: var(--t-font-meta);
+  --font-mono: var(--t-font-code);
   --font-channel: var(--t-font-channel);
   --font-display: var(--t-font-display);
 
@@ -276,12 +284,16 @@
   --t-scrollbar-hover: rgba(255, 255, 255, 0.14);
 
   --t-font-ui: var(--font-stack-ui);
-  --t-font-meta: var(--font-stack-plex);
+  --t-font-meta: var(--font-stack-ui);
+  --t-font-code: var(--font-stack-plex);
   --t-font-channel: var(--font-stack-ui);
   --t-font-display: var(--font-stack-ui);
 
 
-  /* Type scale — graphite (Inter chrome, IBM Plex Mono metadata). */
+  /* Type scale — graphite (Inter throughout; Plex Mono only for code).
+     The meta / micro / section sizes sit 0.5px above where they were
+     with Plex Mono: Inter's glyphs are narrower, so the same px reads
+     lighter. */
   --t-fs-title: 14px;
   --t-fs-body-n: 13.5;
   --t-lh-body: 1.4;
@@ -289,9 +301,9 @@
   --t-fs-sender: 13.5px;
   --t-fs-channel: 13.5px;
   --t-fs-member: 13px;
-  --t-fs-section: 10px;
-  --t-fs-meta: 10.5px;
-  --t-fs-micro: 10px;
+  --t-fs-section: 10.5px;
+  --t-fs-meta: 11px;
+  --t-fs-micro: 10.5px;
   --t-ls-title: -0.02em;
   --t-ls-section: 0.12em;
   --t-ls-wordmark: 0.14em;
@@ -371,12 +383,16 @@
   --t-scrollbar-hover: rgba(15, 20, 30, 0.28);
 
   --t-font-ui: var(--font-stack-ui);
-  --t-font-meta: var(--font-stack-plex);
+  --t-font-meta: var(--font-stack-ui);
+  --t-font-code: var(--font-stack-plex);
   --t-font-channel: var(--font-stack-ui);
   --t-font-display: var(--font-stack-ui);
 
 
-  /* Type scale — graphite (Inter chrome, IBM Plex Mono metadata). */
+  /* Type scale — graphite (Inter throughout; Plex Mono only for code).
+     The meta / micro / section sizes sit 0.5px above where they were
+     with Plex Mono: Inter's glyphs are narrower, so the same px reads
+     lighter. */
   --t-fs-title: 14px;
   --t-fs-body-n: 13.5;
   --t-lh-body: 1.4;
@@ -384,9 +400,9 @@
   --t-fs-sender: 13.5px;
   --t-fs-channel: 13.5px;
   --t-fs-member: 13px;
-  --t-fs-section: 10px;
-  --t-fs-meta: 10.5px;
-  --t-fs-micro: 10px;
+  --t-fs-section: 10.5px;
+  --t-fs-meta: 11px;
+  --t-fs-micro: 10.5px;
   --t-ls-title: -0.02em;
   --t-ls-section: 0.12em;
   --t-ls-wordmark: 0.14em;
@@ -469,6 +485,7 @@
      other running prose stay Inter. */
   --t-font-ui: var(--font-stack-ui);
   --t-font-meta: var(--font-stack-jetbrains);
+  --t-font-code: var(--font-stack-jetbrains);
   --t-font-channel: var(--font-stack-jetbrains);
   --t-font-display: var(--font-stack-jetbrains);
 
@@ -566,6 +583,7 @@
 
   --t-font-ui: var(--font-stack-ui);
   --t-font-meta: var(--font-stack-jetbrains);
+  --t-font-code: var(--font-stack-jetbrains);
   --t-font-channel: var(--font-stack-jetbrains);
   --t-font-display: var(--font-stack-jetbrains);
 

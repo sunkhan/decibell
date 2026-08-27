@@ -475,7 +475,7 @@ function VideoItem({
       >
         {surface}
       </div>
-      <div className="flex items-center justify-between gap-3 px-[11px] py-2 font-mono text-[10.5px]">
+      <div className="flex items-center justify-between gap-3 px-[11px] py-2 font-meta text-[10.5px]">
         <span className="min-w-0 truncate text-text-muted" title={attachment.filename}>
           {attachment.filename}
         </span>
@@ -684,7 +684,7 @@ function AudioItem({
           >
             {attachment.filename}
           </div>
-          <div className="font-mono text-[10.5px] text-text-muted">
+          <div className="font-meta text-[10.5px] text-text-muted">
             {attachment.durationMs > 0 && `${formatDuration(attachment.durationMs)} · `}
             {formatFileSize(attachment.sizeBytes)}
           </div>
@@ -742,7 +742,7 @@ function AudioItem({
           />
         </div>
 
-        <span className="shrink-0 select-none font-mono text-[10px] tabular-nums text-text-muted">
+        <span className="shrink-0 select-none font-meta text-[10px] tabular-nums text-text-muted">
           {fmt(time)} / {fmt(displayDuration)}
         </span>
 

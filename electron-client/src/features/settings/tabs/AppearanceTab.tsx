@@ -174,7 +174,7 @@ function ScaleSlider({
           {label}
         </div>
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[10.5px] tabular-nums text-text-muted">
+          <span className="font-meta text-[10.5px] tabular-nums text-text-muted">
             {readout}
           </span>
           <button
@@ -363,7 +363,7 @@ export default function AppearanceTab() {
                 <span className="truncate text-[13px] font-medium text-text-primary">
                   {option.name}
                 </span>
-                <span className="shrink-0 rounded-sm bg-surface-hover px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.1em] text-text-muted">
+                <span className="shrink-0 rounded-sm bg-surface-hover px-1.5 py-0.5 font-meta text-[9.5px] uppercase tracking-[0.1em] text-text-muted">
                   {option.mode}
                 </span>
               </div>
@@ -405,7 +405,7 @@ export default function AppearanceTab() {
               >
                 {username ?? "You"}
               </span>
-              <span className="font-mono text-meta font-normal tabular-nums text-text-muted">
+              <span className="font-meta text-meta font-normal tabular-nums text-text-muted">
                 Today at 14:32
               </span>
             </div>

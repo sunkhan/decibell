@@ -98,7 +98,7 @@ export default function MembersList() {
         style={{ "--list-row-pad-y": "7px", "--list-row-pad-x": "8px", "--list-row-gap": "10px" } as React.CSSProperties}
       >
         <div className="px-1 pt-3 pb-1">
-          <h3 className="font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted">
+          <h3 className="font-meta text-section font-medium uppercase leading-none tracking-section text-text-muted">
             Online — {online.length}
           </h3>
         </div>
@@ -107,7 +107,7 @@ export default function MembersList() {
         {(offline.length > 0 || rosterMeta?.hasMore) && (
           <>
             <div className="px-1 pt-4 pb-1">
-              <h3 className="font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted">
+              <h3 className="font-meta text-section font-medium uppercase leading-none tracking-section text-text-muted">
                 Offline — {rosterMeta ? Math.max(0, rosterMeta.totalMembers - online.length) : offline.length}
               </h3>
             </div>
@@ -144,7 +144,7 @@ export default function MembersList() {
             />
           ))}
         </div>
-        <span className="font-mono text-[10px] font-emphasis uppercase tracking-wordmark text-text-muted">
+        <span className="font-meta text-[10px] font-emphasis uppercase tracking-wordmark text-text-muted">
           Decibell
         </span>
       </div>

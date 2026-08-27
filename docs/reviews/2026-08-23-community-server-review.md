@@ -471,6 +471,22 @@ matching the home button; the server-name button in the channels header is sized
 content (name + chevron) instead of `flex-1`, with the Public/Private badge kept at the right
 edge via `ml-auto`.
 
+**`font-meta` split from `font-mono`; graphite metadata in Inter (2026-08-27) ✅** — graphite
+set its metadata face (`--t-font-meta`) to IBM Plex Mono on purpose, and every timestamp /
+status / count / uppercase group label reached it through the `font-mono` utility — so the
+"terminal font" the user noticed in graphite was the token, not stray classes. But the same
+utility also dressed real code, certificate fingerprints, invite codes and addresses, which must
+stay monospace in every theme. The token layer now separates the two: `font-meta` →
+`--t-font-meta` (each theme's metadata face: Inter in graphite / graphite-light, JetBrains Mono
+in console*), `font-mono` → new `--t-font-code` (Plex in graphite, JetBrains in console — real
+monospace everywhere). 24 metadata sites moved to `font-meta` (message timestamps, presence
+labels, friends / members section titles and counts, Public/Private and role badges, attachment
+meta rows, Appearance readouts, the emoji shortcode); code blocks, inline code, the rich
+composer, MathTex fallback, CertMismatch, DeepLink host + code, InviteModal code, the browse
+address input, type-to-confirm names, `<kbd>` and the stream stats overlay stay `font-mono`.
+Graphite's meta / micro / section sizes sit 0.5px above their Plex values (Inter's glyphs are
+narrower, so the same px reads lighter); console is untouched.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

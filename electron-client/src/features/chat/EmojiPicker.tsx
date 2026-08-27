@@ -293,7 +293,7 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef }: EmojiPick
         {hoveredEmoji ? (
           <>
             <Twemoji emoji={hoveredEmoji.native} size={28} />
-            <span className="font-mono text-[12px] font-medium text-text-secondary">
+            <span className="font-meta text-[12px] font-medium text-text-secondary">
               :{hoveredEmoji.id}:
             </span>
           </>

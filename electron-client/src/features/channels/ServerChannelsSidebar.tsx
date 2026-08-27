@@ -382,11 +382,11 @@ export default function ServerChannelsSidebar() {
           )}
         </button>
         {servers.some((s) => s.id === activeServerId) ? (
-          <span className="ml-auto rounded-sm bg-success/15 px-1.5 py-0.5 font-mono text-micro font-medium uppercase leading-none tracking-[0.1em] text-success">
+          <span className="ml-auto rounded-sm bg-success/15 px-1.5 py-0.5 font-meta text-micro font-medium uppercase leading-none tracking-[0.1em] text-success">
             Public
           </span>
         ) : (
-          <span className="ml-auto rounded-sm bg-text-muted/15 px-1.5 py-0.5 font-mono text-micro font-medium uppercase leading-none tracking-[0.1em] text-text-secondary">
+          <span className="ml-auto rounded-sm bg-text-muted/15 px-1.5 py-0.5 font-meta text-micro font-medium uppercase leading-none tracking-[0.1em] text-text-secondary">
             Private
           </span>
         )}
@@ -479,7 +479,7 @@ export default function ServerChannelsSidebar() {
                   >
                     <polyline points="6 9 12 15 18 9" />
                   </svg>
-                  <h3 className="truncate font-channel font-mono text-section font-medium uppercase leading-none tracking-section text-text-muted transition-colors group-hover:text-text-secondary">
+                  <h3 className="truncate font-meta text-section font-medium uppercase leading-none tracking-section text-text-muted transition-colors group-hover:text-text-secondary">
                     {category.name}
                   </h3>
                   {canManageChannels && (
