@@ -201,7 +201,7 @@ export default function UserPanel() {
         <div className="mb-2 rounded-sm bg-error/10 px-2 py-1 text-[11px] text-error">{error}</div>
       )}
 
-      {inSession && (
+      {inSession && !callPeer && (
         <div className="mb-2 flex items-center gap-1.5">
           <button
             onClick={isStreaming ? handleStopSharing : () => setShowPicker(true)}

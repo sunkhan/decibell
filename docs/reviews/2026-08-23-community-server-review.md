@@ -658,8 +658,9 @@ Binding, RFC 5769 vectors), `punch.rs` (sealed PINGs at every candidate, first d
 opens = live path, 300 ms LAN preference, 10 s → `no_path`). `VoiceEngine::start_p2p`;
 `call_prepare` / `call_connect` / `call_end` / `call_watch_stream`; 15 s peer-loss watchdog.
 (3) **client** — `callStore` state machine, `callActions` (ringtone loop, 45 s timeout, BUSY,
-glare → lower username's INVITE wins), `IncomingCallModal` (window flash IPC), `CallPanel` in the
-DM, "Call · <peer>" in `UserPanel`; `applyVoicePrefs` shared with the channel join; a call and a
+glare → lower username's INVITE wins), `IncomingCallModal` (window flash IPC), the call **stage**
+at the top of the DM (`CallStage`, Direction A of the 2026-08-28 canvas: tiles → focused stream
+→ theater → fullscreen, one control dock), "Call · <peer>" in `UserPanel`; `applyVoicePrefs` shared with the channel join; a call and a
 voice channel are mutually exclusive (one engine, one mic — renderer leaves/hangs up first,
 native refuses otherwise). (4) **in-call screen share** — `STREAM_START/STOP` over central stand
 in for the community's stream presence; the whole player stack (`StreamPipManager` /

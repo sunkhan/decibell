@@ -142,11 +142,19 @@ component that used to gate on `connectedChannelId` gates on "in a session").
 `features/call/`: `callActions.ts` (start / accept / decline / end, ringtone
 loop, 45 s timeout, `leaveCommunityVoiceIfAny`, stream announce/watch),
 `useCallEvents.ts` (signal state machine incl. BUSY and glare — the lower
-username's INVITE wins), `IncomingCallModal`, `CallPanel` (inside the DM:
-tiles with speaking rings, duration · RTT · LAN/direct, mute / deafen /
-share / hang up, "Watch <peer>'s screen"). In-call streams reuse the whole
-player stack; `DmChatPanel` overlays `StreamViewPanel` while one is focused
-and `MiniStreamPlayer` hides behind it / expands back into the DM.
+username's INVITE wins), `IncomingCallModal`, `CallStage` (the top of the DM — "Direction A" of the
+DM Call Stage canvas, 2026-08-28): voice → two tiles on a dark stage with a
+status pill (duration · RTT · LAN/direct) and one floating control dock
+(mute · deafen · share ┃ stream volume ┃ hang up); a focused stream takes
+the stage over (the persistent `StreamVideoPlayer` is reparented into the
+stage's slot exactly like the community full view / mini player do), tiles
+shrink to chips, LIVE + quality pills, stats / theater / fullscreen buttons;
+**theater** (`callStore.theater`) makes the stage fill the panel and folds
+the conversation into a header toggle with an unread badge; window
+fullscreen is the stage's own `fixed` root with auto-hiding overlays and
+Esc. `MiniStreamPlayer` hides while the DM shows the focused stream and
+expands back into the DM. The peer's local mute + volume sit under their
+tile and in the right-click menu.
 
 ## Security notes
 

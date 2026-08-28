@@ -36,6 +36,13 @@ interface CallState {
   endReason: string | null;
   /// The pending INVITE while `status === "incoming"`, kept until Accept.
   incoming: IncomingCall | null;
+  /// Theater: the call stage fills the DM panel and the conversation folds
+  /// into a header toggle. `theaterBaseline` is the conversation's message
+  /// count when theater was switched on — the toggle's unread badge is the
+  /// difference. Session-only, cleared with the call.
+  theater: boolean;
+  theaterBaseline: number;
+  setTheater: (on: boolean, baseline?: number) => void;
 
   /// From LoginResponse via `get_call_config`. `callSignaling` gates
   /// the Call button: an older central never relays CALL_SIGNAL.
@@ -63,6 +70,9 @@ export const useCallStore = create<CallState>((set) => ({
   incoming: null,
   callSignaling: false,
   stunServers: [],
+  theater: false,
+  theaterBaseline: 0,
+  setTheater: (on, baseline = 0) => set({ theater: on, theaterBaseline: on ? baseline : 0 }),
 
   setCallConfig: ({ callSignaling, stunServers }) => set({ callSignaling, stunServers }),
   startOutgoing: (callId, peer) =>
@@ -103,5 +113,7 @@ export const useCallStore = create<CallState>((set) => ({
       connectedPath: null,
       endReason,
       incoming: null,
+      theater: false,
+      theaterBaseline: 0,
     }),
 }));

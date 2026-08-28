@@ -21,9 +21,7 @@ import RichComposer from "../chat/RichComposer";
 import EmojiPicker from "../chat/EmojiPicker";
 import { newNonce, watchDmEcho } from "../chat/sendPacing";
 import ErrorCard from "../../components/ErrorCard";
-import CallPanel from "../call/CallPanel";
-import StreamViewPanel from "../voice/StreamViewPanel";
-import { useVoiceStore } from "../../stores/voiceStore";
+import CallStage from "../call/CallStage";
 import { startCall } from "../call/callActions";
 import { useCallStore } from "../../stores/callStore";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
@@ -71,12 +69,18 @@ export default function DmChatPanel() {
   const openModal = useUiStore((s) => s.openModal);
   const callStatus = useCallStore((s) => s.status);
   const callSignaling = useCallStore((s) => s.callSignaling);
-  // In-call screen share: the focused stream takes over the area below the
-  // header (the same way VoicePanel swaps its grid for StreamViewPanel).
-  const callPeer = useVoiceStore((s) => s.callPeer);
-  const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
-  const watchingStreams = useVoiceStore((s) => s.watchingStreams);
-  const isStreamFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
+  const callPeer = useCallStore((s) => s.peer);
+  // Theater: the call stage fills the panel and the conversation folds into
+  // a header toggle whose badge counts messages since theater went on.
+  const theater = useCallStore((s) => s.theater);
+  const theaterBaseline = useCallStore((s) => s.theaterBaseline);
+  const setTheater = useCallStore((s) => s.setTheater);
+  const inCallHere = callStatus === "active" && callPeer === activeDmUser;
+  const theaterActive = theater && inCallHere;
+  const dmMessageCount = useDmStore((s) =>
+    activeDmUser ? s.conversations[activeDmUser]?.messages.length ?? 0 : 0,
+  );
+  const theaterUnread = theaterActive ? Math.max(0, dmMessageCount - theaterBaseline) : 0;
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -780,6 +784,43 @@ export default function DmChatPanel() {
               <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
             </svg>
           </button>
+          {theaterActive && (
+            <button
+              onClick={() => setTheater(false)}
+              title="Show chat"
+              className="relative flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+              {theaterUnread > 0 && (
+                <span className="absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-error px-1 text-[10px] font-semibold text-text-bright">
+                  {theaterUnread > 99 ? "99+" : theaterUnread}
+                </span>
+              )}
+            </button>
+          )}
+          {inCallHere && (
+            <button
+              onClick={() => setTheater(!theater, dmMessageCount)}
+              title={theater ? "Exit theater" : "Theater"}
+              className={`flex h-8 w-8 items-center justify-center rounded-sm transition-colors ${
+                theater
+                  ? "bg-accent-soft text-accent"
+                  : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+              }`}
+            >
+              {theater ? (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" /><line x1="14" y1="10" x2="21" y2="3" /><line x1="3" y1="21" x2="10" y2="14" />
+                </svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
+                </svg>
+              )}
+            </button>
+          )}
           <button className="flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -801,29 +842,12 @@ export default function DmChatPanel() {
         </div>
       </div>
 
-      {/* In-call screen share focused: full stream view over the conversation */}
-      {callPeer === activeDmUser &&
-        fullscreenStream != null &&
-        watchingStreams.includes(fullscreenStream) && (
-          // Window-fullscreen: StreamViewPanel's root becomes `fixed inset-0
-          // z-50`. A positioned + z-indexed wrapper would be a stacking
-          // context that traps it under the sidebar's z-20 UserPanel, so the
-          // wrapper drops out of layout (`contents`) exactly like VoicePanel's
-          // plain slot div — the fixed root then escapes to the viewport.
-          <div
-            className={
-              isStreamFullscreen
-                ? "contents"
-                : "absolute inset-x-0 bottom-0 top-12 z-10 flex min-h-0 flex-col overflow-hidden bg-bg-mid"
-            }
-          >
-            <StreamViewPanel />
-          </div>
-        )}
+      {/* P2P call with this user: the stage (tiles, focused stream, dock).
+          In theater it fills the panel and the conversation below is hidden. */}
+      <CallStage peer={activeDmUser} />
 
-      {/* P2P call with this user (ringing / connecting / active) */}
-      <CallPanel peer={activeDmUser} />
-
+      {!theaterActive && (
+      <>
       {/* Messages */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
       {messages.length === 0 && presentLoading ? (
@@ -993,6 +1017,9 @@ export default function DmChatPanel() {
           </div>
         </div>
       </div>
+
+      </>
+      )}
 
       {/* Always mounted; `open` drives it so the close can animate. */}
       <DeleteMessageConfirmModal
