@@ -301,6 +301,7 @@ contextBridge.exposeInMainWorld("decibell", {
       ipcRenderer.invoke("decibell:window:setTitle", title),
     setFullscreen: (on: boolean) =>
       ipcRenderer.invoke("decibell:window:setFullscreen", on),
+    flash: () => ipcRenderer.invoke("decibell:window:flash") as Promise<void>,
     onResized: (cb: () => void): (() => void) => {
       resizeSubs.add(cb);
       return () => {

@@ -11,6 +11,7 @@ import { playSound } from "../../utils/sounds";
 import DeviceContextMenu from "../voice/DeviceContextMenu";
 import ConnectionStatsPopover from "../voice/ConnectionStatsPopover";
 import CaptureSourcePicker from "../voice/CaptureSourcePicker";
+import { endCall } from "../call/callActions";
 
 const EMPTY_CHANNELS: never[] = [];
 
@@ -33,6 +34,9 @@ export default function UserPanel() {
   );
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
+  // P2P DM call: same engine, no channel. Gates below use `inSession`.
+  const callPeer = useVoiceStore((s) => s.callPeer);
+  const inSession = connectedChannelId != null || callPeer != null;
   const isMuted = useVoiceStore((s) => s.isMuted);
   const isDeafened = useVoiceStore((s) => s.isDeafened);
   const isStreaming = useVoiceStore((s) => s.isStreaming);
@@ -69,9 +73,11 @@ export default function UserPanel() {
 
   if (!username) return null;
 
-  const channelName = connectedChannelId
-    ? channels.find((ch) => ch.id === connectedChannelId)?.name ?? "Voice"
-    : null;
+  const channelName = callPeer
+    ? `Call · ${callPeer}`
+    : connectedChannelId
+      ? channels.find((ch) => ch.id === connectedChannelId)?.name ?? "Voice"
+      : null;
 
   const handleMute = () => {
     if (isDeafened) {
@@ -100,14 +106,18 @@ export default function UserPanel() {
       );
       await stopActiveStream();
       await invoke("stop_screen_share", {
-        serverId: connectedServerId,
-        channelId: connectedChannelId,
+        serverId: connectedServerId ?? undefined,
+        channelId: connectedChannelId ?? undefined,
       }).catch(console.error);
       useVoiceStore.getState().setIsStreaming(false);
     }
     invoke("leave_voice_channel").catch(console.error);
     disconnect();
     setActiveView("server");
+  };
+
+  const handleHangUp = () => {
+    void endCall("Call ended");
   };
 
   const handleStopSharing = async () => {
@@ -119,8 +129,8 @@ export default function UserPanel() {
     );
     await stopActiveStream();
     invoke("stop_screen_share", {
-      serverId: connectedServerId,
-      channelId: connectedChannelId,
+      serverId: connectedServerId ?? undefined,
+      channelId: connectedChannelId ?? undefined,
     }).catch(console.error);
     useVoiceStore.getState().setIsStreaming(false);
   };
@@ -148,12 +158,18 @@ export default function UserPanel() {
           </span>
         </button>
       )}
-      {connectedChannelId && (
+      {inSession && (
         <div className="mb-2 flex items-center gap-1.5 px-0.5">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-text-muted">
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-          </svg>
+          {callPeer ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
+              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-text-muted">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            </svg>
+          )}
           <span className="font-display text-member font-emphasis text-text-primary">{channelName}</span>
           {activeStreams.length > 0 && (
             <span className="rounded-sm bg-accent/[0.12] px-1.5 py-0.5 text-[10px] font-semibold text-accent">
@@ -180,7 +196,7 @@ export default function UserPanel() {
           </div>
         </div>
       )}
-      {error && connectedChannelId && (
+      {error && inSession && (
         <div className="mb-2 rounded-sm bg-error/10 px-2 py-1 text-[11px] text-error">{error}</div>
       )}
 
@@ -230,8 +246,12 @@ export default function UserPanel() {
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
-          {connectedChannelId && (
-            <PanelButton title="Disconnect" onClick={handleDisconnect} variant="danger">
+          {inSession && (
+            <PanelButton
+              title={callPeer ? "Hang up" : "Disconnect"}
+              onClick={callPeer ? handleHangUp : handleDisconnect}
+              variant="danger"
+            >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <path d="M16 17l5-5-5-5" />
                 <path d="M21 12H9" />

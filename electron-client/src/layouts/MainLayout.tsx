@@ -26,6 +26,7 @@ import DmChatPanel from "../features/dm/DmChatPanel";
 import UserProfilePopup from "../features/dm/UserProfilePopup";
 import { useDmEvents } from "../features/dm/useDmEvents";
 import { useCallEvents } from "../features/call/useCallEvents";
+import IncomingCallModal from "../features/call/IncomingCallModal";
 import { useDragDrop } from "../features/chat/useDragDrop";
 import { usePasteToAttach } from "../features/chat/usePasteToAttach";
 import { useCentralConnectionStatus } from "../hooks/useCentralConnectionStatus";
@@ -163,6 +164,7 @@ export default function MainLayout() {
       <ChannelSettingsModal />
       <InviteModal />
       <DeepLinkJoinModal />
+      <IncomingCallModal />
       <PersistentAudioLayer />
       <PersistentVideoLayer />
     </div>

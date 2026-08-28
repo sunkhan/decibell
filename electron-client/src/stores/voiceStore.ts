@@ -22,6 +22,13 @@ export interface StreamLocation {
 interface VoiceState {
   connectedServerId: string | null;
   connectedChannelId: string | null;
+  /// P2P DM call in progress with this user. The media session (mute /
+  /// deafen / speaking / ping / streams / player) then runs with
+  /// `connectedServerId === null && connectedChannelId === null` — the
+  /// same native VoiceEngine, just reached peer-to-peer. Components that
+  /// gate on "am I in a media session" use `mediaSessionActive` below.
+  callPeer: string | null;
+  setCallPeer: (peer: string | null) => void;
   participants: VoiceParticipant[];
   activeStreams: StreamInfo[];
   /// Source-of-truth map of streaming users across every connected
@@ -100,6 +107,8 @@ interface VoiceState {
 export const useVoiceStore = create<VoiceState>((set, get) => ({
   connectedServerId: null,
   connectedChannelId: null,
+  callPeer: null,
+  setCallPeer: (peer) => set({ callPeer: peer }),
   participants: [],
   activeStreams: [],
   streamsByUser: new Map(),
@@ -260,6 +269,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     set({
       connectedServerId: null,
       connectedChannelId: null,
+      callPeer: null,
       participants: [],
       speakingUsers: new Set(),
       latencyMs: null,

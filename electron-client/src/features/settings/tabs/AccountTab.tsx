@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { invoke } from "../../../lib/ipc";
+import { endCall } from "../../../features/call/callActions";
 import { useAuthStore } from "../../../stores/authStore";
 import { useAvatarStore } from "../../../stores/avatarStore";
 import { UserAvatar } from "../../../components/UserAvatar";
@@ -13,6 +14,8 @@ export default function AccountTab() {
 
   const handleLogout = async () => {
     try {
+      // Hang up (and tell the peer) before the central session goes away.
+      await endCall(null);
       await invoke("logout");
     } catch (err) {
       console.error("Logout failed:", err);

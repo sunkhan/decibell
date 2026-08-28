@@ -19,6 +19,9 @@ interface DecibellWindow {
   isMaximized: () => Promise<boolean>;
   setTitle: (title: string) => Promise<void>;
   setFullscreen: (on: boolean) => Promise<void>;
+  /// Ask for the user's attention without stealing focus (taskbar flash /
+  /// dock bounce). Used for incoming DM calls.
+  flash: () => Promise<void>;
   /// Fires on any resize (including maximize/unmaximize/fullscreen
   /// transitions). Returns an unsubscribe function. Tauri-API parity
   /// returns `Promise<UnlistenFn>`; the shim is sync-resolves to keep
@@ -38,6 +41,7 @@ export function getCurrentWindow(): DecibellWindow {
     isMaximized: () => w.isMaximized(),
     setTitle: (title) => w.setTitle(title),
     setFullscreen: (on) => w.setFullscreen(on),
+    flash: () => w.flash(),
     onResized: async (cb) => w.onResized(cb),
   };
 }

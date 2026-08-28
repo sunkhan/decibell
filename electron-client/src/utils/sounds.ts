@@ -27,6 +27,8 @@ import streamStartUrl from "../assets/sounds/stream_start.wav?url";
 import streamStopUrl from "../assets/sounds/stream_stop.wav?url";
 import connectUrl from "../assets/sounds/connect.wav?url";
 import disconnectUrl from "../assets/sounds/disconnect.wav?url";
+import callRingUrl from "../assets/sounds/call_ring.wav?url";
+import callEndUrl from "../assets/sounds/call_end.wav?url";
 
 type SoundName =
   | "mute"
@@ -38,7 +40,9 @@ type SoundName =
   | "stream_start"
   | "stream_stop"
   | "connect"
-  | "disconnect";
+  | "disconnect"
+  | "call_ring"
+  | "call_end";
 
 const SOURCES: Record<SoundName, string> = {
   mute: muteUrl,
@@ -51,6 +55,8 @@ const SOURCES: Record<SoundName, string> = {
   stream_stop: streamStopUrl,
   connect: connectUrl,
   disconnect: disconnectUrl,
+  call_ring: callRingUrl,
+  call_end: callEndUrl,
 };
 
 let ctx: AudioContext | null = null;
@@ -111,4 +117,40 @@ export function playSound(name: SoundName): void {
     // graph connection when playback finishes, and the GC reclaims
     // the node once the local reference goes out of scope.
   })();
+}
+
+/// Loop a sound until the returned `stop()` is called — the ringtone /
+/// ringback for DM calls. Same lazy context + buffer cache as `playSound`;
+/// the only difference is `loop = true` and a handle to stop it. Calling
+/// `stop()` before the buffer finished loading cancels the start.
+export function loopSound(name: SoundName): () => void {
+  let stopped = false;
+  let src: AudioBufferSourceNode | null = null;
+  void (async () => {
+    const buf = await loadBuffer(name);
+    if (!buf || stopped) return;
+    const c = getCtx();
+    if (c.state === "suspended") {
+      try {
+        await c.resume();
+      } catch {
+        return;
+      }
+    }
+    if (stopped) return;
+    src = c.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    src.connect(c.destination);
+    src.start();
+  })();
+  return () => {
+    stopped = true;
+    try {
+      src?.stop();
+    } catch {
+      /* already stopped */
+    }
+    src = null;
+  };
 }

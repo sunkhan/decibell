@@ -1,4 +1,4 @@
-import { ipcMain, shell, BrowserWindow, type IpcMainInvokeEvent } from "electron";
+import { app, ipcMain, shell, BrowserWindow, type IpcMainInvokeEvent } from "electron";
 
 // Window controls — Tauri's `getCurrentWindow()` API mapped onto
 // Electron's BrowserWindow. The renderer's `src/lib/window.ts` calls
@@ -37,6 +37,15 @@ export function registerWindowHandlers(): void {
   });
   ipcMain.handle("decibell:window:setFullscreen", (e, on: boolean) => {
     senderWindow(e)?.setFullScreen(on);
+  });
+  // Incoming DM call: get the user's attention without stealing focus —
+  // taskbar flash (Windows / Linux) or a dock bounce (macOS). A no-op
+  // when the window is already focused.
+  ipcMain.handle("decibell:window:flash", (e) => {
+    const w = senderWindow(e);
+    if (!w || w.isFocused()) return;
+    w.flashFrame(true);
+    if (process.platform === "darwin") app.dock?.bounce("informational");
   });
 }
 

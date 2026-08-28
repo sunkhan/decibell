@@ -21,6 +21,9 @@ import RichComposer from "../chat/RichComposer";
 import EmojiPicker from "../chat/EmojiPicker";
 import { newNonce, watchDmEcho } from "../chat/sendPacing";
 import ErrorCard from "../../components/ErrorCard";
+import CallPanel from "../call/CallPanel";
+import { startCall } from "../call/callActions";
+import { useCallStore } from "../../stores/callStore";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
 import type { DmMessage, GifResult, Message } from "../../types";
@@ -64,6 +67,8 @@ export default function DmChatPanel() {
   const toggleDmFriendsPanel = useUiStore((s) => s.toggleDmFriendsPanel);
   const activeModal = useUiStore((s) => s.activeModal);
   const openModal = useUiStore((s) => s.openModal);
+  const callStatus = useCallStore((s) => s.status);
+  const callSignaling = useCallStore((s) => s.callSignaling);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -749,6 +754,24 @@ export default function DmChatPanel() {
         )}
         <div className="flex-1" />
         <div className="flex gap-1">
+          <button
+            onClick={() => void startCall(activeDmUser)}
+            disabled={!isOnline || !callSignaling || callStatus !== "idle"}
+            title={
+              !callSignaling
+                ? "Calls aren't available on this server yet"
+                : !isOnline
+                  ? `${activeDmUser} is offline`
+                  : callStatus !== "idle"
+                    ? "Already in a call"
+                    : "Start a voice call"
+            }
+            className="flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+            </svg>
+          </button>
           <button className="flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -769,6 +792,9 @@ export default function DmChatPanel() {
           </button>
         </div>
       </div>
+
+      {/* P2P call with this user (ringing / connecting / active) */}
+      <CallPanel peer={activeDmUser} />
 
       {/* Messages */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">

@@ -136,6 +136,15 @@ pub async fn logout() -> napi::Result<()> {
         let mut s = state_arc.lock().await;
         let central = s.central.take();
         let communities: Vec<_> = s.communities.drain().map(|(_, c)| c).collect();
+        // A DM call (punching or connected) dies with the session: stop
+        // its punch / watchdog and drop any prepared sockets.
+        s.pending_call = None;
+        if let Some(ac) = s.active_call.take() {
+            ac.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(h) = ac.watchdog {
+                h.abort();
+            }
+        }
         let voice = s.voice_engine.take();
         let video = s.video_engine.take();
         let audio = s.audio_stream_engine.take();

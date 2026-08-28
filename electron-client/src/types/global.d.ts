@@ -91,6 +91,7 @@ declare global {
         isMaximized: () => Promise<boolean>;
         setTitle: (title: string) => Promise<void>;
         setFullscreen: (on: boolean) => Promise<void>;
+        flash: () => Promise<void>;
         onResized: (cb: () => void) => () => void;
       };
       streamFrames: {

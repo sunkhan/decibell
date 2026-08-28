@@ -26,11 +26,17 @@ import { useUiStore } from "../../../stores/uiStore";
 import { useVoiceStore } from "../../../stores/voiceStore";
 import { playSound } from "../../../utils/sounds";
 import { flushSaveSettings } from "../../settings/saveSettings";
+import { applyVoicePrefs } from "./applyVoicePrefs";
+import { endCall } from "../../call/callActions";
 
 export async function joinVoiceChannel(
   serverId: string,
   channelId: string,
 ): Promise<void> {
+  // A DM call and a voice channel are mutually exclusive (one native
+  // VoiceEngine, one mic). Hang up first; native refuses the join otherwise.
+  await endCall("Joined a voice channel");
+
   // Capture the stream state BEFORE the optimistic channel update below.
   const voice = useVoiceStore.getState();
   const prevServerId = voice.connectedServerId;
@@ -129,49 +135,9 @@ export async function joinVoiceChannel(
     throw err;
   }
 
-  // Apply the preferences the engine does NOT set up at start. It already
-  // honoured the saved input/output device (native reads the same config we
-  // just flushed), so we deliberately do NOT re-send those: re-sending
-  // hot-swapped the CPAL streams for nothing (an audible pop), and passing
-  // `null` for a "Default" device tripped napi's `Option<String>`, which
-  // accepts `undefined`/absent but rejects `null`. We only push the VAD
-  // threshold, the DSP toggles, and — because enabling it rebuilds the voice
-  // output on the default device — the separate-stream routing.
-  const {
-    outputDevice,
-    separateStreamOutput,
-    streamOutputDevice,
-    voiceThresholdDb,
-    aecEnabled,
-    noiseSuppressionLevel,
-    agcEnabled,
-  } = useUiStore.getState();
-
-  invoke("set_voice_threshold", {
-    thresholdDb: voiceThresholdDb <= -60 ? -96 : voiceThresholdDb,
-  }).catch(console.error);
-
-  if (separateStreamOutput) {
-    // Order matters: enabling separate-stream output rebuilds the voice output
-    // on the *default* device, so the chosen voice output device must be
-    // (re)applied AFTER the split is configured (audio backlog #2). Await the
-    // split so its control message is enqueued before the device sets. Use
-    // `?? undefined` (never null) for the Option<String> device args.
-    await invoke("set_separate_stream_output", {
-      enabled: true,
-      device: streamOutputDevice ?? undefined,
-    }).catch(console.error);
-    invoke("set_output_device", { name: outputDevice ?? undefined }).catch(console.error);
-    invoke("set_stream_output_device", { name: streamOutputDevice ?? undefined }).catch(
-      console.error,
-    );
-  }
-
-  invoke("set_aec_enabled", { enabled: aecEnabled }).catch(console.error);
-  invoke("set_noise_suppression_level", {
-    level: noiseSuppressionLevel,
-  }).catch(console.error);
-  invoke("set_agc_enabled", { enabled: agcEnabled }).catch(console.error);
+  // Apply the preferences the engine does NOT set up at start (VAD threshold,
+  // DSP toggles, separate-stream routing) — shared with the DM-call flow.
+  await applyVoicePrefs();
 
   // Carry the stream into the new channel now that the new voice engine (and
   // its media socket) exists. On any failure, end the stream cleanly rather
