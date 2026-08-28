@@ -8,6 +8,15 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { playSound } from "../../utils/sounds";
 import { announceCallStreamStop, endCall, watchCallStream } from "./callActions";
+import { saveSettings } from "../settings/saveSettings";
+import {
+  DEFAULT_DB,
+  MAX_DB,
+  MIN_DB,
+  dbToPercent,
+  formatDb,
+  pushUserGain,
+} from "../voice/userGain";
 
 /// In-DM call surface: shown between the DM header and the messages while
 /// a call with `peer` is ringing / connecting / active. Voice controls
@@ -100,9 +109,12 @@ function ActiveCallPanel({ peer }: { peer: string }) {
 
   return (
     <div className="shrink-0 border-b border-border bg-bg-tertiary px-4 py-4">
-      <div className="flex items-center justify-center gap-8">
+      <div className="flex items-start justify-center gap-8">
         <CallTile username={me} muted={isMuted} dim={!live} />
-        <CallTile username={peer} muted={false} dim={!live} pulse={status !== "active"} />
+        <div className="flex flex-col items-center">
+          <CallTile username={peer} muted={false} dim={!live} pulse={status !== "active"} />
+          {live && <PeerAudioControls username={peer} />}
+        </div>
       </div>
       <div className="mt-3 text-center font-meta text-[12px] text-text-muted">{statusLine}</div>
       {error && live && (
@@ -192,6 +204,7 @@ const CallTile = memo(function CallTile({ username, muted, dim, pulse }: CallTil
     (s) => s.participants.find((p) => p.username === username)?.isMuted ?? false,
   );
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
+  const openContextMenu = useUiStore((s) => s.openContextMenu);
   const showMuted = muted || peerMuted;
   return (
     <div
@@ -201,6 +214,11 @@ const CallTile = memo(function CallTile({ username, muted, dim, pulse }: CallTil
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(username, { x: rect.right + 8, y: rect.top }, null);
+      }}
+      onContextMenu={(e) => {
+        // Same menu as a voice-channel tile: local mute + user volume.
+        e.preventDefault();
+        openContextMenu(username, { x: e.clientX, y: e.clientY }, null);
       }}
     >
       <div className="relative">
@@ -232,6 +250,72 @@ const CallTile = memo(function CallTile({ username, muted, dim, pulse }: CallTil
     </div>
   );
 });
+
+/// Local mute + volume for the peer, inline under their tile (the same
+/// controls the right-click menu offers, made discoverable). Persists like
+/// the menu does and pushes the effective gain to the live engine.
+function PeerAudioControls({ username }: { username: string }) {
+  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
+  const currentDb = useVoiceStore((s) => s.userVolumes[username] ?? DEFAULT_DB);
+  const setUserVolume = useVoiceStore((s) => s.setUserVolume);
+  const toggleLocalMute = useVoiceStore((s) => s.toggleLocalMute);
+
+  const sliderValue = ((currentDb - MIN_DB) / (MAX_DB - MIN_DB)) * 100;
+  const handleSlider = (val: number) => {
+    const raw = MIN_DB + (val / 100) * (MAX_DB - MIN_DB);
+    const db = Math.abs(raw) < 0.8 ? 0 : Math.round(raw * 10) / 10;
+    setUserVolume(username, Math.max(MIN_DB, Math.min(MAX_DB, db)));
+    pushUserGain(username);
+    saveSettings();
+  };
+  const handleToggleMute = () => {
+    toggleLocalMute(username);
+    pushUserGain(username);
+    saveSettings();
+  };
+
+  return (
+    <div className="mt-1 flex w-[11rem] items-center gap-2">
+      <button
+        onClick={handleToggleMute}
+        title={isLocallyMuted ? `Unmute ${username} for you` : `Mute ${username} for you`}
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
+          isLocallyMuted
+            ? "bg-error/15 text-error hover:bg-error/25"
+            : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+        }`}
+      >
+        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M11 5L6 9H2v6h4l5 4V5z" />
+          {isLocallyMuted ? (
+            <>
+              <line x1="23" y1="9" x2="17" y2="15" />
+              <line x1="17" y1="9" x2="23" y2="15" />
+            </>
+          ) : (
+            <>
+              <path d="M19.07 4.93a10 10 0 010 14.14" />
+              <path d="M15.54 8.46a5 5 0 010 7.07" />
+            </>
+          )}
+        </svg>
+      </button>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={sliderValue}
+        disabled={isLocallyMuted}
+        onChange={(e) => handleSlider(Number(e.target.value))}
+        title={`${formatDb(currentDb)} · ${dbToPercent(currentDb)}`}
+        className="h-[4px] min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent disabled:cursor-not-allowed disabled:opacity-40 [&::-webkit-slider-thumb]:h-[12px] [&::-webkit-slider-thumb]:w-[12px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-light"
+      />
+      <span className="w-10 shrink-0 text-right font-meta text-[10px] tabular-nums text-text-muted">
+        {isLocallyMuted ? "Muted" : dbToPercent(currentDb)}
+      </span>
+    </div>
+  );
+}
 
 function CallButton({
   title,

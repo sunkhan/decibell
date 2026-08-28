@@ -25,6 +25,7 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { toast } from "../../stores/toastStore";
 import { loopSound, playSound } from "../../utils/sounds";
 import { flushSaveSettings } from "../settings/saveSettings";
+import { applySavedUserGains } from "../voice/userGain";
 import type { CallCandidate, CallSignalKind, CallStreamMeta, StreamInfo, VideoCodec } from "../../types";
 
 /// How long an unanswered call rings before the caller gives up / the
@@ -240,6 +241,10 @@ export async function onCallConnected(callId: string, path: "host" | "srflx"): P
   );
   playSound("connect");
   await applyPrefs();
+  // Saved per-user volume / local mute for this peer (set from an earlier
+  // call or a shared voice channel) — the community path replays these on
+  // every presence update; a call has no presence, so do it here.
+  applySavedUserGains([call.peer]);
 }
 
 async function applyPrefs(): Promise<void> {

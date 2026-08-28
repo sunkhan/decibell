@@ -11,27 +11,15 @@ import { saveSettings } from "../settings/saveSettings";
 import { useChatStore } from "../../stores/chatStore";
 import { toast } from "../../stores/toastStore";
 import { PERM, usePermission, useHierarchy } from "../servers/permissions";
-
-const MIN_DB = -40;
-const MAX_DB = 15;
-const DEFAULT_DB = 0;
-
-function dbToGain(db: number): number {
-  if (db <= MIN_DB) return 0;
-  return Math.pow(10, db / 20);
-}
-
-function formatDb(db: number): string {
-  if (db <= MIN_DB) return "Muted";
-  if (db === 0) return "0 dB";
-  return `${db > 0 ? "+" : ""}${db.toFixed(1)} dB`;
-}
-
-function dbToPercent(db: number): string {
-  if (db <= MIN_DB) return "0%";
-  const pct = Math.round(dbToGain(db) * 100);
-  return `${pct}%`;
-}
+import {
+  DEFAULT_DB,
+  MAX_DB,
+  MIN_DB,
+  dbToGain,
+  dbToPercent,
+  formatDb,
+  mediaSessionActive,
+} from "./userGain";
 
 export default function UserContextMenu() {
   const username = useUiStore((s) => s.contextMenuUser);
@@ -90,17 +78,15 @@ export default function UserContextMenu() {
   const currentDb = username ? userVolumes[username] ?? DEFAULT_DB : DEFAULT_DB;
 
   // The native set_user_volume command errors out with
-  // "Not in a voice channel" when we're not currently connected,
-  // because the gain map only exists while a voice engine is up.
-  // We still want changes made offline to persist, though — the
-  // useVoiceEvents participant-list hydration replays every entry in
-  // userVolumes/localMutedUsers on the next voice join, so deferring
-  // the IPC call is safe. The store + saveSettings always run.
+  // "Not in a voice channel" when no engine is up (the gain map only
+  // exists while one runs). We still want changes made offline to
+  // persist, though — the voice-roster hydration and the DM-call connect
+  // path replay every entry in userVolumes/localMutedUsers, so deferring
+  // the IPC call is safe. The store + saveSettings always run. A P2P DM
+  // call counts as connected (same engine, no channel).
   const sendGainToNative = useCallback(
     (targetUsername: string, gain: number) => {
-      const connected =
-        useVoiceStore.getState().connectedChannelId !== null;
-      if (!connected) return;
+      if (!mediaSessionActive()) return;
       invoke("set_user_volume", { username: targetUsername, gain }).catch(
         console.error,
       );

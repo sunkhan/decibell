@@ -92,13 +92,27 @@ function cornerTopLeft(corner: Corner, w: number, h: number): { x: number; y: nu
 /// is seamless. Position is driven imperatively (refs) so drag + the release
 /// spring stay smooth without re-rendering every frame; React only owns the
 /// resting corner (uiStore.pipCorner).
+/// Click / expand: focus the stream and go where its full view lives — the
+/// peer's DM during a P2P call (the DM panel hosts StreamViewPanel then),
+/// otherwise the voice view. Reads the stores directly so the drag
+/// handlers' closures never go stale.
+function expandToStream() {
+  const v = useVoiceStore.getState();
+  if (v.pipStream) v.setFullscreenStream(v.pipStream);
+  if (v.callPeer) {
+    useDmStore.getState().setActiveDmUser(v.callPeer);
+    useUiStore.getState().setActiveView("dm");
+  } else {
+    useUiStore.getState().setActiveView("voice");
+  }
+}
+
 export default function MiniStreamPlayer() {
   const activeView = useUiStore((s) => s.activeView);
   const pipCorner = useUiStore((s) => s.pipCorner);
   const setPipCorner = useUiStore((s) => s.setPipCorner);
   const pipWidth = useUiStore((s) => s.pipWidth);
   const setPipWidth = useUiStore((s) => s.setPipWidth);
-  const setActiveView = useUiStore((s) => s.setActiveView);
   const pipHeight = heightFor(pipWidth);
 
   const ownUsername = useAuthStore((s) => s.username);
@@ -264,9 +278,7 @@ export default function MiniStreamPlayer() {
         draggingRef.current = false;
         if (!didMove) {
           // Click → expand (focus so we land on the video, not the grid).
-          const s = useVoiceStore.getState();
-          if (s.pipStream) s.setFullscreenStream(s.pipStream);
-          setActiveView("voice");
+          expandToStream();
           return;
         }
         // Snap to the nearest corner, springing from the release point with the
@@ -327,7 +339,7 @@ export default function MiniStreamPlayer() {
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [pipWidth, pipHeight, setActiveView, setPipCorner, stopSpring],
+    [pipWidth, pipHeight, setPipCorner, stopSpring],
   );
 
   // Resize by dragging the interior-corner grip. The docked corner stays pinned
@@ -388,13 +400,7 @@ export default function MiniStreamPlayer() {
 
   const handleExpand = (e: React.MouseEvent) => {
     e.stopPropagation();
-    useVoiceStore.getState().setFullscreenStream(pipStream);
-    if (callPeer) {
-      useDmStore.getState().setActiveDmUser(callPeer);
-      setActiveView("dm");
-    } else {
-      setActiveView("voice");
-    }
+    expandToStream();
   };
 
   const handleClose = async (e: React.MouseEvent) => {

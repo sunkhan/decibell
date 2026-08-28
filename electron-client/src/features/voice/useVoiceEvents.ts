@@ -16,12 +16,7 @@ import { activeStreamCapture, stopActiveStream } from "./streaming/StreamCapture
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { toast } from "../../stores/toastStore";
 import { announceCallStreamStop } from "../call/callActions";
-
-/// dB → linear gain. -40 dB floor maps to 0 (effectively muted).
-function dbToGain(db: number): number {
-  if (db <= -40) return 0;
-  return Math.pow(10, db / 20);
-}
+import { applySavedUserGains } from "./userGain";
 
 /// Voice-channel event subscriber. Listens for:
 ///   • voice_presence_updated — channel roster + per-user mute/deafen
@@ -95,16 +90,7 @@ export function useVoiceEvents() {
           // Re-apply saved per-user volume / local-mute on every roster
           // change so peers picked up after the user's muted them stay
           // muted, and so volume tweaks survive churn.
-          const { userVolumes, localMutedUsers } = store;
-          for (const user of participants) {
-            const hasCustomVolume = user in userVolumes;
-            const isMuted = localMutedUsers.has(user);
-            if (hasCustomVolume || isMuted) {
-              const db = userVolumes[user] ?? 0;
-              const gain = isMuted ? 0 : dbToGain(db);
-              invoke("set_user_volume", { username: user, gain }).catch(console.error);
-            }
-          }
+          applySavedUserGains(participants);
         }
       }),
     );
