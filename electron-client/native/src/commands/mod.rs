@@ -6,6 +6,7 @@
 //! change.
 
 pub mod auth;
+pub mod call;
 pub mod channels;
 pub mod community;
 pub mod dm;

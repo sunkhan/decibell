@@ -44,6 +44,37 @@ export interface FetchAvatarArgs {
  * exist — same response shape).
  */
 export declare function fetchAvatar(args: FetchAvatarArgs): Promise<FetchAvatarResult>
+export interface CallConfig {
+  callSignaling: boolean
+  stunServers: Array<string>
+}
+export declare function getCallConfig(): Promise<CallConfig>
+export interface CallCandidateArg {
+  /** "VOICE" | "MEDIA" */
+  socket: string
+  /** "HOST" | "SRFLX" */
+  kind: string
+  ip: string
+  port: number
+}
+export interface CallStreamMetaArg {
+  codec: number
+  width: number
+  height: number
+  fps: number
+  hasAudio: boolean
+}
+export interface SendCallSignalArgs {
+  callId: string
+  to: string
+  /** proto CallSignal.Kind name: "INVITE", "ACCEPT", "HANGUP", … */
+  kind: string
+  /** base64 X25519 public key — INVITE / ACCEPT only. */
+  pubKey?: string
+  candidates?: Array<CallCandidateArg>
+  stream?: CallStreamMetaArg
+}
+export declare function sendCallSignal(args: SendCallSignalArgs): Promise<void>
 export interface RequestChannelHistoryArgs {
   serverId: string
   channelId: string

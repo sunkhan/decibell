@@ -88,6 +88,12 @@ pub struct AppState {
     /// STREAM_WATCHER_NOTIFY arrives so the LCD picker can plug in
     /// the joining watcher's decode caps without an AppState round-trip.
     pub voice_caps_cache: Arc<RwLock<HashMap<String, PeerCaps>>>,
+    /// P2P DM calls — from LoginResponse. `stun_servers` empty means
+    /// "use the built-in default list"; `call_signaling` is false on an
+    /// older central that never relays CALL_SIGNAL (the renderer gates
+    /// the Call button on it).
+    pub stun_servers: Vec<String>,
+    pub call_signaling: bool,
     /// Plan C: tokio broadcast channel for STREAM_WATCHER_NOTIFY events
     /// inbound from the community server. Pipeline subscribes once at
     /// startup, drops the AppState lock, and processes events without
@@ -134,6 +140,8 @@ impl Default for AppState {
             decoder_caps: Vec::new(),
             encoder_caps: Vec::new(),
             voice_caps_cache: Arc::new(RwLock::new(HashMap::new())),
+            stun_servers: Vec::new(),
+            call_signaling: false,
             watcher_event_tx,
             pending_avatar_update: None,
             pending_avatar_fetches: HashMap::new(),

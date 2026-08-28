@@ -25,6 +25,7 @@ import CrashReportingBanner from "../components/CrashReportingBanner";
 import DmChatPanel from "../features/dm/DmChatPanel";
 import UserProfilePopup from "../features/dm/UserProfilePopup";
 import { useDmEvents } from "../features/dm/useDmEvents";
+import { useCallEvents } from "../features/call/useCallEvents";
 import { useDragDrop } from "../features/chat/useDragDrop";
 import { usePasteToAttach } from "../features/chat/usePasteToAttach";
 import { useCentralConnectionStatus } from "../hooks/useCentralConnectionStatus";
@@ -68,6 +69,8 @@ export default function MainLayout() {
   // hook reads — useDmEvents filters to context === "dm" and routes
   // into useDmStore.
   useDmEvents();
+  // P2P DM calls: central call-config + CALL_SIGNAL relay listener.
+  useCallEvents();
   // Cross-cutting concerns: the central-server reconnecting banner
   // and the OS window title.
   useCentralConnectionStatus();

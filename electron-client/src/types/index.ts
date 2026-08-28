@@ -677,3 +677,74 @@ export type GifSearchResult =
   | { ok: true; page: GifPage }
   /// `error` is "not-configured" when the build has no GIF API key.
   | { ok: false; error: string };
+
+// ── P2P DM calls ─────────────────────────────────────────────────────
+// Mirrors proto `CallSignal` / `CallCandidate` / `CallStreamMeta` as the
+// native event bus delivers them (`call_signal`) and as `send_call_signal`
+// accepts them. `kind` values are the proto enum names.
+
+export type CallSignalKind =
+  | "INVITE"
+  | "RINGING"
+  | "ACCEPT"
+  | "REJECT"
+  | "BUSY"
+  | "CANCEL"
+  | "HANGUP"
+  | "PEER_OFFLINE"
+  | "NOT_ALLOWED"
+  | "STREAM_START"
+  | "STREAM_STOP";
+
+export interface CallCandidate {
+  socket: "VOICE" | "MEDIA";
+  kind: "HOST" | "SRFLX";
+  ip: string;
+  port: number;
+}
+
+export interface CallStreamMeta {
+  codec: number;
+  width: number;
+  height: number;
+  fps: number;
+  hasAudio: boolean;
+}
+
+export interface CallSignalPayload {
+  kind: CallSignalKind;
+  callId: string;
+  /// Always the peer (central stamps it; PEER_OFFLINE / NOT_ALLOWED are
+  /// written from our point of view too).
+  from: string;
+  to: string;
+  /// base64 X25519 public key — INVITE / ACCEPT only.
+  pubKey: string | null;
+  candidates: CallCandidate[];
+  stream: CallStreamMeta | null;
+  timestamp: number;
+}
+
+export interface CallConfig {
+  /// True when the central we're logged into relays CALL_SIGNAL.
+  callSignaling: boolean;
+  /// Operator STUN list from LoginResponse; empty → native default.
+  stunServers: string[];
+}
+
+export interface CallConnectedPayload {
+  callId: string;
+  rttMs: number;
+  path: "host" | "srflx";
+}
+
+export interface CallFailedPayload {
+  callId: string;
+  reason: "no_path" | "stun" | "bind" | "aborted";
+  detail: string;
+}
+
+export interface CallDroppedPayload {
+  callId: string;
+  reason: string;
+}

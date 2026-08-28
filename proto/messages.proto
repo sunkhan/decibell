@@ -223,6 +223,11 @@ message Packet {
     // nonce so the sender withdraws exactly that optimistic bubble.
     // MOD_ACTION_RES(action="message") still follows it for older clients.
     CHANNEL_MSG_REJECTED = 127;     // community→sender
+    // P2P DM calls: ephemeral handshake relay (invite / accept / candidates /
+    // hang-up / stream presence). Central stamps `from`, never persists,
+    // and answers PEER_OFFLINE / NOT_ALLOWED itself. See
+    // docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md.
+    CALL_SIGNAL = 128;              // client→central→client
   }
 
   Type type = 1;
@@ -393,6 +398,7 @@ message Packet {
     MessageEditRes           message_edit_res       = 127;
     ChannelMessageEdited     channel_message_edited = 128;
     ChannelMessageRejected   channel_msg_rejected   = 129;
+    CallSignal               call_signal            = 130;
   }
 }
 
@@ -426,6 +432,13 @@ message LoginResponse {
   // docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md.
   // Absent / empty on legacy servers; client treats as empty.
   repeated CommunityServerInfo memberships = 4;
+  // P2P DM calls: STUN servers ("host:port") the client should use for
+  // reflexive-candidate discovery (DECIBELL_STUN_SERVERS on central).
+  // Empty on an older central or when unset → client built-in default.
+  repeated string stun_servers = 5;
+  // True when this central relays CALL_SIGNAL. Gates the Call button so
+  // a client on an older central never rings into the void.
+  bool call_signaling = 6;
 }
 
 message DirectMessage {
@@ -1749,4 +1762,55 @@ message FetchServerPictureRes {
 message ServerPictureChanged {
   int32  server_id = 1;
   string version = 2;
+}
+
+// ── P2P DM calls ─────────────────────────────────────────────────────
+// Signaling for a direct (peer-to-peer) voice/stream session between two
+// users. Media never touches central: after INVITE/ACCEPT exchange the
+// X25519 public keys + UDP candidates, both clients hole-punch and seal
+// every datagram with AES-256-GCM keys derived from the shared secret.
+
+message CallCandidate {
+  // Which of the two media sockets this address belongs to (voice
+  // carries AUDIO/STREAM_AUDIO/PING, media carries VIDEO/FEC/PLI/NACK).
+  enum Socket { VOICE = 0; MEDIA = 1; }
+  // HOST = a local interface address, SRFLX = the STUN-reflexive
+  // (public NAT-mapped) address of that same socket. IPv4 only in v1.
+  enum Kind { HOST = 0; SRFLX = 1; }
+  Socket socket = 1;
+  Kind kind = 2;
+  string ip = 3;
+  uint32 port = 4;
+}
+
+message CallStreamMeta {
+  int32 codec = 1;       // VideoCodec byte (1=H264_HW 2=H264_SW 3=H265 4=AV1)
+  uint32 width = 2;
+  uint32 height = 3;
+  uint32 fps = 4;
+  bool has_audio = 5;
+}
+
+message CallSignal {
+  enum Kind {
+    INVITE = 0;        // caller→callee: pub_key + candidates
+    RINGING = 1;       // callee client auto-ack so the caller shows "Ringing…"
+    ACCEPT = 2;        // callee→caller: pub_key + candidates
+    REJECT = 3;        // callee declined
+    BUSY = 4;          // callee already in a call
+    CANCEL = 5;        // caller gave up before an answer
+    HANGUP = 6;        // either side ends an active call
+    PEER_OFFLINE = 7;  // central→sender: `to` has no session
+    NOT_ALLOWED = 8;   // central→sender: check_dm_allowed refused the INVITE
+    STREAM_START = 9;  // streamer→peer: screen share started (stream meta)
+    STREAM_STOP = 10;  // streamer→peer: screen share ended
+  }
+  Kind kind = 1;
+  string call_id = 2;                     // caller-minted UUID
+  string from = 3;                        // central-stamped; clients never trust their own value
+  string to = 4;
+  bytes pub_key = 5;                      // 32-byte X25519 ephemeral public key (INVITE/ACCEPT)
+  repeated CallCandidate candidates = 6;  // ≤16 (INVITE/ACCEPT)
+  CallStreamMeta stream = 7;              // STREAM_START only
+  int64 timestamp = 8;                    // central-stamped
 }

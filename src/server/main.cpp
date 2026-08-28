@@ -29,6 +29,31 @@
 namespace ssl = boost::asio::ssl;
 using boost::asio::ip::tcp;
 
+/// STUN servers ("host:port") handed to every client in LOGIN_RES for
+/// P2P DM calls. Filled once in main() from DECIBELL_STUN_SERVERS; empty
+/// means "use the client's built-in default list".
+static std::vector<std::string> g_stun_servers;
+
+/// Minimal per-session token bucket for CALL_SIGNAL. Central has no other
+/// rate limiting and runs a single io thread with synchronous Postgres, so
+/// an unthrottled signal storm from one client would stall every user.
+/// 20 burst / 5 per second is far above a real handshake (~6 signals per
+/// call) and keeps the INVITE-only DB touch (check_dm_allowed) bounded.
+struct CallSignalBucket {
+    double tokens = 20.0;
+    std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+    bool take() {
+        auto now = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration<double>(now - last).count();
+        last = now;
+        tokens += elapsed * 5.0;
+        if (tokens > 20.0) tokens = 20.0;
+        if (tokens < 1.0) return false;
+        tokens -= 1.0;
+        return true;
+    }
+};
+
 class Session : public std::enable_shared_from_this<Session> {
 public:
     Session(tcp::socket socket, SessionManager& manager, ssl::context& context, AuthManager& auth_manager)
@@ -342,6 +367,43 @@ private:
             routed_packet.SerializeToString(&serialized);
             auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
             deliver(framed);
+        }
+
+        // --- CALL SIGNAL (P2P DM calls) ---
+        // Ephemeral relay for the DM-call handshake: INVITE / RINGING /
+        // ACCEPT / REJECT / BUSY / CANCEL / HANGUP / STREAM_START /
+        // STREAM_STOP. Nothing is persisted and the only DB touch is
+        // check_dm_allowed on INVITE (same policy as a DM: blocked → no,
+        // friends-only recipient → friends only). Central stamps `from`
+        // so the peer never trusts a client-supplied sender, and answers
+        // PEER_OFFLINE / NOT_ALLOWED itself from the recipient's POV.
+        else if (packet.type() == chatproj::Packet::CALL_SIGNAL) {
+            if (!authenticated_ || !packet.has_call_signal()) return;
+            if (!call_bucket_.take()) {
+                std::cout << "[Call] Signal rate limit hit for " << username_ << "\n";
+                return;
+            }
+
+            chatproj::Packet routed = packet;
+            auto* sig = routed.mutable_call_signal();
+            if (sig->to().empty() || sig->to() == username_) return;
+            if (sig->to().size() > 64 || sig->call_id().size() > 64 ||
+                sig->pub_key().size() > 64 || sig->candidates_size() > 16) {
+                return;
+            }
+            sig->set_from(username_);
+            sig->set_timestamp(std::chrono::system_clock::to_time_t(
+                std::chrono::system_clock::now()));
+
+            if (sig->kind() == chatproj::CallSignal::INVITE &&
+                !manager_.check_dm_allowed(username_, sig->to(), auth_manager_)) {
+                send_call_reply(chatproj::CallSignal::NOT_ALLOWED, sig->call_id(), sig->to());
+                return;
+            }
+
+            if (!manager_.send_private(routed, sig->to())) {
+                send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(), sig->to());
+            }
         }
 
         // --- DM CONVERSATIONS REQ ---
@@ -942,6 +1004,29 @@ private:
         }
     }
 
+    /// Central-originated CallSignal back to this session (PEER_OFFLINE /
+    /// NOT_ALLOWED). Written from the recipient's point of view — `from`
+    /// is the peer the request was addressed to, `to` is us — the same
+    /// convention DM_MESSAGE_DELETED uses, so the client's call state
+    /// machine keys every signal on `from` regardless of origin.
+    void send_call_reply(chatproj::CallSignal::Kind kind, const std::string& call_id,
+                         const std::string& peer) {
+        chatproj::Packet pkt;
+        pkt.set_type(chatproj::Packet::CALL_SIGNAL);
+        auto* sig = pkt.mutable_call_signal();
+        sig->set_kind(kind);
+        sig->set_call_id(call_id);
+        sig->set_from(peer);
+        sig->set_to(username_);
+        sig->set_timestamp(std::chrono::system_clock::to_time_t(
+            std::chrono::system_clock::now()));
+        std::string serialized;
+        pkt.SerializeToString(&serialized);
+        auto framed = std::make_shared<std::vector<uint8_t>>(
+            chatproj::create_framed_packet(serialized));
+        deliver(framed);
+    }
+
     void send_response(chatproj::Packet::Type type, bool success, const std::string& msg, const std::string& token = "") {
         chatproj::Packet resp_packet;
         resp_packet.set_type(type);
@@ -966,6 +1051,15 @@ private:
                     *resp->add_memberships() = info;
                 }
             }
+            // P2P DM calls: advertise that this central relays CALL_SIGNAL
+            // and hand out the operator's STUN list (may be empty → the
+            // client falls back to its built-in default).
+            if (success) {
+                for (const auto& stun : g_stun_servers) {
+                    resp->add_stun_servers(stun);
+                }
+                resp->set_call_signaling(true);
+            }
         }
 
         std::string serialized;
@@ -985,6 +1079,7 @@ private:
     /// UPDATE_AVATAR_REQ. Read by broadcast_presence.
     std::string avatar_version_;
     bool dm_friends_only_ = false;
+    CallSignalBucket call_bucket_;
     AuthManager& auth_manager_;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
     std::chrono::steady_clock::time_point last_activity_;
@@ -1248,6 +1343,34 @@ int main() {
 
         std::string community_secret = secret_env;
         std::string db_conn = db_env;
+
+        // P2P DM calls: optional comma-separated STUN list ("host:port,...").
+        // Whitespace around entries is ignored; empty → clients use their
+        // built-in default.
+        if (const char* stun_env = std::getenv("DECIBELL_STUN_SERVERS")) {
+            std::string entry;
+            std::string all = stun_env;
+            all.push_back(',');
+            for (char c : all) {
+                if (c == ',') {
+                    size_t b = entry.find_first_not_of(" \t");
+                    size_t e = entry.find_last_not_of(" \t");
+                    if (b != std::string::npos) {
+                        g_stun_servers.push_back(entry.substr(b, e - b + 1));
+                    }
+                    entry.clear();
+                } else {
+                    entry.push_back(c);
+                }
+            }
+        }
+        if (g_stun_servers.empty()) {
+            std::cout << "[Call] DECIBELL_STUN_SERVERS unset — clients use their built-in STUN list\n";
+        } else {
+            std::cout << "[Call] STUN servers: ";
+            for (const auto& stun : g_stun_servers) std::cout << stun << " ";
+            std::cout << "\n";
+        }
         AuthManager auth_manager(community_secret, db_conn, jwt_private_pem, jwt_public_pem);
 
         boost::asio::io_context io_context;

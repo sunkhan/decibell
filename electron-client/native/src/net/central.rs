@@ -275,6 +275,11 @@ impl CentralClient {
                             .map(|(user, _)| user.clone())
                             .unwrap_or_else(|| "unknown".to_string());
                         s.username = Some(username.clone());
+                        // P2P DM calls: remember what this central offers
+                        // before login_succeeded fires, so the renderer's
+                        // get_call_config read on that event is race-free.
+                        s.stun_servers = resp.stun_servers.clone();
+                        s.call_signaling = resp.call_signaling;
                         drop(s);
                         events::emit_login_succeeded(username);
 
@@ -545,6 +550,48 @@ impl CentralClient {
                             data: events::bytes_to_data_url(&resp.data),
                         },
                     );
+                }
+                Some(packet::Payload::CallSignal(sig)) => {
+                    use base64::Engine as _;
+                    let kind = call_signal::Kind::try_from(sig.kind)
+                        .map(|k| k.as_str_name().to_string())
+                        .unwrap_or_else(|_| format!("UNKNOWN_{}", sig.kind));
+                    let candidates = sig
+                        .candidates
+                        .iter()
+                        .map(|c| events::CallCandidatePayload {
+                            socket: call_candidate::Socket::try_from(c.socket)
+                                .map(|v| v.as_str_name().to_string())
+                                .unwrap_or_else(|_| "VOICE".to_string()),
+                            kind: call_candidate::Kind::try_from(c.kind)
+                                .map(|v| v.as_str_name().to_string())
+                                .unwrap_or_else(|_| "HOST".to_string()),
+                            ip: c.ip.clone(),
+                            port: c.port,
+                        })
+                        .collect();
+                    let pub_key = if sig.pub_key.is_empty() {
+                        None
+                    } else {
+                        Some(base64::engine::general_purpose::STANDARD.encode(&sig.pub_key))
+                    };
+                    let stream = sig.stream.as_ref().map(|m| events::CallStreamMetaPayload {
+                        codec: m.codec,
+                        width: m.width,
+                        height: m.height,
+                        fps: m.fps,
+                        has_audio: m.has_audio,
+                    });
+                    events::emit_call_signal(events::CallSignalPayload {
+                        kind,
+                        call_id: sig.call_id,
+                        from: sig.from,
+                        to: sig.to,
+                        pub_key,
+                        candidates,
+                        stream,
+                        timestamp: sig.timestamp,
+                    });
                 }
                 Some(packet::Payload::ServerPictureChanged(b)) => {
                     events::emit_server_picture_changed(
