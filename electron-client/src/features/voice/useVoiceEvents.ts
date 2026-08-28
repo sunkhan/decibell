@@ -322,6 +322,9 @@ export function useVoiceEvents() {
         console.error("[voice] native stream failed:", event.payload);
         useVoiceStore.getState().setIsStreaming(false);
         stopActiveStream().catch(() => {});
+        // In a DM call the peer has no server presence to tell them the
+        // share is gone — send STREAM_STOP (no-op outside a call).
+        announceCallStreamStop();
         playSound("stream_stop");
         toast.error(
           "Stream stopped",

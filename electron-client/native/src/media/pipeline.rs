@@ -1019,7 +1019,13 @@ pub fn run_audio_pipeline(
                                 peer.voice_jitter.push(pkt.sequence, opus_data.to_vec(), is_silence);
                                 peer.voice_underrun_logged = false;
                             } else if pkt.packet_type == PACKET_TYPE_STREAM_AUDIO {
-                                if username != sender_id {
+                                // Only for streams we're watching. The community
+                                // relay fans STREAM_AUDIO out to watchers only, so
+                                // stop-watching silenced it at the source; a P2P
+                                // peer sends it unconditionally, so gate here —
+                                // otherwise the share keeps playing after you stop
+                                // watching (and again when they restart it).
+                                if username != sender_id && super::is_watched(&username) {
                                     let now = Instant::now();
                                     let inserted = !remote_peers.contains_key(&username);
                                     let peer = remote_peers.entry(username.clone()).or_insert_with(|| {

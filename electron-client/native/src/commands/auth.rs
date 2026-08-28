@@ -145,6 +145,7 @@ pub async fn logout() -> napi::Result<()> {
                 h.abort();
             }
         }
+        crate::media::watched_streams_clear();
         let voice = s.voice_engine.take();
         let video = s.video_engine.take();
         let audio = s.audio_stream_engine.take();

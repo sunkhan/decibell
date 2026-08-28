@@ -133,7 +133,7 @@ pub fn watched_streams_clear() {
     watched_streams().store(Arc::new(std::collections::HashSet::new()));
 }
 
-fn is_watched(username: &str) -> bool {
+pub(crate) fn is_watched(username: &str) -> bool {
     watched_streams().load().contains(username)
 }
 
@@ -410,9 +410,13 @@ impl VoiceEngine {
     }
 
     pub fn stop(&mut self) {
-        // This voice session is ending — forget which remote streams it was
-        // watching so stale entries don't leak into the next session.
-        watched_streams_clear();
+        // NOTE: the watched-streams set is deliberately NOT cleared here.
+        // stop() runs on a blocking thread after the leave / hang-up command
+        // has returned, and the next session (a new call, a new channel) may
+        // already have registered its watches — clearing late wiped them and
+        // the receive thread then dropped every frame the new stream sent.
+        // The command sites clear synchronously instead (leave_voice_channel,
+        // join_voice_channel, call_end, logout, shutdown).
         let _ = self.control_tx.send(ControlMessage::Shutdown);
         if let Some(handle) = self.audio_thread.take() {
             let _ = handle.join();
@@ -1056,7 +1060,10 @@ impl VideoEngine {
         self.stop_windows();
         #[cfg(target_os = "linux")]
         self.stop_linux();
-        video_pipeline::clear_frame_sink();
+        // Only OUR sink: this runs on a blocking thread after
+        // stop_screen_share returned, and the next stream may already own
+        // the slot (see clear_frame_sink_if).
+        video_pipeline::clear_frame_sink_if(&self.sender);
     }
 }
 

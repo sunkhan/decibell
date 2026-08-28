@@ -100,10 +100,23 @@ pub fn set_frame_sink(sender: Arc<VideoSender>) {
     *frame_sink_slot().lock().expect("frame sink mutex poisoned") = Some(sender);
 }
 
-/// Clear the slot. Called from `stop_screen_share` and on engine
-/// teardown so a stray frame post-stop is dropped instead of sent.
-pub fn clear_frame_sink() {
-    *frame_sink_slot().lock().expect("frame sink mutex poisoned") = None;
+/// Clear the slot — but only if it still holds `sender`. Engine teardown
+/// runs on a blocking thread *after* `stop_screen_share` has already
+/// returned, so a new stream (next call, or stop→start in the same one)
+/// can install its own sender before the old engine's Drop gets here; an
+/// unconditional clear then wiped the live sink and every frame the
+/// renderer pumped afterwards vanished — the watcher sat on "loading"
+/// forever. Scoping the clear to the owning sender makes drop order
+/// irrelevant.
+pub fn clear_frame_sink_if(sender: &Arc<VideoSender>) -> bool {
+    let mut slot = frame_sink_slot().lock().expect("frame sink mutex poisoned");
+    match slot.as_ref() {
+        Some(cur) if Arc::ptr_eq(cur, sender) => {
+            *slot = None;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Read the active sender (Arc clone is ~atomic refcount bump). The
@@ -114,4 +127,31 @@ pub fn current_frame_sink() -> Option<Arc<VideoSender>> {
         .lock()
         .expect("frame sink mutex poisoned")
         .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::media_socket::MediaSocket;
+    use std::net::UdpSocket;
+
+    fn sender() -> Arc<VideoSender> {
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(sock.local_addr().unwrap()).unwrap();
+        Arc::new(VideoSender::new(Arc::new(MediaSocket::plain(sock, "me")), "me".into()))
+    }
+
+    #[test]
+    fn late_teardown_never_clears_a_newer_sink() {
+        let old = sender();
+        let new = sender();
+        set_frame_sink(old.clone());
+        // The next stream installs its sender before the old engine's Drop runs.
+        set_frame_sink(new.clone());
+        assert!(!clear_frame_sink_if(&old), "old engine must not clear the live sink");
+        assert!(Arc::ptr_eq(&current_frame_sink().unwrap(), &new));
+        // The owning engine clears its own sink.
+        assert!(clear_frame_sink_if(&new));
+        assert!(current_frame_sink().is_none());
+    }
 }

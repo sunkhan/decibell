@@ -123,6 +123,39 @@ pub async fn shutdown() -> napi::Result<()> {
     let state_arc = state::shared();
     let mut s = state_arc.lock().await;
 
+    // A DM call in progress: tell the peer we're gone (best effort, short
+    // timeout) so their side ends now instead of after the 15 s watchdog,
+    // and stop the punch / watchdog.
+    s.pending_call = None;
+    if let Some(ac) = s.active_call.take() {
+        ac.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = ac.watchdog {
+            h.abort();
+        }
+        let hangup = s.central.as_ref().and_then(|c| c.connection_write_tx()).map(|tx| {
+            use crate::net::proto::{call_signal, packet, CallSignal};
+            let pkt = crate::net::connection::build_packet(
+                packet::Type::CallSignal,
+                packet::Payload::CallSignal(CallSignal {
+                    kind: call_signal::Kind::Hangup as i32,
+                    call_id: ac.call_id.clone(),
+                    from: String::new(),
+                    to: ac.peer.clone(),
+                    pub_key: Vec::new(),
+                    candidates: Vec::new(),
+                    stream: None,
+                    timestamp: 0,
+                }),
+                s.token.as_deref(),
+            );
+            (tx, pkt)
+        });
+        if let Some((tx, pkt)) = hangup {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), tx.send(pkt)).await;
+        }
+    }
+    media::watched_streams_clear();
+
     // Drop in reverse start-up order: media engines first (they may
     // still be pushing packets through the voice socket), then voice
     // (owns the sockets), then network connections.

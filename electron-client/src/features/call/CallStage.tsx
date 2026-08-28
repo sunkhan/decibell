@@ -11,7 +11,7 @@ import { playSound } from "../../utils/sounds";
 import { VideoCodec, type StreamInfo } from "../../types";
 import CaptureSourcePicker from "../voice/CaptureSourcePicker";
 import StreamStatsOverlay from "../voice/StreamStatsOverlay";
-import { placeStreamPip, recordFullViewRect } from "../voice/streamPipHost";
+import { getStreamPipHost, placeStreamPip, recordFullViewRect } from "../voice/streamPipHost";
 import { saveSettings } from "../settings/saveSettings";
 import {
   DEFAULT_DB,
@@ -140,11 +140,20 @@ function Stage({ peer }: { peer: string }) {
 
   // Claim the persistent player into our slot whenever a stream is focused
   // here (re-runs on focus change so we reclaim it from the mini player).
+  // On the way out, detach the host from our slot explicitly: it was
+  // appended by hand, not by React, so if it ever stayed behind inside a
+  // container React later reused for the tiles it would sit in the flex
+  // row as a stray full-width child and squeeze the avatars.
   useLayoutEffect(() => {
-    if (focused && slotRef.current) {
-      placeStreamPip(slotRef.current);
-      recordFullViewRect(slotRef.current);
+    const slot = slotRef.current;
+    if (focused && slot) {
+      placeStreamPip(slot);
+      recordFullViewRect(slot);
     }
+    return () => {
+      const host = getStreamPipHost();
+      if (slot && host.parentElement === slot) host.remove();
+    };
   }, [focused, isFullscreen, theater]);
 
   // ── fullscreen ──
@@ -257,8 +266,11 @@ function Stage({ peer }: { peer: string }) {
   return (
     <div className={rootClass} style={rootStyle} onMouseMove={pokeOverlay}>
       {/* ── centre: video or tiles ── */}
+      {/* Distinct keys: the video and tiles containers are both a <div> in the
+          same position, so without keys React would reuse one DOM node for the
+          other and the hand-parented player host could survive the switch. */}
       {focused ? (
-        <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black">
+        <div key="video" className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black">
           <div ref={slotRef} className="h-full w-full" />
           {showStats && <StreamStatsOverlay username={focused} />}
           <div className={`absolute bottom-4 right-4 flex gap-1.5 ${overlayClass}`}>
@@ -267,7 +279,7 @@ function Stage({ peer }: { peer: string }) {
           </div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 pb-14 pt-10">
+        <div key="tiles" className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 pb-14 pt-10">
           <div className="flex items-start justify-center gap-10">
             <CallTile username={me} muted={isMuted} dim={!live} />
             <div className="flex flex-col items-center">

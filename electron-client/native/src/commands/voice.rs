@@ -93,6 +93,9 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
                     leave_sends.push((tx, data));
                 }
             }
+            // Forget the old session's watches now (not in the deferred
+            // engine stop) so they can't wipe the new channel's.
+            crate::media::watched_streams_clear();
             s.voice_engine.take()
         } else {
             None
@@ -260,6 +263,7 @@ pub async fn leave_voice_channel() -> napi::Result<()> {
         let is_muted = s.voice_muted;
         let is_deafened = s.voice_deafened;
 
+        crate::media::watched_streams_clear();
         let old_voice = s.voice_engine.take();
         s.connected_voice_server = None;
         s.connected_voice_channel = None;

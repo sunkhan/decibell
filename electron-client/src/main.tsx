@@ -6,6 +6,7 @@ import { probeDecoders } from "./utils/decoderProbe";
 import { probeEncoders } from "./utils/encoderProbe";
 import { loadSettings } from "./features/settings/loadSettings";
 import { flushSaveSettings } from "./features/settings/saveSettings";
+import { endCall } from "./features/call/callActions";
 import { useCodecSettingsStore } from "./stores/codecSettingsStore";
 import { initRendererSentry } from "./lib/sentry";
 import "./styles/globals.css";
@@ -22,6 +23,9 @@ initRendererSentry();
 // persist. beforeunload fires before the renderer process tears down.
 window.addEventListener("beforeunload", () => {
   flushSaveSettings();
+  // A DM call in progress: tell the peer (best effort — native shutdown()
+  // sends the same HANGUP on app quit; this covers a bare window reload).
+  void endCall(null);
 });
 
 // Hydrate persisted settings + auto-login (if credentials saved)

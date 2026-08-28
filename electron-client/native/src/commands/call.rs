@@ -607,6 +607,9 @@ pub async fn call_end() -> napi::Result<()> {
             s.voice_muted = m;
             s.voice_deafened = d;
             s.voice_muted_before_deafen = mbd;
+            // Synchronously — a watch registered for the NEXT call must not
+            // be wiped by this engine's deferred stop.
+            crate::media::watched_streams_clear();
             (
                 s.voice_engine.take(),
                 s.video_engine.take(),
