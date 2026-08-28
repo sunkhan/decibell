@@ -23,9 +23,15 @@ Decibell is a decentralized Discord-like application with three components:
 ### Central Server (`src/server/`)
 - Handles user registration, login, JWT issuance
 - Manages friend system (add, remove, block, accept, reject)
-- Routes direct messages between users
+- Routes and persists direct messages between users (echoes the sender's
+  packet back with the persisted id and the client's `nonce`)
 - Tracks user presence (online/offline)
-- Maintains server directory (`community_servers` table in PostgreSQL)
+- Maintains server directory (`community_servers` table in PostgreSQL) and
+  the invite registry (`community_invites`): communities register every
+  invite code, and `INVITE_RESOLVE` turns a bare code into host:port plus
+  the community's directory row (name, description, member count, picture
+  version) — which is why invite links are code-only
+  (`decibell://invite/<CODE>`) and invite cards can preview a private server
 - Runs on port **8080** with TLS/SSL (TLSv1.2+)
 
 ### Community Servers (`src/community/`)
@@ -34,6 +40,14 @@ Decibell is a decentralized Discord-like application with three components:
 - Manages text channels and voice channels
 - Relays UDP audio/video packets between voice channel participants
 - Handles screen sharing signaling (start/stop/watch)
+- Rate-limits each session with per-class token buckets (`rate_limit.hpp`):
+  chat messages + edits **10 burst / 3 per s**, presence 10/2, queries 20/4,
+  admin 20/2. An exhausted bucket drops the packet; a dropped `CHANNEL_MSG`
+  is answered with `CHANNEL_MSG_REJECTED {channel_id, nonce, reason}` (plus
+  the legacy `MOD_ACTION_RES(action="message")`), the same reply every other
+  refusal uses (permission, slowmode, attachment cap, persist failure). The
+  Electron client mirrors the message bucket and paces its sends, so a human
+  never hits it
 - Runs on port **8082** (TCP/TLS) + port **8083** (UDP relay, i.e. `port + 1`)
 - Hardcoded channels on auth: `general` (text), `announcements` (text), `voice-lounge` (voice)
 - Environment (all optional unless noted):
@@ -52,12 +66,19 @@ Decibell is a decentralized Discord-like application with three components:
   with no frames; clients ping every 30 s),
   `DECIBELL_RETENTION_INTERVAL_SECONDS` (600 — retention sweep period).
 
-### Client (`src/client/`)
-- Qt6/QML desktop application (being replaced with Tauri v2)
+### Client (`electron-client/`)
+- Electron desktop application: React + zustand renderer, Rust (napi-rs)
+  native backend for the wire protocol and media. `src/client/` (Qt/QML) and
+  `tauri-client/` are retired predecessors — see `electron-client/HANDOFF.md`
 - Connects to central server for auth, friends, DMs
 - Connects to community servers for channels, voice, video
-- Runs audio/video encoding/decoding in-process
-- Sends/receives UDP packets for real-time media
+- Video encode/decode via WebCodecs in the renderer; audio via the native
+  backend; sends/receives UDP packets for real-time media
+- Some features are deliberately **client-side only** — no server involvement:
+  link previews (OpenGraph unfurl in the Electron main process, behind a
+  privacy toggle), GIF search (KLIPY/GIPHY from main with a baked key; a sent
+  GIF is just its https URL as message text), optimistic "pending" bubbles
+  reconciled by the `nonce` both servers echo back
 
 ### Data Flow
 ```
@@ -144,8 +165,16 @@ message Packet {
 | 22 | STREAM_PRESENCE_UPDATE | Community→Client | Active streams in voice channel |
 | 23 | START_STREAM_REQ | Client→Community | Start screen sharing (fps, bitrate, has_audio) |
 | 24 | STOP_STREAM_REQ | Client→Community | Stop screen sharing |
-| 25 | WATCH_STREAM_REQ | Client→Community | Subscribe to a stream (not currently handled server-side) |
-| 26 | STOP_WATCHING_REQ | Client→Community | Unsubscribe from a stream (not currently handled server-side) |
+| 25 | WATCH_STREAM_REQ | Client→Community | Subscribe to a stream |
+| 26 | STOP_WATCHING_REQ | Client→Community | Unsubscribe from a stream |
+| 32–37 | INVITE_CREATE/LIST/REVOKE_REQ/RES | Client↔Community | Invite management (MANAGE_INVITES) |
+| 46–49 | INVITE_REGISTER/UNREGISTER_REQ, INVITE_RESOLVE_REQ/RES | Community→Central, Client↔Central | Invite registry; RESOLVE returns host:port + cert fingerprint + the community's directory row for pre-join previews |
+| 127 | CHANNEL_MSG_REJECTED | Community→Sender | A CHANNEL_MSG was refused (rate limit, slowmode, permission, attachment cap, persist failure); carries the request's `nonce` and a reason |
+
+The table lists the original core plus the types touched by recent work;
+`proto/messages.proto` is the source of truth for the full set (attachments,
+roles/permissions v2, moderation, message edit/delete/reply, server pictures,
+stream negotiation — 127 types as of 2026-08-27).
 
 ### Key Message Structures
 
@@ -153,7 +182,25 @@ message Packet {
 message CommunityServerInfo {
   int32 id = 1; string name = 2; string description = 3;
   string host_ip = 4; int32 port = 5; int32 member_count = 6;
+  string picture_version = 7;      // sha256 of the server picture; '' = none
+  string cert_fingerprint = 8;     // community TLS cert, from its heartbeats
 }
+
+message DirectMessage {
+  string sender = 1; string recipient = 2; string content = 3; int64 timestamp = 4;
+  int64 id = 5; int64 edited_at = 6; int64 reply_to = 7;
+  string reply_to_sender = 8; string reply_to_content = 9;
+  string nonce = 10;               // client-set per send; central echoes it (and sets it on its error replies)
+}
+
+message InviteResolveResponse {
+  bool success = 1; string message = 2; string host = 3; uint32 port = 4; string code = 5;
+  string cert_fingerprint = 6;
+  int64 server_id = 7; string server_name = 8; string server_description = 9;   // pre-join preview
+  int32 member_count = 10; string picture_version = 11;                       // 0 / '' from older centrals
+}
+
+message ChannelMessageRejected { string channel_id = 1; string nonce = 2; string reason = 3; }
 
 message ChannelInfo {
   string id = 1; string name = 2;

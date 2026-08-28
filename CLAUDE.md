@@ -63,6 +63,12 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   `makepkg --printsrcinfo | diff .SRCINFO -`, push to `main`, then push the same two files
   to `ssh://aur@aur.archlinux.org/decibell-bin.git` (`master`). Git identity is not set
   globally — pass `-c user.name='sunkhan' -c user.email='gunhanserhat@gmail.com'`.
+  Release builds bake two secrets into `resources/`: `SENTRY_DSN` → `sentry.json` and
+  `GIF_API_KEY` (+ the `GIF_API_PROVIDER` variable, default `klipy`) → `gifs.json`; a dev
+  checkout uses the same gitignored files or env vars (HANDOFF §5.9a).
+- Wire changes that add a **community→client** packet or field ship client-first safely
+  (older clients ignore them); anything central must *populate* (e.g. the invite preview
+  fields) waits for the Hetzner rebuild — the client degrades gracefully until then.
 
 ## Standing decisions (don't "fix" these)
 
@@ -83,6 +89,26 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   Design + postmortem: `docs/superpowers/specs/2026-08-25-real-dom-message-list-plan.md`.
 - zustand selectors must return stable refs (`?? []`/`.filter` inside a selector loops);
   never combine two store hooks with `&&`.
+- **Link previews are unfurled by the client**, in the Electron main process
+  (`electron/main/linkPreview.ts`: OG/Twitter/`<title>` + oEmbed, image dimension probe,
+  private-network guard, caps, cache) — not by either server. No proto/server work, works
+  against every server version; the privacy trade is the Privacy-tab "Show link previews"
+  toggle. Invite cards resolve against *our* central and ignore that toggle. Remote images
+  are direct `<img src=https:>` (the CSP allows it); `http:` image refs are upgraded.
+- **GIF search is KLIPY** (GIPHY supported) via `electron/main/gifs.ts` + `resources/gifs.json`.
+  Google shut the Tenor API down on 2026-06-30 — never propose Tenor. Sending a GIF sends its
+  https URL as the message text; the link preview renders it, and a message that is only a
+  media link hides its URL text (`loneLink`). Content filter defaults to `low`; the
+  Privacy-tab "Unfiltered GIF search" sends `off`.
+- **Invite links are code-only**: `decibell://invite/<CODE>`; central resolves the code to
+  host:port (+ name/description/picture for the card). Older `host:port/code` links still
+  parse (`features/servers/inviteLink.ts` is the one grammar).
+- **Sends are paced client-side** to the community's per-session message bucket
+  (`features/chat/sendPacing.ts`: 10 burst / 2.7 per s mirror of the server's 10 / 3, reset on
+  community auth, FIFO per server) — a burst is delayed, never dropped. The server answers a
+  refused message with `CHANNEL_MSG_REJECTED {nonce}` so exactly that optimistic bubble is
+  withdrawn; a 30 s echo watchdog is the backstop. Keep the client and server numbers in step.
+  Optimistic bubbles render faded (`pending`) until the echo; DMs carry `DirectMessage.nonce`.
 
 ## Deeper docs
 

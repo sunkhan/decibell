@@ -1,10 +1,11 @@
 # Decibell Electron Client — Resume Handoff
 
 **Read this entire document before touching anything.** It's a complete
-hand-off so a fresh conversation can resume PR8 of the Tauri-to-Electron
-migration without inheriting any false assumptions from the previous
-session. Last updated 2026-05-08 immediately before the user reformatted
-their dev machine to swap Niri → KDE Plasma.
+hand-off so a fresh conversation can resume client work without inheriting
+any false assumptions from a previous session. Written 2026-05-08 at the end
+of PR8 (the Tauri-to-Electron migration); the release table in §2, the
+gotchas in §5, the file table in §8 and the commit list in §9 are kept
+current — last refreshed 2026-08-27.
 
 The companion auto-memory file
 `~/.claude/projects/-home-sun-Desktop-decibell-decibell/memory/project_electron_migration.md`
@@ -69,14 +70,26 @@ read them as "how streaming got here", not as current open work.
 | 0.6.11 | attachment scroll glitch fixed for real (decode-side, B12–B15); streaming fix round — per-sender wire receiver, stream-audio A/V sync, Windows/AMD fallback + escape hatch, 120fps codec levels, fresh-launch watch-lock fix |
 | 0.7.0 | roles/permissions with Discord-style hierarchy; channel management — create/rename/delete, categories, drag-reorder; nicknames + unban; unified server-settings screen (Overview/Members/Roles/Bans); per-channel voice bitrate incl. live mid-call retune; cross-server channel-key fix; community-server hardening pass (owner seeding, zombie sessions, inert central-sync deadlines, wire validation) |
 
-| **0.7.1** | **audio-device hotplug sync (roster store + mid-call re-resolution); stream carry-over on same-server channel switch ("take stream with me"); deafened-listener relay skip; server-settings modal animation; light-theme stream controls; mouse back/forward no longer walks history** |
+| 0.7.1 | audio-device hotplug sync (roster store + mid-call re-resolution); stream carry-over on same-server channel switch ("take stream with me"); deafened-listener relay skip; server-settings modal animation; light-theme stream controls; mouse back/forward no longer walks history |
+| 0.7.2 | seamless stream mini-player (resizable, flick-to-corner) + watch-path hardening, viewer count + stats; stream stall recovery + HW decode; nicknames everywhere |
+| 0.7.3 | Theme A security — Ed25519 JWTs, separate community secret, uid, cert pinning; permissions v2 (Authorizer, per-channel overwrites + editor); server management + moderation (rename, audit log, timeouts, ban expiry/purge, slowmode, voice moderation, ownership transfer); roster deltas (paged member list, live upsert/remove); community fix batches 13–14 (rate limiting, deadlines, perm/statement cache, central-sync worker); central ghost sessions + directory expiry |
+| 0.7.4 | voice: consumer-paced playback rings, PLC on underrun, gated tail frames (the 0.7.1+ pops) |
+| 0.7.5 | voice: gate-edge shaping — pre-roll + faded tails on send, fades on receive |
+| 0.7.6 | chat: embedded reply previews, exact far jumps + jump-to-present pill, attachment-only reply labels; plain-text DM previews |
+| 0.7.7 | design pass — inset workspace panel, 64px server bar with hover-reveal pictures, unread-DM tiles replacing the DM rail, `font-meta`/`font-tile` tokens, ConfirmModal shell, remembered layout (sidebar width, mini-player size/corner, panel toggles); real-DOM message list is the only list (react-virtuoso removed) |
+| **unreleased (post-0.7.7, 2026-08-27)** | **hyperlinks + link previews (main-process unfurl, Privacy toggle); GIFs tab in the picker over KLIPY/GIPHY + animated GIF attachments + unfiltered toggle; invite cards in chat + code-only invite links (`decibell://invite/<CODE>`); spam-burst fix — `CHANNEL_MSG_REJECTED` with nonce, client-side send pacing, 10/3 bucket; pending messages fade until echoed (DMs gained optimistic bubbles via `DirectMessage.nonce`)** |
 
-0.7.1 is the current release. Like 0.7.0 it ships client AND
-community-server changes (0.7.1's server side is just the deafened
-relay skip — no proto changes, any 0.7.x pairing is fine). The 0.7.x
-design record is
-`docs/superpowers/specs/2026-08-17-roles-permissions-design.md`; the
-server fix batches are CODE_REVIEW.md batches 11–12.
+0.7.7 is the current release. The unreleased row carries **three proto
+additions** — `InviteResolveResponse` preview fields (7–11),
+`CHANNEL_MSG_REJECTED` (type 127 / payload 129), `DirectMessage.nonce`
+(10) — all additive: older clients ignore them. Deploy the community
+server for the typed rejection + the 10/3 bucket, and rebuild central
+(protoc regen on the Hetzner box) for invite-card metadata and the DM
+error-reply nonce; until then the client degrades to host:port cards, a
+30 s watchdog on pending bubbles, and the legacy toast. The 0.7.x design
+records are `docs/superpowers/specs/2026-08-17-roles-permissions-design.md`,
+`2026-08-22-*`, and `2026-08-25-real-dom-message-list-plan.md`; the
+running feature log is `docs/reviews/2026-08-23-community-server-review.md`.
 
 ---
 
@@ -402,7 +415,16 @@ to start the server; ask them rather than guessing.
 
 ## 7. Suggested next steps in priority order
 
-**The one live thread: the attachment scroll glitch.** Start by reading
+**Freshly shipped, lightly tested (2026-08-27) — worth an eyeball before the
+next release:** link-preview cards against a narrow side panel and a bubble
+that also has attachments; the pending fade in DMs (channels verified live,
+DMs only by construction); invite cards against the *rebuilt* central
+(name/picture/description — degrades to host:port until then); the send
+pacer under a real flood on a fresh server (the e2e covers the server side
+only). GIF search is verified live with a KLIPY test key; request production
+access before a release.
+
+**The one older live thread: the attachment scroll glitch.** Start by reading
 `docs/reviews/2026-07-27-frontend-review.md` — its header is written as
 a handoff for exactly this, listing what is fixed *and verified*, what
 has been **ruled out with measurements** (don't redo those), and the
@@ -453,6 +475,9 @@ Also open, lower priority:
 | `src/features/chat/MessagePreview.tsx` | live send-preview in both input cards — appears only when the draft parses as formatted; renders through MessageText for fidelity |
 | `src/features/chat/RichComposer.tsx` | code/math composer panels (button beside emoji picker) — textarea with Tab indent + auto-indent, live KaTeX preview; inserts marker syntax into the draft |
 | `src/features/chat/PersistentVideoLayer.tsx` | the fixed-position video overlaid on its placeholder |
+| `src/features/chat/sendPacing.ts` | client-side send/edit pacing to the community's message bucket (FIFO per server), the 30 s echo watchdogs (channel + DM), nonce minting |
+| `src/features/servers/openServer.ts` | the one "switch to this server" (keep the channel if it's here, else first text channel) used by the bar, invite cards, deep-link modal, browse view |
+| `src/stores/inviteResolveStore.ts` | memo of `resolve_invite_code` (definitive answers stick; connectivity failures retry after 30 s) |
 | `src/features/chat/LinkEmbeds.tsx` | link-preview cards under a bubble (≤3): site card / direct image; boxes reserved from declared or probed dimensions; routes `decibell://invite/…` to InviteEmbed |
 | `src/features/chat/InviteEmbed.tsx` | Discord-style invite card: picture / name / members / description + Join (redeem_invite in place); resolves via `stores/inviteResolveStore.ts` → `resolve_invite_code` |
 | `src/features/servers/inviteLink.ts` | the one `decibell://invite/…` grammar (autolinker, card, deep-link receiver) |
@@ -518,20 +543,24 @@ Also open, lower priority:
 ## 9. Recent commits
 
 ```
-06c519a aur: bump decibell-bin to 0.6.10
-444f0e6 chore: 0.6.10
-42f14a3 chore(chat): drop the ThumbHash rollout probe
-c212e9d fix(attachments): compute the ThumbHash without re-fetching the source
-e8ebcd2 chore(chat): temporary dev-only probe for the ThumbHash rollout
-a823ccf fix(chat): reserve the image box before its URL exists; blur on video too
-3088247 Merge ui-rework: theme system, Friends home screen, chat scroll fixes
-2bb690c feat(attachments): ThumbHash placeholders so a row is never an empty box
+ae40b8c feat(client): pending messages render faded until the server echoes them
+9a5b3f9 fix: spam bursts no longer leave ghost bubbles — typed rejection, client pacing, 10/3 bucket
+95a122c fix(client): opening a server from an invite card lands on its first text channel
+bcae97d feat(client): invite links are code-only — decibell://invite/<CODE>
+e6ef534 feat(client): invite card in the browse-card shape — banner on top, details + Join below
+0a8675f feat: invite cards in chat — decibell://invite links preview the server
+010d350 feat(client): "Unfiltered GIF search" toggle in the Privacy tab
+1bc5a16 fix(client): GIF search over KLIPY / GIPHY — Tenor's API is gone
+ac6fe2d feat(client): GIFs — picker tab, animated GIF attachments
+106386e feat(client): hyperlinks + link previews
+79587ea aur: bump decibell-bin to 0.7.7
 ```
 
-`main` is the working branch; `ui-rework` was merged and deleted in
-0.6.10. Releases are tagged `ev*` (the `v*` namespace fires the dead
-tauri workflow). The AUR package (`aur/`) is bumped *after* a release
-builds, because makepkg needs the published `.pacman`.
+`main` is the working branch; feature-sized commits go straight to it
+after the verification bar (CLAUDE.md). Releases are tagged `ev*` (the
+`v*` namespace fires the dead tauri workflow). The AUR package (`aur/`)
+is bumped *after* a release builds, because makepkg needs the published
+`.pacman`.
 
 ---
 
