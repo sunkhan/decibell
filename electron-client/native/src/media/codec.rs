@@ -6,7 +6,20 @@ use std::convert::TryFrom;
 pub const SAMPLE_RATE: u32 = 48000;
 pub const CHANNELS: u16 = 1;
 pub const FRAME_SIZE: usize = 960; // 20ms at 48kHz mono
-pub const MAX_OPUS_FRAME_SIZE: usize = 1400;
+/// Opus output buffer. libopus treats the buffer length as a hard cap on
+/// the *instant* bitrate (it fits the frame rather than failing), so a
+/// frame can never exceed the datagram payload cap — the voice packet
+/// spends one byte on its flags, hence `- 1`. ≈ 479 kbps at 20 ms; the
+/// configured bitrate is clamped far below that (`MAX_BITRATE_BPS`).
+pub const MAX_OPUS_FRAME_SIZE: usize = super::packet::MAX_PAYLOAD_SIZE - 1;
+/// Highest bitrate any encoder here accepts. The channel-settings slider
+/// stops at 256 kbps and the community server clamps to the same 320, so
+/// this is defence in depth against a stray value from an older server.
+pub const MAX_BITRATE_BPS: i32 = 320_000;
+
+fn clamp_bitrate(bps: i32) -> i32 {
+    bps.clamp(8_000, MAX_BITRATE_BPS)
+}
 
 // Stereo constants for stream audio
 pub const STEREO_CHANNELS: u16 = 2;
@@ -25,7 +38,7 @@ impl OpusEncoder {
         let mut encoder =
             Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::Voip)
                 .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
-        let _ = encoder.set_bitrate(audiopus::Bitrate::BitsPerSecond(bitrate_bps));
+        let _ = encoder.set_bitrate(audiopus::Bitrate::BitsPerSecond(clamp_bitrate(bitrate_bps)));
         // Complexity 5 — sweet spot for real-time voice: half the CPU of 10,
         // no perceptible quality difference for speech.
         let _ = encoder.set_complexity(5);
@@ -61,7 +74,7 @@ impl OpusEncoder {
     pub fn set_bitrate(&mut self, bitrate_bps: i32) {
         let _ = self
             .encoder
-            .set_bitrate(audiopus::Bitrate::BitsPerSecond(bitrate_bps));
+            .set_bitrate(audiopus::Bitrate::BitsPerSecond(clamp_bitrate(bitrate_bps)));
     }
 }
 
@@ -75,7 +88,7 @@ impl StereoOpusEncoder {
             Encoder::new(SampleRate::Hz48000, Channels::Stereo, Application::Audio)
                 .map_err(|e| format!("Failed to create stereo Opus encoder: {}", e))?;
         encoder
-            .set_bitrate(audiopus::Bitrate::BitsPerSecond(bitrate_bps))
+            .set_bitrate(audiopus::Bitrate::BitsPerSecond(clamp_bitrate(bitrate_bps)))
             .map_err(|e| format!("Failed to set bitrate: {}", e))?;
         let _ = encoder.set_inband_fec(true);
         let _ = encoder.set_packet_loss_perc(10);

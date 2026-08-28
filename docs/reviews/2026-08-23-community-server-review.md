@@ -671,6 +671,18 @@ Verification section. Limits by design: STUN-only (no relay), IPv4, central can 
 exchange (safety number planned). `MediaSocket::Sealed` is the seam for finally sealing the
 community media plane (the tracked HIGH item).
 
+**UDP payload cap unified at 1200 + bitrate guards (2026-08-28) ✅** — `src/common/udp_packet.hpp`
+said 1400 while the client had chunked video at 1200 since 0.5.4 (CODE_REVIEW #11); the C++
+structs over-allocated and the relay's `sizeof`-based buffers disagreed with the wire. Now
+`UDP_MAX_PAYLOAD = 1200` for audio, video and FEC on both sides (structs 1237 / 1245 / 1243,
+byte-identical to Rust), `UDP_MAX_DATAGRAM` sizes the relay's receive buffers from the largest
+struct, and the audio path can no longer silently truncate: the client's Opus output buffer is
+`MAX_PAYLOAD_SIZE - 1` (libopus fits the frame to its buffer, ≈479 kbps instant cap),
+`UdpAudioPacket::new_audio/new_stream_audio` return `None` instead of clamping, and voice
+bitrates are clamped to **320 kbps** on the community server (create + update; was 512, above
+Opus's own 510 where a 20 ms frame reaches 1275 B) and in the client encoders. The wire format is
+unchanged (compact header + payload); community servers pick it up on their next deploy.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

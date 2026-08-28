@@ -43,15 +43,21 @@ use std::time::{Duration, Instant};
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce, Tag};
 
-use super::packet::{PACKET_TYPE_PING, SENDER_ID_SIZE};
+use super::packet::{PACKET_TOTAL_SIZE, PACKET_TYPE_PING, SENDER_ID_SIZE};
+use super::video_packet::UDP_MAX_PAYLOAD;
 
 pub const OUTER_TYPE_SEALED: u8 = 0xE5;
 const OUTER_HEADER: usize = 1 + 8;
 const TAG_LEN: usize = 16;
 /// Bytes a sealed datagram adds on top of the inner packet.
 pub const SEAL_OVERHEAD: usize = OUTER_HEADER + TAG_LEN;
-/// Largest inner datagram we ever carry (legacy fixed audio size).
-const MAX_INNER: usize = 1437;
+const fn max_usize(a: usize, b: usize) -> usize {
+    if a > b { a } else { b }
+}
+/// Largest inner datagram we ever carry: the video packet (45-byte header +
+/// UDP_MAX_PAYLOAD) or the audio packet (37 + MAX_PAYLOAD_SIZE), whichever
+/// is bigger — 1245 with both caps at 1200.
+const MAX_INNER: usize = max_usize(PACKET_TOTAL_SIZE, 45 + UDP_MAX_PAYLOAD);
 const MAX_OUTER: usize = MAX_INNER + SEAL_OVERHEAD;
 /// Counters this far behind the highest seen are rejected outright.
 const REPLAY_WINDOW: u64 = 1024;
@@ -457,7 +463,7 @@ mod tests {
     #[test]
     fn seal_open_roundtrip() {
         let (a, b) = pair();
-        let pkt = UdpAudioPacket::new_audio("alice", 7, b"hello opus").to_bytes();
+        let pkt = UdpAudioPacket::new_audio("alice", 7, b"hello opus").unwrap().to_bytes();
         a.send(&pkt).unwrap();
         let mut buf = [0u8; 1500];
         let n = b.recv(&mut buf).unwrap();
@@ -553,7 +559,7 @@ mod tests {
         b.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
         // b has no peer yet: sending fails, but a probe from a teaches it.
         assert!(b.send(b"x").is_err());
-        let pkt = UdpAudioPacket::new_audio("alice", 1, b"hi").to_bytes();
+        let pkt = UdpAudioPacket::new_audio("alice", 1, b"hi").unwrap().to_bytes();
         a.send_probe_to(&pkt, b.local_addr().unwrap()).unwrap();
         let mut buf = [0u8; 1500];
         let n = b.recv(&mut buf).unwrap();

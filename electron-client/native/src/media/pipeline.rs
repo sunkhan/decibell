@@ -903,9 +903,14 @@ pub fn run_audio_pipeline(
                                 let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
                                 flagged[0] = flags;
                                 flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
-                                let packet =
-                                    UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len]);
-                                let _ = socket.send(&packet.to_bytes());
+                                match UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len]) {
+                                    Some(packet) => {
+                                        let _ = socket.send(&packet.to_bytes());
+                                    }
+                                    // Unreachable with MAX_OPUS_FRAME_SIZE = cap - 1;
+                                    // kept as the explicit no-truncation guard.
+                                    None => log::warn!("[pipeline] dropped oversize voice frame ({} B)", 1 + len),
+                                }
                                 sequence = sequence.wrapping_add(1);
                             }
                             Err(e) => {
@@ -926,9 +931,11 @@ pub fn run_audio_pipeline(
                         let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
                         flagged[0] = flags;
                         flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
-                        let packet =
-                            UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len]);
-                        let _ = socket.send(&packet.to_bytes());
+                        if let Some(packet) =
+                            UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len])
+                        {
+                            let _ = socket.send(&packet.to_bytes());
+                        }
                         sequence = sequence.wrapping_add(1);
                     }
                 }

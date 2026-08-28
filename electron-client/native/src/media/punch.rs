@@ -258,7 +258,7 @@ mod tests {
         // The locked sockets now exchange normal datagrams.
         a.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
         b.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
-        let pkt = UdpAudioPacket::new_audio("alice", 1, b"voice").to_bytes();
+        let pkt = UdpAudioPacket::new_audio("alice", 1, b"voice").unwrap().to_bytes();
         a.send(&pkt).unwrap();
         let mut buf = [0u8; 1500];
         let n = b.recv(&mut buf).unwrap();

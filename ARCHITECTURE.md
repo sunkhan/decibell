@@ -266,8 +266,7 @@ All structs use `#pragma pack(push, 1)` (1-byte alignment, no padding). Source: 
 | Name | Value | Description |
 |------|-------|-------------|
 | `SENDER_ID_SIZE` | 32 | Bytes reserved for sender identifier in all packets |
-| `UDP_MAX_PAYLOAD` | 1200 | Max video / FEC payload bytes per packet (MTU-safe incl. PPPoE/VPN; matches `video_packet.rs`; was 1400 through 0.7.7) |
-| `AUDIO_MAX_PAYLOAD` | 1400 | Max audio payload bytes (matches `packet.rs MAX_PAYLOAD_SIZE`) |
+| `UDP_MAX_PAYLOAD` | 1200 | Max payload bytes per packet — audio, video and FEC (MTU-safe incl. PPPoE/VPN; matches `packet.rs` / `video_packet.rs`; was 1400 through 0.7.8). Voice bitrates are clamped to 320 kbps on both ends so a 20 ms Opus frame stays ≤ ~800 B |
 | `NACK_MAX_ENTRIES` | 64 | Max missing packet indices per NACK packet |
 | `FEC_GROUP_SIZE` | 5 | Data packets per FEC group |
 
@@ -286,14 +285,14 @@ All structs use `#pragma pack(push, 1)` (1-byte alignment, no padding). Source: 
 | 0 | CODEC_VP9 | VP9 software (libvpx) |
 | 1 | CODEC_H264 | H.264 hardware (Media Foundation Transform) |
 
-### UdpAudioPacket — 1437 bytes total
+### UdpAudioPacket — 1237 bytes total
 | Field | Offset | Size | Type | Description |
 |-------|--------|------|------|-------------|
 | packet_type | 0 | 1 | uint8 | Always 0 (AUDIO) |
 | sender_id | 1 | 32 | char[32] | Last 31 chars of JWT (compact identifier); upstream=token hash, downstream=username |
 | sequence | 33 | 2 | uint16 | Monotonic counter — drop out-of-order packets |
 | payload_size | 35 | 2 | uint16 | Exact byte count of Opus-encoded audio |
-| payload | 37 | 1400 | uint8[1400] | Opus-encoded audio data |
+| payload | 37 | 1200 | uint8[1200] | Opus-encoded audio data |
 
 ### UdpVideoPacket — 1245 bytes total
 | Field | Offset | Size | Type | Description |
@@ -380,12 +379,13 @@ the RTT / keepalive logic above is unchanged. Signaling (`CALL_SIGNAL`),
 STUN and the hole punch are described in
 `docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md`.
 
-> The fixed-size packet lengths quoted in this section (1437 / 1245 / 1243
+> The fixed-size packet lengths quoted in this section (1237 / 1245 / 1243
 > bytes) are the struct sizes; the Electron client sends compact
 > header+payload datagrams (a 20 ms voice packet is ~37 + 100 bytes), and
 > the relay forwards `bytes_recvd`. `src/common/udp_packet.hpp` and
 > `native/src/media/{packet,video_packet}.rs` are the source of truth and
-> agree since 0.7.8 (`UDP_MAX_PAYLOAD` 1200 for video/FEC, 1400 for audio).
+> agree since 0.7.9 (`UDP_MAX_PAYLOAD` = 1200 for every type; the client's
+> Opus output buffer is 1199 so a frame can never overflow it).
 
 ## 5. Audio Pipeline
 

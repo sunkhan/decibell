@@ -1614,8 +1614,11 @@ private:
             // only touches voice rows, so a stray value on a text channel
             // is a no-op.
             if (ok && req.has_voice_bitrate_kbps()) {
-                db->set_channel_voice_bitrate(req.channel_id(),
-                                              req.voice_bitrate_kbps());
+                // Same 0..320 kbps clamp as channel creation (see there).
+                int32_t kbps = req.voice_bitrate_kbps();
+                if (kbps < 0) kbps = 0;
+                if (kbps > 320) kbps = 320;
+                db->set_channel_voice_bitrate(req.channel_id(), kbps);
             }
             if (ok && req.has_slowmode_seconds()) {
                 db->set_channel_slowmode(req.channel_id(), req.slowmode_seconds());
@@ -2455,9 +2458,13 @@ private:
             int32_t type = 0;
             if (req.type() == chatproj::ChannelInfo::VOICE) type = 1;
             else if (req.type() == chatproj::ChannelInfo::CATEGORY) type = 2;
+            // 320 kbps keeps a 20 ms Opus frame (~800 B) well under the
+            // 1200-byte UDP payload cap; the client clamps to the same
+            // value and its slider stops at 256. Was 512 (above Opus's
+            // own 510 kbps ceiling, where a frame can reach 1275 B).
             int32_t bitrate = req.voice_bitrate_kbps();
             if (bitrate < 0) bitrate = 0;
-            if (bitrate > 512) bitrate = 512;
+            if (bitrate > 320) bitrate = 320;
             // Placement target must be a real category when given
             // (create_channel re-checks under its lock; this gives the
             // clearer error message).

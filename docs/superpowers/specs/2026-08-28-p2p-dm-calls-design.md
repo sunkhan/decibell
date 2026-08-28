@@ -86,7 +86,8 @@ used by the community path. `Sealed` is the P2P transport:
   has its top bits set so a late STUN response (top bits `00`) never matches.
 - The inner plaintext is the **unchanged** existing datagram, so
   `pipeline.rs`, `VideoReceiver`, PING/RTT, NACK, PLI and FEC work untouched.
-  Worst-case sealed video datagram is 45 + 1200 + 25 = 1270 B (≤ 1280).
+  Worst-case sealed datagram is 45 + 1200 + 25 = 1270 B for video and
+  37 + 1200 + 25 = 1262 B for audio (≤ 1280).
 - Peer address is *learned* from the source of the last authenticated
   datagram (the community relay's endpoint-learning, made safe by AEAD) and
   migrates after 2 s of silence — no `connect()`, so the two sides can never

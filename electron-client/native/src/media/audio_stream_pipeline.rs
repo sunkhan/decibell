@@ -149,9 +149,12 @@ pub fn run_audio_stream_pipeline(
             let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
             match encoder.encode(&pcm_buf[..STEREO_FRAME_SAMPLES], &mut opus_out) {
                 Ok(len) => {
-                    let packet =
-                        UdpAudioPacket::new_stream_audio(&sender_id, sequence, &opus_out[..len]);
-                    let _ = socket.send(&packet.to_bytes());
+                    match UdpAudioPacket::new_stream_audio(&sender_id, sequence, &opus_out[..len]) {
+                        Some(packet) => {
+                            let _ = socket.send(&packet.to_bytes());
+                        }
+                        None => log::warn!("[stream-audio] dropped oversize frame ({} B)", len),
+                    }
                     sequence = sequence.wrapping_add(1);
                     frame_count += 1;
 
