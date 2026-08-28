@@ -5155,8 +5155,10 @@ private:
     boost::asio::steady_timer accept_backoff_;
     boost::asio::ip::udp::socket udp_socket_;
     boost::asio::ip::udp::socket media_udp_socket_;
-    char udp_buffer_[sizeof(chatproj::UdpVideoPacket) > sizeof(chatproj::UdpFecPacket) ? sizeof(chatproj::UdpVideoPacket) : sizeof(chatproj::UdpFecPacket)];
-    char media_udp_buffer_[sizeof(chatproj::UdpVideoPacket) > sizeof(chatproj::UdpFecPacket) ? sizeof(chatproj::UdpVideoPacket) : sizeof(chatproj::UdpFecPacket)];
+    // Sized for the largest struct of ANY type: the voice socket carries
+    // audio (1437 B max) and the media socket video / FEC (1245 / 1243 B).
+    char udp_buffer_[chatproj::UDP_MAX_DATAGRAM];
+    char media_udp_buffer_[chatproj::UDP_MAX_DATAGRAM];
     boost::asio::ip::udp::endpoint udp_sender_endpoint_;
     boost::asio::ip::udp::endpoint media_udp_sender_endpoint_;
     ssl::context ssl_context_;

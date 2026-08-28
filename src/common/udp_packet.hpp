@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstddef>
 
 namespace chatproj {
 
@@ -8,10 +9,21 @@ namespace chatproj {
 // needed in every UDP packet.  This saves 224 bytes/packet vs the old 256.
 constexpr uint16_t SENDER_ID_SIZE = 32;
 
-// Max payload per UDP packet.  With the smaller header the largest packet
-// (UdpVideoPacket = 45 + 1400 = 1445 bytes) fits inside the standard
-// Ethernet MTU (1500) minus IP(20) + UDP(8) headers = 1472.
-constexpr uint16_t UDP_MAX_PAYLOAD = 1400;
+// Max video / FEC payload per UDP packet. Mirrors the Electron client
+// (native/src/media/video_packet.rs UDP_MAX_PAYLOAD): 1200 keeps the
+// largest datagram (UdpVideoPacket = 45 + 1200 = 1245 bytes) under the
+// PPPoE / VPN / tunnel MTUs that shrink the classic 1472-byte budget, and
+// leaves room for the 25-byte sealed envelope of P2P DM calls (1270 B).
+// Was 1400 through 0.7.7 — the client had already moved to 1200 in 0.5.4,
+// so the C++ structs over-allocated and the relay's sizeof-based buffers
+// and checks disagreed with what was actually on the wire.
+constexpr uint16_t UDP_MAX_PAYLOAD = 1200;
+
+// Max audio payload (AUDIO / STREAM_AUDIO / PING). Mirrors
+// native/src/media/packet.rs MAX_PAYLOAD_SIZE — audio never approaches it
+// (a 20 ms Opus frame is a few hundred bytes) but the struct layout stays
+// byte-compatible with the client's.
+constexpr uint16_t AUDIO_MAX_PAYLOAD = 1400;
 
 #pragma pack(push, 1) // Force 1-byte alignment to prevent padding issues across architectures
 
@@ -49,7 +61,7 @@ struct UdpAudioPacket {
     char sender_id[SENDER_ID_SIZE];     // Token hash upstream, Username downstream
     uint16_t sequence;                  // Sequence number to drop out-of-order packets
     uint16_t payload_size;              // Exact size of the compressed audio data
-    uint8_t payload[UDP_MAX_PAYLOAD];
+    uint8_t payload[AUDIO_MAX_PAYLOAD];
 };
 
 // Sent by a viewer to request retransmission of specific missing video packets
@@ -89,5 +101,15 @@ struct UdpVideoPacket {
     uint8_t payload[UDP_MAX_PAYLOAD];
 };
 #pragma pack(pop)
+
+// Largest datagram any client can send (the audio struct, now that video /
+// FEC chunk at 1200) — sizes the relay's receive buffers so no packet type
+// is ever truncated by receive_from.
+constexpr std::size_t UDP_MAX_DATAGRAM =
+    sizeof(UdpAudioPacket) > sizeof(UdpVideoPacket)
+        ? (sizeof(UdpAudioPacket) > sizeof(UdpFecPacket) ? sizeof(UdpAudioPacket)
+                                                          : sizeof(UdpFecPacket))
+        : (sizeof(UdpVideoPacket) > sizeof(UdpFecPacket) ? sizeof(UdpVideoPacket)
+                                                          : sizeof(UdpFecPacket));
 
 }

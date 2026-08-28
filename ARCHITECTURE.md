@@ -266,7 +266,8 @@ All structs use `#pragma pack(push, 1)` (1-byte alignment, no padding). Source: 
 | Name | Value | Description |
 |------|-------|-------------|
 | `SENDER_ID_SIZE` | 32 | Bytes reserved for sender identifier in all packets |
-| `UDP_MAX_PAYLOAD` | 1400 | Max payload bytes per packet (MTU-safe) |
+| `UDP_MAX_PAYLOAD` | 1200 | Max video / FEC payload bytes per packet (MTU-safe incl. PPPoE/VPN; matches `video_packet.rs`; was 1400 through 0.7.7) |
+| `AUDIO_MAX_PAYLOAD` | 1400 | Max audio payload bytes (matches `packet.rs MAX_PAYLOAD_SIZE`) |
 | `NACK_MAX_ENTRIES` | 64 | Max missing packet indices per NACK packet |
 | `FEC_GROUP_SIZE` | 5 | Data packets per FEC group |
 
@@ -294,7 +295,7 @@ All structs use `#pragma pack(push, 1)` (1-byte alignment, no padding). Source: 
 | payload_size | 35 | 2 | uint16 | Exact byte count of Opus-encoded audio |
 | payload | 37 | 1400 | uint8[1400] | Opus-encoded audio data |
 
-### UdpVideoPacket — 1445 bytes total
+### UdpVideoPacket — 1245 bytes total
 | Field | Offset | Size | Type | Description |
 |-------|--------|------|------|-------------|
 | packet_type | 0 | 1 | uint8 | Always 1 (VIDEO) |
@@ -305,9 +306,9 @@ All structs use `#pragma pack(push, 1)` (1-byte alignment, no padding). Source: 
 | payload_size | 41 | 2 | uint16 | Encoded chunk byte count |
 | is_keyframe | 43 | 1 | bool | True if this fragment belongs to a keyframe (I-frame) |
 | codec | 44 | 1 | uint8 | VideoCodec: 0=VP9, 1=H.264 |
-| payload | 45 | 1400 | uint8[1400] | Encoded video chunk |
+| payload | 45 | 1200 | uint8[1200] | Encoded video chunk |
 
-### UdpFecPacket — 1443 bytes total
+### UdpFecPacket — 1243 bytes total
 | Field | Offset | Size | Type | Description |
 |-------|--------|------|------|-------------|
 | packet_type | 0 | 1 | uint8 | Always 4 (FEC) |
@@ -316,7 +317,7 @@ All structs use `#pragma pack(push, 1)` (1-byte alignment, no padding). Source: 
 | group_start | 37 | 2 | uint16 | packet_index of first packet in FEC group |
 | group_count | 39 | 2 | uint16 | Number of data packets in group (typically FEC_GROUP_SIZE=5) |
 | payload_size_xor | 41 | 2 | uint16 | XOR of all payload_sizes in the group |
-| payload | 43 | 1400 | uint8[1400] | XOR of all payloads in the group (zero-padded) |
+| payload | 43 | 1200 | uint8[1200] | XOR of all payloads in the group (zero-padded) |
 
 ### UdpNackPacket — 199 bytes total
 | Field | Offset | Size | Type | Description |
@@ -379,11 +380,12 @@ the RTT / keepalive logic above is unchanged. Signaling (`CALL_SIGNAL`),
 STUN and the hole punch are described in
 `docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md`.
 
-> The fixed-size packet lengths quoted in this section (1437 / 1445 / 1443
-> bytes) and `UDP_MAX_PAYLOAD = 1400` describe the C++ structs; the Electron
-> client sends compact header+payload datagrams and chunks video at 1200
-> bytes (`native/src/media/video_packet.rs`). `src/common/udp_packet.hpp` and
-> `native/src/media/{packet,video_packet}.rs` are the source of truth.
+> The fixed-size packet lengths quoted in this section (1437 / 1245 / 1243
+> bytes) are the struct sizes; the Electron client sends compact
+> header+payload datagrams (a 20 ms voice packet is ~37 + 100 bytes), and
+> the relay forwards `bytes_recvd`. `src/common/udp_packet.hpp` and
+> `native/src/media/{packet,video_packet}.rs` are the source of truth and
+> agree since 0.7.8 (`UDP_MAX_PAYLOAD` 1200 for video/FEC, 1400 for audio).
 
 ## 5. Audio Pipeline
 
@@ -453,7 +455,7 @@ Capture sources (screen index or window HWND) are selected by the user in `Strea
 - **Adaptive bitrate:** tracks NACK-to-packets-sent ratio each evaluation interval; adjusts codec bitrate between `min_bitrate_` (300 kbps) and `configured_bitrate_` (user max). Applied via `applyBitrate()`.
 
 ### Fragmentation and Transport
-1. Encoded frame split into 1400-byte chunks
+1. Encoded frame split into 1200-byte chunks
 2. Each chunk → `UdpVideoPacket` (frame_id, packet_index, total_packets, is_keyframe, codec)
 3. Sent via `sendUdpData` signal → `ChatBackend` QUdpSocket
 4. FEC: XOR parity packet (`UdpFecPacket`) emitted every `FEC_GROUP_SIZE` (5) data packets
