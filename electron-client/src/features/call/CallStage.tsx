@@ -15,6 +15,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import { playSound } from "../../utils/sounds";
 import { VideoCodec, type StreamInfo } from "../../types";
 import CaptureSourcePicker from "../voice/CaptureSourcePicker";
+import CodecBadge from "../voice/CodecBadge";
 import StreamStatsOverlay from "../voice/StreamStatsOverlay";
 import { getStreamPipHost, placeStreamPip, recordFullViewRect } from "../voice/streamPipHost";
 import { saveSettings } from "../settings/saveSettings";
@@ -329,42 +330,22 @@ function Stage({ peer }: { peer: string }) {
         </div>
       ) : (
         <div key="tiles" className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 pb-14 pt-10">
-          <div className="flex items-start justify-center gap-10">
+          {/* Tiles row: the two people, then a card per live screen share —
+              a share is presented like another participant, not a banner
+              competing with the peer's volume row. */}
+          <div className="flex items-start justify-center gap-8">
             <CallTile username={me} muted={isMuted} dim={!live} />
             <div className="flex flex-col items-center">
               <CallTile username={peer} muted={false} dim={!live} pulse={!live} />
               {live && <PeerAudioControls username={peer} />}
             </div>
+            {live && peerStream && (
+              <StreamCard info={peerStream} owner={peer} own={false} />
+            )}
+            {live && isStreaming && ownStream && (
+              <StreamCard info={ownStream} owner={me} own />
+            )}
           </div>
-          {live && (peerStream || (isStreaming && ownStream)) && (
-            <div className="flex items-center gap-3 rounded-md border border-border bg-bg-light px-3 py-2 shadow-float">
-              {peerStream ? (
-                <>
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-error" />
-                  <span className="text-[12px] text-text-primary">
-                    {peer} is sharing their screen
-                  </span>
-                  <span className="text-[11px] text-text-muted">{qualityLabel(peerStream)}</span>
-                  <button
-                    onClick={() => void watchCallStream(peer)}
-                    className="rounded-sm bg-accent px-3 py-1 text-[12px] font-semibold text-on-accent hover:bg-accent-hover"
-                  >
-                    Watch
-                  </button>
-                </>
-              ) : (
-                <span className="text-[12px] text-text-secondary">You are sharing your screen</span>
-              )}
-              {isStreaming && ownStream && (
-                <button
-                  onClick={() => void watchCallStream(me)}
-                  className="rounded-sm border border-border bg-surface-hover px-3 py-1 text-[12px] font-medium text-text-secondary hover:text-text-bright"
-                >
-                  Preview
-                </button>
-              )}
-            </div>
-          )}
           {error && live && (
             <div className="rounded-sm bg-error/10 px-2 py-1 text-[11px] text-error">{error}</div>
           )}
@@ -621,6 +602,62 @@ const CallTile = memo(function CallTile({ username, muted, dim, pulse }: CallTil
     </div>
   );
 });
+
+/// A live screen share as a card in the tile row: 16:9 poster (the owner's
+/// avatar — P2P calls have no thumbnails), LIVE pill, codec badge, and the
+/// owner caption. Click → watch (the peer's) or preview (your own). Mirrors
+/// the community voice view's stream cards so the two read the same.
+function StreamCard({ info, owner, own }: { info: StreamInfo; owner: string; own: boolean }) {
+  const label = own ? "Your screen" : `${owner}'s screen`;
+  const open = () => void watchCallStream(owner);
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      }}
+      title={own ? "Preview what you're sharing" : `Watch ${owner}'s screen`}
+      className="group mt-2 w-44 cursor-pointer overflow-hidden rounded-lg border border-border bg-bg-light transition-all duration-150 ease-out hover:border-accent/30 hover:shadow-float"
+    >
+      <div className="relative aspect-video w-full bg-bg-darkest">
+        <CodecBadge
+          codec={info.currentCodec}
+          width={info.resolutionWidth}
+          height={info.resolutionHeight}
+          fps={info.fps}
+          enforced={false}
+          size="small"
+        />
+        <div className="flex h-full w-full items-center justify-center">
+          <UserAvatar username={owner} size={40} />
+        </div>
+        <div className="absolute left-2 top-2 flex items-center gap-[5px] rounded-sm bg-error/90 px-1.5 py-0.5">
+          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+          <span className="text-[10px] font-semibold text-white">LIVE</span>
+        </div>
+        <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/40">
+          <span className="text-[12px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
+            {own ? "Preview" : "Watch"}
+          </span>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 px-2.5 py-2">
+        <UserAvatar username={owner} size={20} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12px] font-medium text-text-primary">{label}</div>
+          {qualityLabel(info) && (
+            <div className="truncate font-meta text-[10.5px] text-text-muted">{qualityLabel(info)}</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /// Small avatar + name chip over the video (bottom-right). Speaking ring,
 /// mute glyph, right-click → the user menu.
