@@ -15,7 +15,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import { playSound } from "../../utils/sounds";
 import { VideoCodec, type StreamInfo } from "../../types";
 import CaptureSourcePicker from "../voice/CaptureSourcePicker";
-import CodecBadge from "../voice/CodecBadge";
+import { CodecBadge } from "../voice/CodecBadge";
 import StreamStatsOverlay from "../voice/StreamStatsOverlay";
 import { getStreamPipHost, placeStreamPip, recordFullViewRect } from "../voice/streamPipHost";
 import { saveSettings } from "../settings/saveSettings";
