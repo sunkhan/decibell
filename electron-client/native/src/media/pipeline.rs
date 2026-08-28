@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,6 +10,7 @@ use super::audio_device::{
     build_voice_output_stream, build_stream_output_stream, OutputPullStats, PeerList,
 };
 use super::jitter::Frame;
+use super::media_socket::MediaSocket;
 use super::debug_dump::AudioDump;
 use super::codec::{
     OpusEncoder, FRAME_SIZE, MAX_OPUS_FRAME_SIZE,
@@ -86,7 +86,7 @@ pub const FLAG_SILENCE: u8 = 0x04;
 /// Video packets are forwarded to `video_packet_tx` for processing on a separate thread,
 /// keeping the audio loop fast and preventing video reassembly from causing audio choppiness.
 pub fn run_audio_pipeline(
-    socket: Arc<UdpSocket>,
+    socket: Arc<MediaSocket>,
     sender_id: String,
     voice_bitrate_bps: i32,
     initial_input_device: Option<String>,
@@ -1510,7 +1510,7 @@ pub fn run_audio_pipeline(
 // a separate media socket handled by the video recv thread in mod.rs.
 
 fn voice_recv_thread(
-    socket: Arc<UdpSocket>,
+    socket: Arc<MediaSocket>,
     audio_tx: std::sync::mpsc::SyncSender<Vec<u8>>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
     drops: Arc<std::sync::atomic::AtomicU64>,

@@ -22,8 +22,11 @@ use crate::media::{capture_audio_wasapi, source_id as source_id_parser, AudioStr
 
 #[napi(object)]
 pub struct StartScreenShareArgs {
-    pub server_id: String,
-    pub channel_id: String,
+    /// Community + channel to announce in. Both absent during a DM call —
+    /// the renderer announces over central with CALL_SIGNAL STREAM_START
+    /// instead, and the peer is the only receiver.
+    pub server_id: Option<String>,
+    pub channel_id: Option<String>,
     pub fps: u32,
     pub width: u32,
     pub height: u32,
@@ -59,13 +62,14 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
     // Linux-only: renderer opted into native encoding. Drives whether we
     // defer engine storage to attach the capture pipeline after the lock.
     let native_linux = cfg!(target_os = "linux") && args.native_encode.unwrap_or(false);
-    let (write_tx, data, deferred_engine) = {
+    let (announce, deferred_engine) = {
         let mut s = state_arc.lock().await;
         if s.video_engine.is_some() {
             return Err(napi::Error::from_reason("Already sharing screen"));
         }
+        let in_call = s.active_call.is_some();
         let voice = s.voice_engine.as_ref().ok_or_else(|| {
-            napi::Error::from_reason("Must be in a voice channel to share screen")
+            napi::Error::from_reason("Must be in a voice channel or call to share screen")
         })?;
         let media_socket = voice.media_socket();
         // Stream audio rides the voice UDP socket — receivers demux by
@@ -84,29 +88,40 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
             .clone()
             .ok_or_else(|| napi::Error::from_reason("Not authenticated"))?;
 
-        let client = s.communities.get(&args.server_id).ok_or_else(|| {
-            napi::Error::from_reason(format!(
-                "Not connected to community {}",
-                args.server_id
-            ))
-        })?;
-        let tx = client.connection_write_tx().ok_or_else(|| {
-            napi::Error::from_reason("Community connection lost")
-        })?;
-        let pkt = build_packet(
-            packet::Type::StartStreamReq,
-            packet::Payload::StartStreamReq(StartStreamRequest {
-                channel_id: args.channel_id.clone(),
-                target_fps: args.fps as i32,
-                target_bitrate_kbps: args.video_bitrate_kbps as i32,
-                has_audio: args.share_audio,
-                resolution_width: args.width,
-                resolution_height: args.height,
-                chosen_codec: args.initial_codec as i32,
-                enforced_codec: args.enforced_codec as i32,
-            }),
-            Some(&client.jwt),
-        );
+        // Community announcement (StartStreamReq). Skipped in a DM call:
+        // the P2P peer learns about the stream via CALL_SIGNAL from the
+        // renderer, and there is no community session to tell.
+        let announce: Option<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = if in_call {
+            None
+        } else {
+            let server_id = args.server_id.as_deref().ok_or_else(|| {
+                napi::Error::from_reason("server_id required outside a call")
+            })?;
+            let channel_id = args.channel_id.clone().ok_or_else(|| {
+                napi::Error::from_reason("channel_id required outside a call")
+            })?;
+            let client = s.communities.get(server_id).ok_or_else(|| {
+                napi::Error::from_reason(format!("Not connected to community {}", server_id))
+            })?;
+            let tx = client.connection_write_tx().ok_or_else(|| {
+                napi::Error::from_reason("Community connection lost")
+            })?;
+            let pkt = build_packet(
+                packet::Type::StartStreamReq,
+                packet::Payload::StartStreamReq(StartStreamRequest {
+                    channel_id,
+                    target_fps: args.fps as i32,
+                    target_bitrate_kbps: args.video_bitrate_kbps as i32,
+                    has_audio: args.share_audio,
+                    resolution_width: args.width,
+                    resolution_height: args.height,
+                    chosen_codec: args.initial_codec as i32,
+                    enforced_codec: args.enforced_codec as i32,
+                }),
+                Some(&client.jwt),
+            );
+            Some((tx, pkt))
+        };
 
         let mut engine = VideoEngine::start(media_socket, sender_id, self_username);
 
@@ -162,8 +177,8 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                     args.fps,
                     args.video_bitrate_kbps,
                     args.include_cursor.unwrap_or(true),
-                    args.server_id.clone(),
-                    args.channel_id.clone(),
+                    args.server_id.clone().unwrap_or_default(),
+                    args.channel_id.clone().unwrap_or_default(),
                 )
                 .map_err(napi::Error::from_reason)?;
 
@@ -251,10 +266,10 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
         // the portal dialog blocks on the user — so defer storing the
         // engine. Every other path stores it here under the lock.
         if native_linux {
-            (tx, pkt, Some(engine))
+            (announce, Some(engine))
         } else {
             s.video_engine = Some(engine);
-            (tx, pkt, None)
+            (announce, None)
         }
     };
 
@@ -278,8 +293,8 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                 args.fps,
                 args.video_bitrate_kbps,
                 args.include_cursor.unwrap_or(true),
-                args.server_id.clone(),
-                args.channel_id.clone(),
+                args.server_id.clone().unwrap_or_default(),
+                args.channel_id.clone().unwrap_or_default(),
             )
             .await
             .map_err(napi::Error::from_reason)?;
@@ -328,10 +343,12 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
             None
         };
 
-        match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => return Err(napi::Error::from_reason("Connection closed")),
-            Err(_) => return Err(napi::Error::from_reason("Send timed out")),
+        if let Some((write_tx, data)) = announce {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => return Err(napi::Error::from_reason("Connection closed")),
+                Err(_) => return Err(napi::Error::from_reason("Send timed out")),
+            }
         }
         let mut s = state_arc.lock().await;
         s.video_engine = Some(engine);
@@ -345,6 +362,9 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
 
     // Renderer-WebCodecs path (Linux without native, macOS) and Windows
     // native (engine already stored under the lock): announce now.
+    let Some((write_tx, data)) = announce else {
+        return Ok(());
+    };
     match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
@@ -370,8 +390,9 @@ fn resolve_linux_codec(initial: u8) -> (crate::media::caps::CodecKind, u8) {
 
 #[napi(object)]
 pub struct StopScreenShareArgs {
-    pub server_id: String,
-    pub channel_id: String,
+    /// Absent during a DM call (no community to notify).
+    pub server_id: Option<String>,
+    pub channel_id: Option<String>,
 }
 
 #[napi]
@@ -388,17 +409,19 @@ pub async fn stop_screen_share(args: StopScreenShareArgs) -> napi::Result<()> {
         let was_streaming = s.video_engine.is_some();
         let video = s.video_engine.take();
         let audio = s.audio_stream_engine.take();
-        let send = if was_streaming {
-            s.communities.get(&args.server_id).and_then(|client| {
-                client.connection_write_tx().map(|tx| {
-                    let pkt = build_packet(
-                        packet::Type::StopStreamReq,
-                        packet::Payload::StopStreamReq(StopStreamRequest {
-                            channel_id: args.channel_id.clone(),
-                        }),
-                        Some(&client.jwt),
-                    );
-                    (tx, pkt)
+        let send = if was_streaming && s.active_call.is_none() {
+            args.server_id.as_deref().and_then(|server_id| {
+                s.communities.get(server_id).and_then(|client| {
+                    client.connection_write_tx().map(|tx| {
+                        let pkt = build_packet(
+                            packet::Type::StopStreamReq,
+                            packet::Payload::StopStreamReq(StopStreamRequest {
+                                channel_id: args.channel_id.clone().unwrap_or_default(),
+                            }),
+                            Some(&client.jwt),
+                        );
+                        (tx, pkt)
+                    })
                 })
             })
         } else {

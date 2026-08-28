@@ -9,12 +9,12 @@
 //! in practice; receiver-side FEC + NACK request still works for the
 //! incoming path (see `video_receiver.rs`).
 
-use std::net::UdpSocket;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use arc_swap::ArcSwap;
 
+use super::media_socket::MediaSocket;
 use super::video_packet::{UdpVideoPacket, UDP_MAX_PAYLOAD};
 
 /// Per-stream send context. One of these per active outgoing stream.
@@ -24,13 +24,13 @@ use super::video_packet::{UdpVideoPacket, UDP_MAX_PAYLOAD};
 /// (which spins up a fresh VoiceEngine with a new media socket) without
 /// tearing down the capture/encoder pipeline.
 pub struct VideoSender {
-    socket: ArcSwap<UdpSocket>,
+    socket: ArcSwap<MediaSocket>,
     sender_id: String,
     next_frame_id: AtomicU32,
 }
 
 impl VideoSender {
-    pub fn new(socket: Arc<UdpSocket>, sender_id: String) -> Self {
+    pub fn new(socket: Arc<MediaSocket>, sender_id: String) -> Self {
         Self {
             socket: ArcSwap::from(socket),
             sender_id,
@@ -41,7 +41,7 @@ impl VideoSender {
     /// Re-point the sender at a new media socket. Used when the stream is
     /// carried into a new voice channel — the frame id counter keeps
     /// advancing so the receiver treats it as the same continuous stream.
-    pub fn set_socket(&self, socket: Arc<UdpSocket>) {
+    pub fn set_socket(&self, socket: Arc<MediaSocket>) {
         self.socket.store(socket);
     }
 

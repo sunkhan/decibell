@@ -35,6 +35,11 @@ smallvec = "1"
 aec3 = "0.1"
 nnnoiseless = { version = "0.5.2", default-features = false }
 arc-swap = "1"
+# P2P DM calls: X25519 + HKDF for the per-call media keys (ring is already
+# in the tree through rustls) and local interface enumeration for host
+# candidates.
+ring = "0.17"
+if-addrs = "0.13"
 
 # libc is used in cfg(unix) socket tuning code that runs on Linux *and*
 # macOS — must be available for both, not just Linux.

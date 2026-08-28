@@ -48,6 +48,8 @@ mod tests {
             message: "Welcome".into(),
             jwt_token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.test".into(),
             memberships: vec![],
+            stun_servers: vec![],
+            call_signaling: false,
         };
         let bytes = resp.encode_to_vec();
         let decoded = LoginResponse::decode(&bytes[..]).unwrap();

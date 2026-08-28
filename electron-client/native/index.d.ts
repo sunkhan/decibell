@@ -75,6 +75,30 @@ export interface SendCallSignalArgs {
   stream?: CallStreamMetaArg
 }
 export declare function sendCallSignal(args: SendCallSignalArgs): Promise<void>
+export interface CallPrepareArgs {
+  callId: string
+  peer: string
+}
+export interface CallPrepareResult {
+  /** base64 of our 32-byte X25519 public key. */
+  pubKey: string
+  candidates: Array<CallCandidateArg>
+}
+export declare function callPrepare(args: CallPrepareArgs): Promise<CallPrepareResult>
+export interface CallConnectArgs {
+  callId: string
+  peer: string
+  /** base64 of the peer's 32-byte X25519 public key. */
+  remotePubKey: string
+  remoteCandidates: Array<CallCandidateArg>
+  voiceBitrateKbps?: number
+}
+export declare function callConnect(args: CallConnectArgs): Promise<void>
+export declare function callEnd(): Promise<void>
+export interface CallWatchStreamArgs {
+  watch: boolean
+}
+export declare function callWatchStream(args: CallWatchStreamArgs): Promise<void>
 export interface RequestChannelHistoryArgs {
   serverId: string
   channelId: string
@@ -668,8 +692,13 @@ export interface AudioDeviceList {
 }
 export declare function listAudioDevices(): Promise<AudioDeviceList>
 export interface StartScreenShareArgs {
-  serverId: string
-  channelId: string
+  /**
+   * Community + channel to announce in. Both absent during a DM call —
+   * the renderer announces over central with CALL_SIGNAL STREAM_START
+   * instead, and the peer is the only receiver.
+   */
+  serverId?: string
+  channelId?: string
   fps: number
   width: number
   height: number
@@ -708,8 +737,9 @@ export interface StartScreenShareArgs {
 }
 export declare function startScreenShare(args: StartScreenShareArgs): Promise<void>
 export interface StopScreenShareArgs {
-  serverId: string
-  channelId: string
+  /** Absent during a DM call (no community to notify). */
+  serverId?: string
+  channelId?: string
 }
 export declare function stopScreenShare(args: StopScreenShareArgs): Promise<void>
 export interface MoveStreamToChannelArgs {

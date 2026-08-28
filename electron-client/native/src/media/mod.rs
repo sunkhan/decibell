@@ -23,6 +23,7 @@
 
 pub mod audio_device;
 pub mod audio_stream_pipeline;
+pub mod call_crypto;
 pub mod capture;
 #[cfg(target_os = "linux")]
 pub mod capture_audio_pipewire;
@@ -33,6 +34,7 @@ pub mod codec;
 pub mod codec_selection;
 pub mod debug_dump;
 pub mod jitter;
+pub mod media_socket;
 pub mod packet;
 pub mod peer;
 pub mod source_id;
@@ -69,7 +71,9 @@ pub mod encoder_thread;
 #[cfg(target_os = "windows")]
 pub mod thumbnail;
 pub mod pipeline;
+pub mod punch;
 pub mod speaking;
+pub mod stun;
 #[cfg(test)]
 pub mod voice_sim_tests;
 pub mod video_packet;
@@ -81,6 +85,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 
+use media_socket::MediaSocket;
+pub use media_socket::SocketKeys;
 use pipeline::{ControlMessage, VoiceEvent};
 
 use crate::events;
@@ -150,8 +156,8 @@ pub struct VoiceEngine {
     /// on stop would block indefinitely, leaving Electron's process
     /// hanging in the background after window close.
     video_recv_stop: Arc<AtomicBool>,
-    voice_socket: Arc<UdpSocket>,
-    media_socket: Arc<UdpSocket>,
+    voice_socket: Arc<MediaSocket>,
+    media_socket: Arc<MediaSocket>,
     sender_id: String,
     is_muted: bool,
     is_deafened: bool,
@@ -167,9 +173,6 @@ impl VoiceEngine {
         initial_input_device: Option<String>,
         initial_output_device: Option<String>,
     ) -> Result<Self, String> {
-        let (control_tx, control_rx) = mpsc::channel();
-        let (event_tx, event_rx) = mpsc::channel();
-
         // Voice UDP port is server_port + 1, media UDP port is server_port + 2.
         let voice_udp_addr = format!("{}:{}", server_host, server_port + 1);
         let media_udp_addr = format!("{}:{}", server_host, server_port + 2);
@@ -196,8 +199,55 @@ impl VoiceEngine {
 
         configure_udp_socket(&voice_socket);
         configure_udp_socket(&media_socket);
-        let voice_socket = Arc::new(voice_socket);
-        let media_socket = Arc::new(media_socket);
+        // Community relay: transparent (Plain) transport — bytes on the wire
+        // are exactly what they were before MediaSocket existed.
+        let voice_socket = Arc::new(MediaSocket::plain(voice_socket, &sender_id));
+        let media_socket = Arc::new(MediaSocket::plain(media_socket, &sender_id));
+
+        Self::start_with_sockets(
+            voice_socket,
+            media_socket,
+            sender_id,
+            voice_bitrate_bps,
+            initial_input_device,
+            initial_output_device,
+        )
+    }
+
+    /// P2P DM call: both sockets are already sealed with the per-call keys
+    /// and have their peer address locked by the hole punch. `sender_id`
+    /// is our own username — there is no relay to rewrite it, so the
+    /// peer's pipeline sees exactly what a relayed packet would carry.
+    pub fn start_p2p(
+        voice_socket: Arc<MediaSocket>,
+        media_socket: Arc<MediaSocket>,
+        self_username: String,
+        voice_bitrate_bps: i32,
+        initial_input_device: Option<String>,
+        initial_output_device: Option<String>,
+    ) -> Result<Self, String> {
+        Self::start_with_sockets(
+            voice_socket,
+            media_socket,
+            self_username,
+            voice_bitrate_bps,
+            initial_input_device,
+            initial_output_device,
+        )
+    }
+
+    /// Shared tail of `start` / `start_p2p`: spawn the audio pipeline, the
+    /// video receive thread and the event bridge over two ready sockets.
+    fn start_with_sockets(
+        voice_socket: Arc<MediaSocket>,
+        media_socket: Arc<MediaSocket>,
+        sender_id: String,
+        voice_bitrate_bps: i32,
+        initial_input_device: Option<String>,
+        initial_output_device: Option<String>,
+    ) -> Result<Self, String> {
+        let (control_tx, control_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
 
         // Clone before move so the video recv thread can push into the
         // same event channel as the audio pipeline.
@@ -465,12 +515,18 @@ impl VoiceEngine {
         self.was_muted_before_deafen = v;
     }
 
-    pub fn voice_socket(&self) -> Arc<UdpSocket> {
+    pub fn voice_socket(&self) -> Arc<MediaSocket> {
         self.voice_socket.clone()
     }
 
-    pub fn media_socket(&self) -> Arc<UdpSocket> {
+    pub fn media_socket(&self) -> Arc<MediaSocket> {
         self.media_socket.clone()
+    }
+
+    /// Time since the last datagram (authenticated, in P2P mode) arrived on
+    /// the voice socket — the peer-loss watchdog for DM calls reads this.
+    pub fn voice_last_rx_age(&self) -> std::time::Duration {
+        self.voice_socket.last_rx_age()
     }
 
     pub fn sender_id(&self) -> &str {
@@ -489,7 +545,7 @@ impl Drop for VoiceEngine {
 /// KEYFRAME_REQUEST, NACK. Reassembled frames flow back to the voice
 /// event bridge via `event_tx`.
 fn run_video_recv_thread(
-    socket: Arc<UdpSocket>,
+    socket: Arc<MediaSocket>,
     sender_id: String,
     event_tx: mpsc::Sender<pipeline::VoiceEvent>,
     stop: Arc<AtomicBool>,
@@ -712,7 +768,7 @@ impl VideoEngine {
     /// packetisation. Codec selection + capture + encode live entirely
     /// renderer-side.
     pub fn start(
-        socket: Arc<UdpSocket>,
+        socket: Arc<MediaSocket>,
         sender_id: String,
         self_username: String,
     ) -> Self {
@@ -746,7 +802,7 @@ impl VideoEngine {
     /// is carried into a new voice channel: the new VoiceEngine has a fresh
     /// media socket, and swapping it here re-routes outgoing frames without
     /// tearing down (and re-prompting) the capture pipeline.
-    pub fn set_send_socket(&self, socket: Arc<UdpSocket>) {
+    pub fn set_send_socket(&self, socket: Arc<MediaSocket>) {
         self.sender.set_socket(socket);
     }
 
@@ -1027,7 +1083,7 @@ pub struct AudioStreamEngine {
 impl AudioStreamEngine {
     pub fn start(
         frame_rx: mpsc::Receiver<capture::AudioFrame>,
-        socket: Arc<UdpSocket>,
+        socket: Arc<MediaSocket>,
         sender_id: String,
         bitrate_kbps: u32,
         #[cfg(target_os = "linux")] cleanup: Option<Box<dyn FnOnce() + Send>>,
@@ -1087,7 +1143,7 @@ impl AudioStreamEngine {
 
     /// Re-point the STREAM_AUDIO sends at a new voice socket — used when the
     /// stream follows the user into a new voice channel.
-    pub fn set_socket(&self, socket: Arc<UdpSocket>) {
+    pub fn set_socket(&self, socket: Arc<MediaSocket>) {
         let _ = self
             .control_tx
             .send(audio_stream_pipeline::AudioStreamControl::SetSocket(socket));
@@ -1106,7 +1162,7 @@ impl Drop for AudioStreamEngine {
 /// setsockopt on Unix, WSAIoctl + setsockopt on Windows.
 /// SIO_UDP_CONNRESET is also disabled on Windows so a bogus ICMP
 /// unreachable from one peer doesn't tear down the entire socket.
-fn configure_udp_socket(socket: &UdpSocket) {
+pub(crate) fn configure_udp_socket(socket: &UdpSocket) {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;

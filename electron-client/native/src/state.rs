@@ -35,6 +35,24 @@ pub struct WatcherEvent {
     pub action: i32,
 }
 
+/// See `AppState::pending_call`.
+pub struct PendingCall {
+    pub call_id: String,
+    pub peer: String,
+    pub local: crate::media::call_crypto::LocalKeyPair,
+    pub voice: std::net::UdpSocket,
+    pub media: std::net::UdpSocket,
+}
+
+/// See `AppState::active_call`.
+pub struct ActiveCall {
+    pub call_id: String,
+    pub peer: String,
+    /// Set by `call_end` to abort an in-flight punch / silence the watchdog.
+    pub stop: Arc<std::sync::atomic::AtomicBool>,
+    pub watchdog: Option<tokio::task::JoinHandle<()>>,
+}
+
 pub struct BootConfig {
     pub user_data_dir: PathBuf,
     pub cache_dir: PathBuf,
@@ -94,6 +112,14 @@ pub struct AppState {
     /// the Call button on it).
     pub stun_servers: Vec<String>,
     pub call_signaling: bool,
+    /// A DM call between `call_prepare` (sockets bound, STUN done, keypair
+    /// minted) and `call_connect`. Replaced by a newer prepare; aborted by
+    /// `call_end`.
+    pub pending_call: Option<PendingCall>,
+    /// The DM call currently punching or connected. While set, the
+    /// VoiceEngine belongs to the call (connected_voice_* stay None) and
+    /// join_voice_channel refuses.
+    pub active_call: Option<ActiveCall>,
     /// Plan C: tokio broadcast channel for STREAM_WATCHER_NOTIFY events
     /// inbound from the community server. Pipeline subscribes once at
     /// startup, drops the AppState lock, and processes events without
@@ -142,6 +168,8 @@ impl Default for AppState {
             voice_caps_cache: Arc::new(RwLock::new(HashMap::new())),
             stun_servers: Vec::new(),
             call_signaling: false,
+            pending_call: None,
+            active_call: None,
             watcher_event_tx,
             pending_avatar_update: None,
             pending_avatar_fetches: HashMap::new(),

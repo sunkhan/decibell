@@ -1,4 +1,3 @@
-use std::net::UdpSocket;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,13 +5,14 @@ use rubato::{SincFixedOut, SincInterpolationParameters, SincInterpolationType, W
 
 use super::capture::AudioFrame;
 use super::codec::{StereoOpusEncoder, MAX_OPUS_FRAME_SIZE, SAMPLE_RATE, STEREO_FRAME_SAMPLES};
+use super::media_socket::MediaSocket;
 use super::packet::UdpAudioPacket;
 
 pub enum AudioStreamControl {
     Shutdown,
     /// Re-point the STREAM_AUDIO sends at a new voice socket — used when the
     /// stream follows the user into a new voice channel.
-    SetSocket(Arc<UdpSocket>),
+    SetSocket(Arc<MediaSocket>),
 }
 
 pub enum AudioStreamEvent {
@@ -28,7 +28,7 @@ pub fn run_audio_stream_pipeline(
     frame_rx: std::sync::mpsc::Receiver<AudioFrame>,
     control_rx: std::sync::mpsc::Receiver<AudioStreamControl>,
     event_tx: std::sync::mpsc::Sender<AudioStreamEvent>,
-    mut socket: Arc<UdpSocket>,
+    mut socket: Arc<MediaSocket>,
     sender_id: String,
     bitrate_kbps: u32,
 ) {

@@ -29,7 +29,7 @@ async fn send_raw(tx: &tokio::sync::mpsc::Sender<Vec<u8>>, data: Vec<u8>) -> Res
 /// freeze a Tokio worker (which would hold AppState mutex and deadlock
 /// the app). The streaming PR adds AudioStreamEngine + VideoEngine
 /// shutdown alongside this one.
-fn stop_voice_engine_background(voice: Option<VoiceEngine>) {
+pub(crate) fn stop_voice_engine_background(voice: Option<VoiceEngine>) {
     tokio::task::spawn_blocking(move || {
         if let Some(mut e) = voice {
             e.stop();
@@ -73,6 +73,13 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
         is_deafened,
     ) = {
         let mut s = state_arc.lock().await;
+
+        // A DM call owns the single VoiceEngine; the renderer hangs up
+        // (call_end) before joining a channel. Refuse rather than silently
+        // stealing the engine from under the call.
+        if s.active_call.is_some() {
+            return Err(napi::Error::from_reason("Hang up the call first"));
+        }
 
         let mut leave_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
         let old_voice = if s.voice_engine.is_some() {
