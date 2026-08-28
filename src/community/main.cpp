@@ -1057,9 +1057,7 @@ private:
                           << " on packet type " << packet.type() << "\n";
             }
             if (packet.type() == chatproj::Packet::CHANNEL_MSG) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "You're sending messages too fast.",
-                                    username_, "message");
+                reject_channel_msg(packet.channel_msg(), "You're sending messages too fast.");
             }
             return;
         }
@@ -1345,8 +1343,7 @@ private:
                     a = manager_.authz().check(chatproj::Action::AttachFiles, ctx);
                 }
                 if (!a) {
-                    send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason,
-                                        username_, "message");
+                    reject_channel_msg(*msg, a.reason);
                     return;
                 }
                 // Slowmode: one message per `slowmode_seconds` per channel
@@ -1360,9 +1357,7 @@ private:
                     const int64_t wait = manager_.slowmode_remaining(
                         username_, msg->channel_id(), sm->slowmode_seconds);
                     if (wait > 0) {
-                        send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                            "Slowmode is on — wait " + std::to_string(wait) + "s.",
-                            username_, "message");
+                        reject_channel_msg(*msg, "Slowmode is on — wait " + std::to_string(wait) + "s.");
                         return;
                     }
                     record_slowmode = true;
@@ -1388,9 +1383,7 @@ private:
             // here too so bind_attachments' IN-list stays bounded.
             constexpr int MAX_ATTACHMENTS_PER_MESSAGE = 10;
             if (msg->attachments_size() > MAX_ATTACHMENTS_PER_MESSAGE) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                    "Too many attachments on one message.",
-                                    username_, "message");
+                reject_channel_msg(*msg, "Too many attachments on one message.");
                 return;
             }
 
@@ -1431,9 +1424,7 @@ private:
                     // withdrawn.
                     std::cerr << "[Community] Failed to persist CHANNEL_MSG from "
                               << username_ << " in #" << msg->channel_id() << "\n";
-                    send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false,
-                                        "Message could not be saved — try again.",
-                                        username_, "message");
+                    reject_channel_msg(*msg, "Message could not be saved — try again.");
                     return;
                 }
             }
@@ -3008,6 +2999,22 @@ private:
         send_packet(p);
     }
 
+    // A CHANNEL_MSG this server won't accept. The sender gets a typed
+    // CHANNEL_MSG_REJECTED naming the request's nonce — so the client
+    // withdraws exactly that optimistic bubble instead of leaving a
+    // ghost row anchored at its tail — followed by the legacy
+    // MOD_ACTION_RES(action="message") for clients that predate it.
+    void reject_channel_msg(const chatproj::ChannelMessage& msg, const std::string& reason) {
+        chatproj::Packet p;
+        p.set_type(chatproj::Packet::CHANNEL_MSG_REJECTED);
+        auto* r = p.mutable_channel_msg_rejected();
+        r->set_channel_id(msg.channel_id());
+        r->set_nonce(msg.nonce());
+        r->set_reason(reason);
+        send_packet(p);
+        send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, reason, username_, "message");
+    }
+
     // Routes a packet type to its rate-limit bucket. Unlisted types
     // (pings, stop-stream, leave) are not limited.
     bool rate_limit_allows(chatproj::Packet::Type type) {
@@ -3130,7 +3137,10 @@ private:
     char inbound_header_[4];
 
     // Rate-limit buckets (burst capacity, sustained per second).
-    chatproj::TokenBucket msg_bucket_{8, 1.5};        // chat messages
+    // Chat messages + edits. 10 burst / 3 per s: a human firing one-word
+    // replies stays under it (the client paces to it too), a flood
+    // doesn't. Mirrored in the client's sendPacing.ts — keep in step.
+    chatproj::TokenBucket msg_bucket_{10, 3.0};
     chatproj::TokenBucket thumb_bucket_{6, 1.0};      // stream thumbnails
     chatproj::TokenBucket presence_bucket_{10, 2.0};  // voice/stream signalling
     chatproj::TokenBucket query_bucket_{20, 4.0};     // history / list fetches

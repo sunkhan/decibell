@@ -49,7 +49,7 @@ are header noise, and central changes are verified by inspection (+ a mocked-pqx
 syntax check for anything template-shaped). GCC trap seen in production: a generic lambda
 (`const auto&`) calling `row[i].as<T>()` needs the `template` keyword — use plain
 range-for loops instead. New community e2e checks go in `e2e.py`; per-session message rate
-limit is 8 burst / 1.5 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`.
+limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`.
 
 ## Workflow conventions
 

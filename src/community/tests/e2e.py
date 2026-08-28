@@ -522,13 +522,23 @@ def test_b11_rate_limit():
     lou = join("lou", owner)
     owner.flush(0.5); lou.flush(0.5)
     for i in range(30):
-        lou.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content=f"spam {i}"))
+        lou.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content=f"spam {i}", nonce=f"n{i}"))
     owner.drain(2.0); lou.drain(1.0)
-    delivered = sum(1 for p in owner.inbox if p.type == pb.Packet.CHANNEL_MSG)
+    delivered_nonces = [p.channel_msg.nonce for p in owner.inbox if p.type == pb.Packet.CHANNEL_MSG]
+    delivered = len(delivered_nonces)
     rejected = sum(1 for p in lou.inbox if p.type == pb.Packet.MOD_ACTION_RES and p.mod_action_res.action == "message"
                    and not p.mod_action_res.success)
-    check("burst capped (8 burst + ~1.5/s)", 8 <= delivered <= 14, f"delivered={delivered}")
+    rejections = [p.channel_msg_rejected for p in lou.inbox if p.type == pb.Packet.CHANNEL_MSG_REJECTED]
+    check("burst capped (10 burst + ~3/s)", 10 <= delivered <= 16, f"delivered={delivered}")
     check("sender notified for each dropped message", rejected == 30 - delivered, f"rejected={rejected} delivered={delivered}")
+    # The typed rejection names the dropped request's nonce — the client
+    # withdraws exactly that optimistic bubble (no more ghost rows).
+    expected_dropped = sorted(set(f"n{i}" for i in range(30)) - set(delivered_nonces))
+    check("CHANNEL_MSG_REJECTED names each dropped nonce",
+          sorted(r.nonce for r in rejections) == expected_dropped,
+          f"rejected_nonces={sorted(r.nonce for r in rejections)[:5]}... expected={expected_dropped[:5]}...")
+    check("rejection carries channel + reason",
+          all(r.channel_id == "general" and "too fast" in r.reason for r in rejections))
     lou.close(); owner.close()
 
 

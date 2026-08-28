@@ -835,6 +835,14 @@ impl CommunityClient {
                         actor: n.actor,
                     });
                 }
+                Some(packet::Payload::ChannelMsgRejected(r)) => {
+                    events::emit_channel_message_rejected(events::ChannelMessageRejectedPayload {
+                        server_id: server_id.clone(),
+                        channel_id: r.channel_id,
+                        nonce: r.nonce,
+                        reason: r.reason,
+                    });
+                }
                 Some(packet::Payload::ModActionRes(resp)) => {
                     if resp.success && resp.action == "leave" {
                         terminated.store(true, Ordering::SeqCst);

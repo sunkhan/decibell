@@ -108,6 +108,15 @@ export interface ServerInvite {
   uses: number;
 }
 
+/// CHANNEL_MSG_REJECTED — the community refused one of our messages;
+/// `nonce` identifies the optimistic bubble to withdraw.
+export interface ChannelMessageRejectedPayload {
+  serverId: string;
+  channelId: string;
+  nonce: string;
+  reason: string;
+}
+
 /// A `decibell://invite/<code>` URL parsed from a command-line
 /// argument, open-url event, or a link in chat. Stashed on the chat
 /// store; DeepLinkJoinModal consumes it on next render. host/port are

@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { legacyRejectionSuppressed, resetSendPacing } from "../chat/sendPacing";
 import { parseInviteLink } from "./inviteLink";
 import { invoke, listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
@@ -174,6 +175,8 @@ export function useServerEvents() {
           }
           chat.removeConnectedServer(p.requestedServerId);
         }
+        // The server's message bucket is per session and starts full.
+        resetSendPacing(p.serverId);
         useChatStore.getState().mergeServers([
           {
             id: p.serverId,
@@ -431,6 +434,10 @@ export function useServerEvents() {
       (event) => {
         const { serverId, success, action } = event.payload;
         if (!success) {
+          // A refused message already toasted through the typed
+          // CHANNEL_MSG_REJECTED (see sendPacing); this legacy echo of
+          // it is for older clients.
+          if (action === "message" && legacyRejectionSuppressed()) return;
           // The server denied the kick/ban/leave — surface it instead of
           // leaving the member silently in the list (looks like a hang).
           toast.error(event.payload.message || "Action failed");

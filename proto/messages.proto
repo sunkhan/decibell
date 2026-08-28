@@ -218,6 +218,11 @@ message Packet {
     MESSAGE_EDIT_REQ       = 124;   // client→community (own channel message only)
     MESSAGE_EDIT_RES       = 125;   // community→editor
     CHANNEL_MESSAGE_EDITED = 126;   // community→channel viewers (success only)
+    // A CHANNEL_MSG the community did not accept — rate limit, slowmode,
+    // permission, attachment cap, persist failure. Names the request's
+    // nonce so the sender withdraws exactly that optimistic bubble.
+    // MOD_ACTION_RES(action="message") still follows it for older clients.
+    CHANNEL_MSG_REJECTED = 127;     // community→sender
   }
 
   Type type = 1;
@@ -387,6 +392,7 @@ message Packet {
     MessageEditReq           message_edit_req       = 126;
     MessageEditRes           message_edit_res       = 127;
     ChannelMessageEdited     channel_message_edited = 128;
+    ChannelMessageRejected   channel_msg_rejected   = 129;
   }
 }
 
@@ -1694,6 +1700,15 @@ message ChannelMessageEdited {
   string content = 3;
   int64  edited_at = 4;
   string editor = 5;    // the message's sender (who edited it)
+}
+
+// See Packet.CHANNEL_MSG_REJECTED.
+message ChannelMessageRejected {
+  string channel_id = 1;
+  // The ChannelMessage.nonce of the rejected request ('' if the client
+  // sent none).
+  string nonce = 2;
+  string reason = 3;
 }
 
 // --- Custom server pictures ---

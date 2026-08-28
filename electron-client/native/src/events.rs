@@ -213,6 +213,7 @@ pub const FRIEND_LIST_RECEIVED: &str = "friend_list_received";
 pub const FRIEND_ACTION_RESPONDED: &str = "friend_action_responded";
 pub const MEMBER_LIST_RECEIVED: &str = "member_list_received";
 pub const MOD_ACTION_RESPONDED: &str = "mod_action_responded";
+pub const CHANNEL_MESSAGE_REJECTED: &str = "channel_message_rejected";
 pub const MEMBERSHIP_REVOKED: &str = "membership_revoked";
 pub const ROLE_LIST_RECEIVED: &str = "role_list_received";
 pub const MEMBER_UPSERT: &str = "member_upsert";
@@ -747,6 +748,18 @@ pub struct ModActionRespondedPayload {
     pub action: String,
 }
 
+/// CHANNEL_MSG_REJECTED: the community refused one of our channel
+/// messages. `nonce` is the one the renderer sent, so it withdraws
+/// exactly that optimistic bubble.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMessageRejectedPayload {
+    pub server_id: String,
+    pub channel_id: String,
+    pub nonce: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MembershipRevokedPayload {
@@ -950,6 +963,10 @@ pub fn emit_member_list_received(payload: MemberListReceivedPayload) {
 
 pub fn emit_mod_action_responded(payload: ModActionRespondedPayload) {
     send(MOD_ACTION_RESPONDED, payload);
+}
+
+pub fn emit_channel_message_rejected(payload: ChannelMessageRejectedPayload) {
+    send(CHANNEL_MESSAGE_REJECTED, payload);
 }
 
 pub fn emit_membership_revoked(payload: MembershipRevokedPayload) {

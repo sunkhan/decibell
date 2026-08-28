@@ -21,6 +21,7 @@ import EmojiPicker from "./EmojiPicker";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 import { pickFiles } from "./filePicker";
 import { queueUpload, startQueuedUpload } from "./uploadAttachment";
+import { paceSend, watchEcho } from "./sendPacing";
 import { chunkSourceFromPath } from "./chunkSource";
 import WelcomeState from "./WelcomeState";
 import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
@@ -519,14 +520,19 @@ export default function ChatPanel() {
     }
 
     try {
-      await invoke("send_channel_message", {
-        serverId,
-        channelId,
-        message: content,
-        attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
-        nonce,
-        replyTo: replyToId,
-      });
+      // Paced to the server's message bucket so a burst of sends is
+      // delayed, never dropped (see sendPacing).
+      await paceSend(serverId, () =>
+        invoke("send_channel_message", {
+          serverId,
+          channelId,
+          message: content,
+          attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+          nonce,
+          replyTo: replyToId,
+        }),
+      );
+      watchEcho(serverId, channelId, nonce);
       // Message went out (with whatever uploaded). Surface any partial
       // upload failures instead of dropping their chips silently.
       const failed = pendingIds.filter(
@@ -586,13 +592,16 @@ export default function ChatPanel() {
     });
     setReplyingTo(null);
     try {
-      await invoke("send_channel_message", {
-        serverId,
-        channelId,
-        message: content,
-        nonce,
-        replyTo: replyToId,
-      });
+      await paceSend(serverId, () =>
+        invoke("send_channel_message", {
+          serverId,
+          channelId,
+          message: content,
+          nonce,
+          replyTo: replyToId,
+        }),
+      );
+      watchEcho(serverId, channelId, nonce);
     } catch (err) {
       console.error("send_channel_message (gif):", err);
       useChatStore.getState().removeMessageByNonce(serverId, channelId, nonce);
@@ -687,12 +696,15 @@ export default function ChatPanel() {
     setEditingMessageId(null);
     if (!activeServerId || !activeChannelId || typeof message.id !== "number") return;
     if (content === message.content) return; // no change → skip round-trip
-    invoke("edit_channel_message", {
-      serverId: activeServerId,
-      channelId: activeChannelId,
-      messageId: message.id,
-      content,
-    }).catch((err) => console.error("edit_channel_message:", err));
+    // Edits draw from the same server bucket as sends — pace them too.
+    paceSend(activeServerId, () =>
+      invoke("edit_channel_message", {
+        serverId: activeServerId,
+        channelId: activeChannelId,
+        messageId: message.id,
+        content,
+      }),
+    ).catch((err) => console.error("edit_channel_message:", err));
   }, []);
   // ArrowUp on an empty composer → edit the latest own message in view.
   const editLatestOwn = useCallback(() => {

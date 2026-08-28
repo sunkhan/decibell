@@ -1,10 +1,13 @@
 import { useEffect } from "react";
 import { listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
+import { toast } from "../../stores/toastStore";
+import { noteTypedRejection } from "./sendPacing";
 import type {
   Attachment,
   AttachmentKind,
   ChannelHistoryReceivedPayload,
+  ChannelMessageRejectedPayload,
   ChannelPrunedPayload,
   ChannelWipedPayload,
   MessageReceivedPayload,
@@ -126,6 +129,22 @@ export function useChatEvents() {
       },
     );
 
+    // The community refused a message of ours (rate limit, slowmode,
+    // permission, …). Withdraw exactly that optimistic bubble — left in
+    // place it would anchor at the tail forever, with every later
+    // message inserting above it — and say why.
+    const unlistenRejected = listen<ChannelMessageRejectedPayload>(
+      "channel_message_rejected",
+      (event) => {
+        const p = event.payload;
+        noteTypedRejection();
+        if (p.nonce) {
+          useChatStore.getState().removeMessageByNonce(p.serverId, p.channelId, p.nonce);
+        }
+        toast.error("Message not sent", p.reason || "The server rejected it.");
+      },
+    );
+
     const unlistenWiped = listen<ChannelWipedPayload>("channel_wiped", (event) => {
       useChatStore
         .getState()
@@ -136,6 +155,7 @@ export function useChatEvents() {
       unlistenMsg.then((fn) => fn());
       unlistenHistory.then((fn) => fn());
       unlistenPruned.then((fn) => fn());
+      unlistenRejected.then((fn) => fn());
       unlistenWiped.then((fn) => fn());
     };
   }, []);

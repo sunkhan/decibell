@@ -602,6 +602,27 @@ Accept until the endpoint is known (or the invite is reported invalid). Native
 `parse_invite_link` accepts the code-only shape (host "" / port 0) though the renderer no
 longer calls it.
 
+**Spam-burst ghost bubbles: typed message rejection + client pacing (2026-08-27) ✅** — reported
+as "slowmode off, spam a while → *sending too fast* toast, then my messages render wrong (some
+missing, some trailing ~5 behind)". Not slowmode: the per-session anti-spam bucket (was 8 burst /
+1.5 per s, shared with edits) *drops* the message and answers with a generic
+`MOD_ACTION_RES(action="message")`, which carries no nonce — so the client toasted and left the
+optimistic id-0 bubble in place. `mergeMessage` anchors id-0 rows at the tail and inserts every
+later real message *above* them, hence the "trailing" ghosts and the "missing" newest message
+(it was there, above the ghosts); the ghosts also blocked `trimTail`. Fix, three layers:
+(1) **wire** — new `CHANNEL_MSG_REJECTED {channel_id, nonce, reason}` (type 127 / payload 129)
+sent by `reject_channel_msg()` at every refusal site (rate limit, permission, slowmode,
+attachment cap, persist failure), followed by the legacy `MOD_ACTION_RES` for older clients;
+the renderer (`channel_message_rejected` → `removeMessageByNonce` + toast) withdraws exactly
+that bubble and skips the legacy toast when it lands within a beat of the typed one (older
+servers still toast through the legacy path). (2) **client pacing** —
+`features/chat/sendPacing.ts` mirrors the bucket (10 burst, 2.7/s, reset on community auth)
+and queues sends per server FIFO, so a burst is *delayed* (the bubble is already on screen),
+never dropped — the toast stops appearing for fast typing at all. (3) **echo watchdog** — an
+id-0 bubble with no echo after 30 s is withdrawn with a toast, so no lost response can leave a
+permanent ghost. Bucket retuned to **10 burst / 3 per s** (CLAUDE.md updated). e2e `[B11]`
+now sends nonces and asserts `CHANNEL_MSG_REJECTED` names exactly the dropped ones.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
