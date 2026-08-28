@@ -1,4 +1,5 @@
 import { memo, useEffect, useState } from "react";
+import CaptureSourcePicker from "../voice/CaptureSourcePicker";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
 import { useCallStore } from "../../stores/callStore";
@@ -6,7 +7,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { playSound } from "../../utils/sounds";
-import { endCall } from "./callActions";
+import { announceCallStreamStop, endCall, watchCallStream } from "./callActions";
 
 /// In-DM call surface: shown between the DM header and the messages while
 /// a call with `peer` is ringing / connecting / active. Voice controls
@@ -39,6 +40,10 @@ function ActiveCallPanel({ peer }: { peer: string }) {
   const isMuted = useVoiceStore((s) => s.isMuted);
   const isDeafened = useVoiceStore((s) => s.isDeafened);
   const error = useVoiceStore((s) => s.error);
+  const isStreaming = useVoiceStore((s) => s.isStreaming);
+  const activeStreams = useVoiceStore((s) => s.activeStreams);
+  const [showPicker, setShowPicker] = useState(false);
+  const peerStream = activeStreams.find((st) => st.ownerUsername === peer);
 
   // 1 s tick for the duration readout while active.
   const [now, setNow] = useState(Date.now());
@@ -82,6 +87,14 @@ function ActiveCallPanel({ peer }: { peer: string }) {
   const handleHangUp = () => {
     void endCall(status === "outgoing" ? "Cancelled" : "Call ended");
   };
+  const handleStopSharing = async () => {
+    playSound("stream_stop");
+    const { stopActiveStream } = await import("../voice/streaming/StreamCapture");
+    await stopActiveStream();
+    invoke("stop_screen_share", {}).catch(console.error);
+    useVoiceStore.getState().setIsStreaming(false);
+    announceCallStreamStop();
+  };
 
   const live = status === "active";
 
@@ -95,6 +108,34 @@ function ActiveCallPanel({ peer }: { peer: string }) {
       {error && live && (
         <div className="mx-auto mt-2 max-w-md rounded-sm bg-error/10 px-2 py-1 text-center text-[11px] text-error">
           {error}
+        </div>
+      )}
+      {live && (peerStream || isStreaming) && (
+        <div className="mt-3 flex items-center justify-center gap-2">
+          {peerStream && (
+            <button
+              onClick={() => void watchCallStream(peer)}
+              className="flex h-9 items-center gap-2 rounded-md border border-accent/[0.25] bg-accent/[0.12] px-3 text-[12px] font-medium text-accent transition-colors hover:bg-accent/[0.18]"
+              title={`Watch ${peer}'s screen`}
+            >
+              <span className="flex h-1.5 w-1.5 animate-pulse rounded-full bg-error" />
+              Watch {peer}'s screen
+              {peerStream.resolutionHeight > 0 && (
+                <span className="text-[11px] text-accent/80">
+                  {peerStream.resolutionHeight}p{peerStream.fps > 0 ? ` · ${peerStream.fps}fps` : ""}
+                </span>
+              )}
+            </button>
+          )}
+          {isStreaming && (
+            <button
+              onClick={() => void watchCallStream(me)}
+              className="flex h-9 items-center gap-2 rounded-md border border-border bg-surface-hover px-3 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-bright"
+              title="Preview what you're sharing"
+            >
+              Preview my screen
+            </button>
+          )}
         </div>
       )}
       <div className="mt-3 flex items-center justify-center gap-2">
@@ -114,6 +155,13 @@ function ActiveCallPanel({ peer }: { peer: string }) {
             >
               {isDeafened ? <DeafenOffIcon /> : <DeafenIcon />}
             </CallButton>
+            <CallButton
+              title={isStreaming ? "Stop sharing" : "Share your screen"}
+              onClick={isStreaming ? () => void handleStopSharing() : () => setShowPicker(true)}
+              active={isStreaming}
+            >
+              {isStreaming ? <StopShareIcon /> : <ShareIcon />}
+            </CallButton>
           </>
         )}
         <button
@@ -125,6 +173,7 @@ function ActiveCallPanel({ peer }: { peer: string }) {
           {status === "outgoing" ? "Cancel" : "Hang up"}
         </button>
       </div>
+      {showPicker && <CaptureSourcePicker onClose={() => setShowPicker(false)} />}
     </div>
   );
 }
@@ -251,6 +300,23 @@ function HangUpIcon() {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91" />
       <line x1="23" y1="1" x2="1" y2="23" />
+    </svg>
+  );
+}
+function ShareIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+      <line x1="8" y1="21" x2="16" y2="21" />
+      <line x1="12" y1="17" x2="12" y2="21" />
+    </svg>
+  );
+}
+function StopShareIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" stroke="none" />
     </svg>
   );
 }

@@ -11,7 +11,7 @@ import { playSound } from "../../utils/sounds";
 import DeviceContextMenu from "../voice/DeviceContextMenu";
 import ConnectionStatsPopover from "../voice/ConnectionStatsPopover";
 import CaptureSourcePicker from "../voice/CaptureSourcePicker";
-import { endCall } from "../call/callActions";
+import { announceCallStreamStop, endCall } from "../call/callActions";
 
 const EMPTY_CHANNELS: never[] = [];
 
@@ -133,6 +133,7 @@ export default function UserPanel() {
       channelId: connectedChannelId ?? undefined,
     }).catch(console.error);
     useVoiceStore.getState().setIsStreaming(false);
+    announceCallStreamStop();
   };
 
   const openDeviceMenu = (type: "input" | "output", e: React.MouseEvent) => {
@@ -200,7 +201,7 @@ export default function UserPanel() {
         <div className="mb-2 rounded-sm bg-error/10 px-2 py-1 text-[11px] text-error">{error}</div>
       )}
 
-      {connectedChannelId && (
+      {inSession && (
         <div className="mb-2 flex items-center gap-1.5">
           <button
             onClick={isStreaming ? handleStopSharing : () => setShowPicker(true)}
@@ -324,10 +325,10 @@ export default function UserPanel() {
           onClose={() => setDeviceMenu(null)}
         />
       )}
-      {showPicker && connectedServerId && connectedChannelId && (
+      {showPicker && (callPeer || (connectedServerId && connectedChannelId)) && (
         <CaptureSourcePicker
-          serverId={connectedServerId}
-          channelId={connectedChannelId}
+          serverId={connectedServerId ?? undefined}
+          channelId={connectedChannelId ?? undefined}
           onClose={() => setShowPicker(false)}
         />
       )}

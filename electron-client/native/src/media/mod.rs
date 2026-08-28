@@ -86,7 +86,6 @@ use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 
 use media_socket::MediaSocket;
-pub use media_socket::SocketKeys;
 use pipeline::{ControlMessage, VoiceEvent};
 
 use crate::events;

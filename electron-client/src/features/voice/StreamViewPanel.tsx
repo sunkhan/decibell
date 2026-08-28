@@ -268,13 +268,21 @@ export default function StreamViewPanel() {
   };
 
   const handleStopWatching = async () => {
-    if (!displayUser || !connectedServerId || !connectedChannelId) return;
-    if (displayUser !== currentUsername) {
-      await invoke("stop_watching", {
-        serverId: connectedServerId,
-        channelId: connectedChannelId,
-        targetUsername: displayUser,
-      }).catch(() => {});
+    if (!displayUser) return;
+    if (useVoiceStore.getState().callPeer && !connectedChannelId) {
+      // P2P DM call: no community watch subscription — ungate natively.
+      if (displayUser !== currentUsername) {
+        await invoke("call_watch_stream", { watch: false }).catch(() => {});
+      }
+    } else {
+      if (!connectedServerId || !connectedChannelId) return;
+      if (displayUser !== currentUsername) {
+        await invoke("stop_watching", {
+          serverId: connectedServerId,
+          channelId: connectedChannelId,
+          targetUsername: displayUser,
+        }).catch(() => {});
+      }
     }
     // Self-preview unmount is renderer-internal: StreamVideoPlayer's
     // useEffect cleanup unsubscribes from subscribeLocalFrames when it

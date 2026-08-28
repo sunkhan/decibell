@@ -73,9 +73,11 @@ export interface StreamCaptureOptions {
   /// to non-watching voice-channel participants (so they see a poster
   /// image on the participant tile instead of a black square). The
   /// pump loop draws every Nth frame to an OffscreenCanvas, encodes
-  /// it as JPEG, and ships it via `send_stream_thumbnail`.
-  serverId: string;
-  channelId: string;
+  /// it as JPEG, and ships it via `send_stream_thumbnail`. Both absent
+  /// during a P2P DM call — there is no community to post thumbnails to
+  /// (the peer sees the live frames), so the thumbnail pump is skipped.
+  serverId?: string;
+  channelId?: string;
   /// When true, getDisplayMedia is requested without width/height
   /// constraints so Chromium delivers the captured surface at its
   /// native resolution (e.g. 2560×1440 on a 1440p monitor). The
@@ -623,6 +625,8 @@ export class StreamCapture {
   /// + IPC send. The in-flight guard prevents pile-up if convertToBlob
   /// or the IPC ever stalls.
   private maybeCaptureThumbnail(frame: VideoFrame): void {
+    // Thumbnails only exist for community voice channels.
+    if (!this.opts.serverId || !this.opts.channelId) return;
     const now = performance.now();
     if (now - this.lastThumbnailAt < StreamCapture.THUMBNAIL_INTERVAL_MS) return;
     if (this.thumbnailInFlight) return;

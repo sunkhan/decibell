@@ -3,6 +3,7 @@ import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore, PIP_WIDTH_MIN, PIP_WIDTH_MAX, type PipCorner } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
+import { useDmStore } from "../../stores/dmStore";
 import {
   getFullViewRect,
   placeStreamPip,
@@ -106,6 +107,12 @@ export default function MiniStreamPlayer() {
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
+  // P2P DM call: the full view lives inside the peer's DM panel, so the
+  // mini hides while that DM is showing the focused stream, and expanding
+  // navigates to the DM rather than the (nonexistent) voice view.
+  const callPeer = useVoiceStore((s) => s.callPeer);
+  const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
+  const activeDmUser = useDmStore((s) => s.activeDmUser);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const slotRef = useRef<HTMLDivElement>(null);
@@ -116,7 +123,12 @@ export default function MiniStreamPlayer() {
     pipStream != null &&
     watchingStreams.includes(pipStream) &&
     activeStreams.some((s) => s.ownerUsername === pipStream);
-  const visible = streamLive && activeView !== "voice";
+  const dmShowsFullView =
+    callPeer != null &&
+    activeView === "dm" &&
+    activeDmUser === callPeer &&
+    fullscreenStream === pipStream;
+  const visible = streamLive && activeView !== "voice" && !dmShowsFullView;
 
   const stopSpring = useCallback(() => {
     if (rafRef.current != null) {
@@ -377,13 +389,20 @@ export default function MiniStreamPlayer() {
   const handleExpand = (e: React.MouseEvent) => {
     e.stopPropagation();
     useVoiceStore.getState().setFullscreenStream(pipStream);
-    setActiveView("voice");
+    if (callPeer) {
+      useDmStore.getState().setActiveDmUser(callPeer);
+      setActiveView("dm");
+    } else {
+      setActiveView("voice");
+    }
   };
 
   const handleClose = async (e: React.MouseEvent) => {
     e.stopPropagation();
     const user = pipStream;
-    if (user !== ownUsername && connectedServerId && connectedChannelId) {
+    if (user !== ownUsername && callPeer && !connectedChannelId) {
+      await invoke("call_watch_stream", { watch: false }).catch(() => {});
+    } else if (user !== ownUsername && connectedServerId && connectedChannelId) {
       await invoke("stop_watching", {
         serverId: connectedServerId,
         channelId: connectedChannelId,

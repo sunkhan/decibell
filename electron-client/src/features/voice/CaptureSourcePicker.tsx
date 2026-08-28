@@ -7,10 +7,13 @@ import { VideoCodec, type CaptureSource } from "../../types";
 import { playSound } from "../../utils/sounds";
 import { startActiveStream, stopActiveStream } from "./streaming/StreamCapture";
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
+import { announceCallStreamStart, announceCallStreamStop } from "../call/callActions";
 
 interface Props {
-  serverId: string;
-  channelId: string;
+  /// Community voice channel to announce in. Both absent inside a P2P DM
+  /// call — the stream is announced to the peer over central instead.
+  serverId?: string;
+  channelId?: string;
   onClose: () => void;
 }
 
@@ -137,6 +140,7 @@ export default function CaptureSourcePicker({
         onCaptureEnded: () => {
           useVoiceStore.getState().setIsStreaming(false);
           invoke("stop_screen_share", { serverId, channelId }).catch(() => {});
+          announceCallStreamStop();
           playSound("stream_stop");
         },
       });
@@ -186,6 +190,15 @@ export default function CaptureSourcePicker({
       }
 
       useVoiceStore.getState().setIsStreaming(true);
+      // P2P DM call: no community presence broadcast — tell the peer
+      // directly (no-op outside a call).
+      announceCallStreamStart({
+        codec,
+        width: actualDims.width,
+        height: actualDims.height,
+        fps: streamSettings.fps,
+        hasAudio: streamSettings.shareAudio,
+      });
       playSound("stream_start");
       handleClose();
     } catch (e) {

@@ -17,17 +17,16 @@ import type {
 import {
   RING_TIMEOUT_MS,
   acceptCall,
+  callStreamId,
   connectAfterAccept,
   endCall,
   onCallConnected,
   sendSignal,
   startRing,
   stopRing,
+  unwatchCallStream,
 } from "./callActions";
 
-/// Stream id used for the peer's in-call screen share in
-/// voiceStore.activeStreams (community streams use the server's ids).
-export const callStreamId = (peer: string) => `call:${peer}`;
 
 // Central + native event surface for P2P DM calls. Mounted once in
 // MainLayout. Drives callStore through the signals central relays
@@ -186,8 +185,7 @@ export function useCallEvents() {
           if (v.activeStreams.some((s) => s.ownerUsername === sig.from)) {
             v.setActiveStreams(v.activeStreams.filter((s) => s.ownerUsername !== sig.from));
             if (v.watchingStreams.includes(sig.from)) {
-              invoke("call_watch_stream", { watch: false }).catch(() => {});
-              v.removeWatching(sig.from);
+              void unwatchCallStream(sig.from);
             }
             playSound("stream_stop");
           }

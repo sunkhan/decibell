@@ -25,11 +25,15 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { toast } from "../../stores/toastStore";
 import { loopSound, playSound } from "../../utils/sounds";
 import { flushSaveSettings } from "../settings/saveSettings";
-import type { CallCandidate, CallSignalKind, CallStreamMeta } from "../../types";
+import type { CallCandidate, CallSignalKind, CallStreamMeta, StreamInfo, VideoCodec } from "../../types";
 
 /// How long an unanswered call rings before the caller gives up / the
 /// callee's prompt goes away.
 export const RING_TIMEOUT_MS = 45_000;
+
+/// Stream id used for in-call screen shares in voiceStore.activeStreams
+/// (community streams carry the server's ids).
+export const callStreamId = (owner: string) => `call:${owner}`;
 
 interface CallPrepareResult {
   pubKey: string;
@@ -241,6 +245,72 @@ export async function onCallConnected(callId: string, path: "host" | "srflx"): P
 async function applyPrefs(): Promise<void> {
   const { applyVoicePrefs } = await import("../voice/streaming/applyVoicePrefs");
   await applyVoicePrefs();
+}
+
+// ── In-call screen share ─────────────────────────────────────────
+//
+// There is no community server to announce a stream to during a call, so
+// the streamer tells the peer directly over central (STREAM_START /
+// STREAM_STOP) and both sides keep voiceStore.activeStreams in step —
+// which is all the existing player stack (StreamPipManager /
+// StreamViewPanel / MiniStreamPlayer) needs.
+
+/// Our screen share just started inside the active call: tell the peer
+/// and register our own entry so the self-preview tile + mini player work.
+export function announceCallStreamStart(meta: CallStreamMeta): void {
+  const call = useCallStore.getState();
+  if (call.status !== "active" || !call.callId || !call.peer) return;
+  const me = useAuthStore.getState().username ?? "";
+  sendSignal(call.callId, call.peer, "STREAM_START", { stream: meta }).catch(() => {});
+  const v = useVoiceStore.getState();
+  const own: StreamInfo = {
+    streamId: callStreamId(me),
+    ownerUsername: me,
+    hasAudio: meta.hasAudio,
+    resolutionWidth: meta.width,
+    resolutionHeight: meta.height,
+    fps: meta.fps,
+    currentCodec: meta.codec as VideoCodec,
+    enforcedCodec: 0 as VideoCodec,
+    watcherCount: 0,
+  };
+  v.setActiveStreams([...v.activeStreams.filter((s) => s.ownerUsername !== me), own]);
+}
+
+/// Our screen share ended inside the active call (user stopped it, or the
+/// capture source went away).
+export function announceCallStreamStop(): void {
+  const call = useCallStore.getState();
+  if (call.status !== "active" || !call.callId || !call.peer) return;
+  const me = useAuthStore.getState().username ?? "";
+  sendSignal(call.callId, call.peer, "STREAM_STOP").catch(() => {});
+  const v = useVoiceStore.getState();
+  if (v.activeStreams.some((s) => s.ownerUsername === me)) {
+    v.setActiveStreams(v.activeStreams.filter((s) => s.ownerUsername !== me));
+  }
+  if (v.watchingStreams.includes(me)) v.removeWatching(me);
+}
+
+/// Open `owner`'s stream in the DM's full view. For the peer this gates
+/// their frames through natively (call_watch_stream); our own stream is
+/// the renderer-internal self-preview.
+export async function watchCallStream(owner: string): Promise<void> {
+  const me = useAuthStore.getState().username ?? "";
+  const v = useVoiceStore.getState();
+  if (owner !== me && !v.watchingStreams.includes(owner)) {
+    await invoke("call_watch_stream", { watch: true }).catch(() => {});
+  }
+  v.addWatching(owner);
+  v.setFullscreenStream(owner);
+}
+
+/// Leave `owner`'s stream (full view + mini). Peer → ungate natively.
+export async function unwatchCallStream(owner: string): Promise<void> {
+  const me = useAuthStore.getState().username ?? "";
+  if (owner !== me) {
+    await invoke("call_watch_stream", { watch: false }).catch(() => {});
+  }
+  useVoiceStore.getState().removeWatching(owner);
 }
 
 /// End whatever call state we're in — ringing out, ringing in, punching,

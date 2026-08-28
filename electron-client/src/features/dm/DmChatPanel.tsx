@@ -22,6 +22,8 @@ import EmojiPicker from "../chat/EmojiPicker";
 import { newNonce, watchDmEcho } from "../chat/sendPacing";
 import ErrorCard from "../../components/ErrorCard";
 import CallPanel from "../call/CallPanel";
+import StreamViewPanel from "../voice/StreamViewPanel";
+import { useVoiceStore } from "../../stores/voiceStore";
 import { startCall } from "../call/callActions";
 import { useCallStore } from "../../stores/callStore";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
@@ -69,6 +71,11 @@ export default function DmChatPanel() {
   const openModal = useUiStore((s) => s.openModal);
   const callStatus = useCallStore((s) => s.status);
   const callSignaling = useCallStore((s) => s.callSignaling);
+  // In-call screen share: the focused stream takes over the area below the
+  // header (the same way VoicePanel swaps its grid for StreamViewPanel).
+  const callPeer = useVoiceStore((s) => s.callPeer);
+  const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
+  const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -727,7 +734,7 @@ export default function DmChatPanel() {
     : undefined;
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-bg-mid">
+    <div className="relative flex min-w-0 flex-1 flex-col bg-bg-mid">
       {/* DM header */}
       <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border px-4">
         <div className="relative">
@@ -792,6 +799,15 @@ export default function DmChatPanel() {
           </button>
         </div>
       </div>
+
+      {/* In-call screen share focused: full stream view over the conversation */}
+      {callPeer === activeDmUser &&
+        fullscreenStream != null &&
+        watchingStreams.includes(fullscreenStream) && (
+          <div className="absolute inset-x-0 bottom-0 top-12 z-10 flex min-h-0 flex-col overflow-hidden bg-bg-mid">
+            <StreamViewPanel />
+          </div>
+        )}
 
       {/* P2P call with this user (ringing / connecting / active) */}
       <CallPanel peer={activeDmUser} />

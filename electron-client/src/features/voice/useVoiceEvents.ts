@@ -15,6 +15,7 @@ import { getCurrentWindow } from "../../lib/window";
 import { activeStreamCapture, stopActiveStream } from "./streaming/StreamCapture";
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { toast } from "../../stores/toastStore";
+import { announceCallStreamStop } from "../call/callActions";
 
 /// dB → linear gain. -40 dB floor maps to 0 (effectively muted).
 function dbToGain(db: number): number {
@@ -172,16 +173,19 @@ export function useVoiceEvents() {
         const {
           connectedServerId,
           connectedChannelId,
+          callPeer,
           isStreaming,
           fullscreenStream,
           isStreamFullscreen,
         } = useVoiceStore.getState();
-        if (isStreaming && connectedServerId && connectedChannelId) {
+        const inCall = !!callPeer && !connectedChannelId;
+        if (isStreaming && ((connectedServerId && connectedChannelId) || inCall)) {
           invoke("stop_screen_share", {
-            serverId: connectedServerId,
-            channelId: connectedChannelId,
+            serverId: connectedServerId ?? undefined,
+            channelId: connectedChannelId ?? undefined,
           }).catch(console.error);
           useVoiceStore.getState().setIsStreaming(false);
+          if (inCall) announceCallStreamStop();
 
           if (fullscreenStream === username && isStreamFullscreen) {
             useVoiceStore.getState().setFullscreenStream(null);
