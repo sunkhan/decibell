@@ -4,7 +4,12 @@ import { getCurrentWindow } from "../../lib/window";
 import { useAuthStore } from "../../stores/authStore";
 import { useCallStore } from "../../stores/callStore";
 import { useDmStore } from "../../stores/dmStore";
-import { useUiStore } from "../../stores/uiStore";
+import {
+  CALL_STAGE_MIN,
+  CALL_STAGE_STREAM_DEFAULT,
+  CALL_STAGE_VOICE_DEFAULT,
+  useUiStore,
+} from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { playSound } from "../../utils/sounds";
@@ -108,6 +113,9 @@ function Stage({ peer }: { peer: string }) {
   const isStreamFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
   const setStreamFullscreen = useVoiceStore((s) => s.setStreamFullscreen);
   const msgCount = useDmStore((s) => s.conversations[peer]?.messages.length ?? 0);
+  const voiceHeight = useUiStore((s) => s.callStageVoiceHeight);
+  const streamHeight = useUiStore((s) => s.callStageStreamHeight);
+  const setCallStageHeight = useUiStore((s) => s.setCallStageHeight);
 
   const live = status === "active";
   const peerStream = activeStreams.find((st) => st.ownerUsername === peer);
@@ -129,6 +137,8 @@ function Stage({ peer }: { peer: string }) {
   const [overlayVisible, setOverlayVisible] = useState(true);
   const overlayTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const slotRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [resizing, setResizing] = useState(false);
 
   // 1 s tick for the duration readout.
   const [now, setNow] = useState(Date.now());
@@ -254,17 +264,56 @@ function Stage({ peer }: { peer: string }) {
               .join(" · ")
           : "";
 
+  // ── resize (compact stage only): drag the bottom edge ──
+  // Imperative during the drag (no per-frame React state), committed to
+  // uiStore on release so it persists per mode. The chat below keeps at
+  // least CHAT_MIN px; double-click resets the mode's default.
+  const CHAT_MIN = 180;
+  const compact = !isFullscreen && !theater;
+  const mode: "voice" | "stream" = focused ? "stream" : "voice";
+  const stageHeight = mode === "stream" ? streamHeight : voiceHeight;
+  const maxStageHeight = () => {
+    const parent = rootRef.current?.parentElement;
+    return parent ? Math.max(CALL_STAGE_MIN, parent.clientHeight - 48 - CHAT_MIN) : Infinity;
+  };
+  const onResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!compact || !rootRef.current) return;
+    e.preventDefault();
+    const el = rootRef.current;
+    const startY = e.clientY;
+    const startH = el.getBoundingClientRect().height;
+    const maxH = maxStageHeight();
+    let last = startH;
+    setResizing(true);
+    const onMove = (ev: PointerEvent) => {
+      last = Math.min(maxH, Math.max(CALL_STAGE_MIN, startH + (ev.clientY - startY)));
+      el.style.height = `${Math.round(last)}px`;
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setResizing(false);
+      setCallStageHeight(mode, last);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+  const onResizeReset = () =>
+    setCallStageHeight(mode, mode === "stream" ? CALL_STAGE_STREAM_DEFAULT : CALL_STAGE_VOICE_DEFAULT);
+
   // ── root ──
   const rootClass = isFullscreen
     ? `fixed inset-0 z-50 flex flex-col bg-black ${overlayVisible ? "cursor-default" : "cursor-none"}`
     : theater
       ? "relative flex min-h-0 flex-1 flex-col border-b border-border bg-bg-darkest"
       : "relative flex shrink-0 flex-col border-b border-border bg-bg-darkest";
-  const rootStyle = !isFullscreen && !theater ? { height: focused ? "min(470px, 58vh)" : 300 } : undefined;
+  const rootStyle = compact
+    ? { height: Math.min(stageHeight, maxStageHeight()), userSelect: resizing ? ("none" as const) : undefined }
+    : undefined;
   const overlayClass = `transition-opacity duration-300 ${overlayVisible ? "opacity-100" : "opacity-0"}`;
 
   return (
-    <div className={rootClass} style={rootStyle} onMouseMove={pokeOverlay}>
+    <div ref={rootRef} className={rootClass} style={rootStyle} onMouseMove={pokeOverlay}>
       {/* ── centre: video or tiles ── */}
       {/* Distinct keys: the video and tiles containers are both a <div> in the
           same position, so without keys React would reuse one DOM node for the
@@ -423,6 +472,22 @@ function Stage({ peer }: { peer: string }) {
           </button>
         </div>
       </div>
+
+      {/* ── bottom edge: drag to resize (compact only) ── */}
+      {compact && (
+        <div
+          onPointerDown={onResizeStart}
+          onDoubleClick={onResizeReset}
+          title="Drag to resize · double-click to reset"
+          className="group absolute inset-x-0 -bottom-1 z-10 flex h-2.5 cursor-ns-resize items-center justify-center"
+        >
+          <div
+            className={`h-1 w-12 rounded-full transition-colors ${
+              resizing ? "bg-accent" : "bg-border group-hover:bg-accent/70"
+            }`}
+          />
+        </div>
+      )}
 
       {showPicker && <CaptureSourcePicker onClose={() => setShowPicker(false)} />}
     </div>

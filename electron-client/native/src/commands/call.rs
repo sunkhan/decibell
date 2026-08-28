@@ -621,11 +621,19 @@ pub async fn call_end() -> napi::Result<()> {
         (old_voice, video, audio, s.voice_muted, s.voice_deafened, had_call)
     };
 
-    // Engine drops join native threads — keep that off the async runtime.
+    // Engine drops join native threads — keep that off the async runtime,
+    // and shout if a join wedges (see stop_screen_share).
     if video.is_some() || audio.is_some() {
-        tokio::task::spawn_blocking(move || {
+        let handle = tokio::task::spawn_blocking(move || {
+            let t0 = std::time::Instant::now();
             drop(video);
             drop(audio);
+            log::info!("[call] stream engine teardown took {:?}", t0.elapsed());
+        });
+        tokio::spawn(async move {
+            if tokio::time::timeout(std::time::Duration::from_secs(5), handle).await.is_err() {
+                log::warn!("[call] stream engine teardown still running after 5 s — capture/encoder thread wedged?");
+            }
         });
     }
     crate::commands::voice::stop_voice_engine_background(old_voice);

@@ -431,10 +431,20 @@ pub async fn stop_screen_share(args: StopScreenShareArgs) -> napi::Result<()> {
     };
 
     // Drop (→ join native threads + clear_frame_sink) off the async runtime.
+    // A wedged capture / encoder join would otherwise hang silently on a
+    // blocking thread (and the next capture session may never get frames),
+    // so time the teardown and shout if it overruns.
     if video.is_some() || audio.is_some() {
-        tokio::task::spawn_blocking(move || {
+        let handle = tokio::task::spawn_blocking(move || {
+            let t0 = std::time::Instant::now();
             drop(video);
             drop(audio);
+            log::info!("[stream] engine teardown took {:?}", t0.elapsed());
+        });
+        tokio::spawn(async move {
+            if tokio::time::timeout(std::time::Duration::from_secs(5), handle).await.is_err() {
+                log::warn!("[stream] engine teardown still running after 5 s — capture/encoder thread wedged?");
+            }
         });
     }
 

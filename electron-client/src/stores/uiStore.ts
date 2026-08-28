@@ -63,12 +63,20 @@ export const SIDEBAR_WIDTH_DEFAULT = 240;
 export const PIP_WIDTH_MIN = 240;
 export const PIP_WIDTH_MAX = 640;
 export const PIP_WIDTH_DEFAULT = 320;
+/// P2P call stage (top of the DM) — user-resizable by dragging its bottom
+/// edge; one height for the voice tiles, another for a focused stream.
+export const CALL_STAGE_MIN = 200;
+export const CALL_STAGE_MAX = 1200;
+export const CALL_STAGE_VOICE_DEFAULT = 300;
+export const CALL_STAGE_STREAM_DEFAULT = 470;
 export type PipCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 const PIP_CORNERS: readonly string[] = ["top-left", "top-right", "bottom-left", "bottom-right"];
 const PIP_CORNER_DEFAULT: PipCorner = "bottom-right";
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "decibell.layout.sidebarWidth";
 const PIP_WIDTH_STORAGE_KEY = "decibell.layout.pipWidth";
+const CALL_STAGE_VOICE_STORAGE_KEY = "decibell.layout.callStageVoiceHeight";
+const CALL_STAGE_STREAM_STORAGE_KEY = "decibell.layout.callStageStreamHeight";
 const PIP_CORNER_STORAGE_KEY = "decibell.layout.pipCorner";
 const MEMBERS_PANEL_STORAGE_KEY = "decibell.layout.membersPanel";
 const DM_FRIENDS_PANEL_STORAGE_KEY = "decibell.layout.dmFriendsPanel";
@@ -203,6 +211,12 @@ interface UiState {
   /// Clamped to [PIP_WIDTH_MIN, PIP_WIDTH_MAX]; remembered per install.
   pipWidth: number;
   setPipWidth: (w: number) => void;
+  /// Height (px) of the P2P call stage in its compact form — separate
+  /// values for the voice tiles and for a focused stream. Clamped to
+  /// [CALL_STAGE_MIN, CALL_STAGE_MAX]; remembered per install.
+  callStageVoiceHeight: number;
+  callStageStreamHeight: number;
+  setCallStageHeight: (mode: "voice" | "stream", h: number) => void;
   /// Width (px) of the resizable left sidebar — one value shared by
   /// ServerChannelsSidebar and ConversationSidebar (only one is mounted
   /// at a time). Clamped to [SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX];
@@ -323,6 +337,29 @@ export const useUiStore = create<UiState>((set, get) => ({
     const pipWidth = clampPx(w, PIP_WIDTH_MIN, PIP_WIDTH_MAX, PIP_WIDTH_DEFAULT);
     writeStoredLater(PIP_WIDTH_STORAGE_KEY, String(pipWidth));
     set({ pipWidth });
+  },
+  callStageVoiceHeight: readStoredPx(
+    CALL_STAGE_VOICE_STORAGE_KEY,
+    CALL_STAGE_MIN,
+    CALL_STAGE_MAX,
+    CALL_STAGE_VOICE_DEFAULT,
+  ),
+  callStageStreamHeight: readStoredPx(
+    CALL_STAGE_STREAM_STORAGE_KEY,
+    CALL_STAGE_MIN,
+    CALL_STAGE_MAX,
+    CALL_STAGE_STREAM_DEFAULT,
+  ),
+  setCallStageHeight: (mode, h) => {
+    if (mode === "voice") {
+      const v = clampPx(h, CALL_STAGE_MIN, CALL_STAGE_MAX, CALL_STAGE_VOICE_DEFAULT);
+      writeStoredLater(CALL_STAGE_VOICE_STORAGE_KEY, String(v));
+      set({ callStageVoiceHeight: v });
+    } else {
+      const v = clampPx(h, CALL_STAGE_MIN, CALL_STAGE_MAX, CALL_STAGE_STREAM_DEFAULT);
+      writeStoredLater(CALL_STAGE_STREAM_STORAGE_KEY, String(v));
+      set({ callStageStreamHeight: v });
+    }
   },
   sidebarWidth: readStoredPx(
     SIDEBAR_WIDTH_STORAGE_KEY,
