@@ -357,6 +357,34 @@ The community server uses `find_session_by_token(udp_id)`: it checks whether the
 
 ---
 
+### P2P DM calls — sealed transport (2026-08-28)
+
+DM calls carry the **same datagrams** peer-to-peer with no server in the media
+path. Both UDP sockets are wrapped in `MediaSocket::Sealed`
+(`electron-client/native/src/media/media_socket.rs`); the community path uses
+`MediaSocket::Plain`, a byte-identical passthrough.
+
+| Outer field | Size | Notes |
+|---|---|---|
+| type | 1 | `0xE5` (top bits set — never collides with a STUN message) |
+| counter | 8 | u64 LE, per direction; nonce = 4-byte salt ‖ counter (BE) |
+| ciphertext | n | AES-256-GCM of the unchanged inner datagram (this section's formats) |
+| tag | 16 | AAD = the 9-byte outer header |
+
+Keys: ephemeral X25519 per call, HKDF-SHA256 with `salt = call_id`,
+`info = "decibell-call-v1|<lower user>|<higher user>"` → voice/media × a→b/b→a.
+`sender_id` is the own username (no relay rewrite). Peer address is learned
+from the last authenticated datagram; peer PINGs are reflected re-sealed, so
+the RTT / keepalive logic above is unchanged. Signaling (`CALL_SIGNAL`),
+STUN and the hole punch are described in
+`docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md`.
+
+> The fixed-size packet lengths quoted in this section (1437 / 1445 / 1443
+> bytes) and `UDP_MAX_PAYLOAD = 1400` describe the C++ structs; the Electron
+> client sends compact header+payload datagrams and chunks video at 1200
+> bytes (`native/src/media/video_packet.rs`). `src/common/udp_packet.hpp` and
+> `native/src/media/{packet,video_packet}.rs` are the source of truth.
+
 ## 5. Audio Pipeline
 
 Current implementation: `src/client/audio_engine.hpp/.cpp`

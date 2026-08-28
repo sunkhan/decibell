@@ -78,6 +78,7 @@ read them as "how streaming got here", not as current open work.
 | 0.7.6 | chat: embedded reply previews, exact far jumps + jump-to-present pill, attachment-only reply labels; plain-text DM previews |
 | 0.7.7 | design pass — inset workspace panel, 64px server bar with hover-reveal pictures, unread-DM tiles replacing the DM rail, `font-meta`/`font-tile` tokens, ConfirmModal shell, remembered layout (sidebar width, mini-player size/corner, panel toggles); real-DOM message list is the only list (react-virtuoso removed) |
 | **unreleased (post-0.7.7, 2026-08-27)** | **hyperlinks + link previews (main-process unfurl, Privacy toggle); GIFs tab in the picker over KLIPY/GIPHY + animated GIF attachments + unfiltered toggle; invite cards in chat + code-only invite links (`decibell://invite/<CODE>`); spam-burst fix — `CHANNEL_MSG_REJECTED` with nonce, client-side send pacing, 10/3 bucket; pending messages fade until echoed (DMs gained optimistic bubbles via `DirectMessage.nonce`)** |
+| **unreleased (2026-08-28)** | **P2P voice calls + screen share in DMs** — `CALL_SIGNAL` relay on central, sealed (AES-GCM) UDP transport with STUN + hole punch in native, call UI in the DM (`features/call/`). Design: `docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md`. Needs the central rebuild (type 128 / payload 130 + `LoginResponse.stun_servers`/`call_signaling`); the Call button stays disabled against an older central. |
 
 0.7.7 is the current release. The unreleased row carries **three proto
 additions** — `InviteResolveResponse` preview fields (7–11),
@@ -372,6 +373,35 @@ letting the failure fall into a catch block.
 
 ---
 
+### 5.10 P2P DM calls — how it hangs together
+
+- **One engine.** `AppState.voice_engine` is either a channel session or a
+  call, never both. Renderer: `joinVoiceChannel` calls `endCall` first,
+  `startCall`/`acceptCall` call `leaveCommunityVoiceIfAny` first; native
+  refuses the other order (`join_voice_channel` ↔ `call_prepare/connect`).
+- **`voiceStore.callPeer`** marks the call session (`connectedServerId` /
+  `connectedChannelId` stay null). Components gate on "in a session", not on
+  a channel id; `disconnect()` clears it.
+- **Sealed sockets never `connect()`.** `MediaSocket` sends to the source of
+  the last *authenticated* datagram. Don't add a `connect()` — two sides that
+  picked different candidates would wedge.
+- **PING reflection lives in `MediaSocket::recv`**, not the pipeline. A peer's
+  PING is bounced re-sealed and never surfaced; our echo is returned. That is
+  what keeps `pipeline.rs`'s RTT + 3 s keepalive and the punch responder
+  working without pipeline changes.
+- **`sender_id` = own username** in P2P mode; the peer's frames therefore
+  arrive under their username and the whole username-keyed player stack
+  (`WATCHED_STREAMS`, `streamFrames.subscribe`, `pipStream`) just works.
+  `call_watch_stream({watch})` is the P2P `watch_stream`.
+- **Streams announce over central** (`STREAM_START/STOP`) and both sides keep
+  `voiceStore.activeStreams` in step (`announceCallStreamStart/Stop`); there
+  are no thumbnails (no channel) — `StreamCapture` skips the pump when the
+  community ids are absent.
+- **Client-first is safe**: an old central ignores `CALL_SIGNAL`;
+  `get_call_config().callSignaling` (from `LoginResponse`) gates the button.
+- Ring/ringback are `loopSound("call_ring")` with a returned `stop()`; both
+  sides time out at 45 s (`RING_TIMEOUT_MS`).
+
 ## 6. How to test from a fresh checkout
 
 ```bash
@@ -423,6 +453,16 @@ DMs only by construction); invite cards against the *rebuilt* central
 pacer under a real flood on a fresh server (the e2e covers the server side
 only). GIF search is verified live with a KLIPY test key; request production
 access before a release.
+
+**P2P DM calls (2026-08-28) — shipped, verified only by construction.** All
+four milestones are on `main` (relay, sealed transport + STUN/punch, call
+lifecycle, in-call screen share) with the transport unit-tested on loopback,
+but the two-machine matrix has not been run: same LAN (expect `path: host`),
+two networks (expect `srflx`), a symmetric-NAT pair (clean "couldn't connect"),
+community voice regression, mutual exclusion both ways, central reconnect
+mid-call, stream both ways incl. Linux PipeWire tap / Windows WASAPI, PLI
+round trip, mini player while browsing. Central must be rebuilt first
+(§5.10). Start from the spec's Verification section.
 
 **The one older live thread: the attachment scroll glitch.** Start by reading
 `docs/reviews/2026-07-27-frontend-review.md` — its header is written as

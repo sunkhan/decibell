@@ -39,6 +39,8 @@ Any change to `proto/messages.proto` must be carried through all three sides:
 cd electron-client && npx tsc -p tsconfig.web.json --noEmit
 # Native (also regenerates prost + index.d.ts)
 cd electron-client/native && npx napi build --platform --js index.js --dts index.d.ts
+# Native unit tests (transport / crypto / STUN / punch / voice sim)
+cd electron-client/native && cargo test --lib
 # Community server build + e2e (proto regen included) — see src/community/tests/README.md
 cd src/community/tests && D=/tmp/decibell-deps && ./setup_deps.sh "$D" ../../.. \
   && ./build.sh "$D" ../../.. "$D/community_server" \
@@ -109,6 +111,15 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   refused message with `CHANNEL_MSG_REJECTED {nonce}` so exactly that optimistic bubble is
   withdrawn; a 30 s echo watchdog is the backstop. Keep the client and server numbers in step.
   Optimistic bubbles render faded (`pending`) until the echo; DMs carry `DirectMessage.nonce`.
+- **DM calls are P2P over the native UDP engine**, wrapped in `MediaSocket` (`Plain` for the
+  community relay — byte-identical; `Sealed` = AES-256-GCM + replay window, inner datagram
+  unchanged). Central only relays `CALL_SIGNAL` (never persisted, INVITE gated by
+  `check_dm_allowed`, per-session bucket). STUN-only, no relay, IPv4; sealed sockets never
+  `connect()` (peer learned from the last authenticated datagram); peer PINGs are reflected in
+  `MediaSocket::recv`; `sender_id` = own username. A call and a voice channel are mutually
+  exclusive (one engine, one mic). `features/call/` + `native/src/commands/call.rs` +
+  `native/src/media/{media_socket,call_crypto,stun,punch}.rs`; design in
+  `docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md`.
 
 ## Deeper docs
 

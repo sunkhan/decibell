@@ -639,6 +639,38 @@ toast the reason" instead of rendering central's error text as a message of ours
 on success (unknown fields survive the packet copy); their error replies lack it and fall back
 to the previous rendering, with the watchdog clearing the bubble.
 
+**P2P voice calls + screen share in DMs (2026-08-28) ✅ — live test pending** — the first
+media path not hosted by a community, and the first that is encrypted. Design:
+`docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md`. Four commits (M1–M4): (1) **wire +
+central** — `CALL_SIGNAL` (type 128 / payload 130) is an ephemeral relay: central stamps `from`,
+applies a per-session token bucket (20 burst / 5 per s; central had none, and a signal storm on
+its single io thread + synchronous Postgres would stall every user), runs `check_dm_allowed`
+on INVITE only, `send_private`s, and answers `PEER_OFFLINE` / `NOT_ALLOWED` itself from the
+recipient's POV; nothing persisted. `LoginResponse.stun_servers` (from `DECIBELL_STUN_SERVERS`)
++ `call_signaling` gate the client's Call button so an old central never rings into the void.
+(2) **native transport** — `media_socket.rs` wraps both UDP sockets: `Plain` is byte-identical
+for the community relay, `Sealed` is AES-256-GCM per direction with a `[0xE5][u64 ctr][ct][tag]`
+envelope (25 B), replay window, the *unchanged* inner datagram (so the audio pipeline,
+`VideoReceiver`, PING/RTT, NACK/PLI/FEC all work untouched), peer address learned from the last
+authenticated datagram, and peer PINGs reflected re-sealed so the 3 s keepalive/RTT contract
+holds peer-to-peer. `call_crypto.rs` (ephemeral X25519 + HKDF via `ring`), `stun.rs` (RFC 5389
+Binding, RFC 5769 vectors), `punch.rs` (sealed PINGs at every candidate, first datagram that
+opens = live path, 300 ms LAN preference, 10 s → `no_path`). `VoiceEngine::start_p2p`;
+`call_prepare` / `call_connect` / `call_end` / `call_watch_stream`; 15 s peer-loss watchdog.
+(3) **client** — `callStore` state machine, `callActions` (ringtone loop, 45 s timeout, BUSY,
+glare → lower username's INVITE wins), `IncomingCallModal` (window flash IPC), `CallPanel` in the
+DM, "Call · <peer>" in `UserPanel`; `applyVoicePrefs` shared with the channel join; a call and a
+voice channel are mutually exclusive (one engine, one mic — renderer leaves/hangs up first,
+native refuses otherwise). (4) **in-call screen share** — `STREAM_START/STOP` over central stand
+in for the community's stream presence; the whole player stack (`StreamPipManager` /
+`StreamViewPanel` / `MiniStreamPlayer`) runs over the sealed sockets, thumbnails are skipped
+without a channel. Verified: 97/97 `cargo test --lib` (16 new), tsc, napi build, community e2e
+unchanged, central `-fsyntax-only`. **Not yet run:** the two-machine live matrix (LAN host path,
+cross-network srflx path, symmetric-NAT failure copy, stream both ways) — see the spec's
+Verification section. Limits by design: STUN-only (no relay), IPv4, central can MITM the key
+exchange (safety number planned). `MediaSocket::Sealed` is the seam for finally sealing the
+community media plane (the tracked HIGH item).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
