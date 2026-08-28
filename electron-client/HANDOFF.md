@@ -77,17 +77,18 @@ read them as "how streaming got here", not as current open work.
 | 0.7.5 | voice: gate-edge shaping — pre-roll + faded tails on send, fades on receive |
 | 0.7.6 | chat: embedded reply previews, exact far jumps + jump-to-present pill, attachment-only reply labels; plain-text DM previews |
 | 0.7.7 | design pass — inset workspace panel, 64px server bar with hover-reveal pictures, unread-DM tiles replacing the DM rail, `font-meta`/`font-tile` tokens, ConfirmModal shell, remembered layout (sidebar width, mini-player size/corner, panel toggles); real-DOM message list is the only list (react-virtuoso removed) |
-| **unreleased (post-0.7.7, 2026-08-27)** | **hyperlinks + link previews (main-process unfurl, Privacy toggle); GIFs tab in the picker over KLIPY/GIPHY + animated GIF attachments + unfiltered toggle; invite cards in chat + code-only invite links (`decibell://invite/<CODE>`); spam-burst fix — `CHANNEL_MSG_REJECTED` with nonce, client-side send pacing, 10/3 bucket; pending messages fade until echoed (DMs gained optimistic bubbles via `DirectMessage.nonce`)** |
-| **unreleased (2026-08-28)** | **P2P voice calls + screen share in DMs** — `CALL_SIGNAL` relay on central, sealed (AES-GCM) UDP transport with STUN + hole punch in native, call UI in the DM (`features/call/`). Design: `docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md`. Needs the central rebuild (type 128 / payload 130 + `LoginResponse.stun_servers`/`call_signaling`); the Call button stays disabled against an older central. |
+| **0.7.8** | **P2P voice calls + screen share in DMs** — `CALL_SIGNAL` relay on central, sealed (AES-GCM) UDP transport with STUN + hole punch in native, call UI in the DM (`features/call/`; design `docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md`); hyperlinks + link previews (main-process unfurl, Privacy toggle); GIFs tab in the picker over KLIPY/GIPHY + animated GIF attachments + unfiltered toggle; invite cards in chat + code-only invite links (`decibell://invite/<CODE>`); spam-burst fix — `CHANNEL_MSG_REJECTED` with nonce, client-side send pacing, 10/3 bucket; pending messages fade until echoed (DMs gained optimistic bubbles via `DirectMessage.nonce`) |
 
-0.7.7 is the current release. The unreleased row carries **three proto
-additions** — `InviteResolveResponse` preview fields (7–11),
-`CHANNEL_MSG_REJECTED` (type 127 / payload 129), `DirectMessage.nonce`
-(10) — all additive: older clients ignore them. Deploy the community
+0.7.8 is the current release. It carries **four proto additions** —
+`InviteResolveResponse` preview fields (7–11), `CHANNEL_MSG_REJECTED`
+(type 127 / payload 129), `DirectMessage.nonce` (10), and `CALL_SIGNAL`
+(type 128 / payload 130) + `LoginResponse.stun_servers`/`call_signaling`
+(5–6) — all additive: older clients ignore them. Deploy the community
 server for the typed rejection + the 10/3 bucket, and rebuild central
-(protoc regen on the Hetzner box) for invite-card metadata and the DM
-error-reply nonce; until then the client degrades to host:port cards, a
-30 s watchdog on pending bubbles, and the legacy toast. The 0.7.x design
+(protoc regen on the Hetzner box) for invite-card metadata, the DM
+error-reply nonce and call signaling; until then the client degrades to
+host:port cards, a 30 s watchdog on pending bubbles, the legacy toast, and
+a disabled Call button. The 0.7.x design
 records are `docs/superpowers/specs/2026-08-17-roles-permissions-design.md`,
 `2026-08-22-*`, and `2026-08-25-real-dom-message-list-plan.md`; the
 running feature log is `docs/reviews/2026-08-23-community-server-review.md`.
