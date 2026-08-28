@@ -23,12 +23,32 @@ export function useDmEvents() {
       if (!otherUser) return;
 
       const isFromSelf = p.sender === localUsername;
+
+      // Central's error replies (friends-only recipient, persist failure)
+      // come back as a self-DM with no id and our nonce: withdraw the
+      // pending bubble and say why, rather than showing the error text
+      // as a message of ours. (An older central sends them without the
+      // nonce; those still render as before and the watchdog clears the
+      // bubble.)
+      if (isFromSelf && !p.id && p.nonce) {
+        const dm = useDmStore.getState();
+        const pending = dm.conversations[otherUser]?.messages.some(
+          (m) => !m.id && m.nonce === p.nonce,
+        );
+        if (pending) {
+          dm.removeDmMessageByNonce(otherUser, p.nonce);
+          toast.error("Message not sent", p.content);
+          return;
+        }
+      }
+
       useDmStore.getState().addDmMessage(
         otherUser,
         {
           sender: p.sender,
           content: p.content,
           timestamp: p.timestamp,
+          nonce: p.nonce || undefined,
           // id is set by central after insertDm; 0 means the packet
           // came from a pre-persistence server. The store handles
           // both — 0 is just ineligible for mark-read.

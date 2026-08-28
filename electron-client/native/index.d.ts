@@ -439,6 +439,11 @@ export interface SendPrivateMessageArgs {
   message: string
   /** Id of the DM being replied to (0/absent = not a reply). */
   replyTo?: number
+  /**
+   * Client nonce echoed back by central so the renderer can settle
+   * its optimistic bubble.
+   */
+  nonce?: string
 }
 export declare function sendPrivateMessage(args: SendPrivateMessageArgs): Promise<void>
 /**

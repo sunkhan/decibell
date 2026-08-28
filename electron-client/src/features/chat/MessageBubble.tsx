@@ -375,7 +375,7 @@ function MessageBubble({
             })}
           </span>
         </div>
-        <div className="select-text min-w-0 flex-1">
+        <div className={`select-text min-w-0 flex-1${message.pending ? " opacity-50" : ""}`}>
           {renderReplyPreview()}
           {/* div, not p: rich text renders block children (pre code
               blocks, display math) and a block inside <p> is invalid
@@ -408,7 +408,7 @@ function MessageBubble({
         <UserAvatar username={message.sender} size={38} />
       </div>
 
-      <div className="select-text min-w-0 flex-1">
+      <div className={`select-text min-w-0 flex-1${message.pending ? " opacity-50" : ""}`}>
         {renderReplyPreview()}
         <div className="flex items-baseline gap-2">
           <span

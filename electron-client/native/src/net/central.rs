@@ -144,6 +144,7 @@ impl CentralClient {
                 // Server-resolved on broadcast; never set by the client.
                 reply_to_sender: String::new(),
                 reply_to_content: String::new(),
+                nonce: String::new(),
             }),
             token,
         );
@@ -359,7 +360,7 @@ impl CentralClient {
                         // renderer for the mark-read up_to_id cursor.
                         id: msg.id,
                         attachments: Vec::new(),
-                        nonce: String::new(),
+                        nonce: msg.nonce,
                         edited_at: msg.edited_at,
                         reply_to: msg.reply_to,
                         reply_to_sender: msg.reply_to_sender,

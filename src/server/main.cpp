@@ -280,6 +280,7 @@ private:
                 err_msg->set_recipient(dmsg->recipient());
                 err_msg->set_content("This user only accepts direct messages from users in their friends list.");
                 err_msg->set_timestamp(current_time);
+                err_msg->set_nonce(dmsg->nonce());
 
                 std::string serialized;
                 error_packet.SerializeToString(&serialized);
@@ -317,6 +318,7 @@ private:
                 err_msg->set_recipient(dmsg->recipient());
                 err_msg->set_content("The server couldn't deliver your message. Please try again.");
                 err_msg->set_timestamp(current_time);
+                err_msg->set_nonce(dmsg->nonce());
 
                 std::string serialized;
                 error_packet.SerializeToString(&serialized);

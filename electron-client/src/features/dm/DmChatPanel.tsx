@@ -19,6 +19,7 @@ import { useTypeToFocusComposer } from "../chat/useTypeToFocusComposer";
 import MessagePreview from "../chat/MessagePreview";
 import RichComposer from "../chat/RichComposer";
 import EmojiPicker from "../chat/EmojiPicker";
+import { newNonce, watchDmEcho } from "../chat/sendPacing";
 import ErrorCard from "../../components/ErrorCard";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
@@ -240,8 +241,9 @@ export default function DmChatPanel() {
   // appear for those, which is correct (nothing to delete).
   // Memoized: this used to rebuild (and re-allocate) the whole array
   // on every render — keystrokes included — not just message changes.
-  // DmMessage has no nonce; unsent / legacy rows get a synthetic key (see
-  // syntheticKey) so row keys and scroll anchors are never index-based.
+  // Optimistic rows key by their send nonce; legacy id-less rows get a
+  // synthetic key (see syntheticKey) so row keys and scroll anchors are
+  // never index-based.
   const messageKey = useCallback(
     (m: { id: number; nonce?: string }) => (m.id > 0 ? m.id : m.nonce ?? ""),
     [],
@@ -252,7 +254,7 @@ export default function DmChatPanel() {
       messages.map((m) => ({
         ...m,
         id: typeof m.id === "number" ? m.id : 0,
-        nonce: typeof m.id === "number" && m.id > 0 ? undefined : syntheticKey(m),
+        nonce: typeof m.id === "number" && m.id > 0 ? undefined : m.nonce ?? syntheticKey(m),
         channelId: "",
         attachments: [],
       })),
@@ -466,18 +468,40 @@ export default function DmChatPanel() {
     setSending(true);
     setSendError(null);
     const replyToId = replyingTo?.id && replyingTo.id > 0 ? replyingTo.id : undefined;
+    const peer = activeDmUser;
+    const content = value.trim();
+    // Optimistic bubble (faded until central echoes it back with this
+    // nonce — see addDmMessage's reconciliation).
+    const nonce = newNonce();
+    if (localUsername) {
+      useDmStore.getState().addDmMessage(
+        peer,
+        {
+          sender: localUsername,
+          content,
+          timestamp: String(Math.floor(Date.now() / 1000)),
+          replyTo: replyToId,
+          nonce,
+          pending: true,
+        },
+        true,
+      );
+    }
     try {
       await invoke("send_private_message", {
-        recipient: activeDmUser,
-        message: value.trim(),
+        recipient: peer,
+        message: content,
         replyTo: replyToId,
+        nonce,
       });
+      watchDmEcho(peer, nonce);
       editorRef.current?.clear();
       setInput("");
-      useDraftsStore.getState().clearDmDraft(activeDmUser);
+      useDraftsStore.getState().clearDmDraft(peer);
       setPickerOpen(false);
       setReplyingTo(null);
     } catch (err) {
+      useDmStore.getState().removeDmMessageByNonce(peer, nonce);
       setSendError(String(err));
     } finally {
       setSending(false);
@@ -501,13 +525,32 @@ export default function DmChatPanel() {
     }
     const replyToId = replyingTo?.id && replyingTo.id > 0 ? replyingTo.id : undefined;
     setReplyingTo(null);
+    const peer = activeDmUser;
+    const nonce = newNonce();
+    if (localUsername) {
+      useDmStore.getState().addDmMessage(
+        peer,
+        {
+          sender: localUsername,
+          content: gif.url,
+          timestamp: String(Math.floor(Date.now() / 1000)),
+          replyTo: replyToId,
+          nonce,
+          pending: true,
+        },
+        true,
+      );
+    }
     try {
       await invoke("send_private_message", {
-        recipient: activeDmUser,
+        recipient: peer,
         message: gif.url,
         replyTo: replyToId,
+        nonce,
       });
+      watchDmEcho(peer, nonce);
     } catch (err) {
+      useDmStore.getState().removeDmMessageByNonce(peer, nonce);
       console.error("send_private_message (gif):", err);
       toast.error("Failed to send GIF");
     }

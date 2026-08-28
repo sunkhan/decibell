@@ -445,6 +445,10 @@ message DirectMessage {
   // Empty sender with reply_to>0 = parent was deleted.
   string reply_to_sender = 8;
   string reply_to_content = 9;
+  // Client-generated per send, echoed back unchanged (central copies
+  // the packet it received into its echo) so the sender reconciles
+  // its optimistic bubble; also set on central's error replies.
+  string nonce = 10;
 }
 
 message UserPresence {

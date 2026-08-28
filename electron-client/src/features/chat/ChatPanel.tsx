@@ -460,6 +460,7 @@ export default function ChatPanel() {
       nonce,
       pendingAttachmentIds: pendingIds.length > 0 ? pendingIds : undefined,
       replyTo: replyToId,
+      pending: true,
     });
     editorRef.current?.clear();
     setDraft("");
@@ -589,6 +590,7 @@ export default function ChatPanel() {
       attachments: [],
       nonce,
       replyTo: replyToId,
+      pending: true,
     });
     setReplyingTo(null);
     try {

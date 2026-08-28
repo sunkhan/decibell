@@ -623,6 +623,22 @@ id-0 bubble with no echo after 30 s is withdrawn with a toast, so no lost respon
 permanent ghost. Bucket retuned to **10 burst / 3 per s** (CLAUDE.md updated). e2e `[B11]`
 now sends nonces and asserts `CHANNEL_MSG_REJECTED` names exactly the dropped ones.
 
+**Pending messages render faded until the server echoes them (2026-08-27) ✅** — Discord's
+"sending" look, so the client-side pacing above is legible: an optimistic bubble draws at 50 %
+opacity and the echo replaces it at full colour. `Message.pending` / `DmMessage.pending` flag the
+optimistic object (the echo is a new object without it; rows stay keyed by id-else-nonce, so the
+un-fade is a row replacement, not a transition — keys must equal `String(id)` for the scroll
+anchor's `byKey` lookup). Channels already had optimistic bubbles; **DMs didn't** — sends just
+waited for central's echo. Now: `DirectMessage.nonce` (field 10) is set per send by the renderer
+(`newNonce()`), central's echo carries it for free (it copies the received packet), and its two
+error replies (friends-only recipient, persist failure) set it explicitly; the DM store
+reconciles by nonce (`addDmMessage` replaces the pending row in place; `removeDmMessageByNonce`
+for failures), `useDmEvents` turns a nonce-bearing, id-less self echo into "withdraw the bubble +
+toast the reason" instead of rendering central's error text as a message of ours, and
+`watchDmEcho` clears a bubble nothing confirms within 30 s. Older centrals still echo the nonce
+on success (unknown fields survive the packet copy); their error replies lack it and fall back
+to the previous rendering, with the watchdog clearing the bubble.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

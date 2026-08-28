@@ -13,6 +13,9 @@ pub struct SendPrivateMessageArgs {
     pub message: String,
     /// Id of the DM being replied to (0/absent = not a reply).
     pub reply_to: Option<i64>,
+    /// Client nonce echoed back by central so the renderer can settle
+    /// its optimistic bubble.
+    pub nonce: Option<String>,
 }
 
 #[napi]
@@ -55,6 +58,7 @@ pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<
                 // Server-resolved on broadcast; never set by the client.
                 reply_to_sender: String::new(),
                 reply_to_content: String::new(),
+                nonce: args.nonce.unwrap_or_default(),
             }),
             token.as_deref(),
         );

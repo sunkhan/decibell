@@ -1,4 +1,5 @@
 import { useChatStore } from "../../stores/chatStore";
+import { useDmStore } from "../../stores/dmStore";
 import { toast } from "../../stores/toastStore";
 import { channelKey } from "../../lib/channelKey";
 
@@ -96,6 +97,24 @@ export function watchEcho(serverId: string, channelId: string, nonce: string): v
     chat.removeMessageByNonce(serverId, channelId, nonce);
     toast.error("Message not sent", "The server didn't confirm it.");
   }, ECHO_TIMEOUT_MS);
+}
+
+/// The DM twin: central echoes our DIRECT_MSG (nonce included) or
+/// answers with an error reply carrying the nonce; neither within the
+/// timeout → withdraw the pending bubble.
+export function watchDmEcho(peer: string, nonce: string): void {
+  window.setTimeout(() => {
+    const dm = useDmStore.getState();
+    const list = dm.conversations[peer]?.messages;
+    if (!list || !list.some((m) => !m.id && m.nonce === nonce)) return;
+    dm.removeDmMessageByNonce(peer, nonce);
+    toast.error("Message not sent", "The server didn't confirm it.");
+  }, ECHO_TIMEOUT_MS);
+}
+
+/// Per-send nonce for optimistic bubbles.
+export function newNonce(): string {
+  return crypto.randomUUID();
 }
 
 // The server still sends the legacy MOD_ACTION_RES(action="message")

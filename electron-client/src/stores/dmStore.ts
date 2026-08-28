@@ -150,6 +150,9 @@ interface DmState {
   markRead: (peer: string, upToId: number) => void;
   /// Remove a DM from a peer's visible message list. Idempotent.
   removeDmMessage: (peer: string, messageId: number) => void;
+  /// Drop an optimistic (id-less) DM by its nonce — the send failed or
+  /// was never confirmed.
+  removeDmMessageByNonce: (peer: string, nonce: string) => void;
   /// Apply a DM edit broadcast: replace content + set editedAt on the match.
   applyDmEdit: (peer: string, messageId: number, content: string, editedAt: number) => void;
   /// Snapshot + remove for optimistic delete; returns the snapshot.
@@ -204,6 +207,29 @@ export const useDmStore = create<DmState>((set, get) => ({
       }
       const timestamp = parseInt(message.timestamp, 10);
       const time = isNaN(timestamp) ? Date.now() : timestamp * 1000;
+
+      // Central's echo of our own optimistic send: replace that bubble
+      // in place (it sits at the tail) instead of appending a second
+      // row. Unread and preview bookkeeping are unaffected — it's ours.
+      if (message.nonce && existing) {
+        const idx = existing.messages.findIndex((m) => !m.id && m.nonce === message.nonce);
+        if (idx !== -1) {
+          const msgs = existing.messages.slice();
+          const was = msgs[idx];
+          msgs[idx] = message;
+          return {
+            conversations: {
+              ...state.conversations,
+              [otherUser]: {
+                ...existing,
+                messages: msgs,
+                lastMessage: existing.lastMessage === was ? message : existing.lastMessage,
+                lastMessageTime: Math.max(existing.lastMessageTime, time),
+              },
+            },
+          };
+        }
+      }
 
       // "Actively viewing" requires BOTH: the active DM peer is this
       // sender AND the active view is the DM view. activeDmUser is
@@ -479,6 +505,26 @@ export const useDmStore = create<DmState>((set, get) => ({
             ...conv,
             unreadCount: 0,
             lastReadId: upToId,
+          },
+        },
+      };
+    }),
+
+  removeDmMessageByNonce: (peer, nonce) =>
+    set((state) => {
+      const conv = state.conversations[peer];
+      if (!conv) return {};
+      const next = conv.messages.filter((m) => !(!m.id && m.nonce === nonce));
+      if (next.length === conv.messages.length) return {};
+      const last = conv.lastMessage;
+      return {
+        conversations: {
+          ...state.conversations,
+          [peer]: {
+            ...conv,
+            messages: next,
+            lastMessage:
+              last && !last.id && last.nonce === nonce ? next[next.length - 1] ?? null : last,
           },
         },
       };

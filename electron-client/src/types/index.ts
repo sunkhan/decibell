@@ -67,6 +67,11 @@ export interface DmMessage {
   /// 0 means "legacy or pre-persistence; can't be marked read
   /// individually". Used to feed `up_to_id` on DmMarkReadReq.
   id?: number;
+  /// Client nonce of an optimistic send; central echoes it so the
+  /// pending bubble is replaced by the confirmed message.
+  nonce?: string;
+  /// Optimistic, not yet echoed by central — rendered faded.
+  pending?: boolean;
 }
 
 export interface ServerMember {
@@ -317,6 +322,9 @@ export interface Message {
   /// Kinds of the parent's attachments (position order) — labels an
   /// attachment-only parent ("Image", "Video", …). Absent/empty = none.
   replyToAttachmentKinds?: AttachmentKind[];
+  /// Optimistic send the server hasn't echoed yet — rendered faded
+  /// (Discord's "sending" look); the echo replaces the object.
+  pending?: boolean;
 }
 
 export interface ChannelInfo {
