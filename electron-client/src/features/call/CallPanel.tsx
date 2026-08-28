@@ -179,7 +179,7 @@ function ActiveCallPanel({ peer }: { peer: string }) {
         <button
           onClick={handleHangUp}
           title={status === "outgoing" ? "Cancel" : "Hang up"}
-          className="flex h-10 items-center gap-2 rounded-full bg-error px-5 text-[13px] font-semibold text-text-bright transition-opacity hover:opacity-90"
+          className="flex h-10 items-center gap-2 rounded-md bg-error px-5 text-[13px] font-semibold text-text-bright transition-opacity hover:opacity-90"
         >
           <HangUpIcon />
           {status === "outgoing" ? "Cancel" : "Hang up"}
@@ -279,7 +279,7 @@ function PeerAudioControls({ username }: { username: string }) {
       <button
         onClick={handleToggleMute}
         title={isLocallyMuted ? `Unmute ${username} for you` : `Mute ${username} for you`}
-        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-sm transition-colors ${
           isLocallyMuted
             ? "bg-error/15 text-error hover:bg-error/25"
             : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
@@ -332,7 +332,7 @@ function CallButton({
     <button
       onClick={onClick}
       title={title}
-      className={`flex h-10 w-10 items-center justify-center rounded-full transition-colors ${
+      className={`flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
         active
           ? "bg-error/15 text-error hover:bg-error/25"
           : "bg-surface-hover text-text-secondary hover:bg-surface-active hover:text-text-bright"

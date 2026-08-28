@@ -76,6 +76,7 @@ export default function DmChatPanel() {
   const callPeer = useVoiceStore((s) => s.callPeer);
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
+  const isStreamFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -804,7 +805,18 @@ export default function DmChatPanel() {
       {callPeer === activeDmUser &&
         fullscreenStream != null &&
         watchingStreams.includes(fullscreenStream) && (
-          <div className="absolute inset-x-0 bottom-0 top-12 z-10 flex min-h-0 flex-col overflow-hidden bg-bg-mid">
+          // Window-fullscreen: StreamViewPanel's root becomes `fixed inset-0
+          // z-50`. A positioned + z-indexed wrapper would be a stacking
+          // context that traps it under the sidebar's z-20 UserPanel, so the
+          // wrapper drops out of layout (`contents`) exactly like VoicePanel's
+          // plain slot div — the fixed root then escapes to the viewport.
+          <div
+            className={
+              isStreamFullscreen
+                ? "contents"
+                : "absolute inset-x-0 bottom-0 top-12 z-10 flex min-h-0 flex-col overflow-hidden bg-bg-mid"
+            }
+          >
             <StreamViewPanel />
           </div>
         )}
