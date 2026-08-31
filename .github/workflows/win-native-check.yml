@@ -1,0 +1,70 @@
+name: Windows Native Check
+
+# Compile-checks the cfg(target_os = "windows") half of the native
+# addon, which the Linux dev box can't build (`cargo test --lib` only
+# covers the host cfg). Runs on pushes touching native/ so a Windows
+# compile break surfaces before the next `ev*` release tag, and the
+# full compiler output is uploaded as an artifact — run logs need
+# admin-scoped tokens to download, artifacts don't.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "electron-client/native/**"
+      - "proto/messages.proto"
+      - ".github/workflows/win-native-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: electron-client/native
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: electron-client/native
+          shared-key: win-native-check
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same pinned vcpkg commit as electron-release.yml — ffmpeg-sys's
+      # build script needs the FFmpeg libs even for `cargo check`.
+      - name: Install FFmpeg via vcpkg
+        shell: pwsh
+        run: |
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --quiet origin
+          git -C "$env:VCPKG_INSTALLATION_ROOT" checkout e5a1490e1409d175932ef6014519e9ae149ddb7c
+          & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "ffmpeg[nvcodec,amf,qsv]:x64-windows"
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: cargo check
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check --locked --all-targets 2>&1 | tee cargo-check.log
+
+      - name: Upload compiler output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-cargo-check-log
+          path: electron-client/native/cargo-check.log
+          if-no-files-found: ignore
