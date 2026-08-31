@@ -32,6 +32,14 @@ void AuthManager::initializeDatabase() {
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
             "avatar_version VARCHAR(64) NOT NULL DEFAULT ''"
         );
+        // The (user1, user2) pair is stored in *byte* order — C++
+        // std::min/std::max in handleFriendAction/isBlocked. The CHECK
+        // must use the same ordering: an unqualified `user1 < user2`
+        // compares with the database collation (en_US.UTF-8 on the
+        // deployed box), which disagrees with byte order for case-mixed
+        // or punctuated names ("Zeki"/"adam", "a_b"/"aab") — every such
+        // ADD died with a check violation, surfaced as "Database
+        // error." COLLATE "C" pins the CHECK to byte order.
         txn.exec(
             "CREATE TABLE IF NOT EXISTS friends ("
             "  user1 VARCHAR(32) NOT NULL,"
@@ -39,8 +47,24 @@ void AuthManager::initializeDatabase() {
             "  status VARCHAR(16) NOT NULL,"
             "  action_user VARCHAR(32) NOT NULL,"
             "  PRIMARY KEY (user1, user2),"
-            "  CHECK (user1 < user2)"
+            "  CONSTRAINT friends_pair_byteorder CHECK (user1 < user2 COLLATE \"C\")"
             ")"
+        );
+        // Existing deployments carry the old collation-order CHECK
+        // under its auto-generated name "friends_check"; swap it once.
+        // Every existing row satisfies the new check — rows were only
+        // ever inserted with byte-ordered pairs (inserts where the two
+        // orderings disagreed are exactly the ones that failed).
+        txn.exec(
+            "DO $mig$ BEGIN "
+            "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+            "    WHERE conrelid = 'friends'::regclass "
+            "      AND conname = 'friends_pair_byteorder') THEN "
+            "  ALTER TABLE friends DROP CONSTRAINT IF EXISTS friends_check; "
+            "  ALTER TABLE friends ADD CONSTRAINT friends_pair_byteorder "
+            "    CHECK (user1 < user2 COLLATE \"C\"); "
+            "END IF; "
+            "END $mig$"
         );
         txn.exec(
             "CREATE TABLE IF NOT EXISTS community_invites ("
@@ -161,6 +185,18 @@ void AuthManager::initializeDatabase() {
 
 std::string AuthManager::registerUser(const std::string& username, const std::string& email, const std::string& password) {
     if (username.length() < 3 || username.length() > 32) return "Invalid username length.";
+    // Lowercase-only ASCII (2026-08-31). Case-mixed and non-ASCII names
+    // were both a UX trap (exact-match friend lookups, "Usernames are
+    // case-sensitive") and the trigger for the friends-pair CHECK
+    // mismatch fixed above. Existing mixed-case accounts keep working —
+    // this gate runs at registration only. `char` may be signed:
+    // non-ASCII UTF-8 bytes land in the negative range and fail every
+    // range test below, so multibyte names are rejected too.
+    for (const char c : username) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                        c == '_' || c == '.' || c == '-';
+        if (!ok) return "Usernames may only contain lowercase letters, digits, '.', '_' and '-'.";
+    }
     if (email.empty() || email.find('@') == std::string::npos) return "Invalid email address.";
     // Reject empty / trivially-weak passwords at registration. Only affects
     // new accounts — existing users (any length) can still log in.

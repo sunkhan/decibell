@@ -74,13 +74,21 @@ export default function LoginPage() {
         <input
           type="text"
           value={username}
-          onChange={(e) => setUsername(e.target.value)}
+          // Usernames register lowercase-only (central enforces it);
+          // fold as the user types instead of erroring after submit.
+          // Login stays verbatim — pre-rule accounts may be mixed-case.
+          onChange={(e) =>
+            setUsername(mode === "register" ? e.target.value.toLowerCase() : e.target.value)
+          }
           className="mb-3 w-full rounded-md border border-border bg-bg-primary px-3 py-2.5 text-sm text-text-primary outline-none transition-colors focus:border-accent"
           required
         />
 
         {mode === "register" && (
           <>
+            <p className="-mt-1.5 mb-3 text-[11px] text-text-muted">
+              Lowercase letters, digits, and {". _ -"} only.
+            </p>
             <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
               Email
             </label>

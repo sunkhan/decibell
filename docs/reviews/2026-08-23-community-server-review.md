@@ -684,6 +684,28 @@ bitrates are clamped to **320 kbps** on the community server (create + update; w
 Opus's own 510 where a 20 ms frame reaches 1275 B) and in the client encoders. The wire format is
 unchanged (compact header + payload); community servers pick it up on their next deploy.
 
+**Friend-add "Database error." — friends CHECK collation vs C++ byte order (2026-08-31) ✅ —
+needs Hetzner rebuild** — field report from live testing: a user with a capitalized username
+could not add anyone and nobody could add him; a fresh (also capitalized) account reproduced it.
+Root cause: `friends` was created with `CHECK (user1 < user2)`, which Postgres evaluates in the
+*database collation* (dictionary order — case-insensitive at the primary level, punctuation
+ignored), while `handleFriendAction`/`isBlocked` order the pair with `std::min`/`std::max`
+(byte order, all uppercase before all lowercase). Any pair where the two orderings disagree
+("Zeki"/"adam" — and pure-lowercase pairs too: "a_b"/"aab") failed the CHECK on INSERT →
+"Database error.", symmetrically (u1/u2 are the same whoever initiates) and account-independently
+(same-styled username, same violation). Fix: the CHECK is now the named constraint
+`friends_pair_byteorder` with `COLLATE "C"` (byte order, matching the C++), plus a one-shot
+`DO` migration that swaps the old auto-named `friends_check` on deployed DBs — existing rows
+revalidate clean because only byte-ordered pairs ever inserted successfully. Alongside it,
+registration now enforces **lowercase-only usernames** (`[a-z0-9._-]`, 3–32; signed-char range
+tests reject non-ASCII bytes too): mixed case was already a UX trap with exact-match friend
+lookups. Existing mixed-case accounts still log in and are addressable — the gate is
+registration-only, which is exactly why the constraint fix is still required. Client folds the
+username to lowercase as you type in register mode only (`LoginPage`). Verified: stub g++
+compile of the new statements + validation table, renderer tsc clean, migration semantics
+checked against locale collation ordering; central is inspection-only locally and the migration
+runs on the next Hetzner rebuild — until then the bug persists in production.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
