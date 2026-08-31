@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { legacyRejectionSuppressed, resetSendPacing } from "../chat/sendPacing";
 import { parseInviteLink } from "./inviteLink";
 import { invoke, listen } from "../../lib/ipc";
+import { applySavedUserGains } from "../voice/userGain";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
@@ -330,7 +331,54 @@ export function useServerEvents() {
         const voice = useVoiceStore.getState();
         if (voice.connectedServerId !== serverId) return;
         if (action === "moved") {
+          const prevChannelId = voice.connectedChannelId;
+          // The server stops our stream before switching us (a stream is
+          // bound to the channel it started in) — reconcile like the
+          // manual channel-switch flow, or the encoder keeps running
+          // against a stream the server no longer knows about.
+          if (voice.isStreaming) {
+            const { stopActiveStream } = await import("../voice/streaming/StreamCapture");
+            await stopActiveStream().catch(() => {});
+            if (prevChannelId) {
+              invoke("stop_screen_share", { serverId, channelId: prevChannelId }).catch(() => {});
+            }
+            voice.setIsStreaming(false);
+          }
+          // Our watcher entries were dropped server-side on leaving the
+          // old channel; clear the local mirror so no ghost players linger.
+          useVoiceStore.setState({
+            watchingStreams: [],
+            fullscreenStream: null,
+            pipStream: null,
+          });
           voice.setConnectedChannel(serverId, channelId);
+          // The destination's presence broadcast arrived BEFORE this
+          // notify, while connectedChannelId still pointed at the old
+          // channel, so the roster handler skipped it. Rebuild the
+          // connected-channel roster and stream list from the per-channel
+          // caches — otherwise the stage keeps the old channel's roster
+          // (users appear under two channels at once) and a move back to
+          // a channel shows an empty room.
+          const st = useVoiceStore.getState();
+          const roster = st.channelPresence[channelId] ?? [];
+          const states = st.channelUserStates[channelId] ?? {};
+          st.setParticipants(
+            roster.map((u) => ({
+              username: u,
+              isMuted: states[u]?.isMuted ?? false,
+              isDeafened: states[u]?.isDeafened ?? false,
+              isServerMuted: states[u]?.isServerMuted ?? false,
+              isServerDeafened: states[u]?.isServerDeafened ?? false,
+              isSpeaking: st.speakingUsers.has(u),
+              audioLevel: 0,
+            })),
+          );
+          st.setActiveStreams(
+            [...st.streamsByUser.values()]
+              .filter((loc) => loc.serverId === serverId && loc.channelId === channelId)
+              .map((loc) => loc.streamInfo),
+          );
+          applySavedUserGains(roster);
           const name =
             useChatStore.getState().channelsByServer[serverId]?.find((c) => c.id === channelId)?.name ?? channelId;
           toast.info("Moved", `${actor} moved you to ${name}.`);

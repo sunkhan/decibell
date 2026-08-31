@@ -706,6 +706,26 @@ compile of the new statements + validation table, renderer tsc clean, migration 
 checked against locale collation ordering; central is inspection-only locally and the migration
 runs on the next Hetzner rebuild — until then the bug persists in production.
 
+**Forced voice move left the client's roster on the old channel (2026-08-31) ✅** — field
+report from live testing: after a moderator MOVE, the moved client showed the old channel's
+users under the *new* channel too (everyone listed twice), and being moved back into a channel
+showed an empty room — not even yourself. Root cause: on a MOVE the server broadcasts
+presence for the old channel, then the new channel, then `VOICE_FORCE_NOTIFY` — but the
+renderer's presence handler only refreshes `voiceStore.participants` (the connected channel's
+roster; what the stage and the connected sidebar row render) when the update matches
+`connectedChannelId`, which still pointed at the *old* channel when the destination's presence
+arrived. The notify handler then flipped `connectedChannelId` without reconciling, so
+`participants` froze on whatever last matched: the old channel's remainder (duplication), or
+the emptied channel just left (empty room on a move back). Fix (client-only,
+`useServerEvents.ts` moved branch): after `setConnectedChannel`, rebuild `participants` from
+the always-correct `channelPresence`/`channelUserStates` caches, rebuild `activeStreams` from
+`streamsByUser` for the destination, re-apply saved per-user gains, clear watch state
+(watcher entries were dropped server-side), and tear down our own capture if we were
+streaming (the server stops a stream on MOVE; the client previously kept a zombie encoder and
+a stuck Stop button). Works against all server versions — the server's broadcast order
+(presence before notify) is what makes the cache-rebuild safe. Verified: renderer tsc clean;
+server-side MOVE flow already covered by `test_voice_moderation` in e2e.py.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
