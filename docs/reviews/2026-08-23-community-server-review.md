@@ -726,6 +726,47 @@ a stuck Stop button). Works against all server versions — the server's broadca
 (presence before notify) is what makes the cache-rebuild safe. Verified: renderer tsc clean;
 server-side MOVE flow already covered by `test_voice_moderation` in e2e.py.
 
+**Windows 10 yellow capture border removed for screen shares (2026-08-31) ✅ — needs a
+Windows live test** — field report: streaming on Win10 draws a yellow border around the
+captured monitor (TeamSpeak has it, Discord doesn't). Root cause: the native Windows capture
+is Windows.Graphics.Capture, whose border is mandatory on consumer Win10 —
+`SetIsBorderRequired(false)` (capture_wgc.rs) needs IGraphicsCaptureSession3, a Win11/Server
+2022 API, so the existing best-effort call silently failed there (the 2026-03-28 design doc
+recorded this as accepted degradation). Fix: monitor capture now goes through **DXGI Desktop
+Duplication** (`native/src/media/capture_dxgi.rs`, mined from the Tauri client's
+capture_dxgi.rs) — no OS border on any Windows version, same `SyncSender<ID3D11Texture2D>`
+contract into the encoder thread. Deltas vs. WGC: frames are copied into a 4-slot BGRA ring
+(the duplication surface is only valid until ReleaseFrame; re-sent when the desktop is static
+so the encoder/GOP keeps running), copies happen only when a paced send is due (mouse-only
+duplication updates can fire at polling rate), and the mouse pointer is composited manually —
+duplication doesn't include the hardware cursor — via a cursor-sized staging round-trip and
+pure blend math in the new cross-platform `cursor_blend.rs` (COLOR src-over, MONOCHROME
+AND/XOR, MASKED_COLOR; 11 unit tests run on the Linux box). Fallback to WGC (border on Win10,
+none on Win11) whenever duplication can't start: window capture (duplication does whole
+outputs only), cross-adapter outputs, rotated displays, HDR desktops without DuplicateOutput1
+(BGRA is requested via IDXGIOutput5 so DWM tone-maps; a non-BGRA mode bails), exclusive-
+fullscreen access loss — the start handshake reports failure within ~3s so `start_windows`
+can degrade. Renderer-encode fallback path hardened too: `electron/main/index.ts` disables
+Chromium's WGC capturer features on win32 (`WebRtcAllowWgc{Desktop,Screen,Window}Capturer`)
+so getDisplayMedia also uses the borderless legacy capturers. Known remaining: **window**
+shares on Win10 keep the border (WGC is the only per-window path we have; Discord ships a
+BitBlt/hook capturer for that — future work if it matters). Verified: `cargo test --lib`
+110/110 (cursor_blend + clipping tests new), tsc web+node clean; the cfg(windows) half is
+compile-verified by the release CI and needs a live Win10 stream test.
+
+**Stream watch stuck on "loading" forever (2026-08-31) ✅ (hardening; root cause = stale
+post-move state, fixed above)** — field report: a watcher sat on the spinner indefinitely for
+a Win10 friend's stream during the same session as the voice-move testing. Two findings:
+(1) most likely trigger: pre-fix, a forced move left `activeStreams` stale, so the old
+channel's stream cards stayed clickable from the new channel — and the server drops a
+WATCH_STREAM_REQ from outside the stream's channel **silently** (log + return, no response
+packet), so the client waits forever. The voice-move reconciliation fix removes the ghost
+cards. (2) independent hardening: StreamVideoPlayer's stall watchdog explicitly skipped the
+pre-first-frame phase, so if the single mid-stream-join keyframe request (or its answering
+IDR) was lost — it's UDP — the player never re-asked and stayed black until the next natural
+GOP… or forever. The watchdog now keeps calling `requestKeyframe()` (self-throttled to 1/s)
+until the first frame paints.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

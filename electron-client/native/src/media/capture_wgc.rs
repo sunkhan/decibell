@@ -173,7 +173,9 @@ fn open_capture_item(target: CaptureTarget) -> Result<GraphicsCaptureItem, Strin
     }
 }
 
-fn monitor_at_index(idx: u32) -> Result<HMONITOR, String> {
+// Shared with capture_dxgi so both backends resolve Chromium's
+// `screen:N:0` index to the same monitor.
+pub(crate) fn monitor_at_index(idx: u32) -> Result<HMONITOR, String> {
     // EnumDisplayMonitors callback collects HMONITORs in left-to-right
     // top-to-bottom order. Chromium's desktopCapturer numbers them in
     // the same order.

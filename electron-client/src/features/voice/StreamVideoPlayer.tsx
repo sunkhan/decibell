@@ -524,7 +524,15 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         lastFrameAtRef.current = performance.now();
         return;
       }
-      if (!firstFrameSignalled) return; // still waiting for the first frame
+      if (!firstFrameSignalled) {
+        // Never painted: the mid-stream-join keyframe request (or its
+        // answering IDR) may simply have been lost — it's UDP. Keep
+        // re-asking (requestKeyframe self-throttles) instead of sitting
+        // on the spinner until the streamer's next natural GOP… or
+        // forever, when the request never made it at all.
+        requestKeyframe();
+        return;
+      }
       const since = performance.now() - lastFrameAtRef.current;
       if (since < STALL_MS) return;
       if (!stalledRef.current) {

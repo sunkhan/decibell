@@ -219,6 +219,20 @@ if (process.platform === "linux") {
   // VAAPI gets a chance to claim the codec.
   disableFeatures.push("UseChromeOSDirectVideoDecoder");
 }
+if (process.platform === "win32") {
+  // Keep Chromium's getDisplayMedia (the renderer-encode fallback when
+  // no native HW encoder exists) off Windows.Graphics.Capture: WGC
+  // draws a mandatory yellow border around the captured screen/window
+  // on Windows 10. These force the legacy DXGI/GDI capturers, which are
+  // borderless — the native capture path handles its own borderless
+  // routing (capture_dxgi.rs). Names cover the Chromium feature across
+  // the versions that shipped it; unknown names are ignored.
+  disableFeatures.push(
+    "WebRtcAllowWgcDesktopCapturer",
+    "WebRtcAllowWgcScreenCapturer",
+    "WebRtcAllowWgcWindowCapturer",
+  );
+}
 app.commandLine.appendSwitch("disable-features", disableFeatures.join(","));
 if (process.platform === "win32") {
   app.commandLine.appendSwitch("audio-service-sandbox-type", "none");
