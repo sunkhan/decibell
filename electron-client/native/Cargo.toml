@@ -114,6 +114,11 @@ windows = { version = "0.61", features = [
     # encoder pipeline (see docs/superpowers/specs/2026-05-12-windows-
     # native-ffmpeg-encoder-design.md §5-§6).
     "Graphics_Capture",
+    # ApiInformation — capture backend routing asks whether
+    # GraphicsCaptureSession.IsBorderRequired exists (Win11+): if yes,
+    # WGC captures borderless and stays preferred; if no (Win10),
+    # monitors go through DXGI duplication instead.
+    "Foundation_Metadata",
     "Graphics_DirectX",
     "Graphics_DirectX_Direct3D11",
     "Win32_Graphics_Direct3D",

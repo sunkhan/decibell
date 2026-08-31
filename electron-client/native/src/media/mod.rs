@@ -773,11 +773,14 @@ pub struct VideoEngine {
 }
 
 /// Which native capture backend is feeding the Windows encoder thread.
-/// Monitors prefer DXGI Desktop Duplication (no yellow capture border on
-/// Windows 10 — WGC's border is mandatory there); windows always use WGC
-/// (duplication can't capture a single window), and monitors fall back
-/// to WGC when duplication can't start (cross-adapter output, rotated or
-/// HDR-without-DuplicateOutput1 display, exclusive fullscreen).
+/// WGC is the preferred backend (native cursor compositing, HDR and
+/// rotation handling) and is used everywhere it can capture without the
+/// yellow border — Win11 / Server 2022+, where IsBorderRequired exists.
+/// On Windows 10 the WGC border is mandatory, so monitors go through
+/// DXGI Desktop Duplication instead, falling back to WGC (border and
+/// all) when duplication can't start (cross-adapter output, rotated or
+/// HDR-without-DuplicateOutput1 display, exclusive fullscreen). Single
+/// windows always use WGC — duplication only does whole outputs.
 #[cfg(target_os = "windows")]
 enum WinCapture {
     Wgc(capture_wgc::Capture),
@@ -893,16 +896,16 @@ impl VideoEngine {
             }
         });
 
-        // Monitors: DXGI Desktop Duplication first — no capture border on
-        // any Windows version (WGC's SetIsBorderRequired(false) needs
-        // Win11; on Win10 the WGC border is mandatory). Fall back to WGC
-        // when duplication can't start. Window capture stays on WGC —
-        // duplication only does whole outputs.
+        // WGC wherever it can go borderless (Win11+ — better cursor/HDR/
+        // rotation handling); on Win10, where the WGC border is mandatory,
+        // monitors switch to DXGI Desktop Duplication, degrading back to
+        // WGC when duplication can't start. Window capture is WGC-only —
+        // duplication does whole outputs.
         let capture = match target {
-            source_id::CaptureTarget::Monitor(idx) => {
+            source_id::CaptureTarget::Monitor(idx) if !capture_wgc::borderless_supported() => {
                 match capture_dxgi::Capture::start(&gpu, idx, tx.clone(), include_cursor, fps) {
                     Ok(c) => {
-                        log::info!("[stream] monitor capture via DXGI duplication (borderless)");
+                        log::info!("[stream] monitor capture via DXGI duplication (Win10 borderless)");
                         WinCapture::Dxgi(c)
                     }
                     Err(e) => {
@@ -918,9 +921,7 @@ impl VideoEngine {
                     }
                 }
             }
-            source_id::CaptureTarget::Window(_) => {
-                WinCapture::Wgc(capture_wgc::Capture::start(&gpu, target, tx, include_cursor)?)
-            }
+            _ => WinCapture::Wgc(capture_wgc::Capture::start(&gpu, target, tx, include_cursor)?),
         };
         let encoder_thread = encoder_thread::EncoderThread::start(
             gpu,

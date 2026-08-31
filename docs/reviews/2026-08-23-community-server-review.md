@@ -753,6 +753,12 @@ shares on Win10 keep the border (WGC is the only per-window path we have; Discor
 BitBlt/hook capturer for that — future work if it matters). Verified: `cargo test --lib`
 110/110 (cursor_blend + clipping tests new), tsc web+node clean; the cfg(windows) half is
 compile-verified by the release CI and needs a live Win10 stream test.
+*Follow-up (2026-09-01, user decision):* DXGI duplication is now **Win10-only**. Where WGC
+can itself go borderless — `capture_wgc::borderless_supported()` asks WinRT metadata whether
+`GraphicsCaptureSession.IsBorderRequired` exists (Win11 / Server 2022+; new
+`Foundation_Metadata` crate feature) — monitors stay on WGC, which keeps native cursor
+compositing and HDR/rotation handling. Routing lives in the `start_windows` match guard;
+behavior on Win10 is unchanged (DXGI first, WGC border as last resort).
 
 **Stream watch stuck on "loading" forever (2026-08-31) ✅ (hardening; root cause = stale
 post-move state, fixed above)** — field report: a watcher sat on the spinner indefinitely for

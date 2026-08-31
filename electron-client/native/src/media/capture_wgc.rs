@@ -173,6 +173,23 @@ fn open_capture_item(target: CaptureTarget) -> Result<GraphicsCaptureItem, Strin
     }
 }
 
+/// True when this Windows build exposes
+/// `GraphicsCaptureSession.IsBorderRequired` (Win11 / Server 2022+) —
+/// i.e. WGC itself can capture without the yellow border, and monitor
+/// capture should stay on WGC (native cursor compositing, HDR and
+/// rotation handling) instead of the DXGI duplication path that exists
+/// for border-less capture on Windows 10. Queries the WinRT metadata
+/// for the property rather than sniffing OS build numbers.
+pub(crate) fn borderless_supported() -> bool {
+    use windows::core::HSTRING;
+    use windows::Foundation::Metadata::ApiInformation;
+    ApiInformation::IsPropertyPresent(
+        &HSTRING::from("Windows.Graphics.Capture.GraphicsCaptureSession"),
+        &HSTRING::from("IsBorderRequired"),
+    )
+    .unwrap_or(false)
+}
+
 // Shared with capture_dxgi so both backends resolve Chromium's
 // `screen:N:0` index to the same monitor.
 pub(crate) fn monitor_at_index(idx: u32) -> Result<HMONITOR, String> {
