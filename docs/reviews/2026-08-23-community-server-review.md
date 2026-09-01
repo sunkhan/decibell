@@ -815,6 +815,27 @@ stays sane) when it isn't the active one, then show the voice view. Same hole in
 `UserProfilePopup.handleJoinAndWatch` (clicking a live thumbnail from a DM's profile popup) —
 fixed the same way with the stream's `serverId`. Verified: renderer tsc clean.
 
+**Every capture path now paces to the configured fps — 120/60/30/15 (2026-09-01) ✅** —
+audit prompted by the WGC-vs-DXGI performance question: the capture API costs tenths of a
+millisecond per frame; what actually taxes a streamer's GPU is *how many* frames reach the
+encoder. Findings per path: **WGC (Win11)** forwarded every compositor frame, so a 144 Hz
+monitor drove ~144 copies + hardware-encode submissions per second into a 60 fps stream (the
+encoder's wall-clock pts collapsed duplicates but the work was done). **Renderer WebCodecs**
+(Linux/macOS + fallback) relied solely on getDisplayMedia's `frameRate` constraint, which
+Chromium treats as a request. **DXGI (Win10)** was already paced by the 2026-09-01 fix; the
+**Linux native** paths were already right (PipeWire interval gate + framerate in the format
+pod, wlr-screencopy absolute deadlines, encoder re-encode once per interval when idle). Fixes:
+`capture_wgc.rs` holds only the newest pool frame (pool bumped to 3 buffers), copies it into an
+own 4-slot texture ring on each deadline — which also removes the latent hazard of a recycled
+pool buffer being rewritten while queued for the encoder — re-sends the last slot when the
+screen is static so cadence and keyframe requests keep working, and asks Win11 24H2's
+`GraphicsCaptureSession.SetMinUpdateInterval` for the target up front (best-effort, like
+`SetIsBorderRequired`). `StreamCapture.ts` pumpLoop gates frames on a drift-proof deadline
+with half-an-interval tolerance (an exact-rate source isn't halved by accept/drop jitter; a
+faster source is thinned to the target) using the VideoFrame timestamp. Verified: Windows
+Native Check green on `63aea98` (no new warnings), `cargo test --lib` 110/110, renderer tsc
+clean (via deno — see the node/libada note).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
