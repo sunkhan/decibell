@@ -122,6 +122,9 @@ windows = { version = "0.61", features = [
     "Graphics_DirectX",
     "Graphics_DirectX_Direct3D11",
     "Win32_Graphics_Direct3D",
+    # D3DCompile for the cursor compositor's two tiny shaders
+    # (cursor_gpu.rs) — d3dcompiler_47.dll ships with Windows 10/11.
+    "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",

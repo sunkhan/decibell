@@ -14,9 +14,11 @@
 //! pushed into the encoder thread's SyncSender, same as capture_wgc.
 //! Two deltas vs. WGC: frames land in a small ring of our own textures
 //! (the duplication surface is only valid until ReleaseFrame), and the
-//! mouse pointer is composited manually (duplication frames don't
-//! include the hardware cursor — it arrives as shape + position
-//! metadata; see cursor_blend.rs).
+//! mouse pointer is composited by us — duplication frames don't include
+//! the hardware cursor; it arrives as shape + position metadata, which
+//! cursor_gpu.rs blends on with one small draw. Nothing in this loop ever
+//! waits on the GPU: a busy game's queue would turn any such wait into a
+//! frame-rate cap.
 
 #![cfg(target_os = "windows")]
 
@@ -28,9 +30,7 @@ use std::time::{Duration, Instant};
 use windows::core::Interface;
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
-    D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_CPU_ACCESS_WRITE,
-    D3D11_MAP_READ_WRITE, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
-    D3D11_USAGE_STAGING,
+    D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_MODE_ROTATION_IDENTITY, DXGI_SAMPLE_DESC,
@@ -42,6 +42,7 @@ use windows::Win32::Graphics::Dxgi::{
 };
 
 use super::cursor_blend::{self, CursorImage};
+use super::cursor_gpu::CursorCompositor;
 use super::gpu_pipeline::GpuDevice;
 
 const DXGI_ERROR_WAIT_TIMEOUT_CODE: u32 = 0x887A0027;
@@ -184,11 +185,12 @@ fn open_duplication(
 /// position/shape when they change, so both persist here.
 struct CursorState {
     image: Option<CursorImage>,
+    /// A new shape arrived and hasn't been uploaded to the compositor.
+    shape_dirty: bool,
     pos_x: i32,
     pos_y: i32,
     visible: bool,
     shape_buf: Vec<u8>,
-    staging: Option<(ID3D11Texture2D, usize, usize)>, // (tex, w, h)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -263,11 +265,24 @@ fn run_capture_thread(
 
     let mut cursor = CursorState {
         image: None,
+        shape_dirty: false,
         pos_x: 0,
         pos_y: 0,
         visible: false,
         shape_buf: Vec::new(),
-        staging: None,
+    };
+    // GPU cursor compositor. If shader compilation is unavailable on this
+    // machine the stream simply goes out without a pointer.
+    let mut compositor: Option<CursorCompositor> = if include_cursor {
+        match CursorCompositor::new(device) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                log::warn!("[capture_dxgi] cursor compositor unavailable ({e}); streaming without cursor");
+                None
+            }
+        }
+    } else {
+        None
     };
 
     // Pacing: one send per frame interval, from whatever the desktop
@@ -288,6 +303,17 @@ fn run_capture_thread(
             let _ = ready_tx.try_send(ok);
         }
     };
+
+    // Per-second telemetry so a field report comes with numbers: how
+    // often duplication woke us and why, what we sent, what the encoder
+    // couldn't take, and the worst time spent in one send.
+    let mut tele_last = Instant::now();
+    let mut tele_content = 0u32;
+    let mut tele_mouse = 0u32;
+    let mut tele_timeouts = 0u32;
+    let mut tele_sends = 0u32;
+    let mut tele_drops = 0u32;
+    let mut tele_send_max_us = 0u128;
 
     while !stop.load(Ordering::Relaxed) {
         // Wake for the next deadline (≤ 8ms) or a desktop change,
@@ -321,6 +347,11 @@ fn run_capture_thread(
                     || frame_info.AccumulatedFrames > 0
                     || !have_clean;
                 if content_changed {
+                    tele_content += 1;
+                } else {
+                    tele_mouse += 1;
+                }
+                if content_changed {
                     if let Some(resource) = desktop_resource.as_ref() {
                         let src: ID3D11Texture2D = resource
                             .cast()
@@ -335,6 +366,7 @@ fn run_capture_thread(
                 let code = e.code().0 as u32;
                 if code == DXGI_ERROR_WAIT_TIMEOUT_CODE {
                     signal_ready(Ok(()), &mut signalled_ready);
+                    tele_timeouts += 1;
                 } else if code == DXGI_ERROR_ACCESS_LOST_CODE {
                     // Exclusive-fullscreen handoff or desktop switch.
                     // Before the first frame the caller falls back to
@@ -355,19 +387,36 @@ fn run_capture_thread(
 
         let now = Instant::now();
         if have_clean && now >= next_due {
+            let send_started = Instant::now();
             let slot = ring_idx % ring.len();
             ring_idx += 1;
             unsafe { context.CopyResource(&ring[slot], &clean) };
-            if include_cursor && cursor.visible {
-                composite_cursor_on(device, context, &ring[slot], width, height, &mut cursor);
+            if let Some(comp) = compositor.as_mut() {
+                if cursor.shape_dirty {
+                    if let Some(img) = cursor.image.as_ref() {
+                        if let Err(e) = comp.set_shape(img) {
+                            log::warn!("[capture_dxgi] cursor shape upload failed: {e}");
+                        }
+                    }
+                    cursor.shape_dirty = false;
+                }
+                if cursor.visible {
+                    if let Err(e) =
+                        comp.draw(context, &ring[slot], width, height, cursor.pos_x, cursor.pos_y)
+                    {
+                        log::warn!("[capture_dxgi] cursor draw failed: {e}");
+                    }
+                }
             }
             match tx.try_send(ring[slot].clone()) {
-                Ok(_) => {}
+                Ok(_) => tele_sends += 1,
                 Err(mpsc::TrySendError::Full(_)) => {
                     drops.fetch_add(1, Ordering::Relaxed);
+                    tele_drops += 1;
                 }
                 Err(mpsc::TrySendError::Disconnected(_)) => break,
             }
+            tele_send_max_us = tele_send_max_us.max(send_started.elapsed().as_micros());
             // Fixed cadence, but re-anchor after a stall so a burst of
             // overdue slots doesn't fire back-to-back.
             next_due = if now > next_due + frame_interval * 4 {
@@ -375,6 +424,20 @@ fn run_capture_thread(
             } else {
                 next_due + frame_interval
             };
+        }
+
+        if tele_last.elapsed() >= Duration::from_secs(1) {
+            log::info!(
+                "[capture_dxgi] 1s: content={} mouse_only={} timeouts={} sends={} drops={} send_max={}us",
+                tele_content, tele_mouse, tele_timeouts, tele_sends, tele_drops, tele_send_max_us
+            );
+            tele_content = 0;
+            tele_mouse = 0;
+            tele_timeouts = 0;
+            tele_sends = 0;
+            tele_drops = 0;
+            tele_send_max_us = 0;
+            tele_last = Instant::now();
         }
     }
 
@@ -408,6 +471,7 @@ fn fetch_cursor_shape(
     };
     if info.Width == 0 || visual_height == 0 {
         cursor.image = None;
+        cursor.shape_dirty = true;
         return;
     }
     cursor.image = Some(CursorImage {
@@ -417,95 +481,5 @@ fn fetch_cursor_shape(
         width: info.Width as usize,
         visual_height,
     });
-}
-
-/// Blend the cached cursor onto `frame_tex` via a small staging
-/// round-trip: copy the cursor-sized region out, blend on the CPU
-/// (cursor_blend.rs), copy back. A few KB per frame — negligible next
-/// to the encode, and it avoids hand-rolling a D3D blend pass.
-fn composite_cursor_on(
-    device: &ID3D11Device,
-    context: &ID3D11DeviceContext,
-    frame_tex: &ID3D11Texture2D,
-    frame_w: u32,
-    frame_h: u32,
-    cursor: &mut CursorState,
-) {
-    let Some(image) = cursor.image.as_ref() else { return };
-    let Some((px, py, pw, ph, sx, sy)) = cursor_blend::clip_cursor_rect(
-        cursor.pos_x,
-        cursor.pos_y,
-        image.width,
-        image.visual_height,
-        frame_w as usize,
-        frame_h as usize,
-    ) else {
-        return;
-    };
-
-    // (Re)create the staging texture when the cursor size grows.
-    let need_w = image.width;
-    let need_h = image.visual_height;
-    let recreate = match &cursor.staging {
-        Some((_, w, h)) => *w < need_w || *h < need_h,
-        None => true,
-    };
-    if recreate {
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: need_w as u32,
-            Height: need_h as u32,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-            Usage: D3D11_USAGE_STAGING,
-            BindFlags: 0,
-            CPUAccessFlags: (D3D11_CPU_ACCESS_READ.0 | D3D11_CPU_ACCESS_WRITE.0) as u32,
-            MiscFlags: 0,
-        };
-        let mut t: Option<ID3D11Texture2D> = None;
-        if unsafe { device.CreateTexture2D(&desc, None, Some(&mut t)) }.is_err() {
-            return;
-        }
-        let Some(t) = t else { return };
-        cursor.staging = Some((t, need_w, need_h));
-    }
-    let Some((staging, _, _)) = cursor.staging.as_ref() else { return };
-
-    unsafe {
-        // Frame region → staging top-left.
-        let src_box = D3D11_BOX {
-            left: px,
-            top: py,
-            front: 0,
-            right: px + pw as u32,
-            bottom: py + ph as u32,
-            back: 1,
-        };
-        context.CopySubresourceRegion(staging, 0, 0, 0, 0, frame_tex, 0, Some(&src_box));
-
-        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-        if context
-            .Map(staging, 0, D3D11_MAP_READ_WRITE, 0, Some(&mut mapped))
-            .is_err()
-        {
-            return;
-        }
-        let pitch = mapped.RowPitch as usize;
-        let patch =
-            std::slice::from_raw_parts_mut(mapped.pData as *mut u8, pitch * ph);
-        cursor_blend::composite_cursor(patch, pitch, pw, ph, image, sx, sy);
-        context.Unmap(staging, 0);
-
-        // Blended staging region → back into the frame.
-        let back_box = D3D11_BOX {
-            left: 0,
-            top: 0,
-            front: 0,
-            right: pw as u32,
-            bottom: ph as u32,
-            back: 1,
-        };
-        context.CopySubresourceRegion(frame_tex, 0, px, py, 0, staging, 0, Some(&back_box));
-    }
+    cursor.shape_dirty = true;
 }

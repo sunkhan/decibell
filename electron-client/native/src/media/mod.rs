@@ -70,9 +70,12 @@ pub mod capture_wgc;
 // WGC for screens because Win10's WGC draws a mandatory yellow border.
 #[cfg(target_os = "windows")]
 pub mod capture_dxgi;
-// Pure cursor-compositing math for capture_dxgi; cross-platform so the
-// unit tests run on the Linux dev box.
+// Pointer shape → straight-alpha BGRA for capture_dxgi; cross-platform
+// so the unit tests run on the Linux dev box.
 pub mod cursor_blend;
+// GPU cursor compositor (one alpha-blended quad, no CPU↔GPU sync).
+#[cfg(target_os = "windows")]
+pub mod cursor_gpu;
 #[cfg(target_os = "windows")]
 pub mod encoder_thread;
 #[cfg(target_os = "windows")]
