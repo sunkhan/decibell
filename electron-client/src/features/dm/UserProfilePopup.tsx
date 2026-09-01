@@ -6,6 +6,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
 import { useChatStore } from "../../stores/chatStore";
+import { openServer } from "../servers/openServer";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
 import { canWatchStream } from "../../utils/canWatchStream";
@@ -128,6 +129,12 @@ export default function UserProfilePopup() {
     if (!canWatch) return;
 
     closePopup();
+    // The channel sidebar renders the *active* server; from a DM or Home
+    // that's null, and the voice view alone would show "Server · Private"
+    // with no channels. Open the stream's server first, then the view.
+    if (useChatStore.getState().activeServerId !== targetServerId) {
+      openServer(targetServerId);
+    }
     setActiveView("voice");
 
     try {

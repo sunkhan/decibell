@@ -3,6 +3,8 @@ import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore, PIP_WIDTH_MIN, PIP_WIDTH_MAX, type PipCorner } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
+import { openServer } from "../servers/openServer";
+import { useChatStore } from "../../stores/chatStore";
 import { useDmStore } from "../../stores/dmStore";
 import {
   getFullViewRect,
@@ -103,6 +105,16 @@ function expandToStream() {
     useDmStore.getState().setActiveDmUser(v.callPeer);
     useUiStore.getState().setActiveView("dm");
   } else {
+    // The channel sidebar renders the *active* server, which Home / a DM
+    // cleared to null — flipping only the view left it as "Server ·
+    // Private" with no channels. Re-open the stream's server first
+    // (openServer lands on "server" view; the voice view goes on top).
+    if (
+      v.connectedServerId &&
+      useChatStore.getState().activeServerId !== v.connectedServerId
+    ) {
+      openServer(v.connectedServerId);
+    }
     useUiStore.getState().setActiveView("voice");
   }
 }

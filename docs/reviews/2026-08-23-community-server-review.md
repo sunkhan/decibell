@@ -804,6 +804,17 @@ by the send deadline (≤ 8 ms) instead of a flat 8 ms, so sends no longer slip 
 No frame is ever dropped on the floor now and the cursor can't be stale either. Verified:
 Windows Native Check green on `772a5a4` (no new warnings), `cargo test --lib` 110/110.
 
+**Mini-player "back to stream" showed "Server · Private" with no channels (2026-09-01) ✅** —
+field report: watch a stream, go Home or into a DM, click the floating mini player → the voice
+stage came back but the channel sidebar was blank with the Private badge. `expandToStream`
+(MiniStreamPlayer) only flipped `activeView` to "voice"; the sidebar renders
+`chatStore.activeServerId`, which Home/DM navigation had set to `null`, so the header fell
+back to "Server" and the not-a-known-server badge. Fix: re-open the stream's server first
+(`openServer(connectedServerId)` — the same path the server bar uses, so the channel selection
+stays sane) when it isn't the active one, then show the voice view. Same hole in
+`UserProfilePopup.handleJoinAndWatch` (clicking a live thumbnail from a DM's profile popup) —
+fixed the same way with the stream's `serverId`. Verified: renderer tsc clean.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
