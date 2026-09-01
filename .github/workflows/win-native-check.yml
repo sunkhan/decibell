@@ -46,6 +46,15 @@ jobs:
           version: "27.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # vcpkg's binary cache: the FFmpeg port build is most of the job's
+      # wall clock (~20 min uncached). Keyed on the pinned vcpkg commit +
+      # triplet so a re-pin invalidates it.
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-archives-ffmpeg-e5a1490e-x64-windows
+
       # Same pinned vcpkg commit as electron-release.yml — ffmpeg-sys's
       # build script needs the FFmpeg libs even for `cargo check`.
       - name: Install FFmpeg via vcpkg

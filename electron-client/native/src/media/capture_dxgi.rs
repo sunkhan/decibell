@@ -205,8 +205,8 @@ fn run_capture_thread(
 ) -> Result<(), String> {
     let duplication = open_duplication(device, monitor_idx)?;
 
-    let mut dup_desc = DXGI_OUTDUPL_DESC::default();
-    unsafe { duplication.GetDesc(&mut dup_desc) };
+    // 0.61's projection returns the desc by value (no out-pointer).
+    let dup_desc: DXGI_OUTDUPL_DESC = unsafe { duplication.GetDesc() };
     let width = dup_desc.ModeDesc.Width;
     let height = dup_desc.ModeDesc.Height;
     if width == 0 || height == 0 {
