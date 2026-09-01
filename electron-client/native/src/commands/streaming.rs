@@ -54,6 +54,12 @@ pub struct StartScreenShareArgs {
     /// native capture paths (XDG portal cursor_mode / wlr overlay_cursor /
     /// Windows WGC SetIsCursorCaptureEnabled). Defaults to true (show).
     pub include_cursor: Option<bool>,
+    /// Share-audio application filter: mode (`selected` | `all_except` |
+    /// `all`) and the ticked app identities. Both absent → the filter last
+    /// stored on AppState (`set_stream_audio_filter`) applies; otherwise
+    /// this pair replaces it. Unknown mode → `all`.
+    pub audio_mode: Option<String>,
+    pub audio_apps: Option<Vec<String>>,
 }
 
 #[napi]
@@ -66,6 +72,16 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
         let mut s = state_arc.lock().await;
         if s.video_engine.is_some() {
             return Err(napi::Error::from_reason("Already sharing screen"));
+        }
+        // Resolve the share-audio app filter before anything else so the
+        // capture starts with the right rule instead of correcting itself
+        // a moment later. Stored back so the live popover and the next
+        // stream see the same value.
+        if args.audio_mode.is_some() || args.audio_apps.is_some() {
+            s.stream_audio_filter = crate::media::stream_audio_filter::StreamAudioFilter::from_args(
+                args.audio_mode.as_deref(),
+                args.audio_apps.as_deref(),
+            );
         }
         let in_call = s.active_call.is_some();
         let voice = s.voice_engine.as_ref().ok_or_else(|| {
@@ -250,6 +266,7 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                         voice_socket,
                         audio_sender_id,
                         args.audio_bitrate_kbps,
+                        None,
                     );
                     s.audio_stream_engine = Some(audio_engine);
                 }
@@ -299,34 +316,36 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
             .await
             .map_err(napi::Error::from_reason)?;
 
-        // Stream audio (Linux): whole-system loopback minus Decibell's own
-        // output, so watchers don't hear themselves. We use the same
-        // system capture for BOTH window and monitor captures — the XDG
-        // portal hands us an opaque video node with no window/PID/app
-        // identity, so per-window app audio isn't reachable (unlike
-        // Windows WASAPI process-loopback). Non-fatal: a capture failure
-        // logs and the video stream keeps running without audio.
+        // Stream audio (Linux): PipeWire tap of the applications the user's
+        // filter allows, always minus Decibell's own output so watchers
+        // don't hear themselves. The filter is the only audio rule for BOTH
+        // window and monitor captures — the XDG portal hands us an opaque
+        // video node with no window/PID/app identity, so the picked window
+        // can't be mapped to its app here (Windows can). Non-fatal: a
+        // capture failure logs and the video stream keeps running without
+        // audio.
         let audio_engine = if args.share_audio {
-            // Grab the voice socket + sender id under a brief lock, then
-            // release it before the (~100 ms) PipeWire capture + null-sink
-            // setup so we don't stall other commands.
+            // Grab the voice socket + sender id + filter under a brief lock,
+            // then release it before the (~100 ms) PipeWire capture +
+            // null-sink setup so we don't stall other commands.
             let voice_ctx = {
                 let s = state_arc.lock().await;
+                let filter = s.stream_audio_filter.clone();
                 s.voice_engine
                     .as_ref()
-                    .map(|v| (v.voice_socket(), v.sender_id().to_string()))
+                    .map(|v| (v.voice_socket(), v.sender_id().to_string(), filter))
             };
             match voice_ctx {
-                Some((voice_socket, audio_sender_id)) => {
-                    match crate::media::capture_audio_pipewire::start_system_audio_capture() {
-                        Ok((frame_rx, cleanup)) => {
-                            log::info!("[video-linux] sharing system audio (loopback minus self)");
+                Some((voice_socket, audio_sender_id, filter)) => {
+                    match crate::media::capture_audio_pipewire::start_system_audio_capture(filter) {
+                        Ok((frame_rx, tap)) => {
+                            log::info!("[video-linux] sharing app audio (PipeWire tap minus self)");
                             Some(crate::media::AudioStreamEngine::start(
                                 frame_rx,
                                 voice_socket,
                                 audio_sender_id,
                                 args.audio_bitrate_kbps,
-                                Some(cleanup),
+                                Some(Box::new(tap)),
                             ))
                         }
                         Err(e) => {

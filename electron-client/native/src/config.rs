@@ -93,6 +93,13 @@ pub struct AppSettings {
     pub stream_video_bitrate_kbps: Option<u32>,
     pub stream_share_audio: Option<bool>,
     pub stream_audio_bitrate_kbps: Option<u32>,
+    /// Share-audio application filter: `selected` | `all_except` | `all`
+    /// (see `media::stream_audio_filter::StreamAudioMode`) plus the ticked
+    /// app identities (lowercase program names, platform-local). Stored as
+    /// plain strings so an unknown mode from a newer build round-trips;
+    /// the client falls back to `all` if it doesn't recognise it.
+    pub stream_audio_mode: Option<String>,
+    pub stream_audio_apps: Option<Vec<String>>,
     /// VideoCodec enum byte (0=UNKNOWN/Auto, 1=H264_HW, 2=H264_SW,
     /// 3=H265, 4=AV1). Restored on load; downgraded to 0 by the client
     /// at runtime if the saved codec isn't in the user's encodeCaps.

@@ -1,21 +1,29 @@
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::capture::AudioFrame;
+use super::stream_audio_filter::{
+    group_sessions, identity_from_exe_path, normalize_identity, AppEntry, AudioSessionInfo,
+    StreamAudioCapture, StreamAudioFilter,
+};
 
 use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::Pod;
 
-/// Private sink that non-Decibell application audio is *tapped* into (via extra
-/// PipeWire links — the apps keep playing to the real output untouched). We
-/// capture this sink's monitor for the stream, so Decibell's own voice output —
-/// which we never link here — is excluded, while the streamer still hears it
-/// normally on their real device.
+/// Private sink that application audio is *tapped* into (via extra PipeWire
+/// links — the apps keep playing to the real output untouched). We capture
+/// this sink's monitor for the stream. Decibell's own nodes are never linked
+/// here, so the voice chat stays out of the stream while the streamer still
+/// hears it normally on their real device.
 const CAPTURE_SINK: &str = "decibell_capture";
+
+/// How often the tap is reconciled against the live PipeWire graph when no
+/// filter change wakes it earlier: catches apps that start / stop playing
+/// and self-heals links WirePlumber tears down.
+const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 struct AudioCaptureData {
     tx: SyncSender<AudioFrame>,
@@ -26,34 +34,80 @@ struct AudioCaptureData {
     frame_count: u64,
 }
 
-/// Start capturing system audio for the stream, EXCLUDING Decibell's own output
-/// (so watchers don't hear the voice chat — and themselves — echoed back).
+/// Live handle to the PipeWire tap: owns the null sink, the reconcile
+/// thread and the current app filter. `set_filter` re-links within
+/// milliseconds; dropping it removes the sink (and every tap link with it).
+pub struct PipewireTap {
+    filter: Arc<Mutex<StreamAudioFilter>>,
+    /// Wakes the reconcile thread early; dropping it (in `Drop`) is the
+    /// thread's stop signal.
+    wake_tx: Option<std::sync::mpsc::Sender<()>>,
+    poller: Option<std::thread::JoinHandle<()>>,
+    null_module_id: u32,
+}
+
+impl StreamAudioCapture for PipewireTap {
+    fn set_filter(&self, filter: StreamAudioFilter) {
+        if let Ok(mut f) = self.filter.lock() {
+            *f = filter;
+        }
+        if let Some(tx) = &self.wake_tx {
+            let _ = tx.send(());
+        }
+    }
+}
+
+impl Drop for PipewireTap {
+    fn drop(&mut self) {
+        log::info!("[audio-capture] Cleanup: removing capture sink + tap links");
+        // Dropping the sender makes the poller's recv return Disconnected.
+        self.wake_tx.take();
+        if let Some(h) = self.poller.take() {
+            let _ = h.join();
+        }
+        // Removing the null-sink drops all the tap links we created into it.
+        let _ = remove_null_sink(self.null_module_id);
+    }
+}
+
+/// Start capturing application audio for the stream, filtered by `filter`
+/// and always EXCLUDING Decibell's own output (so watchers don't hear the
+/// voice chat — and themselves — echoed back).
 ///
-/// Non-disruptive tap approach: rather than rerouting the streamer's audio, we
-/// create a private sink (`decibell_capture`) and add EXTRA PipeWire links from
-/// every non-Decibell application's output ports into it. That's a *tap* — the
-/// apps keep playing to the real output untouched while a copy accumulates in
-/// `decibell_capture`, whose monitor we capture. Decibell's own nodes (its whole
-/// process tree) are never linked, so the voice chat is kept out of the stream
-/// while the streamer still hears it normally.
+/// Non-disruptive tap approach: rather than rerouting the streamer's audio,
+/// we create a private sink (`decibell_capture`) and add EXTRA PipeWire links
+/// from every allowed application's output ports into it. That's a *tap* —
+/// the apps keep playing to the real output untouched while a copy
+/// accumulates in `decibell_capture`, whose monitor we capture.
 ///
-/// A 2s poller re-taps applications that start (or expose new streams) after
-/// capture begins, and prunes links for apps that have gone. Cleanup removes the
-/// sink, which drops every tap link with it.
-pub fn start_system_audio_capture() -> Result<(std::sync::mpsc::Receiver<AudioFrame>, Box<dyn FnOnce() + Send>), String> {
+/// A reconcile thread re-evaluates the link set every 2 s and immediately on
+/// `set_filter`: links allowed apps that appeared, unlinks apps the filter no
+/// longer allows. Cleanup removes the sink, which drops every tap link.
+pub fn start_system_audio_capture(
+    filter: StreamAudioFilter,
+) -> Result<(std::sync::mpsc::Receiver<AudioFrame>, PipewireTap), String> {
     let (tx, rx) = std::sync::mpsc::sync_channel::<AudioFrame>(16);
 
     // Decibell is Electron — several processes. Its native (CPAL) voice output
     // lives in the main process, but UI/Web-Audio blips play through Chromium's
     // separate audio process, so we exclude the whole process tree, not just our
-    // own PID.
-    let decibell_pids = build_decibell_pids(std::process::id());
-    log::info!("[audio-capture] Excluding Decibell PIDs: {:?}", decibell_pids);
+    // own PID. The binary-name check covers nodes that carry no PID at all
+    // (PipeWire-ALSA puts the PID on the Client object, not the Node).
+    let our_pid = std::process::id();
+    let decibell_pids = build_decibell_pids(our_pid);
+    let self_id = self_identity();
+    log::info!(
+        "[audio-capture] Excluding Decibell PIDs {:?} / identity {:?}; filter {} ({} apps)",
+        decibell_pids,
+        self_id,
+        filter.mode.as_str(),
+        filter.apps.len()
+    );
 
     // Create the private capture sink, then wait for it (and its playback ports)
     // to register before linking any taps into it.
     let null_module_id = create_null_sink()?;
-    let capture_ports = match wait_for_capture_sink_ports() {
+    let (sink_node_id, capture_ports) = match wait_for_capture_sink_ports() {
         Ok(p) => p,
         Err(e) => {
             let _ = remove_null_sink(null_module_id);
@@ -61,41 +115,49 @@ pub fn start_system_audio_capture() -> Result<(std::sync::mpsc::Receiver<AudioFr
         }
     };
 
-    // Tap all current non-Decibell app outputs into the capture sink.
-    tap_non_decibell_apps(&decibell_pids, &capture_ports);
+    // Tap the currently allowed app outputs into the capture sink.
+    reconcile_taps(&decibell_pids, &self_id, &filter, sink_node_id, &capture_ports);
 
-    // Poller: re-tap on every tick — catches apps that appear after capture
-    // starts and self-heals any tap WirePlumber tears down. Cheap (one pw-dump
-    // + a few pw-link spawns per 2s).
-    let poller_stop = Arc::new(AtomicBool::new(false));
-    let poller_handle = {
-        let stop = poller_stop.clone();
+    let filter = Arc::new(Mutex::new(filter));
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+    let poller = {
+        let filter = filter.clone();
         let ports = capture_ports.clone();
-        let our_pid = std::process::id();
+        let self_id = self_id.clone();
         std::thread::Builder::new()
             .name("decibell-audio-tap-poller".to_string())
-            .spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    if stop.load(Ordering::Relaxed) { break; }
-                    // Rebuild the exclusion set each tick: Decibell's Chromium
-                    // audio-service / renderer processes can restart mid-stream,
-                    // and a stale snapshot would let the new PID's audio (UI
-                    // blips, or voice routed through Chromium) leak into the tap.
-                    let pids = build_decibell_pids(our_pid);
-                    tap_non_decibell_apps(&pids, &ports);
+            .spawn(move || loop {
+                match wake_rx.recv_timeout(RECONCILE_INTERVAL) {
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 }
+                // Coalesce a burst of ticks (the UI toggles several boxes).
+                while wake_rx.try_recv().is_ok() {}
+                // Rebuild the exclusion set each tick: Decibell's Chromium
+                // audio-service / renderer processes can restart mid-stream,
+                // and a stale snapshot would let the new PID's audio (UI
+                // blips, or voice routed through Chromium) leak into the tap.
+                let pids = build_decibell_pids(our_pid);
+                let f = match filter.lock() {
+                    Ok(f) => f.clone(),
+                    Err(_) => break,
+                };
+                reconcile_taps(&pids, &self_id, &f, sink_node_id, &ports);
             })
             .map_err(|e| format!("Spawn audio tap poller: {}", e))?
+    };
+    let tap = PipewireTap {
+        filter,
+        wake_tx: Some(wake_tx),
+        poller: Some(poller),
+        null_module_id,
     };
 
     // Capture the private sink's monitor.
     let monitor_target = match find_sink_monitor_target(CAPTURE_SINK) {
         Ok(t) => t,
         Err(e) => {
-            poller_stop.store(true, Ordering::Relaxed);
-            let _ = poller_handle.join();
-            let _ = remove_null_sink(null_module_id);
+            drop(tap);
             return Err(e);
         }
     };
@@ -114,33 +176,51 @@ pub fn start_system_audio_capture() -> Result<(std::sync::mpsc::Receiver<AudioFr
         })
         .map_err(|e| format!("Spawn audio capture thread: {}", e))?;
 
-    // Wait for the capture to be ready (or fail). Removing the sink on error
-    // drops every tap link automatically — no per-node restore needed.
-    let cleanup_on_err = |poller_stop: &Arc<AtomicBool>, null_module_id: u32| {
-        poller_stop.store(true, Ordering::Relaxed);
-        let _ = remove_null_sink(null_module_id);
-    };
+    // Wait for the capture to be ready (or fail). Dropping the tap on error
+    // removes the sink, which drops every tap link automatically.
     match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
-            cleanup_on_err(&poller_stop, null_module_id);
+            drop(tap);
             return Err(e);
         }
         Err(_) => {
-            cleanup_on_err(&poller_stop, null_module_id);
+            drop(tap);
             return Err("Timeout waiting for audio capture to start".to_string());
         }
     }
+    Ok((rx, tap))
+}
 
-    let cleanup_poller_stop = poller_stop.clone();
-    let cleanup = Box::new(move || {
-        log::info!("[audio-capture] Cleanup: removing capture sink + tap links");
-        cleanup_poller_stop.store(true, Ordering::Relaxed);
-        // Removing the null-sink drops all the tap links we created into it.
-        let _ = remove_null_sink(null_module_id);
-    }) as Box<dyn FnOnce() + Send>;
+/// The applications that currently have an audio output node (playing or
+/// idle), grouped by identity, Decibell itself excluded. Backs the picker.
+pub fn list_apps() -> Result<Vec<AppEntry>, String> {
+    let dump = pw_dump_json()?;
+    let decibell_pids = build_decibell_pids(std::process::id());
+    let self_id = self_identity();
+    let nodes = parse_app_nodes(&dump);
+    let mut names: HashMap<String, String> = HashMap::new();
+    let sessions: Vec<AudioSessionInfo> = nodes
+        .iter()
+        .filter(|n| !is_self(n, &decibell_pids, &self_id))
+        .map(|n| {
+            names.entry(n.identity.clone()).or_insert_with(|| n.display.clone());
+            AudioSessionInfo { pid: n.pid.unwrap_or(0), identity: n.identity.clone(), active: n.active }
+        })
+        .collect();
+    Ok(group_sessions(&sessions, |id| {
+        names.get(id).cloned().unwrap_or_else(|| id.to_string())
+    }))
+}
 
-    Ok((rx, cleanup))
+/// Our own program name as an identity (`decibell`, or `electron` in a dev
+/// checkout) — matched against `application.process.binary`.
+fn self_identity() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .map(|n| normalize_identity(&n))
+        .unwrap_or_default()
 }
 
 /// Build the set of PIDs belonging to Decibell — our own PID plus every
@@ -203,13 +283,16 @@ fn pw_dump_json() -> Result<serde_json::Value, String> {
 }
 
 /// Wait (up to ~2s) for the private capture sink's playback ports to register,
-/// returning a map of audio channel ("FL"/"FR") → port object id.
-fn wait_for_capture_sink_ports() -> Result<HashMap<String, u32>, String> {
+/// returning the sink's node id and a map of audio channel ("FL"/"FR") → port
+/// object id.
+fn wait_for_capture_sink_ports() -> Result<(u32, HashMap<String, u32>), String> {
     for _ in 0..20 {
         if let Ok(dump) = pw_dump_json() {
-            let ports = capture_sink_playback_ports(&dump);
-            if ports.contains_key("FL") && ports.contains_key("FR") {
-                return Ok(ports);
+            if let Some(sink_id) = capture_sink_node_id(&dump) {
+                let ports = capture_sink_playback_ports(&dump);
+                if ports.contains_key("FL") && ports.contains_key("FR") {
+                    return Ok((sink_id as u32, ports));
+                }
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -217,24 +300,25 @@ fn wait_for_capture_sink_ports() -> Result<HashMap<String, u32>, String> {
     Err(format!("capture sink '{}' did not register its ports", CAPTURE_SINK))
 }
 
-/// Extract the capture sink's input (playback) port ids keyed by audio channel.
-fn capture_sink_playback_ports(dump: &serde_json::Value) -> HashMap<String, u32> {
-    let mut sink_node_id: Option<u64> = None;
-    if let Some(arr) = dump.as_array() {
-        for obj in arr {
-            if obj.get("type").and_then(|t| t.as_str()) != Some("PipeWire:Interface:Node") {
-                continue;
-            }
-            let props = match obj.get("info").and_then(|i| i.get("props")) {
-                Some(p) => p,
-                None => continue,
-            };
-            if props.get("node.name").and_then(|v| v.as_str()) == Some(CAPTURE_SINK) {
-                sink_node_id = obj.get("id").and_then(|v| v.as_u64());
-                break;
-            }
+/// Node id of the private capture sink, if it has registered.
+pub fn capture_sink_node_id(dump: &serde_json::Value) -> Option<u64> {
+    let arr = dump.as_array()?;
+    arr.iter().find_map(|obj| {
+        if obj.get("type").and_then(|t| t.as_str()) != Some("PipeWire:Interface:Node") {
+            return None;
         }
-    }
+        let props = obj.get("info")?.get("props")?;
+        if props.get("node.name").and_then(|v| v.as_str()) == Some(CAPTURE_SINK) {
+            obj.get("id").and_then(|v| v.as_u64())
+        } else {
+            None
+        }
+    })
+}
+
+/// Extract the capture sink's input (playback) port ids keyed by audio channel.
+pub fn capture_sink_playback_ports(dump: &serde_json::Value) -> HashMap<String, u32> {
+    let sink_node_id = capture_sink_node_id(dump);
     let mut ports = HashMap::new();
     let Some(sink_id) = sink_node_id else { return ports };
     if let Some(arr) = dump.as_array() {
@@ -263,77 +347,153 @@ fn capture_sink_playback_ports(dump: &serde_json::Value) -> HashMap<String, u32>
     ports
 }
 
-/// Find every output port belonging to a non-Decibell `Stream/Output/Audio`
-/// node — i.e. real application audio we want in the stream. Returns
-/// (port_id, audio_channel). Decibell's own nodes (process tree) are excluded.
-fn find_non_decibell_output_ports(decibell_pids: &HashSet<u32>) -> Vec<(u32, String)> {
-    let dump = match pw_dump_json() {
-        Ok(d) => d,
-        Err(e) => {
-            log::warn!("[audio-capture] tap scan: {}", e);
-            return Vec::new();
-        }
-    };
-    let arr = match dump.as_array() {
-        Some(a) => a,
-        None => return Vec::new(),
-    };
+/// One `Stream/Output/Audio` node as seen in `pw-dump`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppNode {
+    pub node_id: u32,
+    pub pid: Option<u32>,
+    /// Normalised identity (binary name, else application.name, else node.name).
+    pub identity: String,
+    /// Label for the picker (application.name, else binary, else node.name).
+    pub display: String,
+    /// `info.state == "running"` — actually rendering right now.
+    pub active: bool,
+}
 
-    // node id → is this a non-Decibell Stream/Output/Audio node?
-    let mut app_nodes: HashMap<u64, bool> = HashMap::new();
+/// A link INTO the capture sink — i.e. one of our taps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TapLink {
+    pub link_id: u32,
+    pub out_node_id: u32,
+}
+
+fn prop_str<'a>(props: Option<&'a serde_json::Value>, key: &str) -> Option<&'a str> {
+    props.and_then(|p| p.get(key)).and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+}
+
+/// Every application output node in the dump. Identity / PID come from the
+/// node's own props first and fall back to its Client object (`client.id`):
+/// PipeWire-ALSA clients (e.g. Decibell's own CPAL output) carry
+/// `pipewire.sec.pid` / `application.process.binary` only on the Client.
+pub fn parse_app_nodes(dump: &serde_json::Value) -> Vec<AppNode> {
+    let Some(arr) = dump.as_array() else { return Vec::new() };
+    let clients: HashMap<u64, &serde_json::Value> = arr
+        .iter()
+        .filter(|o| o.get("type").and_then(|t| t.as_str()) == Some("PipeWire:Interface:Client"))
+        .filter_map(|o| Some((o.get("id")?.as_u64()?, o.get("info")?.get("props")?)))
+        .collect();
+
+    let mut out = Vec::new();
     for obj in arr {
         if obj.get("type").and_then(|t| t.as_str()) != Some("PipeWire:Interface:Node") {
             continue;
         }
-        let props = match obj.get("info").and_then(|i| i.get("props")) {
-            Some(p) => p,
-            None => continue,
-        };
-        if props.get("media.class").and_then(|v| v.as_str()) != Some("Stream/Output/Audio") {
+        let info = obj.get("info");
+        let props = info.and_then(|i| i.get("props"));
+        if prop_str(props, "media.class") != Some("Stream/Output/Audio") {
             continue;
         }
-        let Some(id) = obj.get("id").and_then(|v| v.as_u64()) else { continue };
-        let pid = parse_pid_value(props.get("application.process.id"));
-        // A node with no PID is definitely not Decibell (our nodes always carry
-        // our PID); one whose PID is in our tree is excluded.
-        let is_decibell = pid.map(|p| decibell_pids.contains(&p)).unwrap_or(false);
-        app_nodes.insert(id, !is_decibell);
-    }
+        let Some(node_id) = obj.get("id").and_then(|v| v.as_u64()) else { continue };
+        let client = props
+            .and_then(|p| p.get("client.id"))
+            .and_then(|v| v.as_u64())
+            .and_then(|cid| clients.get(&cid).copied());
 
-    let mut ports = Vec::new();
-    for obj in arr {
-        if obj.get("type").and_then(|t| t.as_str()) != Some("PipeWire:Interface:Port") {
-            continue;
-        }
-        let props = match obj.get("info").and_then(|i| i.get("props")) {
-            Some(p) => p,
-            None => continue,
-        };
-        if props.get("port.direction").and_then(|v| v.as_str()) != Some("out") {
-            continue;
-        }
-        let node_id = props.get("node.id").and_then(|v| v.as_u64());
-        let is_app = node_id.and_then(|n| app_nodes.get(&n)).copied().unwrap_or(false);
-        if !is_app {
-            continue;
-        }
-        if let (Some(ch), Some(id)) = (
-            props.get("audio.channel").and_then(|v| v.as_str()),
-            obj.get("id").and_then(|v| v.as_u64()),
-        ) {
-            ports.push((id as u32, ch.to_string()));
-        }
+        let pid = parse_pid_value(props.and_then(|p| p.get("application.process.id")))
+            .or_else(|| parse_pid_value(client.and_then(|c| c.get("pipewire.sec.pid"))))
+            .or_else(|| parse_pid_value(client.and_then(|c| c.get("application.process.id"))));
+        let binary = prop_str(props, "application.process.binary")
+            .or_else(|| prop_str(client, "application.process.binary"));
+        let app_name = prop_str(props, "application.name").or_else(|| prop_str(client, "application.name"));
+        let node_name = prop_str(props, "node.name");
+
+        let identity = binary
+            .and_then(identity_from_exe_path)
+            .or_else(|| app_name.map(normalize_identity).filter(|s| !s.is_empty()))
+            .or_else(|| node_name.map(normalize_identity).filter(|s| !s.is_empty()));
+        let Some(identity) = identity else { continue };
+        let display = app_name
+            .or(binary)
+            .or(node_name)
+            .unwrap_or(identity.as_str())
+            .to_string();
+        let active = info.and_then(|i| i.get("state")).and_then(|v| v.as_str()) == Some("running");
+        out.push(AppNode { node_id: node_id as u32, pid, identity, display, active });
     }
-    ports
+    out
 }
 
-/// Tap every non-Decibell application output port into the capture sink by
-/// adding an extra PipeWire link. Called on start and on every poller tick;
-/// re-linking is cheap and idempotent (pw-link returns "File exists" when the
-/// tap is already present), which also makes it self-healing if WirePlumber
-/// ever tears a manual link down — the next tick recreates it.
-fn tap_non_decibell_apps(decibell_pids: &HashSet<u32>, capture_ports: &HashMap<String, u32>) {
-    for (port_id, channel) in find_non_decibell_output_ports(decibell_pids) {
+/// Links whose input side is the capture sink — our taps.
+pub fn parse_tap_links(dump: &serde_json::Value, sink_node_id: u32) -> Vec<TapLink> {
+    let Some(arr) = dump.as_array() else { return Vec::new() };
+    arr.iter()
+        .filter(|o| o.get("type").and_then(|t| t.as_str()) == Some("PipeWire:Interface:Link"))
+        .filter_map(|o| {
+            let info = o.get("info")?;
+            let input = info.get("input-node-id")?.as_u64()? as u32;
+            if input != sink_node_id {
+                return None;
+            }
+            Some(TapLink {
+                link_id: o.get("id")?.as_u64()? as u32,
+                out_node_id: info.get("output-node-id")?.as_u64()? as u32,
+            })
+        })
+        .collect()
+}
+
+/// `(node_id, port_id, audio.channel)` for every output port of `nodes`.
+pub fn output_ports_of(dump: &serde_json::Value, nodes: &HashSet<u32>) -> Vec<(u32, u32, String)> {
+    let Some(arr) = dump.as_array() else { return Vec::new() };
+    arr.iter()
+        .filter(|o| o.get("type").and_then(|t| t.as_str()) == Some("PipeWire:Interface:Port"))
+        .filter_map(|o| {
+            let props = o.get("info")?.get("props")?;
+            if props.get("port.direction")?.as_str()? != "out" {
+                return None;
+            }
+            let node_id = props.get("node.id")?.as_u64()? as u32;
+            if !nodes.contains(&node_id) {
+                return None;
+            }
+            let ch = props.get("audio.channel")?.as_str()?.to_string();
+            Some((node_id, o.get("id")?.as_u64()? as u32, ch))
+        })
+        .collect()
+}
+
+/// Is this node Decibell's own output? PID in our process tree, or the same
+/// program name as us (belt and braces for PID-less nodes).
+fn is_self(node: &AppNode, decibell_pids: &HashSet<u32>, self_identity: &str) -> bool {
+    node.pid.map(|p| decibell_pids.contains(&p)).unwrap_or(false)
+        || (!self_identity.is_empty() && node.identity == self_identity)
+}
+
+/// Bring the tap links in line with `filter`: link every output port of an
+/// allowed, non-Decibell app into the capture sink; unlink every existing
+/// tap whose source is no longer allowed (or has become ours). One pw-dump,
+/// then a few pw-link spawns. Idempotent — "File exists" is success.
+fn reconcile_taps(
+    decibell_pids: &HashSet<u32>,
+    self_identity: &str,
+    filter: &StreamAudioFilter,
+    sink_node_id: u32,
+    capture_ports: &HashMap<String, u32>,
+) {
+    let dump = match pw_dump_json() {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("[audio-capture] tap scan: {}", e);
+            return;
+        }
+    };
+    let desired: HashSet<u32> = parse_app_nodes(&dump)
+        .into_iter()
+        .filter(|n| !is_self(n, decibell_pids, self_identity) && filter.allows(&n.identity))
+        .map(|n| n.node_id)
+        .collect();
+
+    for (_node, port_id, channel) in output_ports_of(&dump, &desired) {
         // Map the app port's channel onto the stereo capture sink; anything
         // that isn't a plain L/R (mono, centre, surround) folds into both.
         let dest_channels: &[&str] = match channel.as_str() {
@@ -360,6 +520,25 @@ fn tap_non_decibell_apps(decibell_pids: &HashSet<u32>, capture_ports: &HashMap<S
                 }
                 Err(e) => log::warn!("[audio-capture] pw-link spawn failed: {}", e),
             }
+        }
+    }
+
+    for link in parse_tap_links(&dump, sink_node_id) {
+        if desired.contains(&link.out_node_id) {
+            continue;
+        }
+        match Command::new("pw-link").arg("-d").arg(link.link_id.to_string()).output() {
+            Ok(o) if o.status.success() => {
+                log::info!("[audio-capture] Untapped node {} (link {})", link.out_node_id, link.link_id);
+            }
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                // Already gone (the app quit between dump and unlink) — fine.
+                if !err.contains("No such") && !err.contains("ENOENT") {
+                    log::warn!("[audio-capture] pw-link -d {} failed: {}", link.link_id, err.trim());
+                }
+            }
+            Err(e) => log::warn!("[audio-capture] pw-link -d spawn failed: {}", e),
         }
     }
 }
@@ -780,4 +959,115 @@ fn convert_s32_to_stereo_f32(raw: &[u8], channels: usize) -> Vec<f32> {
     }
 
     stereo
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::stream_audio_filter::StreamAudioMode;
+
+    /// Modelled on a live `pw-dump`: Firefox with two nodes (one running) whose
+    /// PID/binary sit on the node; Decibell's own PipeWire-ALSA node whose
+    /// PID/binary sit only on the Client object; the capture sink with its
+    /// two playback ports; two existing tap links (one is the self-leak).
+    fn fixture() -> serde_json::Value {
+        serde_json::json!([
+            { "id": 60, "type": "PipeWire:Interface:Client", "info": { "props": {
+                "pipewire.sec.pid": 1748, "application.process.binary": "firefox", "application.name": "Firefox" } } },
+            { "id": 124, "type": "PipeWire:Interface:Client", "info": { "props": {
+                "pipewire.sec.pid": 180492, "application.process.binary": "decibell", "application.name": "PipeWire ALSA [decibell]" } } },
+            { "id": 84, "type": "PipeWire:Interface:Node", "info": { "state": "idle", "props": {
+                "media.class": "Stream/Output/Audio", "client.id": 60, "node.name": "Firefox",
+                "application.process.id": 2002, "application.process.binary": "firefox", "application.name": "Firefox" } } },
+            { "id": 100, "type": "PipeWire:Interface:Node", "info": { "state": "running", "props": {
+                "media.class": "Stream/Output/Audio", "client.id": 60, "node.name": "Firefox",
+                "application.process.id": "2002", "application.process.binary": "firefox", "application.name": "Firefox" } } },
+            { "id": 106, "type": "PipeWire:Interface:Node", "info": { "state": "running", "props": {
+                "media.class": "Stream/Output/Audio", "client.id": 124, "node.name": "alsa_playback.decibell",
+                "application.name": "PipeWire ALSA [decibell]" } } },
+            { "id": 150, "type": "PipeWire:Interface:Node", "info": { "state": "suspended", "props": {
+                "media.class": "Stream/Output/Audio", "node.name": "spotify", "application.name": "Spotify",
+                "application.process.id": 3000 } } },
+            { "id": 200, "type": "PipeWire:Interface:Node", "info": { "state": "running", "props": {
+                "media.class": "Audio/Sink", "node.name": "decibell_capture" } } },
+            { "id": 201, "type": "PipeWire:Interface:Port", "info": { "props": { "node.id": 200, "port.direction": "in", "audio.channel": "FL" } } },
+            { "id": 202, "type": "PipeWire:Interface:Port", "info": { "props": { "node.id": 200, "port.direction": "in", "audio.channel": "FR" } } },
+            { "id": 85, "type": "PipeWire:Interface:Port", "info": { "props": { "node.id": 84, "port.direction": "out", "audio.channel": "FL" } } },
+            { "id": 86, "type": "PipeWire:Interface:Port", "info": { "props": { "node.id": 84, "port.direction": "out", "audio.channel": "FR" } } },
+            { "id": 87, "type": "PipeWire:Interface:Port", "info": { "props": { "node.id": 84, "port.direction": "in", "audio.channel": "FL" } } },
+            { "id": 107, "type": "PipeWire:Interface:Port", "info": { "props": { "node.id": 106, "port.direction": "out", "audio.channel": "MONO" } } },
+            { "id": 300, "type": "PipeWire:Interface:Link", "info": { "output-node-id": 106, "output-port-id": 107, "input-node-id": 200, "input-port-id": 201 } },
+            { "id": 301, "type": "PipeWire:Interface:Link", "info": { "output-node-id": 84, "output-port-id": 85, "input-node-id": 200, "input-port-id": 201 } },
+            { "id": 302, "type": "PipeWire:Interface:Link", "info": { "output-node-id": 200, "output-port-id": 203, "input-node-id": 400, "input-port-id": 401 } }
+        ])
+    }
+
+    #[test]
+    fn parses_nodes_with_client_fallback_and_state() {
+        let nodes = parse_app_nodes(&fixture());
+        let by_id: HashMap<u32, &AppNode> = nodes.iter().map(|n| (n.node_id, n)).collect();
+        assert_eq!(nodes.len(), 4);
+
+        let ff = by_id[&84];
+        assert_eq!((ff.pid, ff.identity.as_str(), ff.display.as_str(), ff.active), (Some(2002), "firefox", "Firefox", false));
+        assert!(by_id[&100].active);
+        assert_eq!(by_id[&100].pid, Some(2002), "string-typed pid parses");
+
+        // PID-less node → resolved through its Client object.
+        let me = by_id[&106];
+        assert_eq!((me.pid, me.identity.as_str(), me.active), (Some(180492), "decibell", true));
+
+        // No binary anywhere → application.name is the identity.
+        let sp = by_id[&150];
+        assert_eq!((sp.pid, sp.identity.as_str(), sp.display.as_str(), sp.active), (Some(3000), "spotify", "Spotify", false));
+    }
+
+    #[test]
+    fn self_detection_by_pid_tree_or_identity() {
+        let nodes = parse_app_nodes(&fixture());
+        let me = nodes.iter().find(|n| n.node_id == 106).unwrap();
+        let ff = nodes.iter().find(|n| n.node_id == 84).unwrap();
+        let tree: HashSet<u32> = [180492u32].into_iter().collect();
+        assert!(is_self(me, &tree, ""));
+        assert!(is_self(me, &HashSet::new(), "decibell"));
+        assert!(!is_self(me, &HashSet::new(), "electron"));
+        assert!(!is_self(ff, &tree, "decibell"));
+    }
+
+    #[test]
+    fn sink_ports_links_and_output_ports() {
+        let dump = fixture();
+        assert_eq!(capture_sink_node_id(&dump), Some(200));
+        let ports = capture_sink_playback_ports(&dump);
+        assert_eq!((ports.get("FL"), ports.get("FR")), (Some(&201), Some(&202)));
+
+        let mut links = parse_tap_links(&dump, 200);
+        links.sort_by_key(|l| l.link_id);
+        assert_eq!(links, vec![
+            TapLink { link_id: 300, out_node_id: 106 },
+            TapLink { link_id: 301, out_node_id: 84 },
+        ]);
+
+        let wanted: HashSet<u32> = [84u32, 106].into_iter().collect();
+        let mut out = output_ports_of(&dump, &wanted);
+        out.sort();
+        assert_eq!(out, vec![(84, 85, "FL".into()), (84, 86, "FR".into()), (106, 107, "MONO".into())]);
+    }
+
+    #[test]
+    fn desired_set_follows_filter_and_excludes_self() {
+        let nodes = parse_app_nodes(&fixture());
+        let tree: HashSet<u32> = [180492u32].into_iter().collect();
+        let desired = |f: &StreamAudioFilter| -> HashSet<u32> {
+            nodes.iter().filter(|n| !is_self(n, &tree, "decibell") && f.allows(&n.identity)).map(|n| n.node_id).collect()
+        };
+        let all = StreamAudioFilter::default();
+        assert_eq!(desired(&all), [84u32, 100, 150].into_iter().collect());
+        // Built the way the napi command builds it, so spelling is normalised.
+        let only_spotify = StreamAudioFilter::from_args(Some("selected"), Some(&["Spotify".to_string()]));
+        assert_eq!(only_spotify.mode, StreamAudioMode::Selected);
+        assert_eq!(desired(&only_spotify), [150u32].into_iter().collect());
+        let not_firefox = StreamAudioFilter::from_args(Some("all_except"), Some(&["Firefox".to_string()]));
+        assert_eq!(desired(&not_firefox), [150u32].into_iter().collect());
+    }
 }

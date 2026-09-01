@@ -38,6 +38,8 @@ pub mod media_socket;
 pub mod packet;
 pub mod peer;
 pub mod source_id;
+pub mod stream_audio_filter;
+pub mod stream_audio_mixer;
 #[cfg(target_os = "windows")]
 pub mod encoder_probe;
 #[cfg(target_os = "windows")]
@@ -1148,10 +1150,11 @@ pub struct AudioStreamEngine {
     pipeline_thread: Option<JoinHandle<()>>,
     event_bridge: Option<tokio::task::JoinHandle<()>>,
     control_tx: mpsc::Sender<audio_stream_pipeline::AudioStreamControl>,
-    /// Linux PipeWire path returns a cleanup closure to restore default
-    /// audio routing on stop. None when no cleanup is needed.
-    #[cfg(target_os = "linux")]
-    cleanup: Option<Box<dyn FnOnce() + Send>>,
+    /// The platform capture feeding `frame_rx`: re-filterable while live
+    /// (`set_filter`), torn down on drop (Linux: null sink + taps removed;
+    /// Windows: loopback clients stopped). None when the frames come from
+    /// a source with no teardown of its own.
+    capture: Option<Box<dyn stream_audio_filter::StreamAudioCapture>>,
 }
 
 impl AudioStreamEngine {
@@ -1160,7 +1163,7 @@ impl AudioStreamEngine {
         socket: Arc<MediaSocket>,
         sender_id: String,
         bitrate_kbps: u32,
-        #[cfg(target_os = "linux")] cleanup: Option<Box<dyn FnOnce() + Send>>,
+        capture: Option<Box<dyn stream_audio_filter::StreamAudioCapture>>,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
@@ -1194,8 +1197,7 @@ impl AudioStreamEngine {
             pipeline_thread: Some(pipeline_thread),
             event_bridge: Some(event_bridge),
             control_tx,
-            #[cfg(target_os = "linux")]
-            cleanup,
+            capture,
         }
     }
 
@@ -1209,9 +1211,17 @@ impl AudioStreamEngine {
         if let Some(h) = self.event_bridge.take() {
             h.abort();
         }
-        #[cfg(target_os = "linux")]
-        if let Some(cleanup) = self.cleanup.take() {
-            cleanup();
+        // Pipeline first (its frame receiver is gone, so capture threads
+        // see Disconnected), then the capture handle: joins threads and
+        // removes any temporary audio routing.
+        self.capture.take();
+    }
+
+    /// Replace the application filter on the live capture. No-op when the
+    /// capture backend has no filter (or there is no capture handle).
+    pub fn set_filter(&self, filter: stream_audio_filter::StreamAudioFilter) {
+        if let Some(c) = &self.capture {
+            c.set_filter(filter);
         }
     }
 

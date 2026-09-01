@@ -14,5 +14,6 @@ pub mod friends;
 pub mod messaging;
 pub mod servers;
 pub mod settings;
+pub mod stream_audio;
 pub mod streaming;
 pub mod voice;

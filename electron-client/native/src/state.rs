@@ -82,6 +82,12 @@ pub struct AppState {
     /// Active stream-audio encoding pipeline. None when not streaming
     /// (or streaming without share-audio).
     pub audio_stream_engine: Option<AudioStreamEngine>,
+    /// Application filter for share-audio (mode + ticked app identities).
+    /// Set by `set_stream_audio_filter` and by `start_screen_share`'s
+    /// args; remembered here so a filter chosen before the engine exists
+    /// applies when the next stream starts. Mirrored on the live
+    /// `AudioStreamEngine` when one is running.
+    pub stream_audio_filter: crate::media::stream_audio_filter::StreamAudioFilter,
     pub connected_voice_server: Option<String>,
     pub connected_voice_channel: Option<String>,
     /// Persisted across voice disconnects so reconnecting to another
@@ -157,6 +163,7 @@ impl Default for AppState {
             voice_engine: None,
             video_engine: None,
             audio_stream_engine: None,
+            stream_audio_filter: Default::default(),
             connected_voice_server: None,
             connected_voice_channel: None,
             voice_muted: false,

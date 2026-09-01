@@ -691,6 +691,47 @@ export interface AudioDeviceList {
   outputs: Array<AudioDevice>
 }
 export declare function listAudioDevices(): Promise<AudioDeviceList>
+export interface ListStreamAudioAppsArgs {
+  /**
+   * Chromium desktopCapturer source id of the picked capture source.
+   * Windows resolves `window:HWND:0` to its owning process so that app
+   * can be flagged `owns_window_source`; ignored elsewhere.
+   */
+  sourceId?: string
+}
+export interface StreamAudioAppValue {
+  /** Stable identity (lowercase program name) — what the filter stores. */
+  id: string
+  /** Display label. */
+  name: string
+  /** Live process ids behind this row (informational). */
+  pids: Array<number>
+  /** Currently rendering audio, as opposed to merely holding a session. */
+  active: boolean
+  /** This app owns the window the streamer picked as the video source. */
+  ownsWindowSource: boolean
+}
+export interface StreamAudioAppList {
+  /**
+   * False where per-app stream audio isn't available (macOS, renderer
+   * encode path) — the renderer hides the picker.
+   */
+  supported: boolean
+  apps: Array<StreamAudioAppValue>
+}
+export declare function listStreamAudioApps(args: ListStreamAudioAppsArgs): Promise<StreamAudioAppList>
+export interface SetStreamAudioFilterArgs {
+  /** `selected` | `all_except` | `all`. */
+  mode: string
+  /** Ticked app identities (any spelling; normalised here). */
+  apps: Array<string>
+}
+/**
+ * Store the streamer's app filter and apply it to the running share-audio
+ * capture, if any. Always succeeds: without a live engine the filter is
+ * simply remembered for the next `start_screen_share`.
+ */
+export declare function setStreamAudioFilter(args: SetStreamAudioFilterArgs): Promise<void>
 export interface StartScreenShareArgs {
   /**
    * Community + channel to announce in. Both absent during a DM call —
@@ -734,6 +775,14 @@ export interface StartScreenShareArgs {
    * Windows WGC SetIsCursorCaptureEnabled). Defaults to true (show).
    */
   includeCursor?: boolean
+  /**
+   * Share-audio application filter: mode (`selected` | `all_except` |
+   * `all`) and the ticked app identities. Both absent → the filter last
+   * stored on AppState (`set_stream_audio_filter`) applies; otherwise
+   * this pair replaces it. Unknown mode → `all`.
+   */
+  audioMode?: string
+  audioApps?: Array<string>
 }
 export declare function startScreenShare(args: StartScreenShareArgs): Promise<void>
 export interface StopScreenShareArgs {
