@@ -787,6 +787,23 @@ IDR) was lost — it's UDP — the player never re-asked and stayed black until 
 GOP… or forever. The watchdog now keeps calling `requestKeyframe()` (self-throttled to 1/s)
 until the first frame paints.
 
+**DXGI capture went choppy whenever the mouse stood still (2026-09-01) ✅ — needs a Win10
+live test** — field report after 0.7.11: a 60 fps game share via the new DXGI path was smooth
+while the streamer moved the mouse and choppy the moment the cursor stayed put. Root cause was
+the capture loop's pacing: a desktop frame that arrived *before* the next paced send was due
+was released without being copied — and Desktop Duplication hands each frame out exactly once,
+so a released frame is gone; the next Acquire waits for a *new* present. With the game's
+presents out of phase with the send schedule, almost every real frame was discarded and the
+timeouts re-sent a stale ring slot. Mouse movement produced extra Acquire returns (mouse-only
+updates still carry the current desktop image) that happened to land on due sends, which is why
+it looked fine while the mouse moved. Fix (`capture_dxgi.rs`): keep the latest desktop in a
+`clean` texture updated on every content frame (`LastPresentTime != 0 || AccumulatedFrames >
+0`, or the first frame); mouse-only updates refresh cursor metadata only; each paced send copies
+clean → ring slot and composites the cursor at its current position; the Acquire wait is bounded
+by the send deadline (≤ 8 ms) instead of a flat 8 ms, so sends no longer slip by up to a frame.
+No frame is ever dropped on the floor now and the cursor can't be stale either. Verified:
+Windows Native Check green on `772a5a4` (no new warnings), `cargo test --lib` 110/110.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
