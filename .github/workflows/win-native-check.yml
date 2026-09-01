@@ -69,6 +69,11 @@ jobs:
       - name: cargo check
         id: check
         shell: bash
+        env:
+          # audiopus_sys vendors a libopus whose CMakeLists says
+          # cmake_minimum_required(VERSION 3.1); CMake 4.x on the runner
+          # refuses that without this shim (same as electron-release.yml).
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: |
           set -o pipefail
           cargo check --locked --all-targets 2>&1 | tee cargo-check.log
