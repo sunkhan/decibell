@@ -836,6 +836,26 @@ faster source is thinned to the target) using the VideoFrame timestamp. Verified
 Native Check green on `63aea98` (no new warnings), `cargo test --lib` 110/110, renderer tsc
 clean (via deno — see the node/libada note).
 
+**DXGI share still ~32 fps with the cursor still → cursor compositing moved to the GPU
+(2026-09-01) ✅ — needs a Win10 live test** — second field report on the Win10 DXGI path
+after 0.7.12: ~20 fps became ~32 fps with the cursor still, 60 while it moved. Root cause: every
+paced send blended the cursor on the CPU through a staging-texture `Map` — a hard wait for the
+GPU to reach our copy. On a GPU-bound game that copy queues behind the game's in-flight
+frame(s), so one send cost ≈ one game frame (≈ 30 ms ⇒ ~32 sends/s), and since the D3D11
+context is multithread-protected the encoder thread's blits waited out the same stall. Mouse
+motion makes DWM composite far more often, which forces finer GPU preemption and lets our copy
+through promptly — hence 60 fps only while the mouse moved (and it stacked with the earlier
+discard bug: ~20). Fix: `cursor_gpu.rs` — the pointer shape is converted once per shape change
+to straight-alpha BGRA (`cursor_blend::cursor_to_bgra`, unit-tested; COLOR exact, the legacy
+XOR-style MASKED/MONOCHROME pixels approximated as opaque inverted / mid-grey) and uploaded as
+a texture; each send draws it as one alpha-blended quad (SV_VertexID quad, two 3-line HLSL
+shaders via `D3DCompile` — new `Win32_Graphics_Direct3D_Fxc` feature; the rasterizer clips
+off-frame cursors). The capture loop now contains **no CPU↔GPU synchronisation at all** —
+treat that as an invariant for every native capture path. Also per-second `[capture_dxgi] 1s:`
+telemetry (content / mouse-only / timeouts / sends / drops / max send µs) so the next report
+carries numbers. Verified: Windows Native Check green on `f0bd1f5` (0 errors, no new
+warnings), `cargo test --lib` 104/104, all D3D11/Fxc signatures checked against the crate.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
