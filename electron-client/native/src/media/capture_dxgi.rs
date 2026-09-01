@@ -226,12 +226,13 @@ fn run_capture_thread(
         return Err("rotated display — using WGC instead".to_string());
     }
 
-    // Ring of 4 BGRA textures. The duplication surface is only valid
-    // until ReleaseFrame, so each frame is copied out; 4 slots + the
-    // depth-2 channel keep a queued texture from being rewritten while
-    // the encoder still reads it (matches the WGC pool's aliasing
-    // guarantees in practice).
-    let ring_desc = D3D11_TEXTURE2D_DESC {
+    // Textures. `clean` always holds the latest desktop image with no
+    // cursor (updated on every content-changed frame); the 4-slot ring
+    // receives clean + cursor at each paced send. The duplication surface
+    // is only valid until ReleaseFrame, so it's never held across loop
+    // iterations; 4 slots + the depth-2 channel keep a queued texture
+    // from being rewritten while the encoder still reads it.
+    let tex_desc = D3D11_TEXTURE2D_DESC {
         Width: width,
         Height: height,
         MipLevels: 1,
@@ -243,12 +244,16 @@ fn run_capture_thread(
         CPUAccessFlags: 0,
         MiscFlags: 0,
     };
+    let make_tex = |what: &str| -> Result<ID3D11Texture2D, String> {
+        let mut t: Option<ID3D11Texture2D> = None;
+        unsafe { device.CreateTexture2D(&tex_desc, None, Some(&mut t)) }
+            .map_err(|e| format!("CreateTexture2D ({what}): {e:?}"))?;
+        t.ok_or_else(|| format!("CreateTexture2D ({what}) returned None"))
+    };
+    let clean = make_tex("clean")?;
     let mut ring: Vec<ID3D11Texture2D> = Vec::with_capacity(4);
     for _ in 0..4 {
-        let mut t: Option<ID3D11Texture2D> = None;
-        unsafe { device.CreateTexture2D(&ring_desc, None, Some(&mut t)) }
-            .map_err(|e| format!("CreateTexture2D (ring): {e:?}"))?;
-        ring.push(t.ok_or("CreateTexture2D (ring) returned None")?);
+        ring.push(make_tex("ring")?);
     }
 
     log::info!(
@@ -265,9 +270,16 @@ fn run_capture_thread(
         staging: None,
     };
 
+    // Pacing: one send per frame interval, from whatever the desktop
+    // looks like right then. Content frames are folded into `clean` as
+    // they arrive (never discarded — duplication only hands a frame out
+    // once, so anything released without copying is gone for good; an
+    // earlier version dropped frames that arrived before the send was
+    // due and went choppy whenever the game's presents ran out of phase
+    // with the schedule). Mouse-only updates cost nothing but metadata.
     let frame_interval = Duration::from_micros(1_000_000 / fps.max(1).min(240) as u64);
     let mut ring_idx = 0usize;
-    let mut last_slot: Option<usize> = None;
+    let mut have_clean = false;
     let mut next_due = Instant::now();
     let mut signalled_ready = false;
     let signal_ready = |ok: Result<(), String>, flag: &mut bool| {
@@ -278,27 +290,21 @@ fn run_capture_thread(
     };
 
     while !stop.load(Ordering::Relaxed) {
+        // Wake for the next deadline (≤ 8ms) or a desktop change,
+        // whichever comes first — a fixed 8ms wait would let sends slip
+        // by up to that much every frame.
+        let remaining = next_due.saturating_duration_since(Instant::now());
+        let wait_ms = (remaining.as_micros() as u64).div_ceil(1000).min(8) as u32;
+
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut desktop_resource: Option<IDXGIResource> = None;
-        // 8ms timeout: on an idle desktop this is the loop's pacing; when
-        // frames flow, Acquire blocks until the next present instead.
         let hr = unsafe {
-            duplication.AcquireNextFrame(8, &mut frame_info, &mut desktop_resource)
+            duplication.AcquireNextFrame(wait_ms, &mut frame_info, &mut desktop_resource)
         };
-
-        // Deliveries are paced to `fps`. A copy is only worth doing when
-        // a send is due — mouse-move-only updates can fire at polling
-        // rate (hundreds/s) and full-frame copies at that cadence would
-        // dwarf the encode itself.
-        let now = Instant::now();
-        let due = now >= next_due || last_slot.is_none();
-        let mut sent_slot: Option<usize> = None;
 
         match hr {
             Ok(()) => {
                 signal_ready(Ok(()), &mut signalled_ready);
-                // Pointer metadata — position/visibility update only on
-                // frames where the mouse actually changed.
                 if frame_info.LastMouseUpdateTime != 0 {
                     cursor.visible = frame_info.PointerPosition.Visible.as_bool();
                     cursor.pos_x = frame_info.PointerPosition.Position.x;
@@ -307,41 +313,28 @@ fn run_capture_thread(
                 if frame_info.PointerShapeBufferSize > 0 {
                     fetch_cursor_shape(&duplication, &mut cursor, frame_info.PointerShapeBufferSize);
                 }
-
-                match (due, desktop_resource) {
-                    (true, Some(resource)) => {
+                // A present happened (or this is the very first frame):
+                // fold the new desktop image into `clean`. Mouse-only
+                // updates report LastPresentTime == 0 and are skipped —
+                // the image hasn't changed.
+                let content_changed = frame_info.LastPresentTime != 0
+                    || frame_info.AccumulatedFrames > 0
+                    || !have_clean;
+                if content_changed {
+                    if let Some(resource) = desktop_resource.as_ref() {
                         let src: ID3D11Texture2D = resource
                             .cast()
                             .map_err(|e| format!("cast IDXGIResource: {e:?}"))?;
-                        let slot = ring_idx % ring.len();
-                        ring_idx += 1;
-                        unsafe { context.CopyResource(&ring[slot], &src) };
-                        let _ = unsafe { duplication.ReleaseFrame() };
-                        if include_cursor && cursor.visible {
-                            composite_cursor_on(
-                                device, context, &ring[slot], width, height, &mut cursor,
-                            );
-                        }
-                        last_slot = Some(slot);
-                        sent_slot = Some(slot);
-                    }
-                    _ => {
-                        // Not due yet (or no image): let the duplication
-                        // keep accumulating and try again next loop.
-                        let _ = unsafe { duplication.ReleaseFrame() };
+                        unsafe { context.CopyResource(&clean, &src) };
+                        have_clean = true;
                     }
                 }
+                let _ = unsafe { duplication.ReleaseFrame() };
             }
             Err(e) => {
                 let code = e.code().0 as u32;
                 if code == DXGI_ERROR_WAIT_TIMEOUT_CODE {
                     signal_ready(Ok(()), &mut signalled_ready);
-                    // Nothing changed on screen. Re-send the last frame
-                    // when due so the encoder (and its GOP/keyframe
-                    // machinery) keeps running like the WGC path.
-                    if due {
-                        sent_slot = last_slot;
-                    }
                 } else if code == DXGI_ERROR_ACCESS_LOST_CODE {
                     // Exclusive-fullscreen handoff or desktop switch.
                     // Before the first frame the caller falls back to
@@ -360,7 +353,14 @@ fn run_capture_thread(
             }
         }
 
-        if let Some(slot) = sent_slot {
+        let now = Instant::now();
+        if have_clean && now >= next_due {
+            let slot = ring_idx % ring.len();
+            ring_idx += 1;
+            unsafe { context.CopyResource(&ring[slot], &clean) };
+            if include_cursor && cursor.visible {
+                composite_cursor_on(device, context, &ring[slot], width, height, &mut cursor);
+            }
             match tx.try_send(ring[slot].clone()) {
                 Ok(_) => {}
                 Err(mpsc::TrySendError::Full(_)) => {
@@ -368,7 +368,6 @@ fn run_capture_thread(
                 }
                 Err(mpsc::TrySendError::Disconnected(_)) => break,
             }
-            let now = Instant::now();
             // Fixed cadence, but re-anchor after a stall so a burst of
             // overdue slots doesn't fire back-to-back.
             next_due = if now > next_due + frame_interval * 4 {
