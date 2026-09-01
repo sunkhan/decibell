@@ -759,6 +759,20 @@ can itself go borderless — `capture_wgc::borderless_supported()` asks WinRT me
 `Foundation_Metadata` crate feature) — monitors stay on WGC, which keeps native cursor
 compositing and HDR/rotation handling. Routing lives in the `start_windows` match guard;
 behavior on Win10 is unchanged (DXGI first, WGC border as last resort).
+*Release fallout (2026-09-01):* the first `ev0.7.11` build failed its Windows job — the
+blind-written `capture_dxgi.rs` called `IDXGIOutputDuplication::GetDesc(&mut desc)`, but the
+windows 0.61 projection returns the desc by value. Two permanent fixes came out of it:
+(1) **`.github/workflows/win-native-check.yml`** — `cargo check --all-targets` of the addon on
+a Windows runner on every push touching `electron-client/native/**` / the proto, with the
+compiler output published as an artifact *and* force-pushed to the orphan branch
+`ci/win-native-check-log` (`git fetch origin ci/win-native-check-log && git show
+FETCH_HEAD:cargo-check.log`) — run logs/artifacts need an authenticated `gh`, a branch
+doesn't; vcpkg binary archives are cached (the FFmpeg port is ~20 min uncached).
+(2) **Local API verification for cfg(windows) code:** `cargo fetch --target
+x86_64-pc-windows-msvc` in `native/` pulls the `windows` crate sources into
+`~/.cargo/registry/src/…/windows-0.61.x/` without needing the target's std, so signatures
+(Dxgi/mod.rs, Direct3D11/mod.rs, Foundation/Metadata/mod.rs) can be grepped before pushing.
+Every other API the DXGI path uses was verified that way.
 
 **Stream watch stuck on "loading" forever (2026-08-31) ✅ (hardening; root cause = stale
 post-move state, fixed above)** — field report: a watcher sat on the spinner indefinitely for
