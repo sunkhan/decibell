@@ -917,11 +917,18 @@ impl VideoEngine {
                             source_id::CaptureTarget::Monitor(idx),
                             tx,
                             include_cursor,
+                            fps,
                         )?)
                     }
                 }
             }
-            _ => WinCapture::Wgc(capture_wgc::Capture::start(&gpu, target, tx, include_cursor)?),
+            _ => WinCapture::Wgc(capture_wgc::Capture::start(
+                &gpu,
+                target,
+                tx,
+                include_cursor,
+                fps,
+            )?),
         };
         let encoder_thread = encoder_thread::EncoderThread::start(
             gpu,

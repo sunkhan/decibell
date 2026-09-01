@@ -563,6 +563,14 @@ export class StreamCapture {
     let firstFrameLogged = false;
     let framesSinceLastReport = 0;
     let lastReportAt = Date.now();
+    // Rate gate: the track's `frameRate` constraint is only a request —
+    // Chromium can still hand us frames above the target (a 144 Hz
+    // monitor on a 60 fps stream), and every one of those is an encode.
+    // Deadline pacing with half-an-interval tolerance, so a source that
+    // runs at exactly the target isn't halved by jitter (accept/drop
+    // alternation) and a faster source is thinned to the target rate.
+    const intervalUs = 1_000_000 / Math.max(1, this.opts.fps);
+    let nextDueUs = 0;
     try {
       while (!this.stopping) {
         const { value: frame, done } = await this.reader.read();
@@ -578,6 +586,13 @@ export class StreamCapture {
           );
           firstFrameLogged = true;
         }
+        const tsUs = frame.timestamp ?? performance.now() * 1000;
+        if (tsUs < nextDueUs - intervalUs / 2) {
+          frame.close();
+          continue;
+        }
+        nextDueUs =
+          tsUs > nextDueUs + intervalUs * 2 ? tsUs + intervalUs : nextDueUs + intervalUs;
         framesSinceLastReport += 1;
         try {
           // Encoder backpressure protection: drop frames if the queue
