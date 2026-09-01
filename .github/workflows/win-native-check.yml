@@ -17,7 +17,9 @@ on:
       - ".github/workflows/win-native-check.yml"
 
 permissions:
-  contents: read
+  # write: the last step publishes the compiler output to the
+  # ci/win-native-check-log branch (see below).
+  contents: write
 
 jobs:
   check:
@@ -56,6 +58,7 @@ jobs:
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: cargo check
+        id: check
         shell: bash
         run: |
           set -o pipefail
@@ -68,3 +71,34 @@ jobs:
           name: win-cargo-check-log
           path: electron-client/native/cargo-check.log
           if-no-files-found: ignore
+
+      # Artifacts and run logs both need an authenticated token to
+      # download; a branch can be fetched over plain git/SSH. Force-push
+      # the log as an orphan commit on ci/win-native-check-log so the dev
+      # box reads it with:
+      #   git fetch origin ci/win-native-check-log
+      #   git show FETCH_HEAD:cargo-check.log
+      - name: Publish compiler output to ci/win-native-check-log
+        if: always()
+        shell: bash
+        working-directory: .
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+        run: |
+          set -e
+          rm -rf /tmp/win-check-log && mkdir -p /tmp/win-check-log
+          if [ -f electron-client/native/cargo-check.log ]; then
+            cp electron-client/native/cargo-check.log /tmp/win-check-log/
+          else
+            echo "(no cargo-check.log — a step before cargo check failed)" > /tmp/win-check-log/cargo-check.log
+          fi
+          cd /tmp/win-check-log
+          printf 'run=%s\nsha=%s\noutcome=%s\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$CHECK_OUTCOME" > meta.txt
+          git init -q
+          git config user.name "decibell-ci"
+          git config user.email "ci@decibell.invalid"
+          git checkout -q -b ci/win-native-check-log
+          git add -A
+          git commit -q -m "win-native-check ${GITHUB_SHA} (${CHECK_OUTCOME})"
+          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/ci/win-native-check-log
