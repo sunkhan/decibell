@@ -68,6 +68,13 @@ pub struct E2ee {
     pub cache: HashMap<(String, u32), PublicBundle>,
     /// username → their current key_id, this session.
     pub current_ids: HashMap<String, u32>,
+    /// True from the moment we send our own E2EE_PUBLISH_KEYS_REQ until
+    /// the local store reflects the result. Central broadcasts
+    /// E2EE_KEYS_CHANGED for *us* right after the reply, and it can land
+    /// before setup/reset has installed the new store — without this
+    /// flag `on_keys_changed` would read the old key_id and wrongly lock
+    /// the device that just rotated.
+    pub publish_in_flight: bool,
 }
 
 impl Default for E2ee {
@@ -80,6 +87,7 @@ impl Default for E2ee {
             fresh: HashSet::new(),
             cache: HashMap::new(),
             current_ids: HashMap::new(),
+            publish_in_flight: false,
         }
     }
 }
@@ -497,6 +505,7 @@ async fn publish(
         let mut s = state.lock().await;
         let (tx, rx) = oneshot::channel();
         s.pending_key_publish = Some(tx);
+        s.e2ee.publish_in_flight = true;
         rx
     };
     send_central(
@@ -580,6 +589,18 @@ pub async fn bootstrap(state: Arc<Mutex<AppState>>) {
     emit_status(&s);
 }
 
+/// Clears `publish_in_flight` when the publishing flow ends, on every
+/// path (success, error, cancellation).
+struct PublishGuard(Arc<Mutex<AppState>>);
+impl Drop for PublishGuard {
+    fn drop(&mut self) {
+        let state = self.0.clone();
+        tokio::spawn(async move {
+            state.lock().await.e2ee.publish_in_flight = false;
+        });
+    }
+}
+
 fn backup_payload(store: &KeyStore) -> backup::BackupPayload {
     backup::BackupPayload { current_key_id: store.current_key_id, keys: store.keys.clone() }
 }
@@ -606,6 +627,7 @@ pub async fn setup(state: &Arc<Mutex<AppState>>, passphrase: String) -> Result<(
         emit_status(&s);
         return Err("You already have encryption keys. Unlock with your passphrase instead.".into());
     }
+    let _guard = PublishGuard(state.clone());
     let identity = IdentityKeys::generate(now_secs())?;
     let bundle = identity.public_bundle(&username)?;
     let store = KeyStore::new(0, vec![identity]);
@@ -690,6 +712,7 @@ pub async fn change_passphrase(state: &Arc<Mutex<AppState>>, passphrase: String)
         }
         backup_payload(s.e2ee.store.as_ref().ok_or("Encryption keys not loaded")?)
     };
+    let _guard = PublishGuard(state.clone());
     let blob = tokio::task::spawn_blocking(move || backup::wrap(&passphrase, &payload))
         .await
         .map_err(|e| e.to_string())??;
@@ -713,6 +736,7 @@ pub async fn reset(state: &Arc<Mutex<AppState>>, passphrase: String) -> Result<(
         };
         (username, keys, peers)
     };
+    let _guard = PublishGuard(state.clone());
     let identity = IdentityKeys::generate(now_secs())?;
     let bundle = identity.public_bundle(&username)?;
     keys.retain(|k| k.key_id != 0);
@@ -747,7 +771,7 @@ pub async fn on_keys_changed(state: &Arc<Mutex<AppState>>, username: &str, key_i
     s.e2ee.fresh.remove(username);
     s.e2ee.current_ids.remove(username);
     let me = s.username.clone().unwrap_or_default();
-    if username == me && s.e2ee.status == Status::Ready {
+    if username == me && s.e2ee.status == Status::Ready && !s.e2ee.publish_in_flight {
         let mine = s.e2ee.store.as_ref().map(|st| st.current_key_id).unwrap_or(0);
         if mine != key_id {
             log::info!("[e2ee] our keys were rotated elsewhere (have {mine}, now {key_id}) — locking");
