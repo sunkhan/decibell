@@ -72,6 +72,11 @@ export interface DmMessage {
   nonce?: string;
   /// Optimistic, not yet echoed by central — rendered faded.
   pending?: boolean;
+  /// E2EE: the body arrived sealed and `content` is the opened text — or
+  /// a placeholder when `decryptError` is set ("locked" | "no_key" |
+  /// "peer_key" | "bad"). See docs/superpowers/specs/2026-09-03-e2ee-dms-design.md.
+  encrypted?: boolean;
+  decryptError?: string;
 }
 
 export interface ServerMember {
@@ -359,6 +364,9 @@ export interface Message {
   /// Optimistic send the server hasn't echoed yet — rendered faded
   /// (Discord's "sending" look); the echo replaces the object.
   pending?: boolean;
+  /// E2EE (DMs only) — see DmMessage.encrypted / decryptError.
+  encrypted?: boolean;
+  decryptError?: string;
 }
 
 export interface ChannelInfo {
@@ -571,6 +579,40 @@ export interface MessageReceivedPayload {
   replyToContent: string;
   /// Attachment.Kind numbers of the parent's attachments (position order).
   replyToAttachmentKinds: number[];
+  /// E2EE (DMs): sealed on the wire; `content` is the opened text or a
+  /// placeholder when decryptError is non-empty. Channels: false / "".
+  encrypted: boolean;
+  decryptError: string;
+}
+
+// ── End-to-end encrypted DMs ─────────────────────────────────────────
+// Mirror of native/src/commands/e2ee.rs + events.rs E2ee*Payload.
+
+export type E2eeStatus = "unavailable" | "not_set_up" | "locked" | "ready";
+
+export interface E2eeStatusPayload {
+  supported: boolean;
+  status: E2eeStatus;
+  keyId: number;
+  /// Our identity fingerprint when ready; "" otherwise.
+  fingerprint: string;
+}
+
+export interface E2eePeerChangedPayload {
+  username: string;
+  keyId: number;
+  fingerprint: string;
+}
+
+export interface E2eePeerInfo {
+  hasKeys: boolean;
+  keyId: number;
+  fingerprint: string;
+  /// Identical on both users' screens; "" unless we're ready and they have keys.
+  safetyNumber: string;
+  /// Unix seconds of the last identity change we saw; 0 = never.
+  changedAt: number;
+  pinned: boolean;
 }
 
 export interface ChannelHistoryReceivedPayload {

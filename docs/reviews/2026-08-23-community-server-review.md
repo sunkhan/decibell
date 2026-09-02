@@ -879,6 +879,51 @@ client, summed by a wall-clock-paced `Mixer` (20 ms prime, 200 ms trim), session
 --lib` 131/131 (was 104), tsc 0 errors, Windows Native Check green on `a29293e`; the live matrix
 in the spec is pending.
 
+**End-to-end encrypted DMs (2026-09-03) ✅ — needs the Hetzner central rebuild + a two-account
+live test** — every DM sat in central's Postgres in plaintext (`dm_messages.content`), readable
+by whoever runs or breaches a central. First step of the encryption programme: DM *messages*.
+Design: `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`. Protocol: one long-term identity
+per user (X25519 agreement + Ed25519 signing, self-signed bundle, central-assigned monotonic
+`key_id`); conversation root = static–static X25519; every message gets its own key from a
+32-byte salt via HKDF-SHA256 (both usernames + both key ids in the info) → AES-256-GCM with the
+sender's name in the AAD (reflection-proof); versioned envelope `0x01 ‖ sender_kid ‖
+recipient_kid ‖ salt ‖ ct ‖ tag` in a new `DirectMessage.envelope` (+ `reply_to_envelope`,
+`DmHistoryMessage`, `DmConversationPreview.last_message_envelope`, `DmEditReq` /
+`DmMessageEdited.envelope`, `DmMessageEdited.sender`). Private keys are backed up on central
+wrapped by Argon2id(64 MiB, t=3) + AES-256-GCM under a user passphrase (≥10 chars; central
+sees the login password so it can't be the KEK) — a second device unlocks with the passphrase
+once; the local store `<userData>/e2ee/<hex user>.json` is AES-GCM at rest under a
+safeStorage-wrapped random key (`electron/main/e2eeLocalKey.ts`), falling back to the config.rs
+derivation. **Policy: seal whenever both sides have keys, plaintext otherwise, visibly; a pinned
+peer is never downgraded** (central saying "no keys" for a pinned peer → refuse to send). Old
+clients see a fixed placeholder in `content`; old centrals are detected by
+`LoginResponse.e2ee_keys` and the feature hides itself. **Not forward secret** (static keys —
+deliberate: there is no local message store, history is re-fetched from central every login; a
+ratchet would make history device-bound; the envelope is versioned for it). Central:
+`user_e2ee_keys` / `user_e2ee_backup` tables + `dm_messages.envelope BYTEA`,
+`E2EE_PUBLISH_KEYS_REQ/RES` (129/130, bundle and/or backup, broadcasts `E2EE_KEYS_CHANGED` 135
+like AVATAR_CHANGED), `E2EE_FETCH_KEYS_REQ/RES` (131/132, key_id 0 = current, any authed
+user), `E2EE_FETCH_BACKUP_REQ/RES` (133/134, own only), all behind a 20/5 per-session bucket;
+DM/edit handlers cap the envelope at 64 KiB + 64 and store it opaquely. Native: `e2ee/`
+(identity, envelope, backup, keystore, session) — all crypto stays in Rust, the renderer only
+sees decrypted events with `encrypted` + `decryptError` (`locked | no_key | peer_key | bad`);
+DM packets are routed through an **ordered crypto worker** (`session::enqueue`) because opening
+may need a peer's historical key = a round-trip whose reply lands on the same router loop;
+`seal_outbound` in `send_private_message` / `edit_dm_message`; TOFU pin per peer with an
+`e2ee_peer_changed` event on identity change; a remote rotation of our own keys (another
+device reset) drops this device to *locked*. Commands: `e2ee_get_status / setup / unlock /
+change_passphrase / reset / peer_info`. Renderer: `e2eeStore`, `useE2eeEvents` (first "locked"
+report opens the unlock prompt once; becoming ready invalidates all loaded DM history and
+re-pulls), `PassphraseModal`, Privacy-tab `E2eeSection` (fingerprint), DM header
+`EncryptionBadge`, `DmEncryptionBanner` (locked / keys changed / set-up nudge / peer has no
+keys), bubble lock glyph + muted placeholder rows (not editable), profile-popup safety number
+(12×4 base32 groups, identical on both sides). Verified: `cargo test --lib` 146/146 (was 131;
+envelope round-trip/tamper/reflection/wrong-pair, bundle signature, backup wrong-passphrase +
+hostile params, keystore at-rest + username binding), tsc 0 errors, community build + e2e
+235/235 against the new proto (additive; no community change), central syntax-checked against
+a mocked pqxx. Non-goals now: forward secrecy, per-device keys, verified-contact state,
+channel encryption, signed call keys (the identity keys make that the next small step).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

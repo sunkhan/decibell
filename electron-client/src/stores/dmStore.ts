@@ -78,6 +78,8 @@ interface ConversationPreviewInput {
   lastMessageId: number;
   lastTimestamp: number;
   unreadCount: number;
+  encrypted?: boolean;
+  decryptError?: string;
 }
 
 interface HistoryMessageInput {
@@ -89,6 +91,8 @@ interface HistoryMessageInput {
   replyTo?: number;
   replyToSender?: string;
   replyToContent?: string;
+  encrypted?: boolean;
+  decryptError?: string;
 }
 
 interface DmState {
@@ -154,7 +158,18 @@ interface DmState {
   /// was never confirmed.
   removeDmMessageByNonce: (peer: string, nonce: string) => void;
   /// Apply a DM edit broadcast: replace content + set editedAt on the match.
-  applyDmEdit: (peer: string, messageId: number, content: string, editedAt: number) => void;
+  applyDmEdit: (
+    peer: string,
+    messageId: number,
+    content: string,
+    editedAt: number,
+    encrypted?: boolean,
+    decryptError?: string,
+  ) => void;
+  /// E2EE: after keys unlock, every loaded row that arrived sealed holds a
+  /// placeholder. Drop all loaded history so the panels reload it (the
+  /// caller re-requests conversations + the active peer's page).
+  invalidateAllHistory: () => void;
   /// Snapshot + remove for optimistic delete; returns the snapshot.
   snapshotAndRemoveDm: (peer: string, messageId: number) => DmMessage | undefined;
   /// Re-insert a snapshotted DM (rejection path). Sorted by id.
@@ -295,6 +310,8 @@ export const useDmStore = create<DmState>((set, get) => ({
           sender: p.lastMessageSender,
           content: p.lastMessageContent,
           timestamp: String(p.lastTimestamp),
+          encrypted: p.encrypted || undefined,
+          decryptError: p.decryptError || undefined,
         };
         const hasInMemoryMessages = (existing?.messages.length ?? 0) > 0;
         next[p.peer] = {
@@ -345,6 +362,8 @@ export const useDmStore = create<DmState>((set, get) => ({
           replyTo: m.replyTo || undefined,
           replyToSender: m.replyToSender || undefined,
           replyToContent: m.replyToContent || undefined,
+          encrypted: m.encrypted || undefined,
+          decryptError: m.decryptError || undefined,
         }));
       const merged: DmMessage[] = [...incoming, ...existing];
       const lastMessageTime =
@@ -386,6 +405,8 @@ export const useDmStore = create<DmState>((set, get) => ({
           replyTo: m.replyTo || undefined,
           replyToSender: m.replyToSender || undefined,
           replyToContent: m.replyToContent || undefined,
+          encrypted: m.encrypted || undefined,
+          decryptError: m.decryptError || undefined,
         }))
         .sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
       return {
@@ -427,6 +448,8 @@ export const useDmStore = create<DmState>((set, get) => ({
           replyTo: m.replyTo || undefined,
           replyToSender: m.replyToSender || undefined,
           replyToContent: m.replyToContent || undefined,
+          encrypted: m.encrypted || undefined,
+          decryptError: m.decryptError || undefined,
         }));
       const merged =
         incoming.length > 0
@@ -550,15 +573,21 @@ export const useDmStore = create<DmState>((set, get) => ({
       };
     }),
 
-  applyDmEdit: (peer, messageId, content, editedAt) =>
+  applyDmEdit: (peer, messageId, content, editedAt, encrypted, decryptError) =>
     set((state) => {
       const conv = state.conversations[peer];
       if (!conv) return {};
       let changed = false;
+      const patch = {
+        content,
+        editedAt,
+        encrypted: encrypted || undefined,
+        decryptError: decryptError || undefined,
+      };
       const next = conv.messages.map((m) => {
         if (m.id !== messageId) return m;
         changed = true;
-        return { ...m, content, editedAt };
+        return { ...m, ...patch };
       });
       if (!changed) return {};
       return {
@@ -569,11 +598,26 @@ export const useDmStore = create<DmState>((set, get) => ({
             messages: next,
             lastMessage:
               idOf(conv.lastMessage) === messageId && conv.lastMessage
-                ? { ...conv.lastMessage, content, editedAt }
+                ? { ...conv.lastMessage, ...patch }
                 : conv.lastMessage,
           },
         },
       };
+    }),
+
+  invalidateAllHistory: () =>
+    set((state) => {
+      const next: Record<string, DmConversation> = {};
+      for (const [peer, conv] of Object.entries(state.conversations)) {
+        next[peer] = {
+          ...conv,
+          messages: [],
+          hasMoreHistory: true,
+          hasMoreAfter: false,
+          historyLoaded: false,
+        };
+      }
+      return { conversations: next, pendingDmDeletions: {} };
     }),
 
   snapshotAndRemoveDm: (peer, messageId) => {

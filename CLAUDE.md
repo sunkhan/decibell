@@ -120,6 +120,16 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   exclusive (one engine, one mic). `features/call/` + `native/src/commands/call.rs` +
   `native/src/media/{media_socket,call_crypto,stun,punch}.rs`; design in
   `docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md`.
+- **DM messages are end-to-end encrypted** when both users have set up encryption; plaintext
+  otherwise, shown as such; a peer whose identity is pinned is never downgraded. Static
+  X25519 identities (no forward secrecy — deliberate: history is server-fetched, there is no
+  local message store), per-message HKDF + AES-256-GCM, passphrase (Argon2id) backup of the
+  private keys on central, TOFU pins + safety numbers. **All crypto lives in native
+  (`native/src/e2ee/`)** — the renderer only ever sees decrypted events with `encrypted` /
+  `decryptError`, and DM packets go through the ordered crypto worker (never decrypt inside
+  `route_packets`: key fetches reply on that same loop). Central stores envelopes opaquely and
+  gates the feature with `LoginResponse.e2ee_keys`. Design:
+  `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`.
 
 ## Deeper docs
 

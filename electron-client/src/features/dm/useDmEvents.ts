@@ -57,6 +57,8 @@ export function useDmEvents() {
           replyTo: p.replyTo || undefined,
           replyToSender: p.replyToSender || undefined,
           replyToContent: p.replyToContent || undefined,
+          encrypted: p.encrypted || undefined,
+          decryptError: p.decryptError || undefined,
         },
         isFromSelf,
       );
@@ -72,6 +74,8 @@ export function useDmEvents() {
         lastMessageId: number;
         lastTimestamp: number;
         unreadCount: number;
+        encrypted: boolean;
+        decryptError: string;
       }[];
     }>("dm_conversations_received", (event) => {
       useDmStore.getState().hydrateConversations(event.payload.conversations);
@@ -90,6 +94,8 @@ export function useDmEvents() {
         replyTo: number;
         replyToSender: string;
         replyToContent: string;
+        encrypted: boolean;
+        decryptError: string;
       }[];
       hasMore: boolean;
       hasMoreAfter: boolean;
@@ -160,9 +166,13 @@ export function useDmEvents() {
       messageId: number;
       content: string;
       editedAt: number;
+      encrypted: boolean;
+      decryptError: string;
     }>("dm_message_edited", (event) => {
-      const { peer, messageId, content, editedAt } = event.payload;
-      useDmStore.getState().applyDmEdit(peer, messageId, content, editedAt);
+      const { peer, messageId, content, editedAt, encrypted, decryptError } = event.payload;
+      useDmStore
+        .getState()
+        .applyDmEdit(peer, messageId, content, editedAt, encrypted, decryptError);
     });
 
     return () => {

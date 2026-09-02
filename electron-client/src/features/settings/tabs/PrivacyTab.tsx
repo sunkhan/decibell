@@ -2,6 +2,7 @@ import { invoke } from "../../../lib/ipc";
 import { useDmStore } from "../../../stores/dmStore";
 import { useUiStore } from "../../../stores/uiStore";
 import { saveSettings } from "../saveSettings";
+import E2eeSection from "../../e2ee/E2eeSection";
 
 export default function PrivacyTab() {
   const friendsOnlyDms = useDmStore((s) => s.friendsOnlyDms);
@@ -35,6 +36,7 @@ export default function PrivacyTab() {
 
   return (
     <div className="flex flex-col gap-3">
+      <E2eeSection />
       <ToggleRow
         title="Only accept DMs from friends"
         description="When enabled, only users in your friends list can send you direct messages"

@@ -121,6 +121,55 @@ function messageEpoch(m: Message): number {
 }
 
 /** Same sender within 7 minutes of the previous → grouped row. */
+/// Small padlock used by the E2EE indicators (bubble + placeholder).
+export function LockGlyph({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="inline-block shrink-0"
+    >
+      <rect x="3" y="11" width="18" height="11" rx="2" />
+      <path d="M7 11V7a5 5 0 0110 0v4" />
+    </svg>
+  );
+}
+
+/// What an unopenable envelope says in the bubble, by native's
+/// `decryptError` code (see e2ee/session.rs DecryptError).
+function decryptErrorText(code: string): string {
+  switch (code) {
+    case "locked":
+      return "Encrypted message — unlock encryption to read it";
+    case "no_key":
+      return "Encrypted with a previous key — can't be read on this device";
+    case "peer_key":
+      return "Encrypted message — the sender's key isn't available";
+    default:
+      return "Encrypted message couldn't be decrypted";
+  }
+}
+
+function decryptErrorHint(code: string): string {
+  switch (code) {
+    case "locked":
+      return "Enter your encryption passphrase in Settings → Privacy.";
+    case "no_key":
+      return "This was sent to encryption keys this device no longer has (keys were reset).";
+    case "peer_key":
+      return "The server no longer has the key this was sent with.";
+    default:
+      return "The message failed authentication or is malformed.";
+  }
+}
+
 export function shouldGroup(prev: Message | undefined, curr: Message): boolean {
   if (!prev || prev.sender !== curr.sender) return false;
   const prevEpoch = messageEpoch(prev);
@@ -252,6 +301,19 @@ function MessageBubble({
         />
       );
     }
+    // E2EE: a sealed body this device couldn't open renders as a muted
+    // placeholder (never the raw placeholder text as if it were a message).
+    if (message.decryptError) {
+      return (
+        <div
+          className={`${marginClass} flex items-center gap-1.5 text-body italic leading-body text-text-muted`}
+          title={decryptErrorHint(message.decryptError)}
+        >
+          <LockGlyph size={12} />
+          <span>{decryptErrorText(message.decryptError)}</span>
+        </div>
+      );
+    }
     if (!message.content || textHidden) return null;
     return (
       <div
@@ -261,6 +323,14 @@ function MessageBubble({
         {message.editedAt ? (
           <span className="ml-1 select-none align-baseline text-meta text-text-muted">
             (edited)
+          </span>
+        ) : null}
+        {message.encrypted ? (
+          <span
+            className="ml-1 inline-flex select-none align-baseline text-text-muted opacity-70"
+            title="End-to-end encrypted"
+          >
+            <LockGlyph size={10} />
           </span>
         ) : null}
       </div>

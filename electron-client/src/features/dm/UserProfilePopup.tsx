@@ -14,6 +14,7 @@ import { stringToGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import { CodecBadge } from "../voice/CodecBadge";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
+import E2eeProfileSection from "../e2ee/E2eeProfileSection";
 
 // Anchored profile popup. Triggered from anywhere a username is shown
 // (members list, message bubble click, etc.) by calling
@@ -291,6 +292,10 @@ export default function UserProfilePopup() {
             )}
           </div>
         </div>
+
+        {/* E2EE: the conversation's safety number, for out-of-band
+            verification. Renders nothing unless encryption is ready. */}
+        {username !== currentUsername && <E2eeProfileSection peer={username} />}
 
         {/* Live-stream section — only when this user is currently
             streaming on a server we have access to. See

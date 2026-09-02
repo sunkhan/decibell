@@ -432,6 +432,48 @@ letting the failure fall into a catch block.
 - Apps start playing between polls: both backends poll every 2 s and wake
   immediately on `set_filter`; that ≤ 2 s gap is the accepted v1 latency.
 
+### 5.12 E2EE DMs — how it hangs together
+
+Design: `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`. The short version:
+
+- **Nothing cryptographic reaches the renderer.** `native/src/e2ee/` owns identities
+  (`identity.rs`), the message envelope (`envelope.rs`), the passphrase backup (`backup.rs`),
+  the encrypted-at-rest local store (`keystore.rs`) and the runtime (`session.rs`). The
+  renderer gets `message_received` / `dm_history_received` / `dm_conversations_received` /
+  `dm_message_edited` exactly as before plus `encrypted: bool` and `decryptError: string`
+  (`"" | locked | no_key | peer_key | bad`), and drives everything through six commands
+  (`e2ee_get_status / e2ee_setup / e2ee_unlock / e2ee_change_passphrase / e2ee_reset /
+  e2ee_peer_info`) and two events (`e2ee_status_changed`, `e2ee_peer_changed`).
+- **Never decrypt inside `route_packets`.** Opening an envelope can need a peer's historical
+  public key, which is an `E2EE_FETCH_KEYS_REQ` round-trip whose reply arrives on the same
+  loop. DM packets are handed to the ordered worker (`session::enqueue`) which awaits fetches
+  and emits; the router only resolves waiters. Adding a DM-shaped packet? Route it through a
+  new `DmJob` arm.
+- **Status is per login, per device:** `unavailable` (central lacks `LoginResponse.e2ee_keys`,
+  or logged out) → `not_set_up` → `locked` (backup exists on central, no usable local store)
+  → `ready`. `session::bootstrap` runs after every LoginRes (spawned). The renderer's
+  `useE2eeEvents` opens the unlock modal on the first `locked` report of a login and, on
+  becoming `ready`, calls `dmStore.invalidateAllHistory()` + re-requests conversations and the
+  active peer's page (sealed rows that arrived while locked hold placeholders).
+- **Send policy lives in `session::seal_outbound`:** ready + peer has keys → sealed (`content`
+  = the fixed placeholder for old clients, body in `envelope`); peer has no keys and was never
+  pinned → plaintext; peer pinned but central has no keys / we're locked → error to the
+  sender. Edits go through the same function.
+- **The at-rest key** comes from Electron main (`electron/main/e2eeLocalKey.ts`, safeStorage
+  wrapped `<userData>/e2ee/local.key`) as `InitOptions.e2eeLocalKey`; absent → `config.rs`
+  derivation. A store that doesn't open shows as *locked* — the passphrase rebuilds it.
+- **key_id is bookkeeping, sign_pub is identity.** Fingerprints / safety numbers hash
+  `sign_pub`; envelopes name key ids so old history finds the right generation (every old
+  private key is kept locally and in the backup). A peer's `sign_pub` changing = "keys
+  changed" banner + toast + re-pin.
+- Argon2id runs on the blocking pool (~100 ms at 64 MiB); `x25519-dalek` is used because
+  `ring` only offers ephemeral agreement (no static secrets).
+- **napi camel-casing splits on digits.** `e2ee_get_status` was exported as `e2EeGetStatus`,
+  which the renderer's `invoke()` normaliser (`_x` → `X` → `e2eeGetStatus`) can never
+  produce — every call would have failed with "unknown command". Any `#[napi]` fn whose name
+  contains a digit needs an explicit `#[napi(js_name = "…")]` matching the normaliser
+  (`commands/e2ee.rs` does this); check `native/index.js` after `npx napi build`.
+
 ## 6. How to test from a fresh checkout
 
 ```bash

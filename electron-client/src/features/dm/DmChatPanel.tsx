@@ -26,6 +26,8 @@ import { startCall } from "../call/callActions";
 import { useCallStore } from "../../stores/callStore";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
+import EncryptionBadge from "../e2ee/EncryptionBadge";
+import DmEncryptionBanner from "../e2ee/DmEncryptionBanner";
 import type { DmMessage, GifResult, Message } from "../../types";
 
 // Canonical reject strings the central server echoes back as a DM
@@ -702,7 +704,9 @@ export default function DmChatPanel() {
         canEdit={
           typeof msg.id === "number" &&
           msg.id > 0 &&
-          msg.sender === localUsername
+          msg.sender === localUsername &&
+          // Can't edit a body this device couldn't open.
+          !msg.decryptError
         }
         editing={editingMessageId === msg.id && msg.id > 0}
         onStartEdit={startEdit}
@@ -764,6 +768,7 @@ export default function DmChatPanel() {
             Offline
           </div>
         )}
+        <EncryptionBadge peer={activeDmUser} />
         <div className="flex-1" />
         <div className="flex gap-1">
           <button
@@ -841,6 +846,8 @@ export default function DmChatPanel() {
           </button>
         </div>
       </div>
+      {/* E2EE: locked / keys-changed / set-up nudge / peer-has-no-keys strip. */}
+      <DmEncryptionBanner peer={activeDmUser} />
 
       {/* P2P call with this user: the stage (tiles, focused stream, dock).
           In theater it fills the panel and the conversation below is hidden. */}

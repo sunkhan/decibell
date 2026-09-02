@@ -27,6 +27,8 @@ import UserProfilePopup from "../features/dm/UserProfilePopup";
 import { useDmEvents } from "../features/dm/useDmEvents";
 import { useCallEvents } from "../features/call/useCallEvents";
 import IncomingCallModal from "../features/call/IncomingCallModal";
+import { useE2eeEvents } from "../features/e2ee/useE2eeEvents";
+import PassphraseModal from "../features/e2ee/PassphraseModal";
 import { useDragDrop } from "../features/chat/useDragDrop";
 import { usePasteToAttach } from "../features/chat/usePasteToAttach";
 import { useCentralConnectionStatus } from "../hooks/useCentralConnectionStatus";
@@ -72,6 +74,9 @@ export default function MainLayout() {
   useDmEvents();
   // P2P DM calls: central call-config + CALL_SIGNAL relay listener.
   useCallEvents();
+  // E2EE DMs: status pushes from native (drives the unlock prompt and
+  // the post-unlock history reload) + peer key-change notices.
+  useE2eeEvents();
   // Cross-cutting concerns: the central-server reconnecting banner
   // and the OS window title.
   useCentralConnectionStatus();
@@ -165,6 +170,7 @@ export default function MainLayout() {
       <InviteModal />
       <DeepLinkJoinModal />
       <IncomingCallModal />
+      <PassphraseModal />
       <PersistentAudioLayer />
       <PersistentVideoLayer />
     </div>
