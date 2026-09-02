@@ -114,6 +114,9 @@ public:
         // Empty sender with reply_to>0 = parent was deleted.
         std::string reply_to_sender;
         std::string reply_to_content;
+        // E2EE envelopes (opaque bytes); empty for plaintext rows.
+        std::string envelope;
+        std::string reply_to_envelope;
     };
     struct DmConversationPreviewRow {
         std::string peer;
@@ -122,16 +125,26 @@ public:
         int64_t last_message_id;
         int64_t last_timestamp;
         int64_t unread_count;
+        std::string last_message_envelope;
+    };
+    /// One DM's author + body, for the reply-parent preview.
+    struct DmPreviewRow {
+        std::string sender;
+        std::string content;
+        std::string envelope;
     };
 
     /// Insert a new DM, return its autoincrement id. Returns 0 on
     /// DB failure (caller surfaces a "could not deliver" error to
     /// the sender).
+    /// `envelope` non-empty = an E2EE row: stored opaquely next to the
+    /// placeholder `content`.
     int64_t insertDm(const std::string& sender,
                      const std::string& recipient,
                      const std::string& content,
                      int64_t sent_at,
-                     int64_t reply_to = 0);
+                     int64_t reply_to = 0,
+                     const std::string& envelope = std::string());
 
     /// Fetch a page of messages between user_a and user_b, ordered
     /// newest first. before_id = 0 means "latest". limit is clamped
@@ -170,7 +183,7 @@ public:
     /// conversation — a forged reply_to must not leak another
     /// conversation's content. nullopt = not found / not this pair.
     /// Used to validate + embed the reply parent preview on send.
-    std::optional<std::pair<std::string, std::string>> fetchDmPreview(
+    std::optional<DmPreviewRow> fetchDmPreview(
         const std::string& user_a, const std::string& user_b, int64_t message_id);
 
     /// One row per conversation the user is part of, with the most
@@ -200,7 +213,39 @@ public:
                        const std::string& peer,
                        int64_t message_id,
                        const std::string& content,
-                       int64_t edited_at);
+                       int64_t edited_at,
+                       const std::string& envelope = std::string());
+
+    // --- End-to-end encrypted DMs ---
+    // (see docs/superpowers/specs/2026-09-03-e2ee-dms-design.md)
+    struct E2eeKeyRow {
+        uint32_t key_id;
+        std::string dh_pub;
+        std::string sign_pub;
+        std::string signature;
+        int64_t created_at;
+    };
+
+    /// Store a new identity bundle for `username`, assigning
+    /// key_id = MAX(key_id) + 1 for that user. Returns the assigned id,
+    /// 0 on DB failure. Sizes are validated by the caller.
+    uint32_t publishE2eeKeys(const std::string& username,
+                             const std::string& dh_pub,
+                             const std::string& sign_pub,
+                             const std::string& signature,
+                             int64_t created_at);
+
+    /// A user's bundle: key_id 0 = the current (highest) one. nullopt when
+    /// the user has never published or the id is unknown.
+    std::optional<E2eeKeyRow> getE2eeKeys(const std::string& username, uint32_t key_id);
+
+    /// Replace the user's passphrase-wrapped private-key backup. Returns
+    /// false on DB failure.
+    bool setE2eeBackup(const std::string& username, uint32_t key_id,
+                       const std::string& blob, int64_t updated_at);
+
+    /// (key_id, blob) of the user's backup; nullopt when none.
+    std::optional<std::pair<uint32_t, std::string>> getE2eeBackup(const std::string& username);
 
     // --- Auto-rejoin community memberships ---
     // (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)

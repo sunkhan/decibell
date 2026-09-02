@@ -67,6 +67,18 @@ public:
         broadcast(packet);
     }
 
+    /// Push E2EE_KEYS_CHANGED to every session (same fan-out as
+    /// AVATAR_CHANGED): clients drop their cached "current" bundle for
+    /// that user and re-fetch on the next send.
+    void broadcast_e2ee_keys_changed(const std::string& username, uint32_t key_id) {
+        chatproj::Packet packet;
+        packet.set_type(chatproj::Packet::E2EE_KEYS_CHANGED);
+        auto* payload = packet.mutable_e2ee_keys_changed();
+        payload->set_username(username);
+        payload->set_key_id(key_id);
+        broadcast(packet);
+    }
+
     void kick_user(const std::string& username);
 
     void sweep_stale(std::chrono::seconds timeout);

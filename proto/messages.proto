@@ -228,6 +228,17 @@ message Packet {
     // and answers PEER_OFFLINE / NOT_ALLOWED itself. See
     // docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md.
     CALL_SIGNAL = 128;              // client→central→client
+    // End-to-end encrypted DMs: identity-key publication / lookup and the
+    // passphrase-wrapped private-key backup. Central stores and relays
+    // public keys and opaque blobs; it never sees a private key or a
+    // plaintext. See docs/superpowers/specs/2026-09-03-e2ee-dms-design.md.
+    E2EE_PUBLISH_KEYS_REQ = 129;    // client→central (JWT): own bundle and/or backup
+    E2EE_PUBLISH_KEYS_RES = 130;    // central→client
+    E2EE_FETCH_KEYS_REQ   = 131;    // client→central: a user's bundle (current or by key_id)
+    E2EE_FETCH_KEYS_RES   = 132;    // central→client
+    E2EE_FETCH_BACKUP_REQ = 133;    // client→central: the caller's own backup blob
+    E2EE_FETCH_BACKUP_RES = 134;    // central→client
+    E2EE_KEYS_CHANGED     = 135;    // central→every session: a user published a new bundle
   }
 
   Type type = 1;
@@ -399,6 +410,13 @@ message Packet {
     ChannelMessageEdited     channel_message_edited = 128;
     ChannelMessageRejected   channel_msg_rejected   = 129;
     CallSignal               call_signal            = 130;
+    E2eePublishKeysReq       e2ee_publish_keys_req  = 131;
+    E2eePublishKeysRes       e2ee_publish_keys_res  = 132;
+    E2eeFetchKeysReq         e2ee_fetch_keys_req    = 133;
+    E2eeFetchKeysRes         e2ee_fetch_keys_res    = 134;
+    E2eeFetchBackupReq       e2ee_fetch_backup_req  = 135;
+    E2eeFetchBackupRes       e2ee_fetch_backup_res  = 136;
+    E2eeKeysChanged          e2ee_keys_changed      = 137;
   }
 }
 
@@ -439,6 +457,10 @@ message LoginResponse {
   // True when this central relays CALL_SIGNAL. Gates the Call button so
   // a client on an older central never rings into the void.
   bool call_signaling = 6;
+  // True when this central serves the E2EE_* key endpoints. False (absent)
+  // on an older central → the client sends plaintext DMs and hides the
+  // encryption setup entirely.
+  bool e2ee_keys = 7;
 }
 
 message DirectMessage {
@@ -462,6 +484,14 @@ message DirectMessage {
   // the packet it received into its echo) so the sender reconciles
   // its optimistic bubble; also set on central's error replies.
   string nonce = 10;
+  // End-to-end encryption. When non-empty, `content` is only a fixed
+  // placeholder for pre-E2EE clients and the real text is inside this
+  // envelope (format: spec 2026-09-03 §Message envelope). Central stores
+  // and relays it opaquely.
+  bytes envelope = 11;
+  // The reply parent's envelope, embedded by central like
+  // reply_to_content — empty when the parent is a plaintext row.
+  bytes reply_to_envelope = 12;
 }
 
 message UserPresence {
@@ -1573,6 +1603,8 @@ message DmConversationPreview {
   int64  last_message_id = 4;
   int64  last_timestamp = 5;
   int64  unread_count = 6;
+  // E2EE — the last message's envelope when it was sent encrypted.
+  bytes  last_message_envelope = 7;
 }
 message DmConversationsRes {
   repeated DmConversationPreview conversations = 1;
@@ -1596,6 +1628,9 @@ message DmHistoryMessage {
   // Empty sender with reply_to>0 = parent was deleted.
   string reply_to_sender = 7;
   string reply_to_content = 8;
+  // E2EE — see DirectMessage.envelope / reply_to_envelope.
+  bytes  envelope = 9;
+  bytes  reply_to_envelope = 10;
 }
 message DmHistoryRes {
   string peer = 1;
@@ -1661,6 +1696,7 @@ message DmEditReq {
   string peer = 1;
   int64  message_id = 2;
   string content = 3;   // new body; central enforces sender == editor
+  bytes  envelope = 4;  // E2EE: the new body sealed; content is then the placeholder
 }
 
 message DmEditRes {
@@ -1676,6 +1712,8 @@ message DmMessageEdited {
   int64  message_id = 2;
   string content = 3;
   int64  edited_at = 4;
+  bytes  envelope = 5;  // E2EE — see DirectMessage.envelope
+  string sender = 6;    // the message's author (= the editor), central-stamped; '' from older centrals
 }
 
 message MessageDeleteReq {
@@ -1813,4 +1851,61 @@ message CallSignal {
   repeated CallCandidate candidates = 6;  // ≤16 (INVITE/ACCEPT)
   CallStreamMeta stream = 7;              // STREAM_START only
   int64 timestamp = 8;                    // central-stamped
+}
+
+// --- End-to-end encrypted DMs ---
+// See docs/superpowers/specs/2026-09-03-e2ee-dms-design.md. Central is a
+// dumb store for these: it assigns key_id, checks sizes, and never
+// interprets dh_pub / sign_pub / signature / backup beyond that.
+
+// A user's published identity. `signature` is Ed25519(sign_priv,
+// "decibell-e2ee-bundle-v1" ‖ username ‖ dh_pub ‖ sign_pub) — the client
+// verifies it on fetch so central can't serve a mix-and-match bundle.
+message E2eeKeyBundle {
+  string username = 1;
+  uint32 key_id = 2;       // central-assigned, monotonic per user (0 in a publish request)
+  bytes  dh_pub = 3;       // 32-byte X25519 public key
+  bytes  sign_pub = 4;     // 32-byte Ed25519 public key
+  bytes  signature = 5;    // 64 bytes
+  int64  created_at = 6;   // central-stamped unix seconds
+}
+
+// Publish a new bundle and/or replace the passphrase-wrapped private-key
+// backup. Either part may be absent (change-passphrase re-uploads only
+// the backup); at least one must be present.
+message E2eePublishKeysReq {
+  E2eeKeyBundle bundle = 1;
+  bytes backup = 2;        // opaque, ≤ 8 KiB
+}
+message E2eePublishKeysRes {
+  bool   success = 1;
+  string message = 2;
+  uint32 key_id = 3;       // the id assigned to the published bundle (or the current one)
+}
+
+message E2eeFetchKeysReq {
+  string username = 1;
+  uint32 key_id = 2;       // 0 = the user's current bundle
+}
+message E2eeFetchKeysRes {
+  string username = 1;
+  uint32 key_id = 2;       // echoes the request so the client routes the reply
+  bool   found = 3;
+  E2eeKeyBundle bundle = 4;
+}
+
+// The caller's own backup blob (never anyone else's).
+message E2eeFetchBackupReq {}
+message E2eeFetchBackupRes {
+  bool   found = 1;
+  uint32 key_id = 2;       // the current key_id the blob was uploaded with
+  bytes  backup = 3;
+}
+
+// Broadcast to every session when a user publishes a new bundle, like
+// AVATAR_CHANGED. Clients drop their cached "current" bundle for that
+// user and re-fetch on the next send.
+message E2eeKeysChanged {
+  string username = 1;
+  uint32 key_id = 2;
 }

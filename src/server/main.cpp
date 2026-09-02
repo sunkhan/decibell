@@ -34,6 +34,15 @@ using boost::asio::ip::tcp;
 /// means "use the client's built-in default list".
 static std::vector<std::string> g_stun_servers;
 
+/// E2EE DM envelope cap: the edit-body cap (64 KiB) plus the sealed
+/// header + tag. A client never produces more; anything bigger is junk.
+constexpr size_t MAX_DM_ENVELOPE = 64 * 1024 + 64;
+/// Identity-bundle field sizes (X25519 / Ed25519 public keys, Ed25519
+/// signature) and the passphrase-wrapped backup blob cap.
+constexpr size_t E2EE_PUB_LEN = 32;
+constexpr size_t E2EE_SIG_LEN = 64;
+constexpr size_t MAX_E2EE_BACKUP = 8 * 1024;
+
 /// Minimal per-session token bucket for CALL_SIGNAL. Central has no other
 /// rate limiting and runs a single io thread with synchronous Postgres, so
 /// an unthrottled signal storm from one client would stall every user.
@@ -297,6 +306,14 @@ private:
                 return;
             }
 
+            // E2EE: the sealed body rides `envelope`; central only caps
+            // its size and stores/relays it opaquely. reply_to_envelope
+            // is server-populated below — never trust a client's.
+            if (dmsg->envelope().size() > MAX_DM_ENVELOPE) {
+                return;
+            }
+            dmsg->clear_reply_to_envelope();
+
             if (!manager_.check_dm_allowed(username_, dmsg->recipient(), auth_manager_)) {
                 chatproj::Packet error_packet;
                 error_packet.set_type(chatproj::Packet::DIRECT_MSG);
@@ -325,8 +342,11 @@ private:
                 if (!parent) {
                     dmsg->set_reply_to(0);
                 } else {
-                    dmsg->set_reply_to_sender(parent->first);
-                    dmsg->set_reply_to_content(parent->second);
+                    dmsg->set_reply_to_sender(parent->sender);
+                    dmsg->set_reply_to_content(parent->content);
+                    if (!parent->envelope.empty()) {
+                        dmsg->set_reply_to_envelope(parent->envelope);
+                    }
                 }
             }
 
@@ -334,7 +354,8 @@ private:
             // sender as a generic "couldn't deliver" — the message
             // is genuinely lost in that branch (rare).
             int64_t new_id = auth_manager_.insertDm(
-                username_, dmsg->recipient(), dmsg->content(), current_time, dmsg->reply_to());
+                username_, dmsg->recipient(), dmsg->content(), current_time, dmsg->reply_to(),
+                dmsg->envelope());
             if (new_id == 0) {
                 chatproj::Packet error_packet;
                 error_packet.set_type(chatproj::Packet::DIRECT_MSG);
@@ -426,6 +447,9 @@ private:
                 preview->set_last_message_id(c.last_message_id);
                 preview->set_last_timestamp(c.last_timestamp);
                 preview->set_unread_count(c.unread_count);
+                if (!c.last_message_envelope.empty()) {
+                    preview->set_last_message_envelope(c.last_message_envelope);
+                }
             }
 
             std::string s;
@@ -485,6 +509,8 @@ private:
                 msg->set_reply_to(r.reply_to);
                 msg->set_reply_to_sender(r.reply_to_sender);
                 msg->set_reply_to_content(r.reply_to_content);
+                if (!r.envelope.empty()) msg->set_envelope(r.envelope);
+                if (!r.reply_to_envelope.empty()) msg->set_reply_to_envelope(r.reply_to_envelope);
             }
 
             std::string s;
@@ -594,12 +620,17 @@ private:
                 return;
             }
             const std::string& content = req.content();
-            if (content.empty()) { build_res(false, "Message can't be empty."); return; }
+            const std::string& envelope = req.envelope();
+            // An encrypted edit carries the placeholder in `content` and
+            // the real body sealed in `envelope`; a plaintext edit has
+            // no envelope. Either way something must be there.
+            if (content.empty() && envelope.empty()) { build_res(false, "Message can't be empty."); return; }
             if (content.size() > 64 * 1024) { build_res(false, "Message too long."); return; }
+            if (envelope.size() > MAX_DM_ENVELOPE) { build_res(false, "Message too long."); return; }
 
             const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
             bool ok = auth_manager_.editDmMessage(
-                username_, req.peer(), req.message_id(), content, now_ts);
+                username_, req.peer(), req.message_id(), content, now_ts, envelope);
             build_res(ok, ok ? "" : "Message not found or not editable.");
             if (!ok) return;
 
@@ -612,6 +643,8 @@ private:
             sb->set_message_id(req.message_id());
             sb->set_content(content);
             sb->set_edited_at(now_ts);
+            sb->set_sender(username_);
+            if (!envelope.empty()) sb->set_envelope(envelope);
             std::string sender_ser;
             sender_bcast.SerializeToString(&sender_ser);
             deliver(std::make_shared<std::vector<uint8_t>>(
@@ -624,7 +657,120 @@ private:
             rb->set_message_id(req.message_id());
             rb->set_content(content);
             rb->set_edited_at(now_ts);
+            rb->set_sender(username_);
+            if (!envelope.empty()) rb->set_envelope(envelope);
             manager_.send_private(recv_bcast, req.peer());
+        }
+
+        // --- E2EE: PUBLISH KEYS ---
+        // Store the caller's identity bundle (central assigns key_id)
+        // and/or replace their passphrase-wrapped backup. Central never
+        // interprets the bytes beyond size checks. A new bundle is
+        // announced to every session like an avatar change.
+        else if (packet.type() == chatproj::Packet::E2EE_PUBLISH_KEYS_REQ) {
+            if (!authenticated_) return;
+            if (!key_bucket_.take()) return;
+            const auto& req = packet.e2ee_publish_keys_req();
+
+            auto reply = [&](bool success, const std::string& msg, uint32_t key_id) {
+                chatproj::Packet rsp;
+                rsp.set_type(chatproj::Packet::E2EE_PUBLISH_KEYS_RES);
+                auto* res = rsp.mutable_e2ee_publish_keys_res();
+                res->set_success(success);
+                res->set_message(msg);
+                res->set_key_id(key_id);
+                std::string serialized;
+                rsp.SerializeToString(&serialized);
+                deliver(std::make_shared<std::vector<uint8_t>>(
+                    chatproj::create_framed_packet(serialized)));
+            };
+
+            const bool has_bundle = req.has_bundle();
+            const std::string& backup = req.backup();
+            if (!has_bundle && backup.empty()) { reply(false, "Nothing to publish.", 0); return; }
+            if (backup.size() > MAX_E2EE_BACKUP) { reply(false, "Backup too large.", 0); return; }
+
+            const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
+            uint32_t key_id = 0;
+            if (has_bundle) {
+                const auto& b = req.bundle();
+                if (b.dh_pub().size() != E2EE_PUB_LEN || b.sign_pub().size() != E2EE_PUB_LEN ||
+                    b.signature().size() != E2EE_SIG_LEN) {
+                    reply(false, "Malformed key bundle.", 0);
+                    return;
+                }
+                key_id = auth_manager_.publishE2eeKeys(
+                    username_, b.dh_pub(), b.sign_pub(), b.signature(), now_ts);
+                if (key_id == 0) { reply(false, "Storage error.", 0); return; }
+            } else {
+                // Backup-only update (passphrase change): it belongs to
+                // the current bundle.
+                auto cur = auth_manager_.getE2eeKeys(username_, 0);
+                if (!cur) { reply(false, "No published keys to back up.", 0); return; }
+                key_id = cur->key_id;
+            }
+            if (!backup.empty() &&
+                !auth_manager_.setE2eeBackup(username_, key_id, backup, now_ts)) {
+                reply(false, "Storage error.", key_id);
+                return;
+            }
+            reply(true, "", key_id);
+            if (has_bundle) {
+                manager_.broadcast_e2ee_keys_changed(username_, key_id);
+            }
+        }
+
+        // --- E2EE: FETCH KEYS ---
+        // Any authenticated user may read anyone's public bundle (that is
+        // the point of a public key); key_id 0 = current. Bucketed: the
+        // lookup is a DB round-trip on the single io thread.
+        else if (packet.type() == chatproj::Packet::E2EE_FETCH_KEYS_REQ) {
+            if (!authenticated_) return;
+            if (!key_bucket_.take()) return;
+            const auto& req = packet.e2ee_fetch_keys_req();
+            if (req.username().empty() || req.username().size() > 64) return;
+
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::E2EE_FETCH_KEYS_RES);
+            auto* res = rsp.mutable_e2ee_fetch_keys_res();
+            res->set_username(req.username());
+            res->set_key_id(req.key_id());
+            auto row = auth_manager_.getE2eeKeys(req.username(), req.key_id());
+            res->set_found(row.has_value());
+            if (row) {
+                auto* b = res->mutable_bundle();
+                b->set_username(req.username());
+                b->set_key_id(row->key_id);
+                b->set_dh_pub(row->dh_pub);
+                b->set_sign_pub(row->sign_pub);
+                b->set_signature(row->signature);
+                b->set_created_at(row->created_at);
+            }
+            std::string serialized;
+            rsp.SerializeToString(&serialized);
+            deliver(std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(serialized)));
+        }
+
+        // --- E2EE: FETCH BACKUP ---
+        // Only ever the caller's own blob.
+        else if (packet.type() == chatproj::Packet::E2EE_FETCH_BACKUP_REQ) {
+            if (!authenticated_) return;
+            if (!key_bucket_.take()) return;
+
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::E2EE_FETCH_BACKUP_RES);
+            auto* res = rsp.mutable_e2ee_fetch_backup_res();
+            auto row = auth_manager_.getE2eeBackup(username_);
+            res->set_found(row.has_value());
+            if (row) {
+                res->set_key_id(row->first);
+                res->set_backup(row->second);
+            }
+            std::string serialized;
+            rsp.SerializeToString(&serialized);
+            deliver(std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(serialized)));
         }
 
         // --- SERVER LIST DIRECTORY ---
@@ -1059,6 +1205,8 @@ private:
                     resp->add_stun_servers(stun);
                 }
                 resp->set_call_signaling(true);
+                // E2EE DMs: this build serves the key endpoints.
+                resp->set_e2ee_keys(true);
             }
         }
 
@@ -1080,6 +1228,9 @@ private:
     std::string avatar_version_;
     bool dm_friends_only_ = false;
     CallSignalBucket call_bucket_;
+    /// Same shape for the E2EE key endpoints (publish / fetch / backup):
+    /// each is a synchronous DB round-trip on the io thread.
+    CallSignalBucket key_bucket_;
     AuthManager& auth_manager_;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
     std::chrono::steady_clock::time_point last_activity_;

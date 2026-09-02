@@ -113,12 +113,46 @@ void AuthManager::initializeDatabase() {
             "CREATE INDEX IF NOT EXISTS dm_messages_recipient_idx "
             "ON dm_messages (recipient, id DESC)"
         );
+        // E2EE (2026-09-03): the sealed body of an encrypted DM. NULL =
+        // a plaintext row (everything written before the feature, and
+        // messages between users who haven't set up encryption).
+        txn.exec(
+            "ALTER TABLE dm_messages "
+            "ADD COLUMN IF NOT EXISTS envelope BYTEA"
+        );
         txn.exec(
             "CREATE TABLE IF NOT EXISTS dm_read_state ("
             "  reader VARCHAR(32) NOT NULL,"
             "  peer VARCHAR(32) NOT NULL,"
             "  last_read_id BIGINT NOT NULL DEFAULT 0,"
             "  PRIMARY KEY (reader, peer)"
+            ")"
+        );
+
+        // --- End-to-end encrypted DMs (see docs/superpowers/specs/
+        //     2026-09-03-e2ee-dms-design.md) ---
+        // Every bundle a user ever published, by monotonic key_id: old
+        // envelopes name the key_id they were sealed under, so a peer
+        // must be able to look up historical public keys forever.
+        txn.exec(
+            "CREATE TABLE IF NOT EXISTS user_e2ee_keys ("
+            "  username VARCHAR(32) NOT NULL,"
+            "  key_id INTEGER NOT NULL,"
+            "  dh_pub BYTEA NOT NULL,"
+            "  sign_pub BYTEA NOT NULL,"
+            "  signature BYTEA NOT NULL,"
+            "  created_at BIGINT NOT NULL,"
+            "  PRIMARY KEY (username, key_id)"
+            ")"
+        );
+        // The passphrase-wrapped private keys (opaque to central). One
+        // blob per user, replaced on every publish / passphrase change.
+        txn.exec(
+            "CREATE TABLE IF NOT EXISTS user_e2ee_backup ("
+            "  username VARCHAR(32) PRIMARY KEY,"
+            "  key_id INTEGER NOT NULL,"
+            "  blob BYTEA NOT NULL,"
+            "  updated_at BIGINT NOT NULL"
             ")"
         );
 
@@ -724,18 +758,44 @@ std::string AuthManager::getAvatarVersion(const std::string& username) {
 
 // ─── Persistent DMs ──────────────────────────────────────────────────────
 
+/// A nullable BYTEA column as raw bytes ('' when NULL). Same
+/// binarystring cast as getAvatar — `data()` is `const unsigned char*`
+/// in pqxx 7+.
+static std::string byteaOrEmpty(const pqxx::field& f) {
+    if (f.is_null()) return std::string();
+    pqxx::binarystring blob(f);
+    return std::string(reinterpret_cast<const char*>(blob.data()), blob.size());
+}
+
+/// std::string → the BYTEA parameter type.
+static pqxx::binarystring toBytea(const std::string& bytes) {
+    return pqxx::binarystring(
+        reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size());
+}
+
 int64_t AuthManager::insertDm(const std::string& sender,
                                const std::string& recipient,
                                const std::string& content,
                                int64_t sent_at,
-                               int64_t reply_to) {
+                               int64_t reply_to,
+                               const std::string& envelope) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
-        pqxx::result rs = txn.exec_params(
-            "INSERT INTO dm_messages (sender, recipient, content, sent_at, reply_to) "
-            "VALUES ($1, $2, $3, $4, $5) RETURNING id",
-            sender, recipient, content, sent_at, reply_to < 0 ? 0 : reply_to);
+        // Two statements rather than a nullable parameter: an empty
+        // envelope must land as NULL (plaintext row), and passing a
+        // std::optional<binarystring> through exec_params isn't something
+        // we can verify against the deployed pqxx from here.
+        pqxx::result rs = envelope.empty()
+            ? txn.exec_params(
+                  "INSERT INTO dm_messages (sender, recipient, content, sent_at, reply_to) "
+                  "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                  sender, recipient, content, sent_at, reply_to < 0 ? 0 : reply_to)
+            : txn.exec_params(
+                  "INSERT INTO dm_messages (sender, recipient, content, sent_at, reply_to, envelope) "
+                  "VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                  sender, recipient, content, sent_at, reply_to < 0 ? 0 : reply_to,
+                  toBytea(envelope));
         txn.commit();
         if (rs.empty()) return 0;
         return rs[0][0].as<int64_t>();
@@ -760,7 +820,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
         // id < before_id. Either way the pair_idx covers the predicate.
         const char* sql =
             "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
-            "COALESCE(p.sender, ''), COALESCE(p.content, '') "
+            "COALESCE(p.sender, ''), COALESCE(p.content, ''), m.envelope, p.envelope "
             "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
             "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
             "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
@@ -782,6 +842,8 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
                 row[5].as<int64_t>(),
                 row[6].as<std::string>(),
                 row[7].as<std::string>(),
+                byteaOrEmpty(row[8]),
+                byteaOrEmpty(row[9]),
             };
             out.push_back(std::move(r));
         }
@@ -811,7 +873,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
         // Older side incl. target (id <= around), newest-first.
         const char* sql_older =
             "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
-            "COALESCE(p.sender, ''), COALESCE(p.content, '') "
+            "COALESCE(p.sender, ''), COALESCE(p.content, ''), m.envelope, p.envelope "
             "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
             "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
             "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
@@ -823,7 +885,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
         // Newer side (id > around), oldest-first.
         const char* sql_newer =
             "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
-            "COALESCE(p.sender, ''), COALESCE(p.content, '') "
+            "COALESCE(p.sender, ''), COALESCE(p.content, ''), m.envelope, p.envelope "
             "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
             "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
             "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
@@ -842,6 +904,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
                 row[2].as<std::string>(), row[3].as<int64_t>(),
                 row[4].as<int64_t>(), row[5].as<int64_t>(),
                 row[6].as<std::string>(), row[7].as<std::string>(),
+                byteaOrEmpty(row[8]), byteaOrEmpty(row[9]),
             });
         }
         if (static_cast<int32_t>(older_vec.size()) > clamped) {
@@ -859,6 +922,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
                 row[2].as<std::string>(), row[3].as<int64_t>(),
                 row[4].as<int64_t>(), row[5].as<int64_t>(),
                 row[6].as<std::string>(), row[7].as<std::string>(),
+                byteaOrEmpty(row[8]), byteaOrEmpty(row[9]),
             });
         }
         if (static_cast<int32_t>(newer_vec.size()) > clamped) {
@@ -885,7 +949,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
         const int32_t fetch_n = clamped + 1;
         const char* sql =
             "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
-            "COALESCE(p.sender, ''), COALESCE(p.content, '') "
+            "COALESCE(p.sender, ''), COALESCE(p.content, ''), m.envelope, p.envelope "
             "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
             "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
             "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
@@ -903,6 +967,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
                 row[2].as<std::string>(), row[3].as<int64_t>(),
                 row[4].as<int64_t>(), row[5].as<int64_t>(),
                 row[6].as<std::string>(), row[7].as<std::string>(),
+                byteaOrEmpty(row[8]), byteaOrEmpty(row[9]),
             });
         }
         if (static_cast<int32_t>(out.size()) > clamped) {
@@ -916,20 +981,24 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
     }
 }
 
-std::optional<std::pair<std::string, std::string>> AuthManager::fetchDmPreview(
+std::optional<AuthManager::DmPreviewRow> AuthManager::fetchDmPreview(
     const std::string& user_a, const std::string& user_b, int64_t message_id) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
-            "SELECT sender, content FROM dm_messages "
+            "SELECT sender, content, envelope FROM dm_messages "
             "WHERE id = $3 "
             "  AND LEAST(sender, recipient) = LEAST($1, $2) "
             "  AND GREATEST(sender, recipient) = GREATEST($1, $2)",
             user_a, user_b, message_id);
         txn.commit();
         if (rs.empty()) return std::nullopt;
-        return std::make_pair(rs[0][0].as<std::string>(), rs[0][1].as<std::string>());
+        DmPreviewRow out;
+        out.sender = rs[0][0].as<std::string>();
+        out.content = rs[0][1].as<std::string>();
+        out.envelope = byteaOrEmpty(rs[0][2]);
+        return out;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] fetchDmPreview: " << e.what() << "\n";
         return std::nullopt;
@@ -969,7 +1038,8 @@ AuthManager::fetchDmConversations(const std::string& user) {
             "        WHERE rs.reader = $1 AND rs.peer = "
             "          CASE WHEN m.sender = $1 THEN m.recipient ELSE m.sender END "
             "      ), 0) "
-            "  ), 0) AS unread "
+            "  ), 0) AS unread, "
+            "  m.envelope "
             "FROM latest l "
             "JOIN dm_messages m ON m.id = l.max_id "
             "ORDER BY m.id DESC";
@@ -985,6 +1055,7 @@ AuthManager::fetchDmConversations(const std::string& user) {
                 row[3].as<int64_t>(),           // last_message_id
                 row[4].as<int64_t>(),           // last_timestamp
                 row[5].as<int64_t>(),           // unread_count
+                byteaOrEmpty(row[6]),           // last_message_envelope
             };
             out.push_back(std::move(p));
         }
@@ -1040,20 +1111,124 @@ bool AuthManager::editDmMessage(const std::string& sender,
                                 const std::string& peer,
                                 int64_t message_id,
                                 const std::string& content,
-                                int64_t edited_at) {
+                                int64_t edited_at,
+                                const std::string& envelope) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         // WHERE enforces sender-only + correct pair + existence atomically.
-        pqxx::result rs = txn.exec_params(
-            "UPDATE dm_messages SET content = $4, edited_at = $5 "
-            "WHERE id = $1 AND sender = $2 AND recipient = $3",
-            message_id, sender, peer, content, edited_at);
+        // An edit always rewrites the envelope column: a plaintext edit of
+        // a formerly-encrypted row (or vice versa) must not leave a stale
+        // sealed body behind.
+        pqxx::result rs = envelope.empty()
+            ? txn.exec_params(
+                  "UPDATE dm_messages SET content = $4, edited_at = $5, envelope = NULL "
+                  "WHERE id = $1 AND sender = $2 AND recipient = $3",
+                  message_id, sender, peer, content, edited_at)
+            : txn.exec_params(
+                  "UPDATE dm_messages SET content = $4, edited_at = $5, envelope = $6 "
+                  "WHERE id = $1 AND sender = $2 AND recipient = $3",
+                  message_id, sender, peer, content, edited_at, toBytea(envelope));
         txn.commit();
         return rs.affected_rows() == 1;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] editDmMessage: " << e.what() << "\n";
         return false;
+    }
+}
+
+// ─── End-to-end encrypted DMs ────────────────────────────────────────────
+// (see docs/superpowers/specs/2026-09-03-e2ee-dms-design.md)
+
+uint32_t AuthManager::publishE2eeKeys(const std::string& username,
+                                      const std::string& dh_pub,
+                                      const std::string& sign_pub,
+                                      const std::string& signature,
+                                      int64_t created_at) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        // MAX+1 inside one transaction; central runs a single io thread
+        // so two publishes from the same user can't interleave anyway.
+        pqxx::result rs = txn.exec_params(
+            "INSERT INTO user_e2ee_keys (username, key_id, dh_pub, sign_pub, signature, created_at) "
+            "SELECT $1, COALESCE(MAX(key_id), 0) + 1, $2, $3, $4, $5 "
+            "FROM user_e2ee_keys WHERE username = $1 "
+            "RETURNING key_id",
+            username, toBytea(dh_pub), toBytea(sign_pub), toBytea(signature), created_at);
+        txn.commit();
+        if (rs.empty()) return 0;
+        return static_cast<uint32_t>(rs[0][0].as<int64_t>());
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] publishE2eeKeys: " << e.what() << "\n";
+        return 0;
+    }
+}
+
+std::optional<AuthManager::E2eeKeyRow> AuthManager::getE2eeKeys(
+    const std::string& username, uint32_t key_id) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = key_id == 0
+            ? txn.exec_params(
+                  "SELECT key_id, dh_pub, sign_pub, signature, created_at "
+                  "FROM user_e2ee_keys WHERE username = $1 "
+                  "ORDER BY key_id DESC LIMIT 1",
+                  username)
+            : txn.exec_params(
+                  "SELECT key_id, dh_pub, sign_pub, signature, created_at "
+                  "FROM user_e2ee_keys WHERE username = $1 AND key_id = $2",
+                  username, static_cast<int64_t>(key_id));
+        txn.commit();
+        if (rs.empty()) return std::nullopt;
+        E2eeKeyRow row;
+        row.key_id = static_cast<uint32_t>(rs[0][0].as<int64_t>());
+        row.dh_pub = byteaOrEmpty(rs[0][1]);
+        row.sign_pub = byteaOrEmpty(rs[0][2]);
+        row.signature = byteaOrEmpty(rs[0][3]);
+        row.created_at = rs[0][4].as<int64_t>();
+        return row;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getE2eeKeys: " << e.what() << "\n";
+        return std::nullopt;
+    }
+}
+
+bool AuthManager::setE2eeBackup(const std::string& username, uint32_t key_id,
+                                const std::string& blob, int64_t updated_at) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        txn.exec_params(
+            "INSERT INTO user_e2ee_backup (username, key_id, blob, updated_at) "
+            "VALUES ($1, $2, $3, $4) "
+            "ON CONFLICT (username) DO UPDATE "
+            "SET key_id = EXCLUDED.key_id, blob = EXCLUDED.blob, updated_at = EXCLUDED.updated_at",
+            username, static_cast<int64_t>(key_id), toBytea(blob), updated_at);
+        txn.commit();
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] setE2eeBackup: " << e.what() << "\n";
+        return false;
+    }
+}
+
+std::optional<std::pair<uint32_t, std::string>> AuthManager::getE2eeBackup(
+    const std::string& username) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "SELECT key_id, blob FROM user_e2ee_backup WHERE username = $1",
+            username);
+        txn.commit();
+        if (rs.empty()) return std::nullopt;
+        return std::make_pair(static_cast<uint32_t>(rs[0][0].as<int64_t>()),
+                              byteaOrEmpty(rs[0][1]));
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getE2eeBackup: " << e.what() << "\n";
+        return std::nullopt;
     }
 }
 
