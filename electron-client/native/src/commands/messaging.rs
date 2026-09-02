@@ -1,8 +1,13 @@
 //! Direct-message send command. The receive path goes via
-//! net/central.rs::route_packets → events::emit_message_received with
-//! `context: "dm"` — the renderer's useDmEvents hook listens for that
-//! and routes it into useDmStore.
+//! net/central.rs::route_packets → the E2EE DM worker →
+//! events::emit_message_received with `context: "dm"` — the renderer's
+//! useDmEvents hook listens for that and routes it into useDmStore.
+//!
+//! E2EE: when both sides have keys the body is sealed here (see
+//! e2ee/session.rs::seal_outbound) and `content` carries only a fixed
+//! placeholder for pre-E2EE clients; otherwise the text goes as before.
 
+use crate::e2ee::session::{self as e2ee, Outbound, PLACEHOLDER};
 use crate::net::connection::build_packet;
 use crate::net::proto::{packet, DirectMessage};
 use crate::state;
@@ -22,6 +27,16 @@ pub struct SendPrivateMessageArgs {
 pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<()> {
     use std::time::{SystemTime, UNIX_EPOCH};
     let state_arc = state::shared();
+
+    // Seal before taking the lock: resolving the peer's key can be a
+    // round-trip through central.
+    let (content, envelope) = match e2ee::seal_outbound(&state_arc, &args.recipient, &args.message)
+        .await
+        .map_err(napi::Error::from_reason)?
+    {
+        Outbound::Plain => (args.message, Vec::new()),
+        Outbound::Sealed(wire) => (PLACEHOLDER.to_string(), wire),
+    };
 
     let (write_tx, data) = {
         let s = state_arc.lock().await;
@@ -48,7 +63,7 @@ pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<
             packet::Payload::DirectMsg(DirectMessage {
                 sender,
                 recipient: args.recipient,
-                content: args.message,
+                content,
                 timestamp,
                 // Server stamps the persisted id on the routed packet
                 // after insertDm; outbound from client is always 0.
@@ -59,6 +74,8 @@ pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<
                 reply_to_sender: String::new(),
                 reply_to_content: String::new(),
                 nonce: args.nonce.unwrap_or_default(),
+                envelope,
+                reply_to_envelope: Vec::new(),
             }),
             token.as_deref(),
         );

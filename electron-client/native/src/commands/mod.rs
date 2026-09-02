@@ -10,6 +10,7 @@ pub mod call;
 pub mod channels;
 pub mod community;
 pub mod dm;
+pub mod e2ee;
 pub mod friends;
 pub mod messaging;
 pub mod servers;

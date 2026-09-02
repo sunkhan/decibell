@@ -40,6 +40,14 @@ arc-swap = "1"
 # candidates.
 ring = "0.17"
 if-addrs = "0.13"
+# E2EE DMs (see docs/superpowers/specs/2026-09-03-e2ee-dms-design.md):
+# static X25519 identities (ring only does ephemeral agreement), Ed25519
+# bundle signatures, Argon2id for the passphrase backup, zeroising
+# secrets. AES-GCM / HKDF / random come from aes-gcm and ring above.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = "2"
+argon2 = "0.5"
+zeroize = { version = "1", features = ["derive"] }
 
 # libc is used in cfg(unix) socket tuning code that runs on Linux *and*
 # macOS — must be available for both, not just Linux.

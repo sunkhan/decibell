@@ -187,7 +187,9 @@ fn config_path() -> PathBuf {
     crate::state::boot().user_data_dir.join("config.json")
 }
 
-fn derive_key() -> [u8; 32] {
+/// Also the fallback at-rest key for the E2EE key store (e2ee/keystore.rs)
+/// when Electron's safeStorage isn't available.
+pub(crate) fn derive_key() -> [u8; 32] {
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown-host".to_string());

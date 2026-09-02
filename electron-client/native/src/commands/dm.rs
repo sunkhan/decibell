@@ -13,6 +13,7 @@
 //! is event-emit (not oneshot waiter) since the renderer is the
 //! caller of last resort, not a pending future.
 
+use crate::e2ee::session::{self as e2ee, Outbound, PLACEHOLDER};
 use crate::net::connection::build_packet;
 use crate::net::proto::{packet, DmConversationsReq, DmDeleteReq, DmEditReq, DmHistoryReq, DmMarkReadReq};
 use crate::state;
@@ -178,6 +179,15 @@ pub struct EditDmMessageArgs {
 #[napi]
 pub async fn edit_dm_message(args: EditDmMessageArgs) -> napi::Result<()> {
     let state_arc = state::shared();
+    // E2EE: the new body is sealed exactly like a fresh send (same
+    // policy — encrypted when both sides have keys).
+    let (content, envelope) = match e2ee::seal_outbound(&state_arc, &args.peer, &args.content)
+        .await
+        .map_err(napi::Error::from_reason)?
+    {
+        Outbound::Plain => (args.content, Vec::new()),
+        Outbound::Sealed(wire) => (PLACEHOLDER.to_string(), wire),
+    };
     let (write_tx, data) = {
         let s = state_arc.lock().await;
         let central = s.central.as_ref().ok_or_else(|| {
@@ -192,7 +202,8 @@ pub async fn edit_dm_message(args: EditDmMessageArgs) -> napi::Result<()> {
             packet::Payload::DmEditReq(DmEditReq {
                 peer: args.peer,
                 message_id: args.message_id,
-                content: args.content,
+                content,
+                envelope,
             }),
             token.as_deref(),
         );

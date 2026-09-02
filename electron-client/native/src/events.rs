@@ -258,6 +258,8 @@ pub const CHANNEL_MESSAGE_DELETE_RESPONDED: &str = "channel_message_delete_respo
 pub const CHANNEL_MESSAGE_DELETED: &str = "channel_message_deleted";
 pub const DM_MESSAGE_EDIT_RESPONDED: &str = "dm_message_edit_responded";
 pub const DM_MESSAGE_EDITED: &str = "dm_message_edited";
+pub const E2EE_STATUS_CHANGED: &str = "e2ee_status_changed";
+pub const E2EE_PEER_CHANGED: &str = "e2ee_peer_changed";
 pub const CHANNEL_MESSAGE_EDIT_RESPONDED: &str = "channel_message_edit_responded";
 pub const CHANNEL_MESSAGE_EDITED: &str = "channel_message_edited";
 
@@ -454,6 +456,11 @@ pub struct MessageReceivedPayload {
     /// Attachment.Kind values of the parent's attachments (position order).
     /// Always empty for DMs (no attachments there).
     pub reply_to_attachment_kinds: Vec<i32>,
+    /// E2EE (DMs only): the body arrived sealed and `content` is the
+    /// opened text — or the placeholder when `decrypt_error` is set
+    /// ("locked" | "no_key" | "peer_key" | "bad"). Channel messages: false / "".
+    pub encrypted: bool,
+    pub decrypt_error: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1292,6 +1299,9 @@ pub struct DmConversationPreviewPayload {
     pub last_message_id: i64,
     pub last_timestamp: i64,
     pub unread_count: i64,
+    /// See MessageReceivedPayload.encrypted / decrypt_error.
+    pub encrypted: bool,
+    pub decrypt_error: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1313,6 +1323,9 @@ pub struct DmHistoryMessagePayload {
     /// reply_to>0 = parent was deleted.
     pub reply_to_sender: String,
     pub reply_to_content: String,
+    /// See MessageReceivedPayload.encrypted / decrypt_error.
+    pub encrypted: bool,
+    pub decrypt_error: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1410,6 +1423,43 @@ pub struct DmMessageEditedPayload {
     pub message_id: i64,
     pub content: String,
     pub edited_at: i64,
+    /// See MessageReceivedPayload.encrypted / decrypt_error.
+    pub encrypted: bool,
+    pub decrypt_error: String,
+}
+
+// ── E2EE DMs ─────────────────────────────────────────────────────
+// See docs/superpowers/specs/2026-09-03-e2ee-dms-design.md.
+
+/// `e2ee_status_changed`: after login bootstrap, setup, unlock, reset,
+/// a remote rotation of our own keys, and logout.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct E2eeStatusPayload {
+    pub supported: bool,
+    /// "unavailable" | "not_set_up" | "locked" | "ready"
+    pub status: String,
+    pub key_id: u32,
+    /// Our identity fingerprint when ready; "" otherwise.
+    pub fingerprint: String,
+}
+
+/// `e2ee_peer_changed`: a peer's pinned identity changed (they reset
+/// their keys). The renderer surfaces it in the conversation.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct E2eePeerChangedPayload {
+    pub username: String,
+    pub key_id: u32,
+    pub fingerprint: String,
+}
+
+pub fn emit_e2ee_status_changed(payload: E2eeStatusPayload) {
+    send(E2EE_STATUS_CHANGED, payload);
+}
+
+pub fn emit_e2ee_peer_changed(payload: E2eePeerChangedPayload) {
+    send(E2EE_PEER_CHANGED, payload);
 }
 
 #[derive(Debug, Clone, Serialize)]

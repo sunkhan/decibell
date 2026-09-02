@@ -50,6 +50,7 @@ mod tests {
             memberships: vec![],
             stun_servers: vec![],
             call_signaling: false,
+            e2ee_keys: false,
         };
         let bytes = resp.encode_to_vec();
         let decoded = LoginResponse::decode(&bytes[..]).unwrap();

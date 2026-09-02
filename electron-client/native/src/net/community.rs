@@ -524,6 +524,8 @@ impl CommunityClient {
                         reply_to_sender: msg.reply_to_sender,
                         reply_to_content: msg.reply_to_content,
                         reply_to_attachment_kinds: msg.reply_to_attachment_kinds,
+                        encrypted: false,
+                        decrypt_error: String::new(),
                     });
                 }
                 Some(packet::Payload::ChannelHistoryRes(resp)) => {

@@ -145,6 +145,8 @@ impl CentralClient {
                 reply_to_sender: String::new(),
                 reply_to_content: String::new(),
                 nonce: String::new(),
+                envelope: Vec::new(),
+                reply_to_envelope: Vec::new(),
             }),
             token,
         );
@@ -280,8 +282,14 @@ impl CentralClient {
                         // get_call_config read on that event is race-free.
                         s.stun_servers = resp.stun_servers.clone();
                         s.call_signaling = resp.call_signaling;
+                        // E2EE DMs: does this central serve the key
+                        // endpoints? The bootstrap below (store load /
+                        // backup lookup) runs off the router so the
+                        // E2EE_FETCH_BACKUP_RES it waits for can be routed.
+                        s.e2ee.supported = resp.e2ee_keys;
                         drop(s);
                         events::emit_login_succeeded(username);
+                        tokio::spawn(crate::e2ee::session::bootstrap(state.clone()));
 
                         // Auto-rejoin: ship memberships to the renderer
                         // for placeholder tile rendering, then auto-
@@ -350,29 +358,14 @@ impl CentralClient {
                         .collect();
                     events::emit_server_list_received(servers);
                 }
+                // DM packets go through the ordered E2EE worker (which
+                // opens envelopes, fetching peer keys as needed) and are
+                // emitted from there — see e2ee/session.rs. The router
+                // itself never awaits a key lookup: the reply would have
+                // to come through this very loop.
                 Some(packet::Payload::DirectMsg(msg)) => {
-                    events::emit_message_received(events::MessageReceivedPayload {
-                        context: "dm".to_string(),
-                        server_id: String::new(),
-                        sender: msg.sender,
-                        recipient: msg.recipient,
-                        content: msg.content,
-                        timestamp: msg.timestamp.to_string(),
-                        // DMs are now persisted server-side and the
-                        // routed packet carries the new id (stamped
-                        // by central after insertDm). 0 on legacy /
-                        // pre-persistence wire packets, used by the
-                        // renderer for the mark-read up_to_id cursor.
-                        id: msg.id,
-                        attachments: Vec::new(),
-                        nonce: msg.nonce,
-                        edited_at: msg.edited_at,
-                        reply_to: msg.reply_to,
-                        reply_to_sender: msg.reply_to_sender,
-                        reply_to_content: msg.reply_to_content,
-                        // DMs carry no attachments.
-                        reply_to_attachment_kinds: Vec::new(),
-                    });
+                    crate::e2ee::session::enqueue(&state, crate::e2ee::session::DmJob::Direct(msg))
+                        .await;
                 }
                 Some(packet::Payload::PresenceUpdate(update)) => {
                     let users: Vec<events::UserPresencePayload> = update
@@ -467,45 +460,15 @@ impl CentralClient {
                     );
                 }
                 Some(packet::Payload::DmConversationsRes(res)) => {
-                    let conversations = res
-                        .conversations
-                        .into_iter()
-                        .map(|c| events::DmConversationPreviewPayload {
-                            peer: c.peer,
-                            last_message_content: c.last_message_content,
-                            last_message_sender: c.last_message_sender,
-                            last_message_id: c.last_message_id,
-                            last_timestamp: c.last_timestamp,
-                            unread_count: c.unread_count,
-                        })
-                        .collect();
-                    events::emit_dm_conversations_received(
-                        events::DmConversationsReceivedPayload { conversations },
-                    );
+                    crate::e2ee::session::enqueue(
+                        &state,
+                        crate::e2ee::session::DmJob::Conversations(res),
+                    )
+                    .await;
                 }
                 Some(packet::Payload::DmHistoryRes(res)) => {
-                    let messages = res
-                        .messages
-                        .into_iter()
-                        .map(|m| events::DmHistoryMessagePayload {
-                            id: m.id,
-                            sender: m.sender,
-                            content: m.content,
-                            timestamp: m.timestamp,
-                            edited_at: m.edited_at,
-                            reply_to: m.reply_to,
-                            reply_to_sender: m.reply_to_sender,
-                            reply_to_content: m.reply_to_content,
-                        })
-                        .collect();
-                    events::emit_dm_history_received(events::DmHistoryReceivedPayload {
-                        peer: res.peer,
-                        messages,
-                        has_more: res.has_more,
-                        has_more_after: res.has_more_after,
-                        around_id: res.around_id,
-                        after_id: res.after_id,
-                    });
+                    crate::e2ee::session::enqueue(&state, crate::e2ee::session::DmJob::History(res))
+                        .await;
                 }
                 Some(packet::Payload::DmDeleteRes(resp)) => {
                     events::emit_dm_message_delete_responded(
@@ -535,12 +498,23 @@ impl CentralClient {
                     );
                 }
                 Some(packet::Payload::DmMessageEdited(b)) => {
-                    events::emit_dm_message_edited(events::DmMessageEditedPayload {
-                        peer: b.peer,
-                        message_id: b.message_id,
-                        content: b.content,
-                        edited_at: b.edited_at,
-                    });
+                    crate::e2ee::session::enqueue(&state, crate::e2ee::session::DmJob::Edited(b))
+                        .await;
+                }
+                // E2EE key traffic: resolve the waiters registered by
+                // e2ee/session.rs; a key-change broadcast drops the
+                // cached "current" bundle for that user.
+                Some(packet::Payload::E2eeFetchKeysRes(res)) => {
+                    crate::e2ee::session::on_fetch_keys_res(&state, res).await;
+                }
+                Some(packet::Payload::E2eePublishKeysRes(res)) => {
+                    crate::e2ee::session::on_publish_res(&state, res).await;
+                }
+                Some(packet::Payload::E2eeFetchBackupRes(res)) => {
+                    crate::e2ee::session::on_fetch_backup_res(&state, res).await;
+                }
+                Some(packet::Payload::E2eeKeysChanged(b)) => {
+                    crate::e2ee::session::on_keys_changed(&state, &b.username, b.key_id).await;
                 }
                 Some(packet::Payload::FetchServerPictureRes(resp)) => {
                     events::emit_server_picture_received(

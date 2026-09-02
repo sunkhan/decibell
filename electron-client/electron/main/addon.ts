@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as os from "os";
 import { app, BrowserWindow } from "electron";
+import { loadOrCreateE2eeLocalKey } from "./e2eeLocalKey";
 
 type EventEnvelope = { name: string; payload: unknown };
 type StreamFrame = {
@@ -19,6 +20,9 @@ type InitOptions = {
   userDataDir: string;
   cacheDir: string;
   appVersion: string;
+  /// base64 32-byte at-rest key for the E2EE key store (safeStorage-
+  /// wrapped on disk); null when no keychain backend is available.
+  e2eeLocalKey: string | null;
 };
 type AddonInit = (
   opts: InitOptions,
@@ -146,6 +150,7 @@ export function initAddon(): void {
       userDataDir: app.getPath("userData"),
       cacheDir: path.join(app.getPath("userData"), "media-cache"),
       appVersion: app.getVersion(),
+      e2eeLocalKey: loadOrCreateE2eeLocalKey(),
     },
     (env) => {
       for (const w of BrowserWindow.getAllWindows()) {

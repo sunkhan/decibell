@@ -5,6 +5,7 @@ extern crate napi_derive;
 
 mod commands;
 mod config;
+mod e2ee;
 mod events;
 mod media;
 mod net;
@@ -46,6 +47,11 @@ pub struct InitOptions {
     pub user_data_dir: String,
     pub cache_dir: String,
     pub app_version: String,
+    /// base64 of a random 32-byte key that Electron main keeps wrapped by
+    /// `safeStorage` — the at-rest key for the E2EE key store. Absent when
+    /// safeStorage isn't available on this machine (config.rs derivation
+    /// is used instead).
+    pub e2ee_local_key: Option<String>,
 }
 
 /// Called once from Electron main after `app.whenReady()` and the
@@ -71,10 +77,22 @@ pub fn init(
     // a base64-encoded `data:image/jpeg;base64,…` string riding the
     // JSON bus. Renderer wraps the bytes in a blob: URL.
     events::install_stream_thumbnail_bus(stream_thumbnail_bus)?;
+    let e2ee_local_key = opts.e2ee_local_key.as_deref().and_then(|b64| {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+        if bytes.len() != 32 {
+            log::warn!("[e2ee] ignoring at-rest key of {} bytes", bytes.len());
+            return None;
+        }
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&bytes);
+        Some(k)
+    });
     state::set_boot(state::BootConfig {
         user_data_dir: opts.user_data_dir.into(),
         cache_dir: opts.cache_dir.into(),
         app_version: opts.app_version,
+        e2ee_local_key,
     });
 
     // env_logger so log::warn! / log::info! land in the Electron main

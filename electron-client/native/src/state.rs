@@ -20,7 +20,8 @@ use crate::media::{AudioStreamEngine, VideoEngine, VoiceEngine};
 use crate::net::central::CentralClient;
 use crate::net::community::CommunityClient;
 use crate::net::proto::{
-    FetchAvatarRes, FetchStreamThumbnailRes, InviteResolveResponse, UpdateAvatarRes,
+    E2eeFetchBackupRes, E2eeFetchKeysRes, E2eePublishKeysRes, FetchAvatarRes,
+    FetchStreamThumbnailRes, InviteResolveResponse, UpdateAvatarRes,
 };
 
 /// Plan C: server-pushed event when a watcher starts or stops watching the
@@ -57,6 +58,9 @@ pub struct BootConfig {
     pub user_data_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub app_version: String,
+    /// At-rest key for the E2EE key store (from Electron safeStorage);
+    /// None → config.rs derivation. See e2ee/keystore.rs.
+    pub e2ee_local_key: Option<[u8; 32]>,
 }
 
 pub struct AppState {
@@ -148,6 +152,21 @@ pub struct AppState {
     /// username — a previous in-flight fetch for the same user gets
     /// its sender replaced; the earlier .await times out, harmless.
     pub pending_thumbnail_fetches: HashMap<String, oneshot::Sender<FetchStreamThumbnailRes>>,
+    /// E2EE DMs: status, own keys, peer pins, session caches. Reset on
+    /// logout; bootstrapped after every LoginRes.
+    pub e2ee: crate::e2ee::session::E2ee,
+    /// In-flight E2EE_FETCH_KEYS_REQ waiters keyed by (username, key_id as
+    /// requested — 0 = current). Several callers may want the same bundle.
+    pub pending_key_fetches:
+        HashMap<(String, u32), Vec<oneshot::Sender<E2eeFetchKeysRes>>>,
+    /// In-flight E2EE_PUBLISH_KEYS_REQ (setup / reset / passphrase change
+    /// serialise through the settings UI — one at a time).
+    pub pending_key_publish: Option<oneshot::Sender<E2eePublishKeysRes>>,
+    /// In-flight E2EE_FETCH_BACKUP_REQ.
+    pub pending_backup_fetch: Option<oneshot::Sender<E2eeFetchBackupRes>>,
+    /// The ordered DM crypto worker's queue (installed on first DM
+    /// packet; outlives reconnects). See e2ee/session.rs.
+    pub dm_crypto_tx: Option<tokio::sync::mpsc::Sender<crate::e2ee::session::DmJob>>,
 }
 
 impl Default for AppState {
@@ -181,6 +200,11 @@ impl Default for AppState {
             pending_avatar_update: None,
             pending_avatar_fetches: HashMap::new(),
             pending_thumbnail_fetches: HashMap::new(),
+            e2ee: Default::default(),
+            pending_key_fetches: HashMap::new(),
+            pending_key_publish: None,
+            pending_backup_fetch: None,
+            dm_crypto_tx: None,
         }
     }
 }

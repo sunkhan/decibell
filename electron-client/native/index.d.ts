@@ -479,6 +479,40 @@ export interface EditDmMessageArgs {
  * `dm_message_edited`. Central enforces own-message-only.
  */
 export declare function editDmMessage(args: EditDmMessageArgs): Promise<void>
+export interface E2EeStatus {
+  supported: boolean
+  /** "unavailable" | "not_set_up" | "locked" | "ready" */
+  status: string
+  keyId: number
+  fingerprint: string
+}
+export declare function e2eeGetStatus(): Promise<E2EeStatus>
+export interface PassphraseArgs {
+  passphrase: string
+}
+export declare function e2eeSetup(args: PassphraseArgs): Promise<void>
+export declare function e2eeUnlock(args: PassphraseArgs): Promise<void>
+export declare function e2eeChangePassphrase(args: PassphraseArgs): Promise<void>
+export declare function e2eeReset(args: PassphraseArgs): Promise<void>
+export interface PeerInfoArgs {
+  username: string
+}
+export interface E2EePeerInfo {
+  /** The peer has published keys (so messages to them are sealed). */
+  hasKeys: boolean
+  keyId: number
+  fingerprint: string
+  /**
+   * Both sides' identities hashed together — identical on both
+   * screens; "" unless we're ready and they have keys.
+   */
+  safetyNumber: string
+  /** Unix seconds of the last identity change we saw; 0 = never. */
+  changedAt: number
+  /** We've talked to this identity before (TOFU pin present). */
+  pinned: boolean
+}
+export declare function e2eePeerInfo(args: PeerInfoArgs): Promise<E2EePeerInfo>
 export declare function requestFriendList(): Promise<void>
 export interface SendFriendActionArgs {
   /**
@@ -1037,6 +1071,13 @@ export interface InitOptions {
   userDataDir: string
   cacheDir: string
   appVersion: string
+  /**
+   * base64 of a random 32-byte key that Electron main keeps wrapped by
+   * `safeStorage` — the at-rest key for the E2EE key store. Absent when
+   * safeStorage isn't available on this machine (config.rs derivation
+   * is used instead).
+   */
+  e2EeLocalKey?: string
 }
 /**
  * Called once from Electron main after `app.whenReady()` and the

@@ -161,6 +161,12 @@ pub async fn logout() -> napi::Result<()> {
         s.pending_avatar_fetches.clear();
         s.pending_thumbnail_fetches.clear();
         s.pending_avatar_update = None;
+        // E2EE: keys leave memory with the session; the on-disk store
+        // stays (it's per account) and reloads on the next login.
+        s.e2ee.reset();
+        s.pending_key_fetches.clear();
+        s.pending_key_publish = None;
+        s.pending_backup_fetch = None;
         (central, communities, voice, video, audio)
     };
 
@@ -183,6 +189,12 @@ pub async fn logout() -> napi::Result<()> {
     }
 
     events::emit_logged_out();
+    events::emit_e2ee_status_changed(events::E2eeStatusPayload {
+        supported: false,
+        status: "unavailable".to_string(),
+        key_id: 0,
+        fingerprint: String::new(),
+    });
 
     let _ = config::clear_credentials();
 
