@@ -20,7 +20,8 @@ import {
 import { useDmStore } from "../../stores/dmStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
-import { VideoCodec } from "../../types";
+import { StreamAudioMode, VideoCodec } from "../../types";
+import { normalizeAppId } from "../voice/streamAudioFilter";
 
 interface LoadedConfigShape {
   credentials: { username: string; password: string } | null;
@@ -53,6 +54,8 @@ interface LoadedConfigShape {
     stream_video_bitrate_kbps: number | null;
     stream_share_audio: boolean | null;
     stream_audio_bitrate_kbps: number | null;
+    stream_audio_mode?: string | null;
+    stream_audio_apps?: string[] | null;
     stream_enforced_codec: number | null;
     theme: string;
     text_size_px: number;
@@ -162,6 +165,8 @@ export async function loadSettings(): Promise<void> {
     videoBitrateKbps: number;
     shareAudio: boolean;
     audioBitrateKbps: (typeof validAudioBitrate)[number];
+    audioMode: StreamAudioMode;
+    audioApps: string[];
     enforcedCodec: VideoCodec;
   }> = {};
   if (
@@ -197,6 +202,24 @@ export async function loadSettings(): Promise<void> {
     (validAudioBitrate as readonly number[]).includes(settings.stream_audio_bitrate_kbps)
   ) {
     restored.audioBitrateKbps = settings.stream_audio_bitrate_kbps as (typeof validAudioBitrate)[number];
+  }
+  if (
+    settings.stream_audio_mode != null &&
+    (Object.values(StreamAudioMode) as string[]).includes(settings.stream_audio_mode)
+  ) {
+    restored.audioMode = settings.stream_audio_mode as StreamAudioMode;
+  }
+  if (Array.isArray(settings.stream_audio_apps)) {
+    // Normalise + dedupe the way native does, and cap so a corrupt blob
+    // can't balloon the picker.
+    restored.audioApps = Array.from(
+      new Set(
+        settings.stream_audio_apps
+          .filter((a): a is string => typeof a === "string")
+          .map(normalizeAppId)
+          .filter((a) => a.length > 0),
+      ),
+    ).slice(0, 256);
   }
   if (
     settings.stream_enforced_codec != null &&

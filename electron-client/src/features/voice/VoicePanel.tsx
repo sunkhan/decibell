@@ -9,6 +9,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import StreamViewPanel from "./StreamViewPanel";
 import StreamVideoPlayer from "./StreamVideoPlayer";
 import CaptureSourcePicker from "./CaptureSourcePicker";
+import { StreamAudioButton } from "./StreamAudioPopover";
 import { CodecBadge } from "./CodecBadge";
 import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
 import { canWatchStream } from "../../utils/canWatchStream";
@@ -495,6 +496,10 @@ export default function VoicePanel() {
             {isStreaming ? "Stop" : "Stream"}
           </button>
           )}
+          <StreamAudioButton
+            size={16}
+            className="flex items-center justify-center rounded-md border border-accent/20 bg-accent-soft px-[11px] py-[9px] text-accent transition-colors hover:bg-accent/[0.18] hover:text-accent-bright"
+          />
           <button
             onClick={handleDisconnect}
             className="flex items-center gap-[7px] rounded-md border border-error/20 bg-error/10 px-[18px] py-[9px] text-[13px] font-medium text-error transition-colors hover:bg-error/[0.18]"

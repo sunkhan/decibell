@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { VoiceParticipant, StreamInfo, ClientCapabilities, VideoCodec } from "../types";
+import { StreamAudioMode, type VoiceParticipant, type StreamInfo, type ClientCapabilities, type VideoCodec } from "../types";
 import { useVoiceStatsStore } from "./voiceStatsStore";
 
 /// Per-username view of all active streams across every connected
@@ -86,6 +86,10 @@ interface VoiceState {
     videoBitrateKbps: number;
     shareAudio: boolean;
     audioBitrateKbps: 128 | 192;
+    /// Share-audio app filter: how the ticked set is read, and the ticked
+    /// app identities (see features/voice/streamAudioFilter.ts).
+    audioMode: StreamAudioMode;
+    audioApps: string[];
     enforcedCodec: VideoCodec;
     includeCursor: boolean;
   };
@@ -207,6 +211,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     videoBitrateKbps: 10000,
     shareAudio: false,
     audioBitrateKbps: 128,
+    audioMode: StreamAudioMode.ALL,
+    audioApps: [],
     enforcedCodec: 0 as VideoCodec,
     includeCursor: true,
   },

@@ -11,6 +11,7 @@ import { playSound } from "../../utils/sounds";
 import DeviceContextMenu from "../voice/DeviceContextMenu";
 import ConnectionStatsPopover from "../voice/ConnectionStatsPopover";
 import CaptureSourcePicker from "../voice/CaptureSourcePicker";
+import { StreamAudioButton } from "../voice/StreamAudioPopover";
 import { announceCallStreamStop, endCall } from "../call/callActions";
 
 const EMPTY_CHANNELS: never[] = [];
@@ -228,6 +229,10 @@ export default function UserPanel() {
             </svg>
             {isStreaming ? "Stop" : "Stream"}
           </button>
+          <StreamAudioButton
+            size={13}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/[0.2] bg-accent/[0.08] text-accent transition-colors hover:bg-accent/[0.15] hover:text-accent-bright"
+          />
         </div>
       )}
 

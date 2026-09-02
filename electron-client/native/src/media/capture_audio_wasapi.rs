@@ -857,11 +857,9 @@ impl AudioActivationWaiter {
         }
 
         match guard.take().unwrap() {
-            Ok(unknown) => unsafe {
-                unknown
-                    .cast::<IAudioClient>()
-                    .map_err(|e| format!("Cast to IAudioClient: {}", e))
-            },
+            Ok(unknown) => unknown
+                .cast::<IAudioClient>()
+                .map_err(|e| format!("Cast to IAudioClient: {}", e)),
             Err(e) => Err(format!("Activation failed: {}", e)),
         }
     }

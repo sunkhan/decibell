@@ -241,6 +241,40 @@ export interface CaptureSource {
   kind: "screen" | "window";
 }
 
+/// Share-audio application filter mode. Wire spelling mirrors native
+/// `media::stream_audio_filter::StreamAudioMode` (also what the settings
+/// blob stores). One ticked set is shared by both list modes.
+export const StreamAudioMode = {
+  /// Whitelist: only ticked apps are streamed.
+  SELECTED: "selected",
+  /// Blacklist: everything except ticked apps.
+  ALL_EXCEPT: "all_except",
+  /// Everything (minus Decibell itself) — the pre-picker behaviour.
+  ALL: "all",
+} as const;
+export type StreamAudioMode = (typeof StreamAudioMode)[keyof typeof StreamAudioMode];
+
+/// One application with an audio output, from `list_stream_audio_apps`
+/// (PipeWire nodes on Linux, WASAPI sessions on Windows; Decibell itself
+/// is never listed).
+export interface StreamAudioApp {
+  /// Stable identity (lowercase program name) — what the filter stores.
+  id: string;
+  name: string;
+  /// Live process ids behind this row (informational).
+  pids: number[];
+  /// Currently rendering audio, as opposed to merely holding a session.
+  active: boolean;
+  /// Owns the window picked as the video source (Windows only).
+  ownsWindowSource: boolean;
+}
+
+export interface StreamAudioAppList {
+  /// False where per-app stream audio isn't available (macOS).
+  supported: boolean;
+  apps: StreamAudioApp[];
+}
+
 /// Returned by `get_caps` and `refresh_caps`. Encode = the FFmpeg-probed
 /// hardware encoder list; decode = whatever the renderer's WebCodecs
 /// probe shipped to native via `set_decoder_caps`.

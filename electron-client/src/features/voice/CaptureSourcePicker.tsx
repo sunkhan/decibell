@@ -8,6 +8,9 @@ import { playSound } from "../../utils/sounds";
 import { startActiveStream, stopActiveStream } from "./streaming/StreamCapture";
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { announceCallStreamStart, announceCallStreamStop } from "../call/callActions";
+import SegmentedControl from "../../components/SegmentedControl";
+import StreamAudioAppPicker from "./StreamAudioAppPicker";
+import { canPickStreamAudioApps } from "./streamAudioFilter";
 
 interface Props {
   /// Community voice channel to announce in. Both absent inside a P2P DM
@@ -23,35 +26,6 @@ interface Props {
 /// `useSystemPicker: true` to get the native ScreenCaptureKit dialog.
 const NEEDS_CUSTOM_PICKER =
   typeof window !== "undefined" && window.decibell?.platform === "win32";
-
-/** A segmented control — row of buttons where exactly one is selected. */
-function SegmentedControl<T extends string | number>({
-  options,
-  value,
-  onChange,
-}: {
-  options: { value: T; label: string }[];
-  value: T;
-  onChange: (v: T) => void;
-}) {
-  return (
-    <div className="flex rounded-md bg-bg-darkest p-[3px]">
-      {options.map((opt) => (
-        <button
-          key={String(opt.value)}
-          onClick={() => onChange(opt.value)}
-          className={`flex-1 rounded-sm px-3 py-[7px] text-[11px] font-semibold transition-all ${
-            value === opt.value
-              ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_10%,transparent)]"
-              : "text-text-muted hover:text-text-secondary"
-          }`}
-        >
-          {opt.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 export default function CaptureSourcePicker({
   serverId,
@@ -132,6 +106,8 @@ export default function CaptureSourcePicker({
         bitrateKbps: streamSettings.videoBitrateKbps,
         shareAudio: streamSettings.shareAudio,
         audioBitrateKbps: streamSettings.audioBitrateKbps,
+        audioMode: streamSettings.audioMode,
+        audioApps: streamSettings.audioApps,
         includeCursor: streamSettings.includeCursor,
         serverId,
         channelId,
@@ -175,6 +151,8 @@ export default function CaptureSourcePicker({
             videoBitrateKbps: streamSettings.videoBitrateKbps,
             shareAudio: streamSettings.shareAudio,
             audioBitrateKbps: streamSettings.audioBitrateKbps,
+            audioMode: streamSettings.audioMode,
+            audioApps: streamSettings.audioApps,
             initialCodec: codec,
             enforcedCodec: streamSettings.enforcedCodec || 0,
             // Explicit false: the renderer owns capture + encode on this
@@ -406,6 +384,17 @@ export default function CaptureSourcePicker({
               />
             </div>
           )}
+
+          {/* Per-app audio exists only on the native capture path; the
+              picker hides itself on macOS / the WebCodecs fallback. */}
+          {streamSettings.shareAudio && canPickStreamAudioApps() && (
+            <div>
+              <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                Audio from
+              </label>
+              <StreamAudioAppPicker sourceId={pickedSourceId ?? undefined} />
+            </div>
+          )}
         </div>
 
         <div className="flex items-center justify-between px-5 py-4">
@@ -429,12 +418,7 @@ export default function CaptureSourcePicker({
                   }`}
                 />
               </button>
-              {/* Linux shares whole-system audio (minus our own output) for
-                  both window and monitor captures — the portal can't isolate
-                  a single window's app audio — so the label is explicit. */}
-              {window.decibell.platform === "linux"
-                ? "Share system audio"
-                : "Share audio"}
+              Share audio
             </label>
             <label className="flex cursor-pointer items-center gap-3 text-[13px] text-text-secondary">
               <button

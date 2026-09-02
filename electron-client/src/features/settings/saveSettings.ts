@@ -66,6 +66,8 @@ function doSave(): void {
     stream_video_bitrate_kbps: streamSettings.videoBitrateKbps,
     stream_share_audio: streamSettings.shareAudio,
     stream_audio_bitrate_kbps: streamSettings.audioBitrateKbps,
+    stream_audio_mode: streamSettings.audioMode,
+    stream_audio_apps: streamSettings.audioApps,
     stream_enforced_codec: streamSettings.enforcedCodec,
     theme: ui.theme,
     text_size_px: ui.textSizePx,

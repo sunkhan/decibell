@@ -13,7 +13,7 @@
 // to CPU memory between frames).
 
 import { invoke } from "../../../lib/ipc";
-import { VideoCodec } from "../../../types";
+import { VideoCodec, type StreamAudioMode } from "../../../types";
 import { toast } from "../../../stores/toastStore";
 import { videoCodecHumanName } from "../../../utils/codecMap";
 import {
@@ -65,6 +65,11 @@ export interface StreamCaptureOptions {
   /// one that carries this — set both sites to the same value from
   /// the user's stream settings so there's no skew.
   audioBitrateKbps: number;
+  /// Share-audio app filter (mode + ticked app identities) so the native
+  /// capture starts with the right rule instead of correcting itself a
+  /// moment later. Omitted → native uses the filter it last stored.
+  audioMode?: StreamAudioMode;
+  audioApps?: string[];
   /// Embed the mouse cursor in the captured video (native paths honour
   /// it via the portal/WGC cursor option). Passed through to
   /// start_screen_share.
@@ -136,6 +141,11 @@ export class StreamCapture {
   private static readonly THUMBNAIL_INTERVAL_MS = 3000;
   private static readonly THUMBNAIL_MAX_EDGE = 320;
 
+  /// The capture source id this session was started with, if any.
+  get sourceId(): string | undefined {
+    return this.opts.sourceId;
+  }
+
   constructor(opts: StreamCaptureOptions) {
     this.opts = opts;
     this.codec = opts.codec === 0 ? VideoCodec.H264_HW : opts.codec;
@@ -173,6 +183,8 @@ export class StreamCapture {
           videoBitrateKbps: this.opts.bitrateKbps,
           shareAudio: this.opts.shareAudio,
           audioBitrateKbps: this.opts.audioBitrateKbps,
+          audioMode: this.opts.audioMode,
+          audioApps: this.opts.audioApps,
           initialCodec: this.codec,
           enforcedCodec: this.codec,
           // True = native owns capture + encode (Windows WGC/FFmpeg,
@@ -874,6 +886,13 @@ export async function stopActiveStream(): Promise<void> {
 
 export function activeStreamCapture(): StreamCapture | null {
   return active;
+}
+
+/// desktopCapturer id of the source the live stream is capturing (Windows
+/// custom picker only; undefined elsewhere). The live stream-audio popover
+/// passes it to `list_stream_audio_apps` so the window's app gets flagged.
+export function activeStreamSourceId(): string | undefined {
+  return active?.sourceId;
 }
 
 /// Codec-string fallback ladder for the HW pre-flight. Given the

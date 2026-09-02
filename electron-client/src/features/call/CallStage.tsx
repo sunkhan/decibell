@@ -15,6 +15,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import { playSound } from "../../utils/sounds";
 import { VideoCodec, type StreamInfo } from "../../types";
 import CaptureSourcePicker from "../voice/CaptureSourcePicker";
+import { StreamAudioButton } from "../voice/StreamAudioPopover";
 import { CodecBadge } from "../voice/CodecBadge";
 import StreamStatsOverlay from "../voice/StreamStatsOverlay";
 import { getStreamPipHost, placeStreamPip, recordFullViewRect } from "../voice/streamPipHost";
@@ -654,6 +655,12 @@ function StreamCard({ info, owner, own }: { info: StreamInfo; owner: string; own
             <div className="truncate font-meta text-[10.5px] text-text-muted">{qualityLabel(info)}</div>
           )}
         </div>
+        {own && (
+          <StreamAudioButton
+            size={14}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary"
+          />
+        )}
       </div>
     </div>
   );

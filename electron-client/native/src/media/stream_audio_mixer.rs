@@ -1,3 +1,7 @@
+//! (Consumed by the Windows process-loopback capture; cfg-free so the
+//! logic is unit-tested on every platform.)
+#![cfg_attr(not(target_os = "windows"), allow(dead_code))]
+
 //! Sums several independent stereo capture sources into one stream.
 //!
 //! The Windows share-audio path runs one WASAPI process-loopback client per
@@ -56,10 +60,6 @@ impl Mixer {
         Self { cfg, sources: BTreeMap::new(), frames_emitted: 0, trims: 0 }
     }
 
-    pub fn sample_rate(&self) -> u32 {
-        self.cfg.sample_rate
-    }
-
     /// Idempotent.
     pub fn add_source(&mut self, key: u32) {
         self.sources.entry(key).or_insert_with(|| SourceRing {
@@ -70,14 +70,6 @@ impl Mixer {
 
     pub fn remove_source(&mut self, key: u32) {
         self.sources.remove(&key);
-    }
-
-    pub fn has_source(&self, key: u32) -> bool {
-        self.sources.contains_key(&key)
-    }
-
-    pub fn source_keys(&self) -> impl Iterator<Item = u32> + '_ {
-        self.sources.keys().copied()
     }
 
     pub fn source_count(&self) -> usize {
@@ -277,9 +269,8 @@ mod tests {
         assert!(m.mix(10).is_none());
         m.push(1, &tone(30, 0.5));
         m.remove_source(1);
-        assert!(!m.has_source(1));
+        assert_eq!(m.source_count(), 0);
         assert!(m.mix(10).is_none());
-        assert_eq!(m.source_keys().count(), 0);
     }
 
     #[test]
