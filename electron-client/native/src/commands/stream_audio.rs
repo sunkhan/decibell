@@ -66,10 +66,34 @@ pub async fn list_stream_audio_apps(args: ListStreamAudioAppsArgs) -> napi::Resu
                 .collect(),
         });
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
     {
-        // Windows: WASAPI session enumeration lands with the process-loopback
-        // mixer. macOS has no native stream audio — unsupported.
+        // Session enumeration opens processes and talks COM on its own
+        // thread inside list_apps; keep the join off the tokio workers.
+        let source_id = args.source_id;
+        let rows = tokio::task::spawn_blocking(move || {
+            crate::media::capture_audio_wasapi::list_apps(source_id.as_deref())
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("app enumeration failed: {}", e)))?
+        .map_err(napi::Error::from_reason)?;
+        return Ok(StreamAudioAppList {
+            supported: true,
+            apps: rows
+                .into_iter()
+                .map(|r| StreamAudioAppValue {
+                    id: r.entry.id,
+                    name: r.entry.name,
+                    pids: r.entry.pids,
+                    active: r.entry.active,
+                    owns_window_source: r.owns_window_source,
+                })
+                .collect(),
+        });
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        // macOS has no native stream audio — unsupported.
         let _ = args;
         Ok(StreamAudioAppList { supported: false, apps: Vec::new() })
     }

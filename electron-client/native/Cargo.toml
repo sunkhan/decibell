@@ -102,6 +102,10 @@ windows = { version = "0.61", features = [
     # OVERLAPPED + LPWSAOVERLAPPED_COMPLETION_ROUTINE for WSAIoctl.
     "Win32_System_IO",
     "Win32_System_Threading",
+    # Toolhelp process snapshot — parent-PID map so the stream-audio
+    # mixer can dedupe an app's child processes against its tree root
+    # (one WASAPI process-loopback client already covers a whole tree).
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_Devices_FunctionDiscovery",
     # IPropertyStore — return type of IMMDevice::OpenPropertyStore.
     # Without this feature the method itself isn't exposed.
