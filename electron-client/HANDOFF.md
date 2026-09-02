@@ -408,6 +408,29 @@ letting the failure fall into a catch block.
 - Ring/ringback are `loopSound("call_ring")` with a returned `stop()`; both
   sides time out at 45 s (`RING_TIMEOUT_MS`).
 
+### 5.11 Stream-audio capture — platform traps
+
+- **One WASAPI process-loopback client = one process tree.** INCLUDE or
+  EXCLUDE exactly one PID's tree per `IAudioClient`; there is no multi-exclude.
+  That's why the Windows filter runs a *set* of clients through
+  `ProcessLoopbackMixer` and why a blacklist is a dynamic include-set
+  (`stream_audio_filter::plan_clients`). The virtual device has no
+  `GetMixFormat` — read the default render endpoint's format once and hand
+  the same block to every client.
+- **`IAudioSessionControl2::IsSystemSoundsSession()` returns S_FALSE for
+  "no".** Both S_OK and S_FALSE are success HRESULTs; compare `== S_OK`,
+  never `.is_ok()` (that would drop every session).
+- **PipeWire may put the PID on the Client, not the Node.** PipeWire-ALSA
+  clients (Decibell's own CPAL output, `alsa_playback.decibell`) carry
+  `pipewire.sec.pid` / `application.process.binary` only on the
+  `PipeWire:Interface:Client` object; the node's props have neither. Resolve
+  through `client.id` (`parse_app_nodes`) — treating a PID-less node as "not
+  us" tapped the voice chat into the stream for months.
+- **`pw-link -d` takes a link id** (or `output input`); link objects carry
+  `input-node-id`, so "our taps" = links whose input node is the capture sink.
+- Apps start playing between polls: both backends poll every 2 s and wake
+  immediately on `set_filter`; that ≤ 2 s gap is the accepted v1 latency.
+
 ## 6. How to test from a fresh checkout
 
 ```bash
@@ -550,11 +573,25 @@ Also open, lower priority:
   `start_screen_share` then `startActiveStream`.
 - `src/features/channels/UserPanel.tsx` — Stop sharing button. Calls
   `stopActiveStream` then `stop_screen_share`.
+- `src/features/voice/StreamAudioAppPicker.tsx` + `StreamAudioPopover.tsx` +
+  `streamAudioFilter.ts` + `src/stores/streamAudioAppsStore.ts` — the
+  multi-app audio picker (mode + ticked apps) in Go Live and, while live,
+  behind the speaker button next to Stop. `streamAudioFilter.ts` is the one
+  place that persists a change **and** pushes it to native.
 - `src/utils/encoderProbe.ts` — boot-time WebCodecs probe.
 - `native/src/commands/streaming.rs` — `start_screen_share`,
   `stop_screen_share`, `send_video_frame`, `set_encoder_caps`, etc.
 - `native/src/media/mod.rs::VideoEngine` — thin send-side wrapper around
-  the UDP socket.
+  the UDP socket. `AudioStreamEngine` (same file) owns the share-audio
+  pipeline plus a `StreamAudioCapture` handle (`set_filter` while live).
+- `native/src/media/stream_audio_filter.rs` — cfg-free app filter (mode +
+  identities) and the Windows client planning (`plan_clients`);
+  `stream_audio_mixer.rs` — cfg-free multi-source summer;
+  `capture_audio_pipewire.rs` (Linux tap) / `capture_audio_wasapi.rs`
+  (Windows `ProcessLoopbackMixer`) — the two backends;
+  `native/src/commands/stream_audio.rs` — `list_stream_audio_apps`,
+  `set_stream_audio_filter`. Design:
+  `docs/superpowers/specs/2026-09-02-multi-app-audio-picker-design.md`.
 - `native/src/media/video_pipeline.rs::VideoSender` — packetise + UDP.
 - `native/src/media/video_packet.rs` — `WIRE_DESCRIPTION_MAGIC`
   constant, packet framing.

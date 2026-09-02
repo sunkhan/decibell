@@ -2,6 +2,7 @@
 
 **Date:** 2026-03-29
 **Status:** Approved
+**Superseded:** 2026-09-02 by `2026-09-02-multi-app-audio-picker-design.md` — the per-app picker now owns the window/screen audio rule on both platforms (Linux is per-app too, via the PipeWire tap).
 
 ## Overview
 

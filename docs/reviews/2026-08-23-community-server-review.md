@@ -856,6 +856,29 @@ telemetry (content / mouse-only / timeouts / sends / drops / max send µs) so th
 carries numbers. Verified: Windows Native Check green on `f0bd1f5` (0 errors, no new
 warnings), `cargo test --lib` 104/104, all D3D11/Fxc signatures checked against the crate.
 
+**Multi-app audio picker for streams (2026-09-02) ✅ — needs Linux + Win10 live tests** —
+"Share audio" was one boolean: Windows scoped stream audio to the picked window's process (or
+everything-minus-self for a screen), Linux always everything-minus-self. Now the Go Live dialog
+(and a speaker button next to Stop while live — UserPanel, VoicePanel, the own-stream card in a
+DM call) lists the applications with an audio output under a **Selected apps / All except / All
+apps** rule; one ticked set, persisted by program name (`stream_audio_mode` /
+`stream_audio_apps`), applied to the running capture at once via `set_stream_audio_filter`. The
+picker owns the rule for window and screen sources alike (the picked window's app is flagged
+"this window"); default is All apps. Native: cfg-free `media/stream_audio_filter.rs` (mode +
+identities, `plan_clients` for WASAPI's one-client-one-tree constraint — a blacklist becomes a
+dynamic include-set and a blacklisted child suppresses its allowed parent rather than leak),
+`AudioStreamEngine` owns a `StreamAudioCapture` handle with `set_filter`. Linux: the PipeWire tap
+is filter-aware (link allowed nodes, `pw-link -d` the rest, 2 s poll + wake on change) and
+**fixes a real leak**: Decibell's own PipeWire-ALSA node carries its PID only on the Client
+object, so the old "PID-less = not us" rule tapped the voice chat into the stream. Windows:
+`ProcessLoopbackMixer` — one include-tree client per allowed app root or the old exclude-self
+client, summed by a wall-clock-paced `Mixer` (20 ms prime, 200 ms trim), session snapshots from
+`IAudioSessionManager2` (+ Toolhelp parent map; `IsSystemSoundsSession` returns S_FALSE for
+"no") every 2 s, dead clients reaped and re-planned. No wire change. Design:
+`docs/superpowers/specs/2026-09-02-multi-app-audio-picker-design.md`. Verified: `cargo test
+--lib` 131/131 (was 104), tsc 0 errors, Windows Native Check green on `a29293e`; the live matrix
+in the spec is pending.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
