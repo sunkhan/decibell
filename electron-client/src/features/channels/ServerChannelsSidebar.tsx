@@ -1,3 +1,4 @@
+import { LockGlyph } from "../chat/MessageBubble";
 import { useState, useRef, useEffect, useMemo, memo } from "react";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
@@ -450,6 +451,7 @@ export default function ServerChannelsSidebar() {
                   channelId={ch.id}
                   channelName={ch.name}
                   canManage={rowManageable(ch)}
+                encrypted={ch.encrypted ?? false}
                 />
               )}
             </div>
@@ -522,6 +524,7 @@ export default function ServerChannelsSidebar() {
                           channelId={ch.id}
                           channelName={ch.name}
                           canManage={rowManageable(ch)}
+                        encrypted={ch.encrypted ?? false}
                         />
                       )}
                     </div>
@@ -717,6 +720,8 @@ interface TextChannelRowProps {
   /// settings. Computed once in the parent so the memoized row doesn't
   /// subscribe to the roles/members slices itself.
   canManage: boolean;
+  /// End-to-end encrypted channel — shows the lock after the name.
+  encrypted: boolean;
 }
 
 const TextChannelRow = memo(function TextChannelRow({
@@ -724,6 +729,7 @@ const TextChannelRow = memo(function TextChannelRow({
   channelId,
   channelName,
   canManage,
+  encrypted,
 }: TextChannelRowProps) {
   const dropKey = `channel:${serverId}:${channelId}`;
   // Per-row primitive selectors — each returns a boolean / number, so
@@ -799,6 +805,11 @@ const TextChannelRow = memo(function TextChannelRow({
         #
       </span>
       <span className="truncate font-channel">{channelName}</span>
+      {encrypted && (
+        <span className="shrink-0 text-text-muted" title="End-to-end encrypted channel">
+          <LockGlyph size={11} />
+        </span>
+      )}
 
       {/* Settings gear — appears on row hover (Discord-style) for
           MANAGE_CHANNELS holders and opens this channel's settings

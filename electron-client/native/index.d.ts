@@ -148,6 +148,8 @@ export interface UpdateChannelRetentionArgs {
   voiceBitrateKbps?: number
   /** Text channels: slowmode seconds (0 = off). None = leave unchanged. */
   slowmodeSeconds?: number
+  /** Text channels: end-to-end encryption on/off. None = leave unchanged. */
+  encrypted?: boolean
 }
 /**
  * MANAGE_CHANNELS edit. All five retention values are sent as a
@@ -178,6 +180,12 @@ export interface SendChannelMessageArgs {
    * validates it points at a message in this channel, else stores 0.
    */
   replyTo?: number
+  /**
+   * The channel's `encrypted` flag (from ChannelInfo): seal the body
+   * under the channel's epoch key and send only the placeholder in
+   * `content`. The server enforces the format either way.
+   */
+  encrypted?: boolean
 }
 export declare function sendChannelMessage(args: SendChannelMessageArgs): Promise<void>
 export interface DeleteChannelMessageArgs {
@@ -197,6 +205,8 @@ export interface EditChannelMessageArgs {
   channelId: string
   messageId: number
   content: string
+  /** See SendChannelMessageArgs.encrypted. */
+  encrypted?: boolean
 }
 /**
  * Sends MESSAGE_EDIT_REQ over the community session. The ack arrives as

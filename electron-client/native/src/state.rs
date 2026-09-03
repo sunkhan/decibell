@@ -20,8 +20,9 @@ use crate::media::{AudioStreamEngine, VideoEngine, VoiceEngine};
 use crate::net::central::CentralClient;
 use crate::net::community::CommunityClient;
 use crate::net::proto::{
-    E2eeFetchBackupRes, E2eeFetchKeysRes, E2eePublishKeysRes, FetchAvatarRes,
-    FetchStreamThumbnailRes, InviteResolveResponse, UpdateAvatarRes,
+    ChannelKeysPublishRes, ChannelKeysRes, E2eeFetchBackupRes, E2eeFetchKeysRes,
+    E2eePublishKeysRes, FetchAvatarRes, FetchStreamThumbnailRes, InviteResolveResponse,
+    UpdateAvatarRes,
 };
 
 /// Plan C: server-pushed event when a watcher starts or stops watching the
@@ -171,6 +172,13 @@ pub struct AppState {
     /// (community path only). Created in `join_voice_channel`, dropped
     /// with the engine. Its `ring` is what the pipelines seal with.
     pub voice_mls: Option<crate::e2ee::group::GroupHandle>,
+    /// Encrypted text channels: epoch keys per (server, channel), the
+    /// in-flight key fetch / publish waiters, and the ordered worker that
+    /// opens incoming channel packets. See e2ee/channel_keys.rs.
+    pub channel_keys: HashMap<crate::e2ee::channel_keys::KeyId, crate::e2ee::channel_keys::ChannelKeyring>,
+    pub pending_channel_keys: HashMap<crate::e2ee::channel_keys::KeyId, Vec<oneshot::Sender<ChannelKeysRes>>>,
+    pub pending_channel_keys_publish: HashMap<crate::e2ee::channel_keys::KeyId, oneshot::Sender<ChannelKeysPublishRes>>,
+    pub channel_crypto_tx: Option<tokio::sync::mpsc::Sender<crate::e2ee::channel_keys::ChannelJob>>,
 }
 
 impl Default for AppState {
@@ -210,6 +218,10 @@ impl Default for AppState {
             pending_backup_fetch: None,
             dm_crypto_tx: None,
             voice_mls: None,
+            channel_keys: HashMap::new(),
+            pending_channel_keys: HashMap::new(),
+            pending_channel_keys_publish: HashMap::new(),
+            channel_crypto_tx: None,
         }
     }
 }

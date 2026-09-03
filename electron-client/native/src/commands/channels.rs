@@ -115,6 +115,8 @@ pub struct UpdateChannelRetentionArgs {
     pub voice_bitrate_kbps: Option<i32>,
     /// Text channels: slowmode seconds (0 = off). None = leave unchanged.
     pub slowmode_seconds: Option<i32>,
+    /// Text channels: end-to-end encryption on/off. None = leave unchanged.
+    pub encrypted: Option<bool>,
 }
 
 /// MANAGE_CHANNELS edit. All five retention values are sent as a
@@ -132,6 +134,7 @@ pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi:
         retention_days_audio,
         voice_bitrate_kbps,
         slowmode_seconds,
+        encrypted,
     } = args;
     send_for_server(
         &server_id,
@@ -145,6 +148,7 @@ pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi:
             retention_days_audio,
             voice_bitrate_kbps,
             slowmode_seconds,
+            encrypted,
         }),
     )
     .await
@@ -168,6 +172,10 @@ pub struct SendChannelMessageArgs {
     /// Id of the message being replied to (0/absent = not a reply). Server
     /// validates it points at a message in this channel, else stores 0.
     pub reply_to: Option<i64>,
+    /// The channel's `encrypted` flag (from ChannelInfo): seal the body
+    /// under the channel's epoch key and send only the placeholder in
+    /// `content`. The server enforces the format either way.
+    pub encrypted: Option<bool>,
 }
 
 #[napi]
@@ -181,7 +189,19 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
         attachment_ids,
         nonce,
         reply_to,
+        encrypted,
     } = args;
+
+    // Encrypted channel: seal before taking the lock (fetching the epoch
+    // key can be a round-trip through the community server).
+    let (message, envelope) = if encrypted.unwrap_or(false) {
+        let wire = crate::e2ee::channel_keys::seal_message(&state_arc, &server_id, &channel_id, &message)
+            .await
+            .map_err(napi::Error::from_reason)?;
+        (crate::e2ee::channel_keys::PLACEHOLDER.to_string(), wire)
+    } else {
+        (message, Vec::new())
+    };
 
     let (write_tx, data) = {
         let s = state_arc.lock().await;
@@ -243,6 +263,8 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
                 reply_to_sender: String::new(),
                 reply_to_content: String::new(),
                 reply_to_attachment_kinds: Vec::new(),
+                envelope,
+                reply_to_envelope: Vec::new(),
             }),
             Some(&client.jwt),
         );
@@ -291,6 +313,8 @@ pub struct EditChannelMessageArgs {
     pub channel_id: String,
     pub message_id: i64,
     pub content: String,
+    /// See SendChannelMessageArgs.encrypted.
+    pub encrypted: Option<bool>,
 }
 
 /// Sends MESSAGE_EDIT_REQ over the community session. The ack arrives as
@@ -303,7 +327,17 @@ pub async fn edit_channel_message(args: EditChannelMessageArgs) -> napi::Result<
         channel_id,
         message_id,
         content,
+        encrypted,
     } = args;
+    let (content, envelope) = if encrypted.unwrap_or(false) {
+        let state_arc = state::shared();
+        let wire = crate::e2ee::channel_keys::seal_message(&state_arc, &server_id, &channel_id, &content)
+            .await
+            .map_err(napi::Error::from_reason)?;
+        (crate::e2ee::channel_keys::PLACEHOLDER.to_string(), wire)
+    } else {
+        (content, Vec::new())
+    };
     send_for_server(
         &server_id,
         packet::Type::MessageEditReq,
@@ -311,6 +345,7 @@ pub async fn edit_channel_message(args: EditChannelMessageArgs) -> napi::Result<
             channel_id,
             message_id,
             content,
+            envelope,
         }),
     )
     .await

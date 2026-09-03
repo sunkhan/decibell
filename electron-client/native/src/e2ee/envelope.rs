@@ -145,17 +145,34 @@ pub fn seal(
     if text.len() > MAX_TEXT_LEN {
         return Err("message too long to seal".into());
     }
+    let mut plain = Vec::with_capacity(1 + text.len());
+    plain.push(CONTENT_TEXT);
+    plain.extend_from_slice(text.as_bytes());
+    seal_bytes(my_priv, sender, sender_kid, peer_pub, recipient, recipient_kid, &plain)
+}
+
+/// Seal an already-tagged inner content (`CONTENT_*` first byte) — used
+/// for channel key blobs, which ride the same pairwise envelope.
+pub fn seal_bytes(
+    my_priv: &[u8; KEY_LEN],
+    sender: &str,
+    sender_kid: u32,
+    peer_pub: &[u8; KEY_LEN],
+    recipient: &str,
+    recipient_kid: u32,
+    plain: &[u8],
+) -> Result<Vec<u8>, String> {
+    if plain.len() > MAX_TEXT_LEN + 1 {
+        return Err("content too long to seal".into());
+    }
     let salt: [u8; SALT_LEN] = random_bytes()?;
     let (key, nonce) = schedule(my_priv, peer_pub, &salt, sender, sender_kid, recipient, recipient_kid)?;
     let header = header_bytes(sender_kid, recipient_kid, &salt);
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
-    let mut plain = Vec::with_capacity(1 + text.len());
-    plain.push(CONTENT_TEXT);
-    plain.extend_from_slice(text.as_bytes());
     let body = cipher
         .encrypt(
             Nonce::from_slice(&nonce),
-            Payload { msg: &plain, aad: &aad(&header, sender) },
+            Payload { msg: plain, aad: &aad(&header, sender) },
         )
         .map_err(|_| "AEAD seal failed".to_string())?;
     let mut wire = Vec::with_capacity(HEADER_LEN + body.len());
@@ -179,6 +196,28 @@ pub fn open(
     i_am_sender: bool,
     wire: &[u8],
 ) -> Result<String, OpenError> {
+    let plain = open_bytes(my_priv, my_kid, peer_pub, peer_kid, sender, recipient, i_am_sender, wire)?;
+    match plain.first() {
+        Some(&CONTENT_TEXT) => {
+            String::from_utf8(plain[1..].to_vec()).map_err(|_| OpenError::Bad)
+        }
+        Some(&other) => Err(OpenError::UnsupportedContent(other)),
+        None => Err(OpenError::Malformed),
+    }
+}
+
+/// `open` without interpreting the inner content tag.
+#[allow(clippy::too_many_arguments)]
+pub fn open_bytes(
+    my_priv: &[u8; KEY_LEN],
+    my_kid: u32,
+    peer_pub: &[u8; KEY_LEN],
+    peer_kid: u32,
+    sender: &str,
+    recipient: &str,
+    i_am_sender: bool,
+    wire: &[u8],
+) -> Result<Vec<u8>, OpenError> {
     let hdr = parse_header(wire)?;
     let (sender_kid, recipient_kid) = if i_am_sender {
         (my_kid, peer_kid)
@@ -200,13 +239,10 @@ pub fn open(
             Payload { msg: &wire[HEADER_LEN..], aad: &aad(header, sender) },
         )
         .map_err(|_| OpenError::Bad)?;
-    match plain.first() {
-        Some(&CONTENT_TEXT) => {
-            String::from_utf8(plain[1..].to_vec()).map_err(|_| OpenError::Bad)
-        }
-        Some(&other) => Err(OpenError::UnsupportedContent(other)),
-        None => Err(OpenError::Malformed),
+    if plain.is_empty() {
+        return Err(OpenError::Malformed);
     }
+    Ok(plain)
 }
 
 #[cfg(test)]

@@ -40,6 +40,7 @@ fn channel_info_payload(c: ChannelInfo) -> events::ChannelInfoPayload {
         retention_days_audio: c.retention_days_audio,
         my_permissions: c.my_permissions,
         slowmode_seconds: c.slowmode_seconds,
+        encrypted: c.encrypted,
     }
 }
 
@@ -55,7 +56,7 @@ fn member_info_payload(m: MemberInfo) -> events::MemberInfoPayload {
     }
 }
 
-fn map_attachment(a: Attachment) -> events::AttachmentPayload {
+pub(crate) fn map_attachment(a: Attachment) -> events::AttachmentPayload {
     events::AttachmentPayload {
         id: a.id,
         message_id: a.message_id,
@@ -504,58 +505,32 @@ impl CommunityClient {
                         public_listing: resp.public_listing,
                     });
                 }
+                // Channel messages go through the ordered channel-crypto
+                // worker (plaintext rows pass straight through it): an
+                // encrypted channel's envelope may need an epoch key that
+                // is a round-trip away, and that reply lands on this loop.
                 Some(packet::Payload::ChannelMsg(msg)) => {
-                    let context = msg.channel_id.clone();
-                    let id = msg.id;
-                    let nonce = msg.nonce.clone();
-                    let attachments = msg.attachments.into_iter().map(map_attachment).collect();
-                    events::emit_message_received(events::MessageReceivedPayload {
-                        context,
-                        server_id: server_id.clone(),
-                        sender: msg.sender,
-                        recipient: String::new(),
-                        content: msg.content,
-                        timestamp: msg.timestamp.to_string(),
-                        id,
-                        attachments,
-                        nonce,
-                        edited_at: msg.edited_at,
-                        reply_to: msg.reply_to,
-                        reply_to_sender: msg.reply_to_sender,
-                        reply_to_content: msg.reply_to_content,
-                        reply_to_attachment_kinds: msg.reply_to_attachment_kinds,
-                        encrypted: false,
-                        decrypt_error: String::new(),
-                    });
+                    crate::e2ee::channel_keys::enqueue(
+                        &state,
+                        crate::e2ee::channel_keys::ChannelJob::Msg(server_id.clone(), msg),
+                    )
+                    .await;
                 }
                 Some(packet::Payload::ChannelHistoryRes(resp)) => {
-                    let messages = resp
-                        .messages
-                        .into_iter()
-                        .map(|m| events::ChannelMessagePayload {
-                            id: m.id,
-                            sender: m.sender,
-                            channel_id: m.channel_id,
-                            content: m.content,
-                            timestamp: m.timestamp,
-                            attachments: m.attachments.into_iter().map(map_attachment).collect(),
-                            nonce: m.nonce,
-                            edited_at: m.edited_at,
-                            reply_to: m.reply_to,
-                            reply_to_sender: m.reply_to_sender,
-                            reply_to_content: m.reply_to_content,
-                            reply_to_attachment_kinds: m.reply_to_attachment_kinds,
-                        })
-                        .collect();
-                    events::emit_channel_history_received(events::ChannelHistoryReceivedPayload {
-                        server_id: server_id.clone(),
-                        channel_id: resp.channel_id,
-                        messages,
-                        has_more: resp.has_more,
-                        has_more_after: resp.has_more_after,
-                        around_id: resp.around_id,
-                        after_id: resp.after_id,
-                    });
+                    crate::e2ee::channel_keys::enqueue(
+                        &state,
+                        crate::e2ee::channel_keys::ChannelJob::History(server_id.clone(), resp),
+                    )
+                    .await;
+                }
+                Some(packet::Payload::ChannelKeysRes(res)) => {
+                    crate::e2ee::channel_keys::on_keys_res(&state, &server_id, res).await;
+                }
+                Some(packet::Payload::ChannelKeysPublishRes(res)) => {
+                    crate::e2ee::channel_keys::on_publish_res(&state, &server_id, res).await;
+                }
+                Some(packet::Payload::ChannelKeysChanged(b)) => {
+                    crate::e2ee::channel_keys::on_keys_changed(&state, &server_id, b).await;
                 }
                 Some(packet::Payload::ChannelPruned(msg)) => {
                     let purged_attachments = msg
@@ -625,16 +600,11 @@ impl CommunityClient {
                     );
                 }
                 Some(packet::Payload::ChannelMessageEdited(b)) => {
-                    events::emit_channel_message_edited(
-                        events::ChannelMessageEditedPayload {
-                            server_id: server_id.clone(),
-                            channel_id: b.channel_id,
-                            message_id: b.message_id,
-                            content: b.content,
-                            edited_at: b.edited_at,
-                            editor: b.editor,
-                        },
-                    );
+                    crate::e2ee::channel_keys::enqueue(
+                        &state,
+                        crate::e2ee::channel_keys::ChannelJob::Edited(server_id.clone(), b),
+                    )
+                    .await;
                 }
                 Some(packet::Payload::UpdateServerPictureRes(resp)) => {
                     events::emit_server_picture_update_responded(

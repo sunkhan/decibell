@@ -691,9 +691,14 @@ export function useServerEvents() {
       content: string;
       editedAt: number;
       editor: string;
+      encrypted?: boolean;
+      decryptError?: string;
     }>("channel_message_edited", (event) => {
-      const { serverId, channelId, messageId, content, editedAt } = event.payload;
-      useChatStore.getState().applyEdit(serverId, channelId, messageId, content, editedAt);
+      const { serverId, channelId, messageId, content, editedAt, encrypted, decryptError } =
+        event.payload;
+      useChatStore
+        .getState()
+        .applyEdit(serverId, channelId, messageId, content, editedAt, encrypted, decryptError);
     });
 
     const unlistenServerPictureUpdateRes = listen<{

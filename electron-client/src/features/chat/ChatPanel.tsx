@@ -531,6 +531,11 @@ export default function ChatPanel() {
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
           nonce,
           replyTo: replyToId,
+          // Encrypted channel: native seals the body under the channel's
+          // epoch key; the server refuses plaintext there.
+          encrypted:
+            useChatStore.getState().channelsByServer[serverId]?.find((c) => c.id === channelId)
+              ?.encrypted ?? false,
         }),
       );
       watchEcho(serverId, channelId, nonce);
@@ -705,6 +710,11 @@ export default function ChatPanel() {
         channelId: activeChannelId,
         messageId: message.id,
         content,
+        encrypted:
+          useChatStore
+            .getState()
+            .channelsByServer[activeServerId]?.find((c) => c.id === activeChannelId)?.encrypted ??
+          false,
       }),
     ).catch((err) => console.error("edit_channel_message:", err));
   }, []);
@@ -1049,7 +1059,7 @@ export default function ChatPanel() {
                 </span>
               </div>
             )}
-            {canAttach && (
+            {canAttach && !channel?.encrypted && (
             <button
               onClick={handlePickFiles}
               title="Attach files"

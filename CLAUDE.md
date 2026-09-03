@@ -139,6 +139,13 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   epoch (`media/frame_crypto.rs`), video at frame level so FEC/NACK are untouched. Stream
   thumbnails stay plaintext on purpose. Adding a media packet type? Add its sealed twin and
   teach the relay. Design: `2026-09-03-mls-voice-channel-encryption-design.md`.
+- **Text channels encrypt per channel, default off** (owner decision: server-side search, when
+  it ships, must keep working for people who never open settings). Epoch keys escrowed to
+  members as identity-sealed blobs on the community server (`e2ee/channel_keys.rs`), never MLS
+  here (offline members, readable history, multi-device). The server enforces the wire format
+  both ways and refuses attachments in encrypted channels until they're encrypted too. Turning
+  a channel off never decrypts its history. Design:
+  `2026-09-04-encrypted-text-channels-design.md`.
 
 ## Deeper docs
 

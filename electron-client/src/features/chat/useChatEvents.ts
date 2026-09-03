@@ -77,6 +77,8 @@ export function useChatEvents() {
         replyToSender: p.replyToSender || undefined,
         replyToContent: p.replyToContent || undefined,
         replyToAttachmentKinds: mapReplyKinds(p.replyToAttachmentKinds),
+        encrypted: p.encrypted || undefined,
+        decryptError: p.decryptError || undefined,
       });
     });
 
@@ -98,6 +100,8 @@ export function useChatEvents() {
           replyToSender: m.replyToSender || undefined,
           replyToContent: m.replyToContent || undefined,
           replyToAttachmentKinds: mapReplyKinds(m.replyToAttachmentKinds),
+          encrypted: m.encrypted || undefined,
+          decryptError: m.decryptError || undefined,
         }));
         const store = useChatStore.getState();
         // Route by the request mode the server echoed back:

@@ -483,6 +483,15 @@ Design: `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`. The short versio
   commit bundle's GroupInfo already carries the ratchet tree and the external-init key when
   `use_ratchet_tree_extension` is on; handshake wire format is PURE_PLAINTEXT (it travels in TLS,
   the server knows the roster anyway).
+- **Encrypted text channels** (`e2ee/channel_keys.rs` + `channel_envelope.rs`): the renderer
+  passes `encrypted` (from `ChannelInfo`) into `send_channel_message` / `edit_channel_message`;
+  native seals under the channel's current epoch key, fetching / creating / filling through
+  `CHANNEL_KEYS_REQ` / `CHANNEL_KEYS_PUBLISH_REQ`. Incoming channel packets go through the
+  ordered channel-crypto worker (`channel_keys::enqueue`), which also passes plaintext rows —
+  same reason as the DM worker: a missing epoch key is a round-trip whose reply lands on the
+  router. `on_keys_changed` acts only when the server names us as filler. Blobs are DM envelopes
+  (`envelope::seal_bytes`, content tag 0x02) so pins and key-change notices apply. Keyrings are
+  per session (`AppState.channel_keys`, dropped on disconnect / logout).
 - **Calls are authenticated with the same identity** (`e2ee/call_auth.rs`,
   `session::sign_own_call_key` / `verify_peer_call_key`): `send_call_signal` signs the
   ephemeral key on INVITE / ACCEPT, `call_connect` verifies against the peer's *current*

@@ -91,6 +91,7 @@ pub async fn disconnect_from_community(
 
     let removed = {
         let mut s = state_arc.lock().await;
+        crate::e2ee::channel_keys::forget_server(&mut s, &args.server_id);
         s.communities.remove(&args.server_id)
     };
 
@@ -378,6 +379,7 @@ pub(crate) async fn connect_with_invite(
     // connect should replace it, otherwise we'd leak its tasks.
     {
         let mut s = state_arc.lock().await;
+        crate::e2ee::channel_keys::forget_server(&mut s, &server_id);
         if let Some(mut existing) = s.communities.remove(&server_id) {
             existing.disconnect();
         }

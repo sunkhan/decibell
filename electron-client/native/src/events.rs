@@ -351,6 +351,8 @@ pub struct ChannelInfoPayload {
     pub my_permissions: u64,
     /// Text channels: seconds between messages per member (0 = off).
     pub slowmode_seconds: i32,
+    /// Text channels: end-to-end encrypted (member-held epoch keys).
+    pub encrypted: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -429,6 +431,9 @@ pub struct ChannelMessagePayload {
     pub reply_to_content: String,
     /// Attachment.Kind values of the parent's attachments (position order).
     pub reply_to_attachment_kinds: Vec<i32>,
+    /// Encrypted channels — see MessageReceivedPayload.encrypted / decrypt_error.
+    pub encrypted: bool,
+    pub decrypt_error: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1501,6 +1506,8 @@ pub struct ChannelMessageEditedPayload {
     pub content: String,
     pub edited_at: i64,
     pub editor: String,
+    pub encrypted: bool,
+    pub decrypt_error: String,
 }
 
 pub fn emit_dm_message_edit_responded(payload: DmMessageEditRespondedPayload) {

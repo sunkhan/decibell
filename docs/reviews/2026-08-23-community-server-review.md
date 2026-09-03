@@ -981,6 +981,39 @@ session through a simulated DS incl. removal + rejoin + stale-info rejection), c
 (create/info/epoch rule/broadcast-except-committer/participant gating/sealed relay/drop on
 empty), tsc 0, community build.
 
+**Encrypted text channels — per-channel opt-in (2026-09-04) ✅ — needs a community-server
+release + a live test** — the last plaintext content on a community server. **User decisions:**
+a per-channel toggle, **default off** (people who never open settings must keep server-side
+search when it ships — note that no message search exists today; the FTS table was dropped as
+unmaintained), strict inside an encrypted channel, thumbnails/attachments out of scope for now.
+Protocol: **channel epoch keys escrowed to members** (not MLS — members are offline, history must
+stay readable to late joiners and on every device, one identity per user would pin a channel to
+one device): a random 32-byte key per epoch, sealed by a member to every entitled member's static
+identity with the DM envelope (content tag `0x02`, `e2ee/channel_envelope.rs`), stored on the
+server per recipient (`channel_key_epochs` / `channel_key_blobs`), fetched on login. Messages are
+sealed like DMs with the epoch in the header (`0x02 ‖ epoch ‖ salt ‖ ct`, channel + server-stamped
+sender bound into key and AAD). The first sender creates epoch 1; **kick / ban / leave rotate**
+(`channel_keys_on_removal` deletes the leaver's blobs and names a filler with `rotate`); a member
+(re)joining lacking blobs triggers `CHANNEL_KEYS_CHANGED` naming the lowest online holder as
+**filler**; `CHANNEL_KEYS_RES` also lists `needs` so any holder fills on open. The server enforces
+the wire format both ways (`channels.encrypted`, `messages.envelope`: plaintext refused in
+encrypted channels, envelopes refused in plaintext ones, attachments refused in encrypted ones),
+carries `envelope` on CHANNEL_MSG / history / edit / reply preview, audits the toggle, and gates
+`CHANNEL_KEYS_*` on VIEW for both sealer and recipient (non-viewer blobs dropped; 500 blobs / 2 KiB
+caps; existing blobs never overwritten). Switching off leaves sealed history sealed. Native:
+`e2ee/channel_keys.rs` (keyring per (server, channel), ensure / refresh / create_epoch / fill_gaps
+/ rotate, fills paced to central's key bucket, an ordered channel-crypto worker like the DM one),
+`seal_message` in `send_channel_message` / `edit_channel_message` (renderer passes the channel's
+flag). Renderer: lock in the sidebar row, the toggle in channel settings with the search /
+attachment caveat, attach hidden in encrypted channels, placeholder rows via the existing
+`decryptError` rendering. Design: `docs/superpowers/specs/2026-09-04-encrypted-text-channels-design.md`.
+Verified: `cargo test --lib` (channel envelope + key-blob round trips / bindings), community e2e
+(toggle + audit + permission, enforcement both ways, envelope through broadcast / history / edit /
+reply, escrow create / fetch / needs / gap fill / stale epoch / viewer gating / CHANGED on join and
+removal / no-overwrite, toggle off), tsc 0, community build. Open: attachments in encrypted
+channels (client-side file encryption + thumbnails), rotation on permission-overwrite changes, a
+batch key-fetch endpoint on central, client-side search once the local store exists.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

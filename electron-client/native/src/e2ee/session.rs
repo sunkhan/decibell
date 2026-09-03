@@ -379,6 +379,37 @@ pub async fn seal_outbound(
     Ok(Outbound::Sealed(wire))
 }
 
+/// Seal arbitrary tagged content to `recipient`'s current identity (the
+/// same policy as a DM: None when they have no keys and aren't pinned,
+/// error when pinned-but-missing). Used for channel key blobs.
+pub async fn seal_outbound_raw(
+    state: &Arc<Mutex<AppState>>,
+    recipient: &str,
+    content: &[u8],
+) -> Result<Option<Vec<u8>>, String> {
+    let bundle = resolve_peer_current(state, recipient).await?;
+    let Some(bundle) = bundle else { return Ok(None) };
+    let s = state.lock().await;
+    let me = s.username.clone().ok_or("Not signed in")?;
+    let store = s.e2ee.store.as_ref().ok_or("Encryption keys not loaded")?;
+    let mine = store.current().ok_or("Encryption keys not loaded")?;
+    let my_priv = arr32(&mine.dh_priv).ok_or("Corrupt local key")?;
+    let peer_pub = bundle.dh_pub_array()?;
+    envelope::seal_bytes(&my_priv, &me, mine.key_id, &peer_pub, recipient, bundle.key_id, content).map(Some)
+}
+
+/// `open_inbound` for tagged content (returns the raw inner bytes).
+pub async fn open_inbound_raw(
+    state: &Arc<Mutex<AppState>>,
+    sender: &str,
+    recipient: &str,
+    wire: &[u8],
+) -> Result<Vec<u8>, DecryptError> {
+    let (my_priv, my_kid, peer_pub, peer_kid, i_am_sender) = resolve_open_keys(state, sender, recipient, wire).await?;
+    envelope::open_bytes(&my_priv, my_kid, &peer_pub, peer_kid, sender, recipient, i_am_sender, wire)
+        .map_err(|_| DecryptError::Bad)
+}
+
 // ── Inbound ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,6 +443,24 @@ pub async fn open_inbound(
     recipient: &str,
     wire: &[u8],
 ) -> Result<String, DecryptError> {
+    let (my_priv, my_kid, peer_pub, peer_kid, i_am_sender) = resolve_open_keys(state, sender, recipient, wire).await?;
+    envelope::open(&my_priv, my_kid, &peer_pub, peer_kid, sender, recipient, i_am_sender, wire).map_err(
+        |e| match e {
+            OpenError::KeyMismatch | OpenError::Malformed | OpenError::Bad => DecryptError::Bad,
+            OpenError::UnsupportedContent(_) => DecryptError::Bad,
+        },
+    )
+}
+
+/// The key material `open` needs for `wire`: our private key for the
+/// generation the header names, the peer's public key (cached or fetched),
+/// and which slot we fill.
+async fn resolve_open_keys(
+    state: &Arc<Mutex<AppState>>,
+    sender: &str,
+    recipient: &str,
+    wire: &[u8],
+) -> Result<([u8; KEY_LEN], u32, [u8; KEY_LEN], u32, bool), DecryptError> {
     let hdr = envelope::parse_header(wire).map_err(|_| DecryptError::Bad)?;
     let (me, i_am_sender, my_priv, my_kid, peer, peer_kid, cached_pub) = {
         let s = state.lock().await;
@@ -446,12 +495,7 @@ pub async fn open_inbound(
     };
     let peer_pub = arr32(&peer_pub).ok_or(DecryptError::Bad)?;
     let _ = me;
-    envelope::open(&my_priv, my_kid, &peer_pub, peer_kid, sender, recipient, i_am_sender, wire).map_err(
-        |e| match e {
-            OpenError::KeyMismatch | OpenError::Malformed | OpenError::Bad => DecryptError::Bad,
-            OpenError::UnsupportedContent(_) => DecryptError::Bad,
-        },
-    )
+    Ok((my_priv, my_kid, peer_pub, peer_kid, i_am_sender))
 }
 
 /// `(content, encrypted, decrypt_error)` for one wire body: plaintext rows

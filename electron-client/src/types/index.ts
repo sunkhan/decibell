@@ -392,6 +392,10 @@ export interface ChannelInfo {
   myPermissions?: number;
   /// Text channels: seconds between messages per member (0 = off).
   slowmodeSeconds?: number;
+  /// Text channels: end-to-end encrypted with member-held epoch keys
+  /// (docs/superpowers/specs/2026-09-04-encrypted-text-channels-design.md).
+  /// Off by default; MANAGE_CHANNELS toggles it in channel settings.
+  encrypted?: boolean;
 }
 
 /// One per-channel permission overwrite (permissions v2).
@@ -644,6 +648,8 @@ export interface ChannelHistoryReceivedPayload {
     replyToSender: string;
     replyToContent: string;
     replyToAttachmentKinds: number[];
+    encrypted?: boolean;
+    decryptError?: string;
   }>;
   hasMore: boolean;
   hasMoreAfter: boolean;

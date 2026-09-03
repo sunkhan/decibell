@@ -151,6 +151,7 @@ export default function ChannelSettingsModal() {
   const [nameDraft, setNameDraft] = useState("");
   const [bitrateDraft, setBitrateDraft] = useState(0);
   const [slowmodeDraft, setSlowmodeDraft] = useState(0);
+  const [encryptedDraft, setEncryptedDraft] = useState(false);
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
   const [wipeConfirmText, setWipeConfirmText] = useState("");
   const [wiping, setWiping] = useState(false);
@@ -194,6 +195,7 @@ export default function ChannelSettingsModal() {
     setNameDraft(channel.name);
     setBitrateDraft(channel.voiceBitrateKbps);
     setSlowmodeDraft(channel.slowmodeSeconds ?? 0);
+    setEncryptedDraft(channel.encrypted ?? false);
     setError(null);
     setSaving(false);
     setWipeConfirmOpen(false);
@@ -255,7 +257,9 @@ export default function ChannelSettingsModal() {
   const bitrateDirty = !!channel && isVoice && bitrateDraft !== channel.voiceBitrateKbps;
   const slowmodeDirty =
     !!channel && !isVoice && !isCategory && slowmodeDraft !== (channel.slowmodeSeconds ?? 0);
-  const dirty = retentionDirty || nameDirty || bitrateDirty || slowmodeDirty;
+  const encryptedDirty =
+    !!channel && !isVoice && !isCategory && encryptedDraft !== (channel.encrypted ?? false);
+  const dirty = retentionDirty || nameDirty || bitrateDirty || slowmodeDirty || encryptedDirty;
 
   const handleSave = async () => {
     if (!canManage) return;
@@ -269,7 +273,7 @@ export default function ChannelSettingsModal() {
           name: nameDraft.trim(),
         });
       }
-      if (retentionDirty || bitrateDirty || slowmodeDirty) {
+      if (retentionDirty || bitrateDirty || slowmodeDirty || encryptedDirty) {
         await invoke("update_channel_retention", {
           serverId: activeServerId,
           channelId: channel.id,
@@ -281,6 +285,7 @@ export default function ChannelSettingsModal() {
           // Explicit presence on the wire: undefined = leave unchanged.
           voiceBitrateKbps: isVoice ? bitrateDraft : undefined,
           slowmodeSeconds: slowmodeDirty ? slowmodeDraft : undefined,
+          encrypted: encryptedDirty ? encryptedDraft : undefined,
         });
       }
       closeModal();
@@ -464,6 +469,29 @@ export default function ChannelSettingsModal() {
           )}
 
           {!isCategory && !isVoice && (<>
+          <div className="mb-5">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+              End-to-end encryption
+            </div>
+            <label className={`flex items-start justify-between gap-4 rounded-md border border-border-divider bg-bg-light px-4 py-3 ${canManage ? "cursor-pointer" : "opacity-60"}`}>
+              <div className="min-w-0">
+                <div className="text-[13px] font-medium text-text-primary">Encrypt messages in this channel</div>
+                <div className="mt-1 text-[12px] leading-[1.55] text-text-muted">
+                  Messages are sealed on members' devices with keys the server never holds.
+                  Members need encryption set up to read or write here, attachments are unavailable
+                  for now, and server-side search can't cover encrypted messages. Turning it off
+                  later leaves earlier encrypted messages encrypted.
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={encryptedDraft}
+                disabled={!canManage}
+                onChange={(e) => setEncryptedDraft(e.target.checked)}
+                className="mt-1 h-4 w-4 shrink-0 accent-accent"
+              />
+            </label>
+          </div>
           <div className="mb-5">
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
               Slowmode
