@@ -1,3 +1,4 @@
+import type { VoiceE2eeStatePayload } from "../types";
 import { create } from "zustand";
 import { StreamAudioMode, type VoiceParticipant, type StreamInfo, type ClientCapabilities, type VideoCodec } from "../types";
 import { useVoiceStatsStore } from "./voiceStatsStore";
@@ -29,6 +30,10 @@ interface VoiceState {
   /// gate on "am I in a media session" use `mediaSessionActive` below.
   callPeer: string | null;
   setCallPeer: (peer: string | null) => void;
+  /// MLS encryption state of the connected community channel (null in a
+  /// DM call or when not connected). Drives the header badge.
+  e2ee: VoiceE2eeStatePayload | null;
+  setE2ee: (state: VoiceE2eeStatePayload | null) => void;
   participants: VoiceParticipant[];
   activeStreams: StreamInfo[];
   /// Source-of-truth map of streaming users across every connected
@@ -113,6 +118,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   connectedChannelId: null,
   callPeer: null,
   setCallPeer: (peer) => set({ callPeer: peer }),
+  e2ee: null,
+  setE2ee: (e2ee) => set({ e2ee }),
   participants: [],
   activeStreams: [],
   streamsByUser: new Map(),
@@ -276,6 +283,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       connectedServerId: null,
       connectedChannelId: null,
       callPeer: null,
+      e2ee: null,
       participants: [],
       speakingUsers: new Set(),
       latencyMs: null,

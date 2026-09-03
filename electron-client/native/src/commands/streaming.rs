@@ -103,6 +103,9 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
             .username
             .clone()
             .ok_or_else(|| napi::Error::from_reason("Not authenticated"))?;
+        // Community channel: the MLS epoch keys seal every frame; a DM call
+        // has no group (its socket is sealed instead).
+        let mls_ring = s.voice_mls.as_ref().map(|h| h.ring.clone());
 
         // Community announcement (StartStreamReq). Skipped in a DM call:
         // the P2P peer learns about the stream via CALL_SIGNAL from the
@@ -139,7 +142,7 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
             Some((tx, pkt))
         };
 
-        let mut engine = VideoEngine::start(media_socket, sender_id, self_username);
+        let mut engine = VideoEngine::start(media_socket, sender_id, self_username, mls_ring.clone());
 
         // Windows: spin up the native capture + encoder pipeline. The
         // renderer never calls send_video_frame on Windows — capture
@@ -221,6 +224,7 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                             audio_sender_id,
                             args.audio_bitrate_kbps,
                             Some(Box::new(mixer)),
+                            mls_ring.clone(),
                         ));
                     }
                     Err(e) => {
@@ -288,12 +292,13 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
             let voice_ctx = {
                 let s = state_arc.lock().await;
                 let filter = s.stream_audio_filter.clone();
+                let mls_ring = s.voice_mls.as_ref().map(|h| h.ring.clone());
                 s.voice_engine
                     .as_ref()
-                    .map(|v| (v.voice_socket(), v.sender_id().to_string(), filter))
+                    .map(|v| (v.voice_socket(), v.sender_id().to_string(), filter, mls_ring))
             };
             match voice_ctx {
-                Some((voice_socket, audio_sender_id, filter)) => {
+                Some((voice_socket, audio_sender_id, filter, mls_ring)) => {
                     match crate::media::capture_audio_pipewire::start_system_audio_capture(filter) {
                         Ok((frame_rx, tap)) => {
                             log::info!("[video-linux] sharing app audio (PipeWire tap minus self)");
@@ -303,6 +308,7 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                                 audio_sender_id,
                                 args.audio_bitrate_kbps,
                                 Some(Box::new(tap)),
+                                mls_ring,
                             ))
                         }
                         Err(e) => {

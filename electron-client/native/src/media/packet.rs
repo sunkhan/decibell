@@ -57,6 +57,13 @@ impl UdpAudioPacket {
         Self::new_with(PACKET_TYPE_AUDIO, sender_id_str, sequence, opus_data)
     }
 
+    /// Audio-class packet of an explicit type — the sealed twins
+    /// (`frame_crypto::PACKET_TYPE_AUDIO_SEALED` / `_STREAM_AUDIO_SEALED`)
+    /// share this header with the plain types.
+    pub fn new_typed(packet_type: u8, sender_id_str: &str, sequence: u16, data: &[u8]) -> Option<Self> {
+        Self::new_with(packet_type, sender_id_str, sequence, data)
+    }
+
     pub fn new_stream_audio(sender_id_str: &str, sequence: u16, opus_data: &[u8]) -> Option<Self> {
         Self::new_with(PACKET_TYPE_STREAM_AUDIO, sender_id_str, sequence, opus_data)
     }

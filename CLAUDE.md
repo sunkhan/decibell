@@ -132,6 +132,13 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`. **P2P calls sign their
   ephemeral keys with the same identity** and `call_connect` verifies before deriving media
   keys (fail closed when the peer has keys) — `2026-09-03-authenticated-p2p-calls-design.md`.
+- **Community voice channels and streams are MLS-encrypted** (OpenMLS, one group per voice
+  session, the community server is only the delivery service). Strict: no keys → no voice
+  (renderer opens the passphrase prompt), plaintext media is ignored in a channel session, no
+  fallback. Packet headers stay in the clear for the relay; payloads are sealed per sender per
+  epoch (`media/frame_crypto.rs`), video at frame level so FEC/NACK are untouched. Stream
+  thumbnails stay plaintext on purpose. Adding a media packet type? Add its sealed twin and
+  teach the relay. Design: `2026-09-03-mls-voice-channel-encryption-design.md`.
 
 ## Deeper docs
 

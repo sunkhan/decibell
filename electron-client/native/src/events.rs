@@ -260,6 +260,7 @@ pub const DM_MESSAGE_EDIT_RESPONDED: &str = "dm_message_edit_responded";
 pub const DM_MESSAGE_EDITED: &str = "dm_message_edited";
 pub const E2EE_STATUS_CHANGED: &str = "e2ee_status_changed";
 pub const E2EE_PEER_CHANGED: &str = "e2ee_peer_changed";
+pub const VOICE_E2EE_STATE: &str = "voice_e2ee_state";
 pub const CHANNEL_MESSAGE_EDIT_RESPONDED: &str = "channel_message_edit_responded";
 pub const CHANNEL_MESSAGE_EDITED: &str = "channel_message_edited";
 
@@ -1460,6 +1461,25 @@ pub fn emit_e2ee_status_changed(payload: E2eeStatusPayload) {
 
 pub fn emit_e2ee_peer_changed(payload: E2eePeerChangedPayload) {
     send(E2EE_PEER_CHANGED, payload);
+}
+
+/// `voice_e2ee_state`: the MLS group behind the current voice channel —
+/// "joining" | "ready" | "resyncing" | "quarantine" | "failed". See
+/// docs/superpowers/specs/2026-09-03-mls-voice-channel-encryption-design.md.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceE2eeStatePayload {
+    pub server_id: String,
+    pub channel_id: String,
+    pub state: String,
+    pub epoch: u64,
+    pub members: u32,
+    /// Members whose leaf identity did not verify against central.
+    pub unverified: Vec<String>,
+}
+
+pub fn emit_voice_e2ee_state(payload: VoiceE2eeStatePayload) {
+    send(VOICE_E2EE_STATE, payload);
 }
 
 #[derive(Debug, Clone, Serialize)]

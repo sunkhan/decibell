@@ -91,6 +91,7 @@ pub mod voice_sim_tests;
 pub mod video_packet;
 pub mod video_pipeline;
 pub mod video_receiver;
+pub mod frame_crypto;
 
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -183,6 +184,7 @@ impl VoiceEngine {
         voice_bitrate_bps: i32,
         initial_input_device: Option<String>,
         initial_output_device: Option<String>,
+        ring: frame_crypto::SharedKeyRing,
     ) -> Result<Self, String> {
         // Voice UDP port is server_port + 1, media UDP port is server_port + 2.
         let voice_udp_addr = format!("{}:{}", server_host, server_port + 1);
@@ -215,6 +217,8 @@ impl VoiceEngine {
         let voice_socket = Arc::new(MediaSocket::plain(voice_socket, &sender_id));
         let media_socket = Arc::new(MediaSocket::plain(media_socket, &sender_id));
 
+        // Community channels are MLS-encrypted: the pipelines seal / open
+        // every media payload with the ring's epoch keys (frame_crypto.rs).
         Self::start_with_sockets(
             voice_socket,
             media_socket,
@@ -222,6 +226,7 @@ impl VoiceEngine {
             voice_bitrate_bps,
             initial_input_device,
             initial_output_device,
+            Some(ring),
         )
     }
 
@@ -244,6 +249,7 @@ impl VoiceEngine {
             voice_bitrate_bps,
             initial_input_device,
             initial_output_device,
+            None,
         )
     }
 
@@ -256,9 +262,12 @@ impl VoiceEngine {
         voice_bitrate_bps: i32,
         initial_input_device: Option<String>,
         initial_output_device: Option<String>,
+        ring: Option<frame_crypto::SharedKeyRing>,
     ) -> Result<Self, String> {
         let (control_tx, control_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
+        let ring_audio = ring.clone();
+        let ring_video = ring;
 
         // Clone before move so the video recv thread can push into the
         // same event channel as the audio pipeline.
@@ -284,6 +293,7 @@ impl VoiceEngine {
                         initial_output_device,
                         control_rx,
                         event_tx,
+                        ring_audio,
                     );
                 }));
                 if let Err(e) = outcome {
@@ -321,6 +331,7 @@ impl VoiceEngine {
                         sender_id_for_video,
                         event_tx_video,
                         video_recv_stop_thread,
+                        ring_video,
                     );
                 }));
                 if let Err(e) = outcome {
@@ -564,6 +575,7 @@ fn run_video_recv_thread(
     sender_id: String,
     event_tx: mpsc::Sender<pipeline::VoiceEvent>,
     stop: Arc<AtomicBool>,
+    ring: Option<frame_crypto::SharedKeyRing>,
 ) {
     use std::time::{Duration, Instant};
     use video_packet::{UdpKeyframeRequest, UdpNackPacket, UdpVideoPacket};
@@ -611,15 +623,44 @@ fn run_video_recv_thread(
             }
             frame
         };
-    let emit_frame = |frame: video_receiver::ReassembledFrame| {
+    let emit_frame = |mut frame: video_receiver::ReassembledFrame| {
         // Only forward frames for streams we're actually watching. See
         // WATCHED_STREAMS above: defense against spoofed/over-relayed senders,
         // and it drops the IPC/renderer work for frames nobody subscribed to.
         if !is_watched(&frame.streamer_username) {
             return;
         }
+        // Encrypted channel: the reassembled bytes are one sealed frame —
+        // open it under the streamer's epoch key (drop it if that fails).
+        if let Some(r) = &ring {
+            match frame_crypto::open_video_frame(
+                &r.load(),
+                &frame.streamer_username,
+                frame.frame_id,
+                frame.is_keyframe,
+                frame.codec,
+                &frame.data,
+            ) {
+                Some(plain) => frame.data = plain,
+                None => {
+                    log::debug!(
+                        "[video-recv] frame {} from '{}' did not open (epoch/key)",
+                        frame.frame_id,
+                        frame.streamer_username
+                    );
+                    return;
+                }
+            }
+        }
         let frame = strip_keyframe_description(frame);
         let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
+    };
+    // Strict: an encrypted channel accepts only VIDEO_SEALED chunks; the
+    // plain (P2P) path only VIDEO. FEC / PLI / NACK are shared.
+    let accepted_video_type = if ring.is_some() {
+        frame_crypto::PACKET_TYPE_VIDEO_SEALED
+    } else {
+        video_packet::PACKET_TYPE_VIDEO
     };
 
     let _ = socket.set_read_timeout(Some(Duration::from_millis(5)));
@@ -633,7 +674,7 @@ fn run_video_recv_thread(
             Ok(n) if n >= 1 => {
                 let packet_type = recv_buf[0];
 
-                if packet_type == video_packet::PACKET_TYPE_VIDEO {
+                if packet_type == accepted_video_type {
                     if let Some(pkt) = UdpVideoPacket::from_bytes(&recv_buf[..n]) {
                         // The receiver keys every piece of state by
                         // sender, so concurrent streams reassemble
@@ -811,8 +852,9 @@ impl VideoEngine {
         socket: Arc<MediaSocket>,
         sender_id: String,
         self_username: String,
+        ring: Option<frame_crypto::SharedKeyRing>,
     ) -> Self {
-        let sender = Arc::new(video_pipeline::VideoSender::new(socket, sender_id));
+        let sender = Arc::new(video_pipeline::VideoSender::new(socket, sender_id, ring));
         // Publish the sender to the hot-path slot so `send_video_frame`
         // can reach it without taking the AppState mutex on every
         // encoded chunk. Cleared on stop/drop below.
@@ -1164,6 +1206,7 @@ impl AudioStreamEngine {
         sender_id: String,
         bitrate_kbps: u32,
         capture: Option<Box<dyn stream_audio_filter::StreamAudioCapture>>,
+        ring: Option<frame_crypto::SharedKeyRing>,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
@@ -1178,6 +1221,7 @@ impl AudioStreamEngine {
                     socket,
                     sender_id,
                     bitrate_kbps,
+                    ring,
                 );
             })
             .expect("spawn audio stream pipeline thread");

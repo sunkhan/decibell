@@ -93,7 +93,23 @@ pub fn run_audio_pipeline(
     initial_output_device: Option<String>,
     control_rx: std::sync::mpsc::Receiver<ControlMessage>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
+    ring: Option<crate::media::frame_crypto::SharedKeyRing>,
 ) {
+    use crate::media::frame_crypto::{self, Kind, PACKET_TYPE_AUDIO_SEALED, PACKET_TYPE_STREAM_AUDIO_SEALED};
+    // Community channel (ring present): every voice frame is sealed under
+    // the MLS epoch keys and plaintext audio from others is ignored. Until
+    // the group's first epoch is ready nothing is sent at all — the sealer
+    // returns None and the frame is skipped.
+    let voice_sealer = frame_crypto::AudioSealer::new(Kind::Voice);
+    let make_audio_packet = |sequence: u16, flagged: &[u8]| -> Option<UdpAudioPacket> {
+        match &ring {
+            Some(r) => {
+                let sealed = voice_sealer.seal(&r.load(), sequence, flagged)?;
+                UdpAudioPacket::new_typed(PACKET_TYPE_AUDIO_SEALED, &sender_id, sequence, &sealed)
+            }
+            None => UdpAudioPacket::new_audio(&sender_id, sequence, flagged),
+        }
+    };
     // Socket timeout is set by the dedicated recv thread — not needed here.
     // The audio loop uses channel-based recv (non-blocking try_recv).
 
@@ -903,13 +919,18 @@ pub fn run_audio_pipeline(
                                 let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
                                 flagged[0] = flags;
                                 flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
-                                match UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len]) {
+                                match make_audio_packet(sequence, &flagged[..1 + len]) {
                                     Some(packet) => {
                                         let _ = socket.send(&packet.to_bytes());
                                     }
-                                    // Unreachable with MAX_OPUS_FRAME_SIZE = cap - 1;
-                                    // kept as the explicit no-truncation guard.
-                                    None => log::warn!("[pipeline] dropped oversize voice frame ({} B)", 1 + len),
+                                    // Plain path: unreachable with MAX_OPUS_FRAME_SIZE = cap - 1
+                                    // (kept as the explicit no-truncation guard). Sealed path:
+                                    // no epoch keys yet / quarantined — skip the frame.
+                                    None => {
+                                        if ring.is_none() {
+                                            log::warn!("[pipeline] dropped oversize voice frame ({} B)", 1 + len);
+                                        }
+                                    }
                                 }
                                 sequence = sequence.wrapping_add(1);
                             }
@@ -931,9 +952,7 @@ pub fn run_audio_pipeline(
                         let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
                         flagged[0] = flags;
                         flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
-                        if let Some(packet) =
-                            UdpAudioPacket::new_audio(&sender_id, sequence, &flagged[..1 + len])
-                        {
+                        if let Some(packet) = make_audio_packet(sequence, &flagged[..1 + len]) {
                             let _ = socket.send(&packet.to_bytes());
                         }
                         sequence = sequence.wrapping_add(1);
@@ -981,7 +1000,20 @@ pub fn run_audio_pipeline(
                                 }
                             } else if username == sender_id {
                                 // Ignore our own reflected audio packets
-                            } else if pkt.packet_type == PACKET_TYPE_AUDIO {
+                            } else if pkt.packet_type == PACKET_TYPE_AUDIO
+                                || pkt.packet_type == PACKET_TYPE_AUDIO_SEALED
+                            {
+                                // Strict: in an encrypted channel only sealed
+                                // audio that opens under the sender's epoch key
+                                // is heard; on the plain (P2P) path only plain.
+                                let opened: Option<Vec<u8>> = match (&ring, pkt.packet_type) {
+                                    (Some(r), PACKET_TYPE_AUDIO_SEALED) => frame_crypto::open_audio(
+                                        &r.load(), Kind::Voice, &username, pkt.sequence, pkt.payload_data(),
+                                    ),
+                                    (None, PACKET_TYPE_AUDIO) => Some(pkt.payload_data().to_vec()),
+                                    _ => None,
+                                };
+                                let Some(opened) = opened else { continue };
                                 let now = Instant::now();
                                 let is_new = !remote_peers.contains_key(&username);
                                 if is_new {
@@ -995,7 +1027,7 @@ pub fn run_audio_pipeline(
                                 peer.last_packet_time = now;
                                 if inserted { peers_changed = true; }
 
-                                let raw_payload = pkt.payload_data();
+                                let raw_payload: &[u8] = &opened;
                                 let (flags, opus_data) = if raw_payload.len() > 1 {
                                     (raw_payload[0], &raw_payload[1..])
                                 } else {
@@ -1018,13 +1050,23 @@ pub fn run_audio_pipeline(
                                 let is_silence = flags & FLAG_SILENCE != 0;
                                 peer.voice_jitter.push(pkt.sequence, opus_data.to_vec(), is_silence);
                                 peer.voice_underrun_logged = false;
-                            } else if pkt.packet_type == PACKET_TYPE_STREAM_AUDIO {
+                            } else if pkt.packet_type == PACKET_TYPE_STREAM_AUDIO
+                                || pkt.packet_type == PACKET_TYPE_STREAM_AUDIO_SEALED
+                            {
                                 // Only for streams we're watching. The community
                                 // relay fans STREAM_AUDIO out to watchers only, so
                                 // stop-watching silenced it at the source; a P2P
                                 // peer sends it unconditionally, so gate here —
                                 // otherwise the share keeps playing after you stop
                                 // watching (and again when they restart it).
+                                let opened: Option<Vec<u8>> = match (&ring, pkt.packet_type) {
+                                    (Some(r), PACKET_TYPE_STREAM_AUDIO_SEALED) => frame_crypto::open_audio(
+                                        &r.load(), Kind::StreamAudio, &username, pkt.sequence, pkt.payload_data(),
+                                    ),
+                                    (None, PACKET_TYPE_STREAM_AUDIO) => Some(pkt.payload_data().to_vec()),
+                                    _ => None,
+                                };
+                                let Some(opened) = opened else { continue };
                                 if username != sender_id && super::is_watched(&username) {
                                     let now = Instant::now();
                                     let inserted = !remote_peers.contains_key(&username);
@@ -1053,7 +1095,7 @@ pub fn run_audio_pipeline(
                                     // WebCodecs video painting immediately it
                                     // had become a pure audio-behind-video lag
                                     // (see peer.rs).
-                                    peer.stream_jitter.push(pkt.sequence, pkt.payload_data().to_vec(), false);
+                                    peer.stream_jitter.push(pkt.sequence, opened, false);
                                 }
                             }
                         }

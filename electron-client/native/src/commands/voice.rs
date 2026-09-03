@@ -140,6 +140,30 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
         let host = client.host.clone();
         let port = client.port;
         let jwt = client.jwt.clone();
+        let mls_write_tx = join_tx.clone();
+
+        // Strict E2EE: community voice is MLS-encrypted, so this device needs
+        // its identity keys loaded. The renderer checks first and opens the
+        // set-up / unlock prompt; this is the backstop.
+        if s.e2ee.status != crate::e2ee::session::Status::Ready {
+            return Err(napi::Error::from_reason(
+                "Set up encryption (Settings → Privacy) to join voice channels",
+            ));
+        }
+        let username = s
+            .username
+            .clone()
+            .ok_or_else(|| napi::Error::from_reason("Not signed in"))?;
+        let identity = s
+            .e2ee
+            .store
+            .as_ref()
+            .and_then(|st| st.current())
+            .cloned()
+            .ok_or_else(|| napi::Error::from_reason("Encryption keys not loaded"))?;
+        // A previous session's group driver dies with its engine.
+        s.voice_mls = None;
+        let ring = crate::media::frame_crypto::new_shared(&username);
 
         // Load the user's saved audio-device preferences from disk so the
         // pipeline starts with them on the first build attempt instead of
@@ -163,8 +187,24 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
             bitrate_bps,
             saved_input,
             saved_output,
+            ring.clone(),
         )
         .map_err(napi::Error::from_reason)?;
+        // The MLS group for this channel: joins (or creates) on the server's
+        // GroupInfo and feeds epoch keys into `ring` — the engine sends
+        // nothing until the first epoch lands.
+        let handle = crate::e2ee::group::start(
+            state_arc.clone(),
+            server_id.clone(),
+            channel_id.clone(),
+            username,
+            &identity,
+            jwt.clone(),
+            mls_write_tx,
+            ring,
+        )
+        .map_err(napi::Error::from_reason)?;
+        s.voice_mls = Some(handle);
 
         // Restore persisted mute/deafen so the user's preference is
         // sticky across voice sessions.
@@ -250,6 +290,10 @@ pub async fn leave_voice_channel() -> napi::Result<()> {
                 leave_sends.push((tx, data));
             }
         }
+
+        // The MLS group driver goes with the session (the others remove
+        // our leaf once the server drops us from the roster).
+        s.voice_mls = None;
 
         // Capture the engine's mute/deafen state before destroying it.
         let (saved_muted, saved_deafened, saved_mbd) = s

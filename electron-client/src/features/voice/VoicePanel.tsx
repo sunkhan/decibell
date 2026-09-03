@@ -15,6 +15,7 @@ import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
 import { canWatchStream } from "../../utils/canWatchStream";
 import { useStreamThumbnails } from "./useStreamThumbnails";
 import { PERM, useChannelPermission } from "../servers/permissions";
+import { LockGlyph } from "../chat/MessageBubble";
 
 const EMPTY_CHANNELS: never[] = [];
 
@@ -165,6 +166,7 @@ export default function VoicePanel() {
           <span className="font-display text-[16px] font-semibold text-text-primary">
             {channelName}
           </span>
+          <VoiceEncryptionBadge />
           <span
             className="ml-auto text-[12px] text-text-muted"
             title={latencyMs != null ? `${latencyMs}ms` : undefined}
@@ -590,3 +592,38 @@ const ParticipantCard = memo(function ParticipantCard({
     </div>
   );
 });
+
+/// MLS state of the connected channel: sealed and verified, still joining
+/// the group, resyncing after a missed epoch, or quarantined because a
+/// member's identity didn't verify (nothing is sent until they're removed).
+function VoiceEncryptionBadge() {
+  const e2ee = useVoiceStore((s) => s.e2ee);
+  const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
+  if (!connectedChannelId) return null;
+  const state = e2ee?.state ?? "joining";
+  const { label, tone, title } =
+    state === "ready"
+      ? {
+          label: "Encrypted",
+          tone: "bg-success/15 text-success",
+          title: `End-to-end encrypted (MLS epoch ${e2ee?.epoch ?? 0}, ${e2ee?.members ?? 0} members)`,
+        }
+      : state === "quarantine"
+        ? {
+            label: "Unverified member",
+            tone: "bg-warning/15 text-warning",
+            title: `Not sending: ${e2ee?.unverified.join(", ")} could not be verified`,
+          }
+        : state === "failed"
+          ? { label: "Encryption failed", tone: "bg-error/15 text-error", title: "Leave and rejoin the channel" }
+          : { label: "Securing…", tone: "bg-text-muted/15 text-text-muted", title: "Joining the channel's encryption group" };
+  return (
+    <span
+      title={title}
+      className={`flex items-center gap-[5px] rounded-sm px-2 py-0.5 font-channel text-[11px] font-medium ${tone}`}
+    >
+      <LockGlyph size={11} />
+      {label}
+    </span>
+  );
+}

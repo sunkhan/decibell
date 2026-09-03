@@ -604,6 +604,18 @@ export interface E2eePeerChangedPayload {
   fingerprint: string;
 }
 
+/// `voice_e2ee_state`: the MLS group behind the current voice channel.
+export type VoiceE2eeStateKind = "joining" | "ready" | "resyncing" | "quarantine" | "failed";
+export interface VoiceE2eeStatePayload {
+  serverId: string;
+  channelId: string;
+  state: VoiceE2eeStateKind;
+  epoch: number;
+  members: number;
+  /// Members whose leaf identity did not verify against central.
+  unverified: string[];
+}
+
 export interface E2eePeerInfo {
   hasKeys: boolean;
   keyId: number;

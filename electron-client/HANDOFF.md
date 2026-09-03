@@ -468,6 +468,21 @@ Design: `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`. The short versio
   changed" banner + toast + re-pin.
 - Argon2id runs on the blocking pool (~100 ms at 64 MiB); `x25519-dalek` is used because
   `ring` only offers ephemeral agreement (no static secrets).
+- **Voice channels are MLS groups** (`e2ee/group.rs`, OpenMLS 0.9): `join_voice_channel` refuses
+  without loaded keys, mints a `frame_crypto::KeyRing` and a driver task that fetches the server's
+  GroupInfo, creates or externally joins, and pushes epoch keys into the ring after every merge.
+  The ring rides `VoiceEngine::start(.., ring)` into the audio pipeline, the video receive thread,
+  `VideoSender` (seals a whole frame, then chunks — FEC/NACK untouched) and `AudioStreamEngine`.
+  Sealed packet types 7/8/9 mirror 0/6/1; an encrypted session drops the plain types, the P2P
+  call path (`ring = None`) drops the sealed ones. The driver resyncs by rejoining on any
+  processing error, removes roster ghosts after 3 s (lowest verified name commits), and
+  quarantines the epoch (nothing sent) when a leaf's identity doesn't match central. Routing:
+  `net/community.rs` forwards `MlsGroupInfoRes` / `MlsCommitRes` / `MlsCommitBroadcast` and the
+  presence roster to `AppState.voice_mls.tx`. OpenMLS gotchas: `MlsMessageIn` has no
+  `into_verifiable_group_info` — match `extract()` on `MlsMessageBodyIn::GroupInfo`; the
+  commit bundle's GroupInfo already carries the ratchet tree and the external-init key when
+  `use_ratchet_tree_extension` is on; handshake wire format is PURE_PLAINTEXT (it travels in TLS,
+  the server knows the roster anyway).
 - **Calls are authenticated with the same identity** (`e2ee/call_auth.rs`,
   `session::sign_own_call_key` / `verify_peer_call_key`): `send_call_signal` signs the
   ephemeral key on INVITE / ACCEPT, `call_connect` verifies against the peer's *current*

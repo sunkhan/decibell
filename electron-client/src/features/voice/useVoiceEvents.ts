@@ -1,3 +1,4 @@
+import type { VoiceE2eeStatePayload } from "../../types";
 import { useEffect } from "react";
 import { invoke, listen } from "../../lib/ipc";
 import { useVoiceStore } from "../../stores/voiceStore";
@@ -45,6 +46,27 @@ export function useVoiceEvents() {
   useEffect(() => {
     const promises: Promise<() => void>[] = [];
     let prevParticipants: Set<string> | null = null;
+
+    // MLS encryption state of the connected channel (native's group
+    // driver). Keyed by server + channel so a stale event from the
+    // previous channel can't paint the new one.
+    promises.push(
+      listen<VoiceE2eeStatePayload>("voice_e2ee_state", (event) => {
+        const p = event.payload;
+        const store = useVoiceStore.getState();
+        if (store.connectedServerId !== p.serverId || store.connectedChannelId !== p.channelId) return;
+        const prev = store.e2ee;
+        store.setE2ee(p);
+        if (p.state === "quarantine" && prev?.state !== "quarantine") {
+          toast.warning(
+            "Unverified member in voice",
+            `${p.unverified.join(", ")} could not be verified against the key directory. Nothing is sent until they are removed.`,
+          );
+        } else if (p.state === "failed" && prev?.state !== "failed") {
+          toast.error("Voice encryption failed", "Couldn't join the channel's encryption group. Leave and rejoin.");
+        }
+      }),
+    );
 
     promises.push(
       listen<{

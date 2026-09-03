@@ -944,6 +944,43 @@ stage; the profile popup's safety number now covers calls and DMs (one identity)
 errors, community build + e2e on the new proto, central mocked-pqxx syntax check. Community
 voice channels and stream watching remain the plaintext relay (tracked HIGH item).
 
+**MLS-encrypted voice channels and streams (2026-09-03) ✅ — needs a community-server release +
+a multi-client live test** — the relay path was the last plaintext media plane: Opus and encoded
+video in the clear through the community server, a JWT-tail sender id never re-verified. Now every
+voice channel session is an **MLS group (RFC 9420, OpenMLS 0.9)** keyed by the E2EE identity
+(Ed25519 signing key = MLS credential, username = BasicCredential identity, ciphersuite
+X25519/AES-128-GCM/Ed25519). Members join by **external commit** against a GroupInfo the server
+holds; leaves are commits by an elected member; every epoch exports one secret from which each
+member derives every sender's keys locally (`media/frame_crypto.rs`: HKDF per member × kind).
+Media: new sealed packet types **AUDIO_SEALED 7 / STREAM_AUDIO_SEALED 8 / VIDEO_SEALED 9** keep the
+plain twins' headers (the relay needs them) and seal only the payload — audio `[epoch][counter]ct`
+(28 B), video **one sealed frame** `[epoch][stream_salt]ct` (24 B/frame) chunked as before so FEC and
+NACK work on ciphertext untouched; AADs bind type, username (the relay's rewrite), sequence /
+frame id / keyframe flag / codec; previous-epoch keys stay usable 2 s. **Strict policy (user
+decision):** a device without E2EE keys can't join voice (renderer opens the set-up/unlock
+prompt; native refuses), receivers ignore plaintext media in a channel session, no fallback.
+**Thumbnails stay plaintext** (user decision: non-members should see what a stream is about).
+Identity binding: after every merge each leaf's (identity, signature key) is checked against
+central's directory; an unverified leaf **quarantines** the epoch (nothing sealed, badge +
+toast) and the elected member removes it — a server can put anyone on the roster but not a fake
+identity in the group. Server = the MLS delivery service (`MLS_GROUP_INFO_REQ/RES`,
+`MLS_GROUP_CREATE_REQ`, `MLS_COMMIT_REQ/RES` with the `epoch == current + 1` rule,
+`MLS_COMMIT_BROADCAST` to participants except the committer; group dropped when the channel
+empties; 20/5 bucket; 256 KiB blob cap; relay treats 7/8/9 like 0/6/1) — it never holds a key.
+Native: `e2ee/group.rs` driver task per session (create / external join / process / merge /
+resync-by-rejoin / ghost removal after 3 s by the lowest verified name / quarantine),
+`voice_mls` in AppState, ring threaded through `run_audio_pipeline`, `VideoSender`
+(frame-level seal), `run_video_recv_thread`, `AudioStreamEngine`; P2P calls keep the plain
+inner types inside the sealed socket. Renderer: `voice_e2ee_state` → header badge (Encrypted /
+Securing… / Unverified member / Encryption failed), join gate. Known: one device per user per
+channel (MLS requires unique leaf keys; the relay never distinguished devices anyway); server-side
+leaf verification and the UDP endpoint-hijack item stay open. Design:
+`docs/superpowers/specs/2026-09-03-mls-voice-channel-encryption-design.md`. Verified: `cargo test
+--lib` (frame_crypto round trips / tamper / epoch grace / quarantine, an in-process 3-member MLS
+session through a simulated DS incl. removal + rejoin + stale-info rejection), community e2e
+(create/info/epoch rule/broadcast-except-committer/participant gating/sealed relay/drop on
+empty), tsc 0, community build.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

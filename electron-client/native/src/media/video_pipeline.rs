@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use arc_swap::ArcSwap;
 
 use super::media_socket::MediaSocket;
-use super::video_packet::{UdpVideoPacket, UDP_MAX_PAYLOAD};
+use super::video_packet::{UdpVideoPacket, PACKET_TYPE_VIDEO, UDP_MAX_PAYLOAD};
 
 /// Per-stream send context. One of these per active outgoing stream.
 /// Cheap to construct — just an atomic counter and a clone of the UDP
@@ -27,14 +27,27 @@ pub struct VideoSender {
     socket: ArcSwap<MediaSocket>,
     sender_id: String,
     next_frame_id: AtomicU32,
+    /// Community channel: the MLS epoch keys; each frame is sealed once
+    /// before chunking (`frame_crypto::seal_video_frame`) and sent as
+    /// VIDEO_SEALED. None on the P2P path (the socket itself is sealed).
+    ring: Option<super::frame_crypto::SharedKeyRing>,
+    /// Random per stream so a restarted frame counter never reuses a
+    /// nonce within an epoch.
+    stream_salt: u32,
 }
 
 impl VideoSender {
-    pub fn new(socket: Arc<MediaSocket>, sender_id: String) -> Self {
+    pub fn new(
+        socket: Arc<MediaSocket>,
+        sender_id: String,
+        ring: Option<super::frame_crypto::SharedKeyRing>,
+    ) -> Self {
         Self {
             socket: ArcSwap::from(socket),
             sender_id,
             next_frame_id: AtomicU32::new(0),
+            ring,
+            stream_salt: super::frame_crypto::random_salt(),
         }
     }
 
@@ -54,6 +67,28 @@ impl VideoSender {
         data: &[u8],
     ) -> (u32, u32) {
         let frame_id = self.next_frame_id.fetch_add(1, Ordering::Relaxed);
+        // Encrypted channel: seal the whole frame first. No epoch keys yet
+        // (or quarantined) → the frame is dropped, never sent in the clear.
+        let sealed;
+        let (data, packet_type): (&[u8], u8) = match &self.ring {
+            Some(r) => {
+                match super::frame_crypto::seal_video_frame(
+                    &r.load(),
+                    self.stream_salt,
+                    frame_id,
+                    is_keyframe,
+                    codec_byte,
+                    data,
+                ) {
+                    Some(s) => {
+                        sealed = s;
+                        (&sealed, super::frame_crypto::PACKET_TYPE_VIDEO_SEALED)
+                    }
+                    None => return (0, 1),
+                }
+            }
+            None => (data, PACKET_TYPE_VIDEO),
+        };
         let chunks: Vec<&[u8]> = data.chunks(UDP_MAX_PAYLOAD).collect();
         let total = chunks.len() as u16;
         let mut ok = 0u32;
@@ -61,7 +96,7 @@ impl VideoSender {
         // Snapshot the current socket once per frame (cheap Arc load).
         let socket = self.socket.load();
         for (i, chunk) in chunks.iter().enumerate() {
-            let pkt = UdpVideoPacket::new_with_codec(
+            let mut pkt = UdpVideoPacket::new_with_codec(
                 &self.sender_id,
                 frame_id,
                 i as u16,
@@ -70,6 +105,7 @@ impl VideoSender {
                 codec_byte,
                 chunk,
             );
+            pkt.packet_type = packet_type;
             match socket.send(&pkt.to_bytes()) {
                 Ok(_) => ok += 1,
                 Err(_) => err += 1,
@@ -138,7 +174,7 @@ mod tests {
     fn sender() -> Arc<VideoSender> {
         let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
         sock.connect(sock.local_addr().unwrap()).unwrap();
-        Arc::new(VideoSender::new(Arc::new(MediaSocket::plain(sock, "me")), "me".into()))
+        Arc::new(VideoSender::new(Arc::new(MediaSocket::plain(sock, "me")), "me".into(), None))
     }
 
     #[test]

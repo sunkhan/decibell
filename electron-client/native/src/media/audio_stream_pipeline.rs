@@ -31,7 +31,10 @@ pub fn run_audio_stream_pipeline(
     mut socket: Arc<MediaSocket>,
     sender_id: String,
     bitrate_kbps: u32,
+    ring: Option<super::frame_crypto::SharedKeyRing>,
 ) {
+    use super::frame_crypto::{AudioSealer, Kind, PACKET_TYPE_STREAM_AUDIO_SEALED};
+    let sealer = AudioSealer::new(Kind::StreamAudio);
     let encoder = match StereoOpusEncoder::new((bitrate_kbps * 1000) as i32) {
         Ok(e) => e,
         Err(e) => {
@@ -149,11 +152,23 @@ pub fn run_audio_stream_pipeline(
             let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
             match encoder.encode(&pcm_buf[..STEREO_FRAME_SAMPLES], &mut opus_out) {
                 Ok(len) => {
-                    match UdpAudioPacket::new_stream_audio(&sender_id, sequence, &opus_out[..len]) {
+                    // Community channel: seal under the MLS epoch key (skipped
+                    // while no epoch is ready); P2P: plain inside the sealed socket.
+                    let packet = match &ring {
+                        Some(r) => sealer.seal(&r.load(), sequence, &opus_out[..len]).and_then(|sealed| {
+                            UdpAudioPacket::new_typed(PACKET_TYPE_STREAM_AUDIO_SEALED, &sender_id, sequence, &sealed)
+                        }),
+                        None => UdpAudioPacket::new_stream_audio(&sender_id, sequence, &opus_out[..len]),
+                    };
+                    match packet {
                         Some(packet) => {
                             let _ = socket.send(&packet.to_bytes());
                         }
-                        None => log::warn!("[stream-audio] dropped oversize frame ({} B)", len),
+                        None => {
+                            if ring.is_none() {
+                                log::warn!("[stream-audio] dropped oversize frame ({} B)", len);
+                            }
+                        }
                     }
                     sequence = sequence.wrapping_add(1);
                     frame_count += 1;

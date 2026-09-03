@@ -163,6 +163,7 @@ pub async fn logout() -> napi::Result<()> {
         s.pending_avatar_update = None;
         // E2EE: keys leave memory with the session; the on-disk store
         // stays (it's per account) and reloads on the next login.
+        s.voice_mls = None;
         s.e2ee.reset();
         s.pending_key_fetches.clear();
         s.pending_key_publish = None;

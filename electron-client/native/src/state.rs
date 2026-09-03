@@ -167,6 +167,10 @@ pub struct AppState {
     /// The ordered DM crypto worker's queue (installed on first DM
     /// packet; outlives reconnects). See e2ee/session.rs.
     pub dm_crypto_tx: Option<tokio::sync::mpsc::Sender<crate::e2ee::session::DmJob>>,
+    /// The MLS group driver for the current voice channel session
+    /// (community path only). Created in `join_voice_channel`, dropped
+    /// with the engine. Its `ring` is what the pipelines seal with.
+    pub voice_mls: Option<crate::e2ee::group::GroupHandle>,
 }
 
 impl Default for AppState {
@@ -205,6 +209,7 @@ impl Default for AppState {
             pending_key_publish: None,
             pending_backup_fetch: None,
             dm_crypto_tx: None,
+            voice_mls: None,
         }
     }
 }

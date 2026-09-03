@@ -1008,6 +1008,16 @@ impl CommunityClient {
                     }
                     drop(cache_arc);
 
+                    // The MLS group driver reconciles the roster (ghost
+                    // removal, elected remover) from this same update.
+                    {
+                        let s = state.lock().await;
+                        if let Some(h) = s.voice_mls.as_ref() {
+                            if h.server_id == server_id && h.channel_id == update.channel_id {
+                                let _ = h.tx.send(crate::e2ee::group::GroupCmd::Presence(participants.clone()));
+                            }
+                        }
+                    }
                     events::emit_voice_presence_updated(events::VoicePresenceUpdatedPayload {
                         server_id: server_id.clone(),
                         channel_id: update.channel_id,
@@ -1015,6 +1025,44 @@ impl CommunityClient {
                         user_states,
                         user_capabilities,
                     });
+                }
+                // MLS delivery-service replies + other members' commits go
+                // straight to the group driver for this channel.
+                Some(packet::Payload::MlsGroupInfoRes(res)) => {
+                    let s = state.lock().await;
+                    if let Some(h) = s.voice_mls.as_ref() {
+                        if h.server_id == server_id && h.channel_id == res.channel_id {
+                            let _ = h.tx.send(crate::e2ee::group::GroupCmd::GroupInfoRes {
+                                exists: res.exists,
+                                epoch: res.epoch,
+                                group_info: res.group_info,
+                            });
+                        }
+                    }
+                }
+                Some(packet::Payload::MlsCommitRes(res)) => {
+                    let s = state.lock().await;
+                    if let Some(h) = s.voice_mls.as_ref() {
+                        if h.server_id == server_id && h.channel_id == res.channel_id {
+                            let _ = h.tx.send(crate::e2ee::group::GroupCmd::CommitRes {
+                                success: res.success,
+                                message: res.message,
+                                epoch: res.epoch,
+                            });
+                        }
+                    }
+                }
+                Some(packet::Payload::MlsCommitBroadcast(b)) => {
+                    let s = state.lock().await;
+                    if let Some(h) = s.voice_mls.as_ref() {
+                        if h.server_id == server_id && h.channel_id == b.channel_id {
+                            let _ = h.tx.send(crate::e2ee::group::GroupCmd::CommitBroadcast {
+                                epoch: b.epoch,
+                                sender: b.sender,
+                                commit: b.commit,
+                            });
+                        }
+                    }
                 }
                 Some(packet::Payload::StreamPresenceUpdate(update)) => {
                     let streams = update

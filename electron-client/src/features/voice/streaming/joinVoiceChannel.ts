@@ -28,11 +28,30 @@ import { playSound } from "../../../utils/sounds";
 import { flushSaveSettings } from "../../settings/saveSettings";
 import { applyVoicePrefs } from "./applyVoicePrefs";
 import { endCall } from "../../call/callActions";
+import { useE2eeStore } from "../../../stores/e2eeStore";
+import { toast } from "../../../stores/toastStore";
 
 export async function joinVoiceChannel(
   serverId: string,
   channelId: string,
 ): Promise<void> {
+  // Strict E2EE: community voice runs inside an MLS group keyed by this
+  // device's identity. Without keys loaded there is nothing to join with —
+  // send the user to the set-up / unlock prompt instead of a failed join.
+  const e2ee = useE2eeStore.getState();
+  if (e2ee.status !== "ready") {
+    if (e2ee.status === "unavailable") {
+      toast.warning("Voice unavailable", "Your central server doesn't support encryption, which voice channels require.");
+    } else {
+      toast.info(
+        e2ee.status === "locked" ? "Unlock encryption to join voice" : "Set up encryption to join voice",
+        "Voice channels are end-to-end encrypted with your identity keys.",
+      );
+      e2ee.openPassphraseModal(e2ee.status === "locked" ? "unlock" : "setup");
+    }
+    return;
+  }
+
   // A DM call and a voice channel are mutually exclusive (one native
   // VoiceEngine, one mic). Hang up first; native refuses the join otherwise.
   await endCall("Joined a voice channel");
