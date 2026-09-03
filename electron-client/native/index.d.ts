@@ -92,6 +92,13 @@ export interface CallConnectArgs {
   remotePubKey: string
   remoteCandidates: Array<CallCandidateArg>
   voiceBitrateKbps?: number
+  /**
+   * The peer's signature over that key (base64) + their identity
+   * generation, straight from the INVITE / ACCEPT signal. Absent when
+   * they sent none.
+   */
+  remotePubKeySig?: string
+  remoteKeyId?: number
 }
 export declare function callConnect(args: CallConnectArgs): Promise<void>
 export declare function callEnd(): Promise<void>

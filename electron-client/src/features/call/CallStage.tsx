@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { LockGlyph } from "../chat/MessageBubble";
 import { invoke } from "../../lib/ipc";
 import { getCurrentWindow } from "../../lib/window";
 import { useAuthStore } from "../../stores/authStore";
@@ -99,6 +100,7 @@ function qualityLabel(info: StreamInfo | undefined): string {
 function Stage({ peer }: { peer: string }) {
   const me = useAuthStore((s) => s.username) ?? "";
   const status = useCallStore((s) => s.status);
+  const verified = useCallStore((s) => s.verified);
   const ringingAcked = useCallStore((s) => s.ringingAcked);
   const startedAt = useCallStore((s) => s.startedAt);
   const connectedPath = useCallStore((s) => s.connectedPath);
@@ -366,6 +368,16 @@ function Stage({ peer }: { peer: string }) {
           </>
         ) : (
           statusText && <Pill dot={live}>{statusText}</Pill>
+        )}
+        {/* E2EE: the peer's call key was signed by their identity and checked
+            against the pinned one (native, before any media key existed). */}
+        {live && verified !== null && (
+          <Pill>
+            <span className={verified ? "text-success" : "text-text-muted"}>
+              <LockGlyph size={10} />
+            </span>
+            {verified ? "Verified" : "Not verified"}
+          </Pill>
         )}
       </div>
 

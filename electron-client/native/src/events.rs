@@ -1598,6 +1598,11 @@ pub struct CallSignalPayload {
     pub candidates: Vec<CallCandidatePayload>,
     pub stream: Option<CallStreamMetaPayload>,
     pub timestamp: i64,
+    /// base64 Ed25519 signature over the ephemeral key by the sender's
+    /// E2EE identity (+ the identity generation). None / 0 = unsigned.
+    /// Opaque to the renderer — handed back into `call_connect`.
+    pub pub_key_sig: Option<String>,
+    pub key_id: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1607,6 +1612,10 @@ pub struct CallConnectedPayload {
     pub rtt_ms: f64,
     /// "host" | "srflx" — which candidate kind the voice socket landed on.
     pub path: String,
+    /// The peer's ephemeral key was signed by their E2EE identity and
+    /// verified against the pinned one. False = the peer has no E2EE
+    /// keys (the exchange is sealed but unauthenticated, as before).
+    pub verified: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

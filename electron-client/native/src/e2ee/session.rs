@@ -16,6 +16,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use super::backup;
+use super::call_auth;
 use super::envelope::{self, OpenError};
 use super::identity::{fingerprint, IdentityKeys, PublicBundle, KEY_LEN};
 use super::keystore::{self, KeyStore, PeerRecord};
@@ -779,6 +780,95 @@ pub async fn on_keys_changed(state: &Arc<Mutex<AppState>>, username: &str, key_i
             s.e2ee.pending_backup = None;
             emit_status(&s);
         }
+    }
+}
+
+// ── P2P call key authentication ─────────────────────────────────────
+
+/// Sign our ephemeral call public key with the current identity. None
+/// when encryption isn't ready on this device (the call goes unsigned).
+pub async fn sign_own_call_key(
+    state: &Arc<Mutex<AppState>>,
+    call_id: &str,
+    to: &str,
+    pub_key: &[u8],
+) -> Option<(Vec<u8>, u32)> {
+    let s = state.lock().await;
+    if s.e2ee.status != Status::Ready {
+        return None;
+    }
+    let me = s.username.clone()?;
+    let id = s.e2ee.store.as_ref()?.current()?;
+    match call_auth::sign(id, call_id, &me, to, pub_key) {
+        Ok(sig) => Some((sig.to_vec(), id.key_id)),
+        Err(e) => {
+            log::warn!("[e2ee] call key signing failed: {e}");
+            None
+        }
+    }
+}
+
+pub enum CallKeyAuth {
+    /// Signed by the peer's current identity.
+    Verified,
+    /// The peer has no E2EE identity — nothing to verify against.
+    Unverified,
+    /// The peer has an identity but the signature is missing, stale or
+    /// wrong; or their keys couldn't be looked up. Refuse the call.
+    Rejected(String),
+}
+
+/// Check the peer's signature over their ephemeral call key against
+/// their *current* identity (TOFU-pinned, so a reset surfaces as a key
+/// change like it does for DMs). Verification needs only their public
+/// key, so it works even when this device hasn't set up encryption.
+pub async fn verify_peer_call_key(
+    state: &Arc<Mutex<AppState>>,
+    peer: &str,
+    call_id: &str,
+    peer_pub: &[u8],
+    sig: &[u8],
+    key_id: u32,
+) -> CallKeyAuth {
+    let (me, supported) = {
+        let s = state.lock().await;
+        (s.username.clone().unwrap_or_default(), s.e2ee.supported)
+    };
+    if !supported {
+        // Old central: no key endpoints at all, nobody can be verified.
+        return CallKeyAuth::Unverified;
+    }
+    let current = match resolve_peer_current(state, peer).await {
+        Ok(c) => c,
+        Err(e) => return CallKeyAuth::Rejected(format!("couldn't look up their encryption keys ({e})")),
+    };
+    let Some(current) = current else {
+        if !sig.is_empty() {
+            // Signed, yet the server claims they have no identity — the
+            // server is lying about one of the two.
+            return CallKeyAuth::Rejected("the call is signed but the server reports no keys".into());
+        }
+        return CallKeyAuth::Unverified;
+    };
+    if sig.is_empty() || key_id == 0 {
+        return CallKeyAuth::Rejected("they have encryption keys but this call isn't signed".into());
+    }
+    let bundle = if key_id == current.key_id {
+        current.clone()
+    } else {
+        match fetch_bundle(state, peer, key_id).await {
+            Ok(Some(b)) => b,
+            Ok(None) => return CallKeyAuth::Rejected("the signing key isn't on the server".into()),
+            Err(e) => return CallKeyAuth::Rejected(format!("couldn't look up the signing key ({e})")),
+        }
+    };
+    if bundle.sign_pub != current.sign_pub {
+        return CallKeyAuth::Rejected("the call was signed with a previous identity".into());
+    }
+    if call_auth::verify(&bundle.sign_pub, call_id, peer, &me, peer_pub, sig) {
+        CallKeyAuth::Verified
+    } else {
+        CallKeyAuth::Rejected("the call signature is invalid".into())
     }
 }
 

@@ -129,7 +129,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   `decryptError`, and DM packets go through the ordered crypto worker (never decrypt inside
   `route_packets`: key fetches reply on that same loop). Central stores envelopes opaquely and
   gates the feature with `LoginResponse.e2ee_keys`. Design:
-  `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`.
+  `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`. **P2P calls sign their
+  ephemeral keys with the same identity** and `call_connect` verifies before deriving media
+  keys (fail closed when the peer has keys) — `2026-09-03-authenticated-p2p-calls-design.md`.
 
 ## Deeper docs
 

@@ -468,6 +468,12 @@ Design: `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`. The short versio
   changed" banner + toast + re-pin.
 - Argon2id runs on the blocking pool (~100 ms at 64 MiB); `x25519-dalek` is used because
   `ring` only offers ephemeral agreement (no static secrets).
+- **Calls are authenticated with the same identity** (`e2ee/call_auth.rs`,
+  `session::sign_own_call_key` / `verify_peer_call_key`): `send_call_signal` signs the
+  ephemeral key on INVITE / ACCEPT, `call_connect` verifies against the peer's *current*
+  pinned identity before `call_crypto::derive` and fails closed when the peer has keys but
+  the signature is missing / stale / wrong. The renderer only ferries `pubKeySig` + `keyId`
+  from `call_signal` into `call_connect`; `call_connected.verified` drives the stage pill.
 - **napi camel-casing splits on digits.** `e2ee_get_status` was exported as `e2EeGetStatus`,
   which the renderer's `invoke()` normaliser (`_x` → `X` → `e2eeGetStatus`) can never
   produce — every call would have failed with "unknown command". Any `#[napi]` fn whose name

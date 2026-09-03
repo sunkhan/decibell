@@ -181,6 +181,8 @@ export async function acceptCall(): Promise<void> {
       peer: inc.from,
       remotePubKey: inc.pubKey,
       remoteCandidates: inc.candidates,
+      remotePubKeySig: inc.pubKeySig ?? undefined,
+      remoteKeyId: inc.keyId || undefined,
     });
   } catch (e) {
     toast.error("Couldn't connect the call", String(e));
@@ -202,6 +204,8 @@ export async function connectAfterAccept(
   peer: string,
   pubKey: string,
   candidates: CallCandidate[],
+  pubKeySig: string | null,
+  keyId: number,
 ): Promise<void> {
   const call = useCallStore.getState();
   if (call.status !== "outgoing" || call.callId !== callId) return;
@@ -214,6 +218,8 @@ export async function connectAfterAccept(
       peer,
       remotePubKey: pubKey,
       remoteCandidates: candidates,
+      remotePubKeySig: pubKeySig ?? undefined,
+      remoteKeyId: keyId || undefined,
     });
   } catch (e) {
     toast.error("Couldn't connect the call", String(e));
@@ -222,11 +228,15 @@ export async function connectAfterAccept(
 }
 
 /// Native reported the punch succeeded and the P2P engine is up.
-export async function onCallConnected(callId: string, path: "host" | "srflx"): Promise<void> {
+export async function onCallConnected(
+  callId: string,
+  path: "host" | "srflx",
+  verified: boolean,
+): Promise<void> {
   const call = useCallStore.getState();
   if (call.callId !== callId || !call.peer) return;
   const me = useAuthStore.getState().username ?? "";
-  call.setActive(path);
+  call.setActive(path, verified);
   const v = useVoiceStore.getState();
   v.setConnectedChannel(null, null);
   v.setCallPeer(call.peer);

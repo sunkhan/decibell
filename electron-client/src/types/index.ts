@@ -799,6 +799,10 @@ export interface CallSignalPayload {
   candidates: CallCandidate[];
   stream: CallStreamMeta | null;
   timestamp: number;
+  /// Sender's E2EE identity signature over pubKey (+ generation). Opaque:
+  /// handed back to `call_connect`, which verifies it natively.
+  pubKeySig: string | null;
+  keyId: number;
 }
 
 export interface CallConfig {
@@ -812,6 +816,9 @@ export interface CallConnectedPayload {
   callId: string;
   rttMs: number;
   path: "host" | "srflx";
+  /// The peer's call key was signed by their E2EE identity and verified
+  /// natively; false = they have no keys (sealed but unauthenticated).
+  verified: boolean;
 }
 
 export interface CallFailedPayload {

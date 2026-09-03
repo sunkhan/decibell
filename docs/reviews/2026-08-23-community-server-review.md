@@ -924,6 +924,26 @@ hostile params, keystore at-rest + username binding), tsc 0 errors, community bu
 a mocked pqxx. Non-goals now: forward secrecy, per-device keys, verified-contact state,
 channel encryption, signed call keys (the identity keys make that the next small step).
 
+**Authenticated P2P calls (2026-09-03) ✅ — same central rebuild + live test as E2EE DMs** —
+DM calls sealed every datagram (AES-256-GCM, ephemeral X25519 per call) but the ephemeral
+keys travelled through central unauthenticated, so a malicious central could swap them and
+sit in the middle (the calls spec's documented gap). Now each side signs its ephemeral key
+with its E2EE identity — `Ed25519("decibell-call-auth-v1" ‖ call_id ‖ from ‖ to ‖ pub_key)`,
+`CallSignal.pub_key_sig` + `key_id` (INVITE / ACCEPT; central relays, caps at 64 B) — and
+`call_connect` verifies against the peer's *current* pinned identity before any media key is
+derived (`e2ee/call_auth.rs`, `session::sign_own_call_key` / `verify_peer_call_key`). Fail
+closed: a peer with keys must have signed with its current identity or the call is refused
+("Couldn't verify X"); a peer without keys yields a sealed-but-unverified call; a signature
+from a peer the server claims has no keys is refused (the server is lying about one of the
+two). Verification needs only the peer's public key, so a not-yet-set-up device still
+verifies. Renderer ferries `pubKeySig` / `keyId` opaquely from `call_signal` into
+`call_connect`; `call_connected.verified` shows a **Verified / Not verified** pill on the call
+stage; the profile popup's safety number now covers calls and DMs (one identity). Design:
+`docs/superpowers/specs/2026-09-03-authenticated-p2p-calls-design.md`. Verified: `cargo test
+--lib` (call_auth round trip + every bound field / foreign identity / malformed), tsc 0
+errors, community build + e2e on the new proto, central mocked-pqxx syntax check. Community
+voice channels and stream watching remain the plaintext relay (tracked HIGH item).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

@@ -19,6 +19,10 @@ export interface IncomingCall {
   from: string;
   pubKey: string;
   candidates: CallCandidate[];
+  /// Caller's identity signature over pubKey (+ generation) — opaque,
+  /// passed through to `call_connect` on Accept.
+  pubKeySig: string | null;
+  keyId: number;
 }
 
 interface CallState {
@@ -32,6 +36,9 @@ interface CallState {
   /// Epoch ms when `call_connected` arrived; the panel's timer base.
   startedAt: number | null;
   connectedPath: "host" | "srflx" | null;
+  /// Native verified the peer's call key against their E2EE identity;
+  /// false = they have no keys. null until connected.
+  verified: boolean | null;
   /// Why the last call ended (shown briefly in the panel / toast).
   endReason: string | null;
   /// The pending INVITE while `status === "incoming"`, kept until Accept.
@@ -54,7 +61,7 @@ interface CallState {
   setIncoming: (call: IncomingCall) => void;
   setRingingAcked: () => void;
   setConnecting: () => void;
-  setActive: (path: "host" | "srflx") => void;
+  setActive: (path: "host" | "srflx", verified: boolean) => void;
   reset: (endReason?: string | null) => void;
 }
 
@@ -66,6 +73,7 @@ export const useCallStore = create<CallState>((set) => ({
   ringingAcked: false,
   startedAt: null,
   connectedPath: null,
+  verified: null,
   endReason: null,
   incoming: null,
   callSignaling: false,
@@ -84,6 +92,7 @@ export const useCallStore = create<CallState>((set) => ({
       ringingAcked: false,
       startedAt: null,
       connectedPath: null,
+      verified: null,
       endReason: null,
       incoming: null,
     }),
@@ -96,12 +105,14 @@ export const useCallStore = create<CallState>((set) => ({
       ringingAcked: false,
       startedAt: null,
       connectedPath: null,
+      verified: null,
       endReason: null,
       incoming: call,
     }),
   setRingingAcked: () => set({ ringingAcked: true }),
   setConnecting: () => set({ status: "connecting", incoming: null }),
-  setActive: (path) => set({ status: "active", startedAt: Date.now(), connectedPath: path }),
+  setActive: (path, verified) =>
+    set({ status: "active", startedAt: Date.now(), connectedPath: path, verified }),
   reset: (endReason = null) =>
     set({
       status: "idle",
@@ -111,6 +122,7 @@ export const useCallStore = create<CallState>((set) => ({
       ringingAcked: false,
       startedAt: null,
       connectedPath: null,
+      verified: null,
       endReason,
       incoming: null,
       theater: false,

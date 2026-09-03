@@ -549,6 +549,11 @@ impl CentralClient {
                     } else {
                         Some(base64::engine::general_purpose::STANDARD.encode(&sig.pub_key))
                     };
+                    let pub_key_sig = if sig.pub_key_sig.is_empty() {
+                        None
+                    } else {
+                        Some(base64::engine::general_purpose::STANDARD.encode(&sig.pub_key_sig))
+                    };
                     let stream = sig.stream.as_ref().map(|m| events::CallStreamMetaPayload {
                         codec: m.codec,
                         width: m.width,
@@ -565,6 +570,8 @@ impl CentralClient {
                         candidates,
                         stream,
                         timestamp: sig.timestamp,
+                        pub_key_sig,
+                        key_id: sig.key_id,
                     });
                 }
                 Some(packet::Payload::ServerPictureChanged(b)) => {

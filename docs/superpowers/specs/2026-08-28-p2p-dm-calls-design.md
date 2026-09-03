@@ -27,8 +27,9 @@ encryption.
 ## Non-goals (v1)
 
 - TURN / relayed media; IPv6 candidates; group calls; webcam video;
-  missed-call persistence (an INVITE to an offline user just fails); a
-  safety-number display for the key exchange.
+  missed-call persistence (an INVITE to an offline user just fails).
+  (The key exchange is authenticated since 2026-09-03 — see
+  `2026-09-03-authenticated-p2p-calls-design.md`.)
 
 ## Architecture
 
@@ -158,10 +159,12 @@ tile and in the right-click menu.
 
 ## Security notes
 
-- Media is end-to-end sealed between the two clients. Central authenticates
-  both identities and relays the ephemeral public keys, so a malicious central
-  could substitute keys (MITM); a safety number (hash of both public keys)
-  shown in the call panel is the planned mitigation.
+- Media is end-to-end sealed between the two clients. Since 2026-09-03 the
+  ephemeral keys are signed by each side's E2EE identity and verified against
+  the pinned one before any media key is derived
+  (`2026-09-03-authenticated-p2p-calls-design.md`), so a central that swaps
+  keys can no longer sit in the middle; the call stage shows Verified / Not
+  verified and the profile popup's safety number covers calls and DMs alike.
 - Only key holders can produce a datagram that opens; the learned-peer rule
   therefore can't be hijacked by a spoofed source, and replays are dropped.
 - `MediaSocket::Sealed` is the seam for closing the tracked HIGH item on the

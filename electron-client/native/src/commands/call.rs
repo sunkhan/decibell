@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::e2ee::session::{self as e2ee, CallKeyAuth};
 use crate::events;
 use crate::media::call_crypto;
 use crate::media::media_socket::MediaSocket;
@@ -135,6 +136,19 @@ pub async fn send_call_signal(args: SendCallSignalArgs) -> napi::Result<()> {
     });
 
     let state_arc = state::shared();
+    // Authenticated exchange: sign our ephemeral key with the E2EE
+    // identity when we have one (INVITE / ACCEPT carry a key). Unsigned
+    // when encryption isn't set up — the peer then treats the call as
+    // unverified, or refuses it if it knows we do have keys.
+    let (pub_key_sig, key_id) = if !pub_key.is_empty()
+        && matches!(kind, call_signal::Kind::Invite | call_signal::Kind::Accept)
+    {
+        e2ee::sign_own_call_key(&state_arc, &args.call_id, &args.to, &pub_key)
+            .await
+            .unwrap_or_default()
+    } else {
+        (Vec::new(), 0)
+    };
     let (write_tx, data) = {
         let s = state_arc.lock().await;
         let central = s
@@ -158,6 +172,8 @@ pub async fn send_call_signal(args: SendCallSignalArgs) -> napi::Result<()> {
                 candidates,
                 stream,
                 timestamp: 0,
+                pub_key_sig,
+                key_id,
             }),
             token.as_deref(),
         );
@@ -370,6 +386,11 @@ pub struct CallConnectArgs {
     pub remote_pub_key: String,
     pub remote_candidates: Vec<CallCandidateArg>,
     pub voice_bitrate_kbps: Option<i32>,
+    /// The peer's signature over that key (base64) + their identity
+    /// generation, straight from the INVITE / ACCEPT signal. Absent when
+    /// they sent none.
+    pub remote_pub_key_sig: Option<String>,
+    pub remote_key_id: Option<u32>,
 }
 
 #[napi]
@@ -383,8 +404,37 @@ pub async fn call_connect(args: CallConnectArgs) -> napi::Result<()> {
         Some(k) if k > 0 => k * 1000,
         _ => crate::media::codec::OpusEncoder::DEFAULT_BITRATE_BPS,
     };
+    let remote_sig = match args.remote_pub_key_sig.as_deref() {
+        Some(b64) if !b64.is_empty() => base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| napi::Error::from_reason(format!("Bad remote pub_key_sig: {e}")))?,
+        _ => Vec::new(),
+    };
 
     let state_arc = state::shared();
+    // Verify the peer's identity over their ephemeral key BEFORE any key
+    // is derived. Fails closed: a peer who has E2EE keys must have signed,
+    // and the signature must verify under their current (pinned)
+    // identity. A peer without keys yields an unverified-but-allowed call.
+    let verified = match e2ee::verify_peer_call_key(
+        &state_arc,
+        &args.peer,
+        &args.call_id,
+        &peer_pub,
+        &remote_sig,
+        args.remote_key_id.unwrap_or(0),
+    )
+    .await
+    {
+        CallKeyAuth::Verified => true,
+        CallKeyAuth::Unverified => false,
+        CallKeyAuth::Rejected(why) => {
+            log::warn!("[call] {} refused: {why}", args.call_id);
+            let mut s = state_arc.lock().await;
+            s.pending_call = None;
+            return Err(napi::Error::from_reason(format!("Couldn't verify {}: {why}", args.peer)));
+        }
+    };
     let (pending, username, stop) = {
         let mut s = state_arc.lock().await;
         if s.active_call.is_some() {
@@ -576,6 +626,7 @@ pub async fn call_connect(args: CallConnectArgs) -> napi::Result<()> {
             call_id,
             rtt_ms: pv.rtt_ms.or(pm.rtt_ms).unwrap_or(0.0),
             path: pv.kind.as_str().to_string(),
+            verified,
         });
         let _ = peer;
     });

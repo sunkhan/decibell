@@ -88,6 +88,8 @@ export function useCallEvents() {
               from: sig.from,
               pubKey: sig.pubKey,
               candidates: sig.candidates,
+              pubKeySig: sig.pubKeySig ?? null,
+              keyId: sig.keyId ?? 0,
             });
             void acceptCall();
             return;
@@ -101,6 +103,8 @@ export function useCallEvents() {
             from: sig.from,
             pubKey: sig.pubKey,
             candidates: sig.candidates,
+            pubKeySig: sig.pubKeySig ?? null,
+            keyId: sig.keyId ?? 0,
           });
           sendSignal(sig.callId, sig.from, "RINGING").catch(() => {});
           startRing();
@@ -121,7 +125,14 @@ export function useCallEvents() {
           return;
         case "ACCEPT":
           if (mine && call.status === "outgoing" && sig.pubKey) {
-            void connectAfterAccept(sig.callId, sig.from, sig.pubKey, sig.candidates);
+            void connectAfterAccept(
+              sig.callId,
+              sig.from,
+              sig.pubKey,
+              sig.candidates,
+              sig.pubKeySig ?? null,
+              sig.keyId ?? 0,
+            );
           }
           return;
         case "REJECT":
@@ -199,7 +210,7 @@ export function useCallEvents() {
     const unlistenSignal = listen<CallSignalPayload>("call_signal", (e) => onSignal(e.payload));
 
     const unlistenConnected = listen<CallConnectedPayload>("call_connected", (e) => {
-      void onCallConnected(e.payload.callId, e.payload.path);
+      void onCallConnected(e.payload.callId, e.payload.path, e.payload.verified ?? false);
     });
 
     const unlistenFailed = listen<CallFailedPayload>("call_failed", (e) => {
