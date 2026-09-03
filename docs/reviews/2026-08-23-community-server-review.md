@@ -1046,6 +1046,15 @@ tsc web + node 0, napi build, community build + e2e (sealed init stand-ins + kin
 binding rule both ways, `encrypted` on broadcast + history). Open: live test (image, video
 seek, save-as), and the community-server release the whole channel-encryption feature waits on.
 
+**Central: E2EE key publish failed with "Storage error." (2026-09-03) ✅** — first production
+run of the key directory. Postgres refused `publishE2eeKeys`: `inconsistent types deduced for
+parameter $1 — text versus character varying`. The insert picked the next `key_id` with
+`INSERT … SELECT $1, MAX+1, $2… FROM user_e2ee_keys WHERE username = $1`; in a select list an
+untyped parameter is deduced as text, while the `WHERE` compares the same `$1` to the varchar
+column. Rewritten as `VALUES ($1, (SELECT COALESCE(MAX(key_id),0)+1 … WHERE username = $1), …)`
+so the target columns type every parameter, like every other bytea write in central. Central
+has no local build here — verified by inspection; needs the Hetzner rebuild + restart.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
