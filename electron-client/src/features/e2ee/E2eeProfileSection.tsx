@@ -18,7 +18,7 @@ export default function E2eeProfileSection({ peer }: { peer: string }) {
         {info.hasKeys ? (
           <>
             <div className="text-[11px] text-text-muted">
-              Safety number — compare it with {peer} in person or on a call. A match means nobody
+              Safety number. Compare it with {peer} in person or on a call. A match means nobody
               is sitting between you.
             </div>
             <div className="mt-2 grid grid-cols-4 gap-x-2 gap-y-0.5 rounded-sm bg-bg-dark px-2.5 py-2 font-mono text-[11px] tracking-[0.06em] text-text-primary">
@@ -34,7 +34,7 @@ export default function E2eeProfileSection({ peer }: { peer: string }) {
           </>
         ) : (
           <div className="text-[11px] text-text-muted">
-            {peer} hasn't set up encryption — your messages to them aren't encrypted yet.
+            {peer} hasn't set up encryption, your messages to them aren't encrypted yet.
           </div>
         )}
       </div>

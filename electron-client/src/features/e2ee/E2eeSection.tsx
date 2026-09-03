@@ -19,7 +19,7 @@ export default function E2eeSection() {
       "Encrypts your direct messages on your device so only you and the person you're talking to can read them. Your central server doesn't offer this yet.";
   } else if (status === "not_set_up") {
     description =
-      "Encrypt your direct messages so only you and the person you're talking to can read them — the server only ever stores ciphertext. Protected by a passphrase you choose; you'll need it on other devices.";
+      "Encrypt your direct messages so only you and the person you're talking to can read them. The server only ever stores encrypted data. Protected by a passphrase you choose; you'll need it on other devices.";
     badge = { text: "Off", on: false };
     actions = <PrimaryButton onClick={() => openModal("setup")}>Set up encryption</PrimaryButton>;
   } else if (status === "locked") {
@@ -34,7 +34,7 @@ export default function E2eeSection() {
     );
   } else {
     description =
-      "Messages with anyone who has also set up encryption are sealed on your device; the server only sees ciphertext. Your fingerprint below is what others compare against your profile.";
+      "Messages with anyone who has also set up encryption are sealed on your device; the server only sees encrypted data. Your fingerprint below is what others compare against your profile.";
     badge = { text: "On", on: true };
     actions = (
       <>

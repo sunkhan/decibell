@@ -36,7 +36,7 @@ export default function DmEncryptionBanner({ peer }: { peer: string }) {
     action = <ActionButton onClick={() => dismissChange(peer)}>Dismiss</ActionButton>;
   } else if (status === "not_set_up") {
     if (nudgeDismissed) return null;
-    body = `Set up end-to-end encryption so only you and ${peer} can read your messages — not even the server.`;
+    body = `Set up end-to-end encryption so only you and ${peer} can read your messages, not even the server.`;
     action = (
       <>
         <ActionButton onClick={dismissNudge}>Not now</ActionButton>
@@ -47,7 +47,7 @@ export default function DmEncryptionBanner({ peer }: { peer: string }) {
     );
   } else if (status === "ready" && info && !info.hasKeys) {
     tone = "muted";
-    body = `Messages with ${peer} aren't encrypted yet — they haven't set up encryption.`;
+    body = `Messages with ${peer} aren't encrypted yet, they haven't set up encryption.`;
   } else {
     return null;
   }

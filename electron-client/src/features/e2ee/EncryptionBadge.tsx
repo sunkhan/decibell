@@ -15,12 +15,12 @@ export default function EncryptionBadge({ peer }: { peer: string }) {
 
   const on = status === "ready" && !!info?.hasKeys;
   const title = on
-    ? "End-to-end encrypted — only you and this person can read these messages"
+    ? "End-to-end encrypted. Only you and this person can read these messages"
     : status === "locked"
-      ? "Encryption is locked on this device — enter your passphrase in Settings → Privacy"
+      ? "Encryption is locked on this device. Enter your passphrase in Settings → Privacy"
       : status === "not_set_up"
         ? "Set up end-to-end encryption in Settings → Privacy"
-        : `${peer} hasn't set up encryption yet — messages are not encrypted`;
+        : `${peer} hasn't set up encryption yet, messages are not encrypted`;
 
   return (
     <div
