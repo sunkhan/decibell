@@ -1,7 +1,7 @@
 {
   "name": "decibell-electron-client",
   "private": true,
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Decibell — Electron + Rust (napi-rs) client",
   "homepage": "https://github.com/sunkhan/decibell",
   "author": {
