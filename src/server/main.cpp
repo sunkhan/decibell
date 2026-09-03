@@ -409,7 +409,8 @@ private:
             auto* sig = routed.mutable_call_signal();
             if (sig->to().empty() || sig->to() == username_) return;
             if (sig->to().size() > 64 || sig->call_id().size() > 64 ||
-                sig->pub_key().size() > 64 || sig->candidates_size() > 16) {
+                sig->pub_key().size() > 64 || sig->pub_key_sig().size() > 64 ||
+                sig->candidates_size() > 16) {
                 return;
             }
             sig->set_from(username_);

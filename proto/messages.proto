@@ -1851,6 +1851,15 @@ message CallSignal {
   repeated CallCandidate candidates = 6;  // ≤16 (INVITE/ACCEPT)
   CallStreamMeta stream = 7;              // STREAM_START only
   int64 timestamp = 8;                    // central-stamped
+  // Authenticated key exchange (2026-09-03): Ed25519 signature by the
+  // sender's E2EE identity over
+  //   "decibell-call-auth-v1" ‖ call_id ‖ from ‖ to ‖ pub_key
+  // and the identity generation that signed it. Empty / 0 when the
+  // sender has no E2EE keys. The receiver verifies against the peer's
+  // current identity before deriving media keys — a central that swaps
+  // pub_key can't forge this. INVITE / ACCEPT only; central relays it.
+  bytes pub_key_sig = 9;                  // 64 bytes
+  uint32 key_id = 10;
 }
 
 // --- End-to-end encrypted DMs ---
