@@ -105,6 +105,11 @@ struct Stmt {
     }
     void bind_int(int i, int v) { sqlite3_bind_int(s, i, v); }
     void bind_int64(int i, int64_t v) { sqlite3_bind_int64(s, i, v); }
+    // Empty = NULL so a plaintext row never stores an empty blob.
+    void bind_blob_or_null(int i, const std::string& v) {
+        if (v.empty()) sqlite3_bind_null(s, i);
+        else sqlite3_bind_blob(s, i, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT);
+    }
 
     int step() { return sqlite3_step(s); }
 
@@ -114,6 +119,11 @@ struct Stmt {
     }
     int64_t col_int64(int i) const { return sqlite3_column_int64(s, i); }
     int col_int(int i) const { return sqlite3_column_int(s, i); }
+    std::string col_blob(int i) const {
+        const void* p = sqlite3_column_blob(s, i);
+        const int n = sqlite3_column_bytes(s, i);
+        return (p && n > 0) ? std::string(static_cast<const char*>(p), static_cast<size_t>(n)) : std::string();
+    }
 };
 
 bool exec_sql(sqlite3* db, const char* sql) {
@@ -234,6 +244,42 @@ void CommunityDb::init_schema_() {
 
     // --- v8: stable user ids (Theme A) ---
     migrate_to_v8_uid_();
+
+    // --- v9: encrypted text channels (spec 2026-09-04) ---
+    migrate_to_v9_e2ee_();
+}
+
+void CommunityDb::migrate_to_v9_e2ee_() {
+    if (!column_exists(db_, "channels", "encrypted"))
+        exec_sql(db_, "ALTER TABLE channels ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0;");
+    // The sealed body of a message in an encrypted channel; NULL = plaintext.
+    if (!column_exists(db_, "messages", "envelope"))
+        exec_sql(db_, "ALTER TABLE messages ADD COLUMN envelope BLOB;");
+    // Key escrow: epochs per channel and one opaque blob per (epoch,
+    // recipient), sealed by a member to a member. The server never holds
+    // a key.
+    exec_sql(db_,
+        "CREATE TABLE IF NOT EXISTS channel_key_epochs ("
+        "  channel_id TEXT NOT NULL,"
+        "  epoch INTEGER NOT NULL,"
+        "  created_by TEXT NOT NULL,"
+        "  created_at INTEGER NOT NULL,"
+        "  PRIMARY KEY (channel_id, epoch)"
+        ");");
+    exec_sql(db_,
+        "CREATE TABLE IF NOT EXISTS channel_key_blobs ("
+        "  channel_id TEXT NOT NULL,"
+        "  epoch INTEGER NOT NULL,"
+        "  recipient TEXT NOT NULL,"
+        "  sender TEXT NOT NULL,"
+        "  blob BLOB NOT NULL,"
+        "  created_at INTEGER NOT NULL,"
+        "  PRIMARY KEY (channel_id, epoch, recipient)"
+        ");");
+    exec_sql(db_,
+        "CREATE INDEX IF NOT EXISTS idx_channel_key_blobs_recipient "
+        "ON channel_key_blobs(recipient, channel_id);");
+    set_meta_("schema_version", "9");
 }
 
 void CommunityDb::migrate_to_v8_uid_() {
@@ -1790,7 +1836,7 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
     Stmt q(db_,
         "SELECT id, name, type, position, voice_bitrate_kbps, "
         "  retention_days_text, retention_days_image, retention_days_video, "
-        "  retention_days_document, retention_days_audio, slowmode_seconds "
+        "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted "
         "FROM channels ORDER BY position ASC, id ASC;");
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) {
@@ -1806,6 +1852,7 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
         c.retention_days_document = q.col_int(8);
         c.retention_days_audio    = q.col_int(9);
         c.slowmode_seconds        = q.col_int(10);
+        c.encrypted               = q.col_int(11) != 0;
         out.push_back(std::move(c));
     }
     return out;
@@ -1816,7 +1863,7 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
     Stmt q(db_,
         "SELECT id, name, type, position, voice_bitrate_kbps, "
         "  retention_days_text, retention_days_image, retention_days_video, "
-        "  retention_days_document, retention_days_audio, slowmode_seconds "
+        "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted "
         "FROM channels WHERE id=?;");
     if (!q.s) return std::nullopt;
     q.bind_text(1, channel_id);
@@ -1833,6 +1880,7 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
     c.retention_days_document = q.col_int(8);
     c.retention_days_audio    = q.col_int(9);
     c.slowmode_seconds        = q.col_int(10);
+    c.encrypted               = q.col_int(11) != 0;
     return c;
 }
 
@@ -2102,6 +2150,15 @@ std::optional<CommunityDb::WipeChannelResult> CommunityDb::delete_channel(
     if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return std::nullopt;
     bool ok = true;
     {
+        // Key escrow goes with the channel.
+        Stmt del(db_, "DELETE FROM channel_key_blobs WHERE channel_id=?;");
+        if (del.s) { del.bind_text(1, channel_id); del.step(); }
+    }
+    {
+        Stmt del(db_, "DELETE FROM channel_key_epochs WHERE channel_id=?;");
+        if (del.s) { del.bind_text(1, channel_id); del.step(); }
+    }
+    {
         Stmt del(db_, "DELETE FROM attachments WHERE channel_id=?;");
         ok = del.s != nullptr;
         if (ok) {
@@ -2167,6 +2224,16 @@ bool CommunityDb::set_channel_slowmode(const std::string& channel_id, int32_t se
     return sqlite3_changes(db_) > 0;
 }
 
+bool CommunityDb::set_channel_encrypted(const std::string& channel_id, bool on) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "UPDATE channels SET encrypted=? WHERE id=? AND type=0;");
+    if (!q.s) return false;
+    q.bind_int(1, on ? 1 : 0);
+    q.bind_text(2, channel_id);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
+}
+
 bool CommunityDb::set_channel_voice_bitrate(const std::string& channel_id,
                                             int32_t kbps) {
     if (kbps < 0) kbps = 0;
@@ -2209,7 +2276,8 @@ int64_t CommunityDb::insert_message(const std::string& channel_id,
                                     const std::string& sender,
                                     const std::string& content,
                                     int64_t timestamp,
-                                    int64_t reply_to) {
+                                    int64_t reply_to,
+                                    const std::string& envelope) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Only accept a reply_to that points at a real message in THIS channel;
     // otherwise store 0 (ignore a stale/cross-channel/forged reference).
@@ -2224,14 +2292,15 @@ int64_t CommunityDb::insert_message(const std::string& channel_id,
         if (!ok) reply_to = 0;
     }
     Stmt q(db_,
-        "INSERT INTO messages(channel_id, sender, content, timestamp, reply_to) "
-        "VALUES(?, ?, ?, ?, ?);");
+        "INSERT INTO messages(channel_id, sender, content, timestamp, reply_to, envelope) "
+        "VALUES(?, ?, ?, ?, ?, ?);");
     if (!q.s) return 0;
     q.bind_text(1, channel_id);
     q.bind_text(2, sender);
     q.bind_text(3, content);
     q.bind_int64(4, timestamp);
     q.bind_int64(5, reply_to);
+    q.bind_blob_or_null(6, envelope);
     if (q.step() != SQLITE_DONE) return 0;
     return sqlite3_last_insert_rowid(db_);
 }
@@ -2247,7 +2316,8 @@ constexpr const char* kMessageSelect =
     // Parent's attachment kinds as "0,1,3" in position order ('' when none /
     // not a reply) — parsed by parse_kind_list below.
     "COALESCE((SELECT GROUP_CONCAT(kind, ',') FROM "
-    "  (SELECT kind FROM attachments WHERE message_id = p.id ORDER BY position)), '') "
+    "  (SELECT kind FROM attachments WHERE message_id = p.id ORDER BY position)), ''), "
+    "m.envelope, p.envelope "
     "FROM messages m LEFT JOIN messages p "
     "ON p.id = m.reply_to AND p.channel_id = m.channel_id ";
 
@@ -2283,6 +2353,8 @@ DbMessage read_message_row(Stmt& q) {
     m.reply_to_sender = q.col_text(7);
     m.reply_to_content = q.col_text(8);
     m.reply_to_attachment_kinds = parse_kind_list(q.col_text(9));
+    m.envelope = q.col_blob(10);
+    m.reply_to_envelope = q.col_blob(11);
     return m;
 }
 } // namespace
@@ -2810,13 +2882,14 @@ std::optional<CommunityDb::MessagePreview> CommunityDb::get_message_preview(
     std::lock_guard<std::mutex> lock(mutex_);
     MessagePreview out;
     {
-        Stmt q(db_, "SELECT sender, content FROM messages WHERE id=? AND channel_id=?;");
+        Stmt q(db_, "SELECT sender, content, envelope FROM messages WHERE id=? AND channel_id=?;");
         if (!q.s) return std::nullopt;
         q.bind_int64(1, message_id);
         q.bind_text(2, channel_id);
         if (q.step() != SQLITE_ROW) return std::nullopt;
         out.sender = q.col_text(0);
         out.content = q.col_text(1);
+        out.envelope = q.col_blob(2);
     }
     Stmt a(db_, "SELECT kind FROM attachments WHERE message_id=? ORDER BY position;");
     if (a.s) {
@@ -2830,22 +2903,141 @@ std::optional<CommunityDb::MessagePreview> CommunityDb::get_message_preview(
 
 bool CommunityDb::edit_message(const std::string& channel_id, int64_t message_id,
                                const std::string& editor, const std::string& content,
-                               int64_t edited_at) {
+                               int64_t edited_at, const std::string& envelope) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Ownership is enforced in the WHERE: the row updates only if it exists in
     // this channel AND was sent by `editor`. changes()==0 → not found or not
-    // the owner (indistinguishable to the caller, which is fine).
+    // the owner (indistinguishable to the caller, which is fine). The
+    // envelope column is always rewritten (NULL for a plaintext edit).
     Stmt q(db_,
-        "UPDATE messages SET content=?, edited_at=? "
+        "UPDATE messages SET content=?, edited_at=?, envelope=? "
         "WHERE id=? AND channel_id=? AND sender=?;");
     if (!q.s) return false;
     q.bind_text(1, content);
     q.bind_int64(2, edited_at);
-    q.bind_int64(3, message_id);
-    q.bind_text(4, channel_id);
-    q.bind_text(5, editor);
+    q.bind_blob_or_null(3, envelope);
+    q.bind_int64(4, message_id);
+    q.bind_text(5, channel_id);
+    q.bind_text(6, editor);
     if (q.step() != SQLITE_DONE) return false;
     return sqlite3_changes(db_) > 0;
+}
+
+// ─── Encrypted text channels: key escrow ─────────────────────────────────
+
+uint32_t CommunityDb::channel_key_current_epoch(const std::string& channel_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "SELECT COALESCE(MAX(epoch), 0) FROM channel_key_epochs WHERE channel_id=?;");
+    if (!q.s) return 0;
+    q.bind_text(1, channel_id);
+    if (q.step() != SQLITE_ROW) return 0;
+    return static_cast<uint32_t>(q.col_int64(0));
+}
+
+bool CommunityDb::channel_key_create_epoch(const std::string& channel_id, uint32_t epoch,
+                                           const std::string& created_by, int64_t now) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    uint32_t current = 0;
+    {
+        Stmt q(db_, "SELECT COALESCE(MAX(epoch), 0) FROM channel_key_epochs WHERE channel_id=?;");
+        if (!q.s) return false;
+        q.bind_text(1, channel_id);
+        if (q.step() == SQLITE_ROW) current = static_cast<uint32_t>(q.col_int64(0));
+    }
+    if (epoch != current + 1) return false;
+    Stmt ins(db_, "INSERT INTO channel_key_epochs(channel_id, epoch, created_by, created_at) VALUES(?, ?, ?, ?);");
+    if (!ins.s) return false;
+    ins.bind_text(1, channel_id);
+    ins.bind_int64(2, epoch);
+    ins.bind_text(3, created_by);
+    ins.bind_int64(4, now);
+    return ins.step() == SQLITE_DONE;
+}
+
+int CommunityDb::channel_key_insert_blobs(const std::string& channel_id, uint32_t epoch,
+                                          const std::string& sender,
+                                          const std::vector<std::pair<std::string, std::string>>& blobs,
+                                          int64_t now) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    int landed = 0;
+    for (const auto& [recipient, blob] : blobs) {
+        Stmt q(db_,
+            "INSERT OR IGNORE INTO channel_key_blobs(channel_id, epoch, recipient, sender, blob, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?);");
+        if (!q.s) return landed;
+        q.bind_text(1, channel_id);
+        q.bind_int64(2, epoch);
+        q.bind_text(3, recipient);
+        q.bind_text(4, sender);
+        q.bind_blob_or_null(5, blob);
+        q.bind_int64(6, now);
+        if (q.step() == SQLITE_DONE && sqlite3_changes(db_) > 0) ++landed;
+    }
+    return landed;
+}
+
+std::vector<DbChannelKeyBlob> CommunityDb::channel_key_blobs_for(const std::string& channel_id,
+                                                                 const std::string& recipient) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<DbChannelKeyBlob> out;
+    Stmt q(db_, "SELECT epoch, sender, blob FROM channel_key_blobs WHERE channel_id=? AND recipient=? ORDER BY epoch;");
+    if (!q.s) return out;
+    q.bind_text(1, channel_id);
+    q.bind_text(2, recipient);
+    while (q.step() == SQLITE_ROW) {
+        DbChannelKeyBlob b;
+        b.epoch = static_cast<uint32_t>(q.col_int64(0));
+        b.sender = q.col_text(1);
+        b.recipient = recipient;
+        b.blob = q.col_blob(2);
+        out.push_back(std::move(b));
+    }
+    return out;
+}
+
+std::vector<uint32_t> CommunityDb::channel_key_missing_epochs(const std::string& channel_id,
+                                                              const std::string& username) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<uint32_t> out;
+    Stmt q(db_,
+        "SELECT e.epoch FROM channel_key_epochs e "
+        "WHERE e.channel_id=? AND NOT EXISTS ("
+        "  SELECT 1 FROM channel_key_blobs b "
+        "  WHERE b.channel_id=e.channel_id AND b.epoch=e.epoch AND b.recipient=?) "
+        "ORDER BY e.epoch;");
+    if (!q.s) return out;
+    q.bind_text(1, channel_id);
+    q.bind_text(2, username);
+    while (q.step() == SQLITE_ROW) out.push_back(static_cast<uint32_t>(q.col_int64(0)));
+    return out;
+}
+
+std::vector<std::string> CommunityDb::channel_key_holders(const std::string& channel_id, uint32_t epoch) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> out;
+    Stmt q(db_, "SELECT recipient FROM channel_key_blobs WHERE channel_id=? AND epoch=? ORDER BY recipient;");
+    if (!q.s) return out;
+    q.bind_text(1, channel_id);
+    q.bind_int64(2, epoch);
+    while (q.step() == SQLITE_ROW) out.push_back(q.col_text(0));
+    return out;
+}
+
+void CommunityDb::channel_key_delete_recipient(const std::string& recipient) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "DELETE FROM channel_key_blobs WHERE recipient=?;");
+    if (!q.s) return;
+    q.bind_text(1, recipient);
+    q.step();
+}
+
+std::vector<std::string> CommunityDb::channel_key_channels_with_epochs() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> out;
+    Stmt q(db_, "SELECT DISTINCT channel_id FROM channel_key_epochs;");
+    if (!q.s) return out;
+    while (q.step() == SQLITE_ROW) out.push_back(q.col_text(0));
+    return out;
 }
 
 CommunityDb::DeleteMessageResult CommunityDb::delete_message(

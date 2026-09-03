@@ -44,6 +44,9 @@ struct DbChannel {
     int32_t retention_days_document = 0;
     int32_t retention_days_audio = 0;
     int32_t slowmode_seconds = 0;  // text channels; 0 = off
+    // Text channels: end-to-end encrypted with member-held epoch keys
+    // (spec 2026-09-04). The server enforces the wire format either way.
+    bool encrypted = false;
 };
 
 struct DbMessage {
@@ -62,6 +65,17 @@ struct DbMessage {
     // Attachment.Kind of each of the parent's attachments, position order —
     // labels an attachment-only parent ("Image", "Video", …) on the client.
     std::vector<int32_t> reply_to_attachment_kinds;
+    // Encrypted channels: the sealed body (opaque); empty = plaintext row.
+    std::string envelope;
+    std::string reply_to_envelope;
+};
+
+// One escrowed epoch key blob (opaque to the server).
+struct DbChannelKeyBlob {
+    uint32_t epoch = 0;
+    std::string sender;
+    std::string recipient;
+    std::string blob;
 };
 
 struct DbAttachment {
@@ -331,6 +345,31 @@ public:
     // identity via uid. False if the source row is missing or on DB error.
     bool rename_member(const std::string& old_username, const std::string& new_username);
     std::vector<DbMember> list_members() const;
+
+    // --- Encrypted text channels (spec 2026-09-04) ---
+    bool set_channel_encrypted(const std::string& channel_id, bool on);
+    // Current epoch of a channel's key escrow; 0 = none yet.
+    uint32_t channel_key_current_epoch(const std::string& channel_id) const;
+    // Create `epoch` (must be current + 1). False when the sequence is wrong.
+    bool channel_key_create_epoch(const std::string& channel_id, uint32_t epoch,
+                                  const std::string& created_by, int64_t now);
+    // Insert blobs that don't exist yet for (epoch, recipient); returns how many landed.
+    int channel_key_insert_blobs(const std::string& channel_id, uint32_t epoch,
+                                 const std::string& sender,
+                                 const std::vector<std::pair<std::string, std::string>>& blobs,
+                                 int64_t now);
+    // Every blob sealed to `recipient` for the channel (all epochs).
+    std::vector<DbChannelKeyBlob> channel_key_blobs_for(const std::string& channel_id,
+                                                        const std::string& recipient) const;
+    // Epochs (1..=current) `username` has no blob for.
+    std::vector<uint32_t> channel_key_missing_epochs(const std::string& channel_id,
+                                                     const std::string& username) const;
+    // Usernames holding a blob for `epoch`.
+    std::vector<std::string> channel_key_holders(const std::string& channel_id, uint32_t epoch) const;
+    // Drop every blob sealed to `recipient` (member removed).
+    void channel_key_delete_recipient(const std::string& recipient);
+    // Text channels with a non-zero epoch (for removal-driven rotations).
+    std::vector<std::string> channel_key_channels_with_epochs() const;
     std::optional<DbMember> get_member(const std::string& username) const;
     // Resolves a member by their stable central uid (the identity anchor),
     // independent of the current display name. nullopt if uid <= 0 or no row.
@@ -493,7 +532,8 @@ public:
                            const std::string& sender,
                            const std::string& content,
                            int64_t timestamp,
-                           int64_t reply_to = 0);
+                           int64_t reply_to = 0,
+                           const std::string& envelope = std::string());
     // Newest-first page. `before_id = 0` means "most recent". Results are
     // ordered newest→oldest; caller reverses if they want oldest→newest.
     // `has_more` is set to true if more messages exist older than the page.
@@ -616,6 +656,7 @@ public:
         std::string sender;
         std::string content;
         std::vector<int32_t> attachment_kinds;  // Attachment.Kind, position order
+        std::string envelope;                   // encrypted channels
     };
     /// Parent-preview fields of the given message in this channel, or nullopt
     /// if no such row exists. Used to validate a reply_to and embed the parent
@@ -628,7 +669,8 @@ public:
     /// row was updated (exists, in this channel, owned by editor).
     bool edit_message(const std::string& channel_id, int64_t message_id,
                       const std::string& editor, const std::string& content,
-                      int64_t edited_at);
+                      int64_t edited_at,
+                      const std::string& envelope = std::string());
 
     /// Hard-deletes the message + its bound attachments in one
     /// transaction. Returns storage_paths the caller should unlink
@@ -736,6 +778,7 @@ private:
     void migrate_to_v6_overwrites_();
     void migrate_to_v7_moderation_();
     void migrate_to_v8_uid_();
+    void migrate_to_v9_e2ee_();
     // server_meta.owner, loaded at open() and kept in sync by set_meta_.
     std::string owner_cache_;
     void seed_if_empty_(const std::string& owner,

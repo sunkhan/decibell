@@ -251,6 +251,16 @@ message Packet {
     MLS_COMMIT_REQ       = 139;     // client→community (epoch must be current + 1)
     MLS_COMMIT_RES       = 140;     // community→committer
     MLS_COMMIT_BROADCAST = 141;     // community→channel participants except the committer
+    // Encrypted text channels (docs/superpowers/specs/
+    // 2026-09-04-encrypted-text-channels-design.md): per-channel epoch keys
+    // escrowed to members as envelopes sealed to their identities. The
+    // community server stores opaque blobs per recipient, sequences epochs,
+    // and names a "filler" when a member lacks keys. Never a key.
+    CHANNEL_KEYS_REQ         = 142; // client→community
+    CHANNEL_KEYS_RES         = 143; // community→client
+    CHANNEL_KEYS_PUBLISH_REQ = 144; // client→community (new epoch or gap fill)
+    CHANNEL_KEYS_PUBLISH_RES = 145; // community→publisher
+    CHANNEL_KEYS_CHANGED     = 146; // community→viewers of the channel
   }
 
   Type type = 1;
@@ -435,6 +445,11 @@ message Packet {
     MlsCommitReq             mls_commit_req         = 141;
     MlsCommitRes             mls_commit_res         = 142;
     MlsCommitBroadcast       mls_commit_broadcast   = 143;
+    ChannelKeysReq           channel_keys_req       = 144;
+    ChannelKeysRes           channel_keys_res       = 145;
+    ChannelKeysPublishReq    channel_keys_publish_req = 146;
+    ChannelKeysPublishRes    channel_keys_publish_res = 147;
+    ChannelKeysChanged       channel_keys_changed   = 148;
   }
 }
 
@@ -624,6 +639,10 @@ message ChannelInfo {
   // Minimum seconds between two messages from the same member in this
   // channel. 0 = off. MANAGE_MESSAGES holders bypass it.
   int32 slowmode_seconds = 11;
+  // Text channels: end-to-end encrypted with member-held epoch keys. The
+  // server refuses plaintext here (and envelopes elsewhere). Off by
+  // default; MANAGE_CHANNELS flips it.
+  bool encrypted = 12;
 }
 
 message CommunityAuthRequest {
@@ -700,6 +719,11 @@ message ChannelMessage {
   // lets the client label an attachment-only parent ("Image", "Video", …)
   // without having it loaded. Empty when the parent has none.
   repeated int32 reply_to_attachment_kinds = 12;
+  // Encrypted channels: the sealed body (spec 2026-09-04 §Message
+  // envelope); `content` is then a fixed placeholder for old clients.
+  // Server-populated reply_to_envelope mirrors reply_to_content.
+  bytes envelope = 13;
+  bytes reply_to_envelope = 14;
 }
 
 message Attachment {
@@ -911,6 +935,8 @@ message ChannelUpdateRequest {
   // Text channels: slowmode in seconds (0 = off), clamped to [0, 21600].
   // Absent = leave unchanged.
   optional int32 slowmode_seconds = 8;
+  // Text channels: end-to-end encryption on/off. Absent = leave unchanged.
+  optional bool encrypted = 9;
 }
 
 message ChannelUpdateResponse {
@@ -1758,6 +1784,7 @@ message MessageEditReq {
   string channel_id = 1;
   int64  message_id = 2;
   string content = 3;   // new body; community enforces sender == editor
+  bytes  envelope = 4;  // encrypted channels: the sealed new body
 }
 
 message MessageEditRes {
@@ -1773,6 +1800,7 @@ message ChannelMessageEdited {
   string content = 3;
   int64  edited_at = 4;
   string editor = 5;    // the message's sender (who edited it)
+  bytes  envelope = 6;  // encrypted channels
 }
 
 // See Packet.CHANNEL_MSG_REJECTED.
@@ -1979,4 +2007,53 @@ message MlsCommitBroadcast {
   uint64 epoch = 2;
   string sender = 3;        // committer, server-stamped
   bytes  commit = 4;
+}
+
+// --- Encrypted text channels ---
+// See docs/superpowers/specs/2026-09-04-encrypted-text-channels-design.md.
+// A "blob" is a DM envelope (content tag 0x02) carrying one epoch key,
+// sealed by `sender`'s identity to `recipient`'s. Opaque to the server.
+
+message ChannelKeysReq {
+  string channel_id = 1;
+}
+message ChannelKeyBlob {
+  uint32 epoch = 1;
+  string sender = 2;      // who sealed it (server-stamped on publish)
+  string recipient = 3;   // set in publish requests; empty in the caller's own list
+  bytes  blob = 4;
+}
+message ChannelKeyNeed {
+  string username = 1;
+  repeated uint32 epochs = 2;   // epochs this viewer has no blob for
+}
+message ChannelKeysRes {
+  string channel_id = 1;
+  bool   encrypted = 2;
+  uint32 current_epoch = 3;             // 0 = no epoch yet (first sender creates 1)
+  repeated ChannelKeyBlob blobs = 4;    // the caller's own blobs, every epoch
+  repeated ChannelKeyNeed needs = 5;    // viewers missing blobs (capped)
+  repeated string members = 6;          // everyone who can VIEW the channel (capped)
+}
+// epoch == current + 1 creates the epoch (≥ 1 blob); epoch <= current fills
+// gaps (only missing recipients are inserted). Blobs for non-viewers drop.
+message ChannelKeysPublishReq {
+  string channel_id = 1;
+  uint32 epoch = 2;
+  repeated ChannelKeyBlob blobs = 3;
+}
+message ChannelKeysPublishRes {
+  string channel_id = 1;
+  bool   success = 2;
+  string message = 3;
+  uint32 current_epoch = 4;
+}
+// Broadcast to the channel's viewers: a new epoch exists, or someone lacks
+// keys. `filler` is the lowest online member holding a current-epoch blob —
+// that client fills (and rotates when `rotate` is set, after a removal).
+message ChannelKeysChanged {
+  string channel_id = 1;
+  uint32 current_epoch = 2;
+  string filler = 3;
+  bool   rotate = 4;
 }

@@ -143,6 +143,7 @@ void fill_channel_info(chatproj::ChannelInfo* info, const chatproj::DbChannel& c
     info->set_retention_days_document(ch.retention_days_document);
     info->set_retention_days_audio(ch.retention_days_audio);
     info->set_slowmode_seconds(ch.slowmode_seconds);
+    info->set_encrypted(ch.encrypted);
 }
 
 /// Builds a CHANNEL_LIST_UPDATE packet for ONE recipient: only channels
@@ -316,6 +317,19 @@ public:
         std::string group_info;
     };
     bool is_in_voice_channel(const std::shared_ptr<Session>& session, const std::string& channel_id);
+
+    // --- Encrypted text channels: key escrow (spec 2026-09-04) ---
+    // Members who can VIEW the channel (capped for the wire).
+    std::vector<std::string> channel_viewers(const std::string& channel_id, size_t cap);
+    // Broadcast CHANNEL_KEYS_CHANGED naming the filler: the lowest online
+    // viewer holding a current-epoch blob (never `exclude`).
+    void channel_keys_changed(const std::string& channel_id, bool rotate, const std::string& exclude);
+    // A member (re)joined / came online: for every encrypted channel they
+    // can view where they lack blobs, ask a filler to seal for them.
+    void channel_keys_on_join(const std::string& username);
+    // A member left / was kicked / banned: drop their blobs and ask the
+    // filler of every encrypted channel to rotate.
+    void channel_keys_on_removal(const std::string& username);
     std::optional<MlsGroupState> mls_group(const std::string& channel_id);
     // Register epoch 0. False when a group already exists.
     bool mls_create(const std::string& channel_id, const std::string& group_info);
@@ -1040,6 +1054,9 @@ private:
             // Roster delta: a brand-new member (invite redemption) or a
             // returning member flipping online — one MemberInfo to everyone.
             manager_.emit_member_upsert(username_);
+            // Encrypted channels: if this member lacks epoch keys anywhere
+            // they can see, ask an online holder to seal them.
+            manager_.channel_keys_on_join(username_);
             // BAN_MEMBERS holders get the ban list up-front.
             if (manager_.authz().check(chatproj::Action::ViewBans, {username_, "", ""})) {
                 chatproj::Packet bl;
@@ -1254,6 +1271,102 @@ private:
             b->set_sender(username_);
             b->set_commit(req.commit());
             manager_.broadcast_to_voice_channel_tcp_except(bcast, req.channel_id(), shared_from_this());
+        }
+
+        // --- Encrypted text channels: key escrow (spec 2026-09-04) ---
+        // Opaque blobs sealed member→member; the server only checks VIEW
+        // on both ends, sequences epochs, and points at a filler.
+        else if (packet.type() == chatproj::Packet::CHANNEL_KEYS_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.channel_keys_req();
+            if (!db) return;
+            if (!manager_.authz().check(chatproj::Action::ViewChannel, {username_, req.channel_id(), ""})) return;
+            auto ch = db->get_channel(req.channel_id());
+            if (!ch || ch->type != 0) return;
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::CHANNEL_KEYS_RES);
+            auto* res = rsp.mutable_channel_keys_res();
+            res->set_channel_id(req.channel_id());
+            res->set_encrypted(ch->encrypted);
+            const uint32_t current = db->channel_key_current_epoch(req.channel_id());
+            res->set_current_epoch(current);
+            for (const auto& b : db->channel_key_blobs_for(req.channel_id(), username_)) {
+                auto* pb = res->add_blobs();
+                pb->set_epoch(b.epoch);
+                pb->set_sender(b.sender);
+                pb->set_blob(b.blob);
+            }
+            constexpr size_t kMaxMembersOnWire = 1000;
+            constexpr size_t kMaxNeeds = 200;
+            const auto viewers = manager_.channel_viewers(req.channel_id(), kMaxMembersOnWire);
+            for (const auto& v : viewers) res->add_members(v);
+            if (current > 0) {
+                size_t needs = 0;
+                for (const auto& v : viewers) {
+                    auto missing = db->channel_key_missing_epochs(req.channel_id(), v);
+                    if (missing.empty()) continue;
+                    auto* n = res->add_needs();
+                    n->set_username(v);
+                    for (uint32_t e : missing) n->add_epochs(e);
+                    if (++needs >= kMaxNeeds) break;
+                }
+            }
+            send_packet(rsp);
+        }
+        else if (packet.type() == chatproj::Packet::CHANNEL_KEYS_PUBLISH_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.channel_keys_publish_req();
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::CHANNEL_KEYS_PUBLISH_RES);
+            auto* res = rsp.mutable_channel_keys_publish_res();
+            res->set_channel_id(req.channel_id());
+            auto fail = [&](const std::string& m, uint32_t cur) {
+                res->set_success(false); res->set_message(m); res->set_current_epoch(cur); send_packet(rsp);
+            };
+            if (!db) { fail("Server misconfigured.", 0); return; }
+            if (!manager_.authz().check(chatproj::Action::ViewChannel, {username_, req.channel_id(), ""})) {
+                fail("You can't see that channel.", 0); return;
+            }
+            auto ch = db->get_channel(req.channel_id());
+            if (!ch || ch->type != 0) { fail("Channel not found.", 0); return; }
+            constexpr int kMaxBlobsPerPublish = 500;
+            constexpr size_t kMaxBlobBytes = 2 * 1024;
+            if (req.blobs_size() == 0 || req.blobs_size() > kMaxBlobsPerPublish) {
+                fail("Bad blob count.", db->channel_key_current_epoch(req.channel_id())); return;
+            }
+            std::vector<std::pair<std::string, std::string>> accepted;
+            accepted.reserve(req.blobs_size());
+            for (const auto& b : req.blobs()) {
+                if (b.recipient().empty() || b.blob().empty() || b.blob().size() > kMaxBlobBytes) continue;
+                // Only *members* who can VIEW the channel get keys. The
+                // permission resolver answers for any name with the default
+                // role's rights, so membership is checked explicitly.
+                if (!db->get_member(b.recipient())) continue;
+                if (!(manager_.authz().channel_permissions(b.recipient(), req.channel_id()) & chatproj::perms::kViewChannel)) continue;
+                accepted.emplace_back(b.recipient(), b.blob());
+            }
+            const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
+            uint32_t current = db->channel_key_current_epoch(req.channel_id());
+            bool created = false;
+            if (req.epoch() == current + 1) {
+                if (accepted.empty()) { fail("A new epoch needs at least one blob.", current); return; }
+                if (!db->channel_key_create_epoch(req.channel_id(), req.epoch(), username_, now_ts)) {
+                    fail("stale_epoch", db->channel_key_current_epoch(req.channel_id())); return;
+                }
+                created = true;
+                current = req.epoch();
+            } else if (req.epoch() == 0 || req.epoch() > current) {
+                fail("stale_epoch", current); return;
+            }
+            db->channel_key_insert_blobs(req.channel_id(), req.epoch(), username_, accepted, now_ts);
+            res->set_success(true);
+            res->set_message("");
+            res->set_current_epoch(current);
+            send_packet(rsp);
+            if (created) {
+                std::cout << "[Keys] #" << req.channel_id() << " epoch " << current << " by " << username_ << "\n";
+                manager_.channel_keys_changed(req.channel_id(), false, "");
+            }
         }
 
         // --- START STREAM ---
@@ -1498,7 +1611,34 @@ private:
                           << username_ << " (" << msg->content().size() << " bytes)\n";
                 return;
             }
-            if (msg->content().empty() && msg->attachments_size() == 0) {
+            // Encrypted channels (spec 2026-09-04): the wire format follows
+            // the channel flag both ways, so a member can neither leak
+            // plaintext into an encrypted channel nor hide ciphertext in a
+            // searchable one. Attachments are refused in encrypted channels
+            // until they are encrypted too. reply_to_envelope is server-set.
+            msg->clear_reply_to_envelope();
+            {
+                std::optional<chatproj::DbChannel> ech;
+                if (auto* db = manager_.db()) ech = db->get_channel(msg->channel_id());
+                const bool encrypted = ech && ech->encrypted;
+                if (encrypted && msg->envelope().empty()) {
+                    reject_channel_msg(*msg, "This channel is end-to-end encrypted — update Decibell to post here.");
+                    return;
+                }
+                if (!encrypted && !msg->envelope().empty()) {
+                    reject_channel_msg(*msg, "This channel isn't encrypted.");
+                    return;
+                }
+                if (encrypted && msg->attachments_size() > 0) {
+                    reject_channel_msg(*msg, "Attachments aren't available in encrypted channels yet.");
+                    return;
+                }
+                if (msg->envelope().size() > MAX_CHANNEL_MSG_BYTES + 64) {
+                    reject_channel_msg(*msg, "Message too long.");
+                    return;
+                }
+            }
+            if (msg->content().empty() && msg->attachments_size() == 0 && msg->envelope().empty()) {
                 return;
             }
             // The client caps a message at 10 attachments; enforce it
@@ -1518,7 +1658,8 @@ private:
             int64_t new_id = 0;
             if (auto* db = manager_.db()) {
                 new_id = db->insert_message(
-                    msg->channel_id(), username_, msg->content(), now_ts, msg->reply_to());
+                    msg->channel_id(), username_, msg->content(), now_ts, msg->reply_to(),
+                    msg->envelope());
                 if (new_id > 0) {
                     msg->set_id(new_id);
                     // insert_message drops an invalid reply_to (missing / wrong
@@ -1534,6 +1675,7 @@ private:
                         } else {
                             msg->set_reply_to_sender(parent->sender);
                             msg->set_reply_to_content(parent->content);
+                            if (!parent->envelope.empty()) msg->set_reply_to_envelope(parent->envelope);
                             for (int32_t k : parent->attachment_kinds)
                                 msg->add_reply_to_attachment_kinds(k);
                         }
@@ -1668,6 +1810,8 @@ private:
                 cm->set_reply_to(it->reply_to);
                 cm->set_reply_to_sender(it->reply_to_sender);
                 cm->set_reply_to_content(it->reply_to_content);
+                if (!it->envelope.empty()) cm->set_envelope(it->envelope);
+                if (!it->reply_to_envelope.empty()) cm->set_reply_to_envelope(it->reply_to_envelope);
                 for (int32_t k : it->reply_to_attachment_kinds)
                     cm->add_reply_to_attachment_kinds(k);
                 auto atts_it = by_msg.find(it->id);
@@ -1745,11 +1889,23 @@ private:
             if (ok && req.has_slowmode_seconds()) {
                 db->set_channel_slowmode(req.channel_id(), req.slowmode_seconds());
             }
+            // End-to-end encryption toggle (text channels). Switching on
+            // seals from the next message; switching off leaves sealed
+            // history sealed — the server never gets those keys.
+            bool encryption_changed = false;
+            if (ok && req.has_encrypted()) {
+                auto before = db->get_channel(req.channel_id());
+                if (before && before->type == 0 && before->encrypted != req.encrypted()) {
+                    encryption_changed = db->set_channel_encrypted(req.channel_id(), req.encrypted());
+                }
+            }
             if (ok) {
                 db->add_audit(username_, "channel_update", "", req.channel_id(),
-                              req.has_slowmode_seconds()
-                                  ? "slowmode " + std::to_string(req.slowmode_seconds()) + "s"
-                                  : "retention/bitrate");
+                              encryption_changed
+                                  ? std::string("encryption ") + (req.encrypted() ? "on" : "off")
+                                  : req.has_slowmode_seconds()
+                                        ? "slowmode " + std::to_string(req.slowmode_seconds()) + "s"
+                                        : "retention/bitrate");
             }
             res->set_success(ok);
             res->set_message(ok ? "Channel updated." : "Channel not found.");
@@ -1952,18 +2108,26 @@ private:
             // (deleting is a separate action). Clamp is unnecessary — the
             // client's prost decodes what we store, and the cap guards size.
             const std::string& content = req.content();
-            if (content.empty()) { fail("Message can't be empty."); return; }
-            if (content.size() > 64 * 1024) { fail("Message too long."); return; }
+            const std::string& envelope = req.envelope();
+            if (content.empty() && envelope.empty()) { fail("Message can't be empty."); return; }
+            if (content.size() > 64 * 1024 || envelope.size() > 64 * 1024 + 64) { fail("Message too long."); return; }
 
             // Must be able to send here (permission + not timed out).
             if (auto a = manager_.authz().check(chatproj::Action::SendMessage,
                                                 {username_, req.channel_id(), ""}); !a) {
                 fail(a.reason); return;
             }
+            // Wire format follows the channel flag, as for CHANNEL_MSG.
+            {
+                auto ech = db->get_channel(req.channel_id());
+                const bool encrypted = ech && ech->encrypted;
+                if (encrypted && envelope.empty()) { fail("This channel is end-to-end encrypted."); return; }
+                if (!encrypted && !envelope.empty()) { fail("This channel isn't encrypted."); return; }
+            }
 
             const int64_t edited_at = static_cast<int64_t>(std::time(nullptr));
             // Ownership is enforced inside edit_message (sender must match).
-            if (!db->edit_message(req.channel_id(), req.message_id(), username_, content, edited_at)) {
+            if (!db->edit_message(req.channel_id(), req.message_id(), username_, content, edited_at, envelope)) {
                 fail("You can only edit your own messages.");
                 return;
             }
@@ -1980,6 +2144,7 @@ private:
             ed->set_content(content);
             ed->set_edited_at(edited_at);
             ed->set_editor(username_);
+            if (!envelope.empty()) ed->set_envelope(envelope);
             manager_.broadcast_to_channel(bcast, req.channel_id());
 
             std::cout << "[Community] message " << req.message_id()
@@ -2193,6 +2358,7 @@ private:
             (void)closed;
             if (removed) {
                 manager_.emit_member_remove(target);
+                manager_.channel_keys_on_removal(target);
                 db->add_audit(username_, "kick", target, "", reason.empty() ? "" : "reason: " + reason);
             }
         }
@@ -2231,6 +2397,7 @@ private:
             (void)closed;
             if (ok) {
                 manager_.emit_member_remove(target);
+                manager_.channel_keys_on_removal(target);
                 manager_.broadcast_bans();
                 std::string details = reason.empty() ? "" : "reason: " + reason;
                 if (expires_at) details += (details.empty() ? "" : "; ") + std::string("until ") + format_utc(expires_at);
@@ -2268,6 +2435,7 @@ private:
             db->remove_member(username_);
             manager_.sync_membership_revoke(username_);
             manager_.emit_member_remove(username_);
+            manager_.channel_keys_on_removal(username_);
             send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, true,
                                 "You have left the server.",
                                 username_, "leave");
@@ -3168,6 +3336,8 @@ private:
             case T::MLS_GROUP_INFO_REQ:
             case T::MLS_GROUP_CREATE_REQ:
             case T::MLS_COMMIT_REQ:
+            case T::CHANNEL_KEYS_REQ:
+            case T::CHANNEL_KEYS_PUBLISH_REQ:
                 return mls_bucket_.try_take();
             case T::CHANNEL_HISTORY_REQ:
             case T::MEMBER_LIST_REQ:
@@ -4211,6 +4381,62 @@ void SessionManager::broadcast_to_voice_channel_tcp_except(const chatproj::Packe
     if (it == voice_channels_.end()) return;
     for (auto& session : it->second) {
         if (session != except) session->deliver(framed);
+    }
+}
+
+// ─── Encrypted text channels: key escrow ─────────────────────────────────
+
+std::vector<std::string> SessionManager::channel_viewers(const std::string& channel_id, size_t cap) {
+    std::vector<std::string> out;
+    if (!db_ || !authz_) return out;
+    for (const auto& m : db_->list_members()) {
+        if (authz_->channel_permissions(m.username, channel_id) & chatproj::perms::kViewChannel) {
+            out.push_back(m.username);
+            if (out.size() >= cap) break;
+        }
+    }
+    return out;
+}
+
+void SessionManager::channel_keys_changed(const std::string& channel_id, bool rotate,
+                                          const std::string& exclude) {
+    if (!db_) return;
+    const uint32_t current = db_->channel_key_current_epoch(channel_id);
+    if (current == 0) return;   // nothing to fill from yet — the first sender creates epoch 1
+    std::string filler;
+    {
+        const auto online = get_online_usernames();
+        for (const auto& holder : db_->channel_key_holders(channel_id, current)) {
+            if (holder == exclude || !online.count(holder)) continue;
+            if (filler.empty() || holder < filler) filler = holder;
+        }
+    }
+    if (filler.empty()) return;  // nobody online can help right now; the next holder to open the channel fills
+    chatproj::Packet p;
+    p.set_type(chatproj::Packet::CHANNEL_KEYS_CHANGED);
+    auto* c = p.mutable_channel_keys_changed();
+    c->set_channel_id(channel_id);
+    c->set_current_epoch(current);
+    c->set_filler(filler);
+    c->set_rotate(rotate);
+    broadcast_to_channel(p, channel_id);
+}
+
+void SessionManager::channel_keys_on_join(const std::string& username) {
+    if (!db_ || !authz_) return;
+    for (const auto& ch : db_->list_channels()) {
+        if (ch.type != 0 || !ch.encrypted) continue;
+        if (!(authz_->channel_permissions(username, ch.id) & chatproj::perms::kViewChannel)) continue;
+        if (db_->channel_key_missing_epochs(ch.id, username).empty()) continue;
+        channel_keys_changed(ch.id, false, username);
+    }
+}
+
+void SessionManager::channel_keys_on_removal(const std::string& username) {
+    if (!db_) return;
+    db_->channel_key_delete_recipient(username);
+    for (const auto& ch : db_->channel_key_channels_with_epochs()) {
+        channel_keys_changed(ch, true, username);
     }
 }
 
