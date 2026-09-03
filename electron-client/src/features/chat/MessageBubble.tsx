@@ -325,14 +325,6 @@ function MessageBubble({
             (edited)
           </span>
         ) : null}
-        {message.encrypted ? (
-          <span
-            className="ml-1 inline-flex select-none align-baseline text-text-muted opacity-70"
-            title="End-to-end encrypted"
-          >
-            <LockGlyph size={10} />
-          </span>
-        ) : null}
       </div>
     );
   };

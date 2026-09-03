@@ -22,6 +22,7 @@ import RichInput, { type RichInputHandle } from "../../components/editor/RichInp
 import { pickFiles } from "./filePicker";
 import { queueUpload, startQueuedUpload, takeEncryptedUploadMeta } from "./uploadAttachment";
 import { encryptedAttachmentArgs } from "./attachmentCrypto";
+import ChannelEncryptionBadge from "../e2ee/ChannelEncryptionBadge";
 import { paceSend, watchEcho } from "./sendPacing";
 import { chunkSourceFromPath } from "./chunkSource";
 import WelcomeState from "./WelcomeState";
@@ -935,7 +936,12 @@ export default function ChatPanel() {
     <div className="flex min-w-0 flex-1 flex-col bg-bg-mid">
       <div className="flex h-12 items-center border-b border-border-divider px-4 font-channel text-title font-emphasis tracking-title text-text-bright">
         <span className="mr-1.5 text-text-muted">#</span>
-        {channelName}
+        <span className="truncate">{channelName}</span>
+        {channel?.encrypted ? (
+          <span className="ml-2.5 flex items-center">
+            <ChannelEncryptionBadge />
+          </span>
+        ) : null}
       </div>
 
       <div ref={chatViewRef} className="relative flex flex-1 flex-col overflow-hidden">

@@ -1057,6 +1057,12 @@ parameter per context (`VALUES ($1, (SELECT … WHERE username = $6), …)`). Ru
 reuse one parameter both as an inserted value and in a comparison. Central has no local build
 here — verified by inspection; needs the Hetzner rebuild + restart.
 
+**Client: encryption cues (2026-09-03) ✅** — the per-message lock glyph next to every sealed
+message (channels and DMs) is gone: a channel is either encrypted or it isn't, so it's said once.
+Text channels with encryption on show an **E2EE** pill in the header (`ChannelEncryptionBadge`,
+same style as the DM header's Encrypted pill); the sidebar lock and the unreadable-message
+placeholders (which still carry the glyph) are unchanged. tsc 0.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
