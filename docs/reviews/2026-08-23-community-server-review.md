@@ -1049,11 +1049,13 @@ seek, save-as), and the community-server release the whole channel-encryption fe
 **Central: E2EE key publish failed with "Storage error." (2026-09-03) ✅** — first production
 run of the key directory. Postgres refused `publishE2eeKeys`: `inconsistent types deduced for
 parameter $1 — text versus character varying`. The insert picked the next `key_id` with
-`INSERT … SELECT $1, MAX+1, $2… FROM user_e2ee_keys WHERE username = $1`; in a select list an
-untyped parameter is deduced as text, while the `WHERE` compares the same `$1` to the varchar
-column. Rewritten as `VALUES ($1, (SELECT COALESCE(MAX(key_id),0)+1 … WHERE username = $1), …)`
-so the target columns type every parameter, like every other bytea write in central. Central
-has no local build here — verified by inspection; needs the Hetzner rebuild + restart.
+`INSERT … SELECT $1, MAX+1, $2… FROM user_e2ee_keys WHERE username = $1`. Postgres types an
+untyped parameter from its uses, and the two uses of `$1` disagree: as an inserted value it takes
+the column's varchar, while `username = $1` resolves through the text equality operator and takes
+text — a `VALUES` + scalar-subquery rewrite failed identically. Fix: pass the username twice, one
+parameter per context (`VALUES ($1, (SELECT … WHERE username = $6), …)`). Rule for central: never
+reuse one parameter both as an inserted value and in a comparison. Central has no local build
+here — verified by inspection; needs the Hetzner rebuild + restart.
 
 ## 5. Suggested order of work
 

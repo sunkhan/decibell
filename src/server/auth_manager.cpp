@@ -1150,19 +1150,22 @@ uint32_t AuthManager::publishE2eeKeys(const std::string& username,
         pqxx::work txn(conn);
         // MAX+1 inside one transaction; central runs a single io thread
         // so two publishes from the same user can't interleave anyway.
-        // VALUES (with the MAX as a scalar subquery) rather than
-        // INSERT ... SELECT: in a select list Postgres deduces an untyped
-        // parameter as text, and the same $1 compared against the
-        // varchar column then fails with "inconsistent types deduced for
-        // parameter $1" (seen in production, 2026-09-03). Target columns
-        // type every parameter here.
+        // The username is passed TWICE on purpose. Postgres types an
+        // untyped parameter from its first use, and the two uses here
+        // disagree: as an inserted value it takes the column's varchar,
+        // while `username = $n` resolves through the text equality
+        // operator and takes text — one $1 in both places fails with
+        // "inconsistent types deduced for parameter $1: text versus
+        // character varying" (production, 2026-09-03, with both the
+        // INSERT … SELECT and the VALUES + subquery shapes).
         pqxx::result rs = txn.exec_params(
             "INSERT INTO user_e2ee_keys (username, key_id, dh_pub, sign_pub, signature, created_at) "
             "VALUES ($1, "
-            "  (SELECT COALESCE(MAX(key_id), 0) + 1 FROM user_e2ee_keys WHERE username = $1), "
+            "  (SELECT COALESCE(MAX(key_id), 0) + 1 FROM user_e2ee_keys WHERE username = $6), "
             "  $2, $3, $4, $5) "
             "RETURNING key_id",
-            username, toBytea(dh_pub), toBytea(sign_pub), toBytea(signature), created_at);
+            username, toBytea(dh_pub), toBytea(sign_pub), toBytea(signature), created_at,
+            username);
         txn.commit();
         if (rs.empty()) return 0;
         return static_cast<uint32_t>(rs[0][0].as<int64_t>());
