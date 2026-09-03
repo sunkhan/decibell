@@ -279,6 +279,10 @@ void CommunityDb::migrate_to_v9_e2ee_() {
     exec_sql(db_,
         "CREATE INDEX IF NOT EXISTS idx_channel_key_blobs_recipient "
         "ON channel_key_blobs(recipient, channel_id);");
+    // Encrypted-channel uploads: ciphertext blobs whose real metadata
+    // lives in the message envelope.
+    if (!column_exists(db_, "attachments", "encrypted"))
+        exec_sql(db_, "ALTER TABLE attachments ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0;");
     set_meta_("schema_version", "9");
 }
 
@@ -2494,7 +2498,7 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
         "  upload_status, expected_size, uploader, width, height, "
         "  thumbnail_size_bytes, thumbnail_sizes_mask, duration_ms, "
-        "  COALESCE(placeholder, '') "
+        "  COALESCE(placeholder, ''), encrypted "
         "FROM attachments WHERE message_id IN (" + placeholders + ") "
         "  AND upload_status = 'ready' "
         "ORDER BY message_id ASC, position ASC;";
@@ -2526,6 +2530,7 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
         a.thumbnail_sizes_mask = q.col_int(16);
         a.duration_ms = q.col_int(17);
         a.placeholder = q.col_text(18);
+        a.encrypted = q.col_int(19) != 0;
         out.push_back(std::move(a));
     }
     return out;
@@ -2542,14 +2547,15 @@ int64_t CommunityDb::insert_pending_attachment(const std::string& channel_id,
                                                int32_t width,
                                                int32_t height,
                                                int32_t duration_ms,
-                                               const std::string& placeholder) {
+                                               const std::string& placeholder,
+                                               bool encrypted) {
     std::lock_guard<std::mutex> lock(mutex_);
     Stmt q(db_,
         "INSERT INTO attachments("
         "  message_id, kind, filename, mime, size_bytes, storage_path, "
         "  position, created_at, purged_at, upload_status, expected_size, "
-        "  uploader, channel_id, width, height, duration_ms, placeholder"
-        ") VALUES(0, ?, ?, ?, 0, ?, ?, ?, 0, 'uploading', ?, ?, ?, ?, ?, ?, ?);");
+        "  uploader, channel_id, width, height, duration_ms, placeholder, encrypted"
+        ") VALUES(0, ?, ?, ?, 0, ?, ?, ?, 0, 'uploading', ?, ?, ?, ?, ?, ?, ?, ?);");
     if (!q.s) {
         std::cerr << "[DB] insert_pending_attachment prepare failed: "
                   << sqlite3_errmsg(db_) << "\n";
@@ -2577,6 +2583,7 @@ int64_t CommunityDb::insert_pending_attachment(const std::string& channel_id,
     // Opaque base64 blob. Length-capped so a malicious client can't use
     // it as unbounded storage — a real ThumbHash is ~34 base64 chars.
     q.bind_text(13, placeholder.size() > 128 ? std::string() : placeholder);
+    q.bind_int(14, encrypted ? 1 : 0);
     int rc = q.step();
     if (rc != SQLITE_DONE) {
         std::cerr << "[DB] insert_pending_attachment step failed (rc=" << rc
@@ -2593,7 +2600,7 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
         "  upload_status, expected_size, uploader, channel_id, width, height, "
         "  thumbnail_size_bytes, thumbnail_sizes_mask, duration_ms, "
-        "  COALESCE(placeholder, '') "
+        "  COALESCE(placeholder, ''), encrypted "
         "FROM attachments WHERE id=?;");
     if (!q.s) return std::nullopt;
     q.bind_int64(1, attachment_id);
@@ -2619,6 +2626,7 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
     a.thumbnail_sizes_mask = q.col_int(17);
     a.duration_ms = q.col_int(18);
     a.placeholder = q.col_text(19);
+    a.encrypted = q.col_int(20) != 0;
     return a;
 }
 
@@ -2698,7 +2706,8 @@ bool CommunityDb::add_attachment_thumbnail_size(int64_t attachment_id,
 std::vector<int64_t> CommunityDb::bind_attachments(const std::vector<int64_t>& attachment_ids,
                                                     int64_t message_id,
                                                     const std::string& channel_id,
-                                                    const std::string& uploader) {
+                                                    const std::string& uploader,
+                                                    bool require_encrypted) {
     std::vector<int64_t> bound;
     if (attachment_ids.empty()) return bound;
 
@@ -2719,7 +2728,8 @@ std::vector<int64_t> CommunityDb::bind_attachments(const std::vector<int64_t>& a
             "  AND upload_status='ready' "
             "  AND message_id=0 "
             "  AND uploader=? "
-            "  AND channel_id=?;";
+            "  AND channel_id=? "
+            "  AND encrypted=?;";
         Stmt q(db_, select_sql.c_str());
         if (!q.s) { exec_sql(db_, "ROLLBACK;"); return bound; }
         for (size_t i = 0; i < attachment_ids.size(); ++i) {
@@ -2727,6 +2737,7 @@ std::vector<int64_t> CommunityDb::bind_attachments(const std::vector<int64_t>& a
         }
         q.bind_text(static_cast<int>(attachment_ids.size() + 1), uploader);
         q.bind_text(static_cast<int>(attachment_ids.size() + 2), channel_id);
+        q.bind_int(static_cast<int>(attachment_ids.size() + 3), require_encrypted ? 1 : 0);
         while (q.step() == SQLITE_ROW) {
             bound.push_back(q.col_int64(0));
         }

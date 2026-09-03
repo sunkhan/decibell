@@ -1629,10 +1629,8 @@ private:
                     reject_channel_msg(*msg, "This channel isn't encrypted.");
                     return;
                 }
-                if (encrypted && msg->attachments_size() > 0) {
-                    reject_channel_msg(*msg, "Attachments aren't available in encrypted channels yet.");
-                    return;
-                }
+                // Attachments follow the flag too: bind_attachments below
+                // only binds uploads whose `encrypted` matches the channel.
                 if (msg->envelope().size() > MAX_CHANNEL_MSG_BYTES + 64) {
                     reject_channel_msg(*msg, "Message too long.");
                     return;
@@ -1705,8 +1703,13 @@ private:
                 for (const auto& a : msg->attachments()) {
                     if (a.id() > 0) requested.push_back(a.id());
                 }
+                // Encrypted channel → only ciphertext uploads bind; plaintext
+                // channel → only plain ones. Anything else is dropped like
+                // any other ineligible upload.
+                bool channel_encrypted = false;
+                if (auto ech = db->get_channel(msg->channel_id())) channel_encrypted = ech->encrypted;
                 auto bound_ids = db->bind_attachments(
-                    requested, new_id, msg->channel_id(), username_);
+                    requested, new_id, msg->channel_id(), username_, channel_encrypted);
 
                 // Rebuild the attachments field with authoritative rows so
                 // downstream consumers see every field (filename, mime, size,
@@ -1734,6 +1737,7 @@ private:
                             static_cast<uint32_t>(row.thumbnail_sizes_mask));
                         pa->set_duration_ms(static_cast<uint32_t>(row.duration_ms));
                         pa->set_placeholder(row.placeholder);
+                        pa->set_encrypted(row.encrypted);
                     }
                 }
             } else {
@@ -1837,6 +1841,7 @@ private:
                             static_cast<uint32_t>(a->thumbnail_sizes_mask));
                         proto_a->set_duration_ms(static_cast<uint32_t>(a->duration_ms));
                         proto_a->set_placeholder(a->placeholder);
+                        proto_a->set_encrypted(a->encrypted);
                     }
                 }
             }

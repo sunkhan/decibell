@@ -1245,6 +1245,37 @@ def test_mls_delivery_service():
     for c in (ann, bob, cid, owner): c.close()
 
 
+def attachment_http(user, method, path, extra_headers="", body=b""):
+    """One request against the attachment HTTP endpoint as `user`."""
+    sk = raw_tls(8085)
+    sk.sendall((f"{method} {path} HTTP/1.1\r\nHost: x\r\n"
+                f"Authorization: Bearer {jwt(user)}\r\n{extra_headers}"
+                f"Content-Length: {len(body)}\r\n\r\n").encode() + body)
+    sk.settimeout(3); data = b""
+    try:
+        while b"\r\n\r\n" not in data:
+            chunk = sk.recv(4096)
+            if not chunk: break
+            data += chunk
+    except socket.timeout:
+        pass
+    head, _, rest = data.partition(b"\r\n\r\n")
+    clen = 0
+    for line in head.split(b"\r\n"):
+        if line.lower().startswith(b"content-length:"):
+            try: clen = int(line.split(b":", 1)[1])
+            except Exception: clen = 0
+    while len(rest) < clen:
+        try:
+            chunk = sk.recv(4096)
+            if not chunk: break
+            rest += chunk
+        except socket.timeout:
+            break
+    sk.close()
+    return head, rest
+
+
 def test_encrypted_channels():
     """Encrypted text channels: toggle + audit, wire-format enforcement both ways,
     envelope through broadcast / history / edit / reply preview, key escrow
@@ -1295,10 +1326,41 @@ def test_encrypted_channels():
     check("sealed edit accepted", r is not None and r.message_edit_res.success, r.message_edit_res.message if r else None)
     e = owner.wait(pb.Packet.CHANNEL_MESSAGE_EDITED, timeout=2, pred=lambda p: p.channel_message_edited.message_id == mid)
     check("edit broadcast carries the envelope", e is not None and e.channel_message_edited.envelope == b"\x02ENV1b")
-    # attachments refused in encrypted channels
-    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="PLACEHOLDER", envelope=b"\x02ENV3", nonce="n4", attachments=[pb.Attachment(id=1)]))
-    rj = ed.wait(pb.Packet.CHANNEL_MSG_REJECTED, timeout=2, pred=lambda p: p.channel_msg_rejected.nonce == "n4")
-    check("attachments refused in encrypted channel", rj is not None)
+    # --- attachments: sealed uploads only, in an encrypted channel ---
+    def upload(user, channel, init):
+        head, body = attachment_http(user, "POST", "/attachments/init", "Content-Type: application/json\r\n",
+                                     json.dumps(dict(init, channelId=channel)).encode())
+        if not head.startswith(b"HTTP/1.1 201"):
+            return head, None
+        aid = json.loads(body.decode() or "{}").get("id")
+        attachment_http(user, "PATCH", f"/attachments/{aid}", "Upload-Offset: 0\r\n", b"ab")
+        attachment_http(user, "POST", f"/attachments/{aid}/complete")
+        return head, aid
+    plain = {"filename": "p.bin", "mime": "application/octet-stream", "size": 2}
+    sealed = {"filename": "encrypted", "mime": "image/png", "size": 2, "encrypted": True, "kind": 0,
+              "width": 640, "height": 480, "durationMs": 7, "placeholder": "zzz"}
+    _, plain_aid = upload("edith", "general", plain)
+    head, enc_aid = upload("edith", "general", sealed)
+    check("sealed upload init accepted", enc_aid is not None, head[:40])
+    check("sealed row keeps the declared kind and no metadata",
+          sql("select encrypted, kind, width, height, duration_ms, coalesce(placeholder,''), mime from attachments where id=?", enc_aid)
+          == [(1, 0, 0, 0, 0, "", "application/octet-stream")])
+    head, _ = attachment_http("edith", "POST", "/attachments/init", "Content-Type: application/json\r\n",
+                              json.dumps(dict(sealed, channelId="general", kind=9)).encode())
+    check("sealed upload needs a valid kind", head.startswith(b"HTTP/1.1 400"), head[:40])
+    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="PLACEHOLDER", envelope=b"\x02ENV3", nonce="n4",
+                                                                 attachments=[pb.Attachment(id=plain_aid), pb.Attachment(id=enc_aid)]))
+    bc3 = ed.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "n4")
+    check("only the sealed upload binds in an encrypted channel", bc3 is not None and [a.id for a in bc3.channel_msg.attachments] == [enc_aid])
+    check("bound attachment flagged encrypted on the wire", bc3 is not None and len(bc3.channel_msg.attachments) == 1
+          and bc3.channel_msg.attachments[0].encrypted and bc3.channel_msg.attachments[0].kind == 0)
+    check("plain upload left unbound", sql("select message_id from attachments where id=?", plain_aid) == [(0,)])
+    mid4 = bc3.channel_msg.id if bc3 else 0
+    ed.flush(0.3)
+    ed.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", limit=50))
+    h = ed.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2)
+    hrow = next((m for m in h.channel_history_res.messages if m.id == mid4), None) if h else None
+    check("history carries the encrypted flag", hrow is not None and len(hrow.attachments) == 1 and hrow.attachments[0].encrypted)
     # envelope refused in a plaintext channel (a fresh one — earlier tests
     # reshape the seeded channels)
     owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="plain-e2ee", type=pb.ChannelInfo.TEXT))
@@ -1308,6 +1370,11 @@ def test_encrypted_channels():
     ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=plain_id, content="PLACEHOLDER", envelope=b"\x02ENVX", nonce="n5"))
     rj = ed.wait(pb.Packet.CHANNEL_MSG_REJECTED, timeout=2, pred=lambda p: p.channel_msg_rejected.nonce == "n5")
     check("envelope refused in plaintext channel", rj is not None)
+    # ...and a sealed upload doesn't bind there either
+    _, enc2 = upload("edith", plain_id, dict(sealed, kind=2))
+    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=plain_id, content="with file", nonce="n6", attachments=[pb.Attachment(id=enc2)]))
+    bc4 = ed.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "n6")
+    check("sealed upload doesn't bind in a plaintext channel", bc4 is not None and len(bc4.channel_msg.attachments) == 0)
     for c in (owner, ed, fay): c.flush(0.3)
 
     # --- key escrow ---

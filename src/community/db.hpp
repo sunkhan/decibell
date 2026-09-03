@@ -117,6 +117,9 @@ struct DbAttachment {
     // server — stored and echoed verbatim, never decoded here. Empty for
     // non-image kinds and pre-thumbhash uploads.
     std::string placeholder;
+    // Encrypted-channel upload: bytes and thumbnails are the uploader's
+    // ciphertext; metadata here is a stand-in (spec 2026-09-04).
+    bool encrypted = false;
 };
 
 // Returned from prune_attachments so the server can broadcast tombstone
@@ -576,7 +579,8 @@ public:
                                       int32_t width,
                                       int32_t height,
                                       int32_t duration_ms,
-                                      const std::string& placeholder);
+                                      const std::string& placeholder,
+                                      bool encrypted = false);
     std::optional<DbAttachment> get_attachment(int64_t attachment_id) const;
     // Set/overwrite the storage_path for an attachment. Used at upload init:
     // we need the row's autoincrement id to build the final path, so the
@@ -609,7 +613,8 @@ public:
     std::vector<int64_t> bind_attachments(const std::vector<int64_t>& attachment_ids,
                                           int64_t message_id,
                                           const std::string& channel_id,
-                                          const std::string& uploader);
+                                          const std::string& uploader,
+                                        bool require_encrypted = false);
     // Unbound attachments (message_id=0) the retention sweep should clean
     // up, with a cutoff per lifecycle state (created_at in unix seconds):
     //   - 'uploading' rows older than `uploading_cutoff_ts` — the client

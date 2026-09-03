@@ -387,12 +387,21 @@ private:
         std::string filename, mime, channel_id, placeholder;
         int64_t size = 0;
         int32_t width = 0, height = 0, duration_ms = 0;
+        // Encrypted-channel upload (spec 2026-09-04): the bytes are the
+        // uploader's ciphertext, so the client declares the *kind*
+        // explicitly (retention still works per kind) and sends stand-in
+        // metadata; the real filename / mime / dimensions / placeholder
+        // ride the message envelope where this server can't read them.
+        bool encrypted = false;
+        int32_t declared_kind = -1;
         try {
             auto j = json::parse(std::string(body_.begin(), body_.end()));
             channel_id = j.value("channelId", "");
             filename   = j.value("filename",  "");
             mime       = j.value("mime",      "application/octet-stream");
             size       = j.value("size",      (int64_t)0);
+            encrypted  = j.value("encrypted", false);
+            declared_kind = j.value("kind", -1);
             // Optional: uploader client reads image dimensions and forwards
             // them so downstream viewers can reserve the right placeholder
             // size before the image data URL loads. Zero = unknown.
@@ -409,6 +418,12 @@ private:
             placeholder = j.value("placeholder", std::string());
             if (placeholder.size() > 128) placeholder.clear();
         } catch (...) { send_error(400, "Bad Request"); return; }
+        if (encrypted) {
+            if (declared_kind < 0 || declared_kind > 3) { send_error(400, "Bad Request"); return; }
+            // Nothing the server could learn from — and nothing to leak.
+            width = 0; height = 0; duration_ms = 0; placeholder.clear();
+            mime = "application/octet-stream";
+        }
 
         if (channel_id.empty() || filename.empty() || size <= 0) {
             send_error(400, "Bad Request"); return;
@@ -458,7 +473,7 @@ private:
         }
 
         const std::string safe_name = sanitize_filename(filename);
-        const int kind = kind_from_mime(mime);
+        const int kind = encrypted ? declared_kind : kind_from_mime(mime);
 
         // Make the channel directory, then insert with an empty placeholder
         // storage_path (we need the autoincrement id to build the final one).
@@ -473,7 +488,7 @@ private:
 
         const int64_t new_id = db_.insert_pending_attachment(
             channel_id, kind, filename, mime, size, /*storage_path*/ "", username_,
-            /*position*/ 0, width, height, duration_ms, placeholder);
+            /*position*/ 0, width, height, duration_ms, placeholder, encrypted);
         if (new_id == 0) {
             std::cerr << "[AttachmentHttp] init: insert_pending_attachment "
                          "returned 0 (see [DB] log for SQLite error)\n";

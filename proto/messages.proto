@@ -789,6 +789,13 @@ message Attachment {
   // the wire instead of 25, which is not worth a base64 implementation
   // in two more languages.
   string placeholder = 16;
+  // Encrypted channels (spec 2026-09-04 §Attachments): the stored bytes
+  // are the uploader's ciphertext (64 KiB AES-256-GCM chunks) and the
+  // thumbnails are sealed JPEGs; filename / mime / dimensions / placeholder
+  // here are opaque stand-ins. The real metadata and the key travel inside
+  // the message envelope (EncryptedMessageBody). The server only keeps the
+  // flag so the wire format follows the channel flag.
+  bool encrypted = 17;
 }
 
 // --- Channel management ---
@@ -2056,4 +2063,27 @@ message ChannelKeysChanged {
   uint32 current_epoch = 2;
   string filler = 3;
   bool   rotate = 4;
+}
+
+// --- Encrypted channel message body (client-only; opaque to every server) ---
+// The plaintext inside a channel envelope with content tag 0x03: the
+// message text plus one entry per encrypted attachment bound to the
+// message. Prost-encoded by the client; C++ never touches it.
+
+message EncryptedAttachmentMeta {
+  int64  id = 1;             // the server's attachment id
+  bytes  key = 2;            // 32-byte AES-256-GCM key, unique per attachment
+  string filename = 3;
+  string mime = 4;
+  int64  size_bytes = 5;     // plaintext size
+  uint32 width = 6;
+  uint32 height = 7;
+  uint32 duration_ms = 8;
+  string placeholder = 9;    // base64 ThumbHash
+  uint32 chunk_bytes = 10;   // plaintext bytes per sealed chunk (64 KiB)
+  uint32 thumbnail_sizes_mask = 11;  // sealed JPEG thumbnails uploaded (bit 0 = 320 px, 1 = 640, 2 = 1280)
+}
+message EncryptedMessageBody {
+  string text = 1;
+  repeated EncryptedAttachmentMeta attachments = 2;
 }
