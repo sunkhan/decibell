@@ -30,7 +30,15 @@ enum UdpPacketType : uint8_t {
     NACK = 3,
     FEC = 4,
     PING = 5,
-    STREAM_AUDIO = 6
+    STREAM_AUDIO = 6,
+    // MLS-encrypted voice channels (2026-09-03): same headers as the plain
+    // twins, payload sealed per sender under the channel's epoch keys. The
+    // relay treats 7 like AUDIO, 8 like STREAM_AUDIO, 9 like VIDEO; FEC over
+    // sealed chunks keeps type 4. A client that predates these drops them
+    // (unknown type) rather than feeding ciphertext to a decoder.
+    AUDIO_SEALED = 7,
+    STREAM_AUDIO_SEALED = 8,
+    VIDEO_SEALED = 9
 };
 
 // Max missing packet indices per NACK — keeps packet under MTU

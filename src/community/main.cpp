@@ -214,6 +214,9 @@ chatproj::Packet build_overwrites_packet(chatproj::CommunityDb* db, const std::s
 }
 } // namespace
 
+/// Largest MLS handshake blob (commit / GroupInfo) the delivery service relays.
+constexpr size_t kMaxMlsBlob = 256 * 1024;
+
 class Session;
 
 class SessionManager {
@@ -298,6 +301,28 @@ public:
     void run_retention_sweep();
     void broadcast_to_voice_channel(const char* data, size_t length, const std::string& channel_id, std::shared_ptr<Session> sender, boost::asio::ip::udp::socket& udp_socket);
     void broadcast_to_voice_channel_tcp(const chatproj::Packet& packet, const std::string& channel_id);
+    // Same, minus one session (the committer of an MLS commit already
+    // holds it as its pending commit).
+    void broadcast_to_voice_channel_tcp_except(const chatproj::Packet& packet, const std::string& channel_id,
+                                               const std::shared_ptr<Session>& except);
+
+    // --- MLS delivery service (docs/superpowers/specs/
+    //     2026-09-03-mls-voice-channel-encryption-design.md) ---
+    // One group per voice channel: the current epoch and the GroupInfo
+    // external joiners need. Blobs are opaque; the server never holds a
+    // key. Dropped when the channel empties.
+    struct MlsGroupState {
+        uint64_t epoch = 0;
+        std::string group_info;
+    };
+    bool is_in_voice_channel(const std::shared_ptr<Session>& session, const std::string& channel_id);
+    std::optional<MlsGroupState> mls_group(const std::string& channel_id);
+    // Register epoch 0. False when a group already exists.
+    bool mls_create(const std::string& channel_id, const std::string& group_info);
+    // Accept a commit for `epoch` iff epoch == current + 1; stores the new
+    // GroupInfo. Returns (accepted, current epoch after the call).
+    std::pair<bool, uint64_t> mls_commit(const std::string& channel_id, uint64_t epoch,
+                                         const std::string& group_info);
     void relay_keyframe_request(const std::string& target_username, boost::asio::ip::udp::socket& udp_socket);
     void relay_nack(const char* data, size_t length, const std::string& target_username, boost::asio::ip::udp::socket& udp_socket);
     void broadcast_voice_presence(const std::string& channel_id);
@@ -463,6 +488,12 @@ public:
 private:
     std::set<std::shared_ptr<Session>> sessions_;
     std::unordered_map<std::string, std::set<std::shared_ptr<Session>>> voice_channels_;
+    // MLS groups by voice channel id (guarded by mutex_). Erased wherever
+    // a voice_channels_ entry is erased — see mls_drop_if_empty_locked.
+    std::unordered_map<std::string, MlsGroupState> mls_groups_;
+    void mls_drop_if_empty_locked(const std::string& channel_id) {
+        if (voice_channels_.find(channel_id) == voice_channels_.end()) mls_groups_.erase(channel_id);
+    }
     
     // channel_id -> map of username -> stream info
     struct StreamInfo {
@@ -1132,6 +1163,97 @@ private:
             current_voice_channel_ = "";
             is_muted_ = false;
             is_deafened_ = false;
+        }
+
+        // --- MLS delivery service (encrypted voice channels) ---
+        // Opaque blobs; the only policy here is "you must be in that voice
+        // channel", the epoch sequencing rule, and size caps. See
+        // docs/superpowers/specs/2026-09-03-mls-voice-channel-encryption-design.md.
+        else if (packet.type() == chatproj::Packet::MLS_GROUP_INFO_REQ) {
+            const auto& req = packet.mls_group_info_req();
+            if (!manager_.is_in_voice_channel(shared_from_this(), req.channel_id())) return;
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::MLS_GROUP_INFO_RES);
+            auto* res = rsp.mutable_mls_group_info_res();
+            res->set_channel_id(req.channel_id());
+            if (auto g = manager_.mls_group(req.channel_id())) {
+                res->set_exists(true);
+                res->set_epoch(g->epoch);
+                res->set_group_info(g->group_info);
+            } else {
+                res->set_exists(false);
+            }
+            std::string serialized;
+            rsp.SerializeToString(&serialized);
+            deliver(std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized)));
+        }
+        else if (packet.type() == chatproj::Packet::MLS_GROUP_CREATE_REQ) {
+            const auto& req = packet.mls_group_create_req();
+            auto reply = [&](bool ok, const std::string& msg, uint64_t epoch) {
+                chatproj::Packet rsp;
+                rsp.set_type(chatproj::Packet::MLS_COMMIT_RES);
+                auto* res = rsp.mutable_mls_commit_res();
+                res->set_channel_id(req.channel_id());
+                res->set_success(ok);
+                res->set_message(msg);
+                res->set_epoch(epoch);
+                std::string serialized;
+                rsp.SerializeToString(&serialized);
+                deliver(std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized)));
+            };
+            if (!manager_.is_in_voice_channel(shared_from_this(), req.channel_id())) {
+                reply(false, "Not in that voice channel.", 0);
+                return;
+            }
+            if (req.group_info().empty() || req.group_info().size() > kMaxMlsBlob) {
+                reply(false, "Bad group info.", 0);
+                return;
+            }
+            if (!manager_.mls_create(req.channel_id(), req.group_info())) {
+                auto g = manager_.mls_group(req.channel_id());
+                reply(false, "exists", g ? g->epoch : 0);
+                return;
+            }
+            std::cout << "[MLS] " << username_ << " created the group for " << req.channel_id() << "\n";
+            reply(true, "", 0);
+        }
+        else if (packet.type() == chatproj::Packet::MLS_COMMIT_REQ) {
+            const auto& req = packet.mls_commit_req();
+            auto reply = [&](bool ok, const std::string& msg, uint64_t epoch) {
+                chatproj::Packet rsp;
+                rsp.set_type(chatproj::Packet::MLS_COMMIT_RES);
+                auto* res = rsp.mutable_mls_commit_res();
+                res->set_channel_id(req.channel_id());
+                res->set_success(ok);
+                res->set_message(msg);
+                res->set_epoch(epoch);
+                std::string serialized;
+                rsp.SerializeToString(&serialized);
+                deliver(std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized)));
+            };
+            if (!manager_.is_in_voice_channel(shared_from_this(), req.channel_id())) {
+                reply(false, "Not in that voice channel.", 0);
+                return;
+            }
+            if (req.commit().empty() || req.commit().size() > kMaxMlsBlob ||
+                req.group_info().size() > kMaxMlsBlob) {
+                reply(false, "Bad commit.", 0);
+                return;
+            }
+            auto [ok, epoch] = manager_.mls_commit(req.channel_id(), req.epoch(), req.group_info());
+            if (!ok) {
+                reply(false, epoch == 0 && !manager_.mls_group(req.channel_id()) ? "no_group" : "stale_epoch", epoch);
+                return;
+            }
+            reply(true, "", epoch);
+            chatproj::Packet bcast;
+            bcast.set_type(chatproj::Packet::MLS_COMMIT_BROADCAST);
+            auto* b = bcast.mutable_mls_commit_broadcast();
+            b->set_channel_id(req.channel_id());
+            b->set_epoch(epoch);
+            b->set_sender(username_);
+            b->set_commit(req.commit());
+            manager_.broadcast_to_voice_channel_tcp_except(bcast, req.channel_id(), shared_from_this());
         }
 
         // --- START STREAM ---
@@ -3043,6 +3165,10 @@ private:
             case T::STOP_WATCHING_REQ:
             case T::STREAM_CODEC_CHANGED_NOTIFY:
                 return presence_bucket_.try_take();
+            case T::MLS_GROUP_INFO_REQ:
+            case T::MLS_GROUP_CREATE_REQ:
+            case T::MLS_COMMIT_REQ:
+                return mls_bucket_.try_take();
             case T::CHANNEL_HISTORY_REQ:
             case T::MEMBER_LIST_REQ:
             case T::BAN_LIST_REQ:
@@ -3152,6 +3278,7 @@ private:
     chatproj::TokenBucket presence_bucket_{10, 2.0};  // voice/stream signalling
     chatproj::TokenBucket query_bucket_{20, 4.0};     // history / list fetches
     chatproj::TokenBucket admin_bucket_{20, 2.0};     // management + moderation
+    chatproj::TokenBucket mls_bucket_{20, 5.0};       // MLS handshake relay
     chatproj::TokenBucket rate_limit_log_bucket_{3, 0.2};
     std::vector<uint8_t> inbound_body_;
 
@@ -3236,7 +3363,12 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
             if (it->second.erase(session) > 0) {
                 affected_voice_channels.push_back(it->first);
             }
-            it = it->second.empty() ? voice_channels_.erase(it) : std::next(it);
+            if (it->second.empty()) {
+                mls_groups_.erase(it->first);
+                it = voice_channels_.erase(it);
+            } else {
+                ++it;
+            }
         }
         for (auto it = active_streams_.begin(); it != active_streams_.end();) {
             auto su = it->second.find(username);
@@ -3466,6 +3598,7 @@ void SessionManager::join_voice_channel(std::shared_ptr<Session> session, const 
                 vc_it->second.erase(session);
                 if (vc_it->second.empty()) voice_channels_.erase(vc_it);
             }
+            mls_drop_if_empty_locked(old_channel);
             // Clean up watcher entries from old channel (prune empties)
             auto ch_it = stream_watchers_.find(old_channel);
             if (ch_it != stream_watchers_.end()) {
@@ -3501,6 +3634,7 @@ void SessionManager::leave_voice_channel(std::shared_ptr<Session> session, const
                 vc_it->second.erase(session);
                 if (vc_it->second.empty()) voice_channels_.erase(vc_it);
             }
+            mls_drop_if_empty_locked(current_channel);
             // Clean up any watcher entries for this session in this channel
             auto ch_it = stream_watchers_.find(current_channel);
             if (ch_it != stream_watchers_.end()) {
@@ -4059,6 +4193,62 @@ void SessionManager::broadcast_to_voice_channel_tcp(const chatproj::Packet& pack
             session->deliver(framed);
         }
     }
+}
+
+void SessionManager::broadcast_to_voice_channel_tcp_except(const chatproj::Packet& packet,
+                                                           const std::string& channel_id,
+                                                           const std::shared_ptr<Session>& except) {
+    std::string serialized;
+    packet.SerializeToString(&serialized);
+    uint32_t length = htonl(static_cast<uint32_t>(serialized.size()));
+    auto framed = std::make_shared<std::vector<uint8_t>>();
+    framed->resize(4 + serialized.size());
+    std::memcpy(framed->data(), &length, 4);
+    std::memcpy(framed->data() + 4, serialized.data(), serialized.size());
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = voice_channels_.find(channel_id);
+    if (it == voice_channels_.end()) return;
+    for (auto& session : it->second) {
+        if (session != except) session->deliver(framed);
+    }
+}
+
+// ─── MLS delivery service ────────────────────────────────────────────────
+
+bool SessionManager::is_in_voice_channel(const std::shared_ptr<Session>& session,
+                                         const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = voice_channels_.find(channel_id);
+    return it != voice_channels_.end() && it->second.count(session) > 0;
+}
+
+std::optional<SessionManager::MlsGroupState> SessionManager::mls_group(const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = mls_groups_.find(channel_id);
+    if (it == mls_groups_.end()) return std::nullopt;
+    return it->second;
+}
+
+bool SessionManager::mls_create(const std::string& channel_id, const std::string& group_info) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (mls_groups_.count(channel_id)) return false;
+    MlsGroupState st;
+    st.epoch = 0;
+    st.group_info = group_info;
+    mls_groups_[channel_id] = std::move(st);
+    return true;
+}
+
+std::pair<bool, uint64_t> SessionManager::mls_commit(const std::string& channel_id, uint64_t epoch,
+                                                     const std::string& group_info) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = mls_groups_.find(channel_id);
+    if (it == mls_groups_.end()) return {false, 0};
+    if (epoch != it->second.epoch + 1) return {false, it->second.epoch};
+    it->second.epoch = epoch;
+    if (!group_info.empty()) it->second.group_info = group_info;
+    return {true, epoch};
 }
 
 void SessionManager::send_udp_to_targets(const char* data, size_t length,
@@ -4930,9 +5120,13 @@ private:
 
                     // AUDIO or STREAM_AUDIO
                     constexpr int SID = chatproj::SENDER_ID_SIZE;
-                    if ((packet_type == chatproj::UdpPacketType::AUDIO ||
-                         packet_type == chatproj::UdpPacketType::STREAM_AUDIO) &&
-                        bytes_recvd >= 1 + SID + 4) {
+                    // Sealed twins (MLS-encrypted channels) relay exactly like the
+                    // plain types — same header, opaque payload.
+                    const bool is_audio = packet_type == chatproj::UdpPacketType::AUDIO ||
+                                          packet_type == chatproj::UdpPacketType::AUDIO_SEALED;
+                    const bool is_stream_audio = packet_type == chatproj::UdpPacketType::STREAM_AUDIO ||
+                                                 packet_type == chatproj::UdpPacketType::STREAM_AUDIO_SEALED;
+                    if ((is_audio || is_stream_audio) && bytes_recvd >= 1 + SID + 4) {
 
                         std::string token_str;
                         chatproj::UdpAudioPacket* packet = reinterpret_cast<chatproj::UdpAudioPacket*>(udp_buffer_);
@@ -4962,14 +5156,14 @@ private:
                                     std::memcpy(udp_buffer_ + 1, uname.c_str(),
                                                 std::min(uname.size(), size_t(SID - 1)));
 
-                                    if (packet_type == chatproj::UdpPacketType::AUDIO) {
+                                    if (is_audio) {
                                         // Server-muted (or -deafened) by a moderator:
                                         // drop at the relay; the client can't bypass it.
                                         if (!session->is_server_muted()) {
                                             manager_.broadcast_to_voice_channel(
                                                 udp_buffer_, bytes_recvd, channel, session, udp_socket_);
                                         }
-                                    } else if (packet_type == chatproj::UdpPacketType::STREAM_AUDIO) {
+                                    } else if (is_stream_audio) {
                                         // Stream audio stays on voice path (small, latency-sensitive).
                                         // Send to each watcher's *voice* endpoint so it lands on
                                         // their voice recv loop alongside regular AUDIO — the media
@@ -5102,9 +5296,12 @@ private:
                         return;
                     }
 
-                    // VIDEO or FEC: authenticate, rewrite sender_id, broadcast to watchers
-                    if ((packet_type == chatproj::UdpPacketType::VIDEO ||
-                         packet_type == chatproj::UdpPacketType::FEC) &&
+                    // VIDEO (plain or sealed) or FEC: authenticate, rewrite
+                    // sender_id, broadcast to watchers. VIDEO_SEALED carries the
+                    // same 45-byte header with an opaque payload.
+                    const bool is_video = packet_type == chatproj::UdpPacketType::VIDEO ||
+                                          packet_type == chatproj::UdpPacketType::VIDEO_SEALED;
+                    if ((is_video || packet_type == chatproj::UdpPacketType::FEC) &&
                         bytes_recvd >= 1 + SID + 8) {
 
                         std::string token_str;
@@ -5121,7 +5318,7 @@ private:
                         // payload_size is only read once the 45-byte header
                         // is known to be present. FEC uses a different layout
                         // and is left to the receiver's own bounds checks.)
-                        if (packet_type == chatproj::UdpPacketType::VIDEO) {
+                        if (is_video) {
                             constexpr size_t VIDEO_HEADER = 45;
                             if (bytes_recvd < VIDEO_HEADER ||
                                 static_cast<size_t>(packet->payload_size) >

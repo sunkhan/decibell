@@ -1168,6 +1168,83 @@ def test_udp_relay():
     ann.close(); bob.close(); owner.close()
 
 
+def test_mls_delivery_service():
+    """MLS DS: group create / info / epoch rule / broadcast excludes committer /
+    participant gating / group dropped when the channel empties; sealed UDP types relay."""
+    print("[mls] delivery service + sealed relay types")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ann = join("ann", owner); bob = join("bobby", owner); cid = join("cid", owner)
+    for c in (ann, bob):
+        c.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "bobby" in p.voice_presence_update.active_users)
+    for c in (ann, bob, cid):
+        c.flush(0.3)
+    # no group yet
+    ann.send(pb.Packet.MLS_GROUP_INFO_REQ, mls_group_info_req=pb.MlsGroupInfoReq(channel_id="voice-lounge"))
+    r = ann.wait(pb.Packet.MLS_GROUP_INFO_RES)
+    check("group info: none before create", r is not None and not r.mls_group_info_res.exists)
+    # a non-participant gets nothing
+    cid.send(pb.Packet.MLS_GROUP_INFO_REQ, mls_group_info_req=pb.MlsGroupInfoReq(channel_id="voice-lounge"))
+    check("non-participant gets no group info", cid.wait(pb.Packet.MLS_GROUP_INFO_RES, timeout=1.0) is None)
+    # create (epoch 0)
+    ann.send(pb.Packet.MLS_GROUP_CREATE_REQ, mls_group_create_req=pb.MlsGroupCreateReq(channel_id="voice-lounge", group_info=b"GI0"))
+    r = ann.wait(pb.Packet.MLS_COMMIT_RES)
+    check("create accepted at epoch 0", r is not None and r.mls_commit_res.success and r.mls_commit_res.epoch == 0)
+    bob.send(pb.Packet.MLS_GROUP_CREATE_REQ, mls_group_create_req=pb.MlsGroupCreateReq(channel_id="voice-lounge", group_info=b"GI0b"))
+    r = bob.wait(pb.Packet.MLS_COMMIT_RES)
+    check("second create refused with 'exists'", r is not None and not r.mls_commit_res.success and r.mls_commit_res.message == "exists")
+    bob.send(pb.Packet.MLS_GROUP_INFO_REQ, mls_group_info_req=pb.MlsGroupInfoReq(channel_id="voice-lounge"))
+    r = bob.wait(pb.Packet.MLS_GROUP_INFO_RES)
+    check("group info after create", r is not None and r.mls_group_info_res.exists and r.mls_group_info_res.epoch == 0 and r.mls_group_info_res.group_info == b"GI0")
+    # commit epoch rule
+    bob.send(pb.Packet.MLS_COMMIT_REQ, mls_commit_req=pb.MlsCommitReq(channel_id="voice-lounge", epoch=2, commit=b"C", group_info=b"GI2"))
+    r = bob.wait(pb.Packet.MLS_COMMIT_RES)
+    check("stale/skipped epoch refused", r is not None and not r.mls_commit_res.success and r.mls_commit_res.message == "stale_epoch" and r.mls_commit_res.epoch == 0)
+    bob.send(pb.Packet.MLS_COMMIT_REQ, mls_commit_req=pb.MlsCommitReq(channel_id="voice-lounge", epoch=1, commit=b"C1", group_info=b"GI1"))
+    r = bob.wait(pb.Packet.MLS_COMMIT_RES)
+    check("epoch 1 commit accepted", r is not None and r.mls_commit_res.success and r.mls_commit_res.epoch == 1)
+    b = ann.wait(pb.Packet.MLS_COMMIT_BROADCAST)
+    check("broadcast reaches the other participant with sender + epoch", b is not None and b.mls_commit_broadcast.sender == "bobby" and b.mls_commit_broadcast.epoch == 1 and b.mls_commit_broadcast.commit == b"C1")
+    check("committer does not receive its own broadcast", bob.wait(pb.Packet.MLS_COMMIT_BROADCAST, timeout=0.8) is None)
+    check("non-participant gets no broadcast", cid.wait(pb.Packet.MLS_COMMIT_BROADCAST, timeout=0.5) is None)
+    ann.send(pb.Packet.MLS_GROUP_INFO_REQ, mls_group_info_req=pb.MlsGroupInfoReq(channel_id="voice-lounge"))
+    r = ann.wait(pb.Packet.MLS_GROUP_INFO_RES)
+    check("group info follows the commit", r is not None and r.mls_group_info_res.epoch == 1 and r.mls_group_info_res.group_info == b"GI1")
+    # a commit without group_info keeps the previous GroupInfo
+    ann.send(pb.Packet.MLS_COMMIT_REQ, mls_commit_req=pb.MlsCommitReq(channel_id="voice-lounge", epoch=2, commit=b"C2"))
+    r = ann.wait(pb.Packet.MLS_COMMIT_RES)
+    check("epoch 2 accepted without group info", r is not None and r.mls_commit_res.success and r.mls_commit_res.epoch == 2)
+    bob.wait(pb.Packet.MLS_COMMIT_BROADCAST)
+    bob.send(pb.Packet.MLS_GROUP_INFO_REQ, mls_group_info_req=pb.MlsGroupInfoReq(channel_id="voice-lounge"))
+    r = bob.wait(pb.Packet.MLS_GROUP_INFO_RES)
+    check("previous group info retained", r is not None and r.mls_group_info_res.epoch == 2 and r.mls_group_info_res.group_info == b"GI1")
+    # sealed UDP types relay like their plain twins
+    ua = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ua.bind((HOST, 0)); ua.settimeout(2)
+    ub = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ub.bind((HOST, 0)); ub.settimeout(2)
+    def sealed_audio(jwt_token, seq, payload, ptype=7):
+        sid = jwt_token[-31:].encode().ljust(32, b"\0")
+        return bytes([ptype]) + sid + struct.pack("<HH", seq, len(payload)) + payload
+    ub.sendto(sealed_audio(bob.jwt, 1, b"b0"), (HOST, 8083))
+    ua.sendto(sealed_audio(ann.jwt, 1, b"sealed-a"), (HOST, 8083))
+    try:
+        got = ub.recv(2048)
+    except socket.timeout:
+        got = b""
+    check("AUDIO_SEALED relayed with sender rewritten", got[:1] == b"\x07" and got[1:33].rstrip(b"\0") == b"ann" and got[-8:] == b"sealed-a")
+    # group dropped when the channel empties
+    for c in (ann, bob):
+        c.send(pb.Packet.LEAVE_VOICE_REQ, leave_voice_req=pb.LeaveVoiceRequest())
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: len(p.voice_presence_update.active_users) == 0)
+    cid.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "cid" in p.voice_presence_update.active_users)
+    cid.flush(0.3)
+    cid.send(pb.Packet.MLS_GROUP_INFO_REQ, mls_group_info_req=pb.MlsGroupInfoReq(channel_id="voice-lounge"))
+    r = cid.wait(pb.Packet.MLS_GROUP_INFO_RES)
+    check("group dropped once the channel emptied", r is not None and not r.mls_group_info_res.exists)
+    for sk in (ua, ub): sk.close()
+    for c in (ann, bob, cid, owner): c.close()
+
+
 def test_http_keepalive_and_fts():
     print("[http] keep-alive on the attachment listener; FTS dropped")
     check("messages_fts table gone", sql("select count(*) from sqlite_master where name='messages_fts'") == [(0,)])
@@ -1725,6 +1802,7 @@ if __name__ == "__main__":
         test_m3_session_cap()
         test_voice_moderation()
         test_udp_relay()
+        test_mls_delivery_service()
         test_http_keepalive_and_fts()
         test_message_edit()
         test_message_reply()

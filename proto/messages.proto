@@ -239,6 +239,18 @@ message Packet {
     E2EE_FETCH_BACKUP_REQ = 133;    // client→central: the caller's own backup blob
     E2EE_FETCH_BACKUP_RES = 134;    // central→client
     E2EE_KEYS_CHANGED     = 135;    // central→every session: a user published a new bundle
+    // MLS-encrypted voice channels (docs/superpowers/specs/
+    // 2026-09-03-mls-voice-channel-encryption-design.md). The community
+    // server is the MLS delivery service: it sequences commits per voice
+    // channel, keeps the current GroupInfo for external joins, and forwards
+    // opaque handshake bytes to the channel's participants. It never holds
+    // a key.
+    MLS_GROUP_INFO_REQ   = 136;     // client→community
+    MLS_GROUP_INFO_RES   = 137;     // community→client
+    MLS_GROUP_CREATE_REQ = 138;     // client→community (epoch 0); answered with MLS_COMMIT_RES
+    MLS_COMMIT_REQ       = 139;     // client→community (epoch must be current + 1)
+    MLS_COMMIT_RES       = 140;     // community→committer
+    MLS_COMMIT_BROADCAST = 141;     // community→channel participants except the committer
   }
 
   Type type = 1;
@@ -417,6 +429,12 @@ message Packet {
     E2eeFetchBackupReq       e2ee_fetch_backup_req  = 135;
     E2eeFetchBackupRes       e2ee_fetch_backup_res  = 136;
     E2eeKeysChanged          e2ee_keys_changed      = 137;
+    MlsGroupInfoReq          mls_group_info_req     = 138;
+    MlsGroupInfoRes          mls_group_info_res     = 139;
+    MlsGroupCreateReq        mls_group_create_req   = 140;
+    MlsCommitReq             mls_commit_req         = 141;
+    MlsCommitRes             mls_commit_res         = 142;
+    MlsCommitBroadcast       mls_commit_broadcast   = 143;
   }
 }
 
@@ -1917,4 +1935,48 @@ message E2eeFetchBackupRes {
 message E2eeKeysChanged {
   string username = 1;
   uint32 key_id = 2;
+}
+
+// --- MLS-encrypted voice channels ---
+// See docs/superpowers/specs/2026-09-03-mls-voice-channel-encryption-design.md.
+// All `bytes` here are RFC 9420 MLSMessage encodings the server treats as
+// opaque (cap 256 KiB).
+
+message MlsGroupInfoReq {
+  string channel_id = 1;
+}
+message MlsGroupInfoRes {
+  string channel_id = 1;
+  bool   exists = 2;        // false = no group yet → the caller creates one
+  uint64 epoch = 3;         // current epoch (the GroupInfo below is for it)
+  bytes  group_info = 4;    // GroupInfo with ratchet tree + external pub
+}
+
+// First member in the channel: register the freshly created group (epoch 0).
+// Fails if a group already exists (the caller then joins it instead).
+message MlsGroupCreateReq {
+  string channel_id = 1;
+  bytes  group_info = 2;
+}
+
+// A commit (external join, removal, update) creating `epoch`. Accepted only
+// when epoch == current + 1; on success the server stores `group_info` and
+// forwards `commit` to the other participants.
+message MlsCommitReq {
+  string channel_id = 1;
+  uint64 epoch = 2;
+  bytes  commit = 3;
+  bytes  group_info = 4;
+}
+message MlsCommitRes {
+  string channel_id = 1;
+  bool   success = 2;
+  string message = 3;
+  uint64 epoch = 4;         // the server's current epoch after handling
+}
+message MlsCommitBroadcast {
+  string channel_id = 1;
+  uint64 epoch = 2;
+  string sender = 3;        // committer, server-stamped
+  bytes  commit = 4;
 }
