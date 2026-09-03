@@ -31,6 +31,9 @@ pub const TAG_LEN: usize = 16;
 pub const CONTENT_TEXT: u8 = 1;
 /// Inner content tag of a key blob inside a DM envelope.
 pub const CONTENT_CHANNEL_KEY: u8 = 2;
+/// Inner content tag of a prost-encoded `EncryptedMessageBody` (text +
+/// encrypted attachment metadata).
+pub const CONTENT_BODY: u8 = 3;
 const INFO_DOMAIN: &[u8] = b"decibell-channel-v1";
 const OKM_LEN: usize = 44;
 pub const MAX_TEXT_LEN: usize = 64 * 1024;
@@ -86,7 +89,19 @@ fn aad(header: &[u8], channel_id: &str, sender: &str) -> Vec<u8> {
 }
 
 pub fn seal(epoch: u32, epoch_key: &[u8; 32], channel_id: &str, sender: &str, text: &str) -> Result<Vec<u8>, String> {
-    if text.len() > MAX_TEXT_LEN {
+    seal_tagged(epoch, epoch_key, channel_id, sender, CONTENT_TEXT, text.as_bytes())
+}
+
+/// Seal arbitrary inner content under a content tag.
+pub fn seal_tagged(
+    epoch: u32,
+    epoch_key: &[u8; 32],
+    channel_id: &str,
+    sender: &str,
+    tag: u8,
+    content: &[u8],
+) -> Result<Vec<u8>, String> {
+    if content.len() > MAX_TEXT_LEN {
         return Err("message too long to seal".into());
     }
     let salt: [u8; SALT_LEN] = random_bytes()?;
@@ -96,9 +111,9 @@ pub fn seal(epoch: u32, epoch_key: &[u8; 32], channel_id: &str, sender: &str, te
     header[5..].copy_from_slice(&salt);
     let (key, nonce) = schedule(epoch_key, &salt, channel_id, sender);
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
-    let mut plain = Vec::with_capacity(1 + text.len());
-    plain.push(CONTENT_TEXT);
-    plain.extend_from_slice(text.as_bytes());
+    let mut plain = Vec::with_capacity(1 + content.len());
+    plain.push(tag);
+    plain.extend_from_slice(content);
     let body = cipher
         .encrypt(Nonce::from_slice(&nonce), Payload { msg: &plain, aad: &aad(&header, channel_id, sender) })
         .map_err(|_| "AEAD seal failed".to_string())?;
@@ -109,8 +124,17 @@ pub fn seal(epoch: u32, epoch_key: &[u8; 32], channel_id: &str, sender: &str, te
 }
 
 /// Open `wire` with the epoch key the header names (the caller resolves it
-/// from `parse_epoch`).
+/// from `parse_epoch`). Text only; see `open_tagged` for bodies.
 pub fn open(epoch_key: &[u8; 32], channel_id: &str, sender: &str, wire: &[u8]) -> Result<String, OpenError> {
+    let (tag, plain) = open_tagged(epoch_key, channel_id, sender, wire)?;
+    match tag {
+        CONTENT_TEXT => String::from_utf8(plain).map_err(|_| OpenError::Bad),
+        other => Err(OpenError::UnsupportedContent(other)),
+    }
+}
+
+/// Open `wire` and return `(content tag, inner bytes)`.
+pub fn open_tagged(epoch_key: &[u8; 32], channel_id: &str, sender: &str, wire: &[u8]) -> Result<(u8, Vec<u8>), OpenError> {
     parse_epoch(wire)?;
     let header = &wire[..HEADER_LEN];
     let (key, nonce) = schedule(epoch_key, &header[5..], channel_id, sender);
@@ -119,8 +143,7 @@ pub fn open(epoch_key: &[u8; 32], channel_id: &str, sender: &str, wire: &[u8]) -
         .decrypt(Nonce::from_slice(&nonce), Payload { msg: &wire[HEADER_LEN..], aad: &aad(header, channel_id, sender) })
         .map_err(|_| OpenError::Bad)?;
     match plain.first() {
-        Some(&CONTENT_TEXT) => String::from_utf8(plain[1..].to_vec()).map_err(|_| OpenError::Bad),
-        Some(&other) => Err(OpenError::UnsupportedContent(other)),
+        Some(&tag) => Ok((tag, plain[1..].to_vec())),
         None => Err(OpenError::Malformed),
     }
 }
@@ -168,6 +191,16 @@ mod tests {
         assert_eq!(parse_epoch(&[]), Err(OpenError::Malformed));
         let w2 = seal(3, &k, "general", "alice", "hello #general 🔒").unwrap();
         assert_ne!(wire, w2, "fresh salt per message");
+    }
+
+    #[test]
+    fn tagged_bodies() {
+        let k = [1u8; 32];
+        let body = b"\x0a\x02hi".to_vec();
+        let w = seal_tagged(1, &k, "c", "a", CONTENT_BODY, &body).unwrap();
+        assert_eq!(open_tagged(&k, "c", "a", &w).unwrap(), (CONTENT_BODY, body));
+        assert_eq!(open(&k, "c", "a", &w), Err(OpenError::UnsupportedContent(CONTENT_BODY)));
+        assert_eq!(open_tagged(&k, "c", "b", &w), Err(OpenError::Bad));
     }
 
     #[test]

@@ -21,6 +21,7 @@
 import * as http from "node:http";
 import { net } from "electron";
 import { getAttachmentTarget } from "./attachmentRegistry";
+import { fetchDecryptedAttachment } from "./attachmentFetch";
 
 let server: http.Server | null = null;
 let port = 0;
@@ -72,6 +73,19 @@ async function handleRequest(
     if (!target) {
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("not connected");
+      return;
+    }
+    // Encrypted-channel attachment: main opens the sealed chunks and
+    // answers the media element's Range probes with plaintext.
+    const dec = await fetchDecryptedAttachment(
+      serverId,
+      attachmentId,
+      url.search,
+      typeof req.headers.range === "string" ? req.headers.range : undefined,
+    );
+    if (dec) {
+      res.writeHead(dec.status, dec.statusText, dec.headers);
+      res.end(Buffer.from(dec.body.buffer, dec.body.byteOffset, dec.body.byteLength));
       return;
     }
     const upstream =

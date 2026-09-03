@@ -186,6 +186,25 @@ export interface SendChannelMessageArgs {
    * `content`. The server enforces the format either way.
    */
   encrypted?: boolean
+  /**
+   * Encrypted channel: the real metadata + per-file key of each
+   * attachment in `attachment_ids` — sealed inside the envelope.
+   */
+  encryptedAttachments?: Array<EncryptedAttachmentArg>
+}
+/** Mirror of proto `EncryptedAttachmentMeta` with a base64 key. */
+export interface EncryptedAttachmentArg {
+  id: number
+  keyB64: string
+  filename: string
+  mime: string
+  sizeBytes: number
+  width: number
+  height: number
+  durationMs: number
+  placeholder: string
+  chunkBytes: number
+  thumbnailSizesMask: number
 }
 export declare function sendChannelMessage(args: SendChannelMessageArgs): Promise<void>
 export interface DeleteChannelMessageArgs {
@@ -207,6 +226,11 @@ export interface EditChannelMessageArgs {
   content: string
   /** See SendChannelMessageArgs.encrypted. */
   encrypted?: boolean
+  /**
+   * The message's existing encrypted attachments (an edit re-seals
+   * the whole body, so their metadata rides along again).
+   */
+  encryptedAttachments?: Array<EncryptedAttachmentArg>
 }
 /**
  * Sends MESSAGE_EDIT_REQ over the community session. The ack arrives as

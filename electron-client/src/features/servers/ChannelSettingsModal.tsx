@@ -477,10 +477,10 @@ export default function ChannelSettingsModal() {
               <div className="min-w-0">
                 <div className="text-[13px] font-medium text-text-primary">Encrypt messages in this channel</div>
                 <div className="mt-1 text-[12px] leading-[1.55] text-text-muted">
-                  Messages are sealed on members' devices with keys the server never holds.
-                  Members need encryption set up to read or write here, attachments are unavailable
-                  for now, and server-side search can't cover encrypted messages. Turning it off
-                  later leaves earlier encrypted messages encrypted.
+                  Messages and attachments are sealed on members' devices with keys the server
+                  never holds. Members need encryption set up to read or write here, and
+                  server-side search can't cover encrypted messages. Turning it off later leaves
+                  earlier encrypted messages encrypted.
                 </div>
               </div>
               <input

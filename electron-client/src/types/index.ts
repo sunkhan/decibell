@@ -306,6 +306,22 @@ export interface CodecSettings {
 
 export type AttachmentKind = "image" | "video" | "document" | "audio";
 
+/// One sealed attachment's real metadata + key, opened from the message
+/// envelope by native (mirror of proto EncryptedAttachmentMeta).
+export interface EncryptedAttachmentMetaPayload {
+  id: number;
+  keyB64: string;
+  filename: string;
+  mime: string;
+  sizeBytes: number;
+  width: number;
+  height: number;
+  durationMs: number;
+  placeholder: string;
+  chunkBytes: number;
+  thumbnailSizesMask: number;
+}
+
 export interface Attachment {
   id: number;
   messageId: number;
@@ -328,6 +344,13 @@ export interface Attachment {
   /// bytes arrive shows the picture's colours rather than an empty box.
   /// "" for audio/documents, and for uploads that predate the field.
   placeholder: string;
+  /// Encrypted channel: the server row is a stand-in; the real metadata
+  /// (merged in here) and the per-file key came from the message envelope.
+  encrypted?: boolean;
+  /// base64 32-byte AES-256-GCM key (encrypted attachments only).
+  keyB64?: string;
+  /// Sealed chunk size (encrypted attachments only).
+  chunkBytes?: number;
 }
 
 export interface Message {
@@ -587,6 +610,8 @@ export interface MessageReceivedPayload {
   /// placeholder when decryptError is non-empty. Channels: false / "".
   encrypted: boolean;
   decryptError: string;
+  /// Encrypted channels: real metadata + key of each sealed attachment.
+  encryptedAttachments?: EncryptedAttachmentMetaPayload[];
 }
 
 // ── End-to-end encrypted DMs ─────────────────────────────────────────
@@ -650,6 +675,7 @@ export interface ChannelHistoryReceivedPayload {
     replyToAttachmentKinds: number[];
     encrypted?: boolean;
     decryptError?: string;
+    encryptedAttachments?: EncryptedAttachmentMetaPayload[];
   }>;
   hasMore: boolean;
   hasMoreAfter: boolean;
@@ -704,6 +730,8 @@ interface WireAttachment {
   height: number;
   thumbnailSizeBytes: number;
   thumbnailSizesMask: number;
+  /// Encrypted channel: the row is a stand-in (see Attachment.encrypted).
+  encrypted?: boolean;
   durationMs: number;
   /// base64 ThumbHash; absent on servers that predate the field.
   placeholder?: string;

@@ -13,6 +13,7 @@ import { registerWindowHandlers, attachWindowEvents, hardenNavigation } from "./
 import { registerDialogHandlers } from "./dialog";
 import { registerFsHandlers } from "./fs";
 import { registerNetHandlers } from "./netFetch";
+import { registerAttachmentKeyHandlers } from "./attachmentKeys";
 import { registerLinkPreviewHandlers } from "./linkPreview";
 import { registerGifHandlers } from "./gifs";
 import { startMediaServer, stopMediaServer, getMediaServerPort } from "./mediaServer";
@@ -601,6 +602,7 @@ ipcMain.handle(
 app.whenReady().then(async () => {
   registerProtocol();
   registerAttachmentProtocol();
+  registerAttachmentKeyHandlers();
   registerFileProtocol();
   registerInvokeHandler();
   registerWindowHandlers();

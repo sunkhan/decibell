@@ -989,6 +989,7 @@ async fn handle_direct(state: &Arc<Mutex<AppState>>, msg: DirectMessage) {
         reply_to_attachment_kinds: Vec::new(),
         encrypted,
         decrypt_error: err,
+        encrypted_attachments: Vec::new(),
     });
 }
 

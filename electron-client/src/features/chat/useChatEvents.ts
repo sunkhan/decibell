@@ -10,6 +10,7 @@ import type {
   ChannelMessageRejectedPayload,
   ChannelPrunedPayload,
   ChannelWipedPayload,
+  EncryptedAttachmentMetaPayload,
   MessageReceivedPayload,
 } from "../../types";
 
@@ -31,8 +32,9 @@ function mapReplyKinds(kinds: number[] | undefined): AttachmentKind[] | undefine
 
 function mapAttachment(
   a: MessageReceivedPayload["attachments"][number],
+  metas?: EncryptedAttachmentMetaPayload[],
 ): Attachment {
-  return {
+  const base: Attachment = {
     id: a.id,
     messageId: a.messageId,
     kind: normalizeKind(a.kind),
@@ -50,6 +52,54 @@ function mapAttachment(
     durationMs: a.durationMs ?? 0,
     placeholder: a.placeholder ?? "",
   };
+  if (!a.encrypted) return base;
+  // Encrypted channel: the server row is a stand-in ("encrypted",
+  // octet-stream, ciphertext size); the real metadata came out of the
+  // message envelope. Without it (undecryptable message) the stand-in
+  // shows, flagged encrypted.
+  const meta = metas?.find((m) => m.id === a.id);
+  if (!meta) return { ...base, encrypted: true };
+  return {
+    ...base,
+    encrypted: true,
+    keyB64: meta.keyB64,
+    chunkBytes: meta.chunkBytes,
+    filename: meta.filename,
+    mime: meta.mime,
+    sizeBytes: meta.sizeBytes,
+    width: meta.width,
+    height: meta.height,
+    durationMs: meta.durationMs,
+    placeholder: meta.placeholder,
+    thumbnailSizesMask: base.thumbnailSizesMask || meta.thumbnailSizesMask,
+  };
+}
+
+/// Map a message's attachments and hand main the keys of the sealed ones
+/// so decibell-attachment:// / media-server / netFetch fetches decrypt.
+function mapAttachments(
+  serverId: string,
+  atts: MessageReceivedPayload["attachments"] | undefined,
+  metas: EncryptedAttachmentMetaPayload[] | undefined,
+): Attachment[] {
+  const mapped = (atts ?? []).map((a) => mapAttachment(a, metas));
+  const keyed = mapped.filter((a) => a.encrypted && a.keyB64);
+  if (keyed.length > 0) {
+    window.decibell.attachments
+      ?.registerKeys(
+        keyed.map((a) => ({
+          serverId,
+          attachmentId: a.id,
+          keyB64: a.keyB64!,
+          chunkBytes: a.chunkBytes ?? 65536,
+          sizeBytes: a.sizeBytes,
+          mime: a.mime,
+          filename: a.filename,
+        })),
+      )
+      .catch(() => {});
+  }
+  return mapped;
 }
 
 // Wires up channel-message and channel-lifecycle events. DM messages
@@ -70,7 +120,7 @@ export function useChatEvents() {
         content: p.content,
         timestamp: p.timestamp,
         channelId: p.context,
-        attachments: (p.attachments ?? []).map(mapAttachment),
+        attachments: mapAttachments(p.serverId, p.attachments, p.encryptedAttachments),
         nonce: p.nonce || undefined,
         editedAt: p.editedAt || undefined,
         replyTo: p.replyTo || undefined,
@@ -93,7 +143,7 @@ export function useChatEvents() {
           content: m.content,
           timestamp: String(m.timestamp),
           channelId: m.channelId,
-          attachments: (m.attachments ?? []).map(mapAttachment),
+          attachments: mapAttachments(serverId, m.attachments, m.encryptedAttachments),
           nonce: m.nonce || undefined,
           editedAt: m.editedAt || undefined,
           replyTo: m.replyTo || undefined,

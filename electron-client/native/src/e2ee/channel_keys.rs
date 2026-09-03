@@ -24,6 +24,8 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+use prost::Message as _;
+
 use super::channel_envelope;
 use super::envelope;
 use super::identity::{random_bytes, KEY_LEN};
@@ -373,13 +375,52 @@ pub fn forget_server(s: &mut AppState, server_id: &str) {
     s.pending_channel_keys_publish.retain(|(sid, _), _| sid != server_id);
 }
 
-/// Seal a message body under the channel's current epoch.
+/// Encrypted attachment metadata as the renderer hands it over / gets it
+/// back — mirrors proto `EncryptedAttachmentMeta` with a base64 key.
+#[derive(Clone, Debug, Default)]
+pub struct AttachmentMeta {
+    pub id: i64,
+    pub key_b64: String,
+    pub filename: String,
+    pub mime: String,
+    pub size_bytes: i64,
+    pub width: u32,
+    pub height: u32,
+    pub duration_ms: u32,
+    pub placeholder: String,
+    pub chunk_bytes: u32,
+    pub thumbnail_sizes_mask: u32,
+}
+
+impl AttachmentMeta {
+    fn to_payload(&self) -> events::EncryptedAttachmentMetaPayload {
+        events::EncryptedAttachmentMetaPayload {
+            id: self.id,
+            key_b64: self.key_b64.clone(),
+            filename: self.filename.clone(),
+            mime: self.mime.clone(),
+            size_bytes: self.size_bytes,
+            width: self.width,
+            height: self.height,
+            duration_ms: self.duration_ms,
+            placeholder: self.placeholder.clone(),
+            chunk_bytes: self.chunk_bytes,
+            thumbnail_sizes_mask: self.thumbnail_sizes_mask,
+        }
+    }
+}
+
+/// Seal a message body under the channel's current epoch. Plain text
+/// goes under content tag 0x01; text with encrypted attachments as a
+/// prost `EncryptedMessageBody` under 0x03.
 pub async fn seal_message(
     state: &Arc<Mutex<AppState>>,
     server_id: &str,
     channel_id: &str,
     text: &str,
+    attachments: &[AttachmentMeta],
 ) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
     let ring = ensure(state, server_id, channel_id).await?;
     if !ring.encrypted {
         return Err("This channel isn't encrypted.".into());
@@ -389,17 +430,49 @@ pub async fn seal_message(
         .get(&ring.current_epoch)
         .ok_or("You don't have this channel's current key yet — another member has to share it. Try again in a moment.")?;
     let me = state.lock().await.username.clone().ok_or("Not signed in")?;
-    channel_envelope::seal(ring.current_epoch, key, channel_id, &me, text)
+    if attachments.is_empty() {
+        return channel_envelope::seal(ring.current_epoch, key, channel_id, &me, text);
+    }
+    let mut body = EncryptedMessageBody { text: text.to_string(), attachments: Vec::new() };
+    for a in attachments {
+        let key_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&a.key_b64)
+            .map_err(|e| format!("bad attachment key: {e}"))?;
+        if key_bytes.len() != 32 {
+            return Err("bad attachment key length".into());
+        }
+        body.attachments.push(EncryptedAttachmentMeta {
+            id: a.id,
+            key: key_bytes,
+            filename: a.filename.clone(),
+            mime: a.mime.clone(),
+            size_bytes: a.size_bytes,
+            width: a.width,
+            height: a.height,
+            duration_ms: a.duration_ms,
+            placeholder: a.placeholder.clone(),
+            chunk_bytes: a.chunk_bytes,
+            thumbnail_sizes_mask: a.thumbnail_sizes_mask,
+        });
+    }
+    channel_envelope::seal_tagged(
+        ring.current_epoch,
+        key,
+        channel_id,
+        &me,
+        channel_envelope::CONTENT_BODY,
+        &body.encode_to_vec(),
+    )
 }
 
-/// Open a message body; fetches once if the epoch is unknown.
+/// Open a message body: `(text, encrypted attachment metadata)`.
 pub async fn open_message(
     state: &Arc<Mutex<AppState>>,
     server_id: &str,
     channel_id: &str,
     sender: &str,
     wire: &[u8],
-) -> Result<String, DecryptError> {
+) -> Result<(String, Vec<AttachmentMeta>), DecryptError> {
     let epoch = channel_envelope::parse_epoch(wire).map_err(|_| DecryptError::Bad)?;
     let lookup = |s: &AppState| -> Option<[u8; KEY_LEN]> {
         s.channel_keys.get(&key_id(server_id, channel_id)).and_then(|r| r.keys.get(&epoch).copied())
@@ -421,7 +494,33 @@ pub async fn open_message(
             lookup(&s).ok_or(DecryptError::NoKey)?
         }
     };
-    channel_envelope::open(&key, channel_id, sender, wire).map_err(|_| DecryptError::Bad)
+    use base64::Engine as _;
+    let (tag, plain) = channel_envelope::open_tagged(&key, channel_id, sender, wire).map_err(|_| DecryptError::Bad)?;
+    match tag {
+        channel_envelope::CONTENT_TEXT => Ok((String::from_utf8(plain).map_err(|_| DecryptError::Bad)?, Vec::new())),
+        channel_envelope::CONTENT_BODY => {
+            let body = EncryptedMessageBody::decode(plain.as_slice()).map_err(|_| DecryptError::Bad)?;
+            let metas = body
+                .attachments
+                .into_iter()
+                .map(|a| AttachmentMeta {
+                    id: a.id,
+                    key_b64: base64::engine::general_purpose::STANDARD.encode(&a.key),
+                    filename: a.filename,
+                    mime: a.mime,
+                    size_bytes: a.size_bytes,
+                    width: a.width,
+                    height: a.height,
+                    duration_ms: a.duration_ms,
+                    placeholder: a.placeholder,
+                    chunk_bytes: a.chunk_bytes,
+                    thumbnail_sizes_mask: a.thumbnail_sizes_mask,
+                })
+                .collect();
+            Ok((body.text, metas))
+        }
+        _ => Err(DecryptError::Bad),
+    }
 }
 
 // ── Router hooks ────────────────────────────────────────────────────
@@ -514,18 +613,18 @@ async fn render(
     sender: &str,
     content: String,
     wire: &[u8],
-) -> (String, bool, String) {
+) -> (String, bool, String, Vec<events::EncryptedAttachmentMetaPayload>) {
     if wire.is_empty() {
-        return (content, false, String::new());
+        return (content, false, String::new(), Vec::new());
     }
     match open_message(state, server_id, channel_id, sender, wire).await {
-        Ok(t) => (t, true, String::new()),
-        Err(e) => (UNREADABLE.to_string(), true, e.as_str().to_string()),
+        Ok((t, metas)) => (t, true, String::new(), metas.iter().map(|m| m.to_payload()).collect()),
+        Err(e) => (UNREADABLE.to_string(), true, e.as_str().to_string(), Vec::new()),
     }
 }
 
 async fn handle_msg(state: &Arc<Mutex<AppState>>, server_id: &str, msg: ChannelMessage) {
-    let (content, encrypted, err) =
+    let (content, encrypted, err, metas) =
         render(state, server_id, &msg.channel_id, &msg.sender, msg.content, &msg.envelope).await;
     let reply_to_content = if msg.reply_to_envelope.is_empty() {
         msg.reply_to_content
@@ -549,6 +648,7 @@ async fn handle_msg(state: &Arc<Mutex<AppState>>, server_id: &str, msg: ChannelM
         reply_to_attachment_kinds: msg.reply_to_attachment_kinds,
         encrypted,
         decrypt_error: err,
+        encrypted_attachments: metas,
     });
 }
 
@@ -556,7 +656,7 @@ async fn handle_history(state: &Arc<Mutex<AppState>>, server_id: &str, resp: Cha
     let channel_id = resp.channel_id.clone();
     let mut messages = Vec::with_capacity(resp.messages.len());
     for m in resp.messages {
-        let (content, encrypted, err) = render(state, server_id, &channel_id, &m.sender, m.content, &m.envelope).await;
+        let (content, encrypted, err, metas) = render(state, server_id, &channel_id, &m.sender, m.content, &m.envelope).await;
         let reply_to_content = if m.reply_to_envelope.is_empty() {
             m.reply_to_content
         } else {
@@ -577,6 +677,7 @@ async fn handle_history(state: &Arc<Mutex<AppState>>, server_id: &str, resp: Cha
             reply_to_attachment_kinds: m.reply_to_attachment_kinds,
             encrypted,
             decrypt_error: err,
+            encrypted_attachments: metas,
         });
     }
     events::emit_channel_history_received(events::ChannelHistoryReceivedPayload {
@@ -591,7 +692,7 @@ async fn handle_history(state: &Arc<Mutex<AppState>>, server_id: &str, resp: Cha
 }
 
 async fn handle_edited(state: &Arc<Mutex<AppState>>, server_id: &str, b: ChannelMessageEdited) {
-    let (content, encrypted, err) = render(state, server_id, &b.channel_id, &b.editor, b.content, &b.envelope).await;
+    let (content, encrypted, err, metas) = render(state, server_id, &b.channel_id, &b.editor, b.content, &b.envelope).await;
     events::emit_channel_message_edited(events::ChannelMessageEditedPayload {
         server_id: server_id.to_string(),
         channel_id: b.channel_id,
@@ -601,6 +702,7 @@ async fn handle_edited(state: &Arc<Mutex<AppState>>, server_id: &str, b: Channel
         editor: b.editor,
         encrypted,
         decrypt_error: err,
+        encrypted_attachments: metas,
     });
 }
 

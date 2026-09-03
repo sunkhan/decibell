@@ -64,6 +64,9 @@ export interface PendingAttachment {
   /// own reference. cleanup() runs once the upload terminates so the
   /// decibell-file:// whitelist entry / Blob URL is released.
   source: ChunkSource;
+  /// Encrypted channel: the bytes are sealed client-side before upload
+  /// and the real metadata travels in the message envelope.
+  encrypted: boolean;
 }
 
 interface AttachmentsState {

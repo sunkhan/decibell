@@ -1,4 +1,5 @@
 import { ipcMain, net } from "electron";
+import { fetchDecryptedAttachment } from "./attachmentFetch";
 import {
   setAttachmentTarget,
   clearAttachmentTarget,
@@ -74,6 +75,20 @@ export function registerNetHandlers(): void {
       // redirect the request (with the bearer JWT) to another host.
       if (typeof reqPath !== "string" || !reqPath.startsWith("/")) {
         throw new Error("netFetch: attachmentTarget.path must start with '/'");
+      }
+      // Encrypted-channel attachment content (save-as): decrypt in main.
+      const attMatch = /^\/attachments\/(\d+)(\?.*)?$/.exec(reqPath);
+      if ((init.method ?? "GET") === "GET" && attMatch) {
+        const dec = await fetchDecryptedAttachment(
+          init.attachmentTarget.serverId,
+          attMatch[1],
+          attMatch[2] ?? "",
+          headers["Range"] ?? headers["range"],
+        );
+        if (dec) {
+          const body = dec.body.buffer.slice(dec.body.byteOffset, dec.body.byteOffset + dec.body.byteLength) as ArrayBuffer;
+          return { ok: dec.status < 400, status: dec.status, statusText: dec.statusText, headers: dec.headers, body };
+        }
       }
       const finalUrl = `https://${target.host}:${target.port}${reqPath}`;
       headers["Authorization"] = `Bearer ${target.jwt}`;

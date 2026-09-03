@@ -20,7 +20,8 @@ import RichComposer from "./RichComposer";
 import EmojiPicker from "./EmojiPicker";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 import { pickFiles } from "./filePicker";
-import { queueUpload, startQueuedUpload } from "./uploadAttachment";
+import { queueUpload, startQueuedUpload, takeEncryptedUploadMeta } from "./uploadAttachment";
+import { encryptedAttachmentArgs } from "./attachmentCrypto";
 import { paceSend, watchEcho } from "./sendPacing";
 import { chunkSourceFromPath } from "./chunkSource";
 import WelcomeState from "./WelcomeState";
@@ -520,6 +521,12 @@ export default function ChatPanel() {
       return;
     }
 
+    // Encrypted channel: each sealed upload's real metadata + key goes
+    // into the message envelope; the server only ever saw stand-ins.
+    const encryptedAttachments = pendingIds
+      .map((id) => takeEncryptedUploadMeta(id))
+      .filter((m): m is NonNullable<typeof m> => m !== null && attachmentIds.includes(m.id));
+
     try {
       // Paced to the server's message bucket so a burst of sends is
       // delayed, never dropped (see sendPacing).
@@ -529,6 +536,7 @@ export default function ChatPanel() {
           channelId,
           message: content,
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+          encryptedAttachments: encryptedAttachments.length > 0 ? encryptedAttachments : undefined,
           nonce,
           replyTo: replyToId,
           // Encrypted channel: native seals the body under the channel's
@@ -710,6 +718,7 @@ export default function ChatPanel() {
         channelId: activeChannelId,
         messageId: message.id,
         content,
+        encryptedAttachments: encryptedAttachmentArgs(message.attachments),
         encrypted:
           useChatStore
             .getState()
@@ -1059,7 +1068,7 @@ export default function ChatPanel() {
                 </span>
               </div>
             )}
-            {canAttach && !channel?.encrypted && (
+            {canAttach && (
             <button
               onClick={handlePickFiles}
               title="Attach files"

@@ -143,9 +143,15 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   it ships, must keep working for people who never open settings). Epoch keys escrowed to
   members as identity-sealed blobs on the community server (`e2ee/channel_keys.rs`), never MLS
   here (offline members, readable history, multi-device). The server enforces the wire format
-  both ways and refuses attachments in encrypted channels until they're encrypted too. Turning
-  a channel off never decrypts its history. Design:
+  both ways. Turning a channel off never decrypts its history. Design:
   `2026-09-04-encrypted-text-channels-design.md`.
+- **Attachments in encrypted channels are sealed client-side** (random key per file, 64 KiB
+  AES-256-GCM chunks, sealed thumbnails; `features/chat/attachmentCrypto.ts` encrypts,
+  `electron/main/attachmentCrypto.ts` + `attachmentFetch.ts` decrypt in the protocol / media
+  server / netFetch paths — the two modules must stay byte-for-byte in step). Real metadata +
+  key ride the message envelope (content tag 0x03, `EncryptedMessageBody`); the server keeps
+  stand-ins + `attachments.encrypted` and binds only uploads whose flag matches the channel.
+  The server still learns kind, ciphertext size and thumbnail sizes — accepted.
 
 ## Deeper docs
 

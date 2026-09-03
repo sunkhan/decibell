@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-04
 **Author:** sunkhan (with Claude)
-**Status:** Implemented on `main` (messages); attachments in encrypted channels are a follow-up
+**Status:** Implemented on `main` (messages 2026-09-04, attachments 2026-09-04)
 
 ## Problem
 
@@ -19,7 +19,7 @@ channels are the remaining plaintext content the host can read.
 | Who holds keys | Members only. A member who has the keys seals them to each entitled member's static X25519 identity (the DM envelope, content tag `0x02`) and the server stores those blobs per recipient. The server never sees a key. |
 | Who is entitled | The server decides (it already decides who can VIEW a channel); members decide whether an identity is real (central's key directory + pins). Same split as voice. |
 | Rotation | A new epoch on every membership removal (kick / ban / leave), coalesced client-side. Joins don't rotate: late joiners read history by design. |
-| Enforcement | The server enforces the wire format: an encrypted channel refuses plaintext messages and attachments; a plaintext channel refuses envelopes. Switching on seals from that message on; switching off leaves sealed history sealed forever. |
+| Enforcement | The server enforces the wire format: an encrypted channel refuses plaintext messages and binds only sealed uploads; a plaintext channel refuses envelopes and sealed uploads. Switching on seals from that message on; switching off leaves sealed history sealed forever. |
 | Strict | No keys → placeholders and a prompt; no fallback. |
 
 ## Wire
@@ -74,13 +74,52 @@ entitled to.
   pass straight through it. `send_channel_message` / `edit_channel_message`
   take `encrypted` from the renderer's `ChannelInfo` and seal.
 - Renderer: lock on encrypted channels in the sidebar, the toggle in channel
-  settings (with the search/attachment caveat), attach disabled in encrypted
-  channels, placeholder rows + prompt when this device has no keys.
+  settings (with the search caveat), placeholder rows + prompt when this device
+  has no keys.
+
+## Attachments
+
+The server never processes attachment content (it stores bytes, serves Ranges,
+and keeps client-made thumbnails), so encrypting attachments is a client-side
+transform around the existing upload / fetch paths plus one flag.
+
+- **Per-file key.** The renderer draws a random 32-byte key per upload
+  (`features/chat/attachmentCrypto.ts`, WebCrypto). Content is sealed in 64 KiB
+  chunks: chunk *i* = AES-256-GCM(key, nonce `u64le(i) ‖ 00 00 00 01`, plain,
+  aad `"decibell-att-v1" ‖ 0x00 ‖ u64le(i)`) ‖ tag; the ciphertext is the
+  concatenation, so plaintext byte *p* lives in sealed chunk ⌊p / 64 KiB⌋ and a
+  `<video>` Range probe maps to one upstream Range of whole chunks. Thumbnails
+  (still generated client-side) are sealed whole under nonce
+  `u64le(sizePx) ‖ 00 00 00 02`, aad `"decibell-att-v1" ‖ 0x01 ‖ u64le(sizePx)`.
+  Deterministic nonces are safe because the key is single-use; they keep a
+  retried chunk byte-identical.
+- **What the server sees.** `/attachments/init` takes `encrypted: true` plus
+  the *kind* (retention is per kind) and the ciphertext size; filename is
+  "encrypted", mime octet-stream, width / height / duration / placeholder are
+  zeroed server-side whatever the client sent. The row carries
+  `attachments.encrypted` and the wire `Attachment.encrypted` (field 17).
+  `bind_attachments` binds only uploads whose flag matches the channel's, so a
+  plaintext upload never lands in an encrypted channel and vice versa.
+- **Where the metadata goes.** The real filename / mime / size / dimensions /
+  duration / ThumbHash / chunk size / thumbnail set and the key ride the message
+  envelope: content tag 0x03 = prost `EncryptedMessageBody { text, attachments:
+  [EncryptedAttachmentMeta] }` (tag 0x01 stays the text-only body). Native opens
+  it and emits `encryptedAttachments` on message / history / edit events; the
+  renderer merges the metadata into the `Attachment` (`encrypted`, `keyB64`,
+  `chunkBytes`) and registers the keys with main
+  (`decibell:attachments:registerKeys`, per session, never persisted). An edit
+  re-seals the body with the same metadata.
+- **Fetch paths.** Main decrypts in every path that hands bytes to the renderer
+  (`electron/main/attachmentFetch.ts`): the `decibell-attachment://` protocol
+  (images, thumbnails), the loopback media server (`<video>` / `<audio>`, with
+  real 200 / 206 semantics: the covering chunks are fetched, opened, trimmed)
+  and `netFetch` (save-as). Plain attachments proxy exactly as before.
+- **Not hidden:** attachment count, kind, ciphertext size and thumbnail
+  presence / sizes (the server needs kind for retention and sizes for storage).
 
 ## Non-goals (v1)
 
-Attachments in encrypted channels (client-side file encryption + client-side
-thumbnails — next step; the server refuses them meanwhile); rotating on
+Rotating on
 permission-overwrite changes (a member who loses VIEW keeps the old epochs until
 the next removal-driven rotation); search (no server search exists yet; encrypted
 channels will need the local store); a batch key-fetch endpoint on central
@@ -89,7 +128,10 @@ channels will need the local store); a batch key-fetch endpoint on central
 ## Verification
 
 `cargo test --lib` (channel envelope round trip / tamper / wrong channel or
-sender / epoch; blob seal/unseal), community e2e (toggle + audit, enforcement
-both ways, envelope through broadcast/history/edit/reply preview, escrow:
-create / fetch / needs / gap fill / stale epoch / viewer gating / CHANGED on
-join and removal), tsc, community build, Windows check.
+sender / epoch, tagged bodies; blob seal/unseal), community e2e (toggle + audit,
+enforcement both ways, envelope through broadcast/history/edit/reply preview,
+escrow: create / fetch / needs / gap fill / stale epoch / viewer gating / CHANGED
+on join and removal; sealed uploads: init stand-ins + kind check, binding rule
+both ways, `encrypted` on broadcast and history), a node cross-check that the
+renderer's sealing and main's opening agree (sizes 0 … 3 chunks, ranges, tamper,
+thumbnails), tsc (web + node), community build, Windows check.

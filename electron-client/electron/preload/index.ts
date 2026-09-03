@@ -229,6 +229,23 @@ contextBridge.exposeInMainWorld("decibell", {
     clearAll: (): Promise<void> =>
       ipcRenderer.invoke("decibell:attachmentRegistry:clearAll") as Promise<void>,
   },
+  /// Keys of encrypted-channel attachments, so main can decrypt fetches
+  /// through decibell-attachment://, the media server and netFetch.
+  attachments: {
+    registerKeys: (
+      entries: Array<{
+        serverId: string;
+        attachmentId: number;
+        keyB64: string;
+        chunkBytes: number;
+        sizeBytes: number;
+        mime: string;
+        filename: string;
+      }>,
+    ) => ipcRenderer.invoke("decibell:attachments:registerKeys", entries) as Promise<void>,
+    clearKeys: (serverId?: string) =>
+      ipcRenderer.invoke("decibell:attachments:clearKeys", serverId) as Promise<void>,
+  },
   netFetch: (
     url: string,
     init: {

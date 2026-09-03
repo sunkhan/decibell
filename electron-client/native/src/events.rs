@@ -434,6 +434,28 @@ pub struct ChannelMessagePayload {
     /// Encrypted channels — see MessageReceivedPayload.encrypted / decrypt_error.
     pub encrypted: bool,
     pub decrypt_error: String,
+    /// Encrypted channels: the real metadata + key of each attachment
+    /// bound to this message (the server rows carry stand-ins).
+    pub encrypted_attachments: Vec<EncryptedAttachmentMetaPayload>,
+}
+
+/// One entry of `EncryptedMessageBody.attachments`, opened for the
+/// renderer (which registers the key with main for decrypting fetches).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedAttachmentMetaPayload {
+    pub id: i64,
+    /// base64 32-byte key
+    pub key_b64: String,
+    pub filename: String,
+    pub mime: String,
+    pub size_bytes: i64,
+    pub width: u32,
+    pub height: u32,
+    pub duration_ms: u32,
+    pub placeholder: String,
+    pub chunk_bytes: u32,
+    pub thumbnail_sizes_mask: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -467,6 +489,9 @@ pub struct MessageReceivedPayload {
     /// ("locked" | "no_key" | "peer_key" | "bad"). Channel messages: false / "".
     pub encrypted: bool,
     pub decrypt_error: String,
+    /// Encrypted channels: the real metadata + key of each attachment
+    /// bound to this message (the server rows carry stand-ins).
+    pub encrypted_attachments: Vec<EncryptedAttachmentMetaPayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1508,6 +1533,9 @@ pub struct ChannelMessageEditedPayload {
     pub editor: String,
     pub encrypted: bool,
     pub decrypt_error: String,
+    /// Encrypted channels: the real metadata + key of each attachment
+    /// bound to this message (the server rows carry stand-ins).
+    pub encrypted_attachments: Vec<EncryptedAttachmentMetaPayload>,
 }
 
 pub fn emit_dm_message_edit_responded(payload: DmMessageEditRespondedPayload) {

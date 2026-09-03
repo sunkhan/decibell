@@ -28,6 +28,15 @@ import { toast } from "../../stores/toastStore";
 import type { AttachmentKind } from "../../types";
 import type { ChunkSource } from "./chunkSource";
 import { encodeThumbHash, encodeThumbHashFromBlob } from "./thumbhash";
+import { useChatStore } from "../../stores/chatStore";
+import {
+  CHUNK_BYTES as SEALED_CHUNK_BYTES,
+  ciphertextOffset,
+  ciphertextSize,
+  newAttachmentCipher,
+  sealSpan,
+  sealThumbnail,
+} from "./attachmentCrypto";
 
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
@@ -54,6 +63,17 @@ const KIND_NAMES: Record<number, AttachmentKind> = {
   2: "document",
   3: "audio",
 };
+
+const KIND_INDEX: Record<AttachmentKind, number> = { image: 0, video: 1, document: 2, audio: 3 };
+/// Bits of Attachment.thumbnailSizesMask (server: attachment_http.cpp).
+const THUMB_BIT: Record<number, number> = { 320: 1, 640: 2, 1280: 4 };
+
+function channelIsEncrypted(serverId: string, channelId: string): boolean {
+  return (
+    useChatStore.getState().channelsByServer[serverId]?.find((c) => c.id === channelId)?.encrypted ??
+    false
+  );
+}
 
 function classify(mime: string): AttachmentKind {
   if (mime.startsWith("image/")) return "image";
@@ -371,6 +391,8 @@ interface QueueArgs {
   serverId: string;
   channelId: string;
   source: ChunkSource;
+  /// Encrypted channel — defaults to the channel's flag in chatStore.
+  encrypted?: boolean;
 }
 
 /// Phase 1: probe metadata + register the attachment as `queued` in
@@ -382,6 +404,7 @@ interface QueueArgs {
 /// ChatPanel.handleSend.
 export async function queueUpload(args: QueueArgs): Promise<void> {
   const { pendingId, serverId, channelId, source } = args;
+  const encrypted = args.encrypted ?? channelIsEncrypted(serverId, channelId);
   const store = useAttachmentsStore.getState();
 
   // Per-message attachment cap. Enforced HERE so the limit applies to
@@ -420,6 +443,7 @@ export async function queueUpload(args: QueueArgs): Promise<void> {
     durationMs: meta.durationMs,
     placeholder: meta.placeholder ?? "",
     source,
+    encrypted,
     // probeMetadata.frameBlob (video poster) is captured into a
     // module-scoped cache below — it's needed at upload-finish time
     // for thumbnail uploads, but plumbing it through the pending
@@ -439,6 +463,31 @@ export async function queueUpload(args: QueueArgs): Promise<void> {
 /// pending that gets discarded without being sent doesn't leak.
 const pendingFrameBlobs = new Map<string, Blob>();
 
+/// What an encrypted upload keeps to itself: the real metadata and the
+/// per-file key, which handleSend seals into the message envelope (the
+/// server row only has stand-ins). Mirrors proto EncryptedAttachmentMeta.
+export interface EncryptedUploadMeta {
+  id: number;
+  keyB64: string;
+  filename: string;
+  mime: string;
+  sizeBytes: number;
+  width: number;
+  height: number;
+  durationMs: number;
+  placeholder: string;
+  chunkBytes: number;
+  thumbnailSizesMask: number;
+}
+const encryptedUploadMeta = new Map<string, EncryptedUploadMeta>();
+
+/// Consume the sealed-upload metadata of a pending (null for plain ones).
+export function takeEncryptedUploadMeta(pendingId: string): EncryptedUploadMeta | null {
+  const m = encryptedUploadMeta.get(pendingId) ?? null;
+  encryptedUploadMeta.delete(pendingId);
+  return m;
+}
+
 /// Phase 2: actually send the bytes for a previously-queued
 /// attachment. Returns the server-assigned attachment id on success.
 /// Called from ChatPanel.handleSend once per queued item; the wait
@@ -451,6 +500,10 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
   const { serverId, channelId, source, abortController, width, height, durationMs, placeholder } =
     pending;
   const kind = pending.kind;
+  // Encrypted channel: one fresh key per file; every chunk and thumbnail
+  // is sealed before it leaves the renderer (attachmentCrypto.ts).
+  const cipher = pending.encrypted ? await newAttachmentCipher() : null;
+  const realMime = source.mime || "application/octet-stream";
   // Mark as uploading so the chat-side BubbleInflightAttachments
   // switches from the queued chip to the live progress bar.
   store.setStatus(pendingId, "uploading");
@@ -460,18 +513,32 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
     const initResult = await attachmentFetch(serverId, "/attachments/init", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        channelId,
-        filename: source.name,
-        mime: source.mime || "application/octet-stream",
-        size: source.size,
-        width,
-        height,
-        durationMs,
-        // base64 ThumbHash. The server stores and echoes the bytes
-        // without interpreting them.
-        placeholder,
-      }),
+      body: JSON.stringify(
+        cipher
+          ? {
+              // The server stores ciphertext plus stand-in metadata; it
+              // still needs the kind (retention is per kind) and the
+              // ciphertext size. The real values ride the envelope.
+              channelId,
+              filename: "encrypted",
+              mime: "application/octet-stream",
+              size: ciphertextSize(source.size),
+              kind: KIND_INDEX[kind],
+              encrypted: true,
+            }
+          : {
+              channelId,
+              filename: source.name,
+              mime: realMime,
+              size: source.size,
+              width,
+              height,
+              durationMs,
+              // base64 ThumbHash. The server stores and echoes the bytes
+              // without interpreting them.
+              placeholder,
+            },
+      ),
     });
     if (!initResult.ok) {
       throw new Error(
@@ -479,7 +546,9 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
       );
     }
     const initBody = decodeJson<InitResponse>(initResult);
-    let offset = initBody.uploadOffset ?? 0;
+    // `offset` walks the plaintext. A fresh init always answers 0; a
+    // sealed upload never resumes mid-file (the offsets differ).
+    let offset = cipher ? 0 : (initBody.uploadOffset ?? 0);
 
     // PATCH chunks until we hit source.size, with retry/backoff per
     // chunk. Per-chunk Range fetch against source.url means peak
@@ -491,6 +560,9 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
       }
       const end = Math.min(offset + CHUNK_BYTES, source.size);
       const chunk = await source.readChunk(offset, end, abortController.signal);
+      // CHUNK_BYTES is a multiple of the sealed chunk size, so every
+      // 8 MiB read starts on a sealed-chunk boundary.
+      const wire = cipher ? await sealSpan(cipher, offset / SEALED_CHUNK_BYTES, chunk) : chunk;
       let attempt = 0;
       let lastErr: Error | null = null;
 
@@ -509,10 +581,10 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
                 // looks at `Upload-Offset` to know where this chunk
                 // starts, not the HTTP Content-Range header. Sending
                 // Content-Range without Upload-Offset → 400.
-                "Upload-Offset": String(offset),
+                "Upload-Offset": String(cipher ? ciphertextOffset(offset / SEALED_CHUNK_BYTES) : offset),
                 "Content-Type": "application/octet-stream",
               },
-              body: chunk,
+              body: wire,
             },
           );
           if (!resp.ok) {
@@ -548,13 +620,15 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
     }
     const completeBody = decodeJson<CompleteResponse>(completeResult);
     const finalKind = KIND_NAMES[completeBody.kind] ?? kind;
-    store.markReady(
-      pendingId,
-      completeBody.id,
-      finalKind,
-      completeBody.mime,
-      completeBody.filename,
-    );
+    if (!cipher) {
+      store.markReady(
+        pendingId,
+        completeBody.id,
+        finalKind,
+        completeBody.mime,
+        completeBody.filename,
+      );
+    }
 
     // Thumbnail uploads — best-effort, non-fatal if any fail.
     // Videos use the poster frame captured during probeMetadata as
@@ -573,29 +647,51 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
     } else if (finalKind === "video") {
       thumbSource = pendingFrameBlobs.get(pendingId) ?? null;
     }
+    let thumbMask = 0;
     if (thumbSource) {
       for (const size of [320, 640, 1280]) {
         const thumb = await generateThumbnail(thumbSource, size);
         if (!thumb) continue;
         try {
-          await attachmentFetch(
+          const r = await attachmentFetch(
             serverId,
             `/attachments/${completeBody.id}/thumbnail?size=${size}`,
             {
               method: "POST",
               headers: { "Content-Type": "image/jpeg" },
-              body: thumb,
+              body: cipher ? await sealThumbnail(cipher, size, thumb) : thumb,
             },
           );
+          if (r.ok) thumbMask |= THUMB_BIT[size] ?? 0;
         } catch {
           // Non-fatal
         }
       }
     }
 
+    if (cipher) {
+      // Ready only now: handleSend reads this the moment the pending
+      // turns ready, and the thumbnail set is part of it.
+      encryptedUploadMeta.set(pendingId, {
+        id: completeBody.id,
+        keyB64: cipher.keyB64,
+        filename: source.name,
+        mime: realMime,
+        sizeBytes: source.size,
+        width,
+        height,
+        durationMs,
+        placeholder,
+        chunkBytes: SEALED_CHUNK_BYTES,
+        thumbnailSizesMask: thumbMask,
+      });
+      store.markReady(pendingId, completeBody.id, finalKind, realMime, source.name);
+    }
+
     return completeBody.id;
   } catch (e) {
     const err = e as Error;
+    encryptedUploadMeta.delete(pendingId);
     const cancelled = abortController.signal.aborted;
     useAttachmentsStore
       .getState()

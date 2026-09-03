@@ -1014,6 +1014,38 @@ removal / no-overwrite, toggle off), tsc 0, community build. Open: attachments i
 channels (client-side file encryption + thumbnails), rotation on permission-overwrite changes, a
 batch key-fetch endpoint on central, client-side search once the local store exists.
 
+**Attachments in encrypted channels (2026-09-04) ✅ — needs the same community-server release
++ live test** — closes the "attachments refused in encrypted channels" gap. The server never
+processed attachment content (bytes in, Ranges out, client-made thumbnails), so this is a
+client-side transform around the existing upload / fetch paths plus one flag. **Renderer
+seals on upload** (`features/chat/attachmentCrypto.ts`, WebCrypto): random 32-byte key per
+file, content in 64 KiB AES-256-GCM chunks (nonce `u64le(i) ‖ 00 00 00 01`, aad
+`"decibell-att-v1" ‖ 0x00 ‖ u64le(i)`, ciphertext = concatenated sealed chunks so a plaintext
+Range maps to one upstream Range of whole chunks), thumbnails sealed whole under
+`u64le(sizePx) ‖ 00 00 00 02`. `uploadAttachment.ts` sends `/attachments/init` stand-ins
+(filename "encrypted", octet-stream, ciphertext size) plus `encrypted: true` and the **kind**
+(retention is per kind); the server zeroes width / height / duration / placeholder regardless,
+stores `attachments.encrypted`, and `bind_attachments` binds only uploads whose flag matches
+the channel's (a plain upload never lands in an encrypted channel, a sealed one never in a
+plaintext channel — dropped like any other ineligible upload, not rejected). Wire:
+`Attachment.encrypted` (17), `EncryptedAttachmentMeta` / `EncryptedMessageBody`. **Metadata +
+key ride the envelope**: content tag 0x03 = prost `EncryptedMessageBody { text, attachments }`
+(0x01 stays the text-only body; `channel_envelope::seal_tagged` / `open_tagged`), native
+emits `encryptedAttachments` on message / history / edit events, `send_channel_message` /
+`edit_channel_message` take `encryptedAttachments` (an edit re-seals the same metadata).
+`useChatEvents` merges the real metadata into the `Attachment` (`encrypted`, `keyB64`,
+`chunkBytes`) and registers the keys with main (`decibell:attachments:registerKeys`, session
+only). **Main decrypts** (`electron/main/attachmentFetch.ts` + `attachmentCrypto.ts`) in all
+three byte paths — `decibell-attachment://` (images, thumbnails), the loopback media server
+(`<video>` / `<audio>`: covering chunks fetched, opened, trimmed; real 200 / 206 +
+Content-Range) and `netFetch` (save-as); plain attachments proxy as before. Not hidden from
+the server: count, kind, ciphertext size, thumbnail sizes — accepted. Verified: `cargo test
+--lib` (157, incl. tagged bodies), a node cross-check that renderer sealing and main opening
+agree (0 … 3 chunks, ranges incl. suffix / cross-chunk, tamper, wrong index, thumbnails),
+tsc web + node 0, napi build, community build + e2e (sealed init stand-ins + kind check,
+binding rule both ways, `encrypted` on broadcast + history). Open: live test (image, video
+seek, save-as), and the community-server release the whole channel-encryption feature waits on.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

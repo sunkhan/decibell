@@ -176,6 +176,45 @@ pub struct SendChannelMessageArgs {
     /// under the channel's epoch key and send only the placeholder in
     /// `content`. The server enforces the format either way.
     pub encrypted: Option<bool>,
+    /// Encrypted channel: the real metadata + per-file key of each
+    /// attachment in `attachment_ids` — sealed inside the envelope.
+    pub encrypted_attachments: Option<Vec<EncryptedAttachmentArg>>,
+}
+
+/// Mirror of proto `EncryptedAttachmentMeta` with a base64 key.
+#[napi(object)]
+#[derive(Clone)]
+pub struct EncryptedAttachmentArg {
+    pub id: i64,
+    pub key_b64: String,
+    pub filename: String,
+    pub mime: String,
+    pub size_bytes: i64,
+    pub width: u32,
+    pub height: u32,
+    pub duration_ms: u32,
+    pub placeholder: String,
+    pub chunk_bytes: u32,
+    pub thumbnail_sizes_mask: u32,
+}
+
+fn attachment_metas(args: Option<Vec<EncryptedAttachmentArg>>) -> Vec<crate::e2ee::channel_keys::AttachmentMeta> {
+    args.unwrap_or_default()
+        .into_iter()
+        .map(|a| crate::e2ee::channel_keys::AttachmentMeta {
+            id: a.id,
+            key_b64: a.key_b64,
+            filename: a.filename,
+            mime: a.mime,
+            size_bytes: a.size_bytes,
+            width: a.width,
+            height: a.height,
+            duration_ms: a.duration_ms,
+            placeholder: a.placeholder,
+            chunk_bytes: a.chunk_bytes,
+            thumbnail_sizes_mask: a.thumbnail_sizes_mask,
+        })
+        .collect()
 }
 
 #[napi]
@@ -190,12 +229,14 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
         nonce,
         reply_to,
         encrypted,
+        encrypted_attachments,
     } = args;
 
     // Encrypted channel: seal before taking the lock (fetching the epoch
     // key can be a round-trip through the community server).
     let (message, envelope) = if encrypted.unwrap_or(false) {
-        let wire = crate::e2ee::channel_keys::seal_message(&state_arc, &server_id, &channel_id, &message)
+        let metas = attachment_metas(encrypted_attachments);
+        let wire = crate::e2ee::channel_keys::seal_message(&state_arc, &server_id, &channel_id, &message, &metas)
             .await
             .map_err(napi::Error::from_reason)?;
         (crate::e2ee::channel_keys::PLACEHOLDER.to_string(), wire)
@@ -243,6 +284,7 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
                 thumbnail_size_bytes: 0,
                 thumbnail_sizes_mask: 0,
                 duration_ms: 0,
+                encrypted: false,
                 placeholder: String::new(),
             })
             .collect();
@@ -315,6 +357,9 @@ pub struct EditChannelMessageArgs {
     pub content: String,
     /// See SendChannelMessageArgs.encrypted.
     pub encrypted: Option<bool>,
+    /// The message's existing encrypted attachments (an edit re-seals
+    /// the whole body, so their metadata rides along again).
+    pub encrypted_attachments: Option<Vec<EncryptedAttachmentArg>>,
 }
 
 /// Sends MESSAGE_EDIT_REQ over the community session. The ack arrives as
@@ -328,10 +373,12 @@ pub async fn edit_channel_message(args: EditChannelMessageArgs) -> napi::Result<
         message_id,
         content,
         encrypted,
+        encrypted_attachments,
     } = args;
     let (content, envelope) = if encrypted.unwrap_or(false) {
         let state_arc = state::shared();
-        let wire = crate::e2ee::channel_keys::seal_message(&state_arc, &server_id, &channel_id, &content)
+        let metas = attachment_metas(encrypted_attachments);
+        let wire = crate::e2ee::channel_keys::seal_message(&state_arc, &server_id, &channel_id, &content, &metas)
             .await
             .map_err(napi::Error::from_reason)?;
         (crate::e2ee::channel_keys::PLACEHOLDER.to_string(), wire)

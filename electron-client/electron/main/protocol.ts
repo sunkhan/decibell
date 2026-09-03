@@ -4,6 +4,7 @@ import * as fs from "fs";
 import { app } from "electron";
 import { getAttachmentTarget } from "./attachmentRegistry";
 import { lookupFile } from "./fileRegistry";
+import { fetchDecryptedAttachment } from "./attachmentFetch";
 
 const SCHEME = "decibell-asset";
 const ATTACHMENT_SCHEME = "decibell-attachment";
@@ -122,6 +123,18 @@ export function registerAttachmentProtocol(): void {
       const target = getAttachmentTarget(serverId);
       if (!target) {
         return new Response("not connected", { status: 404 });
+      }
+      // Encrypted-channel attachment (the renderer registered its key
+      // while decrypting the message): fetch the sealed chunks and hand
+      // Chromium plaintext with proper 200/206 semantics.
+      const dec = await fetchDecryptedAttachment(
+        serverId,
+        attachmentId,
+        url.search,
+        req.headers.get("range") ?? undefined,
+      );
+      if (dec) {
+        return new Response(dec.body, { status: dec.status, statusText: dec.statusText, headers: dec.headers });
       }
       const upstream = `https://${target.host}:${target.port}/attachments/${attachmentId}${url.search}`;
       // Forward the byte-range probe that Chromium's <video>/<audio>

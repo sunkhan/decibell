@@ -52,6 +52,20 @@ declare global {
         clear: (serverId: string) => Promise<void>;
         clearAll: () => Promise<void>;
       };
+      attachments: {
+        registerKeys: (
+          entries: Array<{
+            serverId: string;
+            attachmentId: number;
+            keyB64: string;
+            chunkBytes: number;
+            sizeBytes: number;
+            mime: string;
+            filename: string;
+          }>,
+        ) => Promise<void>;
+        clearKeys: (serverId?: string) => Promise<void>;
+      };
       netFetch: (
         url: string,
         init: {
