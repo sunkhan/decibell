@@ -400,7 +400,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   setAecEnabled: (value) => set({ aecEnabled: value }),
   noiseSuppressionLevel: 0,
   setNoiseSuppressionLevel: (value) => set({ noiseSuppressionLevel: value }),
-  agcEnabled: false,
+  agcEnabled: true,
   setAgcEnabled: (value) => set({ agcEnabled: value }),
   streamStereo: false,
   setStreamStereo: (value) => set({ streamStereo: value }),

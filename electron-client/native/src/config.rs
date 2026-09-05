@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 const SALT: &[u8] = b"decibell-config-v1";
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default)]
     pub friends_only_dms: bool,
@@ -46,8 +46,9 @@ pub struct AppSettings {
     /// Noise suppression level: 0=off, 1=light(6dB), 2=moderate(12dB), 3=aggressive(18dB), 4=very aggressive(21dB)
     #[serde(default)]
     pub noise_suppression_level: u8,
-    /// Automatic gain control (AGC2) — normalizes mic volume
-    #[serde(default)]
+    /// Automatic gain control (AGC2) — normalizes mic volume. Default on;
+    /// a config that already carries the field keeps whatever it says.
+    #[serde(default = "default_true")]
     pub agc_enabled: bool,
     /// Per-user volume in dB (username → dB). 0 = default, negative = quieter, positive = louder.
     #[serde(default)]
@@ -151,6 +152,16 @@ pub struct AppSettings {
     /// `low` filter.
     #[serde(default)]
     pub gif_unfiltered: bool,
+}
+
+/// The defaults are the serde ones. A derived `Default` would zero every
+/// field instead — `default_true` toggles off, the theme "" — and that is
+/// exactly what a fresh install got: `load()` hands out `AppSettings::default()`
+/// when there is no config file yet, and the login path writes it to disk.
+impl Default for AppSettings {
+    fn default() -> Self {
+        serde_json::from_str("{}").expect("AppSettings deserialises from an empty object")
+    }
 }
 
 fn default_true() -> bool {
@@ -364,4 +375,33 @@ pub fn clear_credentials() -> Result<(), String> {
     write_atomic(&path, json.as_bytes())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh install (no config file) gets `AppSettings::default()` from
+    /// `load()`, so it has to be the serde defaults, not zeroed fields.
+    #[test]
+    fn default_settings_are_the_serde_defaults() {
+        let d = AppSettings::default();
+        assert!(d.agc_enabled);
+        assert!(d.use_av1 && d.use_h265);
+        assert!(d.crash_reporting_enabled);
+        assert!(d.link_previews_enabled);
+        assert_eq!(d.theme, "graphite");
+        assert!(!d.aec_enabled);
+        assert!(d.input_device.is_none());
+    }
+
+    /// A config written before AGC defaulted on keeps what it says; one
+    /// without the field gets the new default.
+    #[test]
+    fn agc_default_respects_an_existing_value() {
+        let s: AppSettings = serde_json::from_str(r#"{"agc_enabled": false}"#).unwrap();
+        assert!(!s.agc_enabled);
+        let s: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(s.agc_enabled);
+    }
 }

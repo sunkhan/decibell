@@ -1063,6 +1063,44 @@ Text channels with encryption on show an **E2EE** pill in the header (`ChannelEn
 same style as the DM header's Encrypted pill); the sidebar lock and the unreadable-message
 placeholders (which still carry the glyph) are unchanged. tsc 0.
 
+**Client: AGC default, menus at the window edge, a profile screen, smaller inline media (2026-09-05) ✅**
+— four fixes from a usage pass. **(1) AGC defaults on.** `agc_enabled` is `default_true` in
+`AppSettings` and `true` in the renderer store; a config that already carries the field keeps
+its value, so existing installs stay as the user left them until they toggle it. Found on the
+way: `AppSettings` *derived* `Default`, which zeroes every field, and `config::load()` hands
+that out when there is no file yet while the login path writes it to disk — a fresh install
+therefore started with crash reporting, link previews and AV1/H.265 all *off* and the theme
+`""` (the renderer whitelist happened to rescue the theme). `Default` now goes through serde
+(`from_str("{}")`), unit-tested. **(2) Context menus clipped at the bottom/right edge.** Each
+menu clamped against a hard-coded "approximate" size: the voice user menu with 160 px (it is
+~300 with the moderation section), the channel-list menu with 170, the image menu with 84, and
+the device menu floated a fixed 300 px above its button. New `hooks/useMenuPosition.ts`:
+measures the rendered menu (layout effect, so the corrected position is what the first frame
+paints; ResizeObserver + window resize re-clamp), prefers flipping to the other side of the
+anchor (a right-click near the bottom opens upward, like every desktop menu), slides along the
+edge only when neither side fits, and caps `maxHeight` to the viewport. All four menus use it;
+the popovers that already measured (`EmojiInfoPopover`, `StreamAudioPopover`, the profile
+popup) are unchanged. **(3) A full profile screen.** The safety number left the anchored popup,
+where it took half the card. Clicking the popup's avatar (hover scrim "View profile" — Discord's
+idiom) opens `features/profile/UserProfileModal`: banner, 96 px avatar, display name +
+username, status, Message / friend actions (add, accept / decline, cancel request, unblock,
+remove), two tabs. *Profile*: About (username, nickname, status, friendship, joined date), roles
+on the server it was opened from (`RoleChips`, now shared with the popup). *Privacy*: the pair's
+encryption state (On / Off / Locked / not set up / unsupported, each with its next step), the
+safety number as a 4-column grid with Copy, the peer's fingerprint, pin state, and the
+key-change warning with its date; our own profile shows our fingerprint and links to Settings →
+Privacy. `openUserProfile` rides `activeModal === "user-profile"` and closes the popup;
+`E2eeProfileSection` is gone. **(4) Inline media too large.** The sqrt curve alone put a
+maximised 1080p window at ~790 × 530: a GIF filled a third of the screen, and an attachment
+whose largest thumbnail (≤1280) was smaller than that box was upscaled past its own pixels.
+`attachmentSizing.ts` caps the curve at Discord's 550 × 350 (`IMAGE_MAX_W/H`; a 16:9 frame
+lands at 550 × 309, a square at 350 × 350; panels narrower than ~930 px still shrink along the
+curve), the pre-measure fallbacks match, and `LinkEmbeds`' reserved-box image renders at
+`max-*` rather than `h-full w-full`, so a page that overstates its `og:image` dimensions gets a
+centred image, never a blown-up one. Verified: tsc web 0, `cargo test --lib`, napi build. Open:
+a live pass on the profile screen against a peer with keys, and on the Privacy tab's locked /
+not-set-up states.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

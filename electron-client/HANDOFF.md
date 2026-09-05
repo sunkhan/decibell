@@ -711,6 +711,24 @@ Also open, lower priority:
 - `electron/main/ipc.ts` — `decibell:invoke` handler routing to napi
   commands. Snake-case → camelCase normalisation lives here.
 
+### Overlays (menus, popups, modals)
+
+- `src/hooks/useMenuPosition.ts` — the one placement for `position: fixed`
+  menus: measures the rendered menu, flips to the other side of the anchor
+  when it doesn't fit, clamps to the viewport, re-measures on resize. Used by
+  `UserContextMenu`, `ImageContextMenu`, `DeviceContextMenu` and the
+  channel-list menu in `ServerChannelsSidebar`. Never clamp against a
+  hard-coded "approximate height" again — that is what clipped them.
+- `src/features/dm/UserProfilePopup.tsx` — the anchored popout (identity,
+  live stream, roles, quick DM). Its avatar opens the full profile.
+- `src/features/profile/UserProfileModal.tsx` — the full profile screen
+  (`activeModal === "user-profile"`): Profile tab + Privacy tab (safety
+  number, fingerprint, pin state, key-change notice). `RoleChips.tsx` beside
+  it is shared with the popup.
+- `src/features/settings/SettingsModal.tsx` — the tabbed settings modal
+  (`activeModal === "settings"`, `settingsTab`). One `activeModal` at a
+  time: opening settings from the profile screen replaces it.
+
 ---
 
 ## 9. Recent commits
