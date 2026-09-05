@@ -24,6 +24,7 @@ import PersistentVideoLayer from "../features/chat/PersistentVideoLayer";
 import CrashReportingBanner from "../components/CrashReportingBanner";
 import DmChatPanel from "../features/dm/DmChatPanel";
 import UserProfilePopup from "../features/dm/UserProfilePopup";
+import UserProfileModal from "../features/profile/UserProfileModal";
 import { useDmEvents } from "../features/dm/useDmEvents";
 import { useCallEvents } from "../features/call/useCallEvents";
 import IncomingCallModal from "../features/call/IncomingCallModal";
@@ -162,6 +163,7 @@ export default function MainLayout() {
 
       <UserContextMenu />
       <UserProfilePopup />
+      <UserProfileModal />
       <ImageViewer />
       <SettingsModal />
       <ImageContextMenu />

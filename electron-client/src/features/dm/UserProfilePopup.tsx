@@ -14,13 +14,18 @@ import { stringToGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import { CodecBadge } from "../voice/CodecBadge";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
-import E2eeProfileSection from "../e2ee/E2eeProfileSection";
+import { RoleChips } from "../profile/RoleChips";
 
 // Anchored profile popup. Triggered from anywhere a username is shown
 // (members list, message bubble click, etc.) by calling
 // useUiStore.openProfilePopup(username, {x, y}, serverId?). serverId
 // is optional — present in server-context invocations so the popup can
 // render role chips; null in pure DM/friends contexts.
+//
+// Deliberately compact: identity, live stream, roles, quick DM. Clicking
+// the avatar opens the full profile screen (features/profile/
+// UserProfileModal), which is where the encryption details (safety
+// number, fingerprint) live — they took half the card here.
 //
 // The popup anchors at (anchor.x, anchor.y) but clamps its final
 // y-position post-measurement so the full card stays inside the
@@ -30,6 +35,7 @@ export default function UserProfilePopup() {
   const anchor = useUiStore((s) => s.profilePopupAnchor);
   const serverId = useUiStore((s) => s.profilePopupServerId);
   const closePopup = useUiStore((s) => s.closeProfilePopup);
+  const openUserProfile = useUiStore((s) => s.openUserProfile);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
   const currentUsername = useAuthStore((s) => s.username);
@@ -261,14 +267,30 @@ export default function UserProfilePopup() {
         <div className="h-[60px]" style={{ background: gradient }} />
 
         <div className="relative h-7 mx-4">
-          <div className="absolute -top-9 left-0 rounded-xl border-[4px] border-bg-light">
+          {/* The avatar is the door to the full profile (Discord's idiom);
+              the hover scrim says so, since nothing else about a picture
+              suggests it is a button. */}
+          <button
+            type="button"
+            onClick={() => openUserProfile(username, serverId)}
+            title="View full profile"
+            className="group absolute -top-9 left-0 cursor-pointer rounded-xl border-[4px] border-bg-light"
+          >
             <UserAvatar username={username} size={64} />
+            <span
+              className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/55 text-center text-[9px] font-semibold uppercase leading-tight tracking-[0.06em] text-white opacity-0 transition-opacity group-hover:opacity-100"
+              style={{ borderRadius: "var(--radius-avatar)" }}
+            >
+              View
+              <br />
+              profile
+            </span>
             <div
               className={`absolute -bottom-px -right-px h-[14px] w-[14px] rounded-full border-[3px] border-bg-light ${
                 isOnline ? "bg-success" : "bg-text-muted"
               }`}
             />
-          </div>
+          </button>
         </div>
 
         <div className="px-4 pb-1 pt-3">
@@ -292,10 +314,6 @@ export default function UserProfilePopup() {
             )}
           </div>
         </div>
-
-        {/* E2EE: the conversation's safety number, for out-of-band
-            verification. Renders nothing unless encryption is ready. */}
-        {username !== currentUsername && <E2eeProfileSection peer={username} />}
 
         {/* Live-stream section — only when this user is currently
             streaming on a server we have access to. See
@@ -378,45 +396,11 @@ export default function UserProfilePopup() {
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                 Roles
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {(() => {
-                  const chips = (memberEntry?.roleIds ?? [])
-                    .map((id) => serverRoles?.find((r) => r.id === id))
-                    .filter((r): r is NonNullable<typeof r> => !!r);
-                  return (
-                    <>
-                      {memberEntry?.isOwner && (
-                        <span className="inline-flex items-center gap-[5px] rounded-sm border border-border-divider bg-bg-lighter px-2 py-[3px] text-[11px] font-medium text-text-secondary">
-                          <span className="h-2 w-2 rounded-full bg-warning" />
-                          Owner
-                        </span>
-                      )}
-                      {chips.map((r) => (
-                        <span
-                          key={r.id}
-                          className="inline-flex items-center gap-[5px] rounded-sm border border-border-divider bg-bg-lighter px-2 py-[3px] text-[11px] font-medium text-text-secondary"
-                        >
-                          <span
-                            className="h-2 w-2 rounded-full"
-                            style={{
-                              backgroundColor: r.color
-                                ? `#${r.color.toString(16).padStart(6, "0")}`
-                                : "var(--color-text-muted)",
-                            }}
-                          />
-                          {r.name}
-                        </span>
-                      ))}
-                      {!memberEntry?.isOwner && chips.length === 0 && (
-                        <span className="inline-flex items-center gap-[5px] rounded-sm border border-border-divider bg-bg-lighter px-2 py-[3px] text-[11px] font-medium text-text-secondary">
-                          <span className="h-2 w-2 rounded-full bg-accent-bright" />
-                          Member
-                        </span>
-                      )}
-                    </>
-                  );
-                })()}
-              </div>
+              <RoleChips
+                roles={serverRoles}
+                roleIds={memberEntry?.roleIds ?? []}
+                isOwner={!!memberEntry?.isOwner}
+              />
             </div>
           </>
         )}

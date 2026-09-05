@@ -201,6 +201,12 @@ interface UiState {
   /// requires the channel to be the active one.
   channelSettingsChannelId: string | null;
   openChannelSettings: (channelId: string) => void;
+  /// The full profile screen (features/profile/UserProfileModal): who it
+  /// shows and the server it was opened from (nickname + roles). Rides
+  /// `activeModal === "user-profile"`; opened from the popup's avatar.
+  userProfileUser: string | null;
+  userProfileServerId: string | null;
+  openUserProfile: (username: string, serverId?: string | null) => void;
   connectionStatus: "connected" | "reconnecting" | "disconnected";
   activeView: "home" | "server" | "browse" | "voice" | "dm";
   /// Which corner the floating pop-out stream player snaps to. Remembered
@@ -325,6 +331,8 @@ interface UiState {
 export const useUiStore = create<UiState>((set, get) => ({
   activeModal: null,
   channelSettingsChannelId: null,
+  userProfileUser: null,
+  userProfileServerId: null,
   connectionStatus: "connected",
   activeView: "home",
   pipCorner: readStoredCorner(),
@@ -460,6 +468,16 @@ export const useUiStore = create<UiState>((set, get) => ({
   closeModal: () => set({ activeModal: null }),
   openChannelSettings: (channelId) =>
     set({ activeModal: "channel-settings", channelSettingsChannelId: channelId }),
+  openUserProfile: (username, serverId = null) =>
+    set({
+      activeModal: "user-profile",
+      userProfileUser: username,
+      userProfileServerId: serverId,
+      // The anchored popup is what opened us; it has no place under a modal.
+      profilePopupUser: null,
+      profilePopupAnchor: null,
+      profilePopupServerId: null,
+    }),
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setActiveView: (view) => set({ activeView: view }),
   openProfilePopup: (username, anchor, serverId = null) =>
