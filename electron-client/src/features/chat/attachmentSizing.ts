@@ -2,20 +2,32 @@
 // from tauri-client and kept identical so the visual size + layout
 // match across both apps.
 //
-// Image dimensions scale as the **square root** of chat-view dimensions.
-// A linear "75% of chat width" looks great on small/medium chats but
-// produces unbearably large previews in fullscreen layouts; sqrt grows
-// monotonically yet sub-linearly, so the curve flattens out as chats
-// widen — without resorting to a hard cap. The coefficients are tuned
-// so a typical small panel (~500 × 600) renders images in the same
-// neighbourhood (~400 × 390) the previous linear scaling produced.
-// Floor reserves keep avatar + bubble padding intact on narrow panels.
+// Image dimensions scale as the **square root** of chat-view dimensions,
+// under a hard ceiling. A linear "75% of chat width" looks great on
+// small/medium chats but produces unbearably large previews in fullscreen
+// layouts; sqrt grows monotonically yet sub-linearly, so the curve
+// flattens out as chats widen. The coefficients are tuned so a typical
+// small panel (~500 × 600) renders images in the same neighbourhood
+// (~400 × 390) the previous linear scaling produced. Floor reserves keep
+// avatar + bubble padding intact on narrow panels.
+//
+// The ceiling is Discord's inline-media box (550 × 350). Without it a
+// maximised 1080p window put the curve at ~790 × 530: a GIF or screenshot
+// filled a third of the screen, and an attachment whose largest thumbnail
+// was smaller than that box was blown up past its own pixels. Everything
+// wider than ~930px now gets the same size; only cramped panels shrink.
 
 import type { Attachment } from "../../types";
 
+/// Hard ceiling for a single inline image/video preview, whatever the
+/// chat panel's size. Discord's numbers; a 16:9 frame lands at 550 × 309,
+/// a square one at 350 × 350.
+export const IMAGE_MAX_W = 550;
+export const IMAGE_MAX_H = 350;
+
 // Pre-measurement / unknown-dimensions fallback caps.
-export const PREVIEW_FALLBACK_MAX_W = 400;
-export const PREVIEW_FALLBACK_MAX_H = 360;
+export const PREVIEW_FALLBACK_MAX_W = IMAGE_MAX_W;
+export const PREVIEW_FALLBACK_MAX_H = IMAGE_MAX_H;
 export const PREVIEW_FALLBACK_W = 260;
 export const PREVIEW_FALLBACK_H = 180;
 
@@ -28,6 +40,7 @@ export function maxImageWidth(viewWidth: number): number {
   return Math.max(
     120,
     Math.min(
+      IMAGE_MAX_W,
       IMAGE_WIDTH_SQRT_COEFF * Math.sqrt(viewWidth),
       viewWidth - HORIZONTAL_BUBBLE_RESERVE_MIN,
     ),
@@ -38,6 +51,7 @@ export function maxImageHeight(viewHeight: number): number {
   return Math.max(
     120,
     Math.min(
+      IMAGE_MAX_H,
       IMAGE_HEIGHT_SQRT_COEFF * Math.sqrt(viewHeight),
       viewHeight - VERTICAL_BUBBLE_RESERVE_MIN,
     ),

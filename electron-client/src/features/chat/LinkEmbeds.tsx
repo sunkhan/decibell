@@ -113,8 +113,8 @@ function ImageEmbed({
   };
   const box = reserveBoxFor(image.width, image.height, chatViewSize);
   const frameClass = standalone
-    ? "mt-1 block cursor-pointer overflow-hidden rounded-lg border border-border bg-bg-secondary"
-    : "mt-2 block max-w-full cursor-pointer overflow-hidden rounded-md bg-bg-secondary";
+    ? "mt-1 flex cursor-pointer items-center justify-center overflow-hidden rounded-lg border border-border bg-bg-secondary"
+    : "mt-2 flex max-w-full cursor-pointer items-center justify-center overflow-hidden rounded-md bg-bg-secondary";
   const imgProps = {
     src: image.url,
     alt: filename,
@@ -131,9 +131,14 @@ function ImageEmbed({
       height = Math.round((height * innerMax) / width);
       width = innerMax;
     }
+    // max-*, not h-full w-full: the box comes from what the page declared
+    // (or the byte probe found), and a page can overstate its image. A
+    // full-size <img> with object-contain would scale the pixels up to fill
+    // the box; capped at natural size the image sits centred in the space
+    // it was promised instead.
     return (
       <button type="button" onClick={onOpen} className={frameClass} style={{ width, height }}>
-        <img {...imgProps} className="h-full w-full object-contain" />
+        <img {...imgProps} className="max-h-full max-w-full object-contain" />
       </button>
     );
   }
