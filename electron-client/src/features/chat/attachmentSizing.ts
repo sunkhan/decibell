@@ -24,6 +24,18 @@ import type { Attachment } from "../../types";
 /// a square one at 350 × 350.
 export const IMAGE_MAX_W = 550;
 export const IMAGE_MAX_H = 350;
+/// GIFs get a tighter ceiling (owner call, 2026-09-05): they loop and pull
+/// the eye, so at the still-image size one animation owns the channel. 80%
+/// of the image box; a 16:9 GIF lands at 440 × 248.
+export const GIF_MAX_W = 440;
+export const GIF_MAX_H = 280;
+
+/// Which ceiling a preview gets. Attachments decide by mime, link previews
+/// by the unfurler's `gif` flag.
+export type MediaKind = "image" | "gif";
+export function mediaKindOf(mime: string): MediaKind {
+  return mime === "image/gif" ? "gif" : "image";
+}
 
 // Pre-measurement / unknown-dimensions fallback caps.
 export const PREVIEW_FALLBACK_MAX_W = IMAGE_MAX_W;
@@ -36,22 +48,22 @@ const VERTICAL_BUBBLE_RESERVE_MIN = 60;
 const IMAGE_WIDTH_SQRT_COEFF = 18;
 const IMAGE_HEIGHT_SQRT_COEFF = 16;
 
-export function maxImageWidth(viewWidth: number): number {
+export function maxImageWidth(viewWidth: number, kind: MediaKind = "image"): number {
   return Math.max(
     120,
     Math.min(
-      IMAGE_MAX_W,
+      kind === "gif" ? GIF_MAX_W : IMAGE_MAX_W,
       IMAGE_WIDTH_SQRT_COEFF * Math.sqrt(viewWidth),
       viewWidth - HORIZONTAL_BUBBLE_RESERVE_MIN,
     ),
   );
 }
 
-export function maxImageHeight(viewHeight: number): number {
+export function maxImageHeight(viewHeight: number, kind: MediaKind = "image"): number {
   return Math.max(
     120,
     Math.min(
-      IMAGE_MAX_H,
+      kind === "gif" ? GIF_MAX_H : IMAGE_MAX_H,
       IMAGE_HEIGHT_SQRT_COEFF * Math.sqrt(viewHeight),
       viewHeight - VERTICAL_BUBBLE_RESERVE_MIN,
     ),
@@ -71,7 +83,7 @@ export function reserveBox(
   attachment: Attachment,
   viewSize: ChatViewSize | null,
 ): { width: number; height: number; known: boolean } {
-  return reserveBoxFor(attachment.width, attachment.height, viewSize);
+  return reserveBoxFor(attachment.width, attachment.height, viewSize, mediaKindOf(attachment.mime));
 }
 
 /// Same box from bare dimensions — link-preview images carry no
@@ -80,12 +92,17 @@ export function reserveBoxFor(
   w: number,
   h: number,
   viewSize: ChatViewSize | null,
+  kind: MediaKind = "image",
 ): { width: number; height: number; known: boolean } {
   if (w <= 0 || h <= 0) {
     return { width: PREVIEW_FALLBACK_W, height: PREVIEW_FALLBACK_H, known: false };
   }
-  const maxW = viewSize ? maxImageWidth(viewSize.width) : PREVIEW_FALLBACK_MAX_W;
-  const maxH = viewSize ? maxImageHeight(viewSize.height) : PREVIEW_FALLBACK_MAX_H;
+  const maxW = viewSize
+    ? maxImageWidth(viewSize.width, kind)
+    : kind === "gif" ? GIF_MAX_W : PREVIEW_FALLBACK_MAX_W;
+  const maxH = viewSize
+    ? maxImageHeight(viewSize.height, kind)
+    : kind === "gif" ? GIF_MAX_H : PREVIEW_FALLBACK_MAX_H;
   const scale = Math.min(1, maxW / w, maxH / h);
   return {
     width: Math.max(1, Math.round(w * scale)),

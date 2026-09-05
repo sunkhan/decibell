@@ -45,7 +45,9 @@ export type LinkPreview =
       largeImage: boolean;
       color: string | null;
     }
-  | { kind: "image"; url: string; width: number; height: number };
+  /// `gif`: an animated-format file (content type or magic bytes) — the
+  /// renderer gives those a tighter box than a still.
+  | { kind: "image"; url: string; width: number; height: number; gif: boolean };
 
 // ── Limits ───────────────────────────────────────────────────────────
 
@@ -519,7 +521,10 @@ async function unfurl(url: string): Promise<LinkPreview | null> {
     const imageUrl = resolveImage(got.url, got.url);
     if (!imageUrl) return null;
     const dims = probeImageDims(got.bytes) ?? { width: 0, height: 0 };
-    return { kind: "image", url: imageUrl, ...dims };
+    const gif =
+      got.contentType.startsWith("image/gif") ||
+      String.fromCharCode(...got.bytes.subarray(0, 3)) === "GIF";
+    return { kind: "image", url: imageUrl, ...dims, gif };
   }
 
   if (!/^(text\/html|application\/xhtml\+xml)\b/.test(got.contentType)) return null;

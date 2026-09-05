@@ -5,11 +5,14 @@ import { useUiStore } from "../../stores/uiStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import {
+  GIF_MAX_H,
+  GIF_MAX_W,
   maxImageHeight,
   maxImageWidth,
   PREVIEW_FALLBACK_MAX_H,
   PREVIEW_FALLBACK_MAX_W,
   reserveBoxFor,
+  type MediaKind,
 } from "./attachmentSizing";
 import { onLinkClick, onLinkAuxClick } from "../../lib/openExternal";
 import { isInviteLink } from "../servers/inviteLink";
@@ -67,7 +70,7 @@ function LinkEmbed({ url }: { url: string }) {
   const preview = entry?.status === "done" ? entry.preview : null;
   if (!preview) return null;
   return preview.kind === "image" ? (
-    <ImageEmbed image={preview} standalone />
+    <ImageEmbed image={preview} standalone gif={preview.gif} />
   ) : (
     <SiteCard preview={preview} />
   );
@@ -90,6 +93,7 @@ function filenameOf(url: string): string {
 function ImageEmbed({
   image,
   standalone,
+  gif = false,
   onError,
 }: {
   image: LinkPreviewImage;
@@ -97,6 +101,8 @@ function ImageEmbed({
   /// styling (border, rounded-lg). Inside a card: rounded-md, no
   /// border, capped to the card's column.
   standalone: boolean;
+  /// An animated file (a GIF-picker send): the tighter GIF ceiling.
+  gif?: boolean;
   onError?: () => void;
 }) {
   const open = useImageViewerStore((s) => s.open);
@@ -111,7 +117,8 @@ function ImageEmbed({
     setFailed(true);
     onError?.();
   };
-  const box = reserveBoxFor(image.width, image.height, chatViewSize);
+  const kind: MediaKind = gif ? "gif" : "image";
+  const box = reserveBoxFor(image.width, image.height, chatViewSize, kind);
   const frameClass = standalone
     ? "mt-1 flex cursor-pointer items-center justify-center overflow-hidden rounded-lg border border-border bg-bg-secondary"
     : "mt-2 flex max-w-full cursor-pointer items-center justify-center overflow-hidden rounded-md bg-bg-secondary";
@@ -143,8 +150,12 @@ function ImageEmbed({
     );
   }
 
-  const maxW = chatViewSize ? maxImageWidth(chatViewSize.width) : PREVIEW_FALLBACK_MAX_W;
-  const maxH = chatViewSize ? maxImageHeight(chatViewSize.height) : PREVIEW_FALLBACK_MAX_H;
+  const maxW = chatViewSize
+    ? maxImageWidth(chatViewSize.width, kind)
+    : gif ? GIF_MAX_W : PREVIEW_FALLBACK_MAX_W;
+  const maxH = chatViewSize
+    ? maxImageHeight(chatViewSize.height, kind)
+    : gif ? GIF_MAX_H : PREVIEW_FALLBACK_MAX_H;
   return (
     <button type="button" onClick={onOpen} className={frameClass}>
       <img

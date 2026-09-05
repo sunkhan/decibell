@@ -1097,7 +1097,10 @@ whose largest thumbnail (≤1280) was smaller than that box was upscaled past it
 lands at 550 × 309, a square at 350 × 350; panels narrower than ~930 px still shrink along the
 curve), the pre-measure fallbacks match, and `LinkEmbeds`' reserved-box image renders at
 `max-*` rather than `h-full w-full`, so a page that overstates its `og:image` dimensions gets a
-centred image, never a blown-up one. Verified: tsc web 0, `cargo test --lib`, napi build. Open:
+centred image, never a blown-up one. Follow-up the same day: **GIFs get a tighter box** (440 × 280,
+`GIF_MAX_W/H`, 80% of the still-image ceiling) — uploaded GIFs by mime, picker sends by a new
+`gif` flag the unfurler sets on direct-image previews (content type or `GIF` magic; mirrored in
+main / preload / renderer types). Verified: tsc web 0, `cargo test --lib`, napi build. Open:
 a live pass on the profile screen against a peer with keys, and on the Privacy tab's locked /
 not-set-up states.
 

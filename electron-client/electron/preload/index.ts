@@ -85,7 +85,7 @@ type LinkPreview =
       largeImage: boolean;
       color: string | null;
     }
-  | { kind: "image"; url: string; width: number; height: number };
+  | { kind: "image"; url: string; width: number; height: number; gif: boolean };
 
 type GifResult = {
   id: string;

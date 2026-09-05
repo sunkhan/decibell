@@ -764,8 +764,9 @@ export type LinkPreview =
       /// The page's theme-color as a #hex string, for the card's edge.
       color: string | null;
     }
-  /// The URL itself is an image.
-  | { kind: "image"; url: string; width: number; height: number };
+  /// The URL itself is an image. `gif` = an animated-format file (a GIF
+  /// picker send, a pasted .gif) — rendered in a tighter box than a still.
+  | { kind: "image"; url: string; width: number; height: number; gif: boolean };
 
 // ── GIF search (KLIPY / GIPHY, via electron/main/gifs.ts) ────────────
 
