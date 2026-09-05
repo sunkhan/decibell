@@ -41,6 +41,19 @@ const THUMB_PX = 80;
 
 type SitePreview = Extract<LinkPreview, { kind: "site" }>;
 
+/// A direct-image URL that is a GIF by its path (KLIPY's `….gif`, GIPHY's
+/// `giphy.gif?cid=…`). Belt and braces next to the unfurler's `gif` flag:
+/// main caches previews for 30 minutes and only restarts with the app, so
+/// an entry unfurled by an older main (or before a restart) lacks the flag
+/// — the renderer can still tell from the URL it already has.
+function isGifUrl(url: string): boolean {
+  try {
+    return /\.gif$/i.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 function LinkEmbeds({ content, sender }: { content: string; sender: string }) {
   const enabled = useUiStore((s) => s.linkPreviewsEnabled);
   const urls = useMemo(() => extractLinks(content, MAX_EMBEDS), [content]);
@@ -70,7 +83,7 @@ function LinkEmbed({ url }: { url: string }) {
   const preview = entry?.status === "done" ? entry.preview : null;
   if (!preview) return null;
   return preview.kind === "image" ? (
-    <ImageEmbed image={preview} standalone gif={preview.gif} />
+    <ImageEmbed image={preview} standalone gif={preview.gif || isGifUrl(preview.url)} />
   ) : (
     <SiteCard preview={preview} />
   );

@@ -25,10 +25,12 @@ import type { Attachment } from "../../types";
 export const IMAGE_MAX_W = 550;
 export const IMAGE_MAX_H = 350;
 /// GIFs get a tighter ceiling (owner call, 2026-09-05): they loop and pull
-/// the eye, so at the still-image size one animation owns the channel. 80%
-/// of the image box; a 16:9 GIF lands at 440 × 248.
-export const GIF_MAX_W = 440;
-export const GIF_MAX_H = 280;
+/// the eye, so at the still-image size one animation owns the channel.
+/// Picker GIFs (KLIPY "hd") are ~500 px wide natively, so a cap has to sit
+/// well under that to be seen at all — 440 read as "nothing changed". A
+/// 16:9 GIF lands at 360 × 203, a 4:3 one at 320 × 240.
+export const GIF_MAX_W = 360;
+export const GIF_MAX_H = 240;
 
 /// Which ceiling a preview gets. Attachments decide by mime, link previews
 /// by the unfurler's `gif` flag.
