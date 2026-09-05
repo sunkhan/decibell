@@ -1,5 +1,6 @@
 import { LockGlyph } from "../chat/MessageBubble";
 import { useState, useRef, useEffect, useMemo, memo } from "react";
+import { useMenuPosition } from "../../hooks/useMenuPosition";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -53,6 +54,10 @@ export default function ServerChannelsSidebar() {
       | { kind: "channel" | "category"; id: string; name: string }
       | { kind: "empty" };
   } | null>(null);
+  // Measured placement for the context menu (flips upward near the
+  // bottom edge instead of clipping). ctxMenu is a fresh object per
+  // opening, which is what re-measures it.
+  const { ref: ctxMenuRef, style: ctxMenuStyle } = useMenuPosition(ctxMenu);
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string;
     name: string;
@@ -545,11 +550,9 @@ export default function ServerChannelsSidebar() {
       {/* Channel-list context menu (MANAGE_CHANNELS only) */}
       {ctxMenu && (
         <div
-          className="fixed z-50 w-[190px] animate-[dropIn_0.12s_ease] rounded-md border border-border bg-bg-light p-[5px] shadow-float"
-          style={{
-            left: Math.min(ctxMenu.x, window.innerWidth - 200),
-            top: Math.min(ctxMenu.y, window.innerHeight - 170),
-          }}
+          ref={ctxMenuRef}
+          className="z-50 w-[190px] animate-[dropIn_0.12s_ease] rounded-md border border-border bg-bg-light p-[5px] shadow-float"
+          style={ctxMenuStyle}
           onMouseDown={(e) => e.stopPropagation()}
         >
           {ctxMenu.target.kind === "empty" ? (

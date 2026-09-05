@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useCallback } from "react";
+import { useEffect, useMemo, useCallback } from "react";
 import { EMPTY_LIST } from "../../lib/empty";
 import { createPortal } from "react-dom";
 import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
 import { useDisplayName } from "../../hooks/useDisplayName";
+import { useMenuPosition } from "../../hooks/useMenuPosition";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { UserAvatar } from "../../components/UserAvatar";
@@ -72,7 +73,10 @@ export default function UserContextMenu() {
     },
     [username, contextServerId, closeContextMenu],
   );
-  const menuRef = useRef<HTMLDivElement>(null);
+  // Measured placement: the menu grows a moderation section for some
+  // targets, so a fixed "approximate height" clamp left it clipped at the
+  // bottom edge. The hook flips it above the cursor when it doesn't fit.
+  const { ref: menuRef, style: menuStyle } = useMenuPosition(anchor);
   const isLocallyMuted = username ? localMutedUsers.has(username) : false;
 
   const currentDb = username ? userVolumes[username] ?? DEFAULT_DB : DEFAULT_DB;
@@ -147,11 +151,6 @@ export default function UserContextMenu() {
 
   if (!username || !anchor) return null;
 
-  const menuWidth = 220;
-  const menuHeight = 160;
-  const x = Math.min(anchor.x, window.innerWidth - menuWidth - 8);
-  const y = Math.min(anchor.y, window.innerHeight - menuHeight - 8);
-
   const sliderValue = ((currentDb - MIN_DB) / (MAX_DB - MIN_DB)) * 100;
   const handleSlider = (val: number) => {
     const db = MIN_DB + (val / 100) * (MAX_DB - MIN_DB);
@@ -162,8 +161,8 @@ export default function UserContextMenu() {
   return createPortal(
     <div
       ref={menuRef}
-      className="fixed z-[100] w-[220px] animate-[dropIn_0.15s_ease] overflow-hidden rounded-lg border border-border bg-bg-light shadow-float"
-      style={{ left: x, top: y }}
+      className="z-[100] w-[220px] animate-[dropIn_0.15s_ease] overflow-hidden rounded-lg border border-border bg-bg-light shadow-float"
+      style={menuStyle}
     >
       {/* User header */}
       <div className="flex items-center gap-2.5 border-b border-border-divider px-3.5 py-3">

@@ -1,9 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useImageContextMenuStore } from "../stores/imageContextMenuStore";
 import { toast } from "../stores/toastStore";
-
-const MENU_WIDTH = 200;
-const MENU_HEIGHT = 84; // approximate, used for edge-clamping
+import { useMenuPosition } from "../hooks/useMenuPosition";
 
 // Right-click menu for chat image and video attachments.
 //
@@ -30,12 +28,10 @@ export default function ImageContextMenu() {
   const kind = useImageContextMenuStore((s) => s.kind);
   const close = useImageContextMenuStore((s) => s.close);
 
-  // Keep the menu inside the viewport.
-  const position = useMemo(() => {
-    const left = Math.min(x, window.innerWidth - MENU_WIDTH - 8);
-    const top = Math.min(y, window.innerHeight - MENU_HEIGHT - 8);
-    return { left: Math.max(8, left), top: Math.max(8, top) };
-  }, [x, y]);
+  // Keep the menu inside the viewport (measured, flips above the cursor
+  // near the bottom edge). One anchor object per opening.
+  const anchor = useMemo(() => (open ? { x, y } : null), [open, x, y]);
+  const { ref: menuRef, style: menuStyle } = useMenuPosition(anchor);
 
   useEffect(() => {
     if (!open) return;
@@ -130,8 +126,9 @@ export default function ImageContextMenu() {
 
   return (
     <div
-      className="fixed z-[80] min-w-[180px] rounded-md border border-border bg-bg-light p-1 shadow-float animate-[fadeUp_0.12s_ease_both]"
-      style={position}
+      ref={menuRef}
+      className="z-[80] min-w-[180px] rounded-md border border-border bg-bg-light p-1 shadow-float animate-[fadeUp_0.12s_ease_both]"
+      style={menuStyle}
       onMouseDown={(e) => e.stopPropagation()}
     >
       {kind === "image" && (

@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
+import { useMenuPosition } from "../../hooks/useMenuPosition";
 import { saveSettings } from "../settings/saveSettings";
 
 interface AudioDevice {
@@ -17,7 +18,9 @@ interface Props {
 }
 
 export default function DeviceContextMenu({ type, anchor, devices, onClose }: Props) {
-  const menuRef = useRef<HTMLDivElement>(null);
+  // Opens upward from the user-panel button it was summoned on, sized to
+  // its real height (it used to float a fixed 300px above the anchor).
+  const { ref: menuRef, style: menuStyle } = useMenuPosition(anchor, { prefer: "above" });
   const selected = useUiStore((s) =>
     type === "input" ? s.inputDevice : s.outputDevice,
   );
@@ -56,16 +59,11 @@ export default function DeviceContextMenu({ type, anchor, devices, onClose }: Pr
     onClose();
   };
 
-  const menuWidth = 240;
-  const menuMaxHeight = 300;
-  const x = Math.max(8, Math.min(anchor.x, window.innerWidth - menuWidth - 8));
-  const y = Math.max(8, anchor.y - menuMaxHeight);
-
   return createPortal(
     <div
       ref={menuRef}
-      className="fixed z-[100] w-[240px] rounded-lg border border-border bg-bg-secondary shadow-modal"
-      style={{ left: x, top: y, maxHeight: menuMaxHeight }}
+      className="z-[100] w-[240px] rounded-lg border border-border bg-bg-secondary shadow-modal"
+      style={menuStyle}
     >
       <div className="border-b border-border px-3 py-2.5">
         <span className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
