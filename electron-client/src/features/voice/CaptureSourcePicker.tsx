@@ -55,6 +55,14 @@ export default function CaptureSourcePicker({
     if (!visible && closing) onClose();
   }, [visible, closing, onClose]);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") handleClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [handleClose]);
+
   // PR8: Chromium's `getDisplayMedia` triggers the OS-native screen-share
   // dialog when StreamCapture.start() runs, so the picker no longer needs
   // its own source list. Settings + Go Live only.
@@ -185,9 +193,15 @@ export default function CaptureSourcePicker({
     }
   };
 
+  // Windows gets the source grid too: side by side with the settings on a
+  // wide window (one fixed-height dialog, each column scrolls on its own),
+  // stacked below `lg`. Either way the header and footer are pinned — the
+  // body scrolls, never the Go Live button.
+  const split = NEEDS_CUSTOM_PICKER;
+
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center transition-colors duration-300"
+      className="fixed inset-0 z-50 flex items-center justify-center p-6 transition-colors duration-300"
       style={{
         backgroundColor: visible ? "rgba(0,0,0,0.65)" : "rgba(0,0,0,0)",
       }}
@@ -195,268 +209,337 @@ export default function CaptureSourcePicker({
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="w-[560px] overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-all duration-300"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="go-live-title"
+        className={`flex max-h-full w-full max-w-[560px] flex-col overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-all duration-300 ${
+          split ? "lg:h-full lg:max-h-[900px] lg:max-w-[1040px]" : ""
+        }`}
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",
         }}
       >
-        {NEEDS_CUSTOM_PICKER ? (
-          <SourceGrid
-            pickedSourceId={pickedSourceId}
-            onPick={setPickedSourceId}
-          />
-        ) : (
-          <div className="px-6 py-8 text-center">
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-accent-soft">
-              <svg
-                width="24"
-                height="24"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="text-accent-bright"
-              >
-                <rect x="2" y="3" width="20" height="14" rx="2" />
-                <line x1="8" y1="21" x2="16" y2="21" />
-                <line x1="12" y1="17" x2="12" y2="21" />
-              </svg>
-            </div>
-            <p className="font-display text-[16px] font-semibold text-text-primary">
-              Screen or window selection
-            </p>
-            <p className="mt-1.5 text-[13px] leading-[1.55] text-text-muted">
-              A system dialog will appear after you click Go Live to choose what to share.
-            </p>
-          </div>
-        )}
-
-        <div className="mx-5 mb-1 space-y-3 rounded-md border border-border-divider bg-bg-light p-4">
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                Resolution
-              </label>
-              <SegmentedControl
-                options={[
-                  { value: "source" as const, label: "Source" },
-                  { value: "1080p" as const, label: "1080p" },
-                  { value: "720p" as const, label: "720p" },
-                ]}
-                value={streamSettings.resolution}
-                onChange={(v) => {
-                  setStreamSettings({ resolution: v });
-                  if (streamSettings.quality !== "custom") {
-                    const isHighRes = v === "source";
-                    const presets = {
-                      low: isHighRes ? 6000 : 3000,
-                      medium: isHighRes ? 12000 : 6000,
-                      high: isHighRes ? 20000 : 10000,
-                    };
-                    setStreamSettings({
-                      videoBitrateKbps: presets[streamSettings.quality],
-                    });
-                  }
-                }}
-              />
-            </div>
-            <div className="flex-1">
-              <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                Frame rate
-              </label>
-              <SegmentedControl
-                options={[
-                  { value: 120 as const, label: "120" },
-                  { value: 60 as const, label: "60" },
-                  { value: 30 as const, label: "30" },
-                  { value: 15 as const, label: "15" },
-                ]}
-                value={streamSettings.fps}
-                onChange={(v) => setStreamSettings({ fps: v })}
-              />
-            </div>
-          </div>
-
-          <CodecPicker />
-
-          <div>
-            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-              Video quality
-            </label>
-            <div className="flex rounded-md bg-bg-darkest p-[3px]">
-              {(() => {
-                const isHighRes = streamSettings.resolution === "source";
-                return [
-                  {
-                    key: "low" as const,
-                    label: "Low",
-                    sub: isHighRes ? "6 Mbps" : "3 Mbps",
-                    bitrate: isHighRes ? 6000 : 3000,
-                  },
-                  {
-                    key: "medium" as const,
-                    label: "Medium",
-                    sub: isHighRes ? "12 Mbps" : "6 Mbps",
-                    bitrate: isHighRes ? 12000 : 6000,
-                  },
-                  {
-                    key: "high" as const,
-                    label: "High",
-                    sub: isHighRes ? "20 Mbps" : "10 Mbps",
-                    bitrate: isHighRes ? 20000 : 10000,
-                  },
-                  { key: "custom" as const, label: "Custom", sub: null, bitrate: null },
-                ];
-              })().map((opt) => (
-                <button
-                  key={opt.key}
-                  onClick={() => {
-                    if (opt.bitrate !== null) {
-                      setStreamSettings({
-                        quality: opt.key,
-                        videoBitrateKbps: opt.bitrate,
-                      });
-                    } else {
-                      setStreamSettings({ quality: "custom" });
-                    }
-                  }}
-                  className={`flex flex-1 flex-col items-center rounded-sm px-2 py-[7px] transition-all ${
-                    streamSettings.quality === opt.key
-                      ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_10%,transparent)]"
-                      : "text-text-muted hover:text-text-secondary"
-                  }`}
-                >
-                  <span className="text-[11px] font-semibold">{opt.label}</span>
-                  {opt.sub && (
-                    <span
-                      className={`text-[10px] ${
-                        streamSettings.quality === opt.key
-                          ? "text-accent/60"
-                          : "text-text-muted"
-                      }`}
-                    >
-                      {opt.sub}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-
-            {streamSettings.quality === "custom" && (
-              <div className="mt-2.5 flex items-center gap-3 px-1">
-                <input
-                  type="range"
-                  min={1000}
-                  max={30000}
-                  step={500}
-                  value={streamSettings.videoBitrateKbps}
-                  onChange={(e) =>
-                    setStreamSettings({
-                      videoBitrateKbps: Number(e.target.value),
-                    })
-                  }
-                  className="h-[6px] flex-1 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[16px] [&::-webkit-slider-thumb]:w-[16px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-mid [&::-webkit-slider-thumb]:shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
-                />
-                <span className="w-[60px] shrink-0 whitespace-nowrap text-right text-[11px] font-medium tabular-nums text-text-secondary">
-                  {streamSettings.videoBitrateKbps >= 1000
-                    ? `${(streamSettings.videoBitrateKbps / 1000).toFixed(streamSettings.videoBitrateKbps % 1000 === 0 ? 0 : 1)} Mbps`
-                    : `${streamSettings.videoBitrateKbps} kbps`}
-                </span>
-              </div>
-            )}
-          </div>
-
-          {streamSettings.shareAudio && (
-            <div>
-              <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                Audio bitrate
-              </label>
-              <SegmentedControl
-                options={[
-                  { value: 128 as const, label: "128 kbps" },
-                  { value: 192 as const, label: "192 kbps" },
-                ]}
-                value={streamSettings.audioBitrateKbps}
-                onChange={(v) => setStreamSettings({ audioBitrateKbps: v })}
-              />
-            </div>
-          )}
-
-          {/* Per-app audio exists only on the native capture path; the
-              picker hides itself on macOS / the WebCodecs fallback. */}
-          {streamSettings.shareAudio && canPickStreamAudioApps() && (
-            <div>
-              <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                Audio from
-              </label>
-              <StreamAudioAppPicker sourceId={pickedSourceId ?? undefined} />
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center justify-between px-5 py-4">
-          <div className="flex flex-col gap-2">
-            <label className="flex cursor-pointer items-center gap-3 text-[13px] text-text-secondary">
-              <button
-                onClick={() =>
-                  setStreamSettings({ shareAudio: !streamSettings.shareAudio })
-                }
-                className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
-                  streamSettings.shareAudio
-                    ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
-                    : "border-border bg-bg-lighter"
-                }`}
-              >
-                <div
-                  className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
-                    streamSettings.shareAudio
-                      ? "translate-x-[18px] bg-on-accent"
-                      : "translate-x-[3px] bg-text-muted"
-                  }`}
-                />
-              </button>
-              Share audio
-            </label>
-            <label className="flex cursor-pointer items-center gap-3 text-[13px] text-text-secondary">
-              <button
-                onClick={() =>
-                  setStreamSettings({
-                    includeCursor: !streamSettings.includeCursor,
-                  })
-                }
-                className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
-                  streamSettings.includeCursor
-                    ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
-                    : "border-border bg-bg-lighter"
-                }`}
-              >
-                <div
-                  className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
-                    streamSettings.includeCursor
-                      ? "translate-x-[18px] bg-on-accent"
-                      : "translate-x-[3px] bg-text-muted"
-                  }`}
-                />
-              </button>
-              Show cursor
-            </label>
-          </div>
-          <button
-            onClick={handleGoLive}
-            disabled={starting || (NEEDS_CUSTOM_PICKER && !pickedSourceId)}
-            className="rounded-md bg-accent px-7 py-2.5 text-[13px] font-semibold text-on-accent transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50 disabled:shadow-none"
+        <div className="flex shrink-0 items-center justify-between border-b border-border-divider px-5 py-4">
+          <h2
+            id="go-live-title"
+            className="font-display text-[16px] font-semibold text-text-primary"
           >
-            {starting ? "Starting..." : "Go Live"}
+            Go live
+          </h2>
+          <button
+            onClick={handleClose}
+            aria-label="Close"
+            className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
           </button>
         </div>
 
-        {error && <p className="px-5 pb-3 text-[12px] text-error">{error}</p>}
+        <div
+          className={`flex min-h-0 flex-1 flex-col overflow-y-auto ${
+            split ? "lg:flex-row lg:overflow-hidden" : ""
+          }`}
+        >
+          {NEEDS_CUSTOM_PICKER ? (
+            <SourceGrid
+              pickedSourceId={pickedSourceId}
+              onPick={setPickedSourceId}
+            />
+          ) : (
+            <div className="mx-5 mt-5 mb-4 flex shrink-0 items-center gap-3 rounded-md border border-border-divider bg-bg-light px-4 py-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="text-accent-bright"
+                >
+                  <rect x="2" y="3" width="20" height="14" rx="2" />
+                  <line x1="8" y1="21" x2="16" y2="21" />
+                  <line x1="12" y1="17" x2="12" y2="21" />
+                </svg>
+              </div>
+              <div className="min-w-0">
+                <p className="text-[13px] font-medium text-text-primary">
+                  Screen or window selection
+                </p>
+                <p className="mt-0.5 text-[12px] leading-[1.55] text-text-muted">
+                  A system dialog will appear after you click Go Live to choose what to share.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div
+            className={`mx-5 mb-5 flex shrink-0 flex-col gap-5 rounded-md border border-border-divider bg-bg-light p-4 ${
+              split
+                ? "lg:m-0 lg:w-[480px] lg:overflow-y-auto lg:rounded-none lg:border-0 lg:border-l lg:p-5"
+                : ""
+            }`}
+          >
+            <section className="flex flex-col gap-3">
+              <h3 className={GROUP_HEADING}>Video</h3>
+              <div className="flex gap-3">
+                <div className="min-w-0 flex-1">
+                  <label className={FIELD_LABEL}>Resolution</label>
+                  <SegmentedControl
+                    options={[
+                      { value: "source" as const, label: "Source" },
+                      { value: "1080p" as const, label: "1080p" },
+                      { value: "720p" as const, label: "720p" },
+                    ]}
+                    value={streamSettings.resolution}
+                    onChange={(v) => {
+                      setStreamSettings({ resolution: v });
+                      if (streamSettings.quality !== "custom") {
+                        const isHighRes = v === "source";
+                        const presets = {
+                          low: isHighRes ? 6000 : 3000,
+                          medium: isHighRes ? 12000 : 6000,
+                          high: isHighRes ? 20000 : 10000,
+                        };
+                        setStreamSettings({
+                          videoBitrateKbps: presets[streamSettings.quality],
+                        });
+                      }
+                    }}
+                  />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <label className={FIELD_LABEL}>Frame rate</label>
+                  <SegmentedControl
+                    options={[
+                      { value: 120 as const, label: "120" },
+                      { value: 60 as const, label: "60" },
+                      { value: 30 as const, label: "30" },
+                      { value: 15 as const, label: "15" },
+                    ]}
+                    value={streamSettings.fps}
+                    onChange={(v) => setStreamSettings({ fps: v })}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className={FIELD_LABEL}>Video quality</label>
+                <div className="flex rounded-md bg-bg-darkest p-[3px]">
+                  {(() => {
+                    const isHighRes = streamSettings.resolution === "source";
+                    return [
+                      {
+                        key: "low" as const,
+                        label: "Low",
+                        sub: isHighRes ? "6 Mbps" : "3 Mbps",
+                        bitrate: isHighRes ? 6000 : 3000,
+                      },
+                      {
+                        key: "medium" as const,
+                        label: "Medium",
+                        sub: isHighRes ? "12 Mbps" : "6 Mbps",
+                        bitrate: isHighRes ? 12000 : 6000,
+                      },
+                      {
+                        key: "high" as const,
+                        label: "High",
+                        sub: isHighRes ? "20 Mbps" : "10 Mbps",
+                        bitrate: isHighRes ? 20000 : 10000,
+                      },
+                      { key: "custom" as const, label: "Custom", sub: null, bitrate: null },
+                    ];
+                  })().map((opt) => (
+                    <button
+                      key={opt.key}
+                      onClick={() => {
+                        if (opt.bitrate !== null) {
+                          setStreamSettings({
+                            quality: opt.key,
+                            videoBitrateKbps: opt.bitrate,
+                          });
+                        } else {
+                          setStreamSettings({ quality: "custom" });
+                        }
+                      }}
+                      className={`flex flex-1 flex-col items-center rounded-sm px-2 py-[7px] transition-all ${
+                        streamSettings.quality === opt.key
+                          ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_10%,transparent)]"
+                          : "text-text-muted hover:text-text-secondary"
+                      }`}
+                    >
+                      <span className="text-[11px] font-semibold">{opt.label}</span>
+                      {opt.sub && (
+                        <span
+                          className={`text-[10px] ${
+                            streamSettings.quality === opt.key
+                              ? "text-accent/60"
+                              : "text-text-muted"
+                          }`}
+                        >
+                          {opt.sub}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                {streamSettings.quality === "custom" && (
+                  <div className="mt-2.5 flex items-center gap-3 px-1">
+                    <input
+                      type="range"
+                      min={1000}
+                      max={30000}
+                      step={500}
+                      value={streamSettings.videoBitrateKbps}
+                      onChange={(e) =>
+                        setStreamSettings({
+                          videoBitrateKbps: Number(e.target.value),
+                        })
+                      }
+                      className="h-[6px] flex-1 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[16px] [&::-webkit-slider-thumb]:w-[16px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-mid [&::-webkit-slider-thumb]:shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
+                    />
+                    <span className="w-[60px] shrink-0 whitespace-nowrap text-right text-[11px] font-medium tabular-nums text-text-secondary">
+                      {streamSettings.videoBitrateKbps >= 1000
+                        ? `${(streamSettings.videoBitrateKbps / 1000).toFixed(streamSettings.videoBitrateKbps % 1000 === 0 ? 0 : 1)} Mbps`
+                        : `${streamSettings.videoBitrateKbps} kbps`}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <CodecPicker />
+
+              <label className="flex cursor-pointer items-center justify-between gap-3 text-[13px] text-text-secondary">
+                Show cursor
+                <Switch
+                  checked={streamSettings.includeCursor}
+                  onToggle={() =>
+                    setStreamSettings({
+                      includeCursor: !streamSettings.includeCursor,
+                    })
+                  }
+                />
+              </label>
+            </section>
+
+            <section className="flex flex-col gap-3 border-t border-border-divider pt-5">
+              <label className="flex cursor-pointer items-center justify-between gap-3">
+                <span className={GROUP_HEADING}>Audio</span>
+                <Switch
+                  checked={streamSettings.shareAudio}
+                  label="Share audio"
+                  onToggle={() =>
+                    setStreamSettings({ shareAudio: !streamSettings.shareAudio })
+                  }
+                />
+              </label>
+
+              {!streamSettings.shareAudio ? (
+                <p className="text-[12px] text-text-muted">
+                  Audio is off — viewers get video only.
+                </p>
+              ) : (
+                <>
+                  <div>
+                    <label className={FIELD_LABEL}>Audio bitrate</label>
+                    <SegmentedControl
+                      options={[
+                        { value: 128 as const, label: "128 kbps" },
+                        { value: 192 as const, label: "192 kbps" },
+                      ]}
+                      value={streamSettings.audioBitrateKbps}
+                      onChange={(v) => setStreamSettings({ audioBitrateKbps: v })}
+                    />
+                  </div>
+
+                  {/* Per-app audio exists only on the native capture path; the
+                      picker hides itself on macOS / the WebCodecs fallback. */}
+                  {canPickStreamAudioApps() && (
+                    <div>
+                      <label className={FIELD_LABEL}>Audio from</label>
+                      <StreamAudioAppPicker sourceId={pickedSourceId ?? undefined} />
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+          </div>
+        </div>
+
+        <div className="shrink-0 border-t border-border-divider px-5 py-3">
+          {error && (
+            <p className="mb-2 line-clamp-3 break-words text-[12px] text-error" title={error}>
+              {error}
+            </p>
+          )}
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 truncate text-[12px] text-text-muted">
+              {NEEDS_CUSTOM_PICKER && !pickedSourceId
+                ? "Pick a screen or window to share."
+                : null}
+            </p>
+            <button
+              onClick={handleClose}
+              className="rounded-sm border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleGoLive}
+              disabled={starting || (NEEDS_CUSTOM_PICKER && !pickedSourceId)}
+              className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-50 disabled:hover:bg-accent"
+            >
+              {starting ? "Starting..." : "Go Live"}
+            </button>
+          </div>
+        </div>
       </div>
     </div>,
     document.body,
+  );
+}
+
+const FIELD_LABEL =
+  "mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted";
+const GROUP_HEADING = "font-display text-[13px] font-semibold text-text-primary";
+
+/// The settings on/off switch. Put it inside a <label> to name it by the
+/// label's text, or pass `label` when it stands next to a heading.
+function Switch({
+  checked,
+  onToggle,
+  label,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={onToggle}
+      className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
+        checked
+          ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
+          : "border-border bg-bg-lighter"
+      }`}
+    >
+      <div
+        className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
+          checked ? "translate-x-[18px] bg-on-accent" : "translate-x-[3px] bg-text-muted"
+        }`}
+      />
+    </button>
   );
 }
 
@@ -510,11 +593,10 @@ function SourceGrid({
   const visible = tab === "screen" ? screens : windows;
 
   return (
-    <div className="px-5 py-5">
-      <p className="mb-3 font-display text-[14px] font-semibold text-text-primary">
-        Choose what to share
-      </p>
-      <div className="mb-3 flex rounded-md bg-bg-darkest p-[3px]">
+    // Stacked: a capped grid above the settings. Side by side (lg): the
+    // column fills the dialog's height and only the grid scrolls.
+    <div className="flex shrink-0 flex-col px-5 pt-5 pb-4 lg:min-w-0 lg:flex-1 lg:pb-5">
+      <div className="mb-3 flex shrink-0 rounded-md bg-bg-darkest p-[3px]">
         {([
           { value: "screen" as const, label: `Screens (${screens.length})` },
           { value: "window" as const, label: `Windows (${windows.length})` },
@@ -543,7 +625,7 @@ function SourceGrid({
           No {tab === "screen" ? "screens" : "windows"} available.
         </p>
       ) : (
-        <div className="grid max-h-[260px] grid-cols-2 gap-2.5 overflow-y-auto pr-1">
+        <div className="grid max-h-[260px] auto-rows-max grid-cols-2 content-start gap-2.5 overflow-y-auto pr-1 lg:max-h-none lg:min-h-0 lg:flex-1">
           {visible.map((s) => {
             const picked = pickedSourceId === s.id;
             return (
@@ -641,7 +723,7 @@ function CodecPicker() {
   return (
     <div>
       <label
-        className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted"
+        className={FIELD_LABEL}
         title="Forcing a codec prevents viewers without that decoder from watching this stream."
       >
         Codec

@@ -1104,6 +1104,26 @@ main / preload / renderer types). Verified: tsc web 0, `cargo test --lib`, napi 
 a live pass on the profile screen against a peer with keys, and on the Privacy tab's locked /
 not-set-up states.
 
+**Client: Go Live dialog no longer pushes its button off-screen (2026-09-29) ✅** — friends
+reported the Go Live button falling out of the window, worst since the stream-audio app picker
+landed. `CaptureSourcePicker` was a fixed 560 px centred box with no height cap or inner
+scroll: on Windows the source grid (≤260) + settings + the app list (≤200) came to ~1100 px,
+so on anything shorter the footer (and, since the box was centred, the top) left the window —
+reproduced in an isolated render at 1366 × 690 (button at y 782–822) and on a 1280 × 720 Linux
+window with the app picker. The dialog now has a pinned header ("Go live" + close) and
+footer (Cancel / Go Live, the start error, and the "pick a source" hint), with only the body
+scrolling (`max-h-full` inside a `p-6` overlay). On Windows at `lg`+ it goes side by side
+(≤1040 × 900): sources on the left, settings in a 480 px column on the right, each scrolling on
+its own; the grid pins `auto-rows-max`, because its cards are `overflow-hidden` and in a
+fixed-height grid their rows would otherwise shrink to fit and clip the titles. Settings are
+grouped: *Video* (resolution, frame rate, quality, codec, Show cursor) and *Audio*, where the
+Share-audio switch now heads the bitrate + "Audio from" controls it gates. The macOS / Linux
+"system dialog will appear" block is a compact one-line notice. Escape closes the dialog. Go Live logic
+untouched. Verified: tsc web 0; screenshots of the real component + stylesheet (stubbed
+bridge) at 1920 × 1040, 1366 × 690, 900 × 620, 800 × 600 (Windows) and 1280 × 720 / 800 × 600
+(Linux), dark and light, with Go Live on-screen in all of them. Open: a live Windows pass with
+real capture sources.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
