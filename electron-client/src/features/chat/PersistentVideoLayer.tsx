@@ -185,21 +185,25 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     const ro = new ResizeObserver(update);
     ro.observe(hostElement);
     if (scrollParent) ro.observe(scrollParent);
-    let frame = 0;
+    let settle = 0;
     const onScroll = () => {
       const [r, sr] = measure();
-      // Paint now so there is no lag; let React converge on the next
-      // frame with the same numbers, so a render landing mid-scroll
-      // can't reinstate a stale position.
+      // Paint now so there is no lag. React converges once the scroll
+      // settles: committing every frame re-rendered the whole player
+      // per scroll frame for as long as a video was active in the
+      // channel. A render mid-scroll can't reinstate a stale position —
+      // React only writes style keys whose value changed, and `pos`
+      // hasn't — and fullscreen exit re-applies `pos`, which is current
+      // by then.
       paint(r, sr);
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => commit(r, sr));
+      window.clearTimeout(settle);
+      settle = window.setTimeout(() => commit(r, sr), 150);
     };
     window.addEventListener("scroll", onScroll, { capture: true, passive: true });
     window.addEventListener("resize", update);
     return () => {
       ro.disconnect();
-      cancelAnimationFrame(frame);
+      window.clearTimeout(settle);
       window.removeEventListener("scroll", onScroll, { capture: true });
       window.removeEventListener("resize", update);
     };

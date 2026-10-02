@@ -109,14 +109,14 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
   setStatus: (pendingId, status) =>
     set((state) => {
       const existing = state.pendings[pendingId];
-      if (!existing) return {};
+      if (!existing) return state;
       return { pendings: { ...state.pendings, [pendingId]: { ...existing, status } } };
     }),
 
   updateProgress: (pendingId, transferredBytes) =>
     set((state) => {
       const existing = state.pendings[pendingId];
-      if (!existing) return {};
+      if (!existing) return state;
       // Throttle to ~10Hz per upload. The caller reports per 256KB
       // chunk, which on a fast link is hundreds of store commits per
       // second — every one re-rendering the progress UI for a bar the
@@ -126,7 +126,7 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
       const done =
         existing.totalBytes > 0 && transferredBytes >= existing.totalBytes;
       const last = lastProgressCommit.get(pendingId) ?? 0;
-      if (!done && now - last < 100) return {};
+      if (!done && now - last < 100) return state;
       lastProgressCommit.set(pendingId, now);
       return {
         pendings: {
@@ -139,7 +139,7 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
   markReady: (pendingId, attachmentId, kind, mime, filename) =>
     set((state) => {
       const existing = state.pendings[pendingId];
-      if (!existing) return {};
+      if (!existing) return state;
       return {
         pendings: {
           ...state.pendings,
@@ -159,7 +159,7 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
   markFailed: (pendingId, message, _cancelled) =>
     set((state) => {
       const existing = state.pendings[pendingId];
-      if (!existing) return {};
+      if (!existing) return state;
       return {
         pendings: {
           ...state.pendings,

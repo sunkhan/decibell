@@ -20,9 +20,10 @@ export default function ImageViewer() {
   // edge and the viewport edge. The bound shrinks with the image, so
   // zooming out slides a panned image back toward the middle and
   // reaches exactly (0, 0) — centered — once it fits. Reads the img's
-  // layout box (pre-transform), which is why the zoom effect below is
-  // post-layout: the box changes when zoom crosses 1 (the 90vw/90vh cap
-  // switches off).
+  // layout box (pre-transform), which is always the fitted 90vw/90vh box:
+  // zoom scales the fitted image. (Dropping the cap above 100% made the
+  // first zoom step jump a large photo from fit-to-screen to its natural
+  // size — a layout change, so un-animated, plus a full-res re-raster.)
   const clampPan = (p: { x: number; y: number }, z: number) => {
     const img = imgRef.current;
     if (!img) return p;
@@ -136,8 +137,8 @@ export default function ImageViewer() {
         style={{
           transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
           cursor: zoom > 1 ? "grab" : "zoom-in",
-          maxHeight: zoom <= 1 ? "90vh" : undefined,
-          maxWidth: zoom <= 1 ? "90vw" : undefined,
+          maxHeight: "90vh",
+          maxWidth: "90vw",
           transition: dragStart.current ? "none" : "transform 0.12s ease-out",
         }}
         className="select-none"

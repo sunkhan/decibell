@@ -289,6 +289,24 @@ interface ChatState {
   enforceChannelCacheSize: () => void;
 }
 
+/// The channel whose RealMessageList is mounted right now (set by
+/// ChatPanel), or null. Not store state: nothing renders off it, it only
+/// tells addMessage which slice keeps itself bounded (the mounted list trims
+/// by pixels via onOverflow) and which ones nobody is trimming.
+let displayedChannelKey: ChannelKey | null = null;
+export function setDisplayedChannelKey(key: ChannelKey | null): void {
+  displayedChannelKey = key;
+}
+
+/// Cap for a slice no list is trimming — a cached channel the user left, or
+/// the active one while another view is up. The community pushes every
+/// message of every viewable channel, so without it a busy channel grew
+/// without bound while unseen and switching back mounted the whole backlog
+/// in one commit (seconds of freeze) before the list trimmed it. Matches
+/// RealMessageList's MAX_ROWS so a revisit mounts no more than a normal
+/// visit does.
+const BACKGROUND_SLICE_CAP = 150;
+
 // Merge a new message into a channel's list, sorted by id ascending
 // and deduped by id. id=0 entries (optimistic bubbles) sit at the tail
 // since they have no stable cursor; on receipt of a real server
@@ -399,7 +417,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   scrollPositionsByChannel: {},
   chatViewSize: null,
   channelAccessOrder: [],
-  setOnlineUsers: (users) => set({ onlineUsers: users }),
+  // Central re-sends the whole global online list on every login/logout;
+  // keep the old array when nothing changed so its subscribers (DM panel,
+  // conversation list, profile popup) don't re-render for nothing.
+  setOnlineUsers: (users) =>
+    set((state) => {
+      const cur = state.onlineUsers;
+      if (cur.length === users.length && cur.every((u, i) => u === users[i])) return state;
+      return { onlineUsers: users };
+    }),
   setActiveServer: (serverId) => set({ activeServerId: serverId }),
   setActiveChannel: (channelId) =>
     set((state) => {
@@ -468,7 +494,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ pendingMembershipServerIds: new Set(ids) }),
   removePendingMembership: (id) =>
     set((state) => {
-      if (!state.pendingMembershipServerIds.has(id)) return {};
+      if (!state.pendingMembershipServerIds.has(id)) return state;
       const next = new Set(state.pendingMembershipServerIds);
       next.delete(id);
       return { pendingMembershipServerIds: next };
@@ -476,7 +502,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setServerPictureVersion: (serverId, version) =>
     set((state) => {
       const current = state.serverPictureVersions[serverId] ?? "";
-      if (current === version) return {};
+      if (current === version) return state;
       const nextVersions = {
         ...state.serverPictureVersions,
         [serverId]: version,
@@ -496,7 +522,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Drop fetches whose version is no longer current — a newer
       // server_picture_changed event invalidated this fetch before
       // it returned.
-      if (current !== version) return {};
+      if (current !== version) return state;
       return {
         serverPictures: { ...state.serverPictures, [serverId]: dataUrl },
       };
@@ -508,6 +534,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       for (const s of entries) {
         if (!byId.has(s.id)) byId.set(s.id, s);
       }
+      // Fires per community_auth_responded; a fresh array with the same
+      // servers re-rendered every `servers` subscriber for nothing.
+      if (byId.size === state.servers.length) return state;
       return { servers: Array.from(byId.values()) };
     }),
 
@@ -591,7 +620,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setMembersLoadingMore: (serverId, loading) =>
     set((state) => {
       const meta = state.memberRosterMeta[serverId];
-      if (!meta) return {};
+      if (!meta) return state;
       return { memberRosterMeta: { ...state.memberRosterMeta, [serverId]: { ...meta, loadingMore: loading } } };
     }),
 
@@ -659,11 +688,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // contiguous. It'll load when the user returns to present / pages down.
       // Optimistic sends (id=0) never reach here in that state: the composer
       // jumps to present before sending.
-      if (state.hasMoreAfter[key] && message.id !== 0) return {};
+      if (state.hasMoreAfter[key] && message.id !== 0) return state;
+      const existing = state.messagesByChannel[key];
+      if (key !== displayedChannelKey && message.id !== 0) {
+        // Never loaded and no fetch in flight: the first visit fetches the
+        // newest page anyway, so caching this one would only seed a slice
+        // nothing reads.
+        if (!existing && !state.historyLoading[key]) return state;
+        const merged = mergeMessage(existing ?? [], message);
+        if (merged.length > BACKGROUND_SLICE_CAP) {
+          const pos = state.scrollPositionsByChannel[key];
+          // Left scrolled up with no send in flight → go windowed, exactly
+          // like a tail trim: keep the slice (and the saved anchor) intact,
+          // drop the live message past the gap, and the return visit shows
+          // the jump-to-present pill. Never with an optimistic pending: its
+          // echo would be dropped too and the echo watchdog would withdraw a
+          // message that was actually delivered.
+          if (pos && !pos.atBottom && !merged.some((m) => m.id === 0)) {
+            return { hasMoreAfter: { ...state.hasMoreAfter, [key]: true } };
+          }
+          // Caught up (or a send in flight) → keep the newest rows;
+          // optimistics ride along at the tail.
+          return {
+            messagesByChannel: {
+              ...state.messagesByChannel,
+              [key]: merged.slice(merged.length - BACKGROUND_SLICE_CAP),
+            },
+            hasMoreHistory: { ...state.hasMoreHistory, [key]: true },
+          };
+        }
+        return {
+          messagesByChannel: { ...state.messagesByChannel, [key]: merged },
+        };
+      }
       return {
         messagesByChannel: {
           ...state.messagesByChannel,
-          [key]: mergeMessage(state.messagesByChannel[key] ?? [], message),
+          [key]: mergeMessage(existing ?? [], message),
         },
       };
     }),
@@ -735,8 +796,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => {
       const key = channelKey(serverId, channelId);
       const list = state.messagesByChannel[key];
-      if (!list || keep <= 0 || keep >= list.length) return {};
-      if (list.some((m) => m.id === 0)) return {};
+      if (!list || keep <= 0 || keep >= list.length) return state;
+      if (list.some((m) => m.id === 0)) return state;
       return {
         messagesByChannel: { ...state.messagesByChannel, [key]: list.slice(0, keep) },
         hasMoreAfter: { ...state.hasMoreAfter, [key]: true },
@@ -747,7 +808,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => {
       const key = channelKey(serverId, channelId);
       const list = state.messagesByChannel[key];
-      if (!list || keep <= 0 || keep >= list.length) return {};
+      if (!list || keep <= 0 || keep >= list.length) return state;
       return {
         messagesByChannel: {
           ...state.messagesByChannel,
@@ -818,9 +879,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => {
       const key = channelKey(serverId, channelId);
       const list = state.messagesByChannel[key];
-      if (!list) return {};
+      if (!list) return state;
       const next = list.filter((m) => m.id !== messageId);
-      if (next.length === list.length) return {};
+      if (next.length === list.length) return state;
       return {
         messagesByChannel: {
           ...state.messagesByChannel,
@@ -833,14 +894,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => {
       const key = channelKey(serverId, channelId);
       const list = state.messagesByChannel[key];
-      if (!list) return {};
+      if (!list) return state;
       let changed = false;
       const next = list.map((m) => {
         if (m.id !== messageId) return m;
         changed = true;
         return { ...m, content, editedAt, encrypted: encrypted || undefined, decryptError: decryptError || undefined };
       });
-      if (!changed) return {};
+      if (!changed) return state;
       return {
         messagesByChannel: { ...state.messagesByChannel, [key]: next },
       };
@@ -850,9 +911,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => {
       const key = channelKey(serverId, channelId);
       const list = state.messagesByChannel[key];
-      if (!list) return {};
+      if (!list) return state;
       const next = list.filter((m) => !(m.id === 0 && m.nonce === nonce));
-      if (next.length === list.length) return {};
+      if (next.length === list.length) return state;
       return {
         messagesByChannel: {
           ...state.messagesByChannel,
@@ -891,7 +952,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const key = channelKey(serverId, channelId);
       const bucket = state.pendingDeletions[key];
       const snap = bucket?.get(messageId);
-      if (!snap) return {};
+      if (!snap) return state;
       const existing = state.messagesByChannel[key] ?? [];
       const merged = mergeMessage(existing, snap);
       const nextBucket = new Map(bucket);
@@ -915,7 +976,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => {
       const key = channelKey(serverId, channelId);
       const bucket = state.pendingDeletions[key];
-      if (!bucket || !bucket.has(messageId)) return {};
+      if (!bucket || !bucket.has(messageId)) return state;
       const nextBucket = new Map(bucket);
       nextBucket.delete(messageId);
       const nextPending = { ...state.pendingDeletions };
@@ -963,7 +1024,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   enforceChannelCacheSize: () =>
     set((state) => {
       const cap = Math.max(1, useUiStore.getState().channelCacheSize || 10);
-      if (state.channelAccessOrder.length <= cap) return {};
+      if (state.channelAccessOrder.length <= cap) return state;
       // Always retain the active channel even if it's somehow not in
       // the top `cap` of the access order (defensive — shouldn't
       // happen since setActiveChannel reorders).
@@ -999,5 +1060,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
     })),
 
-  setChatViewSize: (size) => set({ chatViewSize: size }),
+  // Skips unchanged sizes: the panel's ResizeObserver fires on every
+  // composer reflow and sidebar-drag frame, and every image/video/link
+  // preview on screen re-renders off this value.
+  setChatViewSize: (size) =>
+    set((state) => {
+      const cur = state.chatViewSize;
+      if (cur === size) return state;
+      if (cur && size && cur.width === size.width && cur.height === size.height) return state;
+      return { chatViewSize: size };
+    }),
 }));

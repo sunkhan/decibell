@@ -220,6 +220,41 @@ function isVisuallyEmpty(root: HTMLElement): boolean {
 // Walk every text node (but not *inside* emoji atoms) and convert any matched
 // Unicode emoji / :shortcode: to atom img nodes. Returns true if anything
 // changed.
+// Cheap pre-check for tokenize: does any text node hold an emoji or a known
+// `:shortcode:`? The caret-sentinel round trip in handleInput is not free —
+// insertNode splits the caret's text node and leaves an empty one behind, and
+// the selection re-canonicalises across that growing run on every addRange.
+// Doing it on every keystroke made each input event slower than the last
+// (~25 ms per key ~500 keys into a message). Plain typing now never touches
+// the DOM or the selection.
+function hasTokenizable(root: HTMLElement): boolean {
+  const shortMap = getShortcodeMap();
+  let found = false;
+  (function walk(node: Node) {
+    if (found) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent ?? "";
+      if (!text) return;
+      if (emojiRegex().test(text)) {
+        found = true;
+        return;
+      }
+      if (!text.includes(":")) return;
+      for (const m of text.matchAll(SHORTCODE_RE)) {
+        if (shortMap.has(m[1].toLowerCase())) {
+          found = true;
+          return;
+        }
+      }
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = node as HTMLElement;
+      if (el.dataset.emoji) return;
+      for (const child of Array.from(el.childNodes)) walk(child);
+    }
+  })(root);
+  return found;
+}
+
 function tokenize(root: HTMLElement): boolean {
   const shortMap = getShortcodeMap();
   const textNodes: Text[] = [];
@@ -391,9 +426,11 @@ const RichInput = forwardRef<RichInputHandle, RichInputProps>(function RichInput
       notifyChange();
       return;
     }
-    const marker = insertCaretSentinel(el);
-    tokenize(el);
-    if (marker) restoreCaretFromSentinel(marker);
+    if (hasTokenizable(el)) {
+      const marker = insertCaretSentinel(el);
+      tokenize(el);
+      if (marker) restoreCaretFromSentinel(marker);
+    }
     // Normalize back to a single empty text node whenever the editor is
     // visually empty — strips padding <br>s and keeps a stable caret anchor.
     if (isVisuallyEmpty(el)) {

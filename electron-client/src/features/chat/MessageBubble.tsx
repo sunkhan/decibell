@@ -30,8 +30,10 @@ function attachmentPreviewLabel(kinds: AttachmentKind[]): string {
 
 // Inline edit box shown in place of a message's content. Plain textarea over
 // the raw wire string (MessageText re-renders it on save). Enter submits,
-// Shift+Enter inserts a newline, Escape cancels. Auto-sized + auto-focused
-// with the caret at the end.
+// Shift+Enter inserts a newline, Escape cancels. Auto-focused with the caret
+// at the end; auto-sized by `field-sizing: content` — the old JS sizing
+// (height=auto → read scrollHeight → write) forced a layout of the whole
+// message list on every keystroke.
 function InlineEditor({
   initialContent,
   onSubmit,
@@ -49,8 +51,6 @@ function InlineEditor({
     if (!el) return;
     el.focus();
     el.setSelectionRange(el.value.length, el.value.length);
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
   }, []);
 
   return (
@@ -58,11 +58,7 @@ function InlineEditor({
       <textarea
         ref={ref}
         value={value}
-        onChange={(e) => {
-          setValue(e.target.value);
-          e.target.style.height = "auto";
-          e.target.style.height = `${e.target.scrollHeight}px`;
-        }}
+        onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
@@ -74,7 +70,7 @@ function InlineEditor({
           }
         }}
         rows={1}
-        className="w-full resize-none rounded-md border border-border bg-bg-lighter px-3 py-2 text-body leading-body text-text-primary outline-none focus:border-accent"
+        className="field-sizing-content w-full resize-none rounded-md border border-border bg-bg-lighter px-3 py-2 text-body leading-body text-text-primary outline-none focus:border-accent"
       />
       <div className="mt-1 text-meta text-text-muted">
         escape to <button className="text-accent hover:underline" onClick={onCancel}>cancel</button>
@@ -89,18 +85,30 @@ function parseTimestamp(ts: string): Date {
   return isNaN(asEpoch) ? new Date(ts) : new Date(asEpoch * 1000);
 }
 
+// Shared formatters. toLocale*String with options builds a fresh ICU
+// formatter per call (~40 µs) — paid twice per row render, so a 150-row
+// mount or a history page spent milliseconds just formatting times.
+const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const DATE_FMT = new Intl.DateTimeFormat();
+
+function formatTime(ts: string): string {
+  const date = parseTimestamp(ts);
+  // format() throws on an Invalid Date where toLocaleTimeString didn't.
+  return isNaN(date.getTime()) ? "" : TIME_FMT.format(date);
+}
+
 function formatTimestamp(ts: string): string {
   const date = parseTimestamp(ts);
   if (isNaN(date.getTime())) return ts;
   const now = new Date();
-  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const time = TIME_FMT.format(date);
   if (date.toDateString() === now.toDateString()) return time;
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
   if (date.toDateString() === yesterday.toDateString()) {
     return `Yesterday, at ${time}`;
   }
-  return `${date.toLocaleDateString()}, at ${time}`;
+  return `${DATE_FMT.format(date)}, at ${time}`;
 }
 
 // Parsed-epoch cache keyed on message identity. shouldGroup runs in
@@ -254,7 +262,8 @@ function MessageBubble({
   const openContextMenu = useUiStore((s) => s.openContextMenu);
   // Server nickname (or the username when none / in DMs). Identity visuals
   // (avatar, name color) stay keyed on message.sender.
-  const displayName = useDisplayName(serverId, message.sender);
+  // Grouped rows never show the name, so they skip the roster lookup.
+  const displayName = useDisplayName(grouped ? null : serverId, message.sender);
   // Dev-only: log any post-mount height settle (a settle above the
   // viewport shifts content unless anchored — candidate glitch causes).
   const auditRef = useRowHeightAudit(message.id > 0 ? message.id : message.nonce ?? "?");
@@ -431,10 +440,7 @@ function MessageBubble({
       >
         <div className="flex w-[38px] shrink-0 items-baseline justify-end">
           <span className="font-meta text-meta font-normal leading-none tabular-nums text-text-muted opacity-0 group-hover:opacity-100">
-            {parseTimestamp(message.timestamp).toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
+            {formatTime(message.timestamp)}
           </span>
         </div>
         <div className={`select-text min-w-0 flex-1${message.pending ? " opacity-50" : ""}`}>

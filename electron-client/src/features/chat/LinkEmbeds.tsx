@@ -135,10 +135,16 @@ function ImageEmbed({
   const frameClass = standalone
     ? "mt-1 flex cursor-pointer items-center justify-center overflow-hidden rounded-lg border border-border bg-bg-secondary"
     : "mt-2 flex max-w-full cursor-pointer items-center justify-center overflow-hidden rounded-md bg-bg-secondary";
+  // "async" guarantees the row paints one frame before its pixels — an
+  // empty box flashing on every mount (channel switch, page-in) even with
+  // the bytes cached. Decode in the paint frame when the image is known to
+  // be small (picker GIFs are ~500 px); a big or unmeasured remote image
+  // stays async so it can't stall the frame.
+  const smallKnown = image.width > 0 && image.height > 0 && image.width * image.height <= 1_500_000;
   const imgProps = {
     src: image.url,
     alt: filename,
-    decoding: "async" as const,
+    decoding: (smallKnown ? "sync" : "async") as "sync" | "async",
     draggable: false,
     referrerPolicy: "no-referrer" as const,
     onError: fail,

@@ -6,11 +6,13 @@ import RealMessageList, {
 } from "./RealMessageList";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
-import { useChatStore } from "../../stores/chatStore";
+import { setDisplayedChannelKey, useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import { useDraftsStore } from "../../stores/draftsStore";
 import { channelKey } from "../../lib/channelKey";
+import { EMPTY_LIST } from "../../lib/empty";
+import { findMember } from "../../hooks/useDisplayName";
 import { toast } from "../../stores/toastStore";
 import MessageBubble, { shouldGroup } from "./MessageBubble";
 import { useTypeToFocusComposer } from "./useTypeToFocusComposer";
@@ -37,7 +39,29 @@ function formatRemaining(totalSec: number): string {
   if (s < 86400) return `${Math.ceil(s / 3600)}h`;
   return `${Math.ceil(s / 86400)}d`;
 }
-import type { GifResult, Message } from "../../types";
+import type { AttachmentKind, GifResult, Message } from "../../types";
+
+// Reply previews show the parent's attachment kinds. Mapped once per parent
+// object (messages are never mutated, only replaced) so a reply row gets the
+// same array on every render and memo(MessageBubble) holds — a fresh `.map`
+// re-rendered every reply row on every panel render.
+const attachmentKindsCache = new WeakMap<Message, AttachmentKind[]>();
+function attachmentKindsOf(m: Message): AttachmentKind[] {
+  let kinds = attachmentKindsCache.get(m);
+  if (!kinds) {
+    kinds = m.attachments.map((a) => a.kind);
+    attachmentKindsCache.set(m, kinds);
+  }
+  return kinds;
+}
+
+// Height of the composer card at rest (py-2 around a 54px card). The panel
+// sizes media against "panel minus header minus a resting composer" rather
+// than measuring the list area itself: the list shrinks with every composer
+// line, reply bar and preview, and on short windows that re-sized every
+// image/video/GIF box in the channel per keystroke.
+const COMPOSER_REST_PX = 70;
+const HEADER_PX = 48;
 
 // How many rows below the viewport's bottom edge before the "jump to
 // present" pill appears for a plain scroll-up (no jump window involved).
@@ -61,9 +85,24 @@ export default function ChatPanel() {
   const username = useAuthStore((s) => s.username);
   const activeServerId = useChatStore((s) => s.activeServerId);
   const activeChannelId = useChatStore((s) => s.activeChannelId);
-  const channelsByServer = useChatStore((s) => s.channelsByServer);
-  const messagesByChannel = useChatStore((s) => s.messagesByChannel);
-  const historyLoading = useChatStore((s) => s.historyLoading);
+  // Composite cache key — per-channel maps are namespaced by server
+  // (bare channel ids collide: every server has a "general").
+  const activeKey =
+    activeServerId && activeChannelId
+      ? channelKey(activeServerId, activeChannelId)
+      : null;
+  // Per-channel selectors, never whole maps: subscribing to all of
+  // messagesByChannel re-rendered this panel (and the whole list pass) for
+  // every message in every channel of every connected server.
+  const channel = useChatStore((s) =>
+    activeServerId && activeChannelId
+      ? s.channelsByServer[activeServerId]?.find((c) => c.id === activeChannelId) ?? null
+      : null,
+  );
+  const messages = useChatStore((s): Message[] =>
+    activeKey ? s.messagesByChannel[activeKey] ?? EMPTY_LIST : EMPTY_LIST,
+  );
+  const loading = useChatStore((s) => (activeKey ? s.historyLoading[activeKey] === true : false));
   const dragActive = useUiStore((s) => s.dragActive);
   const dragHoveredKey = useUiStore((s) => s.dragHoveredKey);
   const activeModal = useUiStore((s) => s.activeModal);
@@ -77,8 +116,8 @@ export default function ChatPanel() {
   // Timed out (MODERATE_MEMBERS): the server rejects sends; show why.
   const ownUsername = useAuthStore((s) => s.username);
   const timedOutUntil = useChatStore((s) =>
-    activeServerId
-      ? s.membersByServer[activeServerId]?.find((m) => m.username === ownUsername)?.timedOutUntil ?? 0
+    activeServerId && ownUsername
+      ? findMember(s.membersByServer, activeServerId, ownUsername)?.timedOutUntil ?? 0
       : 0,
   );
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
@@ -95,7 +134,6 @@ export default function ChatPanel() {
   const [pendingDeleteTarget, setPendingDeleteTarget] =
     useState<Message | null>(null);
 
-  const [draft, setDraft] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   // True while the user has scrolled more than JUMP_PILL_ROWS above the live
   // bottom — shows the jump-to-present pill even without a jump window.
@@ -135,7 +173,7 @@ export default function ChatPanel() {
   // outgoing one's before the cleanup reads it.
   const positionsRef = useRef<Record<string, ScrollState>>({});
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
-  const chatViewRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   // Stable per-message identity for row keys and scroll anchors.
   // Optimistic bubbles have id 0 and carry a client nonce instead.
@@ -148,16 +186,21 @@ export default function ChatPanel() {
   // AttachmentList can scale image/video previews proportionally to
   // the available space (sqrt-based, see attachmentSizing.ts). On
   // unmount we clear the size so the helpers fall back to fixed
-  // defaults instead of using a stale dimension.
+  // defaults instead of using a stale dimension. Measured on the panel
+  // root, less the header and a resting composer (see COMPOSER_REST_PX),
+  // so composer growth doesn't resize the channel's media.
   useLayoutEffect(() => {
-    const el = chatViewRef.current;
+    const el = panelRef.current;
     if (!el) return;
     const setSize = useChatStore.getState().setChatViewSize;
     // Round before publishing: the observer fires on sub-pixel
     // changes while a window is dragged, and every attachment on
     // screen recomputes its box off this value.
     const publish = (w: number, h: number) =>
-      setSize({ width: Math.round(w), height: Math.round(h) });
+      setSize({
+        width: Math.round(w),
+        height: Math.max(0, Math.round(h) - HEADER_PX - COMPOSER_REST_PX),
+      });
     const observer = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
@@ -174,42 +217,20 @@ export default function ChatPanel() {
     };
   }, []);
 
-  const channels = activeServerId ? channelsByServer[activeServerId] ?? [] : [];
-  const channel = channels.find((c) => c.id === activeChannelId) ?? null;
   const channelName = channel?.name ?? activeChannelId ?? null;
-  // Composite cache key — per-channel maps are namespaced by server
-  // (bare channel ids collide: every server has a "general").
-  const activeKey =
-    activeServerId && activeChannelId
-      ? channelKey(activeServerId, activeChannelId)
-      : null;
-  const messages = activeKey ? messagesByChannel[activeKey] ?? [] : [];
-  const loading = activeKey ? historyLoading[activeKey] === true : false;
   // "Windowed" = viewing a jumped slice with newer messages below (not at the
   // live bottom). Drives the jump-to-present pill, disables followOutput's
   // auto-scroll, and enables downward pagination via endReached.
-  const hasMoreAfterMap = useChatStore((s) => s.hasMoreAfter);
-  const windowed = activeKey ? hasMoreAfterMap[activeKey] === true : false;
+  const windowed = useChatStore((s) => (activeKey ? s.hasMoreAfter[activeKey] === true : false));
   const dropHoveredHere = dragHoveredKey === "active-input";
 
-  // Live "are there any non-failed pendings for this channel" — drives
-  // the send button's enabled state. Subscribing via a derived boolean
-  // (rather than reading getState() at render time) means the button
-  // re-evaluates the moment a queued upload is added or the moment
-  // the last pending is removed, no other render trigger required.
-  const hasLivePendings = useAttachmentsStore((s) => {
-    if (!activeServerId || !activeChannelId) return false;
-    for (const p of Object.values(s.pendings)) {
-      if (
-        p.serverId === activeServerId &&
-        p.channelId === activeChannelId &&
-        p.status !== "failed"
-      ) {
-        return true;
-      }
-    }
-    return false;
-  });
+  // The displayed channel keeps its own slice bounded (the list trims by
+  // pixels); addMessage caps every other one. See setDisplayedChannelKey.
+  useEffect(() => {
+    if (!activeKey) return;
+    setDisplayedChannelKey(activeKey);
+    return () => setDisplayedChannelKey(null);
+  }, [activeKey]);
 
 
   // Persist the outgoing channel's scroll state at the moment we leave
@@ -272,7 +293,6 @@ export default function ChatPanel() {
         ? useDraftsStore.getState().getChannelDraft(activeServerId, activeChannelId)
         : "";
     editorRef.current?.setValue(stored);
-    setDraft(stored);
   }, [activeServerId, activeChannelId]);
 
   // Scroll-up paginator, driven by RealMessageList's onNearTop — fired while
@@ -465,7 +485,6 @@ export default function ChatPanel() {
       pending: true,
     });
     editorRef.current?.clear();
-    setDraft("");
     setReplyingTo(null);
     useDraftsStore.getState().clearChannelDraft(serverId, channelId);
 
@@ -570,7 +589,6 @@ export default function ChatPanel() {
       useChatStore.getState().removeMessageByNonce(serverId, channelId, nonce);
       toast.error("Failed to send message");
       if (content) {
-        setDraft(content);
         editorRef.current?.setValue(content);
         useDraftsStore.getState().setChannelDraft(serverId, channelId, content);
       }
@@ -859,7 +877,10 @@ export default function ChatPanel() {
         !message.replyTo
       }
       serverId={activeServerId}
-      isLast={i === messages.length - 1}
+      // The last row fades in — but not our own echo: it replaces the
+      // optimistic bubble under a new key (nonce → id), so it remounts, and
+      // replaying the fade blinked a message that was already on screen.
+      isLast={i === messages.length - 1 && !(message.id > 0 && message.sender === username)}
       // Align avatar's left edge with the input bar card's
       // left edge: outer wrapper `px-3` = 12px from chat
       // panel's left. The card's rounded border starts there.
@@ -895,8 +916,10 @@ export default function ChatPanel() {
       }
       replyToAttachmentKinds={
         message.replyTo
-          ? messagesById.get(message.replyTo)?.attachments.map((a) => a.kind) ??
-            message.replyToAttachmentKinds
+          ? (() => {
+              const parent = messagesById.get(message.replyTo);
+              return parent ? attachmentKindsOf(parent) : message.replyToAttachmentKinds;
+            })()
           : undefined
       }
       onJumpToReply={jumpToMessage}
@@ -933,7 +956,7 @@ export default function ChatPanel() {
   }
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-bg-mid">
+    <div ref={panelRef} className="flex min-w-0 flex-1 flex-col bg-bg-mid">
       <div className="flex h-12 items-center border-b border-border-divider px-4 font-channel text-title font-emphasis tracking-title text-text-bright">
         <span className="mr-1.5 text-text-muted">#</span>
         <span className="truncate">{channelName}</span>
@@ -944,7 +967,7 @@ export default function ChatPanel() {
         ) : null}
       </div>
 
-      <div ref={chatViewRef} className="relative flex flex-1 flex-col overflow-hidden">
+      <div className="relative flex flex-1 flex-col overflow-hidden">
         {loading && messages.length === 0 ? (
           <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
             Loading history…
@@ -1032,7 +1055,7 @@ export default function ChatPanel() {
             dropHoveredHere
               ? "border-accent bg-accent-soft/50 animate-[dropTargetIn_0.18s_ease_both]"
               : dragActive
-                ? "border-transparent animate-[dropPulse_1.6s_ease-in-out_infinite]"
+                ? "border-transparent drop-pulse"
                 : "border-border"
           }`}
         >
@@ -1054,7 +1077,7 @@ export default function ChatPanel() {
               </button>
             </div>
           )}
-          <MessagePreview draft={draft} />
+          <DraftPreview serverId={activeServerId} channelId={activeChannelId} />
           <PendingAttachmentsRow />
           <div className="flex items-center gap-2.5">
             {dropHoveredHere && (
@@ -1090,7 +1113,9 @@ export default function ChatPanel() {
             <RichInput
               ref={editorRef}
               onChange={(value) => {
-                setDraft(value);
+                // The drafts store is the only owner of the draft: the
+                // preview and send button subscribe to it. Holding it in
+                // panel state re-rendered the whole message list per key.
                 if (activeServerId && activeChannelId)
                   useDraftsStore
                     .getState()
@@ -1138,16 +1163,11 @@ export default function ChatPanel() {
                   />
                 )}
               </div>
-              <button
-                onClick={handleSend}
-                disabled={!draft.trim() && !hasLivePendings}
-                className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-on-accent transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-                title="Send"
-              >
-                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-                </svg>
-              </button>
+              <SendButton
+                serverId={activeServerId}
+                channelId={activeChannelId}
+                onSend={handleSend}
+              />
             </div>
           </div>
         </div>
@@ -1164,5 +1184,49 @@ export default function ChatPanel() {
         }}
       />
     </div>
+  );
+}
+
+// The composer's draft-driven leaves. They subscribe to the drafts store
+// themselves so a keystroke re-renders them, not ChatPanel and its list.
+function DraftPreview({ serverId, channelId }: { serverId: string; channelId: string }) {
+  const draft = useDraftsStore((s) => s.channelDrafts[channelKey(serverId, channelId)] ?? "");
+  return <MessagePreview draft={draft} />;
+}
+
+function SendButton({
+  serverId,
+  channelId,
+  onSend,
+}: {
+  serverId: string;
+  channelId: string;
+  onSend: () => void;
+}) {
+  const hasDraft = useDraftsStore(
+    (s) => (s.channelDrafts[channelKey(serverId, channelId)] ?? "").trim() !== "",
+  );
+  // Live "are there any non-failed pendings for this channel" — a derived
+  // boolean, so the button re-evaluates the moment a queued upload is
+  // added or the last pending is removed.
+  const hasLivePendings = useAttachmentsStore((s) => {
+    for (const p of Object.values(s.pendings)) {
+      if (p.serverId === serverId && p.channelId === channelId && p.status !== "failed") {
+        return true;
+      }
+    }
+    return false;
+  });
+  return (
+    <button
+      onClick={onSend}
+      disabled={!hasDraft && !hasLivePendings}
+      className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-on-accent transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+      title="Send"
+    >
+      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+      </svg>
+    </button>
   );
 }

@@ -419,6 +419,13 @@ export function parseRichText(content: string): RichNode[] {
   return nodes;
 }
 
+/// Same parse, never cached — for transient strings (the composer's draft,
+/// a new string per keystroke) that would otherwise flush real messages'
+/// parses out of the shared FIFO.
+export function parseRichTextUncached(content: string): RichNode[] {
+  return parseRange(content, 0, content.length, 0);
+}
+
 /// True when parsing found no formatting at all — the message is one
 /// plain text run. Drives the jumbo-emoji path, which only applies to
 /// unformatted messages (Discord behaves the same way).

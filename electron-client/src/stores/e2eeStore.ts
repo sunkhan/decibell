@@ -59,7 +59,7 @@ export const useE2eeStore = create<E2eeState>((set) => ({
     set((state) => ({ changedPeers: { ...state.changedPeers, [username]: at } })),
   dismissPeerChange: (username) =>
     set((state) => {
-      if (!(username in state.changedPeers)) return {};
+      if (!(username in state.changedPeers)) return state;
       const next = { ...state.changedPeers };
       delete next[username];
       return { changedPeers: next };

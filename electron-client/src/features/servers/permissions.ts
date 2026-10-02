@@ -1,4 +1,5 @@
 import { useAuthStore } from "../../stores/authStore";
+import { findMember } from "../../hooks/useDisplayName";
 import { useChatStore } from "../../stores/chatStore";
 import type { ServerRole } from "../../types";
 
@@ -211,12 +212,16 @@ export function usePermission(serverId: string | null, perm: number): boolean {
   const roles = useChatStore((s) =>
     serverId ? s.rolesByServer[serverId] : undefined,
   );
-  const members = useChatStore((s) =>
-    serverId ? s.membersByServer[serverId] : undefined,
+  // Only my own member record: it keeps its identity across other members'
+  // presence deltas, so those no longer re-render every permission-gated
+  // component (the channel sidebar, the chat panel).
+  const me = useChatStore((s) =>
+    serverId && localUsername
+      ? findMember(s.membersByServer, serverId, localUsername)
+      : undefined,
   );
   if (!serverId || !localUsername) return false;
   if (!!owner && owner === localUsername) return true;
-  const me = members?.find((m) => m.username === localUsername);
   const perms = computeEffectivePermissions(roles, me?.roleIds);
   return hasBits(perms, perm);
 }

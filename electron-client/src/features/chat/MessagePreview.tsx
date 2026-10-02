@@ -5,21 +5,30 @@
 // MessageText the bubbles use, so what you see is exactly what will be
 // sent, code highlighting, KaTeX and all.
 //
-// Per-keystroke cost is fine by construction: parseRichText caches by
-// content string, and the highlight/KaTeX caches absorb the
-// intermediate states typed on the way to a finished block.
+// Kept off the keystroke's critical path: the preview renders from a
+// deferred copy of the draft, so a long code block re-highlighting can't
+// delay the typed character from painting — React renders it after, and
+// drops it if the next key arrives first. The "is it formatted?" check
+// parses uncached: every draft string is new, and caching them flushed
+// the shared parse cache that the message list relies on.
 
-import { useMemo, useState } from "react";
-import { parseRichText, hasFormatting } from "./richText";
+import { memo, useDeferredValue, useMemo, useState } from "react";
+import { parseRichTextUncached, hasFormatting } from "./richText";
 import MessageText from "./MessageText";
 
-export default function MessagePreview({ draft }: { draft: string }) {
+// Memoised so the urgent render (deferred value unchanged) skips it.
+const PreviewBody = memo(function PreviewBody({ content }: { content: string }) {
+  return <MessageText content={content} />;
+});
+
+export default function MessagePreview({ draft: liveDraft }: { draft: string }) {
   const [collapsed, setCollapsed] = useState(false);
+  const draft = useDeferredValue(liveDraft);
 
   const formatted = useMemo(() => {
     if (!draft) return false;
     // Autolinks alone don't count: a bare URL renders as itself.
-    return hasFormatting(parseRichText(draft));
+    return hasFormatting(parseRichTextUncached(draft));
   }, [draft]);
 
   if (!formatted) return null;
@@ -50,7 +59,7 @@ export default function MessagePreview({ draft }: { draft: string }) {
         // Same classes as the bubble content wrapper in MessageBubble,
         // so line wrapping and spacing match the sent result exactly.
         <div className="max-h-44 overflow-y-auto whitespace-pre-wrap break-all text-body leading-body text-text-primary [overflow-wrap:anywhere]">
-          <MessageText content={draft} />
+          <PreviewBody content={draft} />
         </div>
       )}
     </div>

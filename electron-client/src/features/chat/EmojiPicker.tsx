@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, memo, useCallback } from "react";
 import data from "@emoji-mart/data";
 import Twemoji from "../../components/emoji/Twemoji";
 import GifPicker from "./GifPicker";
@@ -116,6 +116,14 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef, onSendGif }
     saveTab(next);
   };
 
+  // Latest callbacks, read at call time: the parents pass inline closures,
+  // and depending on them re-subscribed the document listeners (and broke
+  // the grids' memo) on every parent render — each keystroke while open.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+
   // Close on outside click / Escape
   useEffect(() => {
     const handleMouseDown = (e: MouseEvent) => {
@@ -125,11 +133,11 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef, onSendGif }
         !containerRef.current.contains(target) &&
         !triggerRef?.current?.contains(target)
       ) {
-        onClose();
+        onCloseRef.current();
       }
     };
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     const id = window.setTimeout(() => {
       document.addEventListener("mousedown", handleMouseDown);
@@ -140,7 +148,7 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef, onSendGif }
       document.removeEventListener("mousedown", handleMouseDown);
       document.removeEventListener("keydown", handleEscape);
     };
-  }, [onClose, triggerRef]);
+  }, [triggerRef]);
 
   // Autofocus search when the emoji tab shows (GifPicker focuses its own).
   useEffect(() => {
@@ -164,14 +172,20 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef, onSendGif }
     return out;
   }, [trimmedSearch]);
 
-  const handlePick = (id: string) => {
+  // Identity-stable so memo(EmojiGrid) holds: hovering a cell (preview bar
+  // state up here) or crossing a category boundary re-rendered every
+  // hydrated cell — up to ~1,900 buttons.
+  const handlePick = useCallback((id: string) => {
     const native = nativeOf(id);
     if (!native) return;
-    onSelect(native);
-    const next = [id, ...recent.filter((x) => x !== id)].slice(0, RECENT_MAX);
-    setRecent(next);
-    saveRecent(next);
-  };
+    onSelectRef.current(native);
+    setRecent((prev) => {
+      const next = [id, ...prev.filter((x) => x !== id)].slice(0, RECENT_MAX);
+      saveRecent(next);
+      return next;
+    });
+  }, []);
+  const frequentIds = useMemo(() => recent.filter((id) => EMOJIS[id]), [recent]);
 
   // Observe which category section is currently in view
   useEffect(() => {
@@ -303,7 +317,7 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef, onSendGif }
                 emojiCount={recent.length}
               >
                 <EmojiGrid
-                  ids={recent.filter((id) => EMOJIS[id])}
+                  ids={frequentIds}
                   onPick={handlePick}
                   onHover={setHoveredEmoji}
                 />
@@ -457,7 +471,7 @@ function Section({
   );
 }
 
-function EmojiGrid({
+const EmojiGrid = memo(function EmojiGrid({
   ids,
   onPick,
   onHover,
@@ -488,4 +502,4 @@ function EmojiGrid({
       })}
     </div>
   );
-}
+});

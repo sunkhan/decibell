@@ -210,7 +210,7 @@ export const useDmStore = create<DmState>((set, get) => ({
       // message.id is truthy only for real (server-assigned) ids; 0 /
       // undefined are optimistic and handled by nonce reconciliation.
       if (message.id && existing?.messages.some((m) => m.id === message.id)) {
-        return {};
+        return state;
       }
       // While viewing a jumped/windowed slice (newer messages hidden below),
       // a live real-id DM belongs past the gap — drop it to keep the window
@@ -218,7 +218,7 @@ export const useDmStore = create<DmState>((set, get) => ({
       // No optimistic send reaches here in that state: the composer snaps to
       // present before sending.
       if (existing?.hasMoreAfter && typeof message.id === "number" && message.id > 0) {
-        return {};
+        return state;
       }
       const timestamp = parseInt(message.timestamp, 10);
       const time = isNaN(timestamp) ? Date.now() : timestamp * 1000;
@@ -432,7 +432,7 @@ export const useDmStore = create<DmState>((set, get) => ({
   appendNewerDm: (peer, messages, hasMoreNewer) =>
     set((state) => {
       const conv = state.conversations[peer];
-      if (!conv) return {};
+      if (!conv) return state;
       const existingIds = new Set<number>();
       for (const m of conv.messages) {
         if (typeof m.id === "number" && m.id > 0) existingIds.add(m.id);
@@ -490,8 +490,8 @@ export const useDmStore = create<DmState>((set, get) => ({
   trimDmTail: (peer, keep) =>
     set((state) => {
       const conv = state.conversations[peer];
-      if (!conv || keep <= 0 || keep >= conv.messages.length) return {};
-      if (conv.messages.some((m) => !(typeof m.id === "number" && m.id > 0))) return {};
+      if (!conv || keep <= 0 || keep >= conv.messages.length) return state;
+      if (conv.messages.some((m) => !(typeof m.id === "number" && m.id > 0))) return state;
       return {
         conversations: {
           ...state.conversations,
@@ -503,7 +503,7 @@ export const useDmStore = create<DmState>((set, get) => ({
   trimDmHead: (peer, keep) =>
     set((state) => {
       const conv = state.conversations[peer];
-      if (!conv || keep <= 0 || keep >= conv.messages.length) return {};
+      if (!conv || keep <= 0 || keep >= conv.messages.length) return state;
       return {
         conversations: {
           ...state.conversations,
@@ -519,8 +519,8 @@ export const useDmStore = create<DmState>((set, get) => ({
   markRead: (peer, upToId) =>
     set((state) => {
       const conv = state.conversations[peer];
-      if (!conv) return {};
-      if (upToId <= conv.lastReadId) return {};
+      if (!conv) return state;
+      if (upToId <= conv.lastReadId) return state;
       return {
         conversations: {
           ...state.conversations,
@@ -536,9 +536,9 @@ export const useDmStore = create<DmState>((set, get) => ({
   removeDmMessageByNonce: (peer, nonce) =>
     set((state) => {
       const conv = state.conversations[peer];
-      if (!conv) return {};
+      if (!conv) return state;
       const next = conv.messages.filter((m) => !(!m.id && m.nonce === nonce));
-      if (next.length === conv.messages.length) return {};
+      if (next.length === conv.messages.length) return state;
       const last = conv.lastMessage;
       return {
         conversations: {
@@ -556,9 +556,9 @@ export const useDmStore = create<DmState>((set, get) => ({
   removeDmMessage: (peer, messageId) =>
     set((state) => {
       const conv = state.conversations[peer];
-      if (!conv) return {};
+      if (!conv) return state;
       const next = conv.messages.filter((m) => m.id !== messageId);
-      if (next.length === conv.messages.length) return {};
+      if (next.length === conv.messages.length) return state;
       return {
         conversations: {
           ...state.conversations,
@@ -576,7 +576,7 @@ export const useDmStore = create<DmState>((set, get) => ({
   applyDmEdit: (peer, messageId, content, editedAt, encrypted, decryptError) =>
     set((state) => {
       const conv = state.conversations[peer];
-      if (!conv) return {};
+      if (!conv) return state;
       let changed = false;
       const patch = {
         content,
@@ -589,7 +589,7 @@ export const useDmStore = create<DmState>((set, get) => ({
         changed = true;
         return { ...m, ...patch };
       });
-      if (!changed) return {};
+      if (!changed) return state;
       return {
         conversations: {
           ...state.conversations,
@@ -631,7 +631,7 @@ export const useDmStore = create<DmState>((set, get) => ({
       const next = new Map(bucket);
       next.set(messageId, snap);
       const updatedConv = s.conversations[peer];
-      if (!updatedConv) return {};
+      if (!updatedConv) return s;
       const remaining = updatedConv.messages.filter((m) => m.id !== messageId);
       return {
         pendingDmDeletions: {
@@ -658,9 +658,9 @@ export const useDmStore = create<DmState>((set, get) => ({
     set((state) => {
       const bucket = state.pendingDmDeletions[peer];
       const snap = bucket?.get(messageId);
-      if (!snap) return {};
+      if (!snap) return state;
       const conv = state.conversations[peer];
-      if (!conv) return {};
+      if (!conv) return state;
       // Re-insert by id ascending. messages are stored oldest-first;
       // linear scan is fine (50-200 messages typically).
       const restored: DmMessage[] = [];
@@ -696,7 +696,7 @@ export const useDmStore = create<DmState>((set, get) => ({
   clearPendingDmDeletion: (peer, messageId) =>
     set((state) => {
       const bucket = state.pendingDmDeletions[peer];
-      if (!bucket || !bucket.has(messageId)) return {};
+      if (!bucket || !bucket.has(messageId)) return state;
       const nextBucket = new Map(bucket);
       nextBucket.delete(messageId);
       const nextPending = { ...state.pendingDmDeletions };

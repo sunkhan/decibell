@@ -28,7 +28,7 @@ import RichInput, { type RichInputHandle } from "../../components/editor/RichInp
 import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
 import EncryptionBadge from "../e2ee/EncryptionBadge";
 import DmEncryptionBanner from "../e2ee/DmEncryptionBanner";
-import type { DmMessage, GifResult, Message } from "../../types";
+import type { Attachment, DmMessage, GifResult, Message } from "../../types";
 
 // Canonical reject strings the central server echoes back as a DM
 // from us-to-us. Pattern-matched here so we can render them as a
@@ -58,11 +58,50 @@ function syntheticKey(m: object): string {
   return k;
 }
 
+// DmMessage → the Message shape MessageBubble takes, once per store object.
+// The store never mutates a message (it replaces the ones that change), so
+// the adapted object is stable across renders and memo(MessageBubble) holds.
+// Mapping the whole list with fresh objects re-rendered every mounted bubble
+// on each incoming DM, send, echo, history page and sliding-window trim.
+const NO_ATTACHMENTS: Attachment[] = [];
+const bubbleCache = new WeakMap<DmMessage, Message>();
+function toBubble(m: DmMessage): Message {
+  let b = bubbleCache.get(m);
+  if (!b) {
+    b = {
+      ...m,
+      // Preserve the real server-assigned id when present (persistent DMs)
+      // — the delete flow keys on it. Legacy / synthetic preview entries
+      // fall back to 0 and the trash icon won't appear for those, which is
+      // correct (nothing to delete).
+      id: typeof m.id === "number" ? m.id : 0,
+      // Optimistic rows key by their send nonce; legacy id-less rows get a
+      // synthetic key (see syntheticKey) so row keys and scroll anchors are
+      // never index-based.
+      nonce: typeof m.id === "number" && m.id > 0 ? undefined : m.nonce ?? syntheticKey(m),
+      channelId: "",
+      attachments: NO_ATTACHMENTS,
+    };
+    bubbleCache.set(m, b);
+  }
+  return b;
+}
+
 export default function DmChatPanel() {
   const activeDmUser = useDmStore((s) => s.activeDmUser);
-  const conversations = useDmStore((s) => s.conversations);
-  const friends = useFriendsStore((s) => s.friends);
-  const onlineUsers = useChatStore((s) => s.onlineUsers);
+  // The active conversation only: subscribing to the whole map re-rendered
+  // this panel (and its list pass) on every other conversation's traffic.
+  const conversation = useDmStore((s) =>
+    activeDmUser ? s.conversations[activeDmUser] : undefined,
+  );
+  // Booleans, not the friend list / central's global online list, so a
+  // presence broadcast about someone else doesn't re-render the panel.
+  const friendOnline = useFriendsStore((s) =>
+    s.friends.some((f) => f.username === activeDmUser && f.status === "online"),
+  );
+  const peerOnline = useChatStore((s) =>
+    activeDmUser ? s.onlineUsers.includes(activeDmUser) : false,
+  );
 
   const localUsername = useAuthStore((s) => s.username);
   const dmFriendsPanelVisible = useUiStore((s) => s.dmFriendsPanelVisible);
@@ -83,8 +122,11 @@ export default function DmChatPanel() {
     activeDmUser ? s.conversations[activeDmUser]?.messages.length ?? 0 : 0,
   );
   const theaterUnread = theaterActive ? Math.max(0, dmMessageCount - theaterBaseline) : 0;
-  const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  // Sends chain so they reach central in the order they were typed — the
+  // composer stays editable while one is in flight, and a send can wait on
+  // the peer's key fetch.
+  const sendChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const [sendError, setSendError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pendingDeleteTarget, setPendingDeleteTarget] =
@@ -213,9 +255,6 @@ export default function DmChatPanel() {
   // Type anywhere in the conversation to start composing; ArrowUp edits latest.
   useTypeToFocusComposer(editorRef, editLatestOwn);
 
-  const conversation = activeDmUser
-    ? conversations[activeDmUser]
-    : null;
   const messages = conversation?.messages ?? [];
   // "Windowed" = viewing a jumped slice with newer messages below (not at the
   // live bottom). Drives the jump-to-present pill, followOutput gating, and
@@ -253,39 +292,16 @@ export default function DmChatPanel() {
     if (presentLoading && messages.length > 0) setPresentLoading(false);
   }, [presentLoading, messages.length]);
 
-  // Map DmMessages to Message shape for MessageBubble compatibility.
-  // Preserve the real server-assigned id when present (persistent-DMs)
-  // — the delete flow keys on it. Legacy / synthetic preview entries
-  // (pre-persistence DMs) fall back to 0 and the trash icon won't
-  // appear for those, which is correct (nothing to delete).
-  // Memoized: this used to rebuild (and re-allocate) the whole array
-  // on every render — keystrokes included — not just message changes.
-  // Optimistic rows key by their send nonce; legacy id-less rows get a
-  // synthetic key (see syntheticKey) so row keys and scroll anchors are
-  // never index-based.
+  // Optimistic rows key by their send nonce; legacy id-less rows carry a
+  // synthetic nonce (see toBubble).
   const messageKey = useCallback(
     (m: { id: number; nonce?: string }) => (m.id > 0 ? m.id : m.nonce ?? ""),
     [],
   );
 
-  const bubbleMessages = useMemo(
-    () =>
-      messages.map((m) => ({
-        ...m,
-        id: typeof m.id === "number" ? m.id : 0,
-        nonce: typeof m.id === "number" && m.id > 0 ? undefined : m.nonce ?? syntheticKey(m),
-        channelId: "",
-        attachments: [],
-      })),
-    [messages],
-  );
+  const bubbleMessages = useMemo(() => messages.map(toBubble), [messages]);
 
-  const friend = activeDmUser
-    ? friends.find((f) => f.username === activeDmUser)
-    : null;
-  const isOnline =
-    friend?.status === "online" ||
-    (activeDmUser ? onlineUsers.includes(activeDmUser) : false);
+  const isOnline = friendOnline || peerOnline;
 
   // Restore draft on conversation switch.
   useEffect(() => {
@@ -295,7 +311,6 @@ export default function DmChatPanel() {
       ? useDraftsStore.getState().dmDrafts[activeDmUser] ?? ""
       : "";
     editorRef.current?.setValue(stored);
-    setInput(stored);
   }, [activeDmUser]);
 
   // On switching to a peer, pull the latest page of history IF we
@@ -426,10 +441,7 @@ export default function DmChatPanel() {
   // the panel for a peer and there are unread messages with a real
   // id. Optimistically zeroes the unread count locally; server call
   // is fire-and-forget.
-  const conversationForActive = activeDmUser
-    ? conversations[activeDmUser]
-    : undefined;
-  const messagesLenForMarkRead = conversationForActive?.messages.length ?? 0;
+  const messagesLenForMarkRead = conversation?.messages.length ?? 0;
   useEffect(() => {
     if (!activeDmUser) return;
     const conv = useDmStore.getState().conversations[activeDmUser];
@@ -475,7 +487,7 @@ export default function DmChatPanel() {
   }, []);
 
   const handleSend = async () => {
-    const value = editorRef.current?.getValue() ?? input;
+    const value = editorRef.current?.getValue() ?? "";
     if (!value.trim() || !activeDmUser) return;
     // Sending while viewing a jumped slice would drop the new message past a
     // hidden gap (addDmMessage guards against it). Snap to present first and
@@ -506,29 +518,46 @@ export default function DmChatPanel() {
         true,
       );
     }
-    try {
-      await invoke("send_private_message", {
+    // Clear now, like ChatPanel: the composer stays editable while the send
+    // is in flight (sealing can wait on a key fetch from central), so
+    // nothing typed meanwhile is lost and the sent text doesn't linger next
+    // to its own bubble. The text comes back on failure.
+    editorRef.current?.clear();
+    useDraftsStore.getState().clearDmDraft(peer);
+    setPickerOpen(false);
+    setReplyingTo(null);
+    const run = sendChainRef.current.then(() =>
+      invoke("send_private_message", {
         recipient: peer,
         message: content,
         replyTo: replyToId,
         nonce,
-      });
+      }),
+    );
+    sendChainRef.current = run.catch(() => {});
+    try {
+      await run;
       watchDmEcho(peer, nonce);
-      editorRef.current?.clear();
-      setInput("");
-      useDraftsStore.getState().clearDmDraft(peer);
-      setPickerOpen(false);
-      setReplyingTo(null);
     } catch (err) {
       useDmStore.getState().removeDmMessageByNonce(peer, nonce);
       setSendError(String(err));
+      // Restore the text unless something new was typed since.
+      const drafts = useDraftsStore.getState();
+      if (!(drafts.dmDrafts[peer] ?? "").trim()) {
+        drafts.setDmDraft(peer, content);
+        if (useDmStore.getState().activeDmUser === peer) {
+          editorRef.current?.setValue(content);
+        }
+      }
     } finally {
       setSending(false);
     }
   };
 
   const handleInputChange = (value: string) => {
-    setInput(value);
+    // The drafts store is the only owner of the draft: the preview and the
+    // send button subscribe to it, so a keystroke doesn't re-render the
+    // panel and its message list.
     if (activeDmUser) {
       useDraftsStore.getState().setDmDraft(activeDmUser, value);
     }
@@ -560,13 +589,17 @@ export default function DmChatPanel() {
         true,
       );
     }
-    try {
-      await invoke("send_private_message", {
+    const run = sendChainRef.current.then(() =>
+      invoke("send_private_message", {
         recipient: peer,
         message: gif.url,
         replyTo: replyToId,
         nonce,
-      });
+      }),
+    );
+    sendChainRef.current = run.catch(() => {});
+    try {
+      await run;
       watchDmEcho(peer, nonce);
     } catch (err) {
       useDmStore.getState().removeDmMessageByNonce(peer, nonce);
@@ -966,14 +999,13 @@ export default function DmChatPanel() {
               </button>
             </div>
           )}
-          <MessagePreview draft={input} />
+          <DmDraftPreview peer={activeDmUser} />
           <div className="flex items-center gap-2.5">
           <RichInput
             ref={editorRef}
             onChange={handleInputChange}
             onEnter={handleSend}
             onArrowUpEmpty={editLatestOwn}
-            disabled={sending}
             placeholder={`Message @${activeDmUser}`}
             className="flex-1 bg-transparent text-sm leading-snug text-text-primary"
             maxHeight={160}
@@ -1011,15 +1043,7 @@ export default function DmChatPanel() {
                 />
               )}
             </div>
-            <button
-              onClick={handleSend}
-              disabled={sending || !input.trim()}
-              className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-sm bg-accent text-on-accent transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-              </svg>
-            </button>
+            <DmSendButton peer={activeDmUser} sending={sending} onSend={handleSend} />
           </div>
           </div>
         </div>
@@ -1038,5 +1062,35 @@ export default function DmChatPanel() {
         }}
       />
     </div>
+  );
+}
+
+// Draft-driven leaves: they subscribe to the drafts store themselves so a
+// keystroke re-renders them, not the panel and its message list.
+function DmDraftPreview({ peer }: { peer: string }) {
+  const draft = useDraftsStore((s) => s.dmDrafts[peer] ?? "");
+  return <MessagePreview draft={draft} />;
+}
+
+function DmSendButton({
+  peer,
+  sending,
+  onSend,
+}: {
+  peer: string;
+  sending: boolean;
+  onSend: () => void;
+}) {
+  const hasDraft = useDraftsStore((s) => (s.dmDrafts[peer] ?? "").trim() !== "");
+  return (
+    <button
+      onClick={onSend}
+      disabled={sending || !hasDraft}
+      className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-sm bg-accent text-on-accent transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+      </svg>
+    </button>
   );
 }

@@ -152,7 +152,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       // Bail early if the requested state matches what we have — keeps
       // the Set ref stable so per-row subscribers don't churn on a
       // no-op event (the wire fires speaking-stop/start frequently).
-      if (has === speaking) return {};
+      if (has === speaking) return state;
       const next = new Set(state.speakingUsers);
       if (speaking) next.add(username);
       else next.delete(username);
