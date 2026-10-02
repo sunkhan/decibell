@@ -1124,6 +1124,64 @@ bridge) at 1920 × 1040, 1366 × 690, 900 × 620, 800 × 600 (Windows) and 1280 
 (Linux), dark and light, with Go Live on-screen in all of them. Open: a live Windows pass with
 real capture sources.
 
+**Client: smoothness pass — re-renders, typing latency, paint, main-thread stalls (2026-10-02) ✅** —
+six parallel read-only audits of the client (stores/subscriptions, chat surface, composer + pickers,
+voice/stream/call UI, CSS/paint + sidebars, main process/IPC/native events), every finding re-read
+against source before fixing. What was jank and what changed:
+*Chat.* (1) Every channel's live messages were appended forever while unseen (the community pushes
+all viewable channels), so returning to a busy channel mounted the whole backlog in one commit before
+the list trimmed it. `addMessage` now drops live messages for never-loaded channels and caps every
+slice no list is trimming at 150 (`setDisplayedChannelKey` marks the mounted one); a channel left
+scrolled up goes windowed instead (anchor kept, jump-to-present pill), never with a send in flight
+(the echo watchdog would withdraw a delivered message). (2) `ChatPanel` subscribed to whole maps
+(`messagesByChannel`, `historyLoading`, `hasMoreAfter`, `channelsByServer`) and held the draft in
+state, so any message anywhere and every keystroke re-rendered the panel and the list pass; it now
+selects per channel, and the preview + send button subscribe to `draftsStore` themselves. Same for
+`DmChatPanel`, whose row adapter also rebuilt every bubble object per change (now a per-message
+WeakMap), and whose composer was disabled during a send (keystrokes lost) — it now clears up front
+and chains sends in order. (3) Reply rows got a fresh `.map` array per render (memo defeated);
+`toLocaleTimeString` with options built an ICU formatter per row (~40 µs × 2); `useDisplayName` ran a
+roster `find` per row per store write (now a WeakMap index, also used by `usePermission` and the
+timeout check); own-message echoes re-ran the fade-in on remount (blink); media boxes re-sized on
+composer growth (the view size is now panel − header − resting composer); link-preview images decoded
+async (empty frame per mount; small known ones decode sync); the persistent video committed React
+state every scroll frame (now on settle); the image viewer dropped its fit cap at the first zoom step
+(a 4K photo jumped to natural size — zoom is now × fit); the inline editor forced a layout per key
+(`field-sizing: content`). *Composer.* `RichInput` inserted a caret sentinel on every input event and
+left an empty text node behind each time, so each keystroke got slower than the last (~25 ms/key ~500
+keys in, measured); tokenizing is now gated on a cheap emoji/shortcode pre-check. The live preview
+renders from `useDeferredValue` and parses uncached; emoji grids are memoised (hover re-rendered up to
+~1,900 cells). *Chrome.* `dropPulse` animated `box-shadow` (main-thread repaint per frame) on the
+"Update ready" dot — on screen for days — and on every channel row + composer during a file drag; it
+is now `.drop-pulse`, a static glow on `::after` whose opacity breathes (composited). Modal cards
+transition only opacity/transform; the root no longer fades the palette swap; two full-viewport
+`backdrop-blur` scrims are plain; `MembersList` / `ConversationSidebar` rows are memoised with narrow
+selectors; `VoiceRow` subscribes to its own presence; the window-title hook no longer re-renders
+`MainLayout`; the Sentry tag no longer re-serialises the scope to main on every chatStore write;
+avatar versions are batched and avatars pre-decode; no-op store updates return `state` (zustand
+notifies on `{}`). *Streams / voice / main.* The native→JS stream queue leaked every dropped frame
+(napi-rs 2 boxes the value before `napi_call_threadsafe_function` and never frees it on QueueFull —
+`send_stream_frame` now reserves a slot first) and dropped frames left the decoder smearing until the
+next IDR (a `discontinuity` flag now makes the player gate + request a keyframe). Frames nobody displays
+— own self-preview, watched-but-hidden streams — no longer cross native → main → IPC (`set_stream_frame_sink`,
+mirrored from the preload's subscriptions). After "Back" the persistent player stopped painting into a
+hidden full-res canvas. Renderer-encoded frames are sealed + packetised + sent on a `decibell-video-send`
+thread instead of the Electron main thread (and the Windows WebCodecs fallback now actually sends video —
+`send_video_frame` was still a Windows no-op). `probe_native_encoders` runs off the main thread;
+`voice_input_level` is only emitted while Settings → Audio is open; the Go Live picker polls every 5 s with
+JPEG thumbnails for the active tab and cached icons; the titlebar no longer round-trips `isMaximized()` per
+resize step; encrypted-attachment ranges are capped at 4 MiB (an open-ended `bytes=0-` decrypted the whole
+file on main); per-request main-process logs are dev-only; speaking rings no longer animate `box-shadow`;
+VoicePanel / CallStage / mini-player re-render only what changed (ping, thumbnails, 1 s call tick,
+resize drag). Verified: tsc web 0 / node 0, `napi build`, `cargo test --lib` 160 (one new), vite build.
+Windows-only Rust (encoder-thread sink check, async probe) is mechanical — Windows Native Check before
+the next `ev*` tag. Open (live): two watched streams + Back; native self-preview resume (Linux NVENC,
+Windows); a stalled renderer recovering via `discontinuity`; renderer-encode shedding; the Windows picker;
+the Windows WebCodecs fallback stream; encrypted-channel video open + seek with the 4 MiB window; Audio-tab
+meter in voice; a busy background channel → switch back (cap + windowed return). Not done (noted): save-as
+still moves the file through IPC twice (stream it in main); CL1 (voice presence keyed by bare channelId)
+still open.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
