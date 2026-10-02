@@ -68,7 +68,21 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
     // Linux-only: renderer opted into native encoding. Drives whether we
     // defer engine storage to attach the capture pipeline after the lock.
     let native_linux = cfg!(target_os = "linux") && args.native_encode.unwrap_or(false);
-    let (announce, deferred_engine) = {
+    // Windows native: resolve the hardware encoder list BEFORE taking the
+    // AppState lock. The probe test-opens NVENC/AMF sessions (hundreds of
+    // ms) — it ran under the lock on every Go Live before; now it's cached
+    // process-wide and only probes (off the runtime) on a cache miss.
+    #[cfg(target_os = "windows")]
+    let native_caps = if args.native_encode.unwrap_or(true) {
+        Some(
+            tokio::task::spawn_blocking(cached_native_encoder_caps)
+                .await
+                .map_err(|e| napi::Error::from_reason(format!("encoder probe failed: {e}")))?,
+        )
+    } else {
+        None
+    };
+    let (announce, deferred_engine, session_id) = {
         let mut s = state_arc.lock().await;
         if s.video_engine.is_some() {
             return Err(napi::Error::from_reason("Already sharing screen"));
@@ -143,6 +157,15 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
         };
 
         let mut engine = VideoEngine::start(media_socket, sender_id, self_username, mls_ring.clone());
+        let session_id = engine.session_id();
+        // Remember where the stream is announced so a later stop without
+        // ids (main process, after a renderer reload/crash) can still tell
+        // the community. A DM call has no community target.
+        if !in_call {
+            if let (Some(server_id), Some(channel_id)) = (&args.server_id, &args.channel_id) {
+                engine.set_announce_target(Some((server_id.clone(), channel_id.clone())));
+            }
+        }
 
         // Windows: spin up the native capture + encoder pipeline. The
         // renderer never calls send_video_frame on Windows — capture
@@ -159,16 +182,15 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
         // fallback streams without audio — degradation, not a blocker.
         // None defaults to true so older callers keep the native path.
         #[cfg(target_os = "windows")]
-        if args.native_encode.unwrap_or(true) {
+        if let Some(caps) = native_caps {
             let source_id = args.source_id.as_deref().ok_or_else(|| {
                 napi::Error::from_reason("source_id required on Windows")
             })?;
             // Resolve the requested codec to a working FFmpeg encoder
-            // name via the native probe. initial_codec=0 means "auto" —
-            // pick the first HW encoder available (whatever NVENC/AMF
-            // gave us). Otherwise honour the user's pick; error if the
-            // probe didn't see that codec as available.
-            let caps = crate::media::encoder_probe::run(read_primary_gpu_vendor_id());
+            // name via the (cached) native probe. initial_codec=0 means
+            // "auto" — pick the first HW encoder available (whatever
+            // NVENC/AMF gave us). Otherwise honour the user's pick; error
+            // if the probe didn't see that codec as available.
             if caps.is_empty() {
                 return Err(napi::Error::from_reason(
                     "No hardware encoder available — install your GPU's video drivers",
@@ -244,10 +266,10 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
         // the portal dialog blocks on the user — so defer storing the
         // engine. Every other path stores it here under the lock.
         if native_linux {
-            (announce, Some(engine))
+            (announce, Some(engine), session_id)
         } else {
             s.video_engine = Some(engine);
-            (announce, None)
+            (announce, None, session_id)
         }
     };
 
@@ -347,10 +369,39 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
     let Some((write_tx, data)) = announce else {
         return Ok(());
     };
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
+    let announce_err = match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => return Ok(()),
+        Ok(Err(_)) => "Connection closed",
+        Err(_) => "Send timed out",
+    };
+    // The announce failed after the engines were stored: the caller sees an
+    // error (and may fall back to the renderer path), so take this
+    // session's engines back out — otherwise the retry hits "Already
+    // sharing screen" while a live native capture keeps running unseen.
+    discard_session_engines(session_id).await;
+    Err(napi::Error::from_reason(announce_err))
+}
+
+/// Remove the video engine (and the stream-audio engine started with it)
+/// from AppState if it still belongs to `session_id`, and drop them off the
+/// async runtime — dropping joins the native capture/encode threads.
+async fn discard_session_engines(session_id: u64) {
+    let (video, audio) = {
+        let state_arc = state::shared();
+        let mut s = state_arc.lock().await;
+        if s.video_engine.as_ref().map(|v| v.session_id()) == Some(session_id) {
+            (s.video_engine.take(), s.audio_stream_engine.take())
+        } else {
+            (None, None)
+        }
+    };
+    if video.is_some() || audio.is_some() {
+        // Detached: the error goes back to the renderer now, not after the
+        // (bounded) thread joins.
+        tokio::task::spawn_blocking(move || {
+            drop(video);
+            drop(audio);
+        });
     }
 }
 
@@ -391,15 +442,24 @@ pub async fn stop_screen_share(args: StopScreenShareArgs) -> napi::Result<()> {
         let was_streaming = s.video_engine.is_some();
         let video = s.video_engine.take();
         let audio = s.audio_stream_engine.take();
+        // Explicit ids win (unchanged behaviour). Without ids — the main
+        // process stopping an orphaned share after a renderer reload/crash
+        // — fall back to the channel the stream was announced in. A DM-call
+        // stream has no target and no community to notify.
+        let target: Option<(String, String)> = match args.server_id.clone() {
+            Some(server_id) => Some((server_id, args.channel_id.clone().unwrap_or_default())),
+            None => video
+                .as_ref()
+                .and_then(|v| v.announce_target())
+                .map(|(sid, cid)| (sid.to_string(), cid.to_string())),
+        };
         let send = if was_streaming && s.active_call.is_none() {
-            args.server_id.as_deref().and_then(|server_id| {
-                s.communities.get(server_id).and_then(|client| {
+            target.and_then(|(server_id, channel_id)| {
+                s.communities.get(&server_id).and_then(|client| {
                     client.connection_write_tx().map(|tx| {
                         let pkt = build_packet(
                             packet::Type::StopStreamReq,
-                            packet::Payload::StopStreamReq(StopStreamRequest {
-                                channel_id: args.channel_id.clone().unwrap_or_default(),
-                            }),
+                            packet::Payload::StopStreamReq(StopStreamRequest { channel_id }),
                             Some(&client.jwt),
                         );
                         (tx, pkt)
@@ -459,7 +519,7 @@ pub struct MoveStreamToChannelArgs {
 pub async fn move_stream_to_channel(args: MoveStreamToChannelArgs) -> napi::Result<()> {
     let state_arc = state::shared();
     let send = {
-        let s = state_arc.lock().await;
+        let mut s = state_arc.lock().await;
 
         if s.video_engine.is_none() {
             return Err(napi::Error::from_reason("Not currently streaming"));
@@ -483,6 +543,10 @@ pub async fn move_stream_to_channel(args: MoveStreamToChannelArgs) -> napi::Resu
         // Re-point stream audio too (present only when sharing audio).
         if let Some(audio) = s.audio_stream_engine.as_ref() {
             audio.set_socket(voice_socket);
+        }
+        // A later stop without ids must notify the NEW channel.
+        if let Some(video) = s.video_engine.as_mut() {
+            video.set_announce_target(Some((args.server_id.clone(), args.channel_id.clone())));
         }
 
         // Announce the stream in the new channel — the old channel's stream was
@@ -956,6 +1020,48 @@ pub struct NativeEncoderCap {
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 static PROBE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Process-wide result of the last successful Windows encoder probe,
+/// shared by `probe_native_encoders` (which refreshes it) and
+/// `start_screen_share` (which reuses it). Each probe opens 3+ NVENC/AMF
+/// sessions and loads/unloads the vendor runtime — once per process is
+/// enough. An empty result is not cached, so a later start retries.
+#[cfg(target_os = "windows")]
+static NATIVE_CAPS_CACHE: std::sync::Mutex<Option<Vec<crate::media::encoder_probe::EncoderCap>>> =
+    std::sync::Mutex::new(None);
+
+/// Run the Windows encoder probe under PROBE_LOCK and cache the result.
+/// Blocking — call from spawn_blocking.
+#[cfg(target_os = "windows")]
+fn probe_and_cache_native_encoders() -> Vec<crate::media::encoder_probe::EncoderCap> {
+    let _g = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    probe_and_cache_locked()
+}
+
+/// Probe + cache; the caller holds PROBE_LOCK.
+#[cfg(target_os = "windows")]
+fn probe_and_cache_locked() -> Vec<crate::media::encoder_probe::EncoderCap> {
+    let caps = crate::media::encoder_probe::run(read_primary_gpu_vendor_id());
+    let mut cache = NATIVE_CAPS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    *cache = if caps.is_empty() { None } else { Some(caps.clone()) };
+    caps
+}
+
+/// Cached encoder caps, probing (under PROBE_LOCK) only on a miss.
+/// Blocking — call from spawn_blocking.
+#[cfg(target_os = "windows")]
+fn cached_native_encoder_caps() -> Vec<crate::media::encoder_probe::EncoderCap> {
+    if let Some(caps) = NATIVE_CAPS_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        return caps.clone();
+    }
+    // A concurrent probe may have filled the cache while we waited for
+    // the probe lock — check again under it before probing ourselves.
+    let _g = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(caps) = NATIVE_CAPS_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        return caps.clone();
+    }
+    probe_and_cache_locked()
+}
+
 /// Runs the native FFmpeg encoder probe. Windows-only. Returns the
 /// list of (codec, vendor) tuples that successfully opened.
 ///
@@ -965,11 +1071,7 @@ static PROBE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(target_os = "windows")]
 #[napi]
 pub async fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
-    let caps = tokio::task::spawn_blocking(|| {
-        let _g = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let vendor_id = read_primary_gpu_vendor_id();
-        crate::media::encoder_probe::run(vendor_id)
-    })
+    let caps = tokio::task::spawn_blocking(probe_and_cache_native_encoders)
     .await
     .map_err(|e| napi::Error::from_reason(format!("encoder probe failed: {}", e)))?;
     Ok(caps

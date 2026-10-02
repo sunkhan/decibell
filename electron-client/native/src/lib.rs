@@ -109,6 +109,9 @@ pub fn init(
     // rustls 0.23 dropped the default-set behavior. Idempotent.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    #[cfg(target_os = "windows")]
+    pin_amf_runtime();
+
     // PR8: FFmpeg removed from the addon entirely. Encode lives in the
     // renderer (Chromium WebCodecs); decode lives there too. The native
     // side just packetises encoded chunks onto UDP and doesn't link
@@ -116,6 +119,52 @@ pub fn init(
     // and the libavcodec runtime-version diagnostic.
 
     Ok(())
+}
+
+/// Load AMD's AMF runtime once and never free it.
+///
+/// Every AMF encoder probe/open loads amfrt64.dll (FFmpeg's
+/// hwcontext_amf dlopen) and `amf_device_uninit` unloads it again. A
+/// driver/AMF worker thread that outlives AMFContext::Terminate then
+/// executes in unmapped code — the classic `<Unloaded_amfrt64.dll>`
+/// access violation. Holding our own reference keeps the module mapped for
+/// the life of the process (OBS does the same: load once, never free).
+///
+/// Same search flags FFmpeg's win32_dlopen uses (application dir +
+/// System32), so we pin exactly the module FFmpeg will resolve, and never
+/// pick a planted copy from the current directory / PATH. Missing on
+/// non-AMD machines — that's fine, nothing to pin. Declared by hand
+/// because the windows crate's LibraryLoader feature isn't enabled.
+#[cfg(target_os = "windows")]
+fn pin_amf_runtime() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryExW(
+            lp_lib_file_name: *const u16,
+            h_file: *mut std::ffi::c_void,
+            dw_flags: u32,
+        ) -> *mut std::ffi::c_void;
+    }
+    const LOAD_LIBRARY_SEARCH_APPLICATION_DIR: u32 = 0x0000_0200;
+    const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
+
+    static PINNED: std::sync::Once = std::sync::Once::new();
+    PINNED.call_once(|| {
+        let name: Vec<u16> = "amfrt64.dll\0".encode_utf16().collect();
+        // The module handle is intentionally leaked (never FreeLibrary'd).
+        let module = unsafe {
+            LoadLibraryExW(
+                name.as_ptr(),
+                std::ptr::null_mut(),
+                LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+            )
+        };
+        if module.is_null() {
+            log::info!("[amf] amfrt64.dll not present (no AMD driver) — nothing to pin");
+        } else {
+            log::info!("[amf] amfrt64.dll pinned for the process lifetime");
+        }
+    });
 }
 
 /// Called from Electron main on `before-quit`. Drops engines, joins

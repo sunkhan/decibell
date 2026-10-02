@@ -575,7 +575,7 @@ impl H264Encoder {
         match codec_name.as_str() {
             // ── NVENC family (H.264 / HEVC / AV1) — same option vocabulary ──
             "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" => {
-                opts.set("forced_idr", "1");
+                opts.set("forced-idr", "1");
                 opts.set("preset", "p5");
                 opts.set("rc", "cbr");
                 // hevc_nvenc with tune=ull was producing pictures that
@@ -598,6 +598,9 @@ impl H264Encoder {
             "h264_amf" | "hevc_amf" | "av1_amf" => {
                 opts.set("usage", "ultralowlatency");
                 opts.set("quality", "speed");
+                // AMF's forced_idr defaults to 0: a forced keyframe would be a
+                // non-IDR I (AV1: intra-only) frame that isn't flagged key.
+                opts.set("forced_idr", "1");
             }
             // ── QSV family (Intel) ──
             "h264_qsv" | "hevc_qsv" | "av1_qsv" => {
@@ -1140,7 +1143,7 @@ impl H264Encoder {
         }
 
         let mut opts = ffmpeg_next::Dictionary::new();
-        opts.set("forced_idr", "1");
+        opts.set("forced-idr", "1");
         opts.set("preset", "p5");
         opts.set("tune", "ull");
         opts.set("rc", "cbr");
@@ -1432,7 +1435,7 @@ impl H264Encoder {
         // consistent between CPU and GPU paths.
         let mut opts = ffmpeg_next::Dictionary::new();
         if is_nvenc {
-            opts.set("forced_idr", "1");
+            opts.set("forced-idr", "1");
             opts.set("preset", "p5");
             opts.set("rc", "cbr");
             if codec_name == "hevc_nvenc" {
@@ -1448,6 +1451,8 @@ impl H264Encoder {
             // the CPU AMF path uses.
             opts.set("usage", "ultralowlatency");
             opts.set("quality", "speed");
+            // Forced keyframes must be IDRs (AMF's forced_idr defaults to 0).
+            opts.set("forced_idr", "1");
         } else if is_qsv {
             // QSV (Intel): preset=veryfast biases towards encode speed and
             // forced_idr=1 lets us respond to viewer keyframe requests.

@@ -6,9 +6,15 @@
 //! cleanly is reported as HW-capable.
 //!
 //! Vendor priority is auto-detected from the GPU vendor id (NVIDIA →
-//! NVENC first, AMD → AMF first, Intel → QSV first). The probe still
-//! tries the other vendors as a fallback in case the user has a
-//! mixed-GPU system.
+//! NVENC first, AMD → AMF first). The probe still tries the other vendor
+//! as a fallback in case the user has a mixed-GPU system.
+//!
+//! QSV is deliberately NOT a candidate: `Encoder::open` rejects it (it
+//! needs a D3D11VA→QSV derived hwframes context that isn't built yet), so
+//! reporting it would make Go Live fail natively — on an Intel-iGPU-
+//! primary hybrid laptop H.264 resolved to h264_qsv and every native start
+//! failed. Intel-only machines get no native encoder and use the
+//! renderer's WebCodecs path.
 //!
 //! Result shape matches the existing CodecCap used by Linux/macOS so
 //! the renderer can use one cached structure regardless of platform.
@@ -36,11 +42,11 @@ const PROBE_H: u32 = 720;
 const PROBE_FPS: u32 = 30;
 const PROBE_BR: i64 = 2_000_000;
 
-/// (codec_id, encoder_name) tuples in vendor priority order.
+/// Encoder names for `codec_id` in vendor priority order. Only encoders
+/// `Encoder::open` can actually drive (NVENC, AMF) — see the module doc for
+/// why QSV is excluded.
 fn candidates_for(codec_id: i32, vendor_id: u32) -> Vec<&'static str> {
-    let nvenc_first = vendor_id == 0x10DE;
     let amf_first = vendor_id == 0x1002;
-    let qsv_first = vendor_id == 0x8086;
 
     let nvenc = match codec_id {
         1 => "h264_nvenc",
@@ -54,18 +60,13 @@ fn candidates_for(codec_id: i32, vendor_id: u32) -> Vec<&'static str> {
         4 => "av1_amf",
         _ => return Vec::new(),
     };
-    let qsv = match codec_id {
-        1 => "h264_qsv",
-        3 => "hevc_qsv",
-        4 => "av1_qsv",
-        _ => return Vec::new(),
-    };
 
-    match (nvenc_first, amf_first, qsv_first) {
-        (true, _, _) => vec![nvenc, amf, qsv],
-        (_, true, _) => vec![amf, nvenc, qsv],
-        (_, _, true) => vec![qsv, nvenc, amf],
-        _ => vec![nvenc, amf, qsv],
+    // NVIDIA, Intel (hybrid laptops: the dGPU behind an Intel primary is
+    // usually NVIDIA) and unknown vendors all try NVENC first.
+    if amf_first {
+        vec![amf, nvenc]
+    } else {
+        vec![nvenc, amf]
     }
 }
 
@@ -151,9 +152,22 @@ mod tests {
     }
 
     #[test]
-    fn qsv_priority_for_intel() {
+    fn intel_primary_gets_no_qsv() {
+        // Encoder::open can't drive QSV; offering it broke native Go Live.
         let v = candidates_for(1, 0x8086);
-        assert_eq!(v[0], "h264_qsv");
+        assert_eq!(v, vec!["h264_nvenc", "h264_amf"]);
+    }
+
+    #[test]
+    fn no_qsv_candidates_anywhere() {
+        for codec in [1, 3, 4] {
+            for vendor in [0x10DE, 0x1002, 0x8086, 0x0000] {
+                assert!(
+                    candidates_for(codec, vendor).iter().all(|n| !n.ends_with("_qsv")),
+                    "codec {codec} vendor {vendor:#x}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -46,8 +46,10 @@ pub mod encoder_probe;
 pub mod gpu_pipeline;
 #[cfg(target_os = "windows")]
 pub mod video_processor;
-#[cfg(target_os = "windows")]
+// Pure data + tests; only the Windows encoder consumes it.
 pub mod bitrate_preset;
+// Annex B / geometry helpers for the native encode path (tested everywhere).
+pub mod encode_util;
 #[cfg(target_os = "windows")]
 pub mod encoder;
 // Linux native FFmpeg encoder (NVENC/VAAPI/libx264) — the Linux
@@ -796,6 +798,14 @@ fn run_video_recv_thread(
 pub struct VideoEngine {
     sender: Arc<video_pipeline::VideoSender>,
     self_username: String,
+    /// Process-unique id of this streaming session, so a caller cleaning
+    /// up after a failed start only removes ITS engine from AppState.
+    session_id: u64,
+    /// Community (server_id, channel_id) the stream was announced in —
+    /// None in a DM call (no community). Lets `stop_screen_share` notify
+    /// the community when called without ids (the main process stopping
+    /// an orphaned share after a renderer reload/crash).
+    announce_target: Option<(String, String)>,
     /// JS-side encoder may emit an `EncodedFrame` self-preview pump too
     /// — but the local self-preview is just the raw VideoFrame painted
     /// to a canvas in the StreamCapture component, so the receive-side
@@ -867,9 +877,12 @@ impl VideoEngine {
         // can reach it without taking the AppState mutex on every
         // encoded chunk. Cleared on stop/drop below.
         video_pipeline::set_frame_sink(sender.clone());
+        static NEXT_SESSION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         VideoEngine {
             sender,
             self_username,
+            session_id: NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed),
+            announce_target: None,
             _phantom: std::marker::PhantomData,
             #[cfg(target_os = "windows")]
             win_capture: None,
@@ -896,6 +909,23 @@ impl VideoEngine {
         self.sender.set_socket(socket);
     }
 
+    pub fn session_id(&self) -> u64 {
+        self.session_id
+    }
+
+    /// Record the community channel the stream is announced in (start, and
+    /// again on move_stream_to_channel). None for a DM-call stream.
+    pub fn set_announce_target(&mut self, target: Option<(String, String)>) {
+        self.announce_target = target;
+    }
+
+    /// (server_id, channel_id) the stream is announced in, if any.
+    pub fn announce_target(&self) -> Option<(&str, &str)> {
+        self.announce_target
+            .as_ref()
+            .map(|(s, c)| (s.as_str(), c.as_str()))
+    }
+
     /// Windows-only: spin up the native capture + encoder pipeline.
     /// Source id is the Chromium desktopCapturer id ("screen:N:0" or
     /// "window:HWND:0"). Encoder name comes from probe_native_encoders.
@@ -917,7 +947,12 @@ impl VideoEngine {
     ) -> Result<(u32, u32), String> {
         let target = source_id::parse(source_id)
             .map_err(|e| format!("source id '{}': {:?}", source_id, e))?;
-        let gpu = gpu_pipeline::GpuDevice::create()?;
+        // Open the device on the encoder vendor's GPU: on hybrid systems
+        // the default adapter is often the other vendor's, and NVENC/AMF
+        // can't open on a foreign device. Falls back to the default.
+        let gpu = gpu_pipeline::GpuDevice::create_for_vendor(
+            gpu_pipeline::vendor_for_encoder(encoder_name),
+        )?;
         let (tx, rx) = std::sync::mpsc::sync_channel::<
             windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
         >(2);
@@ -985,7 +1020,7 @@ impl VideoEngine {
                 fps,
             )?),
         };
-        let encoder_thread = encoder_thread::EncoderThread::start(
+        let encoder_thread = match encoder_thread::EncoderThread::start(
             gpu,
             encoder_thread::EncoderThreadConfig {
                 encoder_name: encoder_name.to_string(),
@@ -999,7 +1034,18 @@ impl VideoEngine {
                 thumbnail_tx: thumb_tx,
             },
             rx,
-        )?;
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                // The capture is already running and WinCapture has no
+                // Drop: stop it here or its thread is orphaned (and keeps
+                // the source captured). The thumbnail task would end on
+                // its own once thumb_tx is gone; abort it anyway.
+                capture.stop();
+                thumb_task.abort();
+                return Err(e);
+            }
+        };
         self.win_force_keyframe = Some(encoder_thread.force_keyframe_handle());
         self.win_capture = Some(capture);
         self.win_encoder_thread = Some(encoder_thread);
@@ -1010,9 +1056,17 @@ impl VideoEngine {
         Ok((width, height))
     }
 
-    /// Windows-only: stop the native pipeline. Joins both threads.
+    /// Windows-only: stop the native pipeline. Joins both threads (the
+    /// encoder join is bounded — see EncoderThread::stop).
     #[cfg(target_os = "windows")]
     pub fn stop_windows(&mut self) {
+        // Flag the encoder thread FIRST: stopping the capture disconnects
+        // its frame channel, and an encoder that sees the disconnect
+        // before its stop flag reports a spurious `native_stream_failed`,
+        // which the renderer turns into a stop of the NEXT session.
+        if let Some(e) = &self.win_encoder_thread {
+            e.signal_stop();
+        }
         if let Some(c) = self.win_capture.take() {
             c.stop();
         }
