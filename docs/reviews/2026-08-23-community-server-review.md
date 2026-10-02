@@ -1182,6 +1182,56 @@ meter in voice; a busy background channel → switch back (cap + windowed return
 still moves the file through IPC twice (stream it in main); CL1 (voice presence keyed by bare channelId)
 still open.
 
+**Client: Windows streaming on AMD — encoder, video processor, capture, fallback (2026-10-02) ✅** —
+three read-only reviews (FFmpeg/AMF semantics against the pinned FFmpeg **n8.0.1** source — the vcpkg
+pin e5a1490e builds it; D3D11 capture/convert; lifecycle/fallback), every claim re-checked before
+fixing. The native path had only ever run on NVENC. *Black tiles on AMD (definite).* (1) A keyframe
+request set `pict_type = I`, and amfenc's `forced_idr` defaults to 0, so AMF emitted a plain I /
+intra-only frame that isn't flagged key — watchers (and the self-preview) waited for the 4 s GOP. NVENC
+has the same default (`forced-idr`, with a hyphen — the Linux NVENC path set `forced_idr`, silently
+ignored); both now force IDR. (2) AMF doesn't repeat SPS/PPS (H.264) or VPS/SPS/PPS (HEVC) on its own
+IDRs by default and `GLOBAL_HEADER` is ignored by amfenc, while the Windows path never ships extradata —
+a late joiner got an IDR it couldn't decode. Now `header_spacing` = GOP (h264), `header_insertion_mode`
+idr / frame (hevc / av1), plus a codec-independent safety net: an H.264/HEVC keyframe without an SPS gets
+the Annex B extradata spliced in (after a leading AUD). AMF also runs with `latency` on and RC frame
+skipping off (a skipped frame could starve amfenc's surface counter into an endless wait). *Video
+processor (best lead for the reported crash).* `ID3D11VideoProcessor` was created with the ENCODE size as
+its input size while capture hands native-size textures, and the stream destination rect was never set —
+documented as "no data is written" (NVIDIA ignores it); Chromium notes a mismatched content desc can crash
+drivers. It is now built per input size (rebuilt on change), with explicit source / aspect-fit dest /
+target rects (letterboxed, no more stretching), auto-processing off, RGB-black bars. *Other native fixes.*
+The device is created on the encoder vendor's adapter (hybrid laptops opened AMF/NVENC on the other GPU);
+QSV left the Windows probe (the encoder can't open it, so Intel-primary machines failed every Go Live);
+the probe runs once per process and off the AppState lock; amfrt64.dll is pinned for the process (each
+open/close unloaded it — the classic `<Unloaded_amfrt64.dll>` fault); a failed `av_hwdevice_ctx_init`
+double-Released the device and early returns leaked the hw refs; transient `EAGAIN` / pool exhaustion
+drops a frame instead of killing the stream (the old EAGAIN test compared against a negative errno and
+never matched); the encoder thread reports failure before anything that can hang and never drains; stop
+signals the encoder before stopping capture and detaches a wedged thread after 3 s. *Capture.* WGC start
+is now a handshake (closed / minimized window, bad monitor → start error → renderer fallback, not an
+announced dead stream) with a first-frame watchdog and no busy-spin; it follows content-size changes
+(Recreate + ring rebuild) and ends on item close; DXGI duplication survives ACCESS_LOST (UAC, lock screen,
+mode change, exclusive fullscreen — recovers for up to 10 s re-sending the last frame); `screen:N` resolves
+through EnumDisplayDevices like WebRTC; thumbnails downscale on the GPU and read back asynchronously (the
+blocking Map every 3 s stalled the pipeline); masked-colour cursors no longer draw a white box; cursor
+compositing and the blit run under `ID3D11Multithread` Enter/Leave. *Fallback + watchers.* WebCodecs
+H.264 now emits Annex B (it defaulted to length-prefixed with the parameter sets only in a description
+that `send_video_frame` never forwards for H.264); the fallback announces the codec it really encodes
+(HEVC/AV1 → H.264, enforcement dropped if it no longer matches); an encoder error no longer turns `stop()`
+into a no-op (leaked capture); `stop()` always tears down the native VideoEngine (voice kick → "Already
+sharing screen" forever); session-state errors don't trip the sticky native-failed flag; a dead pump ends
+the stream; the picker can't resurrect a session that ended mid-start; a start whose announce failed
+drops its engines; main stops an orphaned share after a renderer reload/crash (native remembers the
+channel); a vanished picked source is refused instead of sharing the primary monitor. Watchers rebuild a
+WebCodecs decoder closed by an error (it was dead until remount) and drop to software when a hardware
+decoder never paints. The encoder caps cache is versioned and refreshed in the background. Verified: tsc
+web 0 / node 0, `cargo test --lib` 184, napi build, Windows Native Check, and a Linux-side type-check of
+the Windows modules against windows 0.61.3 + ffmpeg-next 8. Open (live, AMD box): join a stream mid-way
+(immediate picture), source size ≠ preset (letterbox, no crash), window resize, UAC / fullscreen game on
+Win10, hybrid laptop, the new AMF options accepted on pre-RDNA cards, TDR mid-stream. Open (cross-platform):
+the Linux native H.264 path sends AVCC with no description to remote watchers — check that a Linux NVENC
+H.264 stream decodes on another machine. Remaining: AV1 64×16 padding on RDNA3 (crop side data dropped).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
