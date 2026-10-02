@@ -5,15 +5,22 @@
 //! game stalled behind the game's queued frames (and, under the device's
 //! multithread protection, stalled the encoder thread with it), capping
 //! a 60 fps stream around 30.
+//!
+//! The immediate context is shared with the encoder thread and the
+//! encoder runtime's own worker threads (AMF in particular). Device
+//! multithread protection serialises single calls, not sequences, so the
+//! state-set → Draw sequence here runs under `ContextLock`
+//! (ID3D11Multithread::Enter/Leave, re-entrant): nobody else's state can
+//! land between our OMSetRenderTargets and our Draw.
 
 #![cfg(target_os = "windows")]
 
-use windows::core::{s, PCSTR};
+use windows::core::{s, Interface, PCSTR};
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{ID3DBlob, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP};
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11BlendState, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader,
-    ID3D11RenderTargetView, ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D,
+    ID3D11BlendState, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
+    ID3D11PixelShader, ID3D11RenderTargetView, ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D,
     ID3D11VertexShader, D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_SHADER_RESOURCE,
     D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE, D3D11_BLEND_OP_ADD,
     D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_ZERO, D3D11_BUFFER_DESC, D3D11_COLOR_WRITE_ENABLE_ALL,
@@ -43,8 +50,44 @@ SamplerState smp : register(s0);
 float4 ps(VSOut i) : SV_Target { return tex.Sample(smp, i.uv); }
 "#;
 
+/// The device's multithread interface (same IID as ID3D10Multithread),
+/// for `ContextLock`. None only if the device doesn't expose it.
+pub(crate) fn multithread_of(device: &ID3D11Device) -> Option<ID3D11Multithread> {
+    device.cast::<ID3D11Multithread>().ok()
+}
+
+/// Holds the device's multithread critical section for a sequence of
+/// immediate-context calls that must not interleave with another
+/// thread's (state set → Draw, copy → composite). Re-entrant; released
+/// on drop, so an early return can't leak it. Never hold one across a
+/// wait (Map, a channel send, a sleep): everything else on the device
+/// queues behind it.
+pub(crate) struct ContextLock<'a>(Option<&'a ID3D11Multithread>);
+
+impl<'a> ContextLock<'a> {
+    pub(crate) fn enter(mt: Option<&'a ID3D11Multithread>) -> Self {
+        if let Some(m) = mt {
+            unsafe { m.Enter() };
+        }
+        Self(mt)
+    }
+}
+
+impl Drop for ContextLock<'_> {
+    fn drop(&mut self) {
+        if let Some(m) = self.0 {
+            unsafe { m.Leave() };
+        }
+    }
+}
+
+/// Render-target views kept per frame texture (the capture ring reuses a
+/// handful of textures, so creating a view per draw was pure churn).
+const RTV_CACHE_MAX: usize = 4;
+
 pub struct CursorCompositor {
     device: ID3D11Device,
+    mt: Option<ID3D11Multithread>,
     vs: ID3D11VertexShader,
     ps: ID3D11PixelShader,
     blend: ID3D11BlendState,
@@ -52,6 +95,9 @@ pub struct CursorCompositor {
     cb: ID3D11Buffer,
     /// Uploaded shape: view + size in pixels.
     shape: Option<(ID3D11ShaderResourceView, u32, u32)>,
+    /// (target texture, its RTV). Holding the texture keeps its pointer
+    /// from being reused by a different texture while cached.
+    rtvs: Vec<(ID3D11Texture2D, ID3D11RenderTargetView)>,
 }
 
 fn compile(entry: PCSTR, target: PCSTR) -> Result<Vec<u8>, String> {
@@ -149,13 +195,40 @@ impl CursorCompositor {
 
         Ok(Self {
             device: device.clone(),
+            mt: multithread_of(device),
             vs: vs.ok_or("CreateVertexShader returned None")?,
             ps: ps.ok_or("CreatePixelShader returned None")?,
             blend: blend.ok_or("CreateBlendState returned None")?,
             sampler: sampler.ok_or("CreateSamplerState returned None")?,
             cb: cb.ok_or("CreateBuffer returned None")?,
             shape: None,
+            rtvs: Vec::new(),
         })
+    }
+
+    /// Drop the cached render-target views — call when the frame textures
+    /// are rebuilt (e.g. a display mode change resized them).
+    pub fn forget_targets(&mut self) {
+        self.rtvs.clear();
+    }
+
+    fn target_view(&mut self, target: &ID3D11Texture2D) -> Result<ID3D11RenderTargetView, String> {
+        if let Some((_, rtv)) = self
+            .rtvs
+            .iter()
+            .find(|(t, _)| t.as_raw() == target.as_raw())
+        {
+            return Ok(rtv.clone());
+        }
+        let mut rtv: Option<ID3D11RenderTargetView> = None;
+        unsafe { self.device.CreateRenderTargetView(target, None, Some(&mut rtv)) }
+            .map_err(|e| format!("CreateRenderTargetView: {e:?}"))?;
+        let rtv = rtv.ok_or("CreateRenderTargetView returned None")?;
+        if self.rtvs.len() >= RTV_CACHE_MAX {
+            self.rtvs.remove(0);
+        }
+        self.rtvs.push((target.clone(), rtv.clone()));
+        Ok(rtv)
     }
 
     /// Upload a (new) pointer shape. Shapes change rarely (hover over a
@@ -199,9 +272,10 @@ impl CursorCompositor {
 
     /// Blend the current shape onto `target` (a BGRA render-target
     /// texture of `frame_w`×`frame_h`) at pixel position (x, y). Queues
-    /// GPU work only — never waits.
+    /// GPU work only — never waits. The context sequence runs under the
+    /// device's multithread lock (see the module docs).
     pub fn draw(
-        &self,
+        &mut self,
         context: &ID3D11DeviceContext,
         target: &ID3D11Texture2D,
         frame_w: u32,
@@ -209,19 +283,16 @@ impl CursorCompositor {
         x: i32,
         y: i32,
     ) -> Result<(), String> {
-        let Some((srv, w, h)) = self.shape.as_ref() else {
+        let Some((srv, w, h)) = self.shape.clone() else {
             return Ok(());
         };
-        let mut rtv: Option<ID3D11RenderTargetView> = None;
-        unsafe { self.device.CreateRenderTargetView(target, None, Some(&mut rtv)) }
-            .map_err(|e| format!("CreateRenderTargetView: {e:?}"))?;
-        let rtv = rtv.ok_or("CreateRenderTargetView returned None")?;
+        let rtv = self.target_view(target)?;
 
         let cb_data: [f32; 8] = [
             x as f32,
             y as f32,
-            *w as f32,
-            *h as f32,
+            w as f32,
+            h as f32,
             frame_w as f32,
             frame_h as f32,
             0.0,
@@ -235,9 +306,10 @@ impl CursorCompositor {
             MinDepth: 0.0,
             MaxDepth: 1.0,
         };
+        let _lock = ContextLock::enter(self.mt.as_ref());
         unsafe {
             context.UpdateSubresource(&self.cb, 0, None, cb_data.as_ptr() as *const _, 0, 0);
-            context.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+            context.OMSetRenderTargets(Some(&[Some(rtv)]), None);
             context.RSSetViewports(Some(&[viewport]));
             context.IASetInputLayout(None);
             context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);

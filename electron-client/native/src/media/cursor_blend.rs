@@ -44,7 +44,8 @@ pub struct CursorImage {
 /// alpha blend can't express; those are approximated by an opaque pixel:
 /// MASKED_COLOR XOR → the inverted colour, MONOCHROME invert → mid grey,
 /// which stays visible on both light and dark backgrounds (the I-beam is
-/// the common case).
+/// the common case). A MASKED_COLOR XOR with black is a no-op on the
+/// screen, so it's exact: transparent.
 pub fn cursor_to_bgra(c: &CursorImage) -> Vec<u8> {
     let w = c.width;
     let h = c.visual_height;
@@ -68,14 +69,21 @@ pub fn cursor_to_bgra(c: &CursorImage) -> Vec<u8> {
                     let d = (y * w + x) * 4;
                     let Some(px) = c.data.get(s..s + 4) else { continue };
                     if px[3] == 0 {
+                        // Mask 0: the RGB value replaces the screen pixel.
                         out[d..d + 3].copy_from_slice(&px[..3]);
+                        out[d + 3] = 0xFF;
+                    } else if px[..3] == [0, 0, 0] {
+                        // Mask 0xFF with RGB 0: XOR with black leaves the
+                        // screen pixel unchanged — fully transparent. This
+                        // is the whole background of a masked-colour
+                        // cursor; rendering it opaque drew a box.
                     } else {
                         // XOR pixel: approximate as the inverted colour.
                         out[d] = !px[0];
                         out[d + 1] = !px[1];
                         out[d + 2] = !px[2];
+                        out[d + 3] = 0xFF;
                     }
-                    out[d + 3] = 0xFF;
                 }
             }
         }
@@ -142,6 +150,28 @@ mod tests {
         assert_eq!(
             cursor_to_bgra(&c),
             vec![1, 2, 3, 0xFF, 0xF0, 0x0F, 0xFF, 0xFF]
+        );
+    }
+
+    #[test]
+    fn masked_color_xor_black_is_transparent() {
+        // Mask 0xFF + RGB 0 (XOR with black = screen unchanged) must be
+        // see-through, not an opaque white box; a mask-0 black pixel stays
+        // opaque black, and a coloured XOR pixel keeps the approximation.
+        let c = CursorImage {
+            shape_type: SHAPE_MASKED_COLOR,
+            data: vec![
+                0, 0, 0, 0xFF, // XOR black → transparent
+                0, 0, 0, 0, // replace with black → opaque black
+                0x10, 0x00, 0x00, 0xFF, // XOR colour → inverted, opaque
+            ],
+            pitch: 12,
+            width: 3,
+            visual_height: 1,
+        };
+        assert_eq!(
+            cursor_to_bgra(&c),
+            vec![0, 0, 0, 0, 0, 0, 0, 0xFF, 0xEF, 0xFF, 0xFF, 0xFF]
         );
     }
 
