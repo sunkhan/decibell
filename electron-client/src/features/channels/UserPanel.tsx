@@ -27,12 +27,6 @@ const EMPTY_CHANNELS: never[] = [];
 export default function UserPanel() {
   const username = useAuthStore((s) => s.username);
   const openModal = useUiStore((s) => s.openModal);
-  // Subscribe to a derived boolean instead of the whole Set so this
-  // panel only re-renders when *our* speaking state changes — every
-  // other user's speaking events become no-ops here.
-  const isSpeaking = useVoiceStore((s) =>
-    username ? s.speakingUsers.has(username) : false,
-  );
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
   // P2P DM call: same engine, no channel. Gates below use `inSession`.
@@ -150,7 +144,9 @@ export default function UserPanel() {
           title={`Restart to update to ${updateStatus.state === "downloaded" ? updateStatus.version : ""}`}
           className="mb-2 flex w-full items-center gap-2 rounded-sm bg-accent-soft px-2 py-1.5 text-left text-[12px] font-medium text-accent-bright transition-colors hover:bg-accent-mid"
         >
-          <span className="h-1.5 w-1.5 rounded-full bg-accent-bright animate-[dropPulse_2.4s_ease-in-out_infinite]" />
+          {/* drop-pulse: composited opacity glow. This chip can sit on screen
+              for days; a box-shadow keyframe here repainted at 60 Hz. */}
+          <span className="drop-pulse relative h-1.5 w-1.5 rounded-full bg-accent-bright [--pulse-dur:2.4s]" />
           <span className="min-w-0 flex-1 truncate">
             Update ready
             {updateStatus.state === "downloaded" ? ` — ${updateStatus.version}` : ""}
@@ -237,14 +233,7 @@ export default function UserPanel() {
       )}
 
       <div className="flex items-center gap-2">
-        <div
-          className="relative shrink-0 rounded-md transition-shadow"
-          style={{
-            boxShadow: isSpeaking ? "0 0 0 2px var(--color-success)" : "none",
-          }}
-        >
-          <UserAvatar username={username} size={36} />
-        </div>
+        <SelfAvatar username={username} />
         <div className="min-w-0 flex-1">
           <div className="truncate font-channel text-member font-emphasis text-text-bright">
             {username}
@@ -367,5 +356,25 @@ function PanelButton({
     <button title={title} onClick={onClick} onContextMenu={onContextMenu} className={`${base} ${tone}`}>
       {children}
     </button>
+  );
+}
+
+// Our avatar + speaking ring. Its own component so a speaking flip (a few
+// per second while talking) re-renders just this, not the whole panel. A
+// derived boolean, not the whole Set, so other users' speaking events are
+// no-ops here.
+function SelfAvatar({ username }: { username: string | null }) {
+  const isSpeaking = useVoiceStore((s) =>
+    username ? s.speakingUsers.has(username) : false,
+  );
+  return (
+    <div
+      className="relative shrink-0 rounded-md transition-shadow"
+      style={{
+        boxShadow: isSpeaking ? "0 0 0 2px var(--color-success)" : "none",
+      }}
+    >
+      <UserAvatar username={username ?? ""} size={36} />
+    </div>
   );
 }

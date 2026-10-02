@@ -51,7 +51,11 @@ export function useMenuPosition<T extends HTMLElement = HTMLDivElement>(
     const el = ref.current;
     if (!el) return;
     const place = () => {
-      const { width, height } = el.getBoundingClientRect();
+      // Layout size, not the rect: menus open with a scale(0.97) entrance,
+      // and a rect taken on the first frame is 3% short (the observer never
+      // re-fires for a transform), so tall menus overran the margin.
+      const width = el.offsetWidth;
+      const height = el.offsetHeight;
       const next = placeMenu(anchor, width, height, prefer, margin);
       setPos((prev) =>
         prev && prev.left === next.left && prev.top === next.top ? prev : next,

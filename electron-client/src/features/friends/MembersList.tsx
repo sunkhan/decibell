@@ -1,15 +1,25 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { UserAvatar } from "../../components/UserAvatar";
+import { EMPTY_LIST } from "../../lib/empty";
 import type { ServerMember } from "../../types";
+
+// One collator for every sort: localeCompare without one rebuilds the ICU
+// collator per comparison.
+const collator = new Intl.Collator();
+const displayNameOf = (m: ServerMember) => m.nickname || m.username;
+const byName = (a: ServerMember, b: ServerMember) =>
+  collator.compare(displayNameOf(a), displayNameOf(b));
 
 export default function MembersList() {
   const activeServerId = useChatStore((s) => s.activeServerId);
-  const membersByServer = useChatStore((s) => s.membersByServer);
-  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
-  const openContextMenu = useUiStore((s) => s.openContextMenu);
+  // This server's roster only — the whole map changes on presence deltas in
+  // every connected server.
+  const roster = useChatStore((s): ServerMember[] =>
+    activeServerId ? s.membersByServer[activeServerId] ?? EMPTY_LIST : EMPTY_LIST,
+  );
   const rosterMeta = useChatStore((s) =>
     activeServerId ? s.memberRosterMeta[activeServerId] : undefined,
   );
@@ -46,49 +56,16 @@ export default function MembersList() {
   }, [loadMore]);
 
   const { online, offline } = useMemo(() => {
-    const roster = activeServerId ? membersByServer[activeServerId] ?? [] : [];
     const onlineList = roster.filter((m) => m.isOnline);
     const offlineList = roster.filter((m) => !m.isOnline);
     // Sort by display name (nickname when set), matching how the list reads.
-    const dn = (m: ServerMember) => m.nickname || m.username;
-    const byName = (a: ServerMember, b: ServerMember) =>
-      dn(a).localeCompare(dn(b));
     onlineList.sort(byName);
     offlineList.sort(byName);
     return { online: onlineList, offline: offlineList };
-  }, [activeServerId, membersByServer]);
+  }, [roster]);
 
   const renderRow = (m: ServerMember, isOnline: boolean) => (
-    <div
-      key={m.username}
-      className="list-row group flex cursor-pointer items-center rounded-sm transition-colors hover:bg-surface-hover"
-      onClick={(e) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        openProfilePopup(m.username, { x: rect.right + 8, y: rect.top }, activeServerId);
-      }}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        openContextMenu(m.username, { x: e.clientX, y: e.clientY }, activeServerId);
-      }}
-    >
-      <div className={`relative shrink-0 ${isOnline ? "" : "opacity-[0.62]"}`}>
-        <UserAvatar username={m.username} size={34} />
-        <div
-          className={`absolute -bottom-px -right-px avatar-dot rounded-full border-[2.5px] border-bg-tertiary ${
-            isOnline ? "bg-success" : "bg-text-muted"
-          }`}
-        />
-      </div>
-      <span
-        className={`truncate font-channel text-member transition-colors ${
-          isOnline
-            ? "font-medium text-text-secondary group-hover:text-text-primary"
-            : "font-normal text-text-muted"
-        }`}
-      >
-        {m.nickname || m.username}
-      </span>
-    </div>
+    <MemberRow key={m.username} member={m} isOnline={isOnline} serverId={activeServerId} />
   );
 
   return (
@@ -151,3 +128,51 @@ export default function MembersList() {
     </div>
   );
 }
+
+// Memoised: a roster delta replaces only the changed member's object, so a
+// presence flip re-renders that one row instead of the whole list.
+const MemberRow = memo(function MemberRow({
+  member: m,
+  isOnline,
+  serverId,
+}: {
+  member: ServerMember;
+  isOnline: boolean;
+  serverId: string | null;
+}) {
+  return (
+    <div
+      className="list-row group flex cursor-pointer items-center rounded-sm transition-colors hover:bg-surface-hover"
+      onClick={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        useUiStore
+          .getState()
+          .openProfilePopup(m.username, { x: rect.right + 8, y: rect.top }, serverId);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        useUiStore
+          .getState()
+          .openContextMenu(m.username, { x: e.clientX, y: e.clientY }, serverId);
+      }}
+    >
+      <div className={`relative shrink-0 ${isOnline ? "" : "opacity-[0.62]"}`}>
+        <UserAvatar username={m.username} size={34} />
+        <div
+          className={`absolute -bottom-px -right-px avatar-dot rounded-full border-[2.5px] border-bg-tertiary ${
+            isOnline ? "bg-success" : "bg-text-muted"
+          }`}
+        />
+      </div>
+      <span
+        className={`truncate font-channel text-member transition-colors ${
+          isOnline
+            ? "font-medium text-text-secondary group-hover:text-text-primary"
+            : "font-normal text-text-muted"
+        }`}
+      >
+        {m.nickname || m.username}
+      </span>
+    </div>
+  );
+});

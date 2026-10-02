@@ -27,10 +27,9 @@ export function useFriendsEvents() {
       // Feed every friend's known avatar version into the cache so
       // UserAvatar renders trigger fetches only when versions differ
       // from what we already have on disk for that user.
-      const avatars = useAvatarStore.getState();
-      for (const f of event.payload.friends) {
-        avatars.setVersion(f.username, f.avatarVersion);
-      }
+      useAvatarStore.getState().setVersions(
+        event.payload.friends.map((f) => ({ username: f.username, version: f.avatarVersion })),
+      );
     });
 
     const unlistenAction = listen<{ success: boolean; message: string }>(
@@ -57,10 +56,9 @@ export function useFriendsEvents() {
         const onlineSet = new Set(usernames);
         useChatStore.getState().setOnlineUsers(usernames);
 
-        const avatars = useAvatarStore.getState();
-        for (const u of event.payload.users) {
-          avatars.setVersion(u.username, u.avatarVersion);
-        }
+        useAvatarStore.getState().setVersions(
+          event.payload.users.map((u) => ({ username: u.username, version: u.avatarVersion })),
+        );
 
         const { friends, setFriends } = useFriendsStore.getState();
         if (friends.length === 0) return;

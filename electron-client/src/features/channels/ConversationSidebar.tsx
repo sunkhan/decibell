@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { useUiStore } from "../../stores/uiStore";
 import { useDmStore, conversationActivityTime } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
@@ -7,8 +7,8 @@ import { UserAvatar } from "../../components/UserAvatar";
 import MessageText from "../chat/MessageText";
 import { useSidebarResize } from "./useSidebarResize";
 
-function formatRelativeTime(epochMs: number): string {
-  const diff = Date.now() - epochMs;
+function formatRelativeTime(epochMs: number, nowMs: number): string {
+  const diff = nowMs - epochMs;
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return "now";
   if (mins < 60) return `${mins}m`;
@@ -46,11 +46,28 @@ export default function ConversationSidebar() {
       ),
     [conversations],
   );
+  // One lookup set instead of scanning the friend list and central's global
+  // online list once per row per render.
+  const onlineSet = useMemo(() => {
+    const set = new Set(onlineUsers);
+    for (const f of friends) if (f.status === "online") set.add(f.username);
+    return set;
+  }, [friends, onlineUsers]);
+  // Rows are memoised, so the relative times ("5m") need their own clock.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(t);
+  }, []);
 
-  const handleClick = (username: string) => {
-    setActiveDmUser(username);
-    setActiveView("dm");
-  };
+  // Stable (setters are stable) so memo(ConversationRow) holds.
+  const handleClick = useMemo(
+    () => (username: string) => {
+      setActiveDmUser(username);
+      setActiveView("dm");
+    },
+    [setActiveDmUser, setActiveView],
+  );
 
   return (
     <div
@@ -73,64 +90,25 @@ export default function ConversationSidebar() {
           </div>
         ) : (
           sortedConversations.map((conv) => {
-            const isOnline =
-              friends.some(
-                (f) => f.username === conv.username && f.status === "online",
-              ) || onlineUsers.includes(conv.username);
             // lastMessage is slice-independent (jump windows / trims can
             // leave messages[] ending on an older row).
             const lastMsg = conv.lastMessage ?? conv.messages[conv.messages.length - 1];
-            // activeDmUser is sticky across views (same pattern as
-            // activeServerId) so the conversation survives a trip to
-            // home — but on home the user is looking at the friends
-            // page, not at it, so only highlight it in the dm view.
-            const isActive = activeView === "dm" && activeDmUser === conv.username;
             return (
-              <button
+              <ConversationRow
                 key={conv.username}
-                onClick={() => handleClick(conv.username)}
-                className={`list-row flex w-full cursor-pointer items-center rounded-md transition-colors ${
-                  isActive
-                    ? "bg-accent-soft text-text-bright"
-                    : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
-                }`}
-              >
-                <div className="relative shrink-0">
-                  <UserAvatar username={conv.username} size={34} />
-                  <div
-                    className={`absolute -bottom-px -right-px avatar-dot rounded-full border-2 border-bg-dmbar ${
-                      isOnline ? "bg-success" : "bg-text-muted"
-                    }`}
-                  />
-                  {conv.unreadCount > 0 && (
-                    <div
-                      className="absolute -top-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full border-[2px] border-bg-dark bg-error text-[10px] font-semibold leading-none text-white"
-                      title={`${conv.unreadCount} unread`}
-                    >
-                      {conv.unreadCount > 99 ? "99+" : conv.unreadCount}
-                    </div>
-                  )}
-                </div>
-                <div className="min-w-0 flex-1 text-left">
-                  <div className="truncate font-channel text-member font-medium">
-                    {conv.username}
-                  </div>
-                  {lastMsg && (
-                    <div className="truncate font-channel text-[11px] font-normal text-text-muted">
-                      <MessageText
-                        content={lastMsg.content}
-                        emojiSize={13}
-                        preview
-                      />
-                    </div>
-                  )}
-                </div>
-                {conv.lastMessageTime > 0 && (
-                  <span className="shrink-0 font-channel text-[10px] font-normal text-text-muted">
-                    {formatRelativeTime(conv.lastMessageTime)}
-                  </span>
-                )}
-              </button>
+                username={conv.username}
+                // activeDmUser is sticky across views (same pattern as
+                // activeServerId) so the conversation survives a trip to
+                // home — but on home the user is looking at the friends
+                // page, not at it, so only highlight it in the dm view.
+                isActive={activeView === "dm" && activeDmUser === conv.username}
+                isOnline={onlineSet.has(conv.username)}
+                unreadCount={conv.unreadCount}
+                lastContent={lastMsg?.content}
+                lastMessageTime={conv.lastMessageTime}
+                now={now}
+                onOpen={handleClick}
+              />
             );
           })
         )}
@@ -142,3 +120,69 @@ export default function ConversationSidebar() {
     </div>
   );
 }
+
+// Memoised with primitive props: DM history pages and sliding-window trims
+// replace `conversations` while a DM is being scrolled, and re-rendering
+// every row (avatar + rich-text preview) landed on those scroll frames.
+const ConversationRow = memo(function ConversationRow({
+  username,
+  isActive,
+  isOnline,
+  unreadCount,
+  lastContent,
+  lastMessageTime,
+  now,
+  onOpen,
+}: {
+  username: string;
+  isActive: boolean;
+  isOnline: boolean;
+  unreadCount: number;
+  lastContent: string | undefined;
+  lastMessageTime: number;
+  now: number;
+  onOpen: (username: string) => void;
+}) {
+  return (
+    <button
+      onClick={() => onOpen(username)}
+      className={`list-row flex w-full cursor-pointer items-center rounded-md transition-colors ${
+        isActive
+          ? "bg-accent-soft text-text-bright"
+          : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+      }`}
+    >
+      <div className="relative shrink-0">
+        <UserAvatar username={username} size={34} />
+        <div
+          className={`absolute -bottom-px -right-px avatar-dot rounded-full border-2 border-bg-dmbar ${
+            isOnline ? "bg-success" : "bg-text-muted"
+          }`}
+        />
+        {unreadCount > 0 && (
+          <div
+            className="absolute -top-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full border-[2px] border-bg-dark bg-error text-[10px] font-semibold leading-none text-white"
+            title={`${unreadCount} unread`}
+          >
+            {unreadCount > 99 ? "99+" : unreadCount}
+          </div>
+        )}
+      </div>
+      <div className="min-w-0 flex-1 text-left">
+        <div className="truncate font-channel text-member font-medium">
+          {username}
+        </div>
+        {lastContent !== undefined && (
+          <div className="truncate font-channel text-[11px] font-normal text-text-muted">
+            <MessageText content={lastContent} emojiSize={13} preview />
+          </div>
+        )}
+      </div>
+      {lastMessageTime > 0 && (
+        <span className="shrink-0 font-channel text-[10px] font-normal text-text-muted">
+          {formatRelativeTime(lastMessageTime, now)}
+        </span>
+      )}
+    </button>
+  );
+});

@@ -299,7 +299,7 @@ export default function ServerBar() {
 
         <button
           onClick={() => setActiveView("browse")}
-          className={`flex shrink-0 items-center justify-center rounded-md text-lg transition-all duration-150 ${
+          className={`flex shrink-0 items-center justify-center rounded-md text-lg transition-colors duration-150 ${
             activeView === "browse"
               ? "bg-success text-on-accent"
               : "border-[1.5px] border-dashed border-text-muted text-text-muted hover:border-accent hover:bg-accent-soft hover:text-accent"

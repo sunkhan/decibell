@@ -1,5 +1,5 @@
 import { LockGlyph } from "../chat/MessageBubble";
-import { useState, useRef, useEffect, useMemo, memo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback, memo } from "react";
 import { useMenuPosition } from "../../hooks/useMenuPosition";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
@@ -15,6 +15,7 @@ import { toast } from "../../stores/toastStore";
 import CreateChannelModal from "./CreateChannelModal";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { useSidebarResize } from "./useSidebarResize";
+import { EMPTY_LIST } from "../../lib/empty";
 import type { ChannelInfo } from "../../types";
 
 /// Server-mode sidebar. Mounted when activeView is "server" or
@@ -31,7 +32,9 @@ export default function ServerChannelsSidebar() {
   const serverMeta = useChatStore((s) => s.serverMeta);
   const setActiveChannel = useChatStore((s) => s.setActiveChannel);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
-  const channelPresence = useVoiceStore((s) => s.channelPresence);
+  // channelPresence is read per VoiceRow: it changes on every join, leave,
+  // mute and deafen in any channel of any server, and subscribing here
+  // re-rendered the whole sidebar for each one.
   const setActiveView = useUiStore((s) => s.setActiveView);
   // Drag/drop state lives inside TextChannelRow now — each row owns
   // its own per-row dragHoveredKey and dragActive subscriptions so
@@ -347,6 +350,11 @@ export default function ServerChannelsSidebar() {
     joinVoiceChannel(activeServerId, channelId).catch(console.error);
     setActiveView("voice");
   };
+  // Identity-stable entry point for memo(VoiceRow); always runs the latest
+  // handler.
+  const voiceClickRef = useRef(handleVoiceChannelClick);
+  voiceClickRef.current = handleVoiceChannelClick;
+  const onVoiceChannelClick = useCallback((id: string) => voiceClickRef.current(id), []);
 
   return (
     <div
@@ -444,11 +452,10 @@ export default function ServerChannelsSidebar() {
               {ch.type === "voice" ? (
                 <VoiceRow
                   channel={ch}
-                  presence={channelPresence[ch.id] ?? []}
                   connectedChannelId={connectedChannelId}
                   activeView={activeView}
                   canManage={rowManageable(ch)}
-                  onClick={() => handleVoiceChannelClick(ch.id)}
+                  onClick={onVoiceChannelClick}
                 />
               ) : (
                 <TextChannelRow
@@ -517,11 +524,10 @@ export default function ServerChannelsSidebar() {
                       {ch.type === "voice" ? (
                         <VoiceRow
                           channel={ch}
-                          presence={channelPresence[ch.id] ?? []}
                           connectedChannelId={connectedChannelId}
                           activeView={activeView}
                           canManage={rowManageable(ch)}
-                          onClick={() => handleVoiceChannelClick(ch.id)}
+                          onClick={onVoiceChannelClick}
                         />
                       ) : (
                         <TextChannelRow
@@ -790,7 +796,7 @@ const TextChannelRow = memo(function TextChannelRow({
           : isActive
             ? "bg-accent-soft text-text-bright font-semibold"
             : dragActive
-              ? "animate-[dropPulse_1.6s_ease-in-out_infinite] bg-accent-soft/30 text-text-secondary"
+              ? "drop-pulse bg-accent-soft/30 text-text-secondary"
               : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
       }`}
     >
@@ -914,27 +920,27 @@ function ContextMenuItem({
 
 /// Voice channel row + its participant lists. Extracted from the old
 /// inline voice-section map so the flat category renderer can place
-/// voice rows anywhere in the list.
-function VoiceRow({
+/// voice rows anywhere in the list. Memoised, and subscribes to its own
+/// channel's presence, so a voice update elsewhere doesn't re-render it.
+const VoiceRow = memo(function VoiceRow({
   channel,
-  presence,
   connectedChannelId,
   activeView,
   canManage,
   onClick,
 }: {
   channel: ChannelInfo;
-  presence: string[];
   connectedChannelId: string | null;
   activeView: string;
   canManage: boolean;
-  onClick: () => void;
+  onClick: (channelId: string) => void;
 }) {
+  const presence = useVoiceStore((s): string[] => s.channelPresence[channel.id] ?? EMPTY_LIST);
   const connected = connectedChannelId === channel.id;
   return (
     <div>
       <button
-        onClick={onClick}
+        onClick={() => onClick(channel.id)}
         data-reorder-id={channel.id}
         draggable={canManage}
         className={`list-row group flex w-full cursor-pointer items-center rounded-sm text-channel transition-colors ${
@@ -992,4 +998,4 @@ function VoiceRow({
       ) : null}
     </div>
   );
-}
+});

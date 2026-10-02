@@ -116,9 +116,9 @@
      at once, so the highlight smears along behind the pointer instead
      of tracking it. Hover feedback wants to be immediate — it's
      answering "where am I", not performing.
-     Deliberate motion opts in and is unaffected: the theme swap and
-     tile lifts at duration-150, modals at duration-300, plus every
-     keyframe animation below. */
+     Deliberate motion opts in and is unaffected: tile lifts at
+     duration-150, modals at duration-300, plus every keyframe animation
+     below. (The palette swap itself snaps — see AppLayout.) */
   --default-transition-duration: 0ms;
 
   --font-sans: var(--t-font-ui);
@@ -959,21 +959,25 @@ html, body, #root {
 }
 
 /* Drop-target "available" state — slow accent glow on every droppable
- * surface while a file drag is in flight. Animates only box-shadow so
- * it's GPU-composited (no layout/paint hit). Mixed off --color-accent
- * rather than a literal blue so the glow follows the theme instead of
- * staying blue under the mint palettes. */
-@keyframes dropPulse {
-  0%, 100% {
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent),
-      0 0 14px 0 color-mix(in srgb, var(--color-accent) 10%, transparent);
-  }
-  50% {
-    box-shadow:
-      0 0 0 1.5px color-mix(in srgb, var(--color-accent) 60%, transparent),
-      0 0 22px 4px color-mix(in srgb, var(--color-accent) 22%, transparent);
-  }
+ * surface while a file drag is in flight (and the "update ready" dot).
+ * The peak glow sits STATIC on a pseudo-element and only its opacity
+ * breathes, so Chromium composites it: zero paint per frame however many
+ * rows pulse. The old keyframe animated box-shadow itself, which is not
+ * compositable — every pulsing row and the composer repainted at 60 Hz for
+ * the whole drag (the same mistake ActiveTileGlow fixed on the ServerBar).
+ * The host must be positioned and must not clip (no overflow-hidden).
+ * Mixed off --color-accent so the glow follows the theme. Duration via
+ * --pulse-dur (default 1.6s). */
+.drop-pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 1.5px color-mix(in srgb, var(--color-accent) 60%, transparent),
+    0 0 22px 4px color-mix(in srgb, var(--color-accent) 22%, transparent);
+  animation: breathe var(--pulse-dur, 1.6s) ease-in-out infinite;
 }
 
 /* Drop-target "hovered" — quick swell when the cursor lands. */
@@ -984,7 +988,7 @@ html, body, #root {
 
 /* Active-tile breathing glow — animates opacity only so Chromium can
  * GPU-composite the layer. Animating box-shadow directly (the old
- * dropPulse approach) forced a full ServerBar repaint at 60 Hz and
+ * dropPulse keyframe) forced a full ServerBar repaint at 60 Hz and
  * landed idle CPU at 3-5 %. Apply via an absolutely-positioned overlay
  * whose static box-shadow carries the peak glow; this keyframe just
  * varies the layer's alpha. */

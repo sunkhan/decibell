@@ -43,6 +43,9 @@ export function UserAvatar({ username, size, className }: Props) {
           borderRadius: AVATAR_RADIUS,
         }}
         draggable={false}
+        // Pre-decoded by the store; sync keeps a remount (rows scrolling
+        // back in) from painting a blank frame first.
+        decoding="sync"
       />
     );
   }

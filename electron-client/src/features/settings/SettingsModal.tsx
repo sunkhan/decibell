@@ -141,7 +141,7 @@ export default function SettingsModal() {
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="flex h-[560px] w-[820px] overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-all duration-300"
+        className="flex h-[560px] w-[820px] overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-[opacity,transform] duration-300"
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",

@@ -35,6 +35,9 @@ interface AvatarStoreState {
   /// the cached entry's version, invalidate (revoke blobUrl, mark
   /// idle) so the next render fetches fresh.
   setVersion: (username: string, version: string) => void;
+  /// Batched setVersion — one Map copy and one notify for a whole
+  /// friend / presence list instead of one per user.
+  setVersions: (list: { username: string; version: string }[]) => void;
   /// Trigger a fetch if the entry is `idle` (just-invalidated or
   /// never-seen). No-op when already loading/loaded/missing/error.
   fetchIfNeeded: (username: string) => void;
@@ -66,6 +69,19 @@ export const useAvatarStore = create<AvatarStoreState>((set, get) => ({
     });
   },
 
+  setVersions: (list) => {
+    const cur = get().entries;
+    let next: Map<string, AvatarEntry> | null = null;
+    for (const { username, version } of list) {
+      const existing = cur.get(username);
+      if (existing && existing.version === version) continue;
+      if (existing?.blobUrl) URL.revokeObjectURL(existing.blobUrl);
+      if (!next) next = new Map(cur);
+      next.set(username, { version, data: null, blobUrl: null, status: "idle" });
+    }
+    if (next) set({ entries: next });
+  },
+
   fetchIfNeeded: (username) => {
     const entry = get().entries.get(username);
     // Only fetch from `idle`. Loading / loaded / missing / error skip.
@@ -82,10 +98,22 @@ export const useAvatarStore = create<AvatarStoreState>((set, get) => ({
           version: string;
           data: Uint8Array;
         };
+        let blobUrl: string | null = null;
+        if (result.version && result.data.byteLength > 0) {
+          blobUrl = URL.createObjectURL(
+            new Blob([result.data as BlobPart], { type: "image/jpeg" }),
+          );
+          // Decode before flipping to `loaded`: UserAvatar swaps the letter
+          // for a brand-new <img>, and an undecoded one paints a blank frame
+          // between the two. Same fix as the attachment prefetch.
+          const img = new Image();
+          img.src = blobUrl;
+          await img.decode().catch(() => {});
+        }
         set((s) => {
           const next = new Map(s.entries);
           const cur = next.get(username);
-          if (!result.version || result.data.byteLength === 0) {
+          if (!blobUrl) {
             next.set(username, {
               version: result.version,
               data: null,
@@ -97,10 +125,6 @@ export const useAvatarStore = create<AvatarStoreState>((set, get) => ({
             // previous version (defensive — setVersion should have
             // done this on invalidation, but races are cheap to guard).
             if (cur?.blobUrl) URL.revokeObjectURL(cur.blobUrl);
-            const blob = new Blob([result.data as BlobPart], {
-              type: "image/jpeg",
-            });
-            const blobUrl = URL.createObjectURL(blob);
             next.set(username, {
               version: result.version,
               // Drop the raw bytes once the blob URL exists — only blobUrl

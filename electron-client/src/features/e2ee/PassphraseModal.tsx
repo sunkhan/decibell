@@ -153,7 +153,7 @@ export default function PassphraseModal() {
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="w-full max-w-[440px] rounded-xl border border-border bg-bg-secondary p-6 shadow-modal transition-all duration-300"
+        className="w-full max-w-[440px] rounded-xl border border-border bg-bg-secondary p-6 shadow-modal transition-[opacity,transform] duration-300"
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",

@@ -81,7 +81,6 @@ export default function MainLayout() {
   // Cross-cutting concerns: the central-server reconnecting banner
   // and the OS window title.
   useCentralConnectionStatus();
-  useWindowTitle();
 
   useEffect(() => {
     invoke("request_friend_list").catch(console.error);
@@ -97,6 +96,9 @@ export default function MainLayout() {
       )}
 
       <CrashReportingBanner />
+      {/* Its own component: the hook subscribes to `servers` and the active
+          DM peer, which would otherwise re-render this whole layout. */}
+      <WindowTitleSync />
 
       <ServerBar />
 
@@ -177,4 +179,9 @@ export default function MainLayout() {
       <PersistentVideoLayer />
     </div>
   );
+}
+
+function WindowTitleSync() {
+  useWindowTitle();
+  return null;
 }

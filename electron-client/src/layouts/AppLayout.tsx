@@ -64,16 +64,23 @@ export default function AppLayout() {
       Sentry.setTag("connected_servers", String(size));
     };
     apply(useChatStore.getState().connectedServers.size);
-    return useChatStore.subscribe((state) => {
-      apply(state.connectedServers.size);
+    // Only on an actual change: setTag notifies Sentry's scope listeners,
+    // and the Electron SDK serialises the whole scope to main over IPC each
+    // time — this subscription fires on every chatStore write (each
+    // message, each resize tick).
+    return useChatStore.subscribe((state, prev) => {
+      if (state.connectedServers !== prev.connectedServers) {
+        apply(state.connectedServers.size);
+      }
     });
   }, []);
 
   return (
-    // transition-colors on the root eases the palette swap instead of
-    // snapping it. Deliberately not on box-shadow: the ServerBar's
-    // glow repaints at 60Hz if you animate it (see globals.css).
-    <div className="relative flex h-screen w-screen flex-col bg-bg-primary text-text-primary transition-colors duration-150">
+    // No transition on the root: easing the palette swap here faded
+    // inherited text across the whole tree (a per-frame style recalc of
+    // every node) while token-coloured surfaces snapped anyway — a
+    // low-contrast flash, not a fade. The swap snaps, like the rest.
+    <div className="relative flex h-screen w-screen flex-col bg-bg-primary text-text-primary">
       <Titlebar />
       <div className="flex min-h-0 flex-1">
         <Outlet />
