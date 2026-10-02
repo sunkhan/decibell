@@ -14,6 +14,9 @@ import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
 // Stall detection thresholds (no painted frame for this long).
 const STALL_MS = 3000; // → show a "reconnecting" indicator + ping for a keyframe
 const STALL_HARD_MS = 6000; // → also reset the decoder to recover a wedged one
+// Stall-timer ticks (1 s) with frames arriving and none painted before a
+// hardware decoder is abandoned for software.
+const HW_NO_OUTPUT_TICKS = 6;
 
 function codecLabel(codec: VideoCodec): string {
   const s = videoCodecToWebCodecsString(codec);
@@ -223,8 +226,13 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     let firstFrameSignalled = false;
 
     let decoder: VideoDecoder | null = null;
-    {
-      decoder = new VideoDecoder({
+    // A decode or configure error CLOSES a WebCodecs decoder for good (per
+    // spec) — reset()/configure() on it throw, which is why every recovery
+    // path below checks `state !== "closed"` and, before this, a single
+    // error left the player dead until the view remounted. createDecoder
+    // builds a replacement on the next frame (see handleFrame).
+    const createDecoder = (): VideoDecoder =>
+      new VideoDecoder({
         output: (frame: VideoFrame) => {
           try {
             framesDecodedRef.current++;
@@ -290,12 +298,15 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         },
         error: handleDecoderError,
       });
+    {
+      decoder = createDecoder();
       // Configure lazily on the first frame once its codec is known, rather than
       // speculatively as H.264 here (which cost an extra reset+reconfigure for
       // AV1/HEVC — see the first-frame branch in handleFrame).
       decoderRef.current = decoder;
       needsKeyframeRef.current = true;
     }
+    let lastRecreateAt = 0;
 
     // Per-frame handler shared between the wire and self-preview paths.
     // `data` and `description` are read but never mutated — the wire
@@ -308,7 +319,20 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       description: Uint8Array | null,
       codec: number,
     ) => {
-      if (!decoder || decoder.state === "closed") return;
+      if (!decoder) return;
+      if (decoder.state === "closed") {
+        // Closed by an error (handleDecoderError already asked for a
+        // keyframe and, for a HW decoder that never painted, dropped to
+        // software). Rebuild — throttled so a config that fails every time
+        // can't spin — and let the first-frame branch below configure it.
+        const now = performance.now();
+        if (now - lastRecreateAt < 500) return;
+        lastRecreateAt = now;
+        decoder = createDecoder();
+        decoderRef.current = decoder;
+        configuredRef.current = false;
+        needsKeyframeRef.current = true;
+      }
 
       // Count every frame that arrives (before any drop/decode). For your own
       // stream this is the encode/capture rate; for a remote stream it's the
@@ -535,6 +559,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     // doubles as a liveness probe, so a static-but-alive stream answers and
     // clears immediately. Escalates to a decoder reset if it stays wedged.
     lastFrameAtRef.current = performance.now();
+    let neverPaintedTicks = 0;
     const stallTimer = window.setInterval(() => {
       // An intentional visibility pause isn't a stall — keep the clock fresh.
       if (hiddenRef.current) {
@@ -548,6 +573,27 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
         // on the spinner until the streamer's next natural GOP… or
         // forever, when the request never made it at all.
         requestKeyframe();
+        // A hardware decoder can accept the config and then never emit a
+        // frame (no error, so handleDecoderError's HW→SW switch never
+        // fires). After a few seconds of frames arriving with nothing
+        // painted, drop to software once.
+        neverPaintedTicks += 1;
+        if (
+          neverPaintedTicks >= HW_NO_OUTPUT_TICKS &&
+          usingHwRef.current &&
+          preferHwRef.current &&
+          framesReceivedRef.current > 0 &&
+          decoder &&
+          decoder.state !== "closed"
+        ) {
+          console.warn(
+            "[StreamVideoPlayer] hardware decoder produced no frames — falling back to software",
+          );
+          preferHwRef.current = false;
+          decoder.reset();
+          configureDecoder(decoder, descriptionRef.current ?? undefined);
+          needsKeyframeRef.current = true;
+        }
         return;
       }
       const since = performance.now() - lastFrameAtRef.current;

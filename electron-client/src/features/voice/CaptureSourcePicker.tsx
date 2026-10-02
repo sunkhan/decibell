@@ -5,7 +5,11 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
 import { VideoCodec, type CaptureSource } from "../../types";
 import { playSound } from "../../utils/sounds";
-import { startActiveStream, stopActiveStream } from "./streaming/StreamCapture";
+import {
+  activeStreamCapture,
+  startActiveStream,
+  stopActiveStream,
+} from "./streaming/StreamCapture";
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { announceCallStreamStart, announceCallStreamStop } from "../call/callActions";
 import SegmentedControl from "../../components/SegmentedControl";
@@ -135,6 +139,19 @@ export default function CaptureSourcePicker({
         await stopActiveStream();
         throw e;
       }
+      // What the session really encodes: a native→WebCodecs fallback
+      // downgrades HEVC/AV1 to H.264. Announcing the requested codec made
+      // the server enforce HEVC on watchers of an H.264 stream. An
+      // enforcement the stream no longer satisfies is dropped.
+      const activeCodec = stream.activeCodec;
+      const enforcedCodec =
+        streamSettings.enforcedCodec && streamSettings.enforcedCodec === activeCodec
+          ? streamSettings.enforcedCodec
+          : 0;
+      // The session can end while we await (encoder error, native failure
+      // event, a stop from elsewhere). Don't resurrect it as "streaming".
+      const superseded = () => activeStreamCapture() !== stream;
+      if (superseded()) throw new Error("Stream ended while starting");
 
       // Native signaling: register the stream with the truthful
       // dimensions. On Linux/macOS this is where StartStreamReq
@@ -161,8 +178,8 @@ export default function CaptureSourcePicker({
             audioBitrateKbps: streamSettings.audioBitrateKbps,
             audioMode: streamSettings.audioMode,
             audioApps: streamSettings.audioApps,
-            initialCodec: codec,
-            enforcedCodec: streamSettings.enforcedCodec || 0,
+            initialCodec: activeCodec,
+            enforcedCodec,
             // Explicit false: the renderer owns capture + encode on this
             // branch. Windows honours this now (WebCodecs fallback) —
             // omitting it defaults to the native pipeline there.
@@ -175,11 +192,19 @@ export default function CaptureSourcePicker({
         }
       }
 
+      if (superseded()) {
+        // Its stop may have run before the start_screen_share above
+        // created the WebCodecs-path VideoEngine — tear that down too.
+        if (!isNativeEncodeActive()) {
+          await invoke("stop_screen_share", { serverId, channelId }).catch(() => {});
+        }
+        throw new Error("Stream ended while starting");
+      }
       useVoiceStore.getState().setIsStreaming(true);
       // P2P DM call: no community presence broadcast — tell the peer
       // directly (no-op outside a call).
       announceCallStreamStart({
-        codec,
+        codec: activeCodec,
         width: actualDims.width,
         height: actualDims.height,
         fps: streamSettings.fps,

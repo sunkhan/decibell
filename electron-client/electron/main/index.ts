@@ -8,7 +8,7 @@ import {
   registerFileProtocol,
   registerCustomSchemes,
 } from "./protocol";
-import { initAddon, shutdownAddon } from "./addon";
+import { callCommand, initAddon, shutdownAddon } from "./addon";
 import { registerWindowHandlers, attachWindowEvents, hardenNavigation } from "./window";
 import { registerDialogHandlers } from "./dialog";
 import { registerFsHandlers } from "./fs";
@@ -454,6 +454,29 @@ function createWindow(): void {
     kickoffInitialCheck();
   });
   attachWindowEvents(mainWindow);
+  // A screen share lives in native (capture + encode + UDP) and outlives the
+  // renderer that started it. After a reload or a renderer crash the new UI
+  // believes nothing is streaming (and Go Live hits "Already sharing
+  // screen") while the screen and its audio keep broadcasting — stop it.
+  // Idempotent (a no-op when nothing is shared); with no ids, native falls
+  // back to the server/channel the stream was started with.
+  let firstLoad = true;
+  const stopOrphanedShare = (why: string) => {
+    void Promise.resolve()
+      .then(() => callCommand("stopScreenShare", {}))
+      .then(() => console.log(`[stream] native share stopped (${why})`))
+      .catch(() => {});
+  };
+  mainWindow.webContents.on("did-start-loading", () => {
+    if (firstLoad) {
+      firstLoad = false;
+      return;
+    }
+    stopOrphanedShare("renderer reload");
+  });
+  mainWindow.webContents.on("render-process-gone", (_e, details) => {
+    stopOrphanedShare(`renderer gone: ${details.reason}`);
+  });
   // Block off-origin top-frame navigation / window.open / <webview>.
   hardenNavigation(
     mainWindow,
@@ -682,7 +705,8 @@ app.whenReady().then(async () => {
   session.defaultSession.setDisplayMediaRequestHandler(
     (_request, callback) => {
       desktopCapturer
-        .getSources({ types: ["screen", "window"] })
+        // Ids only — 0×0 skips Chromium's per-source thumbnail capture.
+        .getSources({ types: ["screen", "window"], thumbnailSize: { width: 0, height: 0 } })
         .then((sources) => {
           if (sources.length === 0) {
             callback({});
@@ -697,8 +721,15 @@ app.whenReady().then(async () => {
           let chosen = sources[0];
           if (pendingCaptureSourceId) {
             const found = sources.find((s) => s.id === pendingCaptureSourceId);
-            if (found) chosen = found;
             pendingCaptureSourceId = null;
+            // The picked window/screen is gone (closed between pick and
+            // capture): refuse rather than silently sharing sources[0] —
+            // the primary monitor — which the user never chose.
+            if (!found) {
+              callback({});
+              return;
+            }
+            chosen = found;
           }
           callback({ video: chosen });
         })

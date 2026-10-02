@@ -253,7 +253,10 @@ export async function probeEncoders(force = false): Promise<CodecCapability[]> {
 async function probeNativeEncoders(
   force: boolean,
 ): Promise<CodecCapability[]> {
-  const NATIVE_KEY = "decibell.native_encoder_caps.v1";
+  // v2: the probe no longer lists QSV (the native encoder can't open it), so
+  // v1 caches could advertise codecs only QSV provided — e.g. AV1 on an
+  // Intel iGPU — that then failed every Go Live.
+  const NATIVE_KEY = "decibell.native_encoder_caps.v2";
   let caps: CodecCapability[] | null = null;
   if (!force) {
     const cached = localStorage.getItem(NATIVE_KEY);
@@ -265,6 +268,31 @@ async function probeNativeEncoders(
             `[encoderProbe/native] using cached caps (${parsed.length} codecs)`,
           );
           caps = parsed;
+          // The cache used to live forever, so a GPU swap or driver update
+          // kept offering codecs that no longer opened. Re-probe quietly
+          // once the app has settled (the probe runs off the main thread)
+          // and refresh the cache for the next launch; this session keeps
+          // the caps it booted with.
+          window.setTimeout(() => {
+            invoke("probe_native_encoders", {})
+              .then((raw) => {
+                const fresh = (raw as {
+                  codec: number;
+                  maxWidth: number;
+                  maxHeight: number;
+                  maxFps: number;
+                  hardware: boolean;
+                }[]).map((c) => ({
+                  codec: c.codec as VideoCodec,
+                  maxWidth: c.maxWidth,
+                  maxHeight: c.maxHeight,
+                  maxFps: c.maxFps,
+                  hardware: c.hardware,
+                }));
+                localStorage.setItem(NATIVE_KEY, JSON.stringify(fresh));
+              })
+              .catch(() => {});
+          }, 15_000);
         }
       } catch {
         /* fall through and re-probe */

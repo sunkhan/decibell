@@ -350,7 +350,7 @@ export function useVoiceEvents() {
         playSound("stream_stop");
         toast.error(
           "Stream stopped",
-          "The native encoder failed. Try again — if it keeps failing, streaming will use software encoding.",
+          "The GPU encoder or screen capture stopped. Try going live again.",
         );
       }),
     );

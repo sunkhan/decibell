@@ -146,6 +146,14 @@ export class StreamCapture {
     return this.opts.sourceId;
   }
 
+  /// The codec this session actually encodes — differs from the requested
+  /// one after a native→WebCodecs fallback downgrade. Announce THIS, not
+  /// the picker's choice: the server enforces the announced codec on
+  /// watchers.
+  get activeCodec(): VideoCodec {
+    return this.codec;
+  }
+
   constructor(opts: StreamCaptureOptions) {
     this.opts = opts;
     this.codec = opts.codec === 0 ? VideoCodec.H264_HW : opts.codec;
@@ -198,6 +206,11 @@ export class StreamCapture {
         );
         return { width: this.opts.width, height: this.opts.height };
       } catch (e) {
+        // Session-state refusals ("Already sharing screen", not in voice,
+        // connection lost, send timed out) say nothing about the GPU
+        // pipeline — the WebCodecs path would hit the same wall, and
+        // markNativeEncodeFailed is sticky for the session. Surface them.
+        if (isSessionStateError(e)) throw e;
         // Native pipeline failed to start (encoder open, capture init,
         // no HW encoder on this GPU/driver…). Fall back to the renderer
         // WebCodecs path instead of failing Go Live outright — OpenH264
@@ -211,9 +224,11 @@ export class StreamCapture {
         );
         markNativeEncodeFailed();
         this.usedNative = false;
-        if (this.codec === VideoCodec.H265) {
-          // WebCodecs HEVC encode needs platform support that is
-          // usually absent; H.264 always has the OpenH264 floor.
+        if (this.codec !== VideoCodec.H264_HW && this.codec !== VideoCodec.H264_SW) {
+          // WebCodecs HEVC encode needs platform support that is usually
+          // absent, and AV1 would land on libaom software — far too slow
+          // for live capture. H.264 always has the OpenH264 floor.
+          // activeCodec reports the downgrade so the picker announces it.
           this.codec = VideoCodec.H264_HW;
         }
         toast.warning(
@@ -356,6 +371,15 @@ export class StreamCapture {
       hardwareAcceleration:
         this.codec === VideoCodec.H264_SW ? "prefer-software" : "prefer-hardware",
     };
+    if (this.codec === VideoCodec.H264_HW || this.codec === VideoCodec.H264_SW) {
+      // Annex B with SPS/PPS inline on keyframes — what the native
+      // encoders put on the wire and what every receiver decodes without
+      // a description. WebCodecs defaults to "avc" (length-prefixed, the
+      // parameter sets only in an avcC description), and send_video_frame
+      // forwards descriptions for HEVC/AV1 only, so remote watchers got
+      // an H.264 stream they couldn't configure for.
+      encoderConfig.avc = { format: "annexb" };
+    }
 
     // Soft pre-flight: confirm the codec family + level + bitrate are
     // even accepted at this resolution. Strips `latencyMode` and
@@ -612,7 +636,11 @@ export class StreamCapture {
           // consumption too — otherwise a requested keyframe can be
           // silently swallowed during a spike and watchers stay stuck
           // on the previous GOP until the next natural IDR.
-          if (this.encoder.encodeQueueSize < 4) {
+          // A closed encoder is mid-recovery (handleEncoderError swaps in
+          // a prefer-software one) — skip the frame instead of throwing out
+          // of the loop, which used to end the pump with the stream still
+          // announced.
+          if (this.encoder.state === "configured" && this.encoder.encodeQueueSize < 4) {
             const encodeOpts: VideoEncoderEncodeOptions = {};
             if (this.wantKeyframe) {
               encodeOpts.keyFrame = true;
@@ -640,7 +668,12 @@ export class StreamCapture {
       }
     } catch (e) {
       if (!this.stopping) {
+        // Nothing would ever feed the encoder again: end the stream
+        // visibly instead of leaving it announced over a dead pump.
         console.error("[StreamCapture] pump loop error:", e);
+        toast.error("Stream stopped", "Screen capture stopped unexpectedly.");
+        this.opts.onCaptureEnded?.();
+        this.stop().catch(() => {});
       }
     }
   }
@@ -766,7 +799,9 @@ export class StreamCapture {
       "Stream stopped",
       `${videoCodecHumanName(this.codec)} encoder failed and could not be recovered.`,
     );
-    this.stopping = true;
+    // stop() sets `stopping` itself. Setting it here first turned stop()
+    // into a no-op, so the capture tracks and reader were never released —
+    // the desktop capture ran on for the rest of the session.
     this.opts.onCaptureEnded?.();
     this.stop().catch(() => {});
   }
@@ -798,6 +833,15 @@ export class StreamCapture {
       }).catch(() => {});
       return;
     }
+    // WebCodecs path: the VideoEngine (send sockets + announce) was created
+    // by the picker's start_screen_share. Tear it down here too — callers
+    // that only call stopActiveStream() (a voice kick, a failed encoder)
+    // otherwise orphaned it, and every later Go Live hit "Already sharing
+    // screen". Idempotent, like the native branch.
+    const stopNative = invoke("stop_screen_share", {
+      serverId: this.opts.serverId,
+      channelId: this.opts.channelId,
+    }).catch(() => {});
     try {
       this.reader?.cancel().catch(() => {});
     } catch {
@@ -818,6 +862,7 @@ export class StreamCapture {
       }
       this.stream = null;
     }
+    await stopNative;
   }
 
   /// Move an already-running stream to a different voice channel WITHOUT
@@ -863,6 +908,16 @@ export class StreamCapture {
 // session in the app. UserPanel's "Stop sharing" button calls
 // `stopActiveStream()` to tear it down without needing to pass the
 // instance through the component tree.
+/// start_screen_share refusals that are about session state, not the GPU
+/// pipeline (see the native-fallback catch in start()). Matches the native
+/// error strings in commands/streaming.rs.
+function isSessionStateError(e: unknown): boolean {
+  const msg = String(e instanceof Error ? e.message : e);
+  return /already sharing|must be in a voice|not authenticated|required outside a call|connection lost|connection closed|send timed out/i.test(
+    msg,
+  );
+}
+
 let active: StreamCapture | null = null;
 
 export async function startActiveStream(
