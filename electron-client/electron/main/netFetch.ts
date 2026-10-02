@@ -1,4 +1,4 @@
-import { ipcMain, net } from "electron";
+import { app, ipcMain, net } from "electron";
 import { fetchDecryptedAttachment } from "./attachmentFetch";
 import {
   setAttachmentTarget,
@@ -98,12 +98,16 @@ export function registerNetHandlers(): void {
           : typeof init.body === "string"
             ? init.body.length
             : 0;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[netFetch] ${init.method ?? "GET"} ${finalUrl} body=${bodyLen} off=${
-          headers["Upload-Offset"] ?? "-"
-        }`,
-      );
+      if (!app.isPackaged) {
+        // Dev only: an upload is one of these per chunk, and main-process
+        // stdout writes are synchronous.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[netFetch] ${init.method ?? "GET"} ${finalUrl} body=${bodyLen} off=${
+            headers["Upload-Offset"] ?? "-"
+          }`,
+        );
+      }
 
       // net.fetch accepts string / ArrayBuffer / Uint8Array as body.
       // The structured-clone of a renderer-side Uint8Array arrives as
@@ -119,8 +123,10 @@ export function registerNetHandlers(): void {
 
       try {
         const response = await net.fetch(finalUrl, fetchInit);
-        // eslint-disable-next-line no-console
-        console.log(`[netFetch] → ${response.status} ${response.statusText}`);
+        if (!app.isPackaged) {
+          // eslint-disable-next-line no-console
+          console.log(`[netFetch] → ${response.status} ${response.statusText}`);
+        }
         const responseHeaders: Record<string, string> = {};
         response.headers.forEach((value, key) => {
           responseHeaders[key] = value;

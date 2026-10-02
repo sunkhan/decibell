@@ -620,3 +620,16 @@ pub async fn set_stream_output_device(args: SetStreamOutputDeviceArgs) -> napi::
     }
     Ok(())
 }
+
+#[napi(object)]
+pub struct SetInputLevelReportingArgs {
+    pub enabled: bool,
+}
+
+/// Gate the `voice_input_level` event (~16 Hz while in voice). Only the
+/// Settings → Audio meter listens, so it switches reporting on while
+/// mounted and off on unmount; default off. Sync: one atomic store.
+#[napi]
+pub fn set_input_level_reporting(args: SetInputLevelReportingArgs) {
+    events::set_input_level_reporting(args.enabled);
+}

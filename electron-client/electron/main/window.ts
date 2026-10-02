@@ -102,11 +102,27 @@ export function hardenNavigation(win: BrowserWindow, allowedOrigin: string): voi
   });
 }
 
-/// Forward the Electron-side resize / maximize / unmaximize lifecycle
-/// to the renderer as a single 'decibell:window:resized' event so the
-/// Titlebar can re-query isMaximized() and update its restore icon.
+/// Forward the Electron-side resize / maximize / unmaximize / fullscreen
+/// lifecycle to the renderer as 'decibell:window:resized' carrying the
+/// maximized state — and only when that state changed. The Titlebar used
+/// to answer every resize step (dozens per second while dragging an edge)
+/// with an isMaximized() invoke; now it just mirrors this payload. Every
+/// event still re-evaluates isMaximized() here, so a WM that settles the
+/// state a step late is still caught.
 export function attachWindowEvents(win: BrowserWindow): void {
-  const fire = () => win.webContents.send("decibell:window:resized");
+  let last: boolean | null = null;
+  const fire = () => {
+    if (win.isDestroyed()) return;
+    const maximized = win.isMaximized();
+    if (maximized === last) return;
+    last = maximized;
+    win.webContents.send("decibell:window:resized", maximized);
+  };
+  // A reloaded renderer re-reads isMaximized() on mount; forget what the
+  // previous document was told so the next change is always sent.
+  win.webContents.on("did-start-loading", () => {
+    last = null;
+  });
   win.on("resize", fire);
   win.on("maximize", fire);
   win.on("unmaximize", fire);

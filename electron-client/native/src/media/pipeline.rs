@@ -804,11 +804,15 @@ pub fn run_audio_pipeline(
                     gate_tail_remaining = GATE_TAIL_FRAMES;
                 }
 
-                // Emit input level for the UI meter (~every 60ms)
+                // Emit input level for the UI meter (~every 60ms) — only
+                // while Settings → Audio's meter has reporting switched on
+                // (set_input_level_reporting); nothing else listens.
                 input_level_counter += 1;
                 if input_level_counter >= 3 {
                     input_level_counter = 0;
-                    let _ = event_tx.send(VoiceEvent::InputLevel(rms_db));
+                    if crate::events::input_level_reporting_enabled() {
+                        let _ = event_tx.send(VoiceEvent::InputLevel(rms_db));
+                    }
                 }
 
                 // Speaking detection based on threshold (no hysteresis — this is

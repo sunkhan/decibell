@@ -61,6 +61,13 @@ export default function CallStage({ peer }: { peer: string }) {
 }
 
 const OVERLAY_HIDE_MS = 2500;
+// Chat keeps at least this much room under the compact stage.
+const CHAT_MIN = 180;
+
+// One handle for the module: getCurrentWindow() builds a fresh object per
+// call, which made the fullscreen callbacks (and the effects keyed on them)
+// change identity on every render.
+const appWindow = getCurrentWindow();
 
 function formatDuration(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -101,12 +108,12 @@ function Stage({ peer }: { peer: string }) {
   const me = useAuthStore((s) => s.username) ?? "";
   const status = useCallStore((s) => s.status);
   const verified = useCallStore((s) => s.verified);
-  const ringingAcked = useCallStore((s) => s.ringingAcked);
-  const startedAt = useCallStore((s) => s.startedAt);
-  const connectedPath = useCallStore((s) => s.connectedPath);
+  // Only whether there IS a start time — the ticking duration, ping and
+  // path live in <CallStatusText>, so the 1 s tick and the 3 s ping
+  // re-render that text node instead of the whole stage.
+  const hasStartedAt = useCallStore((s) => !!s.startedAt);
   const theater = useCallStore((s) => s.theater);
   const setTheater = useCallStore((s) => s.setTheater);
-  const latencyMs = useVoiceStore((s) => s.latencyMs);
   const isMuted = useVoiceStore((s) => s.isMuted);
   const isDeafened = useVoiceStore((s) => s.isDeafened);
   const error = useVoiceStore((s) => s.error);
@@ -144,14 +151,6 @@ function Stage({ peer }: { peer: string }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [resizing, setResizing] = useState(false);
 
-  // 1 s tick for the duration readout.
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!live) return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [live]);
-
   // Claim the persistent player into our slot whenever a stream is focused
   // here (re-runs on focus change so we reclaim it from the mini player).
   // On the way out, detach the host from our slot explicitly: it was
@@ -171,17 +170,16 @@ function Stage({ peer }: { peer: string }) {
   }, [focused, isFullscreen, theater]);
 
   // ── fullscreen ──
-  const appWindow = getCurrentWindow();
   const enterFullscreen = useCallback(async () => {
     setStreamFullscreen(true);
     setOverlayVisible(true);
     await appWindow.setFullscreen(true).catch(() => {});
-  }, [appWindow, setStreamFullscreen]);
+  }, [setStreamFullscreen]);
   const exitFullscreen = useCallback(async () => {
     setStreamFullscreen(false);
     setOverlayVisible(true);
     await appWindow.setFullscreen(false).catch(() => {});
-  }, [appWindow, setStreamFullscreen]);
+  }, [setStreamFullscreen]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -251,28 +249,16 @@ function Stage({ peer }: { peer: string }) {
   };
   const toggleTheater = () => setTheater(!theater, msgCount);
 
-  const statusText =
-    status === "outgoing"
-      ? ringingAcked
-        ? "Ringing…"
-        : "Calling…"
-      : status === "connecting"
-        ? "Connecting…"
-        : live && startedAt
-          ? [
-              formatDuration(now - startedAt),
-              latencyMs != null ? `${latencyMs} ms` : null,
-              connectedPath === "host" ? "LAN" : connectedPath === "srflx" ? "direct" : null,
-            ]
-              .filter(Boolean)
-              .join(" · ")
-          : "";
+  // Non-empty exactly when <CallStatusText> renders something (the live
+  // branch always has at least the duration).
+  const hasStatus =
+    status === "outgoing" || status === "connecting" || (live && hasStartedAt);
+  const statusNode = hasStatus ? <CallStatusText /> : null;
 
   // ── resize (compact stage only): drag the bottom edge ──
   // Imperative during the drag (no per-frame React state), committed to
   // uiStore on release so it persists per mode. The chat below keeps at
   // least CHAT_MIN px; double-click resets the mode's default.
-  const CHAT_MIN = 180;
   const compact = !isFullscreen && !theater;
   const mode: "voice" | "stream" = focused ? "stream" : "voice";
   const stageHeight = mode === "stream" ? streamHeight : voiceHeight;
@@ -280,6 +266,20 @@ function Stage({ peer }: { peer: string }) {
     const parent = rootRef.current?.parentElement;
     return parent ? Math.max(CALL_STAGE_MIN, parent.clientHeight - 48 - CHAT_MIN) : Infinity;
   };
+  // The compact height cap depends on the parent's height. Track it with a
+  // ResizeObserver instead of reading clientHeight during render (a forced
+  // layout on every render — and the stage used to re-render every second).
+  const [parentHeight, setParentHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const parent = rootRef.current?.parentElement;
+    if (!parent) return;
+    setParentHeight(parent.clientHeight);
+    const ro = new ResizeObserver(() => setParentHeight(parent.clientHeight));
+    ro.observe(parent);
+    return () => ro.disconnect();
+  }, []);
+  const maxCompactHeight =
+    parentHeight != null ? Math.max(CALL_STAGE_MIN, parentHeight - 48 - CHAT_MIN) : Infinity;
   const onResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!compact || !rootRef.current) return;
     e.preventDefault();
@@ -312,7 +312,7 @@ function Stage({ peer }: { peer: string }) {
       ? "relative flex min-h-0 flex-1 flex-col border-b border-border bg-bg-darkest"
       : "relative flex shrink-0 flex-col border-b border-border bg-bg-darkest";
   const rootStyle = compact
-    ? { height: Math.min(stageHeight, maxStageHeight()), userSelect: resizing ? ("none" as const) : undefined }
+    ? { height: Math.min(stageHeight, maxCompactHeight), userSelect: resizing ? ("none" as const) : undefined }
     : undefined;
   const overlayClass = `transition-opacity duration-300 ${overlayVisible ? "opacity-100" : "opacity-0"}`;
 
@@ -362,12 +362,16 @@ function Stage({ peer }: { peer: string }) {
             <Pill live>
               {focused === me ? "Your screen" : `${focused}'s screen`}
             </Pill>
-            {(qualityLabel(focusedInfo) || statusText) && (
-              <Pill>{[qualityLabel(focusedInfo), statusText].filter(Boolean).join(" · ")}</Pill>
+            {(qualityLabel(focusedInfo) || hasStatus) && (
+              <Pill>
+                {qualityLabel(focusedInfo)}
+                {qualityLabel(focusedInfo) && hasStatus ? " · " : null}
+                {statusNode}
+              </Pill>
             )}
           </>
         ) : (
-          statusText && <Pill dot={live}>{statusText}</Pill>
+          hasStatus && <Pill dot={live}>{statusNode}</Pill>
         )}
         {/* E2EE: the peer's call key was signed by their identity and checked
             against the pinned one (native, before any media key existed). */}
@@ -490,6 +494,44 @@ function Stage({ peer }: { peer: string }) {
 
 // ── pieces ────────────────────────────────────────────────────────
 
+/// The call status readout ("Calling…", "Ringing…", "Connecting…", or
+/// "mm:ss · 42 ms · direct" once live). Owns the 1 s duration tick and the
+/// ping / path subscriptions, so neither re-renders the whole stage.
+function CallStatusText() {
+  const status = useCallStore((s) => s.status);
+  const ringingAcked = useCallStore((s) => s.ringingAcked);
+  const startedAt = useCallStore((s) => s.startedAt);
+  const connectedPath = useCallStore((s) => s.connectedPath);
+  const latencyMs = useVoiceStore((s) => s.latencyMs);
+  const live = status === "active";
+
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!live) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [live]);
+
+  const text =
+    status === "outgoing"
+      ? ringingAcked
+        ? "Ringing…"
+        : "Calling…"
+      : status === "connecting"
+        ? "Connecting…"
+        : live && startedAt
+          ? [
+              formatDuration(now - startedAt),
+              latencyMs != null ? `${latencyMs} ms` : null,
+              connectedPath === "host" ? "LAN" : connectedPath === "srflx" ? "direct" : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")
+          : "";
+  return <>{text}</>;
+}
+
 function Pill({ children, live, dot }: { children: React.ReactNode; live?: boolean; dot?: boolean }) {
   return (
     <div className="flex h-6 items-center gap-1.5 whitespace-nowrap rounded-sm border border-white/10 bg-black/70 px-2.5 text-[11px] tabular-nums text-text-primary">
@@ -588,8 +630,10 @@ const CallTile = memo(function CallTile({ username, muted, dim, pulse }: CallTil
     >
       <div className="relative">
         {pulse && <div className="absolute inset-0 animate-ping rounded-lg bg-accent/20" />}
+        {/* Instant ring (no transition), like UserPanel's — an animated
+            box-shadow repaints for 150 ms on every speaking flip. */}
         <div
-          className={`relative rounded-lg transition-all duration-150 ${
+          className={`relative rounded-lg ${
             isSpeaking
               ? "shadow-[0_0_0_3px_var(--color-bg-darkest),0_0_0_5px_var(--color-success)]"
               : ""
@@ -695,7 +739,7 @@ const PeerChip = memo(function PeerChip({ username, muted }: { username: string;
       }}
     >
       <div
-        className={`rounded-md transition-all duration-150 ${
+        className={`rounded-md ${
           isSpeaking ? "shadow-[0_0_0_2px_rgba(0,0,0,0.9),0_0_0_4px_var(--color-success)]" : ""
         }`}
       >

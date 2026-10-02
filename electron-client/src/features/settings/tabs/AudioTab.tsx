@@ -239,6 +239,18 @@ function VoiceThresholdBar() {
   // animRef stays unused here; kept for symmetry with tauri-client.
   void animRef;
 
+  // Native only emits voice_input_level while this meter is mounted (it
+  // would otherwise push ~16 events/s through IPC for the whole voice
+  // session). Gated on mount rather than on connectedChannelId so joining
+  // voice with the tab already open lights the meter immediately. The
+  // out-of-voice mic test above is renderer-only and unaffected.
+  useEffect(() => {
+    invoke("set_input_level_reporting", { enabled: true }).catch(() => {});
+    return () => {
+      invoke("set_input_level_reporting", { enabled: false }).catch(() => {});
+    };
+  }, []);
+
   // voice_input_level listener — only meaningful while connected.
   useEffect(() => {
     if (!connectedChannelId) return;

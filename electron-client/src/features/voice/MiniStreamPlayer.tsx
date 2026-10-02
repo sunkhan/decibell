@@ -73,10 +73,16 @@ function panelBounds(): { top: number; left: number; right: number; bottom: numb
     : { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight };
 }
 
-function cornerTopLeft(corner: Corner, w: number, h: number): { x: number; y: number } {
+function cornerTopLeft(
+  corner: Corner,
+  w: number,
+  h: number,
+  // Pass bounds measured once up front on hot paths (the resize drag) so
+  // each pointermove doesn't force a layout via getBoundingClientRect.
+  b: { top: number; left: number; right: number; bottom: number } = panelBounds(),
+): { x: number; y: number } {
   const isTop = corner.startsWith("top");
   const isLeft = corner.endsWith("left");
-  const b = panelBounds();
   // Every corner sits MARGIN inside the panel edge (top corners are therefore
   // below the top bar).
   const x = isLeft ? b.left + MARGIN : b.right - w - MARGIN;
@@ -357,9 +363,11 @@ export default function MiniStreamPlayer() {
   // Resize by dragging the interior-corner grip. The docked corner stays pinned
   // to its screen anchor; we translate the pointer's distance from that anchor
   // into a new width (16:9-locked), clamped to [MIN_WIDTH, MAX_WIDTH] and to the
-  // room available before the box would run off-screen. We only push pipWidth to
-  // the store — the resting layout effect re-pins position for the new size, so
-  // the docked corner doesn't move.
+  // room available before the box would run off-screen. Imperative during the
+  // drag (size + corner position written straight to the element, panel bounds
+  // measured once) — like CallStage's resize — and committed to the store once
+  // on release; pushing pipWidth on every pointermove re-rendered the player
+  // and re-ran the resting-position layout effect (a forced layout) per event.
   const onResizePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.stopPropagation();
@@ -387,22 +395,37 @@ export default function MiniStreamPlayer() {
         Math.min(MAX_WIDTH, availW, availH / ASPECT),
       );
 
+      // Block the resting-position effects (window resize / content-row
+      // observer) from re-pinning at the stale store width mid-drag.
+      draggingRef.current = true;
+      let lastW = pipWidth;
       const onMove = (ev: PointerEvent) => {
         const wFromX = isRight ? anchorX - ev.clientX : ev.clientX - anchorX;
         const wFromY = (isBottom ? anchorY - ev.clientY : ev.clientY - anchorY) / ASPECT;
-        const w = Math.max(wFromX, wFromY);
-        setPipWidth(Math.round(Math.min(hi, Math.max(MIN_WIDTH, w))));
+        const w = Math.round(Math.min(hi, Math.max(MIN_WIDTH, Math.max(wFromX, wFromY))));
+        if (w === lastW) return;
+        lastW = w;
+        const h = heightFor(w);
+        const { x, y } = cornerTopLeft(pipCorner, w, h, b);
+        el.style.width = `${w}px`;
+        el.style.height = `${h}px`;
+        el.style.left = `${x}px`;
+        el.style.top = `${y}px`;
       };
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
+        draggingRef.current = false;
+        // Commit once. React then renders the same width/height it already
+        // has, and the resting effect re-pins the corner for it.
+        setPipWidth(lastW);
         const el2 = containerRef.current;
         if (el2) recordMiniRect(el2);
       };
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [pipCorner, setPipWidth, stopSpring],
+    [pipCorner, pipWidth, setPipWidth, stopSpring],
   );
 
   if (!visible || !pipStream) return null;

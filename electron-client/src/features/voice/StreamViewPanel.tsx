@@ -17,9 +17,15 @@ import { UserAvatar } from "../../components/UserAvatar";
 import StreamStatsOverlay from "./StreamStatsOverlay";
 import {
   getMiniRect,
+  getStreamPipHost,
   placeStreamPip,
   recordFullViewRect,
 } from "./streamPipHost";
+
+// One handle for the panel's lifetime: getCurrentWindow() builds a fresh
+// object per call, which made the fullscreen callbacks (and the Escape /
+// stream-ended effects keyed on them) change identity on every render.
+const appWindow = getCurrentWindow();
 
 function VolumeIcon({ muted }: { muted: boolean }) {
   if (muted) {
@@ -58,7 +64,7 @@ function VolumeIcon({ muted }: { muted: boolean }) {
   );
 }
 
-export default function StreamViewPanel() {
+function StreamViewPanel() {
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
   // No top-level speakingUsers subscription — SidebarParticipantRow
@@ -99,11 +105,24 @@ export default function StreamViewPanel() {
   // move and playback is seamless. Re-runs on stream switch so the full view
   // reclaims the host after the mini player had it. Also record the slot's rect
   // so the mini player can shrink out of it.
+  //
+  // On the way out (Back to the grid, stream switch, unmount) detach the host
+  // from our slot, like CallStage does. "Back" doesn't unmount this panel —
+  // VoicePanel only hides it (display:none) while any stream is watched — so a
+  // host left in the slot kept the canvas connected: the player's "parked"
+  // paint skip never engaged and it kept blitting full-res frames into an
+  // invisible canvas for the whole grid idle window (StreamPipManager's 20 s).
+  // Detached, it keeps decoding (seamless re-focus) without painting.
   useLayoutEffect(() => {
-    if (fullscreenStream && pipSlotRef.current) {
-      placeStreamPip(pipSlotRef.current);
-      recordFullViewRect(pipSlotRef.current);
+    const slot = pipSlotRef.current;
+    if (fullscreenStream && slot) {
+      placeStreamPip(slot);
+      recordFullViewRect(slot);
     }
+    return () => {
+      const host = getStreamPipHost();
+      if (slot && host.parentElement === slot) host.remove();
+    };
   }, [fullscreenStream]);
 
   // On mount (returning to the voice view), grow the video back out of the mini
@@ -148,18 +167,16 @@ export default function StreamViewPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const appWindow = getCurrentWindow();
-
   const enterFullscreen = useCallback(async () => {
     setIsFullscreen(true);
     await appWindow.setFullscreen(true).catch(() => {});
-  }, [appWindow, setIsFullscreen]);
+  }, [setIsFullscreen]);
 
   const exitFullscreen = useCallback(async () => {
     setIsFullscreen(false);
     setOverlayVisible(false);
     await appWindow.setFullscreen(false).catch(() => {});
-  }, [appWindow, setIsFullscreen]);
+  }, [setIsFullscreen]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -761,3 +778,7 @@ const SidebarParticipantRow = memo(function SidebarParticipantRow({
     </div>
   );
 });
+
+// No props: VoicePanel re-renders (ping, participants, thumbnails) must not
+// re-render this 700-line panel — it subscribes to what it needs itself.
+export default memo(StreamViewPanel);

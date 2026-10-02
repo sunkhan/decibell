@@ -399,6 +399,7 @@ impl VoiceEngine {
                             timestamp: video_ts_epoch.elapsed().as_micros() as i64,
                             data: frame.data,
                             description: frame.description,
+                            discontinuity: false,
                         });
                     }
                     VoiceEvent::KeyframeRequested => {
@@ -628,6 +629,13 @@ fn run_video_recv_thread(
         // WATCHED_STREAMS above: defense against spoofed/over-relayed senders,
         // and it drops the IPC/renderer work for frames nobody subscribed to.
         if !is_watched(&frame.streamer_username) {
+            return;
+        }
+        // Watched but not on screen (no renderer subscriber — e.g. the
+        // focused view hides the grid's other watched streams): skip the
+        // decrypt and the bridge/IPC hops. send_stream_frame re-checks; the
+        // player asks for a keyframe when it subscribes again.
+        if !events::is_stream_frame_sink(&frame.streamer_username) {
             return;
         }
         // Encrypted channel: the reassembled bytes are one sealed frame —

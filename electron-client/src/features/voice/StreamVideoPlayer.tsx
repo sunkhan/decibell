@@ -39,6 +39,10 @@ interface StreamFrame {
   timestamp: number;
   data: Uint8Array;
   description: Uint8Array | null;
+  /// Native shed an earlier frame for this streamer (bounded native→JS
+  /// queue), so this one's reference chain is broken. Absent on older
+  /// native builds.
+  discontinuity?: boolean;
 }
 
 /// WebCodecs-only StreamVideoPlayer — single path for Linux + Windows in
@@ -86,7 +90,9 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
   // On-screen size of the canvas (CSS px), tracked via ResizeObserver so the
   // per-frame output callback never reads layout. Caps the canvas backing store
   // so a 4K stream doesn't keep a 4K buffer to paint into a 320×180 mini player.
-  const displaySizeRef = useRef({ w: 0, h: 0 });
+  // -1 = not observed yet (paint at source size); an observed 0×0 means the
+  // canvas isn't rendered (a display:none ancestor) — skip the draw.
+  const displaySizeRef = useRef({ w: -1, h: -1 });
   // Stats counters, published to useStreamStatsStore on an interval.
   const framesReceivedRef = useRef(0);
   const framesDecodedRef = useRef(0);
@@ -242,16 +248,19 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
             srcDimsRef.current = { w: srcW, h: srcH };
             const ctx = ctxRef.current;
             // Skip painting when the canvas isn't in the document (the persistent
-            // host is parked/warm off-screen, e.g. on the streams grid) — keep
-            // decoding so a return to view is seamless, but don't blit.
-            if (ctx && canvas && canvas.isConnected) {
+            // host is parked/warm off-screen, e.g. on the streams grid) or is laid
+            // out at 0×0 (inside a display:none subtree) — keep decoding so a
+            // return to view is seamless, but don't blit (and don't fall back to
+            // a full-res backing store for a canvas nobody can see).
+            const dw = displaySizeRef.current.w;
+            const dh = displaySizeRef.current.h;
+            const observedHidden = dw === 0 || dh === 0;
+            if (ctx && canvas && canvas.isConnected && !observedHidden) {
               // Cap the canvas backing store to the on-screen size (× dpr),
               // never upscaling: a 4K stream painted into the 320×180 mini keeps
               // a 320×180 buffer, not a 3840×2160 one. Falls back to source res
               // until the display size has been observed.
               const dpr = window.devicePixelRatio || 1;
-              const dw = displaySizeRef.current.w;
-              const dh = displaySizeRef.current.h;
               let dstW = srcW;
               let dstH = srcH;
               if (dw > 0 && dh > 0) {
@@ -443,6 +452,14 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       unsubscribe = window.decibell.streamFrames.subscribe(
         streamerUsername,
         (frame: StreamFrame) => {
+          // Native shed an earlier frame for this streamer (its bounded
+          // queue was full), so this delta's reference chain is broken:
+          // gate deltas on the next keyframe and ask for one now instead
+          // of decoding garbage until the streamer's next natural IDR.
+          if (frame.discontinuity && !frame.keyframe) {
+            needsKeyframeRef.current = true;
+            requestKeyframe();
+          }
           handleFrame(
             frame.data,
             frame.timestamp,

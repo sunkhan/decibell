@@ -162,14 +162,21 @@ fn emit_encoded(
     // Self-preview: same encoded bytes to the renderer keyed by local
     // username (StreamVideoPlayer renders the user's own tile via the
     // unified stream-frame bus). Description travels as a separate field.
-    events::send_stream_frame(events::StreamFrame {
-        username: cfg.local_username.clone(),
-        codec,
-        keyframe: ef.is_keyframe,
-        timestamp: stream_start.elapsed().as_micros() as i64,
-        data: ef.data.clone(),
-        description: ef.avcc_description.clone(),
-    });
+    // Only when a player is actually subscribed to our own stream — checked
+    // before cloning so an unwatched self-preview costs nothing. The player
+    // force_keyframe()s on subscribe, so resuming starts on an IDR.
+    if events::is_stream_frame_sink(&cfg.local_username) {
+        events::send_stream_frame(events::StreamFrame {
+            username: cfg.local_username.clone(),
+            codec,
+            keyframe: ef.is_keyframe,
+            timestamp: stream_start.elapsed().as_micros() as i64,
+            data: ef.data.clone(),
+            description: ef.avcc_description.clone(),
+            discontinuity: false,
+        });
+    }
+    // Counts frames put on the wire (telemetry), preview or not.
     *frames_sent += 1;
 }
 

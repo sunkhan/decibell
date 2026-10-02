@@ -178,8 +178,11 @@ const ActiveRow = memo(function ActiveRow({
         openContextMenu(username, { x: e.clientX, y: e.clientY }, connectedServerId);
       }}
     >
+      {/* Ring and name colour flip instantly (no transition), like
+          UserPanel's ring: a 150 ms box-shadow / colour transition on every
+          speaking flip repaints continuously once a few people talk. */}
       <div
-        className="shrink-0 rounded-sm transition-shadow duration-150"
+        className="shrink-0 rounded-sm"
         style={{
           boxShadow: isSpeaking ? "0 0 0 2px var(--color-success), 0 0 6px var(--color-success)" : "none",
         }}
@@ -187,7 +190,7 @@ const ActiveRow = memo(function ActiveRow({
         <UserAvatar username={username} size={22} />
       </div>
       <span
-        className={`min-w-0 truncate transition-colors ${
+        className={`min-w-0 truncate ${
           isSpeaking
             ? "text-success"
             : "text-text-secondary group-hover:text-text-primary"

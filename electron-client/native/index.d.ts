@@ -913,6 +913,27 @@ export interface SendVideoFrameArgs {
   description?: Buffer
 }
 export declare function sendVideoFrame(args: SendVideoFrameArgs): void
+export interface SetStreamFrameSinkArgs {
+  /** Streamer whose encoded frames the renderer now (no longer) displays. */
+  username: string
+  enabled: boolean
+}
+/**
+ * Renderer-side stream-frame subscriptions, mirrored natively. The preload
+ * bridge calls this when the first subscriber for a username appears
+ * (enabled) and when the last one goes (disabled); frames for usernames
+ * without a sink are dropped before the TSFN — and own-stream self-preview
+ * isn't even copied. Sync, and sent over the same `decibell:invoke`
+ * channel as the player's follow-up keyframe request, so the sink is in
+ * place before that keyframe can arrive. NOT the watch filter
+ * (media::WATCHED_STREAMS) — that one gates the server-side watch.
+ */
+export declare function setStreamFrameSink(args: SetStreamFrameSinkArgs): void
+/**
+ * Drop every stream-frame sink. The preload calls this when it loads (a
+ * renderer reload leaves no subscribers behind).
+ */
+export declare function clearStreamFrameSinks(): void
 export interface WatchStreamArgs {
   serverId: string
   channelId: string
@@ -1010,8 +1031,11 @@ export interface NativeEncoderCap {
  * encoders (NVENC → VAAPI → software) and reports which work. Hardware
  * codecs advertise a 4K/60 ceiling; software libx264 is capped lower
  * since CPU 4K encoding isn't realtime.
+ *
+ * Async + spawn_blocking for the same reason as the Windows variant: the
+ * test-opens must not run on the Electron main thread.
  */
-export declare function probeNativeEncoders(): Array<NativeEncoderCap>
+export declare function probeNativeEncoders(): Promise<Array<NativeEncoderCap>>
 /**
  * Force the next encoded frame on the active stream (if any) to be a
  * keyframe. Wired from the renderer's `keyframe_requested` event.
@@ -1101,6 +1125,15 @@ export interface SetStreamOutputDeviceArgs {
   name?: string
 }
 export declare function setStreamOutputDevice(args: SetStreamOutputDeviceArgs): Promise<void>
+export interface SetInputLevelReportingArgs {
+  enabled: boolean
+}
+/**
+ * Gate the `voice_input_level` event (~16 Hz while in voice). Only the
+ * Settings → Audio meter listens, so it switches reporting on while
+ * mounted and off on unmount; default off. Sync: one atomic store.
+ */
+export declare function setInputLevelReporting(args: SetInputLevelReportingArgs): void
 /**
  * Boot-time options pushed in from Electron main. Everything platform-
  * path-shaped (userData, cache) is resolved Node-side via

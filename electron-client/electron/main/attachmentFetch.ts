@@ -8,10 +8,18 @@
 // A plaintext byte range maps to a range of whole sealed chunks, so a
 // <video> seek still costs one upstream Range request — we fetch the
 // covering chunks, open them, and trim. The needed span is buffered
-// rather than streamed: a media probe is a few chunks, a save-as is the
-// file once; neither wants a streaming decipher pipeline's complexity.
+// rather than streamed, so a ranged request is answered with at most
+// MAX_RANGE_BYTES (see below); a save-as is the file once.
 
 import { net } from "electron";
+
+/// Cap on the plaintext span one ranged request is answered with. Media
+/// elements open with `bytes=0-` and seek with `bytes=N-` — open-ended, so
+/// each one decrypted the whole rest of the file on the main process before
+/// replying (a 100 MB video: ~1,600 chunk opens, a 100 MB concat, a frozen
+/// UI). Answering a shorter 206 is legal HTTP; the media stack asks for the
+/// next window as it reads.
+const MAX_RANGE_BYTES = 4 * 1024 * 1024;
 import { getAttachmentTarget } from "./attachmentRegistry";
 import { getAttachmentKey } from "./attachmentKeys";
 import {
@@ -79,7 +87,10 @@ export async function fetchDecryptedAttachment(
   }
 
   const total = info.sizeBytes;
-  const range = parseRange(rangeHeader, total);
+  let range = parseRange(rangeHeader, total);
+  if (range && range.end - range.start + 1 > MAX_RANGE_BYTES) {
+    range = { start: range.start, end: range.start + MAX_RANGE_BYTES - 1 };
+  }
   if (rangeHeader && !range && total > 0) {
     return {
       status: 416,

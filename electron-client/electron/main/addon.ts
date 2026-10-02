@@ -11,6 +11,7 @@ type StreamFrame = {
   timestamp: number;
   data: Uint8Array;
   description: Uint8Array | null;
+  discontinuity: boolean;
 };
 type StreamThumbnail = {
   ownerUsername: string;

@@ -544,11 +544,17 @@ function Switch({
 }
 
 /// Tabbed grid of screens + windows, populated from Chromium's
-/// desktopCapturer via the preload bridge. Thumbnails are PNG data URLs
+/// desktopCapturer via the preload bridge. Thumbnails are JPEG data URLs
 /// (Chromium decodes them on assignment to <img>; no extra trip through
 /// canvas). Re-polled at REFRESH_MS so the previews don't go stale while
 /// the modal is open — Chromium re-snapshots the surfaces server-side,
 /// which is the same path the in-browser screen-share dialog uses.
+///
+/// Each poll is synchronous image-encoding work in the main process (it
+/// stalls every window), so it is kept small: a slow cadence, thumbnails
+/// only for the active tab (the other tab keeps its last ones), and app
+/// icons fetched once and reused by source id — re-requested only when a
+/// window id shows up that no icon fetch has seen yet.
 function SourceGrid({
   pickedSourceId,
   onPick,
@@ -556,37 +562,110 @@ function SourceGrid({
   pickedSourceId: string | null;
   onPick: (id: string) => void;
 }) {
-  const REFRESH_MS = 2000;
+  const REFRESH_MS = 5000;
   const [tab, setTab] = useState<"screen" | "window">("screen");
   const [sources, setSources] = useState<CaptureSource[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   // Held across re-renders so the polling interval doesn't keep
   // reading stale `tab` state and so unmount cancels in-flight calls.
   const aliveRef = useRef(true);
+  const tabRef = useRef(tab);
+  // Per source id: last thumbnail / app icon we got. Ids an icon fetch has
+  // already covered (icon or not) are remembered so a window without an
+  // icon doesn't re-trigger icon fetches on every poll.
+  const thumbsRef = useRef(new Map<string, string>());
+  const iconsRef = useRef(new Map<string, string>());
+  const iconCheckedRef = useRef(new Set<string>());
+  const needIconsRef = useRef(true);
+  const fetchRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     aliveRef.current = true;
+    let inFlight = false;
+    // A request (tab switch) that arrived mid-fetch runs once it lands.
+    let again = false;
     const fetchOnce = async (): Promise<void> => {
+      if (inFlight) {
+        again = true;
+        return;
+      }
+      inFlight = true;
+      const withIcons = needIconsRef.current;
       try {
         const list = await window.decibell.capture.listSources({
           thumbnailWidth: 320,
           thumbnailHeight: 180,
+          thumbnailKinds: [tabRef.current],
+          fetchWindowIcons: withIcons,
         });
-        if (aliveRef.current) {
-          setSources(list);
-          setLoadError(null);
-        }
+        if (!aliveRef.current) return;
+        const thumbs = thumbsRef.current;
+        const icons = iconsRef.current;
+        const checked = iconCheckedRef.current;
+        let unseenWindow = false;
+        const merged = list.map((src) => {
+          if (src.thumbnail) thumbs.set(src.id, src.thumbnail);
+          if (withIcons) {
+            checked.add(src.id);
+            if (src.appIcon) icons.set(src.id, src.appIcon);
+          } else if (src.kind === "window" && !checked.has(src.id)) {
+            unseenWindow = true;
+          }
+          return {
+            ...src,
+            thumbnail: src.thumbnail || thumbs.get(src.id) || "",
+            appIcon: src.appIcon || icons.get(src.id) || "",
+          };
+        });
+        if (withIcons) needIconsRef.current = false;
+        // A window appeared since the last icon fetch: get icons next poll.
+        if (unseenWindow) needIconsRef.current = true;
+        // Skip the re-render (and <img> re-decode) when nothing changed —
+        // a static screen re-encodes to the identical JPEG.
+        setSources((prev) =>
+          prev.length === merged.length &&
+          prev.every(
+            (p, i) =>
+              p.id === merged[i].id &&
+              p.name === merged[i].name &&
+              p.thumbnail === merged[i].thumbnail &&
+              p.appIcon === merged[i].appIcon,
+          )
+            ? prev
+            : merged,
+        );
+        setLoadError(null);
       } catch (e) {
         if (aliveRef.current) setLoadError(String(e));
+      } finally {
+        inFlight = false;
+        if (again && aliveRef.current) {
+          again = false;
+          void fetchOnce();
+        }
       }
     };
+    fetchRef.current = fetchOnce;
     void fetchOnce();
     const id = window.setInterval(fetchOnce, REFRESH_MS);
     return () => {
       aliveRef.current = false;
+      fetchRef.current = null;
       window.clearInterval(id);
     };
   }, []);
+
+  // Switching tabs: fetch right away so the newly visible kind gets fresh
+  // thumbnails instead of waiting up to REFRESH_MS.
+  const firstTabRef = useRef(true);
+  useEffect(() => {
+    tabRef.current = tab;
+    if (firstTabRef.current) {
+      firstTabRef.current = false;
+      return;
+    }
+    void fetchRef.current?.();
+  }, [tab]);
 
   const screens = sources.filter((s) => s.kind === "screen");
   const windows = sources.filter((s) => s.kind === "window");
@@ -642,12 +721,14 @@ function SourceGrid({
                   {/* draggable=false stops Chromium from initiating an HTML5
                       drag on the thumbnail when the user click-and-holds —
                       the picker should feel like buttons, not images. */}
-                  <img
-                    src={s.thumbnail}
-                    alt={s.name}
-                    draggable={false}
-                    className="h-full w-full object-contain"
-                  />
+                  {s.thumbnail && (
+                    <img
+                      src={s.thumbnail}
+                      alt={s.name}
+                      draggable={false}
+                      className="h-full w-full object-contain"
+                    />
+                  )}
                 </div>
                 <div className="flex items-center gap-2 px-2.5 py-2">
                   {s.appIcon && (

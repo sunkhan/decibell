@@ -565,22 +565,61 @@ ipcMain.handle(
 // Enumerate desktop capture sources for the renderer's custom screen-share
 // picker (Windows; macOS uses useSystemPicker; Linux uses xdg-desktop-portal).
 // Chromium does the capture + thumbnail rendering inside desktopCapturer —
-// we just serialise its output for the renderer. Thumbnails are returned
-// as PNG data URLs (cheap to ship over the IPC; Chromium decodes them
-// straight to a paintable bitmap on assignment to <img>).
+// we just serialise its output for the renderer.
+//
+// The serialisation is synchronous main-process work (every window repaints
+// while it runs), and the picker polls, so keep it small:
+//  - thumbnails are JPEG (q70) data URLs — the PNG encode it replaces was
+//    several times slower per source;
+//  - only the kinds in `thumbnailKinds` get thumbnails (the picker asks for
+//    its active tab); the rest are enumerated with a 0×0 size, which also
+//    skips Chromium's per-window capture for them;
+//  - app icons (small PNGs) only when `fetchWindowIcons` is set — the
+//    picker asks once and caches them by source id.
+type CaptureKind = "screen" | "window";
 ipcMain.handle(
   "decibell:capture:listSources",
   async (
     _e,
-    opts: { thumbnailWidth?: number; thumbnailHeight?: number } | undefined,
+    opts:
+      | {
+          thumbnailWidth?: number;
+          thumbnailHeight?: number;
+          thumbnailKinds?: CaptureKind[];
+          fetchWindowIcons?: boolean;
+        }
+      | undefined,
   ) => {
     const w = opts?.thumbnailWidth ?? 320;
     const h = opts?.thumbnailHeight ?? 180;
-    const sources = await desktopCapturer.getSources({
-      types: ["screen", "window"],
-      thumbnailSize: { width: w, height: h },
-      fetchWindowIcons: true,
-    });
+    const fetchWindowIcons = opts?.fetchWindowIcons ?? true;
+    const allKinds: CaptureKind[] = ["screen", "window"];
+    const thumbKinds = allKinds.filter(
+      (k) => !opts?.thumbnailKinds || opts.thumbnailKinds.includes(k),
+    );
+    const bareKinds = allKinds.filter((k) => !thumbKinds.includes(k));
+    const [withThumbs, bare] = await Promise.all([
+      thumbKinds.length > 0
+        ? desktopCapturer.getSources({
+            types: thumbKinds,
+            thumbnailSize: { width: w, height: h },
+            fetchWindowIcons,
+          })
+        : Promise.resolve([]),
+      bareKinds.length > 0
+        ? desktopCapturer.getSources({
+            types: bareKinds,
+            thumbnailSize: { width: 0, height: 0 },
+            fetchWindowIcons,
+          })
+        : Promise.resolve([]),
+    ]);
+    // Screens first, then windows — the order a single getSources call
+    // with types ["screen", "window"] returns.
+    const sources = [...withThumbs, ...bare].sort(
+      (a, b) =>
+        Number(a.id.startsWith("window:")) - Number(b.id.startsWith("window:")),
+    );
     return sources.map((s) => ({
       id: s.id,
       name: s.name,
@@ -588,11 +627,15 @@ ipcMain.handle(
       // ids) and empty on windows. Useful for ordering screens by the user's
       // primary-monitor preference if we ever want it.
       displayId: s.display_id ?? "",
-      // Windows-only: app icon as PNG data URL. Empty string when no icon
-      // is available (screens never have one) so the renderer can fall
-      // back to a generic glyph without a null check.
+      // Windows-only: app icon as PNG data URL (kept PNG for its alpha).
+      // Empty string when no icon is available or icons weren't requested
+      // (screens never have one) so the renderer can fall back without a
+      // null check.
       appIcon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : "",
-      thumbnail: s.thumbnail.toDataURL(),
+      thumbnail:
+        s.thumbnail && !s.thumbnail.isEmpty()
+          ? `data:image/jpeg;base64,${s.thumbnail.toJPEG(70).toString("base64")}`
+          : "",
       // Discriminator for UI tabs — id prefix is stable across Chromium versions.
       kind: s.id.startsWith("screen:") ? "screen" : "window",
     }));

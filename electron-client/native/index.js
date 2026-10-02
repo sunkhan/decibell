@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { login, register, logout, uploadAvatar, fetchAvatar, getCallConfig, sendCallSignal, callPrepare, callConnect, callEnd, callWatchStream, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, deleteChannelMessage, editChannelMessage, createChannel, reorderChannels, renameChannel, setChannelOverwrite, listChannelOverwrites, deleteChannel, listMembers, updateServer, listAuditLog, getStorageInfo, setStorageMinFree, timeoutMember, voiceMod, transferOwnership, listBans, kickMember, banMember, leaveServer, createInvite, listInvites, revokeInvite, listRoles, createRole, updateRole, deleteRole, setMemberRoles, unbanMember, setNickname, requestDmConversations, requestDmHistory, markDmRead, deleteDmMessage, editDmMessage, e2eeGetStatus, e2eeSetup, e2eeUnlock, e2eeChangePassphrase, e2eeReset, e2eePeerInfo, requestFriendList, sendFriendAction, sendPrivateMessage, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, trustCertificate, requestDropMembership, updateServerPicture, fetchServerPicture, loadConfig, saveSettings, setDmPrivacy, setTransferLimits, listAudioDevices, listStreamAudioApps, setStreamAudioFilter, startScreenShare, stopScreenShare, moveStreamToChannel, sendVideoFrame, watchStream, stopWatching, fetchStreamThumbnail, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, probeNativeEncoders, forceKeyframe, requestStreamKeyframe, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setVoiceBitrate, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, init, shutdown, ping, pingAsync } = nativeBinding
+const { login, register, logout, uploadAvatar, fetchAvatar, getCallConfig, sendCallSignal, callPrepare, callConnect, callEnd, callWatchStream, requestChannelHistory, wipeChannelHistory, updateChannelRetention, sendChannelMessage, deleteChannelMessage, editChannelMessage, createChannel, reorderChannels, renameChannel, setChannelOverwrite, listChannelOverwrites, deleteChannel, listMembers, updateServer, listAuditLog, getStorageInfo, setStorageMinFree, timeoutMember, voiceMod, transferOwnership, listBans, kickMember, banMember, leaveServer, createInvite, listInvites, revokeInvite, listRoles, createRole, updateRole, deleteRole, setMemberRoles, unbanMember, setNickname, requestDmConversations, requestDmHistory, markDmRead, deleteDmMessage, editDmMessage, e2eeGetStatus, e2eeSetup, e2eeUnlock, e2eeChangePassphrase, e2eeReset, e2eePeerInfo, requestFriendList, sendFriendAction, sendPrivateMessage, requestServerList, connectToCommunity, redeemInvite, disconnectFromCommunity, parseInviteLink, resolveInviteCode, getAttachmentTarget, trustCertificate, requestDropMembership, updateServerPicture, fetchServerPicture, loadConfig, saveSettings, setDmPrivacy, setTransferLimits, listAudioDevices, listStreamAudioApps, setStreamAudioFilter, startScreenShare, stopScreenShare, moveStreamToChannel, sendVideoFrame, setStreamFrameSink, clearStreamFrameSinks, watchStream, stopWatching, fetchStreamThumbnail, getCaps, setEncoderCaps, setDecoderCaps, getCodecSettings, setCodecSettings, sendStreamThumbnail, probeNativeEncoders, forceKeyframe, requestStreamKeyframe, joinVoiceChannel, leaveVoiceChannel, setVoiceMute, setVoiceDeafen, setVoiceThreshold, setVoiceBitrate, setStreamVolume, setStreamStereo, setUserVolume, setAecEnabled, setNoiseSuppressionLevel, setAgcEnabled, setInputDevice, setOutputDevice, setSeparateStreamOutput, setStreamOutputDevice, setInputLevelReporting, init, shutdown, ping, pingAsync } = nativeBinding
 
 module.exports.login = login
 module.exports.register = register
@@ -393,6 +393,8 @@ module.exports.startScreenShare = startScreenShare
 module.exports.stopScreenShare = stopScreenShare
 module.exports.moveStreamToChannel = moveStreamToChannel
 module.exports.sendVideoFrame = sendVideoFrame
+module.exports.setStreamFrameSink = setStreamFrameSink
+module.exports.clearStreamFrameSinks = clearStreamFrameSinks
 module.exports.watchStream = watchStream
 module.exports.stopWatching = stopWatching
 module.exports.fetchStreamThumbnail = fetchStreamThumbnail
@@ -421,6 +423,7 @@ module.exports.setInputDevice = setInputDevice
 module.exports.setOutputDevice = setOutputDevice
 module.exports.setSeparateStreamOutput = setSeparateStreamOutput
 module.exports.setStreamOutputDevice = setStreamOutputDevice
+module.exports.setInputLevelReporting = setInputLevelReporting
 module.exports.init = init
 module.exports.shutdown = shutdown
 module.exports.ping = ping

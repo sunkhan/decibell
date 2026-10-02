@@ -204,15 +204,22 @@ fn run_encode_loop(
             // packet pts (in time_base = 1/fps units) back to microseconds.
             // Because we set pts from wall-clock above, this round-trips
             // to ~ stream_start.elapsed().as_micros().
-            let timestamp_us = pkt_pts.saturating_mul(1_000_000) / cfg.fps.max(1) as i64;
-            events::send_stream_frame(events::StreamFrame {
-                username: cfg.local_username.clone(),
-                codec: cfg.codec_wire_byte,
-                keyframe: is_key,
-                timestamp: timestamp_us,
-                data: data.to_vec(),
-                description: None,
-            });
+            // Only when a player is subscribed to our own stream — checked
+            // before to_vec() so an unwatched self-preview copies nothing.
+            // The player force_keyframe()s on subscribe to resume on an IDR.
+            if events::is_stream_frame_sink(&cfg.local_username) {
+                let timestamp_us = pkt_pts.saturating_mul(1_000_000) / cfg.fps.max(1) as i64;
+                events::send_stream_frame(events::StreamFrame {
+                    username: cfg.local_username.clone(),
+                    codec: cfg.codec_wire_byte,
+                    keyframe: is_key,
+                    timestamp: timestamp_us,
+                    data: data.to_vec(),
+                    description: None,
+                    discontinuity: false,
+                });
+            }
+            // Wire frames (telemetry), preview or not.
             frames_sent += 1;
         });
 

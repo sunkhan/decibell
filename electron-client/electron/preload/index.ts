@@ -16,12 +16,14 @@ ipcRenderer.on("decibell:event", (_e, env: EventEnvelope) => {
   }
 });
 
-// Window-resized broadcasts (any of resize / maximize / unmaximize /
-// fullscreen toggle). Each subscriber gets a void callback; the
-// Titlebar uses this to re-query isMaximized() and update its icon.
-const resizeSubs = new Set<() => void>();
-ipcRenderer.on("decibell:window:resized", () => {
-  for (const cb of resizeSubs) cb();
+// Maximized-state broadcasts. Main evaluates isMaximized() on every
+// resize / maximize / unmaximize / fullscreen transition but only sends
+// when the value changes, with the new value as the payload — so the
+// Titlebar updates its icon without an isMaximized() round-trip per
+// resize step.
+const resizeSubs = new Set<(maximized: boolean) => void>();
+ipcRenderer.on("decibell:window:resized", (_e, maximized: boolean) => {
+  for (const cb of resizeSubs) cb(maximized);
 });
 
 // PR7c: stream frame fan-out. Encoded video bytes arrive as Uint8Array
@@ -38,6 +40,9 @@ type StreamFrame = {
   timestamp: number;
   data: Uint8Array;
   description: Uint8Array | null;
+  /// Native shed an earlier frame for this streamer (bounded queue) — the
+  /// reference chain is broken until the next keyframe.
+  discontinuity?: boolean;
 };
 type StreamFrameHandler = (frame: StreamFrame) => void;
 const streamFrameSubsByUser = new Map<string, Set<StreamFrameHandler>>();
@@ -46,6 +51,21 @@ ipcRenderer.on("decibell:stream_frame", (_e, frame: StreamFrame) => {
   if (!subs) return;
   for (const cb of subs) cb(frame);
 });
+
+// Mirror "someone here displays <username>'s frames" into native, so it
+// stops pushing frames nobody subscribed to (and skips copying own-stream
+// self-preview frames) instead of letting them cross native → main → IPC
+// only to be dropped above. Same channel as invoke(): a player's
+// subscribe-then-request-keyframe sequence reaches native in order, so the
+// sink exists before the keyframe it asked for.
+function setStreamFrameSink(username: string, enabled: boolean): void {
+  ipcRenderer
+    .invoke("decibell:invoke", "setStreamFrameSink", { username, enabled })
+    .catch(() => {});
+}
+// A (re)loaded renderer has no subscribers — drop whatever the previous
+// document left registered.
+ipcRenderer.invoke("decibell:invoke", "clearStreamFrameSinks", {}).catch(() => {});
 
 type StreamThumbnail = {
   ownerUsername: string;
@@ -319,7 +339,7 @@ contextBridge.exposeInMainWorld("decibell", {
     setFullscreen: (on: boolean) =>
       ipcRenderer.invoke("decibell:window:setFullscreen", on),
     flash: () => ipcRenderer.invoke("decibell:window:flash") as Promise<void>,
-    onResized: (cb: () => void): (() => void) => {
+    onResized: (cb: (maximized: boolean) => void): (() => void) => {
       resizeSubs.add(cb);
       return () => {
         resizeSubs.delete(cb);
@@ -332,18 +352,24 @@ contextBridge.exposeInMainWorld("decibell", {
     /// directly via Map lookup instead of fanning every frame to every
     /// player and making the player check `frame.username` itself.
     /// Returns an unsubscribe fn.
+    /// The first subscriber for a username registers it as a native frame
+    /// sink; the last one to leave removes it (see setStreamFrameSink).
     subscribe: (username: string, cb: StreamFrameHandler): (() => void) => {
       let subs = streamFrameSubsByUser.get(username);
       if (!subs) {
         subs = new Set();
         streamFrameSubsByUser.set(username, subs);
+        setStreamFrameSink(username, true);
       }
       subs.add(cb);
       return () => {
         const cur = streamFrameSubsByUser.get(username);
         if (!cur) return;
         cur.delete(cb);
-        if (cur.size === 0) streamFrameSubsByUser.delete(username);
+        if (cur.size === 0) {
+          streamFrameSubsByUser.delete(username);
+          setStreamFrameSink(username, false);
+        }
       };
     },
   },
@@ -360,11 +386,16 @@ contextBridge.exposeInMainWorld("decibell", {
   },
   capture: {
     /// Enumerate screens + windows for the screen-share picker. Thumbnails
-    /// arrive as PNG data URLs ready to assign to <img>. Chromium's
-    /// desktopCapturer does the actual capture; this just serialises it.
+    /// arrive as JPEG data URLs ready to assign to <img> — only for the
+    /// kinds listed in `thumbnailKinds` (default both; the others come back
+    /// with thumbnail ""). App icons (PNG data URLs) only when
+    /// `fetchWindowIcons` is true (default true). Chromium's desktopCapturer
+    /// does the actual capture; this just serialises it.
     listSources: (opts?: {
       thumbnailWidth?: number;
       thumbnailHeight?: number;
+      thumbnailKinds?: ("screen" | "window")[];
+      fetchWindowIcons?: boolean;
     }): Promise<CaptureSource[]> =>
       ipcRenderer.invoke("decibell:capture:listSources", opts ?? {}) as Promise<
         CaptureSource[]

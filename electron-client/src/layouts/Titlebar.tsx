@@ -22,10 +22,15 @@ function Titlebar() {
 
   useEffect(() => {
     let disposed = false;
-    win.isMaximized().then((v) => { if (!disposed) setMaximized(v); }).catch(() => {});
+    // Main pushes the maximized state itself, only when it changes — no
+    // isMaximized() round-trip per resize step. The one query here seeds
+    // the initial value; a pushed change wins if it lands first.
+    let pushed = false;
+    win.isMaximized().then((v) => { if (!disposed && !pushed) setMaximized(v); }).catch(() => {});
     let unlisten: (() => void) | undefined;
-    win.onResized(() => {
-      win.isMaximized().then((v) => { if (!disposed) setMaximized(v); }).catch(() => {});
+    win.onResized((v) => {
+      pushed = true;
+      if (!disposed) setMaximized(v);
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;

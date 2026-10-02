@@ -19,7 +19,7 @@
 // transport differs.
 
 import * as http from "node:http";
-import { net } from "electron";
+import { app, net } from "electron";
 import { getAttachmentTarget } from "./attachmentRegistry";
 import { fetchDecryptedAttachment } from "./attachmentFetch";
 
@@ -100,18 +100,24 @@ async function handleRequest(
       const v = req.headers[name];
       if (typeof v === "string") upstreamHeaders[name] = v;
     }
-    // eslint-disable-next-line no-console
-    console.log(
-      `[mediaServer] GET ${upstream}${upstreamHeaders.range ? ` ${upstreamHeaders.range}` : ""}`,
-    );
+    if (!app.isPackaged) {
+      // Dev only: one line per range request (video seeks/scrubs fire
+      // many), and main-process stdout writes are synchronous.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[mediaServer] GET ${upstream}${upstreamHeaders.range ? ` ${upstreamHeaders.range}` : ""}`,
+      );
+    }
     const upstreamResp = await net.fetch(upstream, {
       method: "GET",
       headers: upstreamHeaders,
     });
-    // eslint-disable-next-line no-console
-    console.log(
-      `[mediaServer] → ${upstreamResp.status} ${upstreamResp.statusText}`,
-    );
+    if (!app.isPackaged) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[mediaServer] → ${upstreamResp.status} ${upstreamResp.statusText}`,
+      );
+    }
     // Mirror status + headers. Node's writeHead expects a plain object.
     const respHeaders: Record<string, string> = {};
     upstreamResp.headers.forEach((value, name) => {

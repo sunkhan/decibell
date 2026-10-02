@@ -22,11 +22,12 @@ interface DecibellWindow {
   /// Ask for the user's attention without stealing focus (taskbar flash /
   /// dock bounce). Used for incoming DM calls.
   flash: () => Promise<void>;
-  /// Fires on any resize (including maximize/unmaximize/fullscreen
-  /// transitions). Returns an unsubscribe function. Tauri-API parity
+  /// Fires with the new maximized state whenever it changes (main
+  /// evaluates it on every resize / maximize / unmaximize / fullscreen
+  /// transition). Returns an unsubscribe function. Tauri-API parity
   /// returns `Promise<UnlistenFn>`; the shim is sync-resolves to keep
   /// the same await-fn() shape.
-  onResized: (cb: () => void) => Promise<() => void>;
+  onResized: (cb: (maximized: boolean) => void) => Promise<() => void>;
 }
 
 const w = window.decibell.window;

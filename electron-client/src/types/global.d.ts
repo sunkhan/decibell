@@ -106,7 +106,8 @@ declare global {
         setTitle: (title: string) => Promise<void>;
         setFullscreen: (on: boolean) => Promise<void>;
         flash: () => Promise<void>;
-        onResized: (cb: () => void) => () => void;
+        /// Fires with the new maximized state, only when it changes.
+        onResized: (cb: (maximized: boolean) => void) => () => void;
       };
       streamFrames: {
         subscribe: (
@@ -118,6 +119,9 @@ declare global {
             timestamp: number;
             data: Uint8Array;
             description: Uint8Array | null;
+            /// An earlier frame for this streamer was shed natively — the
+            /// reference chain is broken until the next keyframe.
+            discontinuity?: boolean;
           }) => void,
         ) => () => void;
       };
@@ -130,6 +134,10 @@ declare global {
         listSources: (opts?: {
           thumbnailWidth?: number;
           thumbnailHeight?: number;
+          /// Kinds that get a thumbnail (default both); others return "".
+          thumbnailKinds?: ("screen" | "window")[];
+          /// Include app icons (default true).
+          fetchWindowIcons?: boolean;
         }) => Promise<CaptureSource[]>;
         setNextSource: (id: string | null) => Promise<void>;
       };

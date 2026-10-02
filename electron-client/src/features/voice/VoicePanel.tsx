@@ -12,6 +12,7 @@ import CaptureSourcePicker from "./CaptureSourcePicker";
 import { StreamAudioButton } from "./StreamAudioPopover";
 import { CodecBadge } from "./CodecBadge";
 import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
+import type { StreamInfo } from "../../types";
 import { canWatchStream } from "../../utils/canWatchStream";
 import { useStreamThumbnails } from "./useStreamThumbnails";
 import { PERM, useChannelPermission } from "../servers/permissions";
@@ -26,13 +27,12 @@ export default function VoicePanel() {
   const canStream = useChannelPermission(connectedServerId, connectedChannelId, PERM.STREAM);
   const participants = useVoiceStore((s) => s.participants);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
-  // Note: no top-level speakingUsers subscription — the per-card
-  // ParticipantCard below subscribes to its own slice so a speaking
-  // event for one user doesn't re-render the whole panel.
-  const streamThumbnails = useVoiceStore((s) => s.streamThumbnails);
+  // Note: no top-level speakingUsers, latencyMs (3 s ping) or
+  // streamThumbnails (one per unwatched stream every 3 s) subscriptions —
+  // ParticipantCard, HeaderStats and StreamCard below each subscribe to
+  // their own slice, so those events don't re-render the whole panel.
   const isMuted = useVoiceStore((s) => s.isMuted);
   const isDeafened = useVoiceStore((s) => s.isDeafened);
-  const latencyMs = useVoiceStore((s) => s.latencyMs);
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const pipStream = useVoiceStore((s) => s.pipStream);
@@ -48,14 +48,6 @@ export default function VoicePanel() {
   });
 
   const ownUsername = useAuthStore((s) => s.username);
-
-  // Server roster → resolve stream owners to their server nickname (avatars and
-  // identity stay keyed on the username).
-  const serverMembers = useChatStore((s) =>
-    connectedServerId ? s.membersByServer[connectedServerId] : undefined,
-  );
-  const nameOf = (u: string) =>
-    serverMembers?.find((m) => m.username === u)?.nickname || u;
 
   const [showPicker, setShowPicker] = useState(false);
 
@@ -77,27 +69,6 @@ export default function VoicePanel() {
 
   const handleDeafen = () => {
     invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
-  };
-
-  const handleWatchStream = async (username: string) => {
-    if (!connectedServerId || !connectedChannelId) return;
-    const isSelf = username === ownUsername;
-    const isAlreadyWatching = watchingStreams.includes(username);
-
-    if (!isAlreadyWatching) {
-      // Self-preview is renderer-internal: StreamVideoPlayer subscribes
-      // to the local encoder's output via subscribeLocalFrames when
-      // streamerUsername === ownUsername, no native side involvement.
-      if (!isSelf) {
-        invoke("watch_stream", {
-          serverId: connectedServerId,
-          channelId: connectedChannelId,
-          targetUsername: username,
-        }).catch(() => {});
-      }
-      useVoiceStore.getState().addWatching(username);
-    }
-    useVoiceStore.getState().setFullscreenStream(username);
   };
 
   const handleStopSharing = async () => {
@@ -167,26 +138,7 @@ export default function VoicePanel() {
             {channelName}
           </span>
           <VoiceEncryptionBadge />
-          <span
-            className="ml-auto text-[12px] text-text-muted"
-            title={latencyMs != null ? `${latencyMs}ms` : undefined}
-          >
-            {participants.length} participant
-            {participants.length !== 1 ? "s" : ""}
-            {latencyMs != null && (
-              <span
-                className={`ml-2 font-medium ${
-                  latencyMs <= 70
-                    ? "text-success"
-                    : latencyMs < 175
-                      ? "text-warning"
-                      : "text-error"
-                }`}
-              >
-                {latencyMs}ms
-              </span>
-            )}
-          </span>
+          <HeaderStats participantCount={participants.length} />
         </div>
       )}
 
@@ -212,162 +164,16 @@ export default function VoicePanel() {
                   gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
                 }}
               >
-                {activeStreams.map((stream) => {
-                  const isWatching = watchingStreams.includes(
-                    stream.ownerUsername,
-                  );
-                  const thumbnail = streamThumbnails[stream.ownerUsername];
-                  const decodeCaps = useCodecSettingsStore.getState().decodeCaps;
-                  const isOwnStream = stream.ownerUsername === ownUsername;
-                  const { canWatch, reason } = isOwnStream
-                    ? { canWatch: true, reason: undefined }
-                    : canWatchStream(stream, decodeCaps);
-                  return (
-                    <div
-                      key={stream.streamId}
-                      role="button"
-                      tabIndex={canWatch ? 0 : -1}
-                      aria-disabled={!canWatch}
-                      title={reason}
-                      onClick={() =>
-                        canWatch && handleWatchStream(stream.ownerUsername)
-                      }
-                      onKeyDown={(e) => {
-                        if (!canWatch) return;
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          handleWatchStream(stream.ownerUsername);
-                        }
-                      }}
-                      className={`group relative overflow-hidden rounded-lg border transition-all duration-150 ease-out ${
-                        !canWatch
-                          ? "cursor-not-allowed border-border-divider opacity-50"
-                          : isWatching
-                            ? "cursor-pointer border-accent/40 shadow-[0_0_12px_var(--color-accent-soft)] hover:shadow-float"
-                            : "cursor-pointer border-border bg-bg-light hover:border-accent/30 hover:shadow-float"
-                      }`}
-                    >
-                      <div className="relative aspect-video w-full bg-bg-darkest">
-                        <CodecBadge
-                          codec={stream.currentCodec}
-                          width={stream.resolutionWidth}
-                          height={stream.resolutionHeight}
-                          fps={stream.fps}
-                          enforced={stream.enforcedCodec !== 0}
-                          size="small"
-                        />
-                        {isWatching && stream.ownerUsername !== pipStream ? (
-                          // The stream matching pipStream is already decoded by
-                          // the single persistent player (StreamPipManager); show
-                          // its poster here instead of spinning up a second
-                          // decoder for the same stream.
-                          <StreamVideoPlayer
-                            streamerUsername={stream.ownerUsername}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : thumbnail ? (
-                          <img
-                            src={thumbnail}
-                            alt={`${stream.ownerUsername}'s stream`}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center">
-                            <UserAvatar
-                              username={stream.ownerUsername}
-                              size={56}
-                            />
-                          </div>
-                        )}
-                        <div
-                          className={`absolute left-2.5 top-2.5 flex items-center gap-[5px] rounded-sm px-2 py-1 ${
-                            isWatching ? "bg-accent/90" : "bg-error/90"
-                          }`}
-                        >
-                          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
-                          <span className="text-[10px] font-semibold text-white">
-                            {isWatching ? "WATCHING" : "LIVE"}
-                          </span>
-                        </div>
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/40">
-                          <span className="text-[13px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
-                            {isWatching ? "Expand" : "Watch Stream"}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2.5 px-3.5 py-3">
-                        <UserAvatar
-                          username={stream.ownerUsername}
-                          size={32}
-                        />
-                        <div className="min-w-0 flex-1 text-left">
-                          <div className="flex items-center gap-1.5">
-                            <span className="truncate text-[13px] font-medium text-text-primary">
-                              {nameOf(stream.ownerUsername)}
-                            </span>
-                            {stream.hasAudio && (
-                              <svg
-                                className="h-3.5 w-3.5 shrink-0 text-accent-bright"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2.2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              >
-                                <path d="M11 5L6 9H2v6h4l5 4V5z" />
-                                <path d="M15.54 8.46a5 5 0 010 7.07" />
-                              </svg>
-                            )}
-                          </div>
-                          <div className="text-[11px] text-text-muted">
-                            {stream.resolutionWidth > 0
-                              ? `${stream.resolutionWidth}x${stream.resolutionHeight}`
-                              : ""}
-                            {stream.fps > 0 ? ` · ${stream.fps}fps` : ""}
-                            {stream.watcherCount > 0 &&
-                              ` · ${stream.watcherCount} watching`}
-                          </div>
-                        </div>
-                        {isWatching && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (stream.ownerUsername !== ownUsername) {
-                                invoke("stop_watching", {
-                                  serverId: connectedServerId,
-                                  channelId: connectedChannelId,
-                                  targetUsername: stream.ownerUsername,
-                                }).catch(() => {});
-                              }
-                              useVoiceStore
-                                .getState()
-                                .removeWatching(stream.ownerUsername);
-                            }}
-                            className="ml-auto flex h-7 items-center gap-1.5 rounded-sm border border-error/[0.25] bg-error/[0.12] px-2.5 text-[11px] font-medium text-error transition-colors hover:border-error/[0.4] hover:bg-error/[0.18]"
-                          >
-                            <svg
-                              className="h-3.5 w-3.5"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            >
-                              <rect x="2" y="3" width="20" height="14" rx="2" />
-                              <line x1="8" y1="21" x2="16" y2="21" />
-                              <line x1="12" y1="17" x2="12" y2="21" />
-                              <line x1="7" y1="7" x2="17" y2="13" />
-                              <line x1="17" y1="7" x2="7" y2="13" />
-                            </svg>
-                            Stop Watching
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                {activeStreams.map((stream) => (
+                  <StreamCard
+                    key={stream.streamId}
+                    stream={stream}
+                    isWatching={watchingStreams.includes(stream.ownerUsername)}
+                    isPip={stream.ownerUsername === pipStream}
+                    isOwnStream={stream.ownerUsername === ownUsername}
+                    connectedServerId={connectedServerId}
+                  />
+                ))}
               </div>
             </div>
           </div>
@@ -521,6 +327,230 @@ export default function VoicePanel() {
   );
 }
 
+/// Header right side: participant count + voice ping. Owns the latencyMs
+/// subscription so the 3 s ping only re-renders this span.
+function HeaderStats({ participantCount }: { participantCount: number }) {
+  const latencyMs = useVoiceStore((s) => s.latencyMs);
+  return (
+    <span
+      className="ml-auto text-[12px] text-text-muted"
+      title={latencyMs != null ? `${latencyMs}ms` : undefined}
+    >
+      {participantCount} participant
+      {participantCount !== 1 ? "s" : ""}
+      {latencyMs != null && (
+        <span
+          className={`ml-2 font-medium ${
+            latencyMs <= 70
+              ? "text-success"
+              : latencyMs < 175
+                ? "text-warning"
+                : "text-error"
+          }`}
+        >
+          {latencyMs}ms
+        </span>
+      )}
+    </span>
+  );
+}
+
+// Grid actions read the store at call time (instead of closing over panel
+// state) so the memoized StreamCard needs no callback props.
+function watchStream(username: string) {
+  const v = useVoiceStore.getState();
+  const serverId = v.connectedServerId;
+  const channelId = v.connectedChannelId;
+  if (!serverId || !channelId) return;
+  const isSelf = username === useAuthStore.getState().username;
+  if (!v.watchingStreams.includes(username)) {
+    // Self-preview is renderer-internal: StreamVideoPlayer subscribes
+    // to the local encoder's output via subscribeLocalFrames when
+    // streamerUsername === ownUsername, no native side involvement.
+    if (!isSelf) {
+      invoke("watch_stream", {
+        serverId,
+        channelId,
+        targetUsername: username,
+      }).catch(() => {});
+    }
+    v.addWatching(username);
+  }
+  useVoiceStore.getState().setFullscreenStream(username);
+}
+
+function stopWatchingStream(username: string) {
+  const v = useVoiceStore.getState();
+  if (username !== useAuthStore.getState().username) {
+    invoke("stop_watching", {
+      serverId: v.connectedServerId,
+      channelId: v.connectedChannelId,
+      targetUsername: username,
+    }).catch(() => {});
+  }
+  v.removeWatching(username);
+}
+
+interface StreamCardProps {
+  stream: StreamInfo;
+  isWatching: boolean;
+  /// This stream is the one the persistent player (StreamPipManager) holds.
+  isPip: boolean;
+  isOwnStream: boolean;
+  connectedServerId: string | null;
+}
+
+/// One live-stream card on the grid. Memoized and subscribed to its own
+/// thumbnail, so a thumbnail arriving for one stream (every 3 s per
+/// unwatched stream) re-renders only that card.
+const StreamCard = memo(function StreamCard({
+  stream,
+  isWatching,
+  isPip,
+  isOwnStream,
+  connectedServerId,
+}: StreamCardProps) {
+  const thumbnail = useVoiceStore((s) => s.streamThumbnails[stream.ownerUsername]);
+  const displayName = useDisplayName(connectedServerId, stream.ownerUsername);
+  const decodeCaps = useCodecSettingsStore.getState().decodeCaps;
+  const { canWatch, reason } = isOwnStream
+    ? { canWatch: true, reason: undefined }
+    : canWatchStream(stream, decodeCaps);
+  return (
+    <div
+      role="button"
+      tabIndex={canWatch ? 0 : -1}
+      aria-disabled={!canWatch}
+      title={reason}
+      onClick={() => canWatch && watchStream(stream.ownerUsername)}
+      onKeyDown={(e) => {
+        if (!canWatch) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          watchStream(stream.ownerUsername);
+        }
+      }}
+      className={`group relative overflow-hidden rounded-lg border transition-all duration-150 ease-out ${
+        !canWatch
+          ? "cursor-not-allowed border-border-divider opacity-50"
+          : isWatching
+            ? "cursor-pointer border-accent/40 shadow-[0_0_12px_var(--color-accent-soft)] hover:shadow-float"
+            : "cursor-pointer border-border bg-bg-light hover:border-accent/30 hover:shadow-float"
+      }`}
+    >
+      <div className="relative aspect-video w-full bg-bg-darkest">
+        <CodecBadge
+          codec={stream.currentCodec}
+          width={stream.resolutionWidth}
+          height={stream.resolutionHeight}
+          fps={stream.fps}
+          enforced={stream.enforcedCodec !== 0}
+          size="small"
+        />
+        {isWatching && !isPip ? (
+          // The stream matching pipStream is already decoded by
+          // the single persistent player (StreamPipManager); show
+          // its poster here instead of spinning up a second
+          // decoder for the same stream.
+          <StreamVideoPlayer
+            streamerUsername={stream.ownerUsername}
+            className="h-full w-full object-cover"
+          />
+        ) : thumbnail ? (
+          <img
+            src={thumbnail}
+            alt={`${stream.ownerUsername}'s stream`}
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center">
+            <UserAvatar
+              username={stream.ownerUsername}
+              size={56}
+            />
+          </div>
+        )}
+        <div
+          className={`absolute left-2.5 top-2.5 flex items-center gap-[5px] rounded-sm px-2 py-1 ${
+            isWatching ? "bg-accent/90" : "bg-error/90"
+          }`}
+        >
+          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+          <span className="text-[10px] font-semibold text-white">
+            {isWatching ? "WATCHING" : "LIVE"}
+          </span>
+        </div>
+        <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/40">
+          <span className="text-[13px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
+            {isWatching ? "Expand" : "Watch Stream"}
+          </span>
+        </div>
+      </div>
+      <div className="flex items-center gap-2.5 px-3.5 py-3">
+        <UserAvatar
+          username={stream.ownerUsername}
+          size={32}
+        />
+        <div className="min-w-0 flex-1 text-left">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[13px] font-medium text-text-primary">
+              {displayName}
+            </span>
+            {stream.hasAudio && (
+              <svg
+                className="h-3.5 w-3.5 shrink-0 text-accent-bright"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                <path d="M15.54 8.46a5 5 0 010 7.07" />
+              </svg>
+            )}
+          </div>
+          <div className="text-[11px] text-text-muted">
+            {stream.resolutionWidth > 0
+              ? `${stream.resolutionWidth}x${stream.resolutionHeight}`
+              : ""}
+            {stream.fps > 0 ? ` · ${stream.fps}fps` : ""}
+            {stream.watcherCount > 0 &&
+              ` · ${stream.watcherCount} watching`}
+          </div>
+        </div>
+        {isWatching && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              stopWatchingStream(stream.ownerUsername);
+            }}
+            className="ml-auto flex h-7 items-center gap-1.5 rounded-sm border border-error/[0.25] bg-error/[0.12] px-2.5 text-[11px] font-medium text-error transition-colors hover:border-error/[0.4] hover:bg-error/[0.18]"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="2" y="3" width="20" height="14" rx="2" />
+              <line x1="8" y1="21" x2="16" y2="21" />
+              <line x1="12" y1="17" x2="12" y2="21" />
+              <line x1="7" y1="7" x2="17" y2="13" />
+              <line x1="17" y1="7" x2="7" y2="13" />
+            </svg>
+            Stop Watching
+          </button>
+        )}
+      </div>
+    </div>
+  );
+});
+
 // Avatar card for one participant. Subscribes to its OWN slice of
 // speakingUsers so a speaking event for any other user is a no-op
 // here. Memo'd so unchanged props skip the function call entirely.
@@ -557,8 +587,11 @@ const ParticipantCard = memo(function ParticipantCard({
       }}
     >
       <div className="relative">
+        {/* Instant ring (no transition), like UserPanel's: an animated
+            box-shadow repaints for 150 ms on every speaking flip, which with
+            a few talkers is near-continuous main-thread paint. */}
         <div
-          className={`rounded-lg transition-all duration-150 ${
+          className={`rounded-lg ${
             isSpeaking
               ? "shadow-[0_0_0_3px_var(--color-bg-mid),0_0_0_5px_var(--color-success)]"
               : ""

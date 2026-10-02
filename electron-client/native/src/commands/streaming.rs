@@ -548,62 +548,77 @@ pub struct SendVideoFrameArgs {
 
 #[napi]
 pub fn send_video_frame(args: SendVideoFrameArgs) -> napi::Result<()> {
-    // Windows native pipeline owns encode end-to-end; the renderer
-    // never pumps frames here on that platform. Kept as a no-op stub
-    // so the existing renderer code can ship without `cfg(platform)`
-    // guards on its call site.
-    #[cfg(target_os = "windows")]
-    {
-        let _ = args;
-        Ok(())
-    }
+    use crate::media::video_packet::WIRE_DESCRIPTION_MAGIC;
+    use crate::media::video_pipeline;
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        use crate::media::video_packet::WIRE_DESCRIPTION_MAGIC;
-        use crate::media::video_pipeline;
-
-        // Hot path: read the active sender from the dedicated frame-
-        // sink slot. No `state_arc.lock()` here — that mutex is
-        // contended with every other tokio task that touches AppState
-        // and was a real serialisation point at 60–120 fps. The slot's
-        // mutex is held for ~tens of nanoseconds (clone an Arc) and
-        // only contended on start/stop transitions.
-        //
-        // Sync rather than async — no .await anywhere in the body,
-        // so napi-rs doesn't spawn a task per frame.
-        //
-        // A cleared sink is a benign race, not an error: stop_screen_share
-        // clears the slot while the renderer's encoder is still draining
-        // its last chunks, and the old rejection logged one console error
-        // per in-flight frame at up to 60/s.
-        let Some(sender) = video_pipeline::current_frame_sink() else {
-            return Ok(());
-        };
-
-        let data: &[u8] = args.data.as_ref();
-
-        // For HEVC/AV1 keyframes with a description, prepend the
-        // magic-tag length-prefix so receivers strip it back out and
-        // surface the description as a separate field. H.264 keyframes
-        // carry SPS/PPS inline in Annex B and don't need this.
-        if args.keyframe && (args.codec == 3 || args.codec == 4) {
-            if let Some(desc) = args.description.as_ref() {
-                let desc_bytes: &[u8] = desc.as_ref();
+    // Runs on the Electron MAIN thread (sync napi fn behind ipcMain.handle),
+    // once per encoded frame. It only copies the bytes (applying the
+    // HEVC/AV1 description prefix while it's at it) and enqueues them;
+    // sealing, packetising and the per-chunk sendto() happen on the sink's
+    // `decibell-video-send` thread (see video_pipeline::submit_renderer_frame).
+    //
+    // No `state_arc.lock()` here — the dedicated frame-sink slot is read
+    // under its own short-held mutex. Sync rather than async — no .await,
+    // so napi-rs doesn't spawn a task per frame.
+    //
+    // A cleared sink is a benign race, not an error: stop_screen_share
+    // clears the slot while the renderer's encoder is still draining its
+    // last chunks. A full queue sheds the frame and asks the encoder for a
+    // keyframe — also not an error for the caller.
+    //
+    // Every platform: Windows takes this path too when it falls back to the
+    // renderer's WebCodecs encoder (native start failed, or the
+    // `decibell.win_native_encode` opt-out); its native pipeline never
+    // calls this.
+    let data: &[u8] = args.data.as_ref();
+    let description: Option<&[u8]> = args.description.as_ref().map(|d| d.as_ref());
+    let _ = video_pipeline::submit_renderer_frame(args.codec, args.keyframe, || {
+        // For HEVC/AV1 keyframes with a description, prepend the magic-tag
+        // length-prefix so receivers strip it back out and surface the
+        // description as a separate field. H.264 keyframes carry SPS/PPS
+        // inline in Annex B and don't need this.
+        match description {
+            Some(desc) if args.keyframe && (args.codec == 3 || args.codec == 4) => {
                 let mut wire = Vec::with_capacity(
-                    WIRE_DESCRIPTION_MAGIC.len() + 4 + desc_bytes.len() + data.len(),
+                    WIRE_DESCRIPTION_MAGIC.len() + 4 + desc.len() + data.len(),
                 );
                 wire.extend_from_slice(&WIRE_DESCRIPTION_MAGIC);
-                wire.extend_from_slice(&(desc_bytes.len() as u32).to_be_bytes());
-                wire.extend_from_slice(desc_bytes);
+                wire.extend_from_slice(&(desc.len() as u32).to_be_bytes());
+                wire.extend_from_slice(desc);
                 wire.extend_from_slice(data);
-                sender.send_frame(args.codec, args.keyframe, &wire);
-                return Ok(());
+                wire
             }
+            _ => data.to_vec(),
         }
-        sender.send_frame(args.codec, args.keyframe, data);
-        Ok(())
-    }
+    });
+    Ok(())
+}
+
+#[napi(object)]
+pub struct SetStreamFrameSinkArgs {
+    /// Streamer whose encoded frames the renderer now (no longer) displays.
+    pub username: String,
+    pub enabled: bool,
+}
+
+/// Renderer-side stream-frame subscriptions, mirrored natively. The preload
+/// bridge calls this when the first subscriber for a username appears
+/// (enabled) and when the last one goes (disabled); frames for usernames
+/// without a sink are dropped before the TSFN — and own-stream self-preview
+/// isn't even copied. Sync, and sent over the same `decibell:invoke`
+/// channel as the player's follow-up keyframe request, so the sink is in
+/// place before that keyframe can arrive. NOT the watch filter
+/// (media::WATCHED_STREAMS) — that one gates the server-side watch.
+#[napi]
+pub fn set_stream_frame_sink(args: SetStreamFrameSinkArgs) {
+    crate::events::set_stream_frame_sink(&args.username, args.enabled);
+}
+
+/// Drop every stream-frame sink. The preload calls this when it loads (a
+/// renderer reload leaves no subscribers behind).
+#[napi]
+pub fn clear_stream_frame_sinks() {
+    crate::events::clear_stream_frame_sinks();
 }
 
 #[napi(object)]
@@ -935,13 +950,28 @@ pub struct NativeEncoderCap {
     pub encoder_name: String,
 }
 
+/// Serialises native encoder probes: they test-open real hardware encoder
+/// sessions, and two overlapping probes (boot + a settings re-probe) would
+/// double the concurrent NVENC/AMF sessions for no benefit.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+static PROBE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Runs the native FFmpeg encoder probe. Windows-only. Returns the
 /// list of (codec, vendor) tuples that successfully opened.
+///
+/// Async + spawn_blocking: the probe opens (and closes) FFmpeg hardware
+/// encoders, which takes hundreds of ms — as a sync napi fn it ran on the
+/// Electron main thread and froze every window for the duration.
 #[cfg(target_os = "windows")]
 #[napi]
-pub fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
-    let vendor_id = read_primary_gpu_vendor_id();
-    let caps = crate::media::encoder_probe::run(vendor_id);
+pub async fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
+    let caps = tokio::task::spawn_blocking(|| {
+        let _g = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let vendor_id = read_primary_gpu_vendor_id();
+        crate::media::encoder_probe::run(vendor_id)
+    })
+    .await
+    .map_err(|e| napi::Error::from_reason(format!("encoder probe failed: {}", e)))?;
     Ok(caps
         .into_iter()
         .map(|c| NativeEncoderCap {
@@ -959,10 +989,19 @@ pub fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
 /// encoders (NVENC → VAAPI → software) and reports which work. Hardware
 /// codecs advertise a 4K/60 ceiling; software libx264 is capped lower
 /// since CPU 4K encoding isn't realtime.
+///
+/// Async + spawn_blocking for the same reason as the Windows variant: the
+/// test-opens must not run on the Electron main thread.
 #[cfg(target_os = "linux")]
 #[napi]
-pub fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
-    Ok(crate::media::encoder_linux::probe_caps()
+pub async fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
+    let probed = tokio::task::spawn_blocking(|| {
+        let _g = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::media::encoder_linux::probe_caps()
+    })
+    .await
+    .map_err(|e| napi::Error::from_reason(format!("encoder probe failed: {}", e)))?;
+    Ok(probed
         .into_iter()
         .map(|(kind, name, hardware)| {
             let (max_width, max_height, max_fps) = if hardware {

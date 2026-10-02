@@ -56,32 +56,83 @@ pub struct StreamFrame {
     pub timestamp: i64,
     pub data: Vec<u8>,
     pub description: Option<Vec<u8>>,
+    /// Set by `send_stream_frame` (callers pass `false`): an earlier frame
+    /// for this username was shed by the bounded queue, so this one's
+    /// reference chain is broken. The renderer gates deltas on the next
+    /// keyframe and asks the streamer for one.
+    pub discontinuity: bool,
 }
 
 type StreamBus = ThreadsafeFunction<StreamFrame, ErrorStrategy::Fatal>;
 static STREAM_BUS: OnceLock<StreamBus> = OnceLock::new();
 
+/// Frames handed to the stream TSFN that JS hasn't picked up yet. We
+/// reserve a slot here BEFORE calling the TSFN and refuse the call when
+/// all are taken, instead of letting napi report QueueFull: napi-rs 2
+/// boxes the value with `Box::into_raw` before `napi_call_threadsafe_function`
+/// and never reclaims it on failure, so every QueueFull drop leaked the
+/// whole encoded frame. With the cap mirrored here the napi queue can't
+/// overflow and a drop is ours to account for (the frame is freed).
+const STREAM_QUEUE_CAP: usize = 8;
+static STREAM_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn reserve_stream_slot() -> bool {
+    use std::sync::atomic::Ordering;
+    let mut n = STREAM_IN_FLIGHT.load(Ordering::Acquire);
+    loop {
+        if n >= STREAM_QUEUE_CAP {
+            return false;
+        }
+        match STREAM_IN_FLIGHT.compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(cur) => n = cur,
+        }
+    }
+}
+
+fn release_stream_slot() {
+    use std::sync::atomic::Ordering;
+    // Saturating: a slot is only ever released once per reservation, but
+    // never let a logic slip wrap the counter and wedge every later frame.
+    let mut n = STREAM_IN_FLIGHT.load(Ordering::Acquire);
+    while n > 0 {
+        match STREAM_IN_FLIGHT.compare_exchange_weak(n, n - 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(cur) => n = cur,
+        }
+    }
+}
+
 /// Install the stream-frame bus. Called from `init(...)` alongside the
 /// main bus install. The JS callback receives a single object:
 /// `{ username, codec, keyframe, timestamp, data: Uint8Array,
-///    description: Uint8Array | null }`.
+///    description: Uint8Array | null, discontinuity: boolean }`.
 pub fn install_stream_bus(callback: JsFunction) -> Result<()> {
     // Bounded queue. With the previous unbounded queue (0), NonBlocking
-    // could never report saturation — the drop counter below was dead
-    // code, and a busy renderer buffered encoded frames in main-process
-    // memory without limit, turning a stall into permanent added stream
-    // latency. 8 frames ≈ 130ms at 60fps: enough to ride out a GC pause,
-    // small enough that a real stall sheds frames and stays live. The
-    // decoder's keyframe gate recovers from any dropped delta.
+    // could never report saturation, and a busy renderer buffered encoded
+    // frames in main-process memory without limit, turning a stall into
+    // permanent added stream latency. 8 frames ≈ 130ms at 60fps: enough to
+    // ride out a GC pause, small enough that a real stall sheds frames and
+    // stays live. A shed frame breaks the decoder's reference chain, so the
+    // next frame queued for that streamer carries `discontinuity: true`
+    // (see send_stream_frame) — the player then gates deltas on a keyframe
+    // and requests one instead of smearing until the next natural IDR.
     let tsfn: StreamBus = callback.create_threadsafe_function(
-        8,
+        STREAM_QUEUE_CAP,
         |ctx: ThreadSafeCallContext<StreamFrame>| -> Result<Vec<JsUnknown>> {
+            // Popped off the napi queue — free the slot first so an error
+            // below can't strand it.
+            release_stream_slot();
             let env = &ctx.env;
             let mut obj = env.create_object()?;
             obj.set_named_property("username", env.create_string(&ctx.value.username)?)?;
             obj.set_named_property("codec", env.create_uint32(ctx.value.codec as u32)?)?;
             obj.set_named_property("keyframe", env.get_boolean(ctx.value.keyframe)?)?;
             obj.set_named_property("timestamp", env.create_int64(ctx.value.timestamp)?)?;
+            obj.set_named_property(
+                "discontinuity",
+                env.get_boolean(ctx.value.discontinuity)?,
+            )?;
             // Buffer::with_data hands V8 the Vec's backing allocation
             // directly — no copy.
             let data_buf = env.create_buffer_with_data(ctx.value.data)?;
@@ -114,23 +165,153 @@ pub fn stream_frame_drop_count() -> u64 {
     STREAM_FRAME_DROPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+fn note_stream_frame_drop() {
+    let n = STREAM_FRAME_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    // First drop and every 100th after — visible in logs without
+    // becoming its own hot path during a sustained renderer stall.
+    if n == 1 || n % 100 == 0 {
+        log::warn!("stream frame bus saturated — {} frames dropped so far", n);
+    }
+}
+
+// ── Discontinuity marks ──
+// Usernames that lost a frame to the bounded queue and whose next queued
+// frame must carry `discontinuity: true`. The AtomicBool is a lock-free
+// "set is non-empty" fast path so the common case never touches the mutex.
+// Per username there is a single producer thread (the voice event bridge
+// for remote streams, the encoder thread for our own), so mark → take for
+// one name always happens in program order on one thread.
+static DISCONTINUITY_ANY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn discontinuity_set() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static SET: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    SET.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn mark_discontinuity(username: &str) {
+    let mut set = discontinuity_set().lock().unwrap_or_else(|e| e.into_inner());
+    if !set.contains(username) {
+        set.insert(username.to_string());
+    }
+    DISCONTINUITY_ANY.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Remove `username`'s mark, returning whether it was marked.
+fn take_discontinuity(username: &str) -> bool {
+    if !DISCONTINUITY_ANY.load(std::sync::atomic::Ordering::Acquire) {
+        return false;
+    }
+    let mut set = discontinuity_set().lock().unwrap_or_else(|e| e.into_inner());
+    let was = set.remove(username);
+    if set.is_empty() {
+        DISCONTINUITY_ANY.store(false, std::sync::atomic::Ordering::Release);
+    }
+    was
+}
+
+// ── Stream frame sinks ──
+// Usernames the renderer currently has at least one stream-frame
+// subscriber for (preload `streamFrames.subscribe` ref-counts per username
+// and toggles this through `set_stream_frame_sink`). Frames for anyone else
+// would cross native → main → IPC → renderer only to be discarded in the
+// preload, so `send_stream_frame` drops them here, and the encoder threads
+// skip even copying their self-preview bytes when nobody displays them.
+// Not a security filter — that's media::WATCHED_STREAMS (the server-side
+// watch); this one only tracks who is on screen. Lock-free reads on the
+// per-frame hot path.
+static STREAM_FRAME_SINKS: OnceLock<arc_swap::ArcSwap<std::collections::HashSet<String>>> =
+    OnceLock::new();
+
+fn stream_frame_sinks() -> &'static arc_swap::ArcSwap<std::collections::HashSet<String>> {
+    STREAM_FRAME_SINKS
+        .get_or_init(|| arc_swap::ArcSwap::from_pointee(std::collections::HashSet::new()))
+}
+
+/// Whether a renderer subscriber currently wants `username`'s frames.
+pub fn is_stream_frame_sink(username: &str) -> bool {
+    stream_frame_sinks().load().contains(username)
+}
+
+/// Add / remove `username` as a frame sink. Writers are rare (subscribe /
+/// unsubscribe), so the copy-on-write clone is fine.
+pub fn set_stream_frame_sink(username: &str, enabled: bool) {
+    let sinks = stream_frame_sinks();
+    let cur = sinks.load();
+    if cur.contains(username) == enabled {
+        return;
+    }
+    let mut next = (**cur).clone();
+    if enabled {
+        next.insert(username.to_string());
+    } else {
+        next.remove(username);
+        // A pending mark is moot once nobody displays the stream — the
+        // next subscriber starts on a keyframe gate anyway.
+        let _ = take_discontinuity(username);
+    }
+    sinks.store(std::sync::Arc::new(next));
+}
+
+/// Drop every sink (renderer (re)load: its subscribers are gone).
+pub fn clear_stream_frame_sinks() {
+    stream_frame_sinks().store(std::sync::Arc::new(std::collections::HashSet::new()));
+}
+
 /// Push an encoded video frame to JS. Safe from any thread.
 /// Drops silently if the stream bus hasn't been installed yet (the
 /// renderer's video receive thread starts before the bus is installed
-/// during init() in rare ordering — fine, no frames are flowing yet).
-pub fn send_stream_frame(frame: StreamFrame) {
+/// during init() in rare ordering — fine, no frames are flowing yet), or
+/// if no renderer subscriber wants this username's frames (see
+/// STREAM_FRAME_SINKS).
+pub fn send_stream_frame(mut frame: StreamFrame) {
     let Some(bus) = STREAM_BUS.get() else {
         return;
     };
+    if !is_stream_frame_sink(&frame.username) {
+        return;
+    }
+    if !reserve_stream_slot() {
+        // Queue full (busy/stalled renderer): shed this frame — it is freed
+        // here — and flag the streamer so its next queued frame tells the
+        // player the reference chain broke.
+        mark_discontinuity(&frame.username);
+        note_stream_frame_drop();
+        return;
+    }
+    // Unmark before the call; if the call itself fails, re-mark so the
+    // flag rides the next frame instead. The name is only cloned on this
+    // (rare) path.
+    let remark = if take_discontinuity(&frame.username) {
+        frame.discontinuity = true;
+        Some(frame.username.clone())
+    } else {
+        None
+    };
     let status = bus.call(frame, ThreadsafeFunctionCallMode::NonBlocking);
     if status != napi::Status::Ok {
-        let n = STREAM_FRAME_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        // First drop and every 100th after — visible in logs without
-        // becoming its own hot path during a sustained renderer stall.
-        if n == 1 || n % 100 == 0 {
-            log::warn!("stream frame bus saturated — {} frames dropped so far", n);
+        // Only reachable while the TSFN is closing (shutdown) — the slot
+        // reservation above keeps the napi queue from ever filling.
+        release_stream_slot();
+        if let Some(name) = remark {
+            mark_discontinuity(&name);
         }
+        note_stream_frame_drop();
     }
+}
+
+// ── Mic input level gate ──
+// `voice_input_level` is only consumed by Settings → Audio's meter, which
+// turns this on while mounted. Off by default so a voice session doesn't
+// push ~16 events/s through the JSON bus and IPC for nobody.
+static INPUT_LEVEL_REPORTING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn input_level_reporting_enabled() -> bool {
+    INPUT_LEVEL_REPORTING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_input_level_reporting(enabled: bool) {
+    INPUT_LEVEL_REPORTING.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
 // ── Stream thumbnail bus ──────────────────────────────────────────
