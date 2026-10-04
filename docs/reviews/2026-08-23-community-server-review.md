@@ -1363,6 +1363,32 @@ state in Nocturne, Matinee, Graphite and Console Light, plus the empty states an
 section. Open: a live run against a real community server, Open / Show in folder on Windows and
 macOS, and the uploads tab (phase 2).
 
+**Transfers panel, phase 2 — uploads (2026-10-04) ✅** — The Uploads tab: every attachment from
+the moment its message starts sending, with live progress, speed and the target channel, then
+Uploaded / Failed / Cancelled for the rest of the session. *Client:*
+- `features/transfers/uploads.ts` mirrors `attachmentsStore` into `transfersStore`, so a row outlives
+  its pending (which is removed when the message sends). Speed is an EWMA kept outside the store.
+- Pause (`PendingAttachment.paused`) holds the upload loop before its next chunk, and the message
+  waits with it. The bubble shows "Paused · N%". Cancel is the existing abort; `markFailed` now
+  records that it was a cancel.
+- A PATCH 404 fails immediately as "Upload expired on the server" instead of five backoff retries.
+- Clicking an uploaded row opens its channel. The button's ring and counts include uploads, and only
+  a failed upload lights the dot, not every successful send.
+- Opening the panel shows whichever tab saw something start since it was last opened.
+*Community server:* the abandoned-upload sweep deleted `uploading` rows by `created_at` > 1 h, so a
+paused or slowly capped upload that was still alive could vanish under the client. It now sweeps by
+idle time: schema v10 adds `attachments.last_activity_at`, every accepted PATCH stamps it, and the
+sweep compares `MAX(created_at, last_activity_at)`. The client needs no server release for anything
+else; until the server is rebuilt, an upload paused for over an hour fails cleanly as "expired".
+Verified: tsc web 0; community build + e2e 301/301, including a new `[transfers]` test: PATCH stamps
+the column, a never-patched upload and one idle for 2 h are swept, an old upload with recent
+progress is kept and resumes. A preview-harness simulation runs the real upload loop against a fake
+attachment server: pause holds before the next chunk and resume finishes, cancel while paused ends
+cancelled, a 404 fails at once with no retries and lights the error dot, a row survives its pending's
+removal, one that vanishes mid-flight shows as cancelled, and opening the panel picks the tab with
+news. Screenshots in Nocturne and Matinee. Open: a live capped upload with pause against a real
+server; the community release for the sweep change.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

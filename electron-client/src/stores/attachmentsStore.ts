@@ -44,6 +44,11 @@ export interface PendingAttachment {
   attachmentId: number | null;
   /// Error message when status === "failed".
   errorMessage: string | null;
+  /// Failed because the user cancelled it (not an error).
+  cancelled: boolean;
+  /// Held by the user from the Transfers panel: the upload loop waits
+  /// before its next chunk, and the message waits with it.
+  paused: boolean;
   /// Cancellation handle. uploadAttachment subscribes to abort().
   abortController: AbortController;
   /// Renderer-only blob URL for the optimistic preview (image/video).
@@ -71,8 +76,14 @@ export interface PendingAttachment {
 
 interface AttachmentsState {
   pendings: Record<string, PendingAttachment>;
-  add: (p: Omit<PendingAttachment, "status" | "transferredBytes" | "attachmentId" | "errorMessage">) => void;
+  add: (
+    p: Omit<
+      PendingAttachment,
+      "status" | "transferredBytes" | "attachmentId" | "errorMessage" | "cancelled" | "paused"
+    >,
+  ) => void;
   setStatus: (pendingId: string, status: PendingStatus) => void;
+  setPaused: (pendingId: string, paused: boolean) => void;
   updateProgress: (pendingId: string, transferredBytes: number) => void;
   markReady: (
     pendingId: string,
@@ -102,6 +113,8 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
           transferredBytes: 0,
           attachmentId: null,
           errorMessage: null,
+          cancelled: false,
+          paused: false,
         },
       },
     })),
@@ -111,6 +124,13 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
       const existing = state.pendings[pendingId];
       if (!existing) return state;
       return { pendings: { ...state.pendings, [pendingId]: { ...existing, status } } };
+    }),
+
+  setPaused: (pendingId, paused) =>
+    set((state) => {
+      const existing = state.pendings[pendingId];
+      if (!existing || existing.paused === paused) return state;
+      return { pendings: { ...state.pendings, [pendingId]: { ...existing, paused } } };
     }),
 
   updateProgress: (pendingId, transferredBytes) =>
@@ -156,14 +176,20 @@ export const useAttachmentsStore = create<AttachmentsState>((set, get) => ({
       };
     }),
 
-  markFailed: (pendingId, message, _cancelled) =>
+  markFailed: (pendingId, message, cancelled) =>
     set((state) => {
       const existing = state.pendings[pendingId];
       if (!existing) return state;
       return {
         pendings: {
           ...state.pendings,
-          [pendingId]: { ...existing, status: "failed", errorMessage: message },
+          [pendingId]: {
+            ...existing,
+            status: "failed",
+            errorMessage: message,
+            cancelled: cancelled ?? false,
+            paused: false,
+          },
         },
       };
     }),

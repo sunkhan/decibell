@@ -457,6 +457,23 @@ export async function queueUpload(args: QueueArgs): Promise<void> {
   }
 }
 
+/// Resolve once the pending isn't paused (or the upload is aborted).
+function waitWhilePaused(pendingId: string, signal: AbortSignal): Promise<void> {
+  const paused = () => useAttachmentsStore.getState().pendings[pendingId]?.paused ?? false;
+  if (!paused() || signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      unsubscribe();
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const unsubscribe = useAttachmentsStore.subscribe(() => {
+      if (!paused()) done();
+    });
+    signal.addEventListener("abort", done);
+  });
+}
+
 /// Per-pending video poster captured during probeMetadata, looked up
 /// by startQueuedUpload when the upload completes so we can ship
 /// server thumbnails. Cleared in startQueuedUpload's finally so a
@@ -558,6 +575,8 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
     // regardless of file size — no pre-loaded ArrayBuffer of the whole
     // file.
     while (offset < source.size) {
+      // Paused from the Transfers panel: hold before the next chunk.
+      await waitWhilePaused(pendingId, abortController.signal);
       if (abortController.signal.aborted) {
         throw new Error("Upload cancelled");
       }
@@ -591,6 +610,13 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
               body: wire,
             },
           );
+          if (resp.status === 404) {
+            // The server swept it (an hour without progress) or it was
+            // deleted: retrying can't help.
+            lastErr = new Error("Upload expired on the server");
+            attempt = MAX_RETRY + 1;
+            break;
+          }
           if (!resp.ok) {
             throw new Error(`PATCH ${offset}: HTTP ${resp.status} ${resp.statusText}`);
           }

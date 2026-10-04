@@ -27,6 +27,7 @@ function TransfersButton() {
   const attention = useTransfersStore((s) => s.attention);
   const startPulse = useTransfersStore((s) => s.startPulse);
   const downloads = useTransfersStore((s) => s.downloads);
+  const uploads = useTransfersStore((s) => s.uploads);
   const [risky, setRisky] = useState<DownloadView | null>(null);
 
   const live = useMemo(() => {
@@ -34,17 +35,19 @@ function TransfersButton() {
     let paused = 0;
     let done = 0;
     let total = 0;
-    for (const d of downloads) {
-      if (d.state !== "active" && d.state !== "paused") continue;
-      if (d.state === "active") active += 1;
+    const add = (running: boolean, isPaused: boolean, got: number, size: number) => {
+      if (!running && !isPaused) return;
+      if (running) active += 1;
       else paused += 1;
-      if (d.totalBytes > 0) {
-        done += d.receivedBytes;
-        total += d.totalBytes;
+      if (size > 0) {
+        done += got;
+        total += size;
       }
-    }
+    };
+    for (const d of downloads) add(d.state === "active", d.state === "paused", d.receivedBytes, d.totalBytes);
+    for (const u of uploads) add(u.state === "uploading", u.state === "paused", u.transferredBytes, u.totalBytes);
     return { active, paused, fraction: total > 0 ? done / total : 0 };
-  }, [downloads]);
+  }, [downloads, uploads]);
 
   const close = useCallback((refocus: boolean) => {
     useTransfersStore.getState().closePanel();

@@ -55,7 +55,7 @@ export default function BubbleInflightAttachments({ pendingIds }: Props) {
               <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-bg-light">
                 <div
                   className={`h-full transition-all ${
-                    p.status === "failed" ? "bg-error" : "bg-accent"
+                    p.status === "failed" ? "bg-error" : p.paused ? "bg-text-muted" : "bg-accent"
                   }`}
                   style={{ width: `${pct}%` }}
                 />
@@ -65,7 +65,9 @@ export default function BubbleInflightAttachments({ pendingIds }: Props) {
                   ? p.errorMessage ?? "Upload failed"
                   : p.status === "ready"
                     ? "Ready"
-                    : `${pct}%`}
+                    : p.paused
+                      ? `Paused · ${pct}%`
+                      : `${pct}%`}
               </div>
             </div>
           </div>

@@ -4,6 +4,7 @@ import { useChatStore } from "../../stores/chatStore";
 import { useTransfersStore } from "../../stores/transfersStore";
 import { toast } from "../../stores/toastStore";
 import type { Attachment, AttachmentKind, DownloadContext, DownloadView } from "../../types";
+import { initUploads } from "./uploads";
 
 // Renderer side of the download manager (electron/main/downloads.ts).
 
@@ -13,6 +14,7 @@ let initialised = false;
 export function initTransfers(): void {
   if (initialised) return;
   initialised = true;
+  initUploads();
   void refreshDownloads();
   void listen<DownloadView>("downloads_changed", (e) => {
     useTransfersStore.getState().upsertDownload(e.payload);

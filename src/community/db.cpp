@@ -247,6 +247,17 @@ void CommunityDb::init_schema_() {
 
     // --- v9: encrypted text channels (spec 2026-09-04) ---
     migrate_to_v9_e2ee_();
+
+    // --- v10: upload activity, so the abandoned-upload sweep goes by idle time ---
+    migrate_to_v10_upload_activity_();
+}
+
+void CommunityDb::migrate_to_v10_upload_activity_() {
+    // When a PATCH last landed. 0 = none yet; the sweep then falls back
+    // to created_at.
+    if (!column_exists(db_, "attachments", "last_activity_at"))
+        exec_sql(db_, "ALTER TABLE attachments ADD COLUMN last_activity_at INTEGER NOT NULL DEFAULT 0;");
+    set_meta_("schema_version", "10");
 }
 
 void CommunityDb::migrate_to_v9_e2ee_() {
@@ -2787,7 +2798,7 @@ std::vector<DbAttachment> CommunityDb::list_stale_pending_attachments(
         "  COALESCE(storage_path, ''), position, created_at, purged_at, "
         "  upload_status, expected_size, uploader, channel_id "
         "FROM attachments WHERE message_id=0 "
-        "  AND ((upload_status='uploading' AND created_at<?) "
+        "  AND ((upload_status='uploading' AND MAX(created_at, last_activity_at)<?) "
         "    OR (upload_status<>'uploading' AND created_at<?));");
     if (!q.s) return out;
     q.bind_int64(1, uploading_cutoff_ts);
@@ -2818,6 +2829,15 @@ bool CommunityDb::delete_attachment_row(int64_t attachment_id) {
     if (!q.s) return false;
     q.bind_int64(1, attachment_id);
     return q.step() == SQLITE_DONE && sqlite3_changes(db_) > 0;
+}
+
+void CommunityDb::touch_attachment_activity(int64_t attachment_id, int64_t ts) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "UPDATE attachments SET last_activity_at=? WHERE id=?;");
+    if (!q.s) return;
+    q.bind_int64(1, ts);
+    q.bind_int64(2, attachment_id);
+    q.step();
 }
 
 CommunityDb::WipeChannelResult CommunityDb::wipe_channel(const std::string& channel_id) {

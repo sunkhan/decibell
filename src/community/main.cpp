@@ -4283,8 +4283,9 @@ void SessionManager::run_retention_sweep() {
     }
 
     // Abandoned uploads — unbound rows (message_id=0). Two cutoffs:
-    // 'uploading' rows die after an hour (client crashed / gave up
-    // mid-upload), but 'ready' rows get a day — a finished upload can
+    // 'uploading' rows die after an hour without a PATCH (client crashed /
+    // gave up mid-upload; a slow or paused upload that still makes progress
+    // stays), but 'ready' rows get a day — a finished upload can
     // legitimately sit in a compose box for a while before the message
     // referencing it is sent, and sweeping it early silently strips the
     // attachment from that eventual message.

@@ -617,8 +617,10 @@ public:
                                         bool require_encrypted = false);
     // Unbound attachments (message_id=0) the retention sweep should clean
     // up, with a cutoff per lifecycle state (created_at in unix seconds):
-    //   - 'uploading' rows older than `uploading_cutoff_ts` — the client
-    //     crashed or gave up mid-upload;
+    //   - 'uploading' rows idle since before `uploading_cutoff_ts` (no
+    //     PATCH landed; see touch_attachment_activity) — the client
+    //     crashed or gave up mid-upload. Idle, not old: a slow (capped)
+    //     or paused upload that is still alive must not be swept;
     //   - 'ready' rows older than `ready_cutoff_ts` — uploaded but never
     //     referenced by a CHANNEL_MSG. Kept on a much longer leash than
     //     uploading rows, because a finished upload may legitimately sit
@@ -628,6 +630,8 @@ public:
     std::vector<DbAttachment> list_stale_pending_attachments(
         int64_t uploading_cutoff_ts, int64_t ready_cutoff_ts) const;
     bool delete_attachment_row(int64_t attachment_id);
+    // Stamp upload progress (each accepted PATCH) for the sweep above.
+    void touch_attachment_activity(int64_t attachment_id, int64_t ts);
 
     // --- owner-initiated wipe ---
     // Result of a full channel wipe — the count fields are returned to
@@ -784,6 +788,7 @@ private:
     void migrate_to_v7_moderation_();
     void migrate_to_v8_uid_();
     void migrate_to_v9_e2ee_();
+    void migrate_to_v10_upload_activity_();
     // server_meta.owner, loaded at open() and kept in sync by set_meta_.
     std::string owner_cache_;
     void seed_if_empty_(const std::string& owner,

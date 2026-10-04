@@ -5,6 +5,7 @@ import { useTransfersStore, type TransfersTab } from "../../stores/transfersStor
 import { useUiStore } from "../../stores/uiStore";
 import type { DownloadView } from "../../types";
 import DownloadRow from "./DownloadRow";
+import UploadRow from "./UploadRow";
 import { refreshDownloads } from "./downloads";
 
 const WIDTH = 360;
@@ -38,6 +39,7 @@ export default function TransfersPanel({
   const tab = useTransfersStore((s) => s.tab);
   const setTab = useTransfersStore((s) => s.setTab);
   const downloads = useTransfersStore((s) => s.downloads);
+  const uploads = useTransfersStore((s) => s.uploads);
   const downloadCap = useUiStore((s) => s.downloadLimitBps);
   const uploadCap = useUiStore((s) => s.uploadLimitBps);
   const [now, setNow] = useState(() => Date.now());
@@ -76,9 +78,16 @@ export default function TransfersPanel({
     () => downloads.filter((d) => d.state === "active" || d.state === "paused").length,
     [downloads],
   );
+  const uploadsLive = useMemo(
+    () => uploads.filter((u) => u.state === "uploading" || u.state === "paused").length,
+    [uploads],
+  );
   const finished = useMemo(
-    () => downloads.some((d) => d.state === "done" || d.state === "failed" || d.state === "cancelled"),
-    [downloads],
+    () =>
+      tab === "downloads"
+        ? downloads.some((d) => d.state === "done" || d.state === "failed" || d.state === "cancelled")
+        : uploads.some((u) => u.state !== "uploading" && u.state !== "paused"),
+    [tab, downloads, uploads],
   );
 
   const rect = anchorEl.getBoundingClientRect();
@@ -111,7 +120,7 @@ export default function TransfersPanel({
           onChange={setTab}
           options={[
             { value: "downloads", label: downloadsLive > 0 ? `Downloads · ${downloadsLive}` : "Downloads" },
-            { value: "uploads", label: "Uploads" },
+            { value: "uploads", label: uploadsLive > 0 ? `Uploads · ${uploadsLive}` : "Uploads" },
           ]}
         />
       </div>
@@ -135,45 +144,52 @@ export default function TransfersPanel({
           ) : (
             <Empty title="No downloads yet" hint="Files you download from chats show up here." />
           )
+        ) : uploads.length > 0 ? (
+          uploads.map((u) => <UploadRow key={u.pendingId} u={u} onNavigate={() => onClose(false)} />)
         ) : (
           <Empty title="No uploads this session" hint="Files you send show their progress here." />
         )}
       </div>
 
-      <div className="flex items-center gap-3 border-t border-border-divider px-3 py-2 text-[12px]">
-        {cap > 0 ? (
-          <button
-            type="button"
-            onClick={openSettings}
-            className="truncate text-text-muted transition-colors hover:text-text-primary"
-            title="Change in Settings → Network"
-          >
-            {tab === "downloads" ? "↓" : "↑"} Limited to {capLabel(cap)}
-          </button>
-        ) : (
-          <span />
-        )}
-        <div className="ml-auto flex items-center gap-3">
-          {tab === "downloads" && (
+      {(cap > 0 || tab === "downloads" || finished) && (
+        <div className="flex items-center gap-3 border-t border-border-divider px-3 py-2 text-[12px]">
+          {cap > 0 ? (
             <button
               type="button"
-              onClick={() => void window.decibell.downloads.openFolder()}
-              className="font-medium text-text-secondary transition-colors hover:text-text-primary"
+              onClick={openSettings}
+              className="truncate text-text-muted transition-colors hover:text-text-primary"
+              title="Change in Settings → Network"
             >
-              Open folder
+              {tab === "downloads" ? "↓" : "↑"} Limited to {capLabel(cap)}
             </button>
+          ) : (
+            <span />
           )}
-          {tab === "downloads" && finished && (
-            <button
-              type="button"
-              onClick={() => void window.decibell.downloads.clearFinished()}
-              className="font-medium text-text-secondary transition-colors hover:text-text-primary"
-            >
-              Clear
-            </button>
-          )}
+          <div className="ml-auto flex items-center gap-3">
+            {tab === "downloads" && (
+              <button
+                type="button"
+                onClick={() => void window.decibell.downloads.openFolder()}
+                className="font-medium text-text-secondary transition-colors hover:text-text-primary"
+              >
+                Open folder
+              </button>
+            )}
+            {finished && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (tab === "downloads") void window.decibell.downloads.clearFinished();
+                  else useTransfersStore.getState().clearFinishedUploads();
+                }}
+                className="font-medium text-text-secondary transition-colors hover:text-text-primary"
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {menu && <RowMenu menu={menu} onOpenFile={onOpenFile} onDone={() => setMenu(null)} />}
     </div>,

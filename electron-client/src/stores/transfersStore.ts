@@ -1,12 +1,37 @@
 import { create } from "zustand";
-import type { DownloadView } from "../types";
+import type { AttachmentKind, DownloadView } from "../types";
 
 // The Transfers panel's state (features/transfers/). Downloads are a
 // mirror of main's download manager: seeded by `list()` and patched by
 // its `downloads_changed` / `downloads_removed` events (see
 // initTransfers). Main is the source of truth; nothing here persists.
+// Uploads are this session's history, fed from attachmentsStore (see
+// features/transfers/uploads.ts) so a row outlives its pending.
 
 export type TransfersTab = "downloads" | "uploads";
+
+export type UploadState = "uploading" | "paused" | "done" | "failed" | "cancelled";
+
+export interface UploadEntry {
+  pendingId: string;
+  serverId: string;
+  serverName: string;
+  channelId: string;
+  channelName: string;
+  filename: string;
+  kind: AttachmentKind;
+  /// The composer's blob preview, while the pending still exists.
+  previewUrl: string | null;
+  /// Server id once uploaded (for the thumbnail afterwards).
+  attachmentId: number | null;
+  totalBytes: number;
+  transferredBytes: number;
+  state: UploadState;
+  error: string | null;
+  speedBps: number;
+  startedAt: number;
+  finishedAt: number | null;
+}
 
 /// The title-bar button's dot: something ended while the panel was shut.
 export type TransfersAttention = "none" | "done" | "failed";
@@ -14,6 +39,12 @@ export type TransfersAttention = "none" | "done" | "failed";
 interface TransfersState {
   /// Newest first.
   downloads: DownloadView[];
+  /// Newest first. This session only.
+  uploads: UploadEntry[];
+  /// When each tab last saw something start, and when the panel was
+  /// last opened: opening shows the tab with news, else the last one.
+  activityAt: Record<TransfersTab, number>;
+  openedAt: number;
   panelOpen: boolean;
   tab: TransfersTab;
   attention: TransfersAttention;
@@ -25,6 +56,9 @@ interface TransfersState {
   askDownloadLocation: boolean;
 
   setDownloads: (list: DownloadView[]) => void;
+  setUploads: (uploads: UploadEntry[], attention?: TransfersAttention, newActivity?: boolean) => void;
+  removeUpload: (pendingId: string) => void;
+  clearFinishedUploads: () => void;
   upsertDownload: (d: DownloadView) => void;
   removeDownloads: (ids: string[]) => void;
   openPanel: (tab?: TransfersTab) => void;
@@ -41,6 +75,9 @@ function ended(d: DownloadView): boolean {
 
 export const useTransfersStore = create<TransfersState>((set) => ({
   downloads: [],
+  uploads: [],
+  activityAt: { downloads: 0, uploads: 0 },
+  openedAt: 0,
   panelOpen: false,
   tab: "downloads",
   attention: "none",
@@ -65,8 +102,24 @@ export const useTransfersStore = create<TransfersState>((set) => ({
         if (d.state === "failed") attention = "failed";
         else if (attention === "none") attention = "done";
       }
-      return { downloads, attention };
+      const activityAt = prev ? state.activityAt : { ...state.activityAt, downloads: Date.now() };
+      return { downloads, attention, activityAt };
     }),
+
+  setUploads: (uploads, attention, newActivity) =>
+    set((state) => ({
+      uploads,
+      attention: attention && !state.panelOpen && attention !== "none" ? attention : state.attention,
+      activityAt: newActivity ? { ...state.activityAt, uploads: Date.now() } : state.activityAt,
+    })),
+
+  removeUpload: (pendingId) =>
+    set((state) => ({ uploads: state.uploads.filter((u) => u.pendingId !== pendingId) })),
+
+  clearFinishedUploads: () =>
+    set((state) => ({
+      uploads: state.uploads.filter((u) => u.state === "uploading" || u.state === "paused"),
+    })),
 
   removeDownloads: (ids) =>
     set((state) => {
@@ -76,7 +129,16 @@ export const useTransfersStore = create<TransfersState>((set) => ({
     }),
 
   openPanel: (tab) =>
-    set((state) => ({ panelOpen: true, tab: tab ?? state.tab, attention: "none" })),
+    set((state) => {
+      let next = tab ?? state.tab;
+      if (!tab) {
+        const { downloads, uploads } = state.activityAt;
+        if (Math.max(downloads, uploads) > state.openedAt) {
+          next = uploads > downloads ? "uploads" : "downloads";
+        }
+      }
+      return { panelOpen: true, tab: next, attention: "none", openedAt: Date.now() };
+    }),
   closePanel: () => set({ panelOpen: false }),
   setTab: (tab) => set({ tab }),
   noteStarted: () => set((state) => ({ startPulse: state.startPulse + 1 })),

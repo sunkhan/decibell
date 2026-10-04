@@ -723,6 +723,36 @@ def test_b12_b27_retention_sweep():
     sql("update channels set retention_days_image=0, retention_days_text=0")
 
 
+def test_upload_sweep_goes_by_idle_time():
+    print("[transfers] abandoned-upload sweep: idle uploads go, slow/paused ones that still PATCH stay")
+    proc = start_server(extra_env={"DECIBELL_RETENTION_INTERVAL_SECONDS": "2"})
+    try:
+        def init(name):
+            head, body = attachment_http("alice", "POST", "/attachments/init", "Content-Type: application/json\r\n",
+                                         json.dumps({"channelId": "general", "filename": name, "mime": "application/octet-stream", "size": 4}).encode())
+            return json.loads(body.decode() or "{}").get("id") if head.startswith(b"HTTP/1.1 201") else None
+        idle, active, stale = init("idle.bin"), init("active.bin"), init("stale.bin")
+        check("three uploads started", None not in (idle, active, stale))
+        head, _ = attachment_http("alice", "PATCH", f"/attachments/{active}", "Upload-Offset: 0\r\n", b"ab")
+        check("PATCH accepted", head.startswith(b"HTTP/1.1 204"), head[:40])
+        now = int(time.time())
+        stamped = sql("select last_activity_at from attachments where id=?", active)
+        check("PATCH stamps last_activity_at", stamped and abs(stamped[0][0] - now) <= 5, str(stamped))
+        # All three began two hours ago; only `active` has progressed lately.
+        old = now - 7200
+        sql("update attachments set created_at=? where id in (?,?,?)", old, idle, active, stale)
+        sql("update attachments set last_activity_at=? where id=?", old, stale)
+        time.sleep(5)   # >= 2 sweeps
+        left = {r[0] for r in sql("select id from attachments where id in (?,?,?)", idle, active, stale)}
+        check("never-patched upload swept after an hour", idle not in left)
+        check("upload idle for two hours swept", stale not in left)
+        check("old but recently active upload kept", active in left)
+        head, _ = attachment_http("alice", "PATCH", f"/attachments/{active}", "Upload-Offset: 2\r\n", b"cd")
+        check("kept upload resumes", head.startswith(b"HTTP/1.1 204"), head[:40])
+    finally:
+        stop_server(proc)
+
+
 def test_auth_server_id_field():
     print("[B17 server] CommunityAuthResponse carries server_id (0 without central)")
     c = Client("alice"); ok, r = auth_ok(c)
@@ -2048,6 +2078,7 @@ if __name__ == "__main__":
         stop_server(proc)
     test_b9_timeouts()
     test_b12_b27_retention_sweep()
+    test_upload_sweep_goes_by_idle_time()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     if FAIL:
         print("FAILED:", FAIL)

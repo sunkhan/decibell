@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cstring>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -648,6 +649,9 @@ private:
             send_error(500, "Internal Server Error");
             return;
         }
+        // Progress keeps the row off the abandoned-upload sweep, which goes
+        // by idle time: a slow or paused upload is still alive.
+        db_.touch_attachment_activity(patch_id_, static_cast<int64_t>(std::time(nullptr)));
         // Respond 204 with Upload-Offset so the client knows where we are.
         std::string resp =
             "HTTP/1.1 204 No Content\r\n"
