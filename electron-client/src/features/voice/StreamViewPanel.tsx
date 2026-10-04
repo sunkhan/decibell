@@ -34,7 +34,6 @@ import {
   CloseIcon,
   CollapseIcon,
   ExpandIcon,
-  GridIcon,
   HeadphonesIcon,
   HeadphonesOffIcon,
   MicIcon,
@@ -49,9 +48,11 @@ import {
 const appWindow = getCurrentWindow();
 
 const EMPTY_CHANNELS: never[] = [];
-/// Double-click on the video toggles fullscreen; the controls over it eat
-/// theirs so pressing a button twice quickly doesn't.
+/// In the panel a click on the video goes back to the grid; in fullscreen a
+/// double-click exits. The controls over the video swallow both, so using
+/// them never triggers either.
 const stopDouble = (e: React.MouseEvent) => e.stopPropagation();
+const stopClick = (e: React.MouseEvent) => e.stopPropagation();
 /// Overlays hide after the cursor has been still this long.
 const OVERLAY_HIDE_MS = 2500;
 
@@ -378,9 +379,10 @@ function StreamViewPanel() {
             ? overlayVisible
               ? "cursor-default"
               : "cursor-none"
-            : "rounded-lg border border-border"
+            : "cursor-pointer rounded-lg border border-border"
         }`}
-        onDoubleClick={() => void (isFullscreen ? exitFullscreen() : enterFullscreen())}
+        onClick={isFullscreen ? undefined : handleBackToGrid}
+        onDoubleClick={isFullscreen ? () => void exitFullscreen() : undefined}
         onMouseMove={pokeOverlay}
         onMouseLeave={handleMouseLeave}
       >
@@ -404,17 +406,13 @@ function StreamViewPanel() {
         <div
           className={`absolute right-3 top-3 flex items-center gap-1.5 ${overlayClass}`}
           onMouseEnter={holdOverlay}
+          onClick={stopClick}
           onDoubleClick={stopDouble}
         >
           {isFullscreen && <span className="mr-1.5 text-[11px] text-white/50">Esc to exit</span>}
           <OverlayButton title="Stream stats" active={showStats} onClick={() => setShowStats((v) => !v)}>
             <StatsIcon size={16} />
           </OverlayButton>
-          {!isFullscreen && (
-            <OverlayButton title="Back to the grid (Esc)" onClick={handleBackToGrid}>
-              <GridIcon size={16} />
-            </OverlayButton>
-          )}
           <OverlayButton
             title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
             onClick={() => void (isFullscreen ? exitFullscreen() : enterFullscreen())}

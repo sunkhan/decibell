@@ -1292,6 +1292,16 @@ dropped, exactly 256 KB relayed, 4th in a burst refused, fetch serves the last a
 at 5 s). Windows: Windows Native Check on the push. Open (live): thumbnail sharpness and the encoder
 thread staying hitch-free on a 4K source (Linux copies the full frame, ~33 MB, once per interval).
 
+**Client: focused stream — click the video to go back to the grid (2026-10-04) ✅** — Owner feedback
+on 0.8.5: in the voice view's focused stream, a click on the video now returns to the grid, the
+video shows a pointer cursor, and the top-right "back to grid" button is gone (stats, fullscreen and
+stop remain). Esc and the header breadcrumb still work. Double-click no longer enters fullscreen
+from the panel (the first click already leaves it); inside fullscreen a click does nothing and a
+double-click exits. The overlay controls swallow clicks, so the stats / fullscreen / stop buttons and
+the volume slider never bounce you to the grid. Verified: tsc web 0; preview harness — the button is
+gone, a click on the stats button keeps the stream focused, a real mouse click on the video clears
+`fullscreenStream` and the grid shows both watched streams live.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

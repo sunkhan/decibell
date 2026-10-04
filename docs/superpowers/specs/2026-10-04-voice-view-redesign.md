@@ -73,9 +73,11 @@ focused run their own tile player, as before.
 
 ## Controls in the focused view
 
-The overlays show on mouse move and fade after 2.5 s (panel and fullscreen alike). Double-click toggles
-fullscreen; the controls swallow their own double-clicks. A single click on the video no longer goes
-back to the grid. That now goes through Esc, the grid button or the breadcrumb.
+The overlays show on mouse move and fade after 2.5 s (panel and fullscreen alike). In the panel the
+video has a pointer cursor and **a click goes back to the grid** (owner's call after 0.8.5; there is no
+separate grid button). Esc and the breadcrumb do the same. Fullscreen goes in through its button;
+inside fullscreen a click does nothing and a double-click exits. The controls over the video
+swallow clicks and double-clicks, so using them never leaves the view.
 
 ## Stream thumbnails (follow-up, same day)
 
