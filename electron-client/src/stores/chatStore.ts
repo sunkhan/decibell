@@ -127,8 +127,14 @@ interface ChatState {
   /// `useUiStore.channelCacheSize` get evicted from every per-channel
   /// map below on the next setActiveChannel or enforceChannelCacheSize.
   channelAccessOrder: ChannelKey[];
+  /// "Go to message" from outside the chat panel (the Transfers panel).
+  /// ChatPanel runs it once that channel is active and its first page is
+  /// in, then clears it; `at` lets a request nobody consumed go stale.
+  jumpRequest: { serverId: string; channelId: string; messageId: number; at: number } | null;
 
   // Mutators
+  requestJump: (serverId: string, channelId: string, messageId: number) => void;
+  clearJumpRequest: () => void;
   setOnlineUsers: (users: string[]) => void;
   setActiveServer: (serverId: string | null) => void;
   setActiveChannel: (channelId: string | null) => void;
@@ -417,6 +423,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   scrollPositionsByChannel: {},
   chatViewSize: null,
   channelAccessOrder: [],
+  jumpRequest: null,
   // Central re-sends the whole global online list on every login/logout;
   // keep the old array when nothing changed so its subscribers (DM panel,
   // conversation list, profile popup) don't re-render for nothing.
@@ -427,6 +434,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return { onlineUsers: users };
     }),
   setActiveServer: (serverId) => set({ activeServerId: serverId }),
+  requestJump: (serverId, channelId, messageId) =>
+    set({ jumpRequest: { serverId, channelId, messageId, at: Date.now() } }),
+  clearJumpRequest: () => set((state) => (state.jumpRequest ? { jumpRequest: null } : state)),
   setActiveChannel: (channelId) =>
     set((state) => {
       if (!channelId) return { activeChannelId: null };

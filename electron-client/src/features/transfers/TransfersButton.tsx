@@ -45,9 +45,40 @@ function TransfersButton() {
       }
     };
     for (const d of downloads) add(d.state === "active", d.state === "paused", d.receivedBytes, d.totalBytes);
+    const downloadsRunning = active + paused;
     for (const u of uploads) add(u.state === "uploading", u.state === "paused", u.transferredBytes, u.totalBytes);
-    return { active, paused, fraction: total > 0 ? done / total : 0 };
+    return {
+      active,
+      paused,
+      uploads: active + paused - downloadsRunning,
+      fraction: total > 0 ? done / total : 0,
+    };
   }, [downloads, uploads]);
+
+  // Taskbar / dock progress, and how many uploads closing the window
+  // would lose (main asks before it lets that happen). Progress ticks
+  // arrive several times a second; send at most four.
+  const sentAt = useRef(0);
+  useEffect(() => {
+    const send = () => {
+      sentAt.current = performance.now();
+      const running = live.active + live.paused;
+      window.decibell.window
+        .setTransferProgress({
+          fraction: running > 0 ? live.fraction : -1,
+          paused: live.active === 0 && live.paused > 0,
+          uploads: live.uploads,
+        })
+        .catch(() => {});
+    };
+    const wait = 250 - (performance.now() - sentAt.current);
+    if (wait <= 0) {
+      send();
+      return;
+    }
+    const t = window.setTimeout(send, wait);
+    return () => window.clearTimeout(t);
+  }, [live]);
 
   const close = useCallback((refocus: boolean) => {
     useTransfersStore.getState().closePanel();

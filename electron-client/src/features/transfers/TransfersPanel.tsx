@@ -7,6 +7,7 @@ import type { DownloadView } from "../../types";
 import DownloadRow from "./DownloadRow";
 import UploadRow from "./UploadRow";
 import { refreshDownloads } from "./downloads";
+import { goToMessage } from "./uploads";
 
 const WIDTH = 360;
 const MARGIN = 8;
@@ -191,7 +192,17 @@ export default function TransfersPanel({
         </div>
       )}
 
-      {menu && <RowMenu menu={menu} onOpenFile={onOpenFile} onDone={() => setMenu(null)} />}
+      {menu && (
+        <RowMenu
+          menu={menu}
+          onOpenFile={onOpenFile}
+          onGoTo={(d) => {
+            onClose(false);
+            goToMessage(d.serverId, d.context.channelId, d.context.messageId);
+          }}
+          onDone={() => setMenu(null)}
+        />
+      )}
     </div>,
     document.body,
   );
@@ -209,10 +220,12 @@ function Empty({ title, hint }: { title: string; hint: string }) {
 function RowMenu({
   menu,
   onOpenFile,
+  onGoTo,
   onDone,
 }: {
   menu: MenuState;
   onOpenFile: (d: DownloadView) => void;
+  onGoTo: (d: DownloadView) => void;
   onDone: () => void;
 }) {
   const { d } = menu;
@@ -221,6 +234,7 @@ function RowMenu({
   const items: Array<{ label: string; run: () => void; show: boolean }> = [
     { label: "Open", run: () => onOpenFile(d), show: canOpen },
     { label: "Show in folder", run: () => void api.showInFolder(d.id), show: canOpen },
+    { label: "Go to message", run: () => onGoTo(d), show: d.context.channelId !== "" },
     { label: "Remove from list", run: () => void api.remove(d.id), show: d.state !== "active" },
     { label: "Cancel", run: () => void api.cancel(d.id), show: d.state === "active" },
   ];

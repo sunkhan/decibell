@@ -363,6 +363,8 @@ contextBridge.exposeInMainWorld("decibell", {
     setFullscreen: (on: boolean) =>
       ipcRenderer.invoke("decibell:window:setFullscreen", on),
     flash: () => ipcRenderer.invoke("decibell:window:flash") as Promise<void>,
+    setTransferProgress: (p: { fraction: number; paused: boolean; uploads: number }) =>
+      ipcRenderer.invoke("decibell:window:setTransferProgress", p) as Promise<void>,
     onResized: (cb: (maximized: boolean) => void): (() => void) => {
       resizeSubs.add(cb);
       return () => {

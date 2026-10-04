@@ -1,5 +1,6 @@
 import { useAttachmentsStore, type PendingAttachment } from "../../stores/attachmentsStore";
 import { useChatStore } from "../../stores/chatStore";
+import { channelKey } from "../../lib/channelKey";
 import { openServer } from "../servers/openServer";
 import {
   useTransfersStore,
@@ -145,11 +146,22 @@ export function cancelUpload(pendingId: string): void {
   useAttachmentsStore.getState().pendings[pendingId]?.abortController.abort();
 }
 
-/// Open the channel an upload went to.
-export function goToChannel(serverId: string, channelId: string): void {
+/// Open a channel and, when known, jump to a message in it (ChatPanel
+/// picks the request up once the channel's first page is in).
+export function goToMessage(serverId: string, channelId: string, messageId = 0): void {
   openServer(serverId);
   const chat = useChatStore.getState();
-  if (chat.channelsByServer[serverId]?.some((c) => c.id === channelId)) {
-    chat.setActiveChannel(channelId);
+  if (!chat.channelsByServer[serverId]?.some((c) => c.id === channelId)) return;
+  chat.setActiveChannel(channelId);
+  if (messageId > 0) chat.requestJump(serverId, channelId, messageId);
+}
+
+/// The message an uploaded attachment ended up in, once its echo is
+/// loaded (0 when it isn't).
+export function messageIdForAttachment(serverId: string, channelId: string, attachmentId: number): number {
+  const messages = useChatStore.getState().messagesByChannel[channelKey(serverId, channelId)] ?? [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].attachments.some((a) => a.id === attachmentId)) return messages[i].id;
   }
+  return 0;
 }

@@ -3,7 +3,7 @@ import { useTransfersStore, type UploadEntry } from "../../stores/transfersStore
 import TransferRow, { TransferPreview, type RowAction } from "./TransferRow";
 import { formatProgress, formatSpeed } from "./format";
 import { CloseIcon, PauseIcon, PlayIcon } from "./icons";
-import { cancelUpload, goToChannel, pauseUpload } from "./uploads";
+import { cancelUpload, goToMessage, messageIdForAttachment, pauseUpload } from "./uploads";
 
 function previewSrc(u: UploadEntry): string | null {
   if (u.previewUrl) return u.previewUrl;
@@ -65,9 +65,11 @@ export default function UploadRow({ u, onNavigate }: { u: UploadEntry; onNavigat
           persistentActions={false}
           onActivate={() => {
             onNavigate();
-            goToChannel(u.serverId, u.channelId);
+            const messageId =
+              u.attachmentId !== null ? messageIdForAttachment(u.serverId, u.channelId, u.attachmentId) : 0;
+            goToMessage(u.serverId, u.channelId, messageId);
           }}
-          activateLabel={where ? `Go to ${where}` : "Go to the channel"}
+          activateLabel="Go to message"
         />
       );
     case "failed":

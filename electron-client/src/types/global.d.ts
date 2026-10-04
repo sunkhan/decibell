@@ -131,6 +131,9 @@ declare global {
         setTitle: (title: string) => Promise<void>;
         setFullscreen: (on: boolean) => Promise<void>;
         flash: () => Promise<void>;
+        /// Taskbar / dock progress (fraction < 0 clears) and the number of
+        /// unfinished uploads, which closing the window asks about.
+        setTransferProgress: (p: { fraction: number; paused: boolean; uploads: number }) => Promise<void>;
         /// Fires with the new maximized state, only when it changes.
         onResized: (cb: (maximized: boolean) => void) => () => void;
       };

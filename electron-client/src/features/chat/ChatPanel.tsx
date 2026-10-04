@@ -848,6 +848,33 @@ export default function ChatPanel() {
     },
     [],
   );
+
+  // A jump asked for from outside the panel (the Transfers panel's "Go
+  // to message"). Run once this channel is active and its first page is
+  // in, so the around-window fetch can't race the initial load; a request
+  // nobody picked up within 15 s is dropped rather than firing later.
+  const jumpRequest = useChatStore((s) => s.jumpRequest);
+  const firstPageIn = useChatStore((s) => (activeKey ? s.historyFetched[activeKey] === true : false));
+  useEffect(() => {
+    if (!jumpRequest) return;
+    if (Date.now() - jumpRequest.at > 15_000) {
+      useChatStore.getState().clearJumpRequest();
+      return;
+    }
+    if (!firstPageIn) return;
+    if (jumpRequest.serverId !== activeServerId || jumpRequest.channelId !== activeChannelId) return;
+    useChatStore.getState().clearJumpRequest();
+    // Two frames later: a list that just mounted trims its slice to the
+    // viewport first, and the jump has to see the trimmed slice — else it
+    // aims at a row the trim drops instead of fetching a window around it.
+    const { serverId, channelId, messageId } = jumpRequest;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const chat = useChatStore.getState();
+        if (chat.activeServerId === serverId && chat.activeChannelId === channelId) jumpToMessage(messageId);
+      }),
+    );
+  }, [jumpRequest, firstPageIn, activeServerId, activeChannelId, jumpToMessage]);
   // Real-DOM list callbacks.
   const handleJumpLanded = useCallback(
     (epoch: number, id: number) => {

@@ -1,4 +1,4 @@
-import { app, ipcMain, shell, BrowserWindow, type IpcMainInvokeEvent } from "electron";
+import { app, dialog, ipcMain, shell, BrowserWindow, type IpcMainInvokeEvent } from "electron";
 
 // Window controls — Tauri's `getCurrentWindow()` API mapped onto
 // Electron's BrowserWindow. The renderer's `src/lib/window.ts` calls
@@ -8,6 +8,32 @@ import { app, ipcMain, shell, BrowserWindow, type IpcMainInvokeEvent } from "ele
 
 function senderWindow(event: IpcMainInvokeEvent): BrowserWindow | null {
   return BrowserWindow.fromWebContents(event.sender);
+}
+
+/// Unfinished uploads, as the renderer's Transfers panel reports them.
+/// Closing the window loses them — and the message each belongs to — so
+/// a close with any asks first. Downloads need no guard: they pause on
+/// quit and resume next launch.
+let uploadsInFlight = 0;
+let lossConfirmed = false;
+
+/// True when nothing would be lost or the user agreed to lose it. Asks
+/// at most once per quit (the window close and before-quit both check).
+export function confirmLosingUploads(win?: BrowserWindow | null): boolean {
+  if (uploadsInFlight === 0 || lossConfirmed) return true;
+  const opts: Electron.MessageBoxSyncOptions = {
+    type: "warning",
+    buttons: ["Keep uploading", "Quit anyway"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: "Upload in progress",
+    message: uploadsInFlight === 1 ? "A file is still uploading" : `${uploadsInFlight} files are still uploading`,
+    detail: "Quitting now cancels the upload, and the message it belongs to won't be sent.",
+  };
+  const choice = win && !win.isDestroyed() ? dialog.showMessageBoxSync(win, opts) : dialog.showMessageBoxSync(opts);
+  lossConfirmed = choice === 1;
+  return lossConfirmed;
 }
 
 export function registerWindowHandlers(): void {
@@ -38,6 +64,20 @@ export function registerWindowHandlers(): void {
   ipcMain.handle("decibell:window:setFullscreen", (e, on: boolean) => {
     senderWindow(e)?.setFullScreen(on);
   });
+  // Transfers panel: taskbar / dock progress over everything running
+  // (fraction < 0 clears it), and how many uploads a close would lose.
+  ipcMain.handle(
+    "decibell:window:setTransferProgress",
+    (e, p: { fraction?: unknown; paused?: unknown; uploads?: unknown }) => {
+      uploadsInFlight = Math.max(0, Math.floor(Number(p?.uploads) || 0));
+      if (uploadsInFlight === 0) lossConfirmed = false;
+      const w = senderWindow(e);
+      if (!w) return;
+      const f = Number(p?.fraction);
+      if (!Number.isFinite(f) || f < 0) w.setProgressBar(-1);
+      else w.setProgressBar(Math.min(1, f), { mode: p?.paused === true ? "paused" : "normal" });
+    },
+  );
   // Incoming DM call: get the user's attention without stealing focus —
   // taskbar flash (Windows / Linux) or a dock bounce (macOS). A no-op
   // when the window is already focused.
@@ -122,6 +162,9 @@ export function attachWindowEvents(win: BrowserWindow): void {
   // previous document was told so the next change is always sent.
   win.webContents.on("did-start-loading", () => {
     last = null;
+  });
+  win.on("close", (e) => {
+    if (!confirmLosingUploads(win)) e.preventDefault();
   });
   win.on("resize", fire);
   win.on("maximize", fire);

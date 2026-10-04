@@ -1389,6 +1389,25 @@ removal, one that vanishes mid-flight shows as cancelled, and opening the panel 
 news. Screenshots in Nocturne and Matinee. Open: a live capped upload with pause against a real
 server; the community release for the sweep change.
 
+**Transfers panel, phase 3 — polish (2026-10-04) ✅** — The rest of the design:
+- *Go to message*: from a download's right-click menu, and by clicking a finished upload, which finds
+  its message by attachment id once the echo is loaded, else just opens the channel. `chatStore`
+  gains a `jumpRequest` that `ChatPanel` consumes once that channel is active and its first page is
+  in. It runs two frames later because a freshly mounted list first trims a large cached slice to the
+  viewport; jumping before that aimed at a row the trim dropped, so no window was fetched and nothing
+  happened. Unconsumed requests go stale after 15 s.
+- *Taskbar / dock progress*: `setProgressBar` over every running transfer, in paused mode when
+  everything is paused, sent at most 4 times a second.
+- *Quit guard*: an unfinished upload is lost on quit along with its message, so closing the window,
+  or Cmd+Q / an update restart through `before-quit`, asks "Keep uploading / Quit anyway" once per
+  quit. Downloads don't ask: they pause and resume next launch.
+Verified: tsc web + node 0. An Electron test of `window.ts` with a stubbed message box: progress bar
+calls, no prompt without uploads, Keep uploading keeps the window, Quit anyway closes it and
+before-quit doesn't ask again. The preview harness with the real `ChatPanel`: a jump into a small
+cached channel lands and highlights the row in view; one into a 200-message cache now requests a
+window around the target (before the fix it did nothing). Open: a live check of taskbar progress on
+Windows and macOS (Linux shows it only on Unity-style launchers).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

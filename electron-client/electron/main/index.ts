@@ -9,7 +9,12 @@ import {
   registerCustomSchemes,
 } from "./protocol";
 import { callCommand, initAddon, shutdownAddon } from "./addon";
-import { registerWindowHandlers, attachWindowEvents, hardenNavigation } from "./window";
+import {
+  registerWindowHandlers,
+  attachWindowEvents,
+  hardenNavigation,
+  confirmLosingUploads,
+} from "./window";
 import { registerDialogHandlers } from "./dialog";
 import { registerFsHandlers } from "./fs";
 import { registerNetHandlers } from "./netFetch";
@@ -820,6 +825,9 @@ app.on("before-quit", async (e) => {
   // running and the user would have to kill it via Task Manager —
   // exactly the bug we're fixing here.
   e.preventDefault();
+  // Cmd+Q / an update restart skip the window's close guard: an upload in
+  // flight would be lost, so ask here too (once — a confirmed close passes).
+  if (!confirmLosingUploads(mainWindow)) return;
   // Synchronous: running downloads are saved as paused before anything
   // below can stall.
   pauseAllForQuit();
