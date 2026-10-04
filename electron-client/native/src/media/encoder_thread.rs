@@ -32,11 +32,10 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
 use super::encoder::{Encoder, FrameOutcome};
 use super::gpu_pipeline::GpuDevice;
+use super::thumb_encode::{ThumbnailSchedule, ThumbnailWorker};
 use super::thumbnail::ThumbnailGenerator;
 use super::video_pipeline::VideoSender;
 use crate::events;
-
-const THUMBNAIL_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Consecutive frames that may fail (dropped by the encoder, failed blit,
 /// failed packet receive) before the stream is declared dead. ~1 s at
@@ -68,7 +67,7 @@ pub struct EncoderThreadConfig {
     pub local_username: String,
     pub video_sender: Arc<VideoSender>,
     /// Sender for thumbnail JPEG bytes. The encoder thread produces a
-    /// thumbnail every THUMBNAIL_INTERVAL and pushes through this; a
+    /// thumbnail on the ThumbnailSchedule and pushes through this; a
     /// tokio task (set up in `VideoEngine::start_windows`) drains it
     /// and ships the bytes to the community server. Bounded depth=1
     /// drop-newest (via try_send) so a slow server doesn't back up
@@ -206,11 +205,10 @@ fn run_encode_loop(
     stop: &AtomicBool,
 ) -> LoopExit {
     let mut last_telemetry = Instant::now();
-    // Thumbnail on the first frame (checked_sub: Instant can't go below
-    // the clock's origin).
-    let mut last_thumbnail = Instant::now()
-        .checked_sub(THUMBNAIL_INTERVAL)
-        .unwrap_or_else(Instant::now);
+    // Thumbnail on the first frame, a follow-up 2 s later, then every 15 s.
+    // The downscale + JPEG encode run on the worker, not this thread.
+    let mut thumb_schedule = ThumbnailSchedule::new();
+    let thumb_worker = ThumbnailWorker::spawn(cfg.thumbnail_tx.clone());
     let frames_sent = Cell::new(0u32);
     let mut thumbnails_sent = 0u32;
     let mut frames_dropped = 0u32;
@@ -281,21 +279,23 @@ fn run_encode_loop(
         // texture is current. `due` asks the generator to start a new
         // (asynchronous, GPU-downscaled) readback if none is in flight; a
         // finished one comes back on whichever later tick it completes.
-        let due = last_thumbnail.elapsed() >= THUMBNAIL_INTERVAL;
+        let now = Instant::now();
+        let due = thumb_schedule.due(now);
         match thumb.tick(&bgra, due) {
-            Some(Ok(jpeg)) => {
-                // try_send drops the JPEG on the floor if the tokio sender
-                // task hasn't drained the previous one yet (depth=1
-                // channel). That's fine — we'd rather drop a thumbnail
-                // than back up the encoder thread waiting for the network.
-                let _ = cfg.thumbnail_tx.try_send(jpeg);
-                thumbnails_sent += 1;
+            Some(Ok(job)) => {
+                // The worker drops the job if it's still busy with the
+                // previous one, and its try_send drops the JPEG if the
+                // network sender hasn't drained the last (depth=1). Either
+                // way a thumbnail is lost, never the encoder's time.
+                if thumb_worker.submit(job) {
+                    thumbnails_sent += 1;
+                }
             }
             Some(Err(e)) => log::warn!("[encoder/thumb] capture failed: {e}"),
             None => {}
         }
         if due {
-            last_thumbnail = Instant::now();
+            thumb_schedule.taken(now);
         }
 
         let mut failure = match encoder.send_bgra(&bgra, pts, &mut on_packet) {

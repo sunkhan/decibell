@@ -84,6 +84,10 @@ pub mod cursor_gpu;
 pub mod encoder_thread;
 #[cfg(target_os = "windows")]
 pub mod thumbnail;
+// Thumbnail downscale + capped JPEG encode on a worker thread, shared by
+// the Windows and Linux native capture paths.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub mod thumb_encode;
 pub mod pipeline;
 pub mod punch;
 pub mod speaking;

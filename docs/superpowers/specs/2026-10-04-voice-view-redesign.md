@@ -76,3 +76,13 @@ focused run their own tile player, as before.
 The overlays show on mouse move and fade after 2.5 s (panel and fullscreen alike). Double-click toggles
 fullscreen; the controls swallow their own double-clicks. A single click on the video no longer goes
 back to the grid. That now goes through Esc, the grid button or the breadcrumb.
+
+## Stream thumbnails (follow-up, same day)
+
+Stream tiles reach ~960 px, so thumbnails went from 320 px every 3 s to **960 px** (JPEG 80 → 65 → 50
+until ≤ **256 KB**) at first frame, +2 s, then **every 15 s**. Both caps live in the server
+(`MAX_STREAM_THUMB_BYTES`) and the clients (`thumbnailConfig.ts`, `thumb_encode.rs`). The server's
+thumbnail bucket is 3 burst / 1 per 5 s. Native paths encode on a worker thread. Receivers keep
+thumbnails for watched streams and fetch the cached one (FETCH_STREAM_THUMBNAIL) for any stream
+without one, so a late joiner doesn't wait out the 15 s.
+

@@ -592,6 +592,48 @@ def test_b26_stop_watching_spoof():
     ned.close(); oli.close(); owner.close()
 
 
+def test_stream_thumbnails():
+    print("[thumbs] 256 KB cap, 3 burst / 1 per 5 s, last one cached for fetch")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    sam = join("sam", owner); tia = join("tia", owner)
+    for c in (sam, tia):
+        c.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    sam.send(pb.Packet.START_STREAM_REQ, start_stream_req=pb.StartStreamRequest(channel_id="voice-lounge", target_fps=30))
+    time.sleep(0.5); sam.flush(0.5); tia.flush(0.5); owner.flush(0.5)
+
+    def push(size, tag):
+        sam.send(pb.Packet.STREAM_THUMBNAIL_UPDATE, stream_thumbnail_update=pb.StreamThumbnailUpdate(
+            channel_id="voice-lounge", thumbnail_data=bytes([tag]) * size))
+
+    def relayed(timeout):
+        r = tia.wait(pb.Packet.STREAM_THUMBNAIL_UPDATE, timeout=timeout)
+        return r.stream_thumbnail_update if r is not None else None
+
+    push(200 * 1024, 1)   # over the old 128 KB cap
+    t = relayed(3)
+    check("200 KB thumbnail relayed, owner stamped", t is not None and len(t.thumbnail_data) == 200 * 1024
+          and t.owner_username == "sam", None if t is None else len(t.thumbnail_data))
+    push(256 * 1024 + 1, 2)
+    check("256 KB + 1 dropped", relayed(1.0) is None)
+    push(256 * 1024, 3)   # third token of the burst
+    t = relayed(3)
+    check("exactly 256 KB relayed", t is not None and len(t.thumbnail_data) == 256 * 1024)
+    push(1024, 4)         # burst spent (the oversized one took a token too)
+    check("4th in a burst refused", relayed(1.0) is None)
+
+    tia.send(pb.Packet.FETCH_STREAM_THUMBNAIL_REQ,
+             fetch_stream_thumbnail_req=pb.FetchStreamThumbnailReq(owner_username="sam"))
+    r = tia.wait(pb.Packet.FETCH_STREAM_THUMBNAIL_RES, timeout=3)
+    d = r.fetch_stream_thumbnail_res.thumbnail_data if r is not None else b""
+    check("fetch serves the last accepted thumbnail", len(d) == 256 * 1024 and d[:1] == b"\x03", len(d))
+
+    time.sleep(5.2)       # 1 token per 5 s
+    push(1024, 5)
+    t = relayed(3)
+    check("bucket refills (1 per 5 s)", t is not None and t.thumbnail_data[:1] == b"\x05")
+    sam.close(); tia.close(); owner.close()
+
+
 def test_p2_perm_cache_invalidation():
     print("[P2] permission cache invalidates on role changes")
     owner = Client("alice"); assert auth_ok(owner)[0]
@@ -1974,6 +2016,7 @@ if __name__ == "__main__":
         test_b10_caps_cap()
         test_b25_invite_params()
         test_b26_stop_watching_spoof()
+        test_stream_thumbnails()
         test_p2_perm_cache_invalidation()
         test_b20_attachment_url()
         test_auth_server_id_field()

@@ -17,6 +17,13 @@ import { VideoCodec, type StreamAudioMode } from "../../../types";
 import { toast } from "../../../stores/toastStore";
 import { videoCodecHumanName } from "../../../utils/codecMap";
 import {
+  THUMBNAIL_FOLLOWUP_MS,
+  THUMBNAIL_INTERVAL_MS,
+  THUMBNAIL_MAX_BYTES,
+  THUMBNAIL_MAX_EDGE,
+  THUMBNAIL_QUALITY_LADDER,
+} from "../thumbnailConfig";
+import {
   isNativeEncodeActive,
   markNativeEncodeFailed,
 } from "../../../utils/encoderProbe";
@@ -133,13 +140,15 @@ export class StreamCapture {
   // poster image. The native side used to do this on the FFmpeg path;
   // PR8's Chromium-encoder path moved capture to the renderer too.
   private thumbnailCanvas: OffscreenCanvas | null = null;
-  private lastThumbnailAt = 0;
+  /// performance.now() at which the next thumbnail is due: the first
+  /// frame, a follow-up THUMBNAIL_FOLLOWUP_MS later (the first is often
+  /// black while capture warms up), then every THUMBNAIL_INTERVAL_MS.
+  private nextThumbnailAt = 0;
+  private thumbnailsTaken = 0;
   /// Only allow one in-flight thumbnail JPEG encode + IPC at a time.
   /// convertToBlob is async; without this guard a slow main process
   /// would queue thumbnails forever.
   private thumbnailInFlight = false;
-  private static readonly THUMBNAIL_INTERVAL_MS = 3000;
-  private static readonly THUMBNAIL_MAX_EDGE = 320;
 
   /// The capture source id this session was started with, if any.
   get sourceId(): string | undefined {
@@ -688,10 +697,12 @@ export class StreamCapture {
     // Thumbnails only exist for community voice channels.
     if (!this.opts.serverId || !this.opts.channelId) return;
     const now = performance.now();
-    if (now - this.lastThumbnailAt < StreamCapture.THUMBNAIL_INTERVAL_MS) return;
+    if (now < this.nextThumbnailAt) return;
     if (this.thumbnailInFlight) return;
     if (!frame.codedWidth || !frame.codedHeight) return;
-    this.lastThumbnailAt = now;
+    this.thumbnailsTaken += 1;
+    this.nextThumbnailAt =
+      now + (this.thumbnailsTaken === 1 ? THUMBNAIL_FOLLOWUP_MS : THUMBNAIL_INTERVAL_MS);
 
     // Compute target dims: longest edge clamped to THUMBNAIL_MAX_EDGE.
     // OffscreenCanvas is reused across calls; only re-allocated when
@@ -701,10 +712,10 @@ export class StreamCapture {
     const srcH = frame.codedHeight;
     let targetW: number, targetH: number;
     if (srcW >= srcH) {
-      targetW = Math.min(srcW, StreamCapture.THUMBNAIL_MAX_EDGE);
+      targetW = Math.min(srcW, THUMBNAIL_MAX_EDGE);
       targetH = Math.max(1, Math.round((targetW * srcH) / srcW));
     } else {
-      targetH = Math.min(srcH, StreamCapture.THUMBNAIL_MAX_EDGE);
+      targetH = Math.min(srcH, THUMBNAIL_MAX_EDGE);
       targetW = Math.max(1, Math.round((targetH * srcW) / srcH));
     }
     if (
@@ -717,6 +728,10 @@ export class StreamCapture {
     const ctx = this.thumbnailCanvas.getContext("2d");
     if (!ctx) return;
     try {
+      // The default ("low") smoothing is a single bilinear tap: 1080p → 960
+      // is fine, but 4K → 960 aliases text badly. "high" filters properly.
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
       ctx.drawImage(frame, 0, 0, targetW, targetH);
     } catch (e) {
       console.warn("[StreamCapture] thumbnail draw failed:", e);
@@ -724,9 +739,18 @@ export class StreamCapture {
     }
 
     this.thumbnailInFlight = true;
-    void this.thumbnailCanvas
-      .convertToBlob({ type: "image/jpeg", quality: 0.7 })
+    const canvas = this.thumbnailCanvas;
+    void (async () => {
+      // Step the quality down until it fits the server's cap (it drops
+      // bigger ones silently); busy game frames are the ones that need it.
+      for (const quality of THUMBNAIL_QUALITY_LADDER) {
+        const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
+        if (blob.size <= THUMBNAIL_MAX_BYTES) return blob;
+      }
+      return null;
+    })()
       .then(async (blob) => {
+        if (!blob) return;
         const buf = await blob.arrayBuffer();
         await invoke("send_stream_thumbnail", {
           serverId: this.opts.serverId,

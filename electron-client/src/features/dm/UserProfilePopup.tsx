@@ -13,6 +13,7 @@ import { canWatchStream } from "../../utils/canWatchStream";
 import { stringToGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import { CodecBadge } from "../voice/CodecBadge";
+import { THUMBNAIL_INTERVAL_MS } from "../voice/thumbnailConfig";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { RoleChips } from "../profile/RoleChips";
 
@@ -80,7 +81,7 @@ export default function UserProfilePopup() {
     setSending(false);
   }, [username]);
 
-  // Thumbnail fetch + 3s refresh while the popup is open for a
+  // Thumbnail fetch + refresh (the streamer's cadence) while the popup is open for a
   // streaming user. The community server caches the last received
   // STREAM_THUMBNAIL_UPDATE per streamer; we poll for the most recent
   // frame on demand instead of subscribing to a server-wide push (see
@@ -118,7 +119,9 @@ export default function UserProfilePopup() {
     };
 
     fetchOnce();
-    const interval = window.setInterval(fetchOnce, 3000);
+    // The streamer refreshes it every THUMBNAIL_INTERVAL_MS; polling faster
+    // only re-downloads the same (up to 256 KB) JPEG.
+    const interval = window.setInterval(fetchOnce, THUMBNAIL_INTERVAL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(interval);

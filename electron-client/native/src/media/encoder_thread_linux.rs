@@ -27,16 +27,16 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use jpeg_encoder::{ColorType, Encoder as JpegEncoder};
+use jpeg_encoder::ColorType;
 
 use super::capture::{CaptureOutput, PixelFormat, RawFrame};
 use super::encoder_linux::{EncodedFrame, EncoderConfig, H264Encoder};
+use super::thumb_encode::{ThumbnailJob, ThumbnailSchedule, ThumbnailWorker};
 use super::gpu_interop::{GpuBackendType, GpuContext};
 use super::video_pipeline::VideoSender;
 use crate::events;
 use crate::media::video_packet::WIRE_DESCRIPTION_MAGIC;
 
-const THUMBNAIL_INTERVAL: Duration = Duration::from_secs(3);
 /// GOP length in seconds — keyframe every 2s, matching the renderer path.
 const KEYFRAME_INTERVAL_SECS: u32 = 2;
 
@@ -204,7 +204,8 @@ fn run_encode_loop(
 
     let stream_start = Instant::now();
     let mut last_telemetry = Instant::now();
-    let mut last_thumbnail = Instant::now() - THUMBNAIL_INTERVAL;
+    let mut thumb_schedule = ThumbnailSchedule::new();
+    let thumb_worker = ThumbnailWorker::spawn(cfg.thumbnail_tx.clone());
     let mut frames_sent = 0u32;
     let mut thumbnails_sent = 0u32;
 
@@ -243,15 +244,16 @@ fn run_encode_loop(
 
         // Thumbnail (CPU frames only; the DMA-BUF path has no CPU-side
         // pixels to downscale without a readback — TODO if a compositor
-        // re-enables DMA-BUF capture).
-        if last_thumbnail.elapsed() >= THUMBNAIL_INTERVAL {
-            if let Some(frame) = last_frame.as_ref() {
-                if let Some(jpeg) = frame_to_jpeg_thumbnail(frame) {
-                    let _ = cfg.thumbnail_tx.try_send(jpeg);
+        // re-enables DMA-BUF capture). Only the copy of the frame happens
+        // here; the downscale + JPEG encode run on the thumbnail worker.
+        let now = Instant::now();
+        if thumb_schedule.due(now) {
+            if let Some(job) = last_frame.as_ref().and_then(thumbnail_job) {
+                if thumb_worker.submit(job) {
                     thumbnails_sent += 1;
                 }
             }
-            last_thumbnail = Instant::now();
+            thumb_schedule.taken(now);
         }
 
         let encode_result: Result<Option<EncodedFrame>, String> =
@@ -413,47 +415,24 @@ fn encode_dmabuf(
     }
 }
 
-/// Downscale a captured CPU frame to a ~320px-wide JPEG for the stream
-/// tile. jpeg-encoder takes BGRA/RGBA directly, so no manual colour
-/// conversion — we just nearest-neighbour subsample into a tight buffer.
-fn frame_to_jpeg_thumbnail(frame: &RawFrame) -> Option<Vec<u8>> {
-    // The Linux capture backends only ever produce BGRA/RGBA; NV12 would
-    // need a YUV→RGB pass we don't bother with here.
-    let (color, is_bgra) = match frame.pixel_format {
-        PixelFormat::BGRA => (ColorType::Bgra, true),
-        PixelFormat::RGBA => (ColorType::Rgba, false),
+/// Copy a captured CPU frame out for the thumbnail worker (which does the
+/// downscale + JPEG). jpeg-encoder takes BGRA/RGBA directly, so no colour
+/// conversion; NV12 would need a YUV→RGB pass we don't bother with here.
+fn thumbnail_job(frame: &RawFrame) -> Option<ThumbnailJob> {
+    let color = match frame.pixel_format {
+        PixelFormat::BGRA => ColorType::Bgra,
+        PixelFormat::RGBA => ColorType::Rgba,
         PixelFormat::NV12 => return None,
     };
-    let _ = is_bgra;
-
-    let w = frame.width as usize;
-    let h = frame.height as usize;
-    if w == 0 || h == 0 {
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    if w == 0 || h == 0 || frame.stride < w * 4 {
         return None;
     }
-    let thumb_w = 320usize.min(w);
-    let thumb_h = (thumb_w * h) / w;
-    if thumb_w == 0 || thumb_h == 0 {
-        return None;
-    }
-
-    let stride = frame.stride;
-    let mut packed = vec![0u8; thumb_w * thumb_h * 4];
-    for ty in 0..thumb_h {
-        let sy = (ty * h) / thumb_h;
-        for tx in 0..thumb_w {
-            let sx = (tx * w) / thumb_w;
-            let src = sy * stride + sx * 4;
-            let dst = (ty * thumb_w + tx) * 4;
-            if src + 4 <= frame.data.len() {
-                packed[dst..dst + 4].copy_from_slice(&frame.data[src..src + 4]);
-            }
-        }
-    }
-
-    let mut jpeg = Vec::with_capacity(16 * 1024);
-    JpegEncoder::new(&mut jpeg, 60)
-        .encode(&packed, thumb_w as u16, thumb_h as u16, color)
-        .ok()?;
-    Some(jpeg)
+    Some(ThumbnailJob {
+        pixels: frame.data.clone(),
+        width: w,
+        height: h,
+        stride: frame.stride,
+        color,
+    })
 }

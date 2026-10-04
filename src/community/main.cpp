@@ -1491,11 +1491,13 @@ private:
         else if (packet.type() == chatproj::Packet::STREAM_THUMBNAIL_UPDATE) {
             strip_client_envelope(packet);
             auto* update = packet.mutable_stream_thumbnail_update();
-            // Cap thumbnail size — these are small JPEG previews. Without a
+            // Cap thumbnail size — these are JPEG posters (960 px long edge
+            // since 2026-10-04; clients step quality down to fit). Without a
             // cap any member could repeatedly push ~2 MB blobs (up to the
             // TCP frame limit) into the per-username cache. Oversized
-            // updates are dropped silently.
-            constexpr size_t MAX_STREAM_THUMB_BYTES = 128 * 1024;
+            // updates are dropped silently. Keep in step with the clients'
+            // THUMBNAIL_MAX_BYTES / MAX_THUMBNAIL_BYTES.
+            constexpr size_t MAX_STREAM_THUMB_BYTES = 256 * 1024;
             if (update->thumbnail_data().size() <= MAX_STREAM_THUMB_BYTES &&
                 manager_.has_active_stream(update->channel_id(), username_)) {
                 update->set_owner_username(username_); // Enforce identity
@@ -3449,7 +3451,12 @@ private:
     // replies stays under it (the client paces to it too), a flood
     // doesn't. Mirrored in the client's sendPacing.ts — keep in step.
     chatproj::TokenBucket msg_bucket_{10, 3.0};
-    chatproj::TokenBucket thumb_bucket_{6, 1.0};      // stream thumbnails
+    // Stream thumbnails. Clients send one at stream start, a follow-up 2 s
+    // later, then one per 15 s (thumbnailConfig.ts / thumb_encode.rs), so
+    // 3 burst / 1 per 5 s never refuses a real client — and caps what a
+    // misbehaving one can fan out at 256 KB per 5 s per listener (it was
+    // 128 KB per second before the 2026-10-04 cap raise).
+    chatproj::TokenBucket thumb_bucket_{3, 0.2};
     chatproj::TokenBucket presence_bucket_{10, 2.0};  // voice/stream signalling
     chatproj::TokenBucket query_bucket_{20, 4.0};     // history / list fetches
     chatproj::TokenBucket admin_bucket_{20, 2.0};     // management + moderation

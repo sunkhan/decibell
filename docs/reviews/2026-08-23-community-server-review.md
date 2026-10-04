@@ -1266,6 +1266,32 @@ cooldown then taken) checked the same way. Open (live): a real channel with two 
 R9 frame-dispatch test), the grid-tile ↔ full view ↔ mini player handoff of the persistent player, and
 the swap with real VAD.
 
+**Client + community: 960 px stream thumbnails, 15 s cadence, 256 KB cap (2026-10-04) ✅** —
+The redesigned voice view shows stream tiles up to ~960 px wide, but thumbnails were 320 px (JPEG 70,
+every 3 s), so tiles upscaled them 3–5× on HiDPI. All three generators now make **960 px** (longest
+edge) JPEGs at quality 80, stepping down to 65 / 50 until they fit **256 KB**, at **first frame,
++2 s (the first is often black while capture warms up), then every 15 s**. Constants:
+`features/voice/thumbnailConfig.ts` (renderer) and `native/src/media/thumb_encode.rs` (native), in step
+with the server. *Renderer path* (`StreamCapture`): `imageSmoothingQuality = "high"` (the default
+single bilinear tap aliased text from 4K). *Native paths:* the box downscale + JPEG encode moved off
+the encoder threads onto a `ThumbnailWorker` thread (depth-1 channel, drop-not-queue): at 960 px they
+cost several ms, which on the encoder thread would be a late frame every interval. Windows now reads
+back the smallest mip still ≥ 960 px (1080p → 960×540, 1440p → 1280×720, 4K → 960×540; it was ≤ 640)
+and only memcpys the rows out before Unmap. Linux replaces its nearest-neighbour subsample (q60) with
+the same area average. *Receivers* keep thumbnails for watched streams too (stopping watching showed
+a poster from before you started), and the voice view fetches the server's cached copy
+(FETCH_STREAM_THUMBNAIL) for any stream without one, so late joiners and people opening the view
+don't wait up to 15 s. The profile popup polls at 15 s (it was 3 s). *Community server:*
+`MAX_STREAM_THUMB_BYTES` 128 → 256 KB. The per-session thumbnail bucket goes from 6 burst / 1 per s to
+3 burst / 1 per 5 s, which never refuses the real cadence and lowers a misbehaving client's ceiling
+from 128 KB/s to ~51 KB/s per listener. Owner decision: no 128 KB fallback, because there are no other
+servers pre-1.0. Steady state is ~4–8 KB/s per listener per stream (it was ~3). Verified: tsc web 0,
+`cargo test --lib` 191 (7 new: target size, downscale bounds, 1080p noise → 960×540 under the cap,
+schedule, worker), napi build, community build + e2e (new `[thumbs]`: 200 KB relayed, 256 KB + 1
+dropped, exactly 256 KB relayed, 4th in a burst refused, fetch serves the last accepted, bucket refills
+at 5 s). Windows: Windows Native Check on the push. Open (live): thumbnail sharpness and the encoder
+thread staying hitch-free on a 4K source (Linux copies the full frame, ~33 MB, once per interval).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
