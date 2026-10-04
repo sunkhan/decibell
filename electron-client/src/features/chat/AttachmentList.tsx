@@ -8,12 +8,10 @@ import {
 } from "./attachmentHelpers";
 import {
   reserveBox,
-  maxImageWidth,
   gridRowCounts,
+  gridWidth,
   GRID_GAP_PX,
   GRID_ROW_HEIGHT_PX,
-  GRID_MAX_WIDTH_PX,
-  GRID_MIN_WIDTH_PX,
 } from "./attachmentSizing";
 import { previewUrlFor } from "./attachmentPreviewUrl";
 import { thumbHashToDataUrl } from "./thumbhash";
@@ -78,12 +76,14 @@ export default function AttachmentList({ attachments, serverId }: Props) {
 
   return (
     <div className="mt-1 flex flex-col gap-1">
-      {useGrid ? (
-        <MediaGrid items={gridable} serverId={serverId} />
-      ) : (
-        gridable.map((a) => (
-          <LiveAttachment key={a.id} attachment={a} serverId={serverId} />
-        ))
+      {gridable.length > 0 && (
+        <MediaWithDownload items={gridable} serverId={serverId}>
+          {useGrid ? (
+            <MediaGrid items={gridable} serverId={serverId} />
+          ) : (
+            <LiveAttachment key={gridable[0].id} attachment={gridable[0]} serverId={serverId} />
+          )}
+        </MediaWithDownload>
       )}
       {remainder.map((a) =>
         a.purgedAt > 0 ? (
@@ -91,6 +91,74 @@ export default function AttachmentList({ attachments, serverId }: Props) {
         ) : (
           <LiveAttachment key={a.id} attachment={a} serverId={serverId} />
         ),
+      )}
+    </div>
+  );
+}
+
+/// A message's images / videos with a download button beside them: one
+/// click saves all of them to the download folder (progress in the
+/// Transfers panel). Shown on hover and keyboard focus; the media boxes
+/// keep MEDIA_ACTION_RESERVE_PX free for it, so it never overflows.
+/// Bottom-aligned: the message's hover toolbar owns the row's top-right
+/// corner, and on narrower panels it would cover a top-aligned button on
+/// a media-only follow-up message.
+function MediaWithDownload({
+  items,
+  serverId,
+  children,
+}: {
+  items: Attachment[];
+  serverId: string | null;
+  children: React.ReactNode;
+}) {
+  const [saved, setSaved] = useState(false);
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+  const label = items.length > 1 ? `Download all ${items.length}` : "Download";
+  const download = async () => {
+    if (!serverId) return;
+    // One at a time: with "ask where to save" on, each opens its own dialog.
+    let any = false;
+    for (const a of items) {
+      if (await startDownload(serverId, a.id, { fallback: a })) any = true;
+    }
+    if (!any) return;
+    setSaved(true);
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setSaved(false), 1600);
+  };
+
+  return (
+    <div className="group/media flex items-end gap-1.5">
+      <div className="min-w-0">{children}</div>
+      {serverId && (
+        <button
+          type="button"
+          onClick={() => void download()}
+          aria-label={label}
+          title={label}
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-border bg-bg-secondary transition-[opacity,color,background-color] hover:bg-surface-hover focus-visible:opacity-100 group-hover/media:opacity-100 ${
+            saved ? "text-accent opacity-100" : "text-text-muted opacity-0 hover:text-text-primary"
+          }`}
+        >
+          {saved ? (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          )}
+        </button>
       )}
     </div>
   );
@@ -134,8 +202,7 @@ function MediaGrid({
   // clamped to the grid's own min/max so cells stay readable on
   // narrow panels and don't sprawl on wide ones.
   const viewW = useChatStore((s) => s.chatViewSize?.width ?? 0);
-  const cap = viewW > 0 ? maxImageWidth(viewW) : GRID_MAX_WIDTH_PX;
-  const containerWidth = Math.min(GRID_MAX_WIDTH_PX, Math.max(GRID_MIN_WIDTH_PX, cap));
+  const containerWidth = gridWidth(viewW);
 
   const rows: Attachment[][] = [];
   let cursor = 0;

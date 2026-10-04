@@ -83,7 +83,8 @@ function locate(serverId: string, attachmentId: number): Located {
 /// Download an attachment through the manager: straight into the
 /// download folder, or via a save dialog for "Save as…" (and when the
 /// user asked to choose every time). Progress shows in the Transfers
-/// panel; only a failure to start is toasted.
+/// panel; only a failure to start is toasted. Resolves whether it
+/// started (false for a dismissed dialog or a failure).
 export async function startDownload(
   serverId: string,
   attachmentId: number,
@@ -92,7 +93,7 @@ export async function startDownload(
     /// Used when the attachment isn't in the loaded messages.
     fallback?: { filename?: string; mime?: string; kind?: AttachmentKind; sizeBytes?: number };
   } = {},
-): Promise<void> {
+): Promise<boolean> {
   const { attachment, context } = locate(serverId, attachmentId);
   const fb = opts.fallback ?? {};
   try {
@@ -106,9 +107,15 @@ export async function startDownload(
       saveAs: opts.saveAs ?? false,
       context,
     });
-    if (res && "error" in res) toast.error("Download failed", res.error);
-    else if (res) useTransfersStore.getState().noteStarted();
+    if (res && "error" in res) {
+      toast.error("Download failed", res.error);
+      return false;
+    }
+    if (!res) return false;
+    useTransfersStore.getState().noteStarted();
+    return true;
   } catch (e) {
     toast.error("Download failed", String(e));
+    return false;
   }
 }

@@ -1481,6 +1481,22 @@ synchronously at store creation, like the DM toggle's key), but nothing in the U
 button. Verified: tsc web + node 0, vite build; harness with a real click: the panel hides and shows
 and the key flips 0 / 1, and a reload with the key at 0 or 1 restores that state.
 
+**Client: download button beside image / video attachments (2026-10-04) ✅** — A message's images and
+videos get one icon button to their right, shown on hover or keyboard focus. Clicking it downloads
+every one of them straight to the download folder through the Transfers manager, one at a time, so
+"Ask where to save each file" still asks for each. The label reads "Download" or "Download all N",
+and the button shows a check for 1.6 s once they've started. Owner's call: beside the media rather
+than over its corner. It's bottom-aligned: the message's hover toolbar owns the row's top-right
+corner, and on chat panels under about 660 px it covered a top-aligned button on a media-only
+follow-up message. To make room, attachment media (not link previews) reserve 38 px more
+(`MEDIA_ACTION_RESERVE_PX`, inside `reserveBox`, so the thumbnail prefetcher stays byte-identical).
+That only shrinks media on chat panels under about 530 px. A grid's 320 px minimum now yields to that
+room (`gridWidth`) instead of overflowing into the button. `startDownload` reports whether a download
+started. Verified: tsc web 0. The preview harness with the real `ChatPanel` at 380 / 420 / 620 / 1100
+px: a 6 px gap, never past the column, bottom edges flush for an image, a grid, a video card and a
+media-only follow-up, and clear of the hover toolbar at 620 px. Clicking "Download all 4" starts
+attachments 31–34 in order with no dialog, the right channel and message, and shows the check.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

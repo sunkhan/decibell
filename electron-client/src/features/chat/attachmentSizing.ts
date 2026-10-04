@@ -45,17 +45,22 @@ export const PREVIEW_FALLBACK_W = 260;
 export const PREVIEW_FALLBACK_H = 180;
 
 const HORIZONTAL_BUBBLE_RESERVE_MIN = 80;
+/// Attachment media (not link previews) keep this much more room on the
+/// right for the download button beside them (32 px + a 6 px gap). Only
+/// bites on chat panels narrower than ~530 px, where the width term
+/// below is the binding one.
+export const MEDIA_ACTION_RESERVE_PX = 38;
 const VERTICAL_BUBBLE_RESERVE_MIN = 60;
 const IMAGE_WIDTH_SQRT_COEFF = 18;
 const IMAGE_HEIGHT_SQRT_COEFF = 16;
 
-export function maxImageWidth(viewWidth: number, kind: MediaKind = "image"): number {
+export function maxImageWidth(viewWidth: number, kind: MediaKind = "image", reserve = 0): number {
   return Math.max(
     120,
     Math.min(
       kind === "gif" ? GIF_MAX_W : IMAGE_MAX_W,
       IMAGE_WIDTH_SQRT_COEFF * Math.sqrt(viewWidth),
-      viewWidth - HORIZONTAL_BUBBLE_RESERVE_MIN,
+      viewWidth - HORIZONTAL_BUBBLE_RESERVE_MIN - reserve,
     ),
   );
 }
@@ -79,12 +84,18 @@ export interface ChatViewSize {
 /// Compute the pixel box to reserve for a single image/video preview.
 /// Scales down so the image fits within the sqrt-derived caps with
 /// aspect ratio preserved. Small images render at natural size — we
-/// never upscale.
+/// never upscale. Leaves room for the download button beside it.
 export function reserveBox(
   attachment: Attachment,
   viewSize: ChatViewSize | null,
 ): { width: number; height: number; known: boolean } {
-  return reserveBoxFor(attachment.width, attachment.height, viewSize, mediaKindOf(attachment.mime));
+  return reserveBoxFor(
+    attachment.width,
+    attachment.height,
+    viewSize,
+    mediaKindOf(attachment.mime),
+    MEDIA_ACTION_RESERVE_PX,
+  );
 }
 
 /// Same box from bare dimensions — link-preview images carry no
@@ -94,12 +105,13 @@ export function reserveBoxFor(
   h: number,
   viewSize: ChatViewSize | null,
   kind: MediaKind = "image",
+  reserve = 0,
 ): { width: number; height: number; known: boolean } {
   if (w <= 0 || h <= 0) {
     return { width: PREVIEW_FALLBACK_W, height: PREVIEW_FALLBACK_H, known: false };
   }
   const maxW = viewSize
-    ? maxImageWidth(viewSize.width, kind)
+    ? maxImageWidth(viewSize.width, kind, reserve)
     : kind === "gif" ? GIF_MAX_W : PREVIEW_FALLBACK_MAX_W;
   const maxH = viewSize
     ? maxImageHeight(viewSize.height, kind)
@@ -136,3 +148,13 @@ export const GRID_GAP_PX = 4;
 export const GRID_ROW_HEIGHT_PX = 180;
 export const GRID_MAX_WIDTH_PX = 540;
 export const GRID_MIN_WIDTH_PX = 320;
+
+/// Width of a multi-attachment grid: the image cap clamped to the grid's
+/// own min/max, but never wider than the room left beside the download
+/// button — a cramped panel shrinks the grid rather than overlapping it.
+export function gridWidth(viewWidth: number): number {
+  if (viewWidth <= 0) return GRID_MAX_WIDTH_PX;
+  const cap = maxImageWidth(viewWidth, "image", MEDIA_ACTION_RESERVE_PX);
+  const room = viewWidth - HORIZONTAL_BUBBLE_RESERVE_MIN - MEDIA_ACTION_RESERVE_PX;
+  return Math.min(GRID_MAX_WIDTH_PX, Math.max(Math.min(GRID_MIN_WIDTH_PX, room), cap));
+}
