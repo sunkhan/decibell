@@ -14,7 +14,7 @@ import { channelKey } from "../../lib/channelKey";
 import { EMPTY_LIST } from "../../lib/empty";
 import { findMember } from "../../hooks/useDisplayName";
 import { toast } from "../../stores/toastStore";
-import MessageBubble, { shouldGroup } from "./MessageBubble";
+import MessageBubble, { DayDivider, shouldGroup, startsNewDay } from "./MessageBubble";
 import { useTypeToFocusComposer } from "./useTypeToFocusComposer";
 import PendingAttachmentsRow from "./PendingAttachmentsRow";
 import MessagePreview from "./MessagePreview";
@@ -895,64 +895,68 @@ export default function ChatPanel() {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
   }, []);
 
-  // One row; `i` indexes `messages` (grouping looks at messages[i - 1]).
-  const renderBubble = (message: Message, i: number) => (
-    <MessageBubble
-      message={message}
-      grouped={
-        shouldGroup(i > 0 ? messages[i - 1] : undefined, message) &&
-        !message.replyTo
-      }
-      serverId={activeServerId}
-      // The last row fades in — but not our own echo: it replaces the
-      // optimistic bubble under a new key (nonce → id), so it remounts, and
-      // replaying the fade blinked a message that was already on screen.
-      isLast={i === messages.length - 1 && !(message.id > 0 && message.sender === username)}
-      // Align avatar's left edge with the input bar card's
-      // left edge: outer wrapper `px-3` = 12px from chat
-      // panel's left. The card's rounded border starts there.
-      paddingLeft={12}
-      canDelete={
-        typeof message.id === "number" &&
-        message.id > 0 &&
-        (message.sender === username || canDeleteOthers)
-      }
-      onDelete={requestDeleteChannelMessage}
-      canEdit={
-        typeof message.id === "number" &&
-        message.id > 0 &&
-        message.sender === username
-      }
-      editing={editingMessageId === message.id && message.id > 0}
-      onStartEdit={startEdit}
-      onSubmitEdit={submitEdit}
-      onCancelEdit={cancelEdit}
-      canReply={typeof message.id === "number" && message.id > 0}
-      onReply={startReply}
-      replyToSender={
-        message.replyTo
-          ? messagesById.get(message.replyTo)?.sender ??
-            (message.replyToSender || undefined)
-          : undefined
-      }
-      replyToContent={
-        message.replyTo
-          ? messagesById.get(message.replyTo)?.content ??
-            (message.replyToContent || undefined)
-          : undefined
-      }
-      replyToAttachmentKinds={
-        message.replyTo
-          ? (() => {
-              const parent = messagesById.get(message.replyTo);
-              return parent ? attachmentKindsOf(parent) : message.replyToAttachmentKinds;
-            })()
-          : undefined
-      }
-      onJumpToReply={jumpToMessage}
-      highlighted={highlightId === message.id && message.id > 0}
-    />
-  );
+  // One row; `i` indexes `messages` (grouping and the day divider look at
+  // messages[i - 1]). The divider lives inside the row, above the bubble.
+  const renderBubble = (message: Message, i: number) => {
+    const prev = i > 0 ? messages[i - 1] : undefined;
+    return (
+      <>
+        {startsNewDay(prev, message) && <DayDivider timestamp={message.timestamp} />}
+        <MessageBubble
+          message={message}
+          grouped={shouldGroup(prev, message) && !message.replyTo}
+          serverId={activeServerId}
+          // The last row fades in — but not our own echo: it replaces the
+          // optimistic bubble under a new key (nonce → id), so it remounts, and
+          // replaying the fade blinked a message that was already on screen.
+          isLast={i === messages.length - 1 && !(message.id > 0 && message.sender === username)}
+          // Align avatar's left edge with the input bar card's
+          // left edge: outer wrapper `px-3` = 12px from chat
+          // panel's left. The card's rounded border starts there.
+          paddingLeft={12}
+          canDelete={
+            typeof message.id === "number" &&
+            message.id > 0 &&
+            (message.sender === username || canDeleteOthers)
+          }
+          onDelete={requestDeleteChannelMessage}
+          canEdit={
+            typeof message.id === "number" &&
+            message.id > 0 &&
+            message.sender === username
+          }
+          editing={editingMessageId === message.id && message.id > 0}
+          onStartEdit={startEdit}
+          onSubmitEdit={submitEdit}
+          onCancelEdit={cancelEdit}
+          canReply={typeof message.id === "number" && message.id > 0}
+          onReply={startReply}
+          replyToSender={
+            message.replyTo
+              ? messagesById.get(message.replyTo)?.sender ??
+                (message.replyToSender || undefined)
+              : undefined
+          }
+          replyToContent={
+            message.replyTo
+              ? messagesById.get(message.replyTo)?.content ??
+                (message.replyToContent || undefined)
+              : undefined
+          }
+          replyToAttachmentKinds={
+            message.replyTo
+              ? (() => {
+                  const parent = messagesById.get(message.replyTo);
+                  return parent ? attachmentKindsOf(parent) : message.replyToAttachmentKinds;
+                })()
+              : undefined
+          }
+          onJumpToReply={jumpToMessage}
+          highlighted={highlightId === message.id && message.id > 0}
+        />
+      </>
+    );
+  };
 
   // Real-DOM list: mount position for this channel (consumed once, at mount).
   const savedPosition = activeKey

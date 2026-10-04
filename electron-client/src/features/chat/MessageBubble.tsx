@@ -183,8 +183,66 @@ export function shouldGroup(prev: Message | undefined, curr: Message): boolean {
   const prevEpoch = messageEpoch(prev);
   const currEpoch = messageEpoch(curr);
   if (isNaN(prevEpoch) || isNaN(currEpoch)) return false;
+  // A day divider always opens a full row (avatar + name), even for a
+  // 23:58 → 00:01 pair inside the 7-minute window.
+  if (startsNewDay(prev, curr)) return false;
   return Math.abs(currEpoch - prevEpoch) < 7 * 60 * 1000;
 }
+
+// Local calendar day as yyyymmdd, cached per message like the epoch:
+// startsNewDay runs for every row on every list render.
+const dayCache = new WeakMap<Message, number>();
+
+function messageDay(m: Message): number {
+  let day = dayCache.get(m);
+  if (day === undefined) {
+    const epoch = messageEpoch(m);
+    if (isNaN(epoch)) {
+      day = NaN;
+    } else {
+      const d = new Date(epoch);
+      day = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+    }
+    dayCache.set(m, day);
+  }
+  return day;
+}
+
+/** True when `curr` falls on a different local calendar day than `prev` —
+ *  the rows that get a DayDivider above them. Only between two loaded
+ *  messages: the first row of the window has nothing to compare with. */
+export function startsNewDay(prev: Message | undefined, curr: Message): boolean {
+  if (!prev) return false;
+  const a = messageDay(prev);
+  const b = messageDay(curr);
+  return !isNaN(a) && !isNaN(b) && a !== b;
+}
+
+const DAY_FMT = new Intl.DateTimeFormat(undefined, {
+  weekday: "long",
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+});
+
+/// Hairline with the date centred on it, opening the first message of a
+/// new day. Rendered inside that message's list row (above the bubble),
+/// so the list's item model — one row per message, keyed by identity —
+/// is unchanged, and the row hover / jump highlight never include it.
+/// Absolute dates on purpose: a "Today" label would go stale at midnight
+/// on a list that stays mounted.
+export const DayDivider = memo(function DayDivider({ timestamp }: { timestamp: string }) {
+  const date = parseTimestamp(timestamp);
+  if (isNaN(date.getTime())) return null;
+  const label = DAY_FMT.format(date);
+  return (
+    <div role="separator" aria-label={label} className="flex items-center gap-3 pb-1 pl-3 pr-2 pt-5">
+      <div className="h-px flex-1 bg-border" />
+      <span className="font-meta text-meta font-medium tabular-nums text-text-muted">{label}</span>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+  );
+});
 
 interface Props {
   message: Message;

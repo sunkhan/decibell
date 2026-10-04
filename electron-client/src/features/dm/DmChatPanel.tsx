@@ -14,7 +14,7 @@ import { useDraftsStore } from "../../stores/draftsStore";
 import { toast } from "../../stores/toastStore";
 import { stringToColor } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
-import MessageBubble, { shouldGroup } from "../chat/MessageBubble";
+import MessageBubble, { DayDivider, shouldGroup, startsNewDay } from "../chat/MessageBubble";
 import { useTypeToFocusComposer } from "../chat/useTypeToFocusComposer";
 import MessagePreview from "../chat/MessagePreview";
 import RichComposer from "../chat/RichComposer";
@@ -696,8 +696,21 @@ export default function DmChatPanel() {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
   }, []);
 
-  // One row; `i` indexes bubbleMessages (grouping looks at the previous row).
+  // One row; `i` indexes bubbleMessages (grouping and the day divider look
+  // at the previous row). The divider lives inside the row, above it.
   const renderRow = (msg: (typeof bubbleMessages)[number], i: number) => {
+    const prev = i > 0 ? bubbleMessages[i - 1] : undefined;
+    return (
+      <>
+        {startsNewDay(prev, msg) && <DayDivider timestamp={msg.timestamp} />}
+        {renderRowBody(msg, prev)}
+      </>
+    );
+  };
+  const renderRowBody = (
+    msg: (typeof bubbleMessages)[number],
+    prev: (typeof bubbleMessages)[number] | undefined,
+  ) => {
     const isError =
       msg.sender === localUsername &&
       ERROR_MESSAGES.includes(msg.content);
@@ -723,10 +736,7 @@ export default function DmChatPanel() {
     return (
       <MessageBubble
         message={msg}
-        grouped={
-          shouldGroup(i > 0 ? bubbleMessages[i - 1] : undefined, msg) &&
-          !msg.replyTo
-        }
+        grouped={shouldGroup(prev, msg) && !msg.replyTo}
         paddingLeft={12}
         canDelete={
           typeof msg.id === "number" &&

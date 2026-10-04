@@ -1497,6 +1497,20 @@ px: a 6 px gap, never past the column, bottom edges flush for an image, a grid, 
 media-only follow-up, and clear of the hover toolbar at 620 px. Clicking "Download all 4" starts
 attachments 31–34 in order with no dialog, the right channel and message, and shows the check.
 
+**Client: day dividers in the message list (2026-10-04) ✅** — Owner request: a separating line
+between messages whose dates differ. When two consecutive loaded messages fall on different local
+calendar days, the later one gets a `DayDivider` (a hairline with the date centred on it, e.g.
+"Saturday, October 3, 2026"; an absolute date, because a "Today" label would go stale at midnight on
+a mounted list). It applies to both server channels and DMs. The divider renders *inside* that
+message's list row, above the bubble, so RealMessageList's item model (one row per message, keyed by
+identity, offsetTop measurement) is untouched. The rare case where a prepended page gives the
+window's first row a divider is the same in-row height change as the existing grouping flip, which
+the every-commit placement effect and native anchoring already handle. `shouldGroup` now also breaks
+at a day boundary, so a 23:58 → 00:01 pair from one sender opens a full row under the divider.
+Day keys are cached per message (WeakMap), like the epoch cache. Verified: tsc web + node 0, vite
+build; harness with messages spread over four days in Nocturne / Matinee / Console (dividers between
+the days only, the midnight pair split, today's pair still grouped) and in a DM.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
