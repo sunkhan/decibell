@@ -986,12 +986,13 @@ export default function ChatPanel() {
     <div ref={panelRef} className="flex min-w-0 flex-1 flex-col bg-bg-mid">
       <div className="flex h-12 items-center border-b border-border-divider px-4 font-display text-title font-emphasis tracking-title text-text-bright">
         <span className="mr-1.5 text-text-muted">#</span>
-        <span className="truncate">{channelName}</span>
+        <span className="min-w-0 truncate">{channelName}</span>
         {channel?.encrypted ? (
           <span className="ml-2.5 flex items-center">
             <ChannelEncryptionBadge />
           </span>
         ) : null}
+        <MembersPanelToggle />
       </div>
 
       <div className="relative flex flex-1 flex-col overflow-hidden">
@@ -1253,6 +1254,30 @@ function SendButton({
     >
       <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
         <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+      </svg>
+    </button>
+  );
+}
+
+/// Header button that shows / hides the members list beside a text
+/// channel — the twin of the friends toggle in a DM header (same icon,
+/// same states). Its own component so the toggle re-renders this button,
+/// not the chat panel. Visibility is remembered per install by uiStore.
+function MembersPanelToggle() {
+  const visible = useUiStore((s) => s.membersPanelVisible);
+  const toggle = useUiStore((s) => s.toggleMembersPanel);
+  return (
+    <button
+      onClick={toggle}
+      className={`ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-sm transition-colors ${
+        visible
+          ? "text-text-secondary bg-surface-hover"
+          : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+      }`}
+      title={visible ? "Hide members" : "Show members"}
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" />
       </svg>
     </button>
   );

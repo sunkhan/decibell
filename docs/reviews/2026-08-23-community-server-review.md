@@ -1471,6 +1471,16 @@ cached channel lands and highlights the row in view; one into a 200-message cach
 window around the target (before the fix it did nothing). Open: a live check of taskbar progress on
 Windows and macOS (Linux shows it only on Unity-style launchers).
 
+**Client: members-list toggle in text channels (2026-10-04) ✅** — Owner request: a header button in
+server text channels that shows / hides the members list, the same way (and with the same icon) as
+the friends toggle in a DM conversation. `uiStore` already had `membersPanelVisible` +
+`toggleMembersPanel`, remembered per install in local storage (`decibell.layout.membersPanel`, read
+synchronously at store creation, like the DM toggle's key), but nothing in the UI called it.
+`ChatPanel`'s header now ends in `MembersPanelToggle`: a filled state while the panel is shown,
+"Hide members" / "Show members" as its title. It's its own component, so a toggle re-renders only the
+button. Verified: tsc web + node 0, vite build; harness with a real click: the panel hides and shows
+and the key flips 0 / 1, and a reload with the key at 0 or 1 restores that state.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
