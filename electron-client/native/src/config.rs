@@ -152,6 +152,15 @@ pub struct AppSettings {
     /// `low` filter.
     #[serde(default)]
     pub gif_unfiltered: bool,
+
+    /// Folder attachments download into (Transfers panel). Empty = the
+    /// OS Downloads folder.
+    #[serde(default)]
+    pub download_dir: String,
+    /// Show a save dialog for every download instead of using
+    /// `download_dir`. Default off.
+    #[serde(default)]
+    pub ask_download_location: bool,
 }
 
 /// The defaults are the serde ones. A derived `Default` would zero every

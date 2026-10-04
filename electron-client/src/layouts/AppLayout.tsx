@@ -6,6 +6,7 @@ import Titlebar from "./Titlebar";
 import ToastStack from "../components/ToastStack";
 import { listen } from "../lib/ipc";
 import { useChatStore } from "../stores/chatStore";
+import { initTransfers } from "../features/transfers/downloads";
 import {
   useUpdateStore,
   type UpdateStatus,
@@ -53,6 +54,12 @@ export default function AppLayout() {
     return () => {
       unlisten.then((fn) => fn()).catch(() => {});
     };
+  }, []);
+
+  // The Transfers panel mirrors main's download manager for the life of
+  // the window (the title bar, and so the panel, is up on /login too).
+  useEffect(() => {
+    initTransfers();
   }, []);
 
   // Track how many community servers this install is connected to.

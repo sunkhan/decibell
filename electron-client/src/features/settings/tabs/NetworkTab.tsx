@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useUiStore } from "../../../stores/uiStore";
 import { useChatStore } from "../../../stores/chatStore";
 import { saveSettings } from "../saveSettings";
+import DownloadsSettings from "../../transfers/DownloadsSettings";
 
 // Presets tuned around typical broadband allowances. "Unlimited" is the top
 // slot; everything else maps to whole MB/s for human legibility.
@@ -123,7 +124,9 @@ export default function NetworkTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
+      <DownloadsSettings />
+
+      <div className="mt-4">
         <h3 className="mb-2 font-display text-[14px] font-semibold text-text-primary">
           Attachment transfer speed
         </h3>

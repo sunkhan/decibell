@@ -22,6 +22,7 @@ import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useVoiceStore } from "../../stores/voiceStore";
+import { useTransfersStore } from "../../stores/transfersStore";
 
 const DEBOUNCE_MS = 250;
 let pendingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -30,6 +31,7 @@ function doSave(): void {
   const ui = useUiStore.getState();
   const { friendsOnlyDms } = useDmStore.getState();
   const { userVolumes, localMutedUsers, streamSettings } = useVoiceStore.getState();
+  const { downloadDir, askDownloadLocation } = useTransfersStore.getState();
 
   // napi-rs binds a single positional argument of type
   // `serde_json::Value` directly from the JS arg — the param name on
@@ -77,6 +79,8 @@ function doSave(): void {
     crash_reporting_consent_shown: ui.crashReportingConsentShown,
     link_previews_enabled: ui.linkPreviewsEnabled,
     gif_unfiltered: ui.gifUnfiltered,
+    download_dir: downloadDir,
+    ask_download_location: askDownloadLocation,
   }).catch((e) => console.error("[saveSettings] failed:", e));
 }
 

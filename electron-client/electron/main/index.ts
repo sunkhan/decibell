@@ -15,6 +15,7 @@ import { registerFsHandlers } from "./fs";
 import { registerNetHandlers } from "./netFetch";
 import { registerAttachmentKeyHandlers } from "./attachmentKeys";
 import { registerDownloadLimitHandler } from "./downloadPacer";
+import { registerDownloadHandlers, pauseAllForQuit } from "./downloads";
 import { registerLinkPreviewHandlers } from "./linkPreview";
 import { registerGifHandlers } from "./gifs";
 import { startMediaServer, stopMediaServer, getMediaServerPort } from "./mediaServer";
@@ -671,6 +672,7 @@ app.whenReady().then(async () => {
   registerAttachmentProtocol();
   registerAttachmentKeyHandlers();
   registerDownloadLimitHandler();
+  registerDownloadHandlers();
   registerFileProtocol();
   registerInvokeHandler();
   registerWindowHandlers();
@@ -818,6 +820,9 @@ app.on("before-quit", async (e) => {
   // running and the user would have to kill it via Task Manager —
   // exactly the bug we're fixing here.
   e.preventDefault();
+  // Synchronous: running downloads are saved as paused before anything
+  // below can stall.
+  pauseAllForQuit();
   cancelInitialCheck();
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, 3000));
   try {

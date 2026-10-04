@@ -2,18 +2,14 @@ import { useEffect, useMemo } from "react";
 import { useImageContextMenuStore } from "../stores/imageContextMenuStore";
 import { toast } from "../stores/toastStore";
 import { useMenuPosition } from "../hooks/useMenuPosition";
+import { startDownload } from "../features/transfers/downloads";
 
 // Right-click menu for chat image and video attachments.
 //
-// Both actions stay 100% renderer-side using Chromium's built-ins
-// instead of porting tauri-client's native download_attachment +
-// copyAttachmentToClipboard:
-//
-//   - Copy → fetch the attachment URL, get a Blob, hand it to the
-//     Web Clipboard API. Native code never sees the bytes.
-//   - Save → fetch the URL, take an ArrayBuffer, and write it to the
-//     user's chosen path via the fs:writeFile IPC (a thin wrapper
-//     around fs.promises.writeFile in main).
+//   - Copy → fetch the attachment bytes through main's netFetch, make
+//     a Blob, hand it to the Web Clipboard API.
+//   - Save as… → the download manager in main, with its save dialog;
+//     the transfer shows in the Transfers panel.
 //
 // The decibell-attachment:// custom protocol handles auth and the
 // HTTP round-trip transparently — the renderer treats attachments as
@@ -26,6 +22,7 @@ export default function ImageContextMenu() {
   const attachmentId = useImageContextMenuStore((s) => s.attachmentId);
   const filename = useImageContextMenuStore((s) => s.filename);
   const kind = useImageContextMenuStore((s) => s.kind);
+  const mime = useImageContextMenuStore((s) => s.mime);
   const close = useImageContextMenuStore((s) => s.close);
 
   // Keep the menu inside the viewport (measured, flips above the cursor
@@ -107,21 +104,17 @@ export default function ImageContextMenu() {
     }
   };
 
-  const handleSave = async (e: React.MouseEvent) => {
+  const handleSave = (e: React.MouseEvent) => {
     e.stopPropagation();
     close();
-    const isVideo = kind === "video";
-    try {
-      const dest = await window.decibell.dialog.save({
-        defaultPath: filename || (isVideo ? "video" : "image"),
-      });
-      if (!dest) return;
-      const { bytes } = await fetchAttachmentBytes();
-      await window.decibell.fs.writeFile(dest, new Uint8Array(bytes));
-      toast.success(isVideo ? "Video saved" : "Image saved", filename ?? undefined);
-    } catch (err) {
-      toast.error("Save failed", String(err));
-    }
+    void startDownload(serverId, attachmentId, {
+      saveAs: true,
+      fallback: {
+        filename: filename ?? (kind === "video" ? "video" : "image"),
+        mime: mime ?? undefined,
+        kind,
+      },
+    });
   };
 
   return (

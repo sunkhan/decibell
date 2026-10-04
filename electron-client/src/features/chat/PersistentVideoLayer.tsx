@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useActiveVideoStore } from "../../stores/activeVideoStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { useUiStore } from "../../stores/uiStore";
-import { toast } from "../../stores/toastStore";
+import { startDownload } from "../transfers/downloads";
 import { saveSettings } from "../settings/saveSettings";
 import {
   getCachedVideo,
@@ -23,8 +23,8 @@ import {
 //   - No temp-file download. URLs are `decibell-attachment://` and
 //     Chromium handles HTTP caching transparently — `active.src` is
 //     already a fetchable URL by the time we mount.
-//   - Save-as goes through `netFetch + fs.writeFile` (same path as
-//     ImageContextMenu and the audio Save).
+//   - Download goes through the download manager in main
+//     (features/transfers), like every other attachment save.
 //   - Fullscreen via `window.decibell.window.setFullscreen`.
 //   - We don't set `crossOrigin="anonymous"` on the video — with
 //     webSecurity off, canvas drawImage doesn't taint, so the poster
@@ -410,31 +410,10 @@ function PersistentPlayer({ active, hostElement }: ActivePlayerProps) {
     };
   }, []);
 
-  const handleDownload = async () => {
-    let dest: string | null = null;
-    try {
-      dest = await window.decibell.dialog.save({
-        defaultPath: active.filename || "video",
-      });
-    } catch (err) {
-      toast.error("Save dialog failed", String(err));
-      return;
-    }
-    if (!dest) return;
-    try {
-      const res = await window.decibell.netFetch("", {
-        method: "GET",
-        attachmentTarget: {
-          serverId: active.serverId,
-          path: `/attachments/${active.attachmentId}`,
-        },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await window.decibell.fs.writeFile(dest, new Uint8Array(res.body));
-      toast.success("Video saved", active.filename);
-    } catch (err) {
-      toast.error("Save failed", String(err));
-    }
+  const handleDownload = () => {
+    void startDownload(active.serverId, active.attachmentId, {
+      fallback: { filename: active.filename, kind: "video" },
+    });
   };
 
   const handleContextMenu = (e: React.MouseEvent) => {

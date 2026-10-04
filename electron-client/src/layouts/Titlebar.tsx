@@ -3,6 +3,7 @@ import { getCurrentWindow } from "../lib/window";
 import { useUiStore } from "../stores/uiStore";
 import { useChatStore } from "../stores/chatStore";
 import { useDmStore } from "../stores/dmStore";
+import TransfersButton from "../features/transfers/TransfersButton";
 
 const win = getCurrentWindow();
 
@@ -51,6 +52,8 @@ function Titlebar() {
         {title}
       </span>
       <div className="absolute right-0 top-0 flex h-full">
+        <TransfersButton />
+        <div aria-hidden className="my-2 w-px bg-border" />
         <TitleButton onClick={() => win.minimize().catch(() => {})} label="Minimize">
           <svg width="14" height="14" viewBox="0 0 12 12" shapeRendering="crispEdges">
             <line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" strokeWidth="1" />

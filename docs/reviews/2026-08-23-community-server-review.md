@@ -1330,6 +1330,39 @@ as abandoned (`kUploadingTimeoutSeconds` counts from `created_at`), which a cap 
 server with a raised `DECIBELL_MAX_ATTACHMENT_BYTES`. Save-as still shows no progress while a capped
 download runs.
 
+**Client: Transfers panel, phase 1 — downloads (2026-10-04) ✅** — A Chrome/Firefox-style downloads
+popover from a new title-bar button. Design: `docs/superpowers/specs/2026-10-04-transfers-panel-design.md`.
+Owner decisions: downloads go straight to a folder (the OS Downloads folder by default, changeable in
+Settings → Network, plus an "Ask where to save each file" toggle that's off by default), history
+persists across restarts, Downloads | Uploads tabs, and the button is always visible.
+*Main:* `electron/main/downloads.ts` owns each download. It streams to `‹final›.part` through the
+speed-cap pacer and renames on completion, so nothing crosses IPC except small records. The old save
+path buffered the whole file in main and sent it over IPC twice. Pause keeps the `.part`; resume
+sends `Range: bytes=‹size›-`, and a 200 means the server ignored the range, so it starts over.
+Encrypted files go through the protocol's decrypt path in chunk-aligned windows (`fetchDecryptedWith`
++ abort support in `readPaced`). The file key is snapshotted at start and kept wrapped by
+`safeStorage` until the download finishes, so a paused one resumes after a restart. Records live in
+`userData/downloads.json` (last 100, atomic writes); quitting saves running downloads as paused.
+Filenames from the sender are sanitised (separators, Windows reserved names and characters, leading
+and trailing dots, a 200-byte cap) and made unique (`name (1).ext`). The renderer addresses
+downloads by id only: open, reveal and remove act on paths main recorded. *Renderer:*
+`features/transfers/` has the button and the panel.
+- The button: a ring fills with the combined progress, a dot marks a finish or failure while the
+  panel was shut, the arrow drops when a download starts, and Ctrl/Cmd+J toggles the panel.
+- The panel: rows for active, paused, done (click opens the file), failed, cancelled and deleted;
+  thumbnails; a right-click menu; a footer with the speed cap, Open folder and Clear.
+- Opening an executable or script asks first (`ConfirmModal`). The four save sites (file card, audio,
+  video, "Save as…") now call `startDownload`; "Save as…" still asks for a location.
+- `AppSettings` gains `download_dir` + `ask_download_location`.
+Verified: tsc web + node 0, napi build, `cargo test --lib`, and an Electron harness against a local
+HTTPS server with 30 checks over two launches. It covered sanitisation, collisions, pause/resume over
+Range, a server that ignores Range, cancel, 404, encrypted pause/resume, the cap (3 MB at 1 MB/s in
+2.9 s), deleted-file detection, Clear, and a quit mid-download followed by a relaunch that resumed a
+plain file and an encrypted one from the wrapped key alone. The preview harness covered every row
+state in Nocturne, Matinee, Graphite and Console Light, plus the empty states and the settings
+section. Open: a live run against a real community server, Open / Show in folder on Windows and
+macOS, and the uploads tab (phase 2).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

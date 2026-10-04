@@ -24,6 +24,7 @@ import { getAttachmentTarget } from "./attachmentRegistry";
 import { getAttachmentKey } from "./attachmentKeys";
 import { readPaced } from "./downloadPacer";
 import {
+  type AttachmentKeyInfo,
   TAG_BYTES,
   ciphertextSize,
   decryptChunk,
@@ -58,6 +59,20 @@ export async function fetchDecryptedAttachment(
 ): Promise<DecryptedResponse | null> {
   const info = getAttachmentKey(serverId, attachmentId);
   if (!info) return null;
+  return fetchDecryptedWith(info, serverId, attachmentId, search, rangeHeader);
+}
+
+/// The same with the key supplied by the caller — the download manager
+/// holds its own copy, since the registry is cleared on disconnect and
+/// empty after a restart. `signal` aborts the fetch and any paced wait.
+export async function fetchDecryptedWith(
+  info: AttachmentKeyInfo,
+  serverId: string,
+  attachmentId: string,
+  search: string,
+  rangeHeader?: string,
+  signal?: AbortSignal,
+): Promise<DecryptedResponse> {
   const target = getAttachmentTarget(serverId);
   if (!target) return text(404, "Not Found", "not connected");
   const upstream = `https://${target.host}:${target.port}/attachments/${attachmentId}${search}`;
@@ -66,9 +81,9 @@ export async function fetchDecryptedAttachment(
 
   if (params.get("variant") === "thumb") {
     const sizePx = Number(params.get("size")) || 0;
-    const resp = await net.fetch(upstream, { method: "GET", headers: auth });
+    const resp = await net.fetch(upstream, { method: "GET", headers: auth, signal });
     if (!resp.ok) return text(resp.status, resp.statusText, `upstream ${resp.status}`);
-    const raw = await readPaced(resp, serverId, attachmentId);
+    const raw = await readPaced(resp, serverId, attachmentId, signal);
     const sealed = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
     let jpeg: Buffer;
     try {
@@ -111,11 +126,11 @@ export async function fetchDecryptedAttachment(
   const plan = planRange(info, range);
   const headers: Record<string, string> = { ...auth };
   if (plan.upstreamRange) headers.Range = plan.upstreamRange;
-  const resp = await net.fetch(upstream, { method: "GET", headers });
+  const resp = await net.fetch(upstream, { method: "GET", headers, signal });
   if (resp.status !== 200 && resp.status !== 206) {
     return text(resp.status, resp.statusText, `upstream ${resp.status}`);
   }
-  const raw = await readPaced(resp, serverId, attachmentId);
+  const raw = await readPaced(resp, serverId, attachmentId, signal);
   let sealed = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
   const sealedChunk = info.chunkBytes + TAG_BYTES;
   const ctTotal = ciphertextSize(total, info.chunkBytes);

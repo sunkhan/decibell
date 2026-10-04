@@ -39,7 +39,7 @@ import {
   cacheVideo,
   getCachedVideo,
 } from "./videoPlaybackState";
-import { toast } from "../../stores/toastStore";
+import { startDownload } from "../transfers/downloads";
 
 interface Props {
   attachments: Attachment[];
@@ -594,26 +594,8 @@ function AudioItem({
     window.addEventListener("mouseup", onUp);
   };
 
-  const onDownload = async () => {
-    if (!serverId) return;
-    const dest = await window.decibell.dialog.save({
-      defaultPath: attachment.filename || "audio",
-    });
-    if (!dest) return;
-    try {
-      const res = await window.decibell.netFetch("", {
-        method: "GET",
-        attachmentTarget: {
-          serverId,
-          path: `/attachments/${attachment.id}`,
-        },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await window.decibell.fs.writeFile(dest, new Uint8Array(res.body));
-      toast.success("Audio saved", attachment.filename);
-    } catch (err) {
-      toast.error("Save failed", String(err));
-    }
+  const onDownload = () => {
+    if (serverId) void startDownload(serverId, attachment.id, { fallback: attachment });
   };
 
   const onVolumeMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -801,34 +783,10 @@ function DocumentItem({
 }) {
   const url = buildAttachmentUrl(serverId, attachment);
 
-  // The <a download="..."> attribute is silently ignored when href
-  // points to a different origin (Chromium spec). Our attachments are
-  // served from the loopback media server (http://127.0.0.1:PORT) while
-  // the renderer lives at file:// (prod) or http://localhost:5173 (dev),
-  // so the browser falls back to the last path segment of the URL —
-  // which is the numeric attachment id. To save under the real filename
-  // we route through the same dialog.save + netFetch + fs.writeFile
-  // path that the audio attachment download uses.
-  const onDownload = async () => {
-    if (!serverId) return;
-    const dest = await window.decibell.dialog.save({
-      defaultPath: attachment.filename || "attachment",
-    });
-    if (!dest) return;
-    try {
-      const res = await window.decibell.netFetch("", {
-        method: "GET",
-        attachmentTarget: {
-          serverId,
-          path: `/attachments/${attachment.id}`,
-        },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await window.decibell.fs.writeFile(dest, new Uint8Array(res.body));
-      toast.success("File saved", attachment.filename);
-    } catch (err) {
-      toast.error("Save failed", String(err));
-    }
+  // Through the download manager in main (not <a download>, which
+  // Chromium ignores cross-origin): progress in the Transfers panel.
+  const onDownload = () => {
+    if (serverId) void startDownload(serverId, attachment.id, { fallback: attachment });
   };
 
   return (

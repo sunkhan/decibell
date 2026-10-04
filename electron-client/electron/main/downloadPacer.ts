@@ -41,6 +41,11 @@ function effectiveRate(): number {
   return limitBps > 0 ? Math.max(MIN_LIMIT_BPS, limitBps) : 0;
 }
 
+/// The cap in force (floor applied), 0 = unlimited.
+export function downloadRateBps(): number {
+  return effectiveRate();
+}
+
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const done = () => {
@@ -141,10 +146,13 @@ export function pacedBody(
 
 /// Read a whole attachment response at the cap. The result owns its
 /// ArrayBuffer exactly (no pool slack), so `.buffer` is safe to hand on.
+/// Aborting `signal` (the one the fetch was given) ends a paced wait
+/// at once and rejects with an AbortError.
 export async function readPaced(
   resp: Response,
   serverId: string,
   attachmentId: string,
+  signal?: AbortSignal,
 ): Promise<Uint8Array> {
   if (!resp.body) return new Uint8Array(0);
   const pacer = pacerFor(serverId, attachmentId);
@@ -154,7 +162,11 @@ export async function readPaced(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    await pacer.take(value.byteLength);
+    await pacer.take(value.byteLength, signal);
+    if (signal?.aborted) {
+      reader.cancel().catch(() => {});
+      throw new DOMException("Aborted", "AbortError");
+    }
     parts.push(value);
     total += value.byteLength;
   }

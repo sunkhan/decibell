@@ -878,3 +878,51 @@ export interface CallDroppedPayload {
   callId: string;
   reason: string;
 }
+
+// ---- Attachment downloads (electron/main/downloads.ts) ----
+
+export type DownloadState = "active" | "paused" | "done" | "failed" | "cancelled";
+
+/// Where a download came from, for the Transfers panel's status line
+/// and "Go to message".
+export interface DownloadContext {
+  serverName: string;
+  channelId: string;
+  channelName: string;
+  messageId: number;
+  sender: string;
+}
+
+/// One download as main reports it (`downloads_changed`, `list()`).
+export interface DownloadView {
+  id: string;
+  serverId: string;
+  attachmentId: number;
+  filename: string;
+  mime: string;
+  kind: AttachmentKind;
+  totalBytes: number;
+  receivedBytes: number;
+  state: DownloadState;
+  error?: string;
+  startedAt: number;
+  finishedAt?: number;
+  context: DownloadContext;
+  speedBps: number;
+  /// Seconds left, -1 when unknown.
+  etaS: number;
+  /// Finished, but the file is no longer on disk.
+  missing: boolean;
+}
+
+export interface DownloadStartArgs {
+  serverId: string;
+  attachmentId: number;
+  filename: string;
+  mime: string;
+  kind: AttachmentKind;
+  sizeBytes: number;
+  /// Always show the save dialog ("Save as…").
+  saveAs: boolean;
+  context: DownloadContext;
+}

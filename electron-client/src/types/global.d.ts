@@ -1,5 +1,12 @@
 import type { Event, UnlistenFn } from "../lib/ipc";
-import type { CaptureSource, GifProvider, GifSearchResult, LinkPreview } from "./index";
+import type {
+  CaptureSource,
+  DownloadStartArgs,
+  DownloadView,
+  GifProvider,
+  GifSearchResult,
+  LinkPreview,
+} from "./index";
 
 declare global {
   interface Window {
@@ -66,6 +73,23 @@ declare global {
         ) => Promise<void>;
         clearKeys: (serverId?: string) => Promise<void>;
         setDownloadLimit: (bps: number) => Promise<void>;
+      };
+      downloads: {
+        /// null when a save dialog was dismissed.
+        start: (args: DownloadStartArgs) => Promise<{ id: string } | { error: string } | null>;
+        list: () => Promise<DownloadView[]>;
+        pause: (id: string) => Promise<void>;
+        /// Also "Retry" and "Download again".
+        resume: (id: string) => Promise<void>;
+        cancel: (id: string) => Promise<void>;
+        remove: (id: string) => Promise<void>;
+        clearFinished: () => Promise<void>;
+        open: (id: string) => Promise<{ error: string } | null>;
+        showInFolder: (id: string) => Promise<void>;
+        openFolder: () => Promise<{ error: string } | null>;
+        configure: (c: { dir: string; askEachTime: boolean }) => Promise<void>;
+        defaultFolder: () => Promise<string>;
+        pickFolder: () => Promise<string | null>;
       };
       netFetch: (
         url: string,

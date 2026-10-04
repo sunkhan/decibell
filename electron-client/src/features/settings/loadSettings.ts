@@ -9,6 +9,8 @@
 // into its own module here so main.tsx stays terse.
 
 import { invoke } from "../../lib/ipc";
+import { useTransfersStore } from "../../stores/transfersStore";
+import { pushDownloadConfig } from "../transfers/downloads";
 import {
   useUiStore,
   THEME_IDS,
@@ -65,6 +67,8 @@ interface LoadedConfigShape {
     crash_reporting_consent_shown: boolean;
     link_previews_enabled?: boolean;
     gif_unfiltered?: boolean;
+    download_dir?: string;
+    ask_download_location?: boolean;
   };
 }
 
@@ -134,6 +138,9 @@ export async function loadSettings(): Promise<void> {
   window.decibell.attachments
     .setDownloadLimit(settings.download_limit_bps || 0)
     .catch((e) => console.warn("[loadSettings] setDownloadLimit failed:", e));
+  useTransfersStore.getState().setDownloadDir(settings.download_dir ?? "");
+  useTransfersStore.getState().setAskDownloadLocation(settings.ask_download_location ?? false);
+  pushDownloadConfig();
 
   // 0 means "no value persisted" — keep the in-store default of 10.
   useUiStore.getState().setChannelCacheSize(settings.channel_cache_size || 10);

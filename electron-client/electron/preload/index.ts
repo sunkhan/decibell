@@ -270,6 +270,26 @@ contextBridge.exposeInMainWorld("decibell", {
     setDownloadLimit: (bps: number) =>
       ipcRenderer.invoke("decibell:attachments:setDownloadLimit", bps) as Promise<void>,
   },
+  /// The attachment download manager in main (electron/main/downloads.ts).
+  /// Downloads are addressed by id; changes arrive as `downloads_changed`
+  /// / `downloads_removed` events through listen().
+  downloads: {
+    start: (args: unknown): Promise<unknown> => ipcRenderer.invoke("decibell:downloads:start", args),
+    list: (): Promise<unknown> => ipcRenderer.invoke("decibell:downloads:list"),
+    pause: (id: string): Promise<void> => ipcRenderer.invoke("decibell:downloads:pause", id),
+    resume: (id: string): Promise<void> => ipcRenderer.invoke("decibell:downloads:resume", id),
+    cancel: (id: string): Promise<void> => ipcRenderer.invoke("decibell:downloads:cancel", id),
+    remove: (id: string): Promise<void> => ipcRenderer.invoke("decibell:downloads:remove", id),
+    clearFinished: (): Promise<void> => ipcRenderer.invoke("decibell:downloads:clearFinished"),
+    open: (id: string): Promise<unknown> => ipcRenderer.invoke("decibell:downloads:open", id),
+    showInFolder: (id: string): Promise<void> =>
+      ipcRenderer.invoke("decibell:downloads:showInFolder", id),
+    openFolder: (): Promise<unknown> => ipcRenderer.invoke("decibell:downloads:openFolder"),
+    configure: (c: { dir: string; askEachTime: boolean }): Promise<void> =>
+      ipcRenderer.invoke("decibell:downloads:configure", c),
+    defaultFolder: (): Promise<string> => ipcRenderer.invoke("decibell:downloads:defaultFolder"),
+    pickFolder: (): Promise<string | null> => ipcRenderer.invoke("decibell:downloads:pickFolder"),
+  },
   netFetch: (
     url: string,
     init: {
