@@ -22,6 +22,7 @@ import { net } from "electron";
 const MAX_RANGE_BYTES = 4 * 1024 * 1024;
 import { getAttachmentTarget } from "./attachmentRegistry";
 import { getAttachmentKey } from "./attachmentKeys";
+import { readPaced } from "./downloadPacer";
 import {
   TAG_BYTES,
   ciphertextSize,
@@ -67,7 +68,8 @@ export async function fetchDecryptedAttachment(
     const sizePx = Number(params.get("size")) || 0;
     const resp = await net.fetch(upstream, { method: "GET", headers: auth });
     if (!resp.ok) return text(resp.status, resp.statusText, `upstream ${resp.status}`);
-    const sealed = Buffer.from(await resp.arrayBuffer());
+    const raw = await readPaced(resp, serverId, attachmentId);
+    const sealed = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
     let jpeg: Buffer;
     try {
       jpeg = decryptThumbnail(info.key, sizePx, sealed);
@@ -113,7 +115,8 @@ export async function fetchDecryptedAttachment(
   if (resp.status !== 200 && resp.status !== 206) {
     return text(resp.status, resp.statusText, `upstream ${resp.status}`);
   }
-  let sealed = Buffer.from(await resp.arrayBuffer());
+  const raw = await readPaced(resp, serverId, attachmentId);
+  let sealed = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
   const sealedChunk = info.chunkBytes + TAG_BYTES;
   const ctTotal = ciphertextSize(total, info.chunkBytes);
   if (resp.status === 200) {

@@ -79,29 +79,6 @@ pub async fn set_dm_privacy(args: SetDmPrivacyArgs) -> napi::Result<()> {
 }
 
 #[napi(object)]
-pub struct SetTransferLimitsArgs {
-    pub upload_bps: u32,
-    pub download_bps: u32,
-}
-
-/// Persist the user's per-file upload/download caps. PR8 attachment
-/// transfers happen renderer-side via Electron main's netFetch, so the
-/// caps would have to be enforced there to actually rate-limit — for
-/// now this command just writes them to AppSettings so they survive
-/// across restarts. Live enforcement is a follow-up; the renderer's
-/// saveSettings() will already include these fields, but exposing the
-/// command keeps the call shape compatible with tauri-client's
-/// NetworkTab.
-#[napi]
-pub async fn set_transfer_limits(args: SetTransferLimitsArgs) -> napi::Result<()> {
-    let loaded = crate::config::load().map_err(napi::Error::from_reason)?;
-    let mut settings = loaded.settings;
-    settings.upload_limit_bps = args.upload_bps as u64;
-    settings.download_limit_bps = args.download_bps as u64;
-    crate::config::save(None, &settings).map_err(napi::Error::from_reason)
-}
-
-#[napi(object)]
 pub struct AudioDevice {
     pub name: String,
     pub label: String,

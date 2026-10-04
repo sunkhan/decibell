@@ -28,6 +28,7 @@ import { toast } from "../../stores/toastStore";
 import type { AttachmentKind } from "../../types";
 import type { ChunkSource } from "./chunkSource";
 import { encodeThumbHash, encodeThumbHashFromBlob } from "./thumbhash";
+import { UploadPacer, uploadChunkBytes } from "./uploadPacing";
 import { useChatStore } from "../../stores/chatStore";
 import {
   CHUNK_BYTES as SEALED_CHUNK_BYTES,
@@ -54,7 +55,6 @@ interface CompleteResponse {
   uploadStatus?: string;
 }
 
-const CHUNK_BYTES = 8 * 1024 * 1024;
 const MAX_RETRY = 5;
 
 const KIND_NAMES: Record<number, AttachmentKind> = {
@@ -503,6 +503,8 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
   // Encrypted channel: one fresh key per file; every chunk and thumbnail
   // is sealed before it leaves the renderer (attachmentCrypto.ts).
   const cipher = pending.encrypted ? await newAttachmentCipher() : null;
+  // Settings → Network upload cap, this file's own bucket.
+  const pacer = new UploadPacer();
   const realMime = source.mime || "application/octet-stream";
   // Mark as uploading so the chat-side BubbleInflightAttachments
   // switches from the queued chip to the live progress bar.
@@ -552,21 +554,23 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
 
     // PATCH chunks until we hit source.size, with retry/backoff per
     // chunk. Per-chunk Range fetch against source.url means peak
-    // renderer RAM is one chunk (~8MB) regardless of file size — no
-    // pre-loaded ArrayBuffer of the whole file.
+    // renderer RAM is one chunk (≤8MB, smaller under an upload cap)
+    // regardless of file size — no pre-loaded ArrayBuffer of the whole
+    // file.
     while (offset < source.size) {
       if (abortController.signal.aborted) {
         throw new Error("Upload cancelled");
       }
-      const end = Math.min(offset + CHUNK_BYTES, source.size);
+      const end = Math.min(offset + uploadChunkBytes(), source.size);
       const chunk = await source.readChunk(offset, end, abortController.signal);
-      // CHUNK_BYTES is a multiple of the sealed chunk size, so every
-      // 8 MiB read starts on a sealed-chunk boundary.
+      // uploadChunkBytes() is whole sealed chunks, so every read starts
+      // on a sealed-chunk boundary.
       const wire = cipher ? await sealSpan(cipher, offset / SEALED_CHUNK_BYTES, chunk) : chunk;
       let attempt = 0;
       let lastErr: Error | null = null;
 
       while (attempt <= MAX_RETRY) {
+        await pacer.take(wire.byteLength, abortController.signal);
         if (abortController.signal.aborted) {
           throw new Error("Upload cancelled");
         }
@@ -653,13 +657,15 @@ export async function startQueuedUpload(pendingId: string): Promise<number> {
         const thumb = await generateThumbnail(thumbSource, size);
         if (!thumb) continue;
         try {
+          const body = cipher ? await sealThumbnail(cipher, size, thumb) : thumb;
+          await pacer.take(body.byteLength, abortController.signal);
           const r = await attachmentFetch(
             serverId,
             `/attachments/${completeBody.id}/thumbnail?size=${size}`,
             {
               method: "POST",
               headers: { "Content-Type": "image/jpeg" },
-              body: cipher ? await sealThumbnail(cipher, size, thumb) : thumb,
+              body,
             },
           );
           if (r.ok) thumbMask |= THUMB_BIT[size] ?? 0;

@@ -1,4 +1,3 @@
-import { invoke } from "../../../lib/ipc";
 import { useEffect, useState } from "react";
 import { useUiStore } from "../../../stores/uiStore";
 import { useChatStore } from "../../../stores/chatStore";
@@ -17,11 +16,23 @@ const PRESETS_MBPS: Array<{ label: string; mbps: number }> = [
   { label: "100 MB/s",  mbps: 100 },
 ];
 
+/// Smallest non-zero cap. Below it the community server's 30 s
+/// inactivity deadline could cut a slow download off mid-file; the
+/// pacers clamp to the same floor.
+const MIN_MBPS = 0.1;
+
 function bpsToMbps(bps: number): number {
   return bps / (1024 * 1024);
 }
 function mbpsToBps(mbps: number): number {
   return Math.max(0, Math.round(mbps * 1024 * 1024));
+}
+function formatMbps(mbps: number): string {
+  return String(Math.round(mbps * 100) / 100);
+}
+function presetFor(bps: number): number | undefined {
+  // Exact: a preset's bps is what mbpsToBps produced when it was picked.
+  return PRESETS_MBPS.find((p) => mbpsToBps(p.mbps) === bps)?.mbps;
 }
 
 function RateRow({
@@ -36,18 +47,12 @@ function RateRow({
   onChange: (bps: number) => void;
 }) {
   const mbps = bpsToMbps(valueBps);
-  const [customStr, setCustomStr] = useState<string>(
-    valueBps > 0 && !PRESETS_MBPS.some((p) => p.mbps === Math.round(mbps)) ? mbps.toFixed(1) : ""
-  );
+  const preset = presetFor(valueBps) ?? -1;
+  const isCustom = preset === -1;
+  const [customStr, setCustomStr] = useState<string>(isCustom ? formatMbps(mbps) : "");
   useEffect(() => {
-    if (valueBps > 0 && !PRESETS_MBPS.some((p) => p.mbps === Math.round(mbps))) {
-      setCustomStr(mbps.toFixed(mbps < 10 ? 1 : 0));
-    }
-  }, [valueBps, mbps]);
-
-  const preset = valueBps === 0
-    ? 0
-    : PRESETS_MBPS.find((p) => p.mbps === Math.round(mbps))?.mbps ?? -1;
+    if (isCustom) setCustomStr(formatMbps(mbps));
+  }, [isCustom, mbps]);
 
   return (
     <div className="rounded-md border border-border-divider bg-bg-light p-4">
@@ -80,7 +85,7 @@ function RateRow({
         <label className="text-[12px] text-text-muted">Custom:</label>
         <input
           type="number"
-          min={0}
+          min={MIN_MBPS}
           step={0.5}
           inputMode="decimal"
           value={customStr}
@@ -88,7 +93,10 @@ function RateRow({
           onChange={(e) => setCustomStr(e.target.value)}
           onBlur={() => {
             const n = parseFloat(customStr);
-            if (!isNaN(n) && n >= 0) onChange(mbpsToBps(n));
+            if (isNaN(n) || n < 0) return;
+            const next = mbpsToBps(n === 0 ? 0 : Math.max(MIN_MBPS, n));
+            setCustomStr(presetFor(next) === undefined ? formatMbps(bpsToMbps(next)) : "");
+            onChange(next);
           }}
           className="w-28 rounded-sm border border-border bg-bg-mid px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-accent"
         />
@@ -105,12 +113,11 @@ export default function NetworkTab() {
   const setDownloadLimitBps = useUiStore((s) => s.setDownloadLimitBps);
 
   const apply = (nextUp: number, nextDown: number) => {
+    // The upload loop reads the store on every chunk; downloads are
+    // paced in main, which needs telling.
     setUploadLimitBps(nextUp);
     setDownloadLimitBps(nextDown);
-    invoke("set_transfer_limits", {
-      uploadBps: nextUp,
-      downloadBps: nextDown,
-    }).catch(console.error);
+    window.decibell.attachments.setDownloadLimit(nextDown).catch(console.error);
     saveSettings();
   };
 
@@ -121,8 +128,9 @@ export default function NetworkTab() {
           Attachment transfer speed
         </h3>
         <p className="mb-4 text-[12px] text-text-muted">
-          Limit how much of your connection the app uses when uploading or downloading files.
-          Takes effect immediately, even mid-transfer. Voice and video streaming are not affected.
+          Limit how much of your connection attachments use — the files, images, videos and
+          audio you send or open. Takes effect immediately, even mid-transfer. Voice, streams,
+          link previews and GIFs are never limited.
         </p>
       </div>
 

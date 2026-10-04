@@ -1302,6 +1302,34 @@ the volume slider never bounce you to the grid. Verified: tsc web 0; preview har
 gone, a click on the stats button keeps the stream focused, a real mouse click on the video clears
 `fullscreenStream` and the grid shows both watched streams live.
 
+**Client: attachment speed caps actually apply (2026-10-04) ✅** — The Settings → Network
+upload / download limits had done nothing since the Electron migration (0.6.0): the native
+`set_transfer_limits` only saved the values, and Tauri's `RateLimiter` went away with the Rust
+transfer path. They are now enforced per file, for attachments only (files, images, video, audio).
+Voice, streams, link previews and GIFs never pass through the pacers. *Downloads* are paced in main
+(`electron/main/downloadPacer.ts`) by a token bucket keyed on (server, attachment). It's applied in
+the `decibell-attachment://` protocol, the loopback media server, netFetch attachment GETs (save-as,
+copy image) and the encrypted-attachment fetch. Pacing the body read throttles the socket through
+TCP backpressure (measured: the upstream send rate tracks the cap). net.fetch delivers bodies in
+2 MiB chunks, so the bucket charges and delivers in 64 KiB slices. *Uploads* are paced in the
+renderer (`features/chat/uploadPacing.ts`), because each PATCH is one buffered request. Under a cap
+the loop sends about half a second of it per PATCH, in whole 64 KiB sealed chunks so encrypted
+uploads stay aligned, and waits on a per-file bucket. Thumbnails count too. Both sides re-read the
+cap on every slice or chunk, so a change applies mid-transfer, and a cancel never waits. A non-zero
+cap is floored at 0.1 MB/s, because below that the community server's 30 s per-write inactivity
+deadline could cut a download off. The native command is gone (`save_settings` already persists
+both values); main learns the download cap over `decibell:attachments:setDownloadLimit`. The tab's
+preset highlight used to match on rounded MB/s (0.1 MB/s lit "Unlimited", 1.4 lit "1 MB/s"); it
+now matches exactly. Verified: tsc web + node 0, napi build, `cargo test --lib` 191. An Electron
+harness against a local HTTP server: unlimited 24 MB in 0.1 s, 12 MB at 2 MB/s in 5.97 s, a cap
+cleared mid-transfer finishes at full speed, two reads of the same file share the cap (6 s) while
+two files don't (3 s), the floor holds, and cancel is immediate. The renderer pacer under a stubbed
+store: chunk sizing, 10 MB at 2 MB/s, clearing the cap mid-upload, abort. Open: a live capped
+upload and download against a real community server. An upload that takes over an hour is swept
+as abandoned (`kUploadingTimeoutSeconds` counts from `created_at`), which a cap can only reach on a
+server with a raised `DECIBELL_MAX_ATTACHMENT_BYTES`. Save-as still shows no progress while a capped
+download runs.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

@@ -65,6 +65,7 @@ declare global {
           }>,
         ) => Promise<void>;
         clearKeys: (serverId?: string) => Promise<void>;
+        setDownloadLimit: (bps: number) => Promise<void>;
       };
       netFetch: (
         url: string,

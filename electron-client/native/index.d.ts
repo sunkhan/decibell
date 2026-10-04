@@ -742,21 +742,6 @@ export interface SetDmPrivacyArgs {
  * command surface hasn't ported yet — when it does, this can move.
  */
 export declare function setDmPrivacy(args: SetDmPrivacyArgs): Promise<void>
-export interface SetTransferLimitsArgs {
-  uploadBps: number
-  downloadBps: number
-}
-/**
- * Persist the user's per-file upload/download caps. PR8 attachment
- * transfers happen renderer-side via Electron main's netFetch, so the
- * caps would have to be enforced there to actually rate-limit — for
- * now this command just writes them to AppSettings so they survive
- * across restarts. Live enforcement is a follow-up; the renderer's
- * saveSettings() will already include these fields, but exposing the
- * command keeps the call shape compatible with tauri-client's
- * NetworkTab.
- */
-export declare function setTransferLimits(args: SetTransferLimitsArgs): Promise<void>
 export interface AudioDevice {
   name: string
   label: string

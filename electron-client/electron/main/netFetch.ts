@@ -1,5 +1,6 @@
 import { app, ipcMain, net } from "electron";
 import { fetchDecryptedAttachment } from "./attachmentFetch";
+import { readPaced } from "./downloadPacer";
 import {
   setAttachmentTarget,
   clearAttachmentTarget,
@@ -77,12 +78,13 @@ export function registerNetHandlers(): void {
         throw new Error("netFetch: attachmentTarget.path must start with '/'");
       }
       // Encrypted-channel attachment content (save-as): decrypt in main.
-      const attMatch = /^\/attachments\/(\d+)(\?.*)?$/.exec(reqPath);
-      if ((init.method ?? "GET") === "GET" && attMatch) {
+      const attachmentGet =
+        (init.method ?? "GET") === "GET" ? /^\/attachments\/(\d+)(\?.*)?$/.exec(reqPath) : null;
+      if (attachmentGet) {
         const dec = await fetchDecryptedAttachment(
           init.attachmentTarget.serverId,
-          attMatch[1],
-          attMatch[2] ?? "",
+          attachmentGet[1],
+          attachmentGet[2] ?? "",
           headers["Range"] ?? headers["range"],
         );
         if (dec) {
@@ -131,7 +133,11 @@ export function registerNetHandlers(): void {
         response.headers.forEach((value, key) => {
           responseHeaders[key] = value;
         });
-        const buf = await response.arrayBuffer();
+        // Attachment content (save-as / copy) is held to the download
+        // cap; upload control requests (init / PATCH / complete) aren't.
+        const buf = attachmentGet
+          ? ((await readPaced(response, init.attachmentTarget.serverId, attachmentGet[1])).buffer as ArrayBuffer)
+          : await response.arrayBuffer();
         return {
           ok: response.ok,
           status: response.status,

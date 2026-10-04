@@ -14,6 +14,7 @@ import { registerDialogHandlers } from "./dialog";
 import { registerFsHandlers } from "./fs";
 import { registerNetHandlers } from "./netFetch";
 import { registerAttachmentKeyHandlers } from "./attachmentKeys";
+import { registerDownloadLimitHandler } from "./downloadPacer";
 import { registerLinkPreviewHandlers } from "./linkPreview";
 import { registerGifHandlers } from "./gifs";
 import { startMediaServer, stopMediaServer, getMediaServerPort } from "./mediaServer";
@@ -669,6 +670,7 @@ app.whenReady().then(async () => {
   registerProtocol();
   registerAttachmentProtocol();
   registerAttachmentKeyHandlers();
+  registerDownloadLimitHandler();
   registerFileProtocol();
   registerInvokeHandler();
   registerWindowHandlers();

@@ -265,6 +265,10 @@ contextBridge.exposeInMainWorld("decibell", {
     ) => ipcRenderer.invoke("decibell:attachments:registerKeys", entries) as Promise<void>,
     clearKeys: (serverId?: string) =>
       ipcRenderer.invoke("decibell:attachments:clearKeys", serverId) as Promise<void>,
+    /// Per-file download cap in bytes/s (0 = unlimited), enforced in
+    /// main. The upload cap is applied by the renderer's upload loop.
+    setDownloadLimit: (bps: number) =>
+      ipcRenderer.invoke("decibell:attachments:setDownloadLimit", bps) as Promise<void>,
   },
   netFetch: (
     url: string,

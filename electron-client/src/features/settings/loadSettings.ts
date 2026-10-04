@@ -131,10 +131,9 @@ export async function loadSettings(): Promise<void> {
   // Network
   useUiStore.getState().setUploadLimitBps(settings.upload_limit_bps || 0);
   useUiStore.getState().setDownloadLimitBps(settings.download_limit_bps || 0);
-  invoke("set_transfer_limits", {
-    uploadBps: settings.upload_limit_bps || 0,
-    downloadBps: settings.download_limit_bps || 0,
-  }).catch((e) => console.warn("[loadSettings] set_transfer_limits failed:", e));
+  window.decibell.attachments
+    .setDownloadLimit(settings.download_limit_bps || 0)
+    .catch((e) => console.warn("[loadSettings] setDownloadLimit failed:", e));
 
   // 0 means "no value persisted" — keep the in-store default of 10.
   useUiStore.getState().setChannelCacheSize(settings.channel_cache_size || 10);

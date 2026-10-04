@@ -22,6 +22,7 @@ import * as http from "node:http";
 import { app, net } from "electron";
 import { getAttachmentTarget } from "./attachmentRegistry";
 import { fetchDecryptedAttachment } from "./attachmentFetch";
+import { pacedBody } from "./downloadPacer";
 
 let server: http.Server | null = null;
 let port = 0;
@@ -127,7 +128,7 @@ async function handleRequest(
     });
     res.writeHead(upstreamResp.status, upstreamResp.statusText, respHeaders);
     if (upstreamResp.body) {
-      const reader = upstreamResp.body.getReader();
+      const reader = pacedBody(upstreamResp.body, serverId, attachmentId).getReader();
       // Stream the body chunk-by-chunk so a 4 GB video doesn't get
       // buffered into RAM. Chromium's MF renderer reads with its own
       // range-fetch loop anyway, so each request is typically only

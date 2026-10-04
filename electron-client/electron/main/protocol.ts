@@ -5,6 +5,7 @@ import { app } from "electron";
 import { getAttachmentTarget } from "./attachmentRegistry";
 import { lookupFile } from "./fileRegistry";
 import { fetchDecryptedAttachment } from "./attachmentFetch";
+import { pacedBody } from "./downloadPacer";
 
 const SCHEME = "decibell-asset";
 const ATTACHMENT_SCHEME = "decibell-attachment";
@@ -185,7 +186,7 @@ export function registerAttachmentProtocol(): void {
       if (cacheable && !headers.has("cache-control")) {
         headers.set("Cache-Control", "private, max-age=31536000, immutable");
       }
-      return new Response(resp.body, {
+      return new Response(resp.body && pacedBody(resp.body, serverId, attachmentId), {
         status: resp.status,
         statusText: resp.statusText,
         headers,
