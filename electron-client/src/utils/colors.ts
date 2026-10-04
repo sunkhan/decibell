@@ -27,6 +27,12 @@ export function stringToColor(str: string): string {
   return `var(--color-name-${rampIndex(str)})`;
 }
 
+/// The flat avatar colour (`var(--color-av-N)`), for surfaces tinted
+/// with a user's identity — the voice tiles mix it into bg-light.
+export function avatarColor(str: string): string {
+  return `var(--color-av-${rampIndex(str)})`;
+}
+
 /// Avatar fill. The darker stop is derived rather than stored so the
 /// ramp stays one value per slot per theme.
 export function stringToGradient(str: string): string {

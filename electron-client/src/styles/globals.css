@@ -79,6 +79,14 @@
   --color-warning: var(--t-warning);
   --color-error: var(--t-error);
   --color-danger: var(--t-error);
+  /* Glyph on a solid error fill (the voice dock's Leave button). White
+     everywhere except `console`, whose coral error needs near-black —
+     the same split as --color-on-accent. */
+  --color-on-error: var(--t-on-error);
+  /* LIVE pill. One fixed red in every theme: the pill floats over video
+     (like CodecBadge) and white type on each palette's own error red
+     misses 4.5:1 on the dark themes. */
+  --color-live: var(--t-live);
 
   --color-text-primary: var(--t-text-primary);
   --color-text-bright: var(--t-text-bright);
@@ -193,6 +201,13 @@
   --ui-text-scale: calc(var(--ui-text-size-n, var(--ui-text-size-default)) / var(--t-fs-body-n));
   --ui-row-scale: 1;
 
+  /* Fixed across themes — see --color-live. */
+  --t-live: #d1362e;
+  /* How much of a user's avatar colour washes into their voice tile
+     (color-mix over bg-light). Per theme: the console avatar ramp is
+     darker and needs more to read, the light canvases less. */
+  --tile-tint: var(--t-tile-tint);
+
   /* Font stacks referenced by the palettes. */
   --font-stack-ui: "Inter Variable", "Inter", "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --font-stack-jetbrains: "JetBrains Mono", ui-monospace, monospace;
@@ -266,6 +281,8 @@
   --t-success: #4ec97a;
   --t-warning: #dca64a;
   --t-error: #f2655c;
+  --t-on-error: #ffffff;
+  --t-tile-tint: 16%;
 
   --t-text-primary: #e4e8ef;
   --t-text-bright: #f2f5f9;
@@ -364,6 +381,8 @@
   --t-success: #22a75a;
   --t-warning: #b07d1e;
   --t-error: #d54238;
+  --t-on-error: #ffffff;
+  --t-tile-tint: 13%;
 
   --t-text-primary: #171b22;
   --t-text-bright: #12161d;
@@ -463,6 +482,8 @@
   --t-success: #7ef0a8;
   --t-warning: #dca64a;
   --t-error: #f0786e;
+  --t-on-error: #1a0b09;
+  --t-tile-tint: 22%;
 
   --t-text-primary: #dfe4e2;
   --t-text-bright: #eef4f1;
@@ -562,6 +583,8 @@
   --t-success: #0f7a45;
   --t-warning: #b07d1e;
   --t-error: #c8493d;
+  --t-on-error: #ffffff;
+  --t-tile-tint: 12%;
 
   --t-text-primary: #161c19;
   --t-text-bright: #0c1310;
@@ -663,6 +686,7 @@
   --tc-success: #7ef0a8;
   --tc-warning: #dca64a;
   --tc-error: #f0786e;
+  --tc-on-error: #1a0b09;
 
   --tc-text-primary: #dfe4e2;
   --tc-text-bright: #eef4f1;
@@ -731,6 +755,7 @@
   --color-warning: var(--tc-warning, var(--t-warning));
   --color-error: var(--tc-error, var(--t-error));
   --color-danger: var(--tc-error, var(--t-error));
+  --color-on-error: var(--tc-on-error, var(--t-on-error));
 
   --color-text-primary: var(--tc-text-primary, var(--t-text-primary));
   --color-text-bright: var(--tc-text-bright, var(--t-text-bright));

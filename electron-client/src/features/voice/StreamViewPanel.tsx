@@ -4,15 +4,16 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   memo,
 } from "react";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useAuthStore } from "../../stores/authStore";
-import { useUiStore } from "../../stores/uiStore";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { invoke } from "../../lib/ipc";
 import { getCurrentWindow } from "../../lib/window";
+import { playSound } from "../../utils/sounds";
 import { UserAvatar } from "../../components/UserAvatar";
 import StreamStatsOverlay from "./StreamStatsOverlay";
 import {
@@ -21,63 +22,111 @@ import {
   placeStreamPip,
   recordFullViewRect,
 } from "./streamPipHost";
+import {
+  STRIP_GAP,
+  STRIP_TILE_W,
+  rowCapacity,
+  useElementSize,
+  useVisibleParticipants,
+} from "./stage/stageLayout";
+import { LivePill, OverflowTile, ParticipantTile, QualityPill, SCRIM_BASE, SCRIM_LG, StreamTile } from "./stage/StageTiles";
+import {
+  CloseIcon,
+  CollapseIcon,
+  ExpandIcon,
+  GridIcon,
+  HeadphonesIcon,
+  HeadphonesOffIcon,
+  MicIcon,
+  MicOffIcon,
+  SpeakerIcon,
+  StatsIcon,
+} from "./stage/icons";
 
 // One handle for the panel's lifetime: getCurrentWindow() builds a fresh
 // object per call, which made the fullscreen callbacks (and the Escape /
 // stream-ended effects keyed on them) change identity on every render.
 const appWindow = getCurrentWindow();
 
-function VolumeIcon({ muted }: { muted: boolean }) {
-  if (muted) {
-    return (
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M11 5L6 9H2v6h4l5 4V5z" />
-        <line x1="23" y1="9" x2="17" y2="15" />
-        <line x1="17" y1="9" x2="23" y2="15" />
-      </svg>
-    );
-  }
+const EMPTY_CHANNELS: never[] = [];
+/// Double-click on the video toggles fullscreen; the controls over it eat
+/// theirs so pressing a button twice quickly doesn't.
+const stopDouble = (e: React.MouseEvent) => e.stopPropagation();
+/// Overlays hide after the cursor has been still this long.
+const OVERLAY_HIDE_MS = 2500;
+
+/// Square icon button over video: fixed dark scrim, white glyph.
+function OverlayButton({
+  title,
+  onClick,
+  active,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  active?: boolean;
+  children: React.ReactNode;
+}) {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={`flex h-8 w-8 items-center justify-center rounded-sm border border-white/10 ${
+        active ? "bg-accent text-on-accent" : "bg-black/70 text-white hover:bg-black/85"
+      }`}
     >
-      <path d="M11 5L6 9H2v6h4l5 4V5z" />
-      <path d="M19.07 4.93a10 10 0 010 14.14" />
-      <path d="M15.54 8.46a5 5 0 010 7.07" />
-    </svg>
+      {children}
+    </button>
+  );
+}
+
+/// Stream volume on a scrim: mute toggle, slider (accent fill), percent.
+function VolumeControl({
+  volume,
+  onChange,
+  onToggleMute,
+}: {
+  volume: number;
+  onChange: (v: number) => void;
+  onToggleMute: () => void;
+}) {
+  return (
+    <div className={`${SCRIM_BASE} h-8 gap-2.5 px-2.5`} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        onClick={onToggleMute}
+        title={volume > 0 ? "Mute stream" : "Unmute stream"}
+        aria-label={volume > 0 ? "Mute stream" : "Unmute stream"}
+        className={volume === 0 ? "text-error" : "text-white hover:text-white/80"}
+      >
+        <SpeakerIcon muted={volume === 0} size={15} />
+      </button>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={volume}
+        onChange={(e) => onChange(Number(e.target.value))}
+        title={`Stream volume: ${volume}%`}
+        className="custom-slider h-1 w-21 cursor-pointer appearance-none rounded-full [--slider-ring:#000]"
+        style={{
+          background: `linear-gradient(to right, var(--color-accent) ${volume}%, rgb(255 255 255 / 0.22) ${volume}%)`,
+        }}
+      />
+      <span className="w-8 text-white/70">{volume}%</span>
+    </div>
   );
 }
 
 function StreamViewPanel() {
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
-  // No top-level speakingUsers subscription — SidebarParticipantRow
-  // below subscribes per-row, so a speaking event for one user no
-  // longer re-renders this entire 600+-line panel.
-  const participants = useVoiceStore((s) => s.participants);
-  const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
-  const serverMembers = useChatStore((s) =>
-    connectedServerId ? s.membersByServer[connectedServerId] : undefined,
-  );
-  const nameOf = (u: string) =>
-    serverMembers?.find((m) => m.username === u)?.nickname || u;
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
 
   const currentUsername = useAuthStore((s) => s.username);
@@ -98,21 +147,20 @@ function StreamViewPanel() {
   }, [fullscreenStream]);
 
   const displayUser = fullscreenStream || lastStreamUser;
+  const displayName = useDisplayName(connectedServerId, displayUser ?? "");
 
   // Claim the shared, persistent stream player node into the full-view slot
   // whenever a stream is focused here. The player is reparented (not remounted)
-  // between this view and the floating mini player, so the decoder survives the
-  // move and playback is seamless. Re-runs on stream switch so the full view
-  // reclaims the host after the mini player had it. Also record the slot's rect
-  // so the mini player can shrink out of it.
+  // between this view, the grid's stream tile and the floating mini player, so
+  // the decoder survives the move and playback is seamless. Re-runs on stream
+  // switch so the full view reclaims the host after the mini player had it.
+  // Also record the slot's rect so the mini player can shrink out of it.
   //
-  // On the way out (Back to the grid, stream switch, unmount) detach the host
+  // On the way out (back to the grid, stream switch, unmount) detach the host
   // from our slot, like CallStage does. "Back" doesn't unmount this panel —
   // VoicePanel only hides it (display:none) while any stream is watched — so a
-  // host left in the slot kept the canvas connected: the player's "parked"
-  // paint skip never engaged and it kept blitting full-res frames into an
-  // invisible canvas for the whole grid idle window (StreamPipManager's 20 s).
-  // Detached, it keeps decoding (seamless re-focus) without painting.
+  // host left in the slot kept the canvas connected and painting into an
+  // invisible box. The grid's tile for this stream claims it next.
   useLayoutEffect(() => {
     const slot = pipSlotRef.current;
     if (fullscreenStream && slot) {
@@ -218,14 +266,17 @@ function StreamViewPanel() {
 
   const handleMute = () => {
     if (isDeafened) {
+      playSound("undeafen");
       invoke("set_voice_deafen", { deafened: false }).catch(console.error);
       invoke("set_voice_mute", { muted: false }).catch(console.error);
     } else {
+      playSound(isMuted ? "unmute" : "mute");
       invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
     }
   };
 
   const handleDeafen = () => {
+    playSound(isDeafened ? "undeafen" : "deafen");
     invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
   };
 
@@ -254,32 +305,29 @@ function StreamViewPanel() {
     };
   }, [isOwnStream]);
 
-  const [hoverControlsVisible, setHoverControlsVisible] = useState(false);
-  const hoverTimeout = useRef<ReturnType<typeof setTimeout>>(undefined);
-
-  const handleMouseMove = useCallback(() => {
-    if (isFullscreen) {
-      setOverlayVisible(true);
-      if (overlayTimeout.current) clearTimeout(overlayTimeout.current);
-      overlayTimeout.current = setTimeout(() => setOverlayVisible(false), 3000);
-    } else {
-      setHoverControlsVisible(true);
-      if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
-      hoverTimeout.current = setTimeout(
-        () => setHoverControlsVisible(false),
-        1500,
-      );
-    }
-  }, [isFullscreen]);
-
+  // Overlays (pills, buttons, volume) show while the cursor moves over the
+  // video and fade after it rests — in the panel and in fullscreen alike.
+  const pokeOverlay = useCallback(() => {
+    setOverlayVisible(true);
+    if (overlayTimeout.current) clearTimeout(overlayTimeout.current);
+    overlayTimeout.current = setTimeout(() => setOverlayVisible(false), OVERLAY_HIDE_MS);
+  }, []);
+  const holdOverlay = useCallback(() => {
+    if (overlayTimeout.current) clearTimeout(overlayTimeout.current);
+    setOverlayVisible(true);
+  }, []);
   const handleMouseLeave = useCallback(() => {
     if (overlayTimeout.current) clearTimeout(overlayTimeout.current);
     setOverlayVisible(false);
-    if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
-    setHoverControlsVisible(false);
   }, []);
+  useEffect(
+    () => () => {
+      if (overlayTimeout.current) clearTimeout(overlayTimeout.current);
+    },
+    [],
+  );
 
-  const handleBackToCards = () => {
+  const handleBackToGrid = () => {
     if (isFullscreen) exitFullscreen();
     useVoiceStore.getState().setFullscreenStream(null);
   };
@@ -308,477 +356,235 @@ function StreamViewPanel() {
     if (isFullscreen) exitFullscreen();
   };
 
-  const handleSwitchStream = (username: string) => {
-    useVoiceStore.getState().setFullscreenStream(username);
-  };
-
   if (!displayUser || !stream) return null;
 
-  const resLabel =
-    stream.resolutionWidth > 0 ? `${stream.resolutionHeight}p` : "";
-  const fpsLabel = stream.fps > 0 ? `${stream.fps}fps` : "";
-  const qualityBadge = [resLabel, fpsLabel].filter(Boolean).join(" · ");
+  const showVolume = !isOwnStream && stream.hasAudio;
+  const overlayClass = `transition-opacity duration-150 ${
+    overlayVisible ? "opacity-100" : "pointer-events-none opacity-0"
+  }`;
 
   return (
     <div
       className={
         isFullscreen
           ? "fixed inset-0 z-50 flex flex-col bg-black"
-          : "flex flex-1 flex-col bg-bg-dark"
+          : // pb-21 keeps the filmstrip clear of VoicePanel's floating dock.
+            "flex min-h-0 min-w-0 flex-1 flex-col gap-3 px-4 pb-21 pt-4"
       }
     >
-      <div className="flex min-h-0 min-w-0 flex-1">
-        <div
-          className={`flex min-h-0 min-w-0 flex-1 flex-col ${isFullscreen ? "" : "p-2"}`}
-        >
-          {!isFullscreen && (
-            <div className="mb-2 flex items-center gap-2.5 px-1">
-              <UserAvatar username={displayUser} size={24} />
-              <span className="text-[13px] font-medium text-text-primary">
-                {nameOf(displayUser)}'s screen
-              </span>
-              {qualityBadge && (
-                <span className="text-[11px] text-text-muted">{qualityBadge}</span>
-              )}
-              {stream && stream.watcherCount > 0 && (
-                <span className="text-[11px] text-text-muted">
-                  · {stream.watcherCount} watching
-                </span>
-              )}
-              <div className="ml-auto flex items-center gap-2">
-                {!isOwnStream && stream?.hasAudio && (
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={toggleMute}
-                      className={`flex h-6 w-6 items-center justify-center rounded-sm transition-colors ${
-                        streamVolume === 0
-                          ? "text-error"
-                          : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
-                      }`}
-                      title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
-                    >
-                      <VolumeIcon muted={streamVolume === 0} />
-                    </button>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={streamVolume}
-                      onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                      className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-dark [&::-webkit-slider-thumb]:shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
-                      title={`Stream volume: ${streamVolume}%`}
-                    />
-                  </div>
-                )}
-                <button
-                  onClick={handleBackToCards}
-                  className="flex h-6 w-6 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
-                  title="Back (Esc)"
-                >
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <line x1="19" y1="12" x2="5" y2="12" />
-                    <polyline points="12 19 5 12 12 5" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-          )}
+      <div
+        className={`relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-black ${
+          isFullscreen
+            ? overlayVisible
+              ? "cursor-default"
+              : "cursor-none"
+            : "rounded-lg border border-border"
+        }`}
+        onDoubleClick={() => void (isFullscreen ? exitFullscreen() : enterFullscreen())}
+        onMouseMove={pokeOverlay}
+        onMouseLeave={handleMouseLeave}
+      >
+        {/* The shared persistent stream player is reparented in here so it
+            survives moving to/from the grid tile and the mini player. */}
+        <div ref={pipSlotRef} className="h-full w-full" />
 
-          <div
-            className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden ${
-              isFullscreen
-                ? `${overlayVisible ? "cursor-default" : "cursor-none"}`
-                : "cursor-pointer rounded-lg border border-border bg-black"
-            }`}
-            onClick={handleBackToCards}
-            onMouseMove={handleMouseMove}
-            onMouseLeave={handleMouseLeave}
-          >
-            {/* The shared persistent stream player is reparented in here so it
-                survives moving to/from the floating mini player. */}
-            <div ref={pipSlotRef} className="h-full w-full" />
+        {showStats && <StreamStatsOverlay username={displayUser} className="left-3 top-14" />}
 
-            {showStats && displayUser && (
-              <StreamStatsOverlay username={displayUser} />
-            )}
-
-            {!isFullscreen && (
-              <div
-                // Fixed dark scrim, NOT a theme surface: these bars float
-                // over the video and their iconography is white — on light
-                // themes bg-bg-light resolved near-white and the controls
-                // disappeared into it.
-                className={`absolute bottom-3 right-3 flex items-center gap-2 rounded-md border border-white/10 bg-black/70 px-2.5 py-1.5 shadow-float backdrop-blur-sm transition-opacity duration-150 ${
-                  hoverControlsVisible
-                    ? "opacity-100"
-                    : "pointer-events-none opacity-0"
-                }`}
-                onClick={(e) => e.stopPropagation()}
-                onMouseEnter={() => {
-                  if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
-                  setHoverControlsVisible(true);
-                }}
-              >
-                {!isOwnStream && stream?.hasAudio && (
-                  <>
-                    <button
-                      onClick={toggleMute}
-                      className={`flex h-7 w-7 items-center justify-center rounded-sm transition-colors ${
-                        streamVolume === 0
-                          ? "text-error hover:bg-white/[0.08]"
-                          : "text-white/80 hover:bg-white/[0.08] hover:text-white"
-                      }`}
-                      title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
-                    >
-                      <VolumeIcon muted={streamVolume === 0} />
-                    </button>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={streamVolume}
-                      onChange={(e) =>
-                        handleVolumeChange(Number(e.target.value))
-                      }
-                      className="h-[4px] w-16 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-black [&::-webkit-slider-thumb]:shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
-                      title={`Stream volume: ${streamVolume}%`}
-                    />
-                    <div className="mx-0.5 h-5 w-px bg-white/10" />
-                  </>
-                )}
-                <button
-                  onClick={() => setShowStats((v) => !v)}
-                  className={`flex h-7 w-7 items-center justify-center rounded-sm transition-colors ${
-                    showStats
-                      ? "text-accent-bright hover:bg-white/[0.08]"
-                      : "text-white/80 hover:bg-white/[0.08] hover:text-white"
-                  }`}
-                  title="Stream stats"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 3v18h18" />
-                    <path d="M7 15l3-4 3 3 4-6" />
-                  </svg>
-                </button>
-                <button
-                  onClick={enterFullscreen}
-                  className="flex h-7 w-7 items-center justify-center rounded-sm text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white"
-                  title="Fullscreen"
-                >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-                  </svg>
-                </button>
-              </div>
-            )}
-
-            {isFullscreen && (
-              <div
-                className={`absolute inset-x-0 bottom-0 flex flex-col items-center transition-transform duration-300 ease-in-out ${
-                  overlayVisible ? "translate-y-0" : "translate-y-full"
-                }`}
-                onClick={(e) => e.stopPropagation()}
-                onMouseEnter={() => {
-                  if (overlayTimeout.current) clearTimeout(overlayTimeout.current);
-                  setOverlayVisible(true);
-                }}
-              >
-                <div className="mb-2 flex items-center gap-2">
-                  <UserAvatar username={displayUser} size={22} />
-                  <span className="text-[12px] font-medium text-white">
-                    {nameOf(displayUser)}'s screen
-                  </span>
-                  {qualityBadge && (
-                    <span className="text-[10px] text-white/60">{qualityBadge}</span>
-                  )}
-                  {stream && stream.watcherCount > 0 && (
-                    <span className="text-[10px] text-white/60">
-                      · {stream.watcherCount} watching
-                    </span>
-                  )}
-                  <div className="ml-2 flex -space-x-1.5">
-                    {participants.slice(0, 4).map((p) => (
-                      <div
-                        key={p.username}
-                        className="rounded-sm border-2 border-black"
-                      >
-                        <UserAvatar username={p.username} size={20} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Same fixed dark scrim as the hover bar above — the
-                    white controls need it in every theme. */}
-                <div className="mb-4 flex items-center gap-2 rounded-lg border border-white/10 bg-black/70 px-3 py-2 shadow-float backdrop-blur-sm">
-                  <button
-                    onClick={handleMute}
-                    className={`flex h-9 w-9 items-center justify-center rounded-md transition-colors ${
-                      isMuted
-                        ? "bg-white/15 text-error hover:bg-white/20"
-                        : "text-white/80 hover:bg-white/[0.08] hover:text-white"
-                    }`}
-                    title={isMuted ? "Unmute" : "Mute"}
-                  >
-                    <svg
-                      width="18"
-                      height="18"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      {isMuted ? (
-                        <>
-                          <line x1="1" y1="1" x2="23" y2="23" />
-                          <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                          <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
-                          <line x1="12" y1="19" x2="12" y2="23" />
-                          <line x1="8" y1="23" x2="16" y2="23" />
-                        </>
-                      ) : (
-                        <>
-                          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                          <line x1="12" y1="19" x2="12" y2="23" />
-                          <line x1="8" y1="23" x2="16" y2="23" />
-                        </>
-                      )}
-                    </svg>
-                  </button>
-
-                  <button
-                    onClick={handleDeafen}
-                    className={`flex h-9 w-9 items-center justify-center rounded-md transition-colors ${
-                      isDeafened
-                        ? "bg-white/15 text-error hover:bg-white/20"
-                        : "text-white/80 hover:bg-white/[0.08] hover:text-white"
-                    }`}
-                    title={isDeafened ? "Undeafen" : "Deafen"}
-                  >
-                    <svg
-                      width="18"
-                      height="18"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      {isDeafened ? (
-                        <>
-                          <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
-                          <line x1="1" y1="1" x2="23" y2="23" />
-                        </>
-                      ) : (
-                        <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
-                      )}
-                    </svg>
-                  </button>
-
-                  <div className="mx-1 h-6 w-px bg-white/10" />
-
-                  {!isOwnStream && stream?.hasAudio && (
-                    <>
-                      <button
-                        onClick={toggleMute}
-                        className={`flex h-9 w-9 items-center justify-center rounded-md transition-colors ${
-                          streamVolume === 0
-                            ? "bg-white/15 text-error hover:bg-white/20"
-                            : "text-white/80 hover:bg-white/[0.08] hover:text-white"
-                        }`}
-                        title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
-                      >
-                        <VolumeIcon muted={streamVolume === 0} />
-                      </button>
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        value={streamVolume}
-                        onChange={(e) =>
-                          handleVolumeChange(Number(e.target.value))
-                        }
-                        onClick={(e) => e.stopPropagation()}
-                        className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-white/15 accent-accent [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-black [&::-webkit-slider-thumb]:shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
-                        title={`Stream volume: ${streamVolume}%`}
-                      />
-                      <div className="mx-1 h-6 w-px bg-white/10" />
-                    </>
-                  )}
-
-                  <button
-                    onClick={handleStopWatching}
-                    className="flex h-9 items-center gap-1.5 rounded-md bg-error/[0.15] px-3 text-[12px] font-medium text-error transition-colors hover:bg-error/[0.25]"
-                    title="Stop watching"
-                  >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <rect x="2" y="3" width="20" height="14" rx="2" />
-                      <line x1="8" y1="21" x2="16" y2="21" />
-                      <line x1="12" y1="17" x2="12" y2="21" />
-                      <line x1="7" y1="7" x2="17" y2="13" />
-                      <line x1="17" y1="7" x2="7" y2="13" />
-                    </svg>
-                    Stop Watching
-                  </button>
-
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      exitFullscreen();
-                    }}
-                    className="flex h-9 w-9 items-center justify-center rounded-md text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white"
-                    title="Exit fullscreen"
-                  >
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+        {/* top-left: what this is */}
+        <div className={`pointer-events-none absolute left-3 top-3 flex gap-1.5 ${overlayClass}`}>
+          <LivePill size="lg" />
+          <span className={SCRIM_LG}>
+            <UserAvatar username={displayUser} size={18} />
+            {isOwnStream ? "Your screen" : `${displayName}'s screen`}
+          </span>
+          <QualityPill stream={stream} large />
         </div>
 
-        {!isFullscreen && (
-          <div className="flex w-[160px] shrink-0 flex-col gap-1 border-l border-border-divider bg-bg-dark p-3">
-            <h4 className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-              Voice — {participants.length}
-            </h4>
+        {/* top-right: view controls */}
+        <div
+          className={`absolute right-3 top-3 flex items-center gap-1.5 ${overlayClass}`}
+          onMouseEnter={holdOverlay}
+          onDoubleClick={stopDouble}
+        >
+          {isFullscreen && <span className="mr-1.5 text-[11px] text-white/50">Esc to exit</span>}
+          <OverlayButton title="Stream stats" active={showStats} onClick={() => setShowStats((v) => !v)}>
+            <StatsIcon size={16} />
+          </OverlayButton>
+          {!isFullscreen && (
+            <OverlayButton title="Back to the grid (Esc)" onClick={handleBackToGrid}>
+              <GridIcon size={16} />
+            </OverlayButton>
+          )}
+          <OverlayButton
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            onClick={() => void (isFullscreen ? exitFullscreen() : enterFullscreen())}
+          >
+            {isFullscreen ? <CollapseIcon size={16} /> : <ExpandIcon size={16} />}
+          </OverlayButton>
+          <OverlayButton title="Stop watching" onClick={() => void handleStopWatching()}>
+            <CloseIcon size={16} />
+          </OverlayButton>
+        </div>
 
-            {participants.map((p) => (
-              <SidebarParticipantRow
-                key={p.username}
-                username={p.username}
-                connectedServerId={connectedServerId}
-              />
-            ))}
+        {/* bottom-left (panel): stream volume */}
+        {!isFullscreen && showVolume && (
+          <div className={`absolute bottom-3 left-3 ${overlayClass}`} onMouseEnter={holdOverlay} onDoubleClick={stopDouble}>
+            <VolumeControl volume={streamVolume} onChange={handleVolumeChange} onToggleMute={toggleMute} />
+          </div>
+        )}
 
-            {activeStreams.length > 1 && (
-              <div className="mt-auto border-t border-border-divider pt-2">
-                <h4 className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                  Streams
-                </h4>
-                {activeStreams
-                  .filter((s) => watchingStreams.includes(s.ownerUsername))
-                  .map((s) => (
-                    <button
-                      key={s.ownerUsername}
-                      onClick={() => handleSwitchStream(s.ownerUsername)}
-                      className={`w-full rounded-sm px-2 py-1.5 text-left text-[10px] font-medium transition-colors ${
-                        s.ownerUsername === displayUser
-                          ? "border-l-2 border-accent bg-accent-soft text-accent-bright"
-                          : "text-text-secondary hover:bg-surface-hover"
-                      }`}
-                    >
-                      {nameOf(s.ownerUsername)}'s screen
-                    </button>
-                  ))}
-              </div>
-            )}
+        {/* bottom (fullscreen): the dock, on a scrim — VoicePanel's own dock
+            is hidden while the window is fullscreen. */}
+        {isFullscreen && (
+          <div
+            className={`absolute inset-x-0 bottom-6 flex justify-center ${overlayClass}`}
+            onMouseEnter={holdOverlay}
+            onClick={(e) => e.stopPropagation()}
+            onDoubleClick={stopDouble}
+          >
+            <div className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-black/70 p-1.5 shadow-float">
+              <FullscreenDockButton title={isMuted ? "Unmute" : "Mute"} danger={isMuted} onClick={handleMute}>
+                {isMuted ? <MicOffIcon /> : <MicIcon />}
+              </FullscreenDockButton>
+              <FullscreenDockButton title={isDeafened ? "Undeafen" : "Deafen"} danger={isDeafened} onClick={handleDeafen}>
+                {isDeafened ? <HeadphonesOffIcon /> : <HeadphonesIcon />}
+              </FullscreenDockButton>
+              {showVolume && (
+                <>
+                  <div className="mx-0.5 h-6 w-px bg-white/10" />
+                  <VolumeControl volume={streamVolume} onChange={handleVolumeChange} onToggleMute={toggleMute} />
+                </>
+              )}
+              <div className="mx-0.5 h-6 w-px bg-white/10" />
+              <FullscreenDockButton title="Exit fullscreen" onClick={() => void exitFullscreen()}>
+                <CollapseIcon />
+              </FullscreenDockButton>
+            </div>
           </div>
         )}
       </div>
+
+      {!isFullscreen && <Filmstrip focused={displayUser} />}
     </div>
   );
 }
 
-// Sidebar participant row inside the streaming view. Subscribes to its
-// own slice of speakingUsers + activeStreams so a speaking event for
-// one user no longer re-renders this entire 600+-line panel.
-interface SidebarParticipantRowProps {
-  username: string;
-  connectedServerId: string | null;
+function FullscreenDockButton({
+  title,
+  danger,
+  onClick,
+  children,
+}: {
+  title: string;
+  danger?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      className={`flex h-10 w-10 items-center justify-center rounded-md ${
+        danger ? "bg-error/20 text-error hover:bg-error/30" : "text-white/80 hover:bg-white/10 hover:text-white"
+      }`}
+    >
+      {children}
+    </button>
+  );
 }
 
-const SidebarParticipantRow = memo(function SidebarParticipantRow({
-  username,
-  connectedServerId,
-}: SidebarParticipantRowProps) {
-  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
-  const isStreaming = useVoiceStore((s) =>
-    s.activeStreams.some((st) => st.ownerUsername === username),
-  );
-  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
-  const openContextMenu = useUiStore((s) => s.openContextMenu);
-  const displayName = useDisplayName(connectedServerId, username);
+/// The row under a focused stream: the other live streams first (watched ones
+/// keep playing; a click focuses without stopping anything), then people as
+/// mini tiles, capped to one row with the same "+N more" and hidden-speaker
+/// swap as the grid. Subscribes to what it shows itself, so the focused
+/// panel's overlay timers don't re-render it.
+const Filmstrip = memo(function Filmstrip({ focused }: { focused: string }) {
+  const activeStreams = useVoiceStore((s) => s.activeStreams);
+  const watchingStreams = useVoiceStore((s) => s.watchingStreams);
+  const participants = useVoiceStore((s) => s.participants);
+  const connectedServerId = useVoiceStore((s) => s.connectedServerId);
+  const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
+  const ownUsername = useAuthStore((s) => s.username);
+  const channelName = useChatStore((s) => {
+    const list = s.activeServerId ? s.channelsByServer[s.activeServerId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
+    return list.find((ch) => ch.id === connectedChannelId)?.name ?? "Voice";
+  });
+
+  const ref = useRef<HTMLDivElement>(null);
+  const { width } = useElementSize(ref);
+
+  const others = activeStreams.filter((s) => s.ownerUsername !== focused);
+  const rosterKey = participants.map((p) => p.username).join("\n");
+  const roster = useMemo(() => (rosterKey ? rosterKey.split("\n") : []), [rosterKey]);
+  const streamersKey = activeStreams.map((s) => s.ownerUsername).join("\n");
+  const pinned = useMemo(() => {
+    const set = new Set(streamersKey ? streamersKey.split("\n") : []);
+    if (ownUsername) set.add(ownUsername);
+    return set;
+  }, [streamersKey, ownUsername]);
+  const byName = useMemo(() => new Map(participants.map((p) => [p.username, p])), [participants]);
+
+  const cap = width > 0 ? rowCapacity(width, STRIP_TILE_W, STRIP_GAP) : others.length + roster.length;
+  const streamSlots = Math.min(others.length, cap);
+  const peopleCap = cap - streamSlots;
+  const slots = roster.length > peopleCap ? Math.max(0, peopleCap - 1) : roster.length;
+  const overflow = slots < roster.length && peopleCap > 0;
+  const visible = useVisibleParticipants(roster, slots, pinned);
+  const hidden = useMemo(() => {
+    if (!overflow) return [];
+    const shown = new Set(visible);
+    return roster.filter((u) => !shown.has(u));
+  }, [overflow, visible, roster]);
 
   return (
-    <div
-      className="flex cursor-pointer items-center gap-2 rounded-md p-2 transition-colors hover:bg-surface-hover"
-      onClick={(e) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        openProfilePopup(
-          username,
-          { x: rect.right + 8, y: rect.top },
-          connectedServerId,
+    <div ref={ref} className="flex h-18 shrink-0 justify-center gap-2">
+      {others.slice(0, streamSlots).map((s) => (
+        <StreamTile
+          key={s.streamId}
+          stream={s}
+          isWatching={watchingStreams.includes(s.ownerUsername)}
+          // Never the persistent player here: that one is on stage. A
+          // watched stream in the strip runs its own decoder.
+          isPip={false}
+          isOwnStream={s.ownerUsername === ownUsername}
+          watchingOthers
+          connectedServerId={connectedServerId}
+          width={STRIP_TILE_W}
+          mini
+        />
+      ))}
+      {visible.map((u) => {
+        const p = byName.get(u);
+        return (
+          <ParticipantTile
+            key={u}
+            username={u}
+            isLocal={u === ownUsername}
+            rosterMuted={p?.isMuted ?? false}
+            rosterDeafened={p?.isDeafened ?? false}
+            serverMuted={p?.isServerMuted}
+            serverDeafened={p?.isServerDeafened}
+            connectedServerId={connectedServerId}
+            width={STRIP_TILE_W}
+            mini
+          />
         );
-      }}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY }, connectedServerId);
-      }}
-    >
-      <div
-        className={`rounded-sm ${
-          isSpeaking
-            ? "shadow-[0_0_0_2px_var(--color-bg-dark),0_0_0_3.5px_var(--color-success)]"
-            : ""
-        }`}
-      >
-        <UserAvatar username={username} size={28} />
-      </div>
-      <div className="min-w-0">
-        <div className="truncate text-[11px] font-medium text-text-secondary">
-          {displayName}
-        </div>
-        {isStreaming && (
-          <div className="text-[10px] font-medium text-accent">Streaming</div>
-        )}
-      </div>
+      })}
+      {overflow && (
+        <OverflowTile
+          hidden={hidden}
+          width={STRIP_TILE_W}
+          mini
+          connectedServerId={connectedServerId}
+          channelName={channelName}
+        />
+      )}
     </div>
   );
 });
 
 // No props: VoicePanel re-renders (ping, participants, thumbnails) must not
-// re-render this 700-line panel — it subscribes to what it needs itself.
+// re-render this panel — it subscribes to what it needs itself.
 export default memo(StreamViewPanel);

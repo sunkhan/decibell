@@ -1,24 +1,18 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useUiStore } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import StreamVideoPlayer from "./StreamVideoPlayer";
 import { getStreamPipHost, resetStreamPipRect } from "./streamPipHost";
-
-// How long the decoder stays warm while sitting on the streams grid (focused
-// then backed out) before it's dropped. Long enough that backing out and
-// re-focusing is instant; short enough that idling on the grid doesn't keep a
-// video decoding invisibly.
-const GRID_IDLE_MS = 20_000;
 
 /// Owns the single, persistent stream player. Renders StreamVideoPlayer exactly
 /// once — via a portal into the shared host node (see streamPipHost.ts) — for as
 /// long as a stream is "loaded" (pipStream). The full view (StreamViewPanel) and
 /// the floating mini player each reparent that same host into their own slot, so
 /// the decoder is never torn down as the user moves between views OR backs out
-/// to the streams grid. Mounted once at the app root so it outlives every view.
+/// to the streams grid — the grid's tile for that stream claims the host too
+/// (StageTiles' StreamTile), so it keeps playing there rather than decoding
+/// invisibly. Mounted once at the app root so it outlives every view.
 export default function StreamPipManager() {
-  const activeView = useUiStore((s) => s.activeView);
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const pipStream = useVoiceStore((s) => s.pipStream);
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
@@ -44,17 +38,10 @@ export default function StreamPipManager() {
     }
   }, [pipStream, watchingStreams, activeStreams, setPipStream]);
 
-  // Bound the warm-decoder cost: while sitting on the streams grid (in the voice
-  // view, nothing focused) with a stream still loaded, drop it after a short
-  // idle. Refocusing or leaving the view cancels the timer, keeping those
-  // transitions seamless.
-  useEffect(() => {
-    const idleOnGrid =
-      activeView === "voice" && !fullscreenStream && pipStream != null;
-    if (!idleOnGrid) return;
-    const t = setTimeout(() => setPipStream(null), GRID_IDLE_MS);
-    return () => clearTimeout(t);
-  }, [activeView, fullscreenStream, pipStream, setPipStream]);
+  // No idle drop on the grid any more (there was a 20 s one): the grid shows
+  // the loaded stream live in its tile, through this same player, so it is
+  // never decoding invisibly there — and dropping it would only swap the tile
+  // to a second, cold decoder.
 
   // Forget the last on-screen rect when nothing is loaded, so the next stream
   // doesn't morph in from where the old one sat.

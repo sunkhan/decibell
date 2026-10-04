@@ -14,14 +14,14 @@ interface Props {
 // over decoded video, not over a themed surface, so it keeps a dark
 // chip with light type in every palette — routing it through the DS
 // tokens would put dark-on-dark type over the light themes' video.
-const CODEC_COLOR: Record<number, string> = {
+export const CODEC_COLOR: Record<number, string> = {
   [VideoCodec.AV1]: "#4ade80",
   [VideoCodec.H265]: "#93c5fd",
   [VideoCodec.H264_HW]: "#22d3ee",
   [VideoCodec.H264_SW]: "rgba(255,255,255,0.70)",
 };
 
-function formatResolution(w: number, h: number): string {
+export function formatResolution(w: number, h: number): string {
   if (w === 3840 && h === 2160) return "4K";
   if (w === 2560 && h === 1440) return "1440p";
   if (w === 1920 && h === 1080) return "1080p";

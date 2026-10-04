@@ -1232,6 +1232,40 @@ Win10, hybrid laptop, the new AMF options accepted on pre-RDNA cards, TDR mid-st
 the Linux native H.264 path sends AVCC with no description to remote watchers — check that a Linux NVENC
 H.264 stream decodes on another machine. Remaining: AV1 64×16 padding on RDNA3 (crop side data dropped).
 
+**Client: voice view redesign — tiled stage, floating dock, "+N", multi-watch (2026-10-04) ✅** —
+Design: the "Voice View Redesign" canvas + `docs/superpowers/specs/2026-10-04-voice-view-redesign.md`.
+`VoicePanel` is now a stage of 16:9 tiles (same language as the DM CallStage): each participant is a
+tile washed with their avatar colour (`--tile-tint`, per theme), a theme name chip with the status
+glyphs (self mute / deafen, a filled red badge for a moderator's mute, the accent speaker for "muted by
+you"), a "you" tag, a LIVE pill while streaming, and an instant success outline + soft halo while
+speaking. The grid best-fits the space (`stage/stageLayout.ts`: every column count tried, the row width
+capped to the chosen count); below a 200 px tile floor the tail collapses into a "+N more" tile (stacked
+avatars, green while someone in it talks) whose popover lists the rest. You and streamers are always
+shown; a hidden user who talks for 0.6 s swaps into the slot of the visible, unpinned user quiet longest,
+in place, at most once per 3 s (`useVisibleParticipants` — speaking is read by a store subscription, so a
+VAD flip only re-renders on an actual swap). Streams no longer hide the people: live streams get large
+tiles on top, people a single compact row below (same "+N"). Watching several streams: hovering an
+unwatched stream offers Watch (nothing else playing) or **Switch** / **Watch too**; a watched tile offers
+Focus / Stop; a click on the tile runs its first action (`stage/streamActions.ts`). The focused view
+(`StreamViewPanel`) is the video with auto-hiding scrim overlays (LIVE / owner / quality, stats, back to
+grid, fullscreen, stop, volume), double-click for fullscreen (a single click no longer drops you back to
+the grid), and a filmstrip of the other streams (watched ones keep playing; a click focuses without
+stopping anything) + people; the header becomes a "Lounge › mira's screen" breadcrumb; the old 160 px
+side column is gone. A floating dock (mic, deafen, share / stop + stream-audio apps, leave) replaces the
+full-width button bar and now plays the same sounds as UserPanel. Fullscreen draws the same dock on a
+scrim. Alone in the channel: your tile large + an invite (MANAGE_INVITES, active server) / share prompt.
+*Player.* The grid's tile for the stream the persistent player holds now reparents that player's host
+(like the full view / mini player) instead of showing a poster, so StreamPipManager's 20 s "idle on the
+grid" drop is gone — it only ever swapped the tile to a second, cold decoder. *Tokens.* `--color-on-error`
+(near-black under `console`, whose coral fails white at 2.76:1 — mirrors `on-accent`), `--color-live`
+(one fixed red, #d1362e, for LIVE pills over video), `--tile-tint`. Verified: tsc web 0; every state
+(alone, 2, 5, 23 people + open list, streams, three streams + hover, unsupported codec, focused) rendered
+in all five themes through a throwaway harness (real components, seeded stores, mocked player, Electron
+offscreen capture); the swap timing (a 0.3 s blip ignored, a swap at 0.6 s, the second held by the
+cooldown then taken) checked the same way. Open (live): a real channel with two watched streams (also the
+R9 frame-dispatch test), the grid-tile ↔ full view ↔ mini player handoff of the persistent player, and
+the swap with real VAD.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

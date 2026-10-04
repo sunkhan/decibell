@@ -1,24 +1,66 @@
-import { useState, memo } from "react";
+import { useMemo, useRef, useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useDisplayName } from "../../hooks/useDisplayName";
-import { UserAvatar } from "../../components/UserAvatar";
+import { playSound } from "../../utils/sounds";
+import type { StreamInfo, VoiceParticipant } from "../../types";
 import StreamViewPanel from "./StreamViewPanel";
-import StreamVideoPlayer from "./StreamVideoPlayer";
 import CaptureSourcePicker from "./CaptureSourcePicker";
 import { StreamAudioButton } from "./StreamAudioPopover";
-import { CodecBadge } from "./CodecBadge";
-import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
-import type { StreamInfo } from "../../types";
-import { canWatchStream } from "../../utils/canWatchStream";
 import { useStreamThumbnails } from "./useStreamThumbnails";
-import { PERM, useChannelPermission } from "../servers/permissions";
+import { PERM, useChannelPermission, usePermission } from "../servers/permissions";
 import { LockGlyph } from "../chat/MessageBubble";
+import {
+  MAX_TILE_W,
+  MIN_TILE_W,
+  ROW_TILE_W,
+  TILE_ASPECT,
+  TILE_GAP,
+  fitGrid,
+  gridCapacity,
+  rowCapacity,
+  useElementSize,
+  useVisibleParticipants,
+} from "./stage/stageLayout";
+import { OverflowTile, ParticipantTile, StreamTile } from "./stage/StageTiles";
+import {
+  ChevronRightIcon,
+  HeadphonesIcon,
+  HeadphonesOffIcon,
+  LeaveIcon,
+  MicIcon,
+  MicOffIcon,
+  ScreenIcon,
+  SignalIcon,
+  SpeakerIcon,
+  StopShareIcon,
+  UserPlusIcon,
+  UsersIcon,
+} from "./stage/icons";
+
+/// The community voice view (design: the "Voice View Redesign" canvas,
+/// 2026-10-04 — tiled stage + floating dock, shared with the DM CallStage).
+///
+///   alone    → your tile, large, with an invite / share prompt
+///   grid     → everyone as a 16:9 tile, best-fit to the stage; past the
+///              tile-size floor the tail collapses into "+N more" and hidden
+///              speakers swap into view (stage/stageLayout.ts)
+///   streams  → live streams large on top, people in one compact row below
+///   focused  → StreamViewPanel: the stream takes the stage, filmstrip below
+///
+/// The dock floats over the bottom of every mode except window fullscreen
+/// (StreamViewPanel draws its own overlay controls there).
 
 const EMPTY_CHANNELS: never[] = [];
+/// Gap between the streams block and the people row under it.
+const SECTION_GAP = 16;
+/// Live streams can grow bigger than people — they're the content.
+const MAX_STREAM_W = 960;
+/// Below this the streams block stops shrinking and the stage scrolls.
+const MIN_STREAMS_H = 180;
 
 export default function VoicePanel() {
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
@@ -27,119 +69,36 @@ export default function VoicePanel() {
   const canStream = useChannelPermission(connectedServerId, connectedChannelId, PERM.STREAM);
   const participants = useVoiceStore((s) => s.participants);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
-  // Note: no top-level speakingUsers, latencyMs (3 s ping) or
-  // streamThumbnails (one per unwatched stream every 3 s) subscriptions —
-  // ParticipantCard, HeaderStats and StreamCard below each subscribe to
-  // their own slice, so those events don't re-render the whole panel.
-  const isMuted = useVoiceStore((s) => s.isMuted);
-  const isDeafened = useVoiceStore((s) => s.isDeafened);
+  // No top-level speakingUsers, latencyMs (3 s ping) or streamThumbnails
+  // (one per unwatched stream every 3 s) subscriptions — the tiles,
+  // HeaderStats and the visibility hook each subscribe to their own slice,
+  // so those events don't re-render the whole panel.
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const pipStream = useVoiceStore((s) => s.pipStream);
   const isStreamFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
-  const isStreaming = useVoiceStore((s) => s.isStreaming);
-  const disconnect = useVoiceStore((s) => s.disconnect);
-  const setActiveView = useUiStore((s) => s.setActiveView);
   const channels = useChatStore((s) => {
     const serverId = s.activeServerId;
-    return serverId
-      ? s.channelsByServer[serverId] ?? EMPTY_CHANNELS
-      : EMPTY_CHANNELS;
+    return serverId ? s.channelsByServer[serverId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
   });
-
   const ownUsername = useAuthStore((s) => s.username);
 
   const [showPicker, setShowPicker] = useState(false);
 
   useStreamThumbnails();
 
-  const channelName =
-    channels.find((ch) => ch.id === connectedChannelId)?.name ?? "Voice";
-
-  const hasStreams = activeStreams.length > 0;
-
-  const handleMute = () => {
-    if (isDeafened) {
-      invoke("set_voice_deafen", { deafened: false }).catch(console.error);
-      invoke("set_voice_mute", { muted: false }).catch(console.error);
-    } else {
-      invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
-    }
-  };
-
-  const handleDeafen = () => {
-    invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
-  };
-
-  const handleStopSharing = async () => {
-    // Tear down the renderer-side capture + encoder first so no more
-    // frames are pushed to native after we tell native to stop.
-    const { stopActiveStream } = await import("./streaming/StreamCapture");
-    await stopActiveStream();
-    invoke("stop_screen_share", {
-      serverId: connectedServerId,
-      channelId: connectedChannelId,
-    }).catch(console.error);
-    useVoiceStore.getState().setIsStreaming(false);
-  };
-
-  const handleDisconnect = async () => {
-    // If we're streaming, stop the capture/encoder and tell native to
-    // stop BEFORE leaving. Otherwise capture keeps running and, since
-    // disconnect() hides the Stop button, there's no UI left to end it.
-    if (useVoiceStore.getState().isStreaming) {
-      const { stopActiveStream } = await import("./streaming/StreamCapture");
-      await stopActiveStream();
-      if (connectedServerId && connectedChannelId) {
-        await invoke("stop_screen_share", {
-          serverId: connectedServerId,
-          channelId: connectedChannelId,
-        }).catch(console.error);
-      }
-      useVoiceStore.getState().setIsStreaming(false);
-    }
-    if (connectedServerId && connectedChannelId) {
-      // Best-effort, un-awaited: leave_voice_channel below drops all watch
-      // subscriptions server-side, so don't serialize N round-trips into the
-      // disconnect path (this was N awaited round-trips before leaving).
-      for (const username of watchingStreams) {
-        if (username !== ownUsername) {
-          invoke("stop_watching", {
-            serverId: connectedServerId,
-            channelId: connectedChannelId,
-            targetUsername: username,
-          }).catch(() => {});
-        }
-      }
-    }
-    invoke("leave_voice_channel").catch(console.error);
-    disconnect();
-    setActiveView("server");
-  };
+  const channelName = channels.find((ch) => ch.id === connectedChannelId)?.name ?? "Voice";
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-bg-mid">
+    <div className="relative flex min-h-0 flex-1 flex-col bg-bg-mid">
       {!isStreamFullscreen && (
-        <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border px-4">
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            className="text-text-muted"
-          >
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-          </svg>
-          <span className="font-display text-[16px] font-semibold text-text-primary">
-            {channelName}
-          </span>
-          <VoiceEncryptionBadge />
-          <HeaderStats participantCount={participants.length} />
-        </div>
+        <VoiceHeader
+          channelName={channelName}
+          focused={fullscreenStream}
+          ownUsername={ownUsername}
+          connectedServerId={connectedServerId}
+          participantCount={participants.length}
+        />
       )}
 
       {watchingStreams.length > 0 && (
@@ -148,174 +107,26 @@ export default function VoicePanel() {
         </div>
       )}
 
-      {hasStreams && !fullscreenStream && (
-        // Unmount (not `hidden`) the grid while a stream is fullscreen: a
-        // display:none inline StreamVideoPlayer keeps its VideoDecoder running,
-        // so every watched card decoded off-screen behind the full-view player.
-        <div className="flex flex-1 overflow-hidden">
-          <div className="flex flex-1 flex-col overflow-hidden">
-            <div className="px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-              Live — {activeStreams.length}
-            </div>
-            <div className="flex-1 overflow-y-auto px-5 pt-4 pb-4">
-              <div
-                className="grid gap-4"
-                style={{
-                  gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-                }}
-              >
-                {activeStreams.map((stream) => (
-                  <StreamCard
-                    key={stream.streamId}
-                    stream={stream}
-                    isWatching={watchingStreams.includes(stream.ownerUsername)}
-                    isPip={stream.ownerUsername === pipStream}
-                    isOwnStream={stream.ownerUsername === ownUsername}
-                    connectedServerId={connectedServerId}
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
+      {!fullscreenStream && (
+        // Unmount (not `hidden`) the stage while a stream is focused: a
+        // display:none inline StreamVideoPlayer keeps its VideoDecoder
+        // running, so every watched tile decoded off-screen behind the
+        // focused one.
+        <VoiceStage
+          participants={participants}
+          activeStreams={activeStreams}
+          watchingStreams={watchingStreams}
+          pipStream={pipStream}
+          ownUsername={ownUsername}
+          connectedServerId={connectedServerId}
+          channelName={channelName}
+          canStream={canStream}
+          onShare={() => setShowPicker(true)}
+        />
       )}
 
-      {!fullscreenStream && !hasStreams && (
-        <div className="flex flex-1 flex-wrap items-center justify-center gap-5 p-6">
-          {participants.map((p) => (
-            <ParticipantCard
-              key={p.username}
-              username={p.username}
-              isMuted={p.isMuted}
-              connectedServerId={connectedServerId}
-            />
-          ))}
-        </div>
-      )}
+      {!isStreamFullscreen && <VoiceDock canStream={canStream} onShare={() => setShowPicker(true)} />}
 
-      {!isStreamFullscreen && (
-        <div className="flex justify-center gap-2 border-t border-border-divider bg-bg-dark px-5 py-3.5">
-          <button
-            onClick={handleMute}
-            className={`flex items-center gap-[7px] rounded-md border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
-              isMuted
-                ? "border-error/20 bg-error/10 text-error"
-                : "border-border bg-bg-light text-text-secondary hover:bg-bg-lighter hover:text-text-primary"
-            }`}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              {isMuted ? (
-                <>
-                  <line x1="1" y1="1" x2="23" y2="23" />
-                  <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                  <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
-                  <line x1="12" y1="19" x2="12" y2="23" />
-                  <line x1="8" y1="23" x2="16" y2="23" />
-                </>
-              ) : (
-                <>
-                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                  <line x1="12" y1="19" x2="12" y2="23" />
-                  <line x1="8" y1="23" x2="16" y2="23" />
-                </>
-              )}
-            </svg>
-            {isMuted ? "Unmute" : "Mute"}
-          </button>
-          <button
-            onClick={handleDeafen}
-            className={`flex items-center gap-[7px] rounded-md border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
-              isDeafened
-                ? "border-error/20 bg-error/10 text-error"
-                : "border-border bg-bg-light text-text-secondary hover:bg-bg-lighter hover:text-text-primary"
-            }`}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              {isDeafened ? (
-                <>
-                  <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
-                  <line x1="1" y1="1" x2="23" y2="23" />
-                </>
-              ) : (
-                <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
-              )}
-            </svg>
-            {isDeafened ? "Undeafen" : "Deafen"}
-          </button>
-          {(canStream || isStreaming) && (
-          <button
-            onClick={isStreaming ? handleStopSharing : () => setShowPicker(true)}
-            className={`flex items-center gap-[7px] rounded-md border px-[18px] py-[9px] text-[13px] font-medium transition-colors ${
-              isStreaming
-                ? "border-accent/25 bg-accent/[0.12] text-accent hover:bg-accent/[0.18]"
-                : "border-accent/20 bg-accent-soft text-accent hover:bg-accent/[0.18] hover:text-accent-bright"
-            }`}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              {isStreaming ? (
-                <>
-                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                  <rect
-                    x="8"
-                    y="8"
-                    width="8"
-                    height="8"
-                    rx="1"
-                    fill="currentColor"
-                    stroke="none"
-                  />
-                </>
-              ) : (
-                <>
-                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-                  <line x1="8" y1="21" x2="16" y2="21" />
-                  <line x1="12" y1="17" x2="12" y2="21" />
-                </>
-              )}
-            </svg>
-            {isStreaming ? "Stop" : "Stream"}
-          </button>
-          )}
-          <StreamAudioButton
-            size={16}
-            className="flex items-center justify-center rounded-md border border-accent/20 bg-accent-soft px-[11px] py-[9px] text-accent transition-colors hover:bg-accent/[0.18] hover:text-accent-bright"
-          />
-          <button
-            onClick={handleDisconnect}
-            className="flex items-center gap-[7px] rounded-md border border-error/20 bg-error/10 px-[18px] py-[9px] text-[13px] font-medium text-error transition-colors hover:bg-error/[0.18]"
-          >
-            Disconnect
-          </button>
-        </div>
-      )}
       {showPicker && connectedServerId && connectedChannelId && (
         <CaptureSourcePicker
           serverId={connectedServerId}
@@ -327,304 +138,77 @@ export default function VoicePanel() {
   );
 }
 
+// ── header ───────────────────────────────────────────────────────
+
+const HEADER_TITLE = "font-channel text-title font-emphasis tracking-title text-text-bright";
+
+function VoiceHeader({
+  channelName,
+  focused,
+  ownUsername,
+  connectedServerId,
+  participantCount,
+}: {
+  channelName: string;
+  focused: string | null;
+  ownUsername: string | null;
+  connectedServerId: string | null;
+  participantCount: number;
+}) {
+  const focusedName = useDisplayName(connectedServerId, focused ?? "");
+  return (
+    <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border-divider px-4">
+      <SpeakerIcon size={18} className="text-text-muted" />
+      {focused ? (
+        // Breadcrumb while a stream is focused: the channel name is the way
+        // back to the grid (as is Esc and the video's grid button).
+        <>
+          <button
+            type="button"
+            onClick={() => useVoiceStore.getState().setFullscreenStream(null)}
+            title="Back to the grid (Esc)"
+            className="-mx-1 shrink-0 rounded-sm px-1 font-channel text-title font-medium tracking-title text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+          >
+            {channelName}
+          </button>
+          <ChevronRightIcon size={14} className="-mx-1 text-text-muted" />
+          <span className={`truncate ${HEADER_TITLE}`}>
+            {focused === ownUsername ? "Your screen" : `${focusedName}'s screen`}
+          </span>
+        </>
+      ) : (
+        <span className={`truncate ${HEADER_TITLE}`}>{channelName}</span>
+      )}
+      <VoiceEncryptionBadge />
+      <HeaderStats participantCount={participantCount} />
+    </div>
+  );
+}
+
 /// Header right side: participant count + voice ping. Owns the latencyMs
-/// subscription so the 3 s ping only re-renders this span.
+/// subscription so the 3 s ping only re-renders this.
 function HeaderStats({ participantCount }: { participantCount: number }) {
   const latencyMs = useVoiceStore((s) => s.latencyMs);
+  const tone =
+    latencyMs == null ? "" : latencyMs <= 70 ? "text-success" : latencyMs < 175 ? "text-warning" : "text-error";
   return (
-    <span
-      className="ml-auto text-[12px] text-text-muted"
-      title={latencyMs != null ? `${latencyMs}ms` : undefined}
-    >
-      {participantCount} participant
-      {participantCount !== 1 ? "s" : ""}
+    <div className="ml-auto flex shrink-0 items-center gap-1 font-meta text-meta tabular-nums text-text-muted">
+      <span className="flex h-7 items-center gap-1.5 px-2" title={`${participantCount} in voice`}>
+        <UsersIcon size={14} />
+        {participantCount}
+      </span>
       {latencyMs != null && (
-        <span
-          className={`ml-2 font-medium ${
-            latencyMs <= 70
-              ? "text-success"
-              : latencyMs < 175
-                ? "text-warning"
-                : "text-error"
-          }`}
-        >
-          {latencyMs}ms
-        </span>
+        <>
+          <span className="h-4 w-px bg-border-divider" />
+          <span className={`flex h-7 items-center gap-1.5 px-2 ${tone}`} title="Voice latency">
+            <SignalIcon />
+            {latencyMs} ms
+          </span>
+        </>
       )}
-    </span>
-  );
-}
-
-// Grid actions read the store at call time (instead of closing over panel
-// state) so the memoized StreamCard needs no callback props.
-function watchStream(username: string) {
-  const v = useVoiceStore.getState();
-  const serverId = v.connectedServerId;
-  const channelId = v.connectedChannelId;
-  if (!serverId || !channelId) return;
-  const isSelf = username === useAuthStore.getState().username;
-  if (!v.watchingStreams.includes(username)) {
-    // Self-preview is renderer-internal: StreamVideoPlayer subscribes
-    // to the local encoder's output via subscribeLocalFrames when
-    // streamerUsername === ownUsername, no native side involvement.
-    if (!isSelf) {
-      invoke("watch_stream", {
-        serverId,
-        channelId,
-        targetUsername: username,
-      }).catch(() => {});
-    }
-    v.addWatching(username);
-  }
-  useVoiceStore.getState().setFullscreenStream(username);
-}
-
-function stopWatchingStream(username: string) {
-  const v = useVoiceStore.getState();
-  if (username !== useAuthStore.getState().username) {
-    invoke("stop_watching", {
-      serverId: v.connectedServerId,
-      channelId: v.connectedChannelId,
-      targetUsername: username,
-    }).catch(() => {});
-  }
-  v.removeWatching(username);
-}
-
-interface StreamCardProps {
-  stream: StreamInfo;
-  isWatching: boolean;
-  /// This stream is the one the persistent player (StreamPipManager) holds.
-  isPip: boolean;
-  isOwnStream: boolean;
-  connectedServerId: string | null;
-}
-
-/// One live-stream card on the grid. Memoized and subscribed to its own
-/// thumbnail, so a thumbnail arriving for one stream (every 3 s per
-/// unwatched stream) re-renders only that card.
-const StreamCard = memo(function StreamCard({
-  stream,
-  isWatching,
-  isPip,
-  isOwnStream,
-  connectedServerId,
-}: StreamCardProps) {
-  const thumbnail = useVoiceStore((s) => s.streamThumbnails[stream.ownerUsername]);
-  const displayName = useDisplayName(connectedServerId, stream.ownerUsername);
-  const decodeCaps = useCodecSettingsStore.getState().decodeCaps;
-  const { canWatch, reason } = isOwnStream
-    ? { canWatch: true, reason: undefined }
-    : canWatchStream(stream, decodeCaps);
-  return (
-    <div
-      role="button"
-      tabIndex={canWatch ? 0 : -1}
-      aria-disabled={!canWatch}
-      title={reason}
-      onClick={() => canWatch && watchStream(stream.ownerUsername)}
-      onKeyDown={(e) => {
-        if (!canWatch) return;
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          watchStream(stream.ownerUsername);
-        }
-      }}
-      className={`group relative overflow-hidden rounded-lg border transition-all duration-150 ease-out ${
-        !canWatch
-          ? "cursor-not-allowed border-border-divider opacity-50"
-          : isWatching
-            ? "cursor-pointer border-accent/40 shadow-[0_0_12px_var(--color-accent-soft)] hover:shadow-float"
-            : "cursor-pointer border-border bg-bg-light hover:border-accent/30 hover:shadow-float"
-      }`}
-    >
-      <div className="relative aspect-video w-full bg-bg-darkest">
-        <CodecBadge
-          codec={stream.currentCodec}
-          width={stream.resolutionWidth}
-          height={stream.resolutionHeight}
-          fps={stream.fps}
-          enforced={stream.enforcedCodec !== 0}
-          size="small"
-        />
-        {isWatching && !isPip ? (
-          // The stream matching pipStream is already decoded by
-          // the single persistent player (StreamPipManager); show
-          // its poster here instead of spinning up a second
-          // decoder for the same stream.
-          <StreamVideoPlayer
-            streamerUsername={stream.ownerUsername}
-            className="h-full w-full object-cover"
-          />
-        ) : thumbnail ? (
-          <img
-            src={thumbnail}
-            alt={`${stream.ownerUsername}'s stream`}
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center">
-            <UserAvatar
-              username={stream.ownerUsername}
-              size={56}
-            />
-          </div>
-        )}
-        <div
-          className={`absolute left-2.5 top-2.5 flex items-center gap-[5px] rounded-sm px-2 py-1 ${
-            isWatching ? "bg-accent/90" : "bg-error/90"
-          }`}
-        >
-          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
-          <span className="text-[10px] font-semibold text-white">
-            {isWatching ? "WATCHING" : "LIVE"}
-          </span>
-        </div>
-        <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/40">
-          <span className="text-[13px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
-            {isWatching ? "Expand" : "Watch Stream"}
-          </span>
-        </div>
-      </div>
-      <div className="flex items-center gap-2.5 px-3.5 py-3">
-        <UserAvatar
-          username={stream.ownerUsername}
-          size={32}
-        />
-        <div className="min-w-0 flex-1 text-left">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-[13px] font-medium text-text-primary">
-              {displayName}
-            </span>
-            {stream.hasAudio && (
-              <svg
-                className="h-3.5 w-3.5 shrink-0 text-accent-bright"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M11 5L6 9H2v6h4l5 4V5z" />
-                <path d="M15.54 8.46a5 5 0 010 7.07" />
-              </svg>
-            )}
-          </div>
-          <div className="text-[11px] text-text-muted">
-            {stream.resolutionWidth > 0
-              ? `${stream.resolutionWidth}x${stream.resolutionHeight}`
-              : ""}
-            {stream.fps > 0 ? ` · ${stream.fps}fps` : ""}
-            {stream.watcherCount > 0 &&
-              ` · ${stream.watcherCount} watching`}
-          </div>
-        </div>
-        {isWatching && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              stopWatchingStream(stream.ownerUsername);
-            }}
-            className="ml-auto flex h-7 items-center gap-1.5 rounded-sm border border-error/[0.25] bg-error/[0.12] px-2.5 text-[11px] font-medium text-error transition-colors hover:border-error/[0.4] hover:bg-error/[0.18]"
-          >
-            <svg
-              className="h-3.5 w-3.5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <rect x="2" y="3" width="20" height="14" rx="2" />
-              <line x1="8" y1="21" x2="16" y2="21" />
-              <line x1="12" y1="17" x2="12" y2="21" />
-              <line x1="7" y1="7" x2="17" y2="13" />
-              <line x1="17" y1="7" x2="7" y2="13" />
-            </svg>
-            Stop Watching
-          </button>
-        )}
-      </div>
     </div>
   );
-});
-
-// Avatar card for one participant. Subscribes to its OWN slice of
-// speakingUsers so a speaking event for any other user is a no-op
-// here. Memo'd so unchanged props skip the function call entirely.
-interface ParticipantCardProps {
-  username: string;
-  isMuted: boolean;
-  connectedServerId: string | null;
 }
-
-const ParticipantCard = memo(function ParticipantCard({
-  username,
-  isMuted,
-  connectedServerId,
-}: ParticipantCardProps) {
-  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
-  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
-  const openContextMenu = useUiStore((s) => s.openContextMenu);
-  const displayName = useDisplayName(connectedServerId, username);
-
-  return (
-    <div
-      className="flex cursor-pointer flex-col items-center gap-2.5 rounded-lg px-5 py-4 transition-all hover:bg-surface-hover"
-      onClick={(e) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        openProfilePopup(
-          username,
-          { x: rect.right + 8, y: rect.top },
-          connectedServerId,
-        );
-      }}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY }, connectedServerId);
-      }}
-    >
-      <div className="relative">
-        {/* Instant ring (no transition), like UserPanel's: an animated
-            box-shadow repaints for 150 ms on every speaking flip, which with
-            a few talkers is near-continuous main-thread paint. */}
-        <div
-          className={`rounded-lg ${
-            isSpeaking
-              ? "shadow-[0_0_0_3px_var(--color-bg-mid),0_0_0_5px_var(--color-success)]"
-              : ""
-          }`}
-        >
-          <UserAvatar username={username} size={80} />
-        </div>
-        {isMuted && (
-          <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-[2.5px] border-bg-mid bg-bg-light">
-            <svg
-              className="h-3 w-3 text-error"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="1" y1="1" x2="23" y2="23" />
-              <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-              <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
-              <line x1="12" y1="19" x2="12" y2="23" />
-              <line x1="8" y1="23" x2="16" y2="23" />
-            </svg>
-          </div>
-        )}
-      </div>
-      <div className="max-w-full truncate text-center text-[13px] font-medium text-text-primary">
-        {displayName}
-      </div>
-    </div>
-  );
-});
 
 /// MLS state of the connected channel: sealed and verified, still joining
 /// the group, resyncing after a missed epoch, or quarantined because a
@@ -653,10 +237,396 @@ function VoiceEncryptionBadge() {
   return (
     <span
       title={title}
-      className={`flex items-center gap-[5px] rounded-sm px-2 py-0.5 font-channel text-[11px] font-medium ${tone}`}
+      className={`flex h-5.5 shrink-0 items-center gap-1.5 rounded-sm px-2 font-meta text-micro font-medium ${tone}`}
     >
       <LockGlyph size={11} />
       {label}
     </span>
+  );
+}
+
+// ── stage ────────────────────────────────────────────────────────
+
+interface VoiceStageProps {
+  participants: VoiceParticipant[];
+  activeStreams: StreamInfo[];
+  watchingStreams: string[];
+  pipStream: string | null;
+  ownUsername: string | null;
+  connectedServerId: string | null;
+  channelName: string;
+  canStream: boolean;
+  onShare: () => void;
+}
+
+function VoiceStage({
+  participants,
+  activeStreams,
+  watchingStreams,
+  pipStream,
+  ownUsername,
+  connectedServerId,
+  channelName,
+  canStream,
+  onShare,
+}: VoiceStageProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const { width, height } = useElementSize(ref);
+  const measured = width > 0 && height > 0;
+
+  // Keyed on the joined names so a mute flip (a fresh participants array)
+  // doesn't hand the visibility hook a "new" roster.
+  const rosterKey = participants.map((p) => p.username).join("\n");
+  const roster = useMemo(() => (rosterKey ? rosterKey.split("\n") : []), [rosterKey]);
+  const streamersKey = activeStreams.map((s) => s.ownerUsername).join("\n");
+  const pinned = useMemo(() => {
+    const set = new Set(streamersKey ? streamersKey.split("\n") : []);
+    if (ownUsername) set.add(ownUsername);
+    return set;
+  }, [streamersKey, ownUsername]);
+  const byName = useMemo(() => new Map(participants.map((p) => [p.username, p])), [participants]);
+
+  const hasStreams = activeStreams.length > 0;
+  const n = roster.length;
+
+  // Slots for people, and the tile sizes, for the current mode.
+  let slots = n;
+  let peopleW = MIN_TILE_W;
+  let peopleCols = 1;
+  let streams = { cols: 1, tileW: 0 };
+  if (measured && hasStreams) {
+    const rowCap = rowCapacity(width, ROW_TILE_W, TILE_GAP);
+    if (n > rowCap) slots = rowCap - 1;
+    peopleW = ROW_TILE_W;
+    peopleCols = rowCap;
+    const streamsH = Math.max(MIN_STREAMS_H, height - ROW_TILE_W / TILE_ASPECT - SECTION_GAP);
+    streams = fitGrid(activeStreams.length, width, streamsH, TILE_GAP, MAX_STREAM_W);
+  } else if (measured && n > 1) {
+    const cap = gridCapacity(width, height, TILE_GAP, MIN_TILE_W);
+    if (n > cap) slots = cap - 1;
+    const fit = fitGrid(Math.min(n, cap), width, height, TILE_GAP, MAX_TILE_W);
+    peopleW = fit.tileW;
+    peopleCols = fit.cols;
+  }
+  const overflow = slots < n;
+  const visible = useVisibleParticipants(roster, slots, pinned);
+  const hidden = useMemo(() => {
+    if (!overflow) return [];
+    const shown = new Set(visible);
+    return roster.filter((u) => !shown.has(u));
+  }, [overflow, visible, roster]);
+
+  const rowMax = (cols: number, w: number) => cols * w + (cols - 1) * TILE_GAP;
+
+  const peopleTiles = (
+    <>
+      {visible.map((u) => {
+        const p = byName.get(u);
+        return (
+          <ParticipantTile
+            key={u}
+            username={u}
+            isLocal={u === ownUsername}
+            rosterMuted={p?.isMuted ?? false}
+            rosterDeafened={p?.isDeafened ?? false}
+            serverMuted={p?.isServerMuted}
+            serverDeafened={p?.isServerDeafened}
+            connectedServerId={connectedServerId}
+            width={peopleW}
+          />
+        );
+      })}
+      {overflow && (
+        <OverflowTile
+          hidden={hidden}
+          width={peopleW}
+          connectedServerId={connectedServerId}
+          channelName={channelName}
+        />
+      )}
+    </>
+  );
+
+  let body: React.ReactNode = null;
+  if (!measured) {
+    body = null;
+  } else if (!hasStreams && n <= 1) {
+    body = (
+      <AloneStage
+        username={roster[0] ?? ownUsername ?? ""}
+        participant={participants[0]}
+        isLocal={!roster[0] || roster[0] === ownUsername}
+        width={width}
+        height={height}
+        channelName={channelName}
+        connectedServerId={connectedServerId}
+        canStream={canStream}
+        onShare={onShare}
+      />
+    );
+  } else if (hasStreams) {
+    body = (
+      <div className="flex flex-col items-center justify-center gap-4" style={{ minHeight: height }}>
+        <div className="flex flex-wrap justify-center gap-3" style={{ maxWidth: rowMax(streams.cols, streams.tileW) }}>
+          {activeStreams.map((stream) => (
+            <StreamTile
+              key={stream.streamId}
+              stream={stream}
+              isWatching={watchingStreams.includes(stream.ownerUsername)}
+              isPip={stream.ownerUsername === pipStream}
+              isOwnStream={stream.ownerUsername === ownUsername}
+              watchingOthers={watchingStreams.some((u) => u !== stream.ownerUsername)}
+              connectedServerId={connectedServerId}
+              width={streams.tileW}
+            />
+          ))}
+        </div>
+        <div className="flex flex-wrap justify-center gap-3" style={{ maxWidth: rowMax(peopleCols, peopleW) }}>
+          {peopleTiles}
+        </div>
+      </div>
+    );
+  } else {
+    body = (
+      <div className="flex items-center justify-center" style={{ minHeight: height }}>
+        <div className="flex flex-wrap justify-center gap-3" style={{ maxWidth: rowMax(peopleCols, peopleW) }}>
+          {peopleTiles}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    // pb-24 keeps every tile clear of the floating dock.
+    <div ref={ref} className="relative min-h-0 flex-1 overflow-y-auto px-6 pb-24 pt-6">
+      {body}
+    </div>
+  );
+}
+
+/// Only you in the channel: your tile, large, and a nudge to invite people
+/// or start sharing.
+function AloneStage({
+  username,
+  participant,
+  isLocal,
+  width,
+  height,
+  channelName,
+  connectedServerId,
+  canStream,
+  onShare,
+}: {
+  username: string;
+  participant: VoiceParticipant | undefined;
+  isLocal: boolean;
+  width: number;
+  height: number;
+  channelName: string;
+  connectedServerId: string | null;
+  canStream: boolean;
+  onShare: () => void;
+}) {
+  const canManageInvites = usePermission(connectedServerId, PERM.MANAGE_INVITES);
+  // InviteModal manages the *active* server's invites.
+  const activeServerId = useChatStore((s) => s.activeServerId);
+  const serverName = useChatStore(
+    (s) => s.servers.find((sv) => sv.id === connectedServerId)?.name ?? "the server",
+  );
+  const canInvite = canManageInvites && activeServerId === connectedServerId;
+  // Room for the copy + buttons under the tile.
+  const tileW = Math.max(160, Math.min(480, width, Math.floor((height - 140) * TILE_ASPECT)));
+  const copy = canInvite
+    ? `Invite people to ${serverName}${canStream ? ", or share your screen while you wait." : "."}`
+    : canStream
+      ? "Share your screen while you wait for others."
+      : "People show up here as they join.";
+
+  if (!username) return null;
+  return (
+    <div className="flex flex-col items-center justify-center gap-5.5" style={{ minHeight: height }}>
+      <ParticipantTile
+        username={username}
+        isLocal={isLocal}
+        rosterMuted={participant?.isMuted ?? false}
+        rosterDeafened={participant?.isDeafened ?? false}
+        serverMuted={participant?.isServerMuted}
+        serverDeafened={participant?.isServerDeafened}
+        connectedServerId={connectedServerId}
+        width={tileW}
+      />
+      <div className="flex flex-col items-center gap-1.5 text-center">
+        <div className={HEADER_TITLE}>It's just you in {channelName}</div>
+        <div className="text-[13px] text-text-muted">{copy}</div>
+      </div>
+      {(canInvite || canStream) && (
+        <div className="flex gap-2">
+          {canInvite && (
+            <button
+              type="button"
+              onClick={() => useUiStore.getState().openModal("invite-manage")}
+              className="flex items-center gap-2 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover"
+            >
+              <UserPlusIcon size={16} />
+              Invite people
+            </button>
+          )}
+          {canStream && (
+            <button
+              type="button"
+              onClick={onShare}
+              className="flex items-center gap-2 rounded-sm bg-surface-hover px-4 py-2 text-[13px] font-semibold text-text-primary hover:bg-surface-active"
+            >
+              <ScreenIcon size={16} />
+              Share screen
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── dock ─────────────────────────────────────────────────────────
+
+const DOCK_BUTTON = "flex h-10 w-10 items-center justify-center rounded-md";
+const DOCK_TONES = {
+  soft: "bg-surface-hover text-text-secondary hover:bg-surface-active hover:text-text-bright",
+  danger: "bg-error/15 text-error hover:bg-error/25",
+  on: "bg-accent text-on-accent hover:bg-accent-hover",
+} as const;
+
+function DockButton({
+  title,
+  tone,
+  onClick,
+  children,
+}: {
+  title: string;
+  tone: keyof typeof DOCK_TONES;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button type="button" title={title} aria-label={title} onClick={onClick} className={`${DOCK_BUTTON} ${DOCK_TONES[tone]}`}>
+      {children}
+    </button>
+  );
+}
+
+function DockDivider() {
+  return <div className="mx-0.5 h-6 w-px bg-border-divider" />;
+}
+
+/// The floating control dock: your mic and headphones, screen share (+ the
+/// stream-audio app picker while live), leave. Same shape as CallStage's.
+function VoiceDock({ canStream, onShare }: { canStream: boolean; onShare: () => void }) {
+  const isMuted = useVoiceStore((s) => s.isMuted);
+  const isDeafened = useVoiceStore((s) => s.isDeafened);
+  const isStreaming = useVoiceStore((s) => s.isStreaming);
+
+  // Sounds match UserPanel's controls for the same actions.
+  const handleMute = () => {
+    if (isDeafened) {
+      playSound("undeafen");
+      invoke("set_voice_deafen", { deafened: false }).catch(console.error);
+      invoke("set_voice_mute", { muted: false }).catch(console.error);
+    } else {
+      playSound(isMuted ? "unmute" : "mute");
+      invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
+    }
+  };
+
+  const handleDeafen = () => {
+    playSound(isDeafened ? "undeafen" : "deafen");
+    invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
+  };
+
+  const handleStopSharing = async () => {
+    playSound("stream_stop");
+    const { connectedServerId, connectedChannelId } = useVoiceStore.getState();
+    // Tear down the renderer-side capture + encoder first so no more
+    // frames are pushed to native after we tell native to stop.
+    const { stopActiveStream } = await import("./streaming/StreamCapture");
+    await stopActiveStream();
+    invoke("stop_screen_share", {
+      serverId: connectedServerId,
+      channelId: connectedChannelId,
+    }).catch(console.error);
+    useVoiceStore.getState().setIsStreaming(false);
+  };
+
+  const handleDisconnect = async () => {
+    playSound("disconnect");
+    const v = useVoiceStore.getState();
+    const { connectedServerId, connectedChannelId } = v;
+    // If we're streaming, stop the capture/encoder and tell native to
+    // stop BEFORE leaving. Otherwise capture keeps running and, since
+    // disconnect() hides the dock, there's no UI left to end it.
+    if (v.isStreaming) {
+      const { stopActiveStream } = await import("./streaming/StreamCapture");
+      await stopActiveStream();
+      if (connectedServerId && connectedChannelId) {
+        await invoke("stop_screen_share", {
+          serverId: connectedServerId,
+          channelId: connectedChannelId,
+        }).catch(console.error);
+      }
+      useVoiceStore.getState().setIsStreaming(false);
+    }
+    if (connectedServerId && connectedChannelId) {
+      // Best-effort, un-awaited: leave_voice_channel below drops all watch
+      // subscriptions server-side, so don't serialize N round-trips into the
+      // disconnect path.
+      const own = useAuthStore.getState().username;
+      for (const username of useVoiceStore.getState().watchingStreams) {
+        if (username !== own) {
+          invoke("stop_watching", {
+            serverId: connectedServerId,
+            channelId: connectedChannelId,
+            targetUsername: username,
+          }).catch(() => {});
+        }
+      }
+    }
+    invoke("leave_voice_channel").catch(console.error);
+    useVoiceStore.getState().disconnect();
+    useUiStore.getState().setActiveView("server");
+  };
+
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center">
+      <div className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-border bg-bg-light p-1.5 shadow-float">
+        <DockButton title={isMuted ? "Unmute" : "Mute"} tone={isMuted ? "danger" : "soft"} onClick={handleMute}>
+          {isMuted ? <MicOffIcon /> : <MicIcon />}
+        </DockButton>
+        <DockButton title={isDeafened ? "Undeafen" : "Deafen"} tone={isDeafened ? "danger" : "soft"} onClick={handleDeafen}>
+          {isDeafened ? <HeadphonesOffIcon /> : <HeadphonesIcon />}
+        </DockButton>
+        {(canStream || isStreaming) && (
+          <>
+            <DockDivider />
+            <DockButton
+              title={isStreaming ? "Stop sharing" : "Share your screen"}
+              tone={isStreaming ? "on" : "soft"}
+              onClick={isStreaming ? () => void handleStopSharing() : onShare}
+            >
+              {isStreaming ? <StopShareIcon /> : <ScreenIcon />}
+            </DockButton>
+            <StreamAudioButton size={18} className={`${DOCK_BUTTON} ${DOCK_TONES.soft}`} />
+          </>
+        )}
+        <DockDivider />
+        <button
+          type="button"
+          title="Disconnect"
+          aria-label="Disconnect"
+          onClick={() => void handleDisconnect()}
+          className="flex h-10 w-14 items-center justify-center rounded-md bg-error text-on-error hover:bg-error/85"
+        >
+          <LeaveIcon />
+        </button>
+      </div>
+    </div>
   );
 }
