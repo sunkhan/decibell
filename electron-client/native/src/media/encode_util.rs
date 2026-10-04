@@ -1,5 +1,5 @@
-//! Platform-neutral helpers for the native (Windows) encode path, kept out
-//! of the `cfg(windows)` modules so their unit tests run everywhere:
+//! Platform-neutral helpers for the native encode paths, kept out of the
+//! `cfg(windows)` modules so their unit tests run everywhere:
 //!
 //!  - Annex B scanning + parameter-set insertion — the safety net that
 //!    guarantees every H.264 / HEVC keyframe a watcher can join on carries
@@ -7,7 +7,7 @@
 //!  - The aspect-fit destination rect the D3D11 video processor scales the
 //!    captured texture into.
 
-// Only the Windows encoder uses these today.
+// Linux uses only the Annex B half (H.264 parameter-set safety net).
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
 /// NAL header layout of an Annex B bitstream.

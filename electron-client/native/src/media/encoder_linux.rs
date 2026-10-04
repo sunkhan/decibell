@@ -205,37 +205,6 @@ fn annexb_to_avcc(data: &[u8]) -> Vec<u8> {
     result
 }
 
-/// Build an avcC (AVCDecoderConfigurationRecord) from SPS and PPS NAL units.
-/// This is required by WebCodecs as the `description` field in VideoDecoderConfig.
-fn build_avcc_record(sps: &[u8], pps: &[u8]) -> Vec<u8> {
-    let mut record = Vec::new();
-
-    // configurationVersion
-    record.push(1);
-    // AVCProfileIndication (from SPS byte 1)
-    record.push(if sps.len() > 1 { sps[1] } else { 0x64 }); // default High Profile
-    // profile_compatibility (from SPS byte 2)
-    record.push(if sps.len() > 2 { sps[2] } else { 0x00 });
-    // AVCLevelIndication (from SPS byte 3)
-    record.push(if sps.len() > 3 { sps[3] } else { 0x2A }); // default Level 4.2
-    // lengthSizeMinusOne = 3 (we use 4-byte lengths) | 0xFC reserved bits
-    record.push(0xFF);
-    // numOfSequenceParameterSets = 1 | 0xE0 reserved bits
-    record.push(0xE1);
-    // SPS length (big-endian u16)
-    record.extend_from_slice(&(sps.len() as u16).to_be_bytes());
-    // SPS data
-    record.extend_from_slice(sps);
-    // numOfPictureParameterSets = 1
-    record.push(1);
-    // PPS length (big-endian u16)
-    record.extend_from_slice(&(pps.len() as u16).to_be_bytes());
-    // PPS data
-    record.extend_from_slice(pps);
-
-    record
-}
-
 /// Magic 4-byte sentinel marking a length-prefixed hvcC/av1C blob ahead
 /// of the bitstream on HEVC/AV1 keyframes. Picked so it can't collide
 /// with a realistic 4-byte HEVC NAL length (would imply a NAL ~3.7 GB)
@@ -249,8 +218,8 @@ pub const WIRE_DESCRIPTION_MAGIC: [u8; 4] = [0xDE, 0xC1, 0xBE, 0x11];
 /// that carry a description (hvcC / av1C), prepend
 /// `[MAGIC 4 bytes][u32 BE: desc_len][desc bytes]` so the receiver can
 /// configure its WebCodecs decoder without parsing the bitstream itself.
-/// H.264 keyframes don't use this — receivers parse inline SPS/PPS to
-/// build avcC, which has been the H.264 path since v0.4.x.
+/// H.264 doesn't use this: it travels as Annex B with SPS/PPS inline on
+/// keyframes, which WebCodecs decodes without a description.
 ///
 /// For self-preview the streamer's local React event already carries the
 /// description in a separate field and uses `EncodedFrame.data` directly,
@@ -277,51 +246,19 @@ pub fn build_wire_data<'a>(
     std::borrow::Cow::Borrowed(&encoded.data)
 }
 
-/// Extract avcC description from AVCC-formatted data (4-byte length-prefixed NAL units).
-/// Use this on the receiver side to build the description from reassembled keyframe data.
-pub fn extract_avcc_description_from_avcc(avcc_data: &[u8]) -> Option<Vec<u8>> {
-    let mut sps: Option<Vec<u8>> = None;
-    let mut pps: Option<Vec<u8>> = None;
-    let mut i = 0;
-    let len = avcc_data.len();
-
-    while i + 4 <= len {
-        let nal_len = u32::from_be_bytes([avcc_data[i], avcc_data[i+1], avcc_data[i+2], avcc_data[i+3]]) as usize;
-        i += 4;
-        if i + nal_len > len { break; }
-        let nal_type = avcc_data[i] & 0x1F;
-        match nal_type {
-            7 => sps = Some(avcc_data[i..i+nal_len].to_vec()),
-            8 => pps = Some(avcc_data[i..i+nal_len].to_vec()),
-            _ => {}
-        }
-        i += nal_len;
-    }
-
-    match (sps, pps) {
-        (Some(s), Some(p)) => Some(build_avcc_record(&s, &p)),
-        _ => None,
-    }
-}
-
-/// Extract SPS and PPS NAL units from an Annex B keyframe and build avcC record.
-fn extract_avcc_description(annexb_data: &[u8]) -> Option<Vec<u8>> {
+/// The SPS + PPS NAL units of an Annex B H.264 access unit, re-emitted as an
+/// Annex B blob (4-byte start codes) that can be spliced in front of a later
+/// keyframe. None unless both are present.
+fn annexb_h264_parameter_sets(annexb_data: &[u8]) -> Option<Vec<u8>> {
     let nals = parse_annexb_nals(annexb_data);
-    let mut sps: Option<&[u8]> = None;
-    let mut pps: Option<&[u8]> = None;
-
-    for (nal_type, nal_data) in &nals {
-        match nal_type {
-            7 => sps = Some(nal_data), // SPS
-            8 => pps = Some(nal_data), // PPS
-            _ => {}
-        }
-    }
-
-    match (sps, pps) {
-        (Some(s), Some(p)) => Some(build_avcc_record(s, p)),
-        _ => None,
-    }
+    let sps = nals.iter().find(|(t, _)| *t == 7)?.1;
+    let pps = nals.iter().find(|(t, _)| *t == 8)?.1;
+    let mut out = Vec::with_capacity(8 + sps.len() + pps.len());
+    out.extend_from_slice(&[0, 0, 0, 1]);
+    out.extend_from_slice(sps);
+    out.extend_from_slice(&[0, 0, 0, 1]);
+    out.extend_from_slice(pps);
+    Some(out)
 }
 
 /// Persistent scaler context for pixel format conversion / scaling.
@@ -432,6 +369,9 @@ pub struct H264Encoder {
     /// per-packet UdpVideoPacket.codec byte (Plan B Task 7) and to
     /// codec-specific config / extradata handling (Plan B Tasks 4-5).
     pub codec: crate::media::caps::CodecKind,
+    /// H.264 only: the last SPS+PPS seen on a keyframe (Annex B), spliced
+    /// into keyframes that arrive without them (see with_h264_parameter_sets).
+    h264_param_sets: Option<Vec<u8>>,
     encoder: ffmpeg_next::encoder::Video,
     frame_count: u64,
     keyframe_interval: u64,
@@ -488,7 +428,8 @@ pub struct EncoderConfig {
 #[derive(Debug)]
 pub struct EncodedFrame {
     /// Encoded bitstream in the format the WebCodecs decoder expects:
-    ///   - H.264 / H.265 → length-prefixed NALU (AVCC / HVCC)
+    ///   - H.264         → Annex B, SPS/PPS inline on keyframes (no description)
+    ///   - H.265         → length-prefixed NALU (HVCC) + hvcC description
     ///   - AV1           → OBU stream
     /// Codec is identified via the surrounding pipeline's CodecKind, NOT
     /// stored in this struct (it would duplicate H264Encoder.codec).
@@ -496,8 +437,8 @@ pub struct EncodedFrame {
     pub is_keyframe: bool,
     pub pts: u64,
     /// Codec decoder-configuration record, present on keyframes only:
-    ///   - H.264 → avcC (built from SPS/PPS extracted from annex-B)
-    ///   - H.265 → hvcC (FFmpeg encoder.extradata())
+    ///   - H.264 → none (SPS/PPS travel inline in the Annex B keyframe)
+    ///   - H.265 → hvcC (built from the keyframe's inline VPS/SPS/PPS)
     ///   - AV1   → av1C (FFmpeg encoder.extradata())
     /// Field name kept stable for diff hygiene; semantics are codec-aware.
     /// Pass these bytes verbatim to WebCodecs VideoDecoder.configure({description}).
@@ -646,6 +587,7 @@ impl H264Encoder {
         };
 
         Ok(H264Encoder {
+            h264_param_sets: None,
             codec: target_codec,
             encoder,
             frame_count: 0,
@@ -1006,6 +948,7 @@ impl H264Encoder {
         );
 
         Ok(H264Encoder {
+            h264_param_sets: None,
             // VAAPI path is currently H.264-only (Plan B Group 2 limits scope).
             codec: crate::media::caps::CodecKind::H264Hw,
             encoder,
@@ -1169,6 +1112,7 @@ impl H264Encoder {
         );
 
         Ok(H264Encoder {
+            h264_param_sets: None,
             // CUDA path is currently H.264-only (Plan B Group 2 limits scope).
             codec: crate::media::caps::CodecKind::H264Hw,
             encoder,
@@ -1490,6 +1434,7 @@ impl H264Encoder {
         );
 
         Ok(H264Encoder {
+            h264_param_sets: None,
             codec: target_codec,
             encoder,
             frame_count: 0,
@@ -1848,13 +1793,20 @@ impl H264Encoder {
     /// Codec-aware bitstream conversion + description extraction. Shared
     /// between receive_one_packet and flush so both produce the right
     /// EncodedFrame shape per codec.
-    fn build_encoded_frame(&self, raw_data: Vec<u8>, is_keyframe: bool, pts: u64) -> Option<EncodedFrame> {
+    fn build_encoded_frame(&mut self, raw_data: Vec<u8>, is_keyframe: bool, pts: u64) -> Option<EncodedFrame> {
         use crate::media::caps::CodecKind;
         let (data, description) = match self.codec {
             CodecKind::H264Hw | CodecKind::H264Sw => {
-                let avcc_data = annexb_to_avcc(&raw_data);
-                let desc = if is_keyframe { extract_avcc_description(&raw_data) } else { None };
-                (avcc_data, desc)
+                // Annex B exactly as FFmpeg emits it, no description — the
+                // format every receiver configures for (Windows native and the
+                // WebCodecs encoder send the same). This used to be converted
+                // to AVCC (length-prefixed) with SPS/PPS moved into an avcC
+                // description, but descriptions only go on the wire for
+                // HEVC/AV1, so remote watchers got length-prefixed H.264 with
+                // nothing to configure from and decoded nothing — only the
+                // streamer's own preview, which got the description locally,
+                // ever showed a picture.
+                (self.with_h264_parameter_sets(raw_data, is_keyframe), None)
             }
             CodecKind::H265 => {
                 let hvcc_data = annexb_to_avcc(&raw_data);
@@ -1882,6 +1834,31 @@ impl H264Encoder {
             CodecKind::Unknown => return None,
         };
         Some(EncodedFrame { data, is_keyframe, pts, avcc_description: description })
+    }
+
+    /// Make sure an H.264 keyframe carries its SPS/PPS, so a watcher can
+    /// start decoding on it. NVENC / VA-API / x264 repeat them on every IDR
+    /// without GLOBAL_HEADER, but AMF only does on forced IDRs by default —
+    /// so remember the last parameter sets seen and splice them into any
+    /// keyframe that arrives without (after a leading AUD, if any).
+    fn with_h264_parameter_sets(&mut self, data: Vec<u8>, is_keyframe: bool) -> Vec<u8> {
+        use crate::media::encode_util::{contains_nal_type, insert_parameter_sets, NalCodec};
+        if !is_keyframe {
+            return data;
+        }
+        if contains_nal_type(&data, NalCodec::H264, NalCodec::H264.sps_type()) {
+            if let Some(ps) = annexb_h264_parameter_sets(&data) {
+                self.h264_param_sets = Some(ps);
+            }
+            return data;
+        }
+        match &self.h264_param_sets {
+            Some(ps) => {
+                log::debug!("[encoder] H.264 keyframe without SPS — inserting cached parameter sets");
+                insert_parameter_sets(&data, ps, NalCodec::H264)
+            }
+            None => data,
+        }
     }
 
     /// Allocate a D3D11 NV12 texture from the encoder's hw_frames_ctx pool.
@@ -2064,5 +2041,48 @@ impl Drop for H264Encoder {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::annexb_h264_parameter_sets;
+    use crate::media::encode_util::{contains_nal_type, insert_parameter_sets, NalCodec};
+
+    // AUD (9), SPS (7), PPS (8), IDR slice (5) — 4- and 3-byte start codes.
+    const KEYFRAME: &[u8] = &[
+        0, 0, 0, 1, 0x09, 0xF0, //
+        0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1F, //
+        0, 0, 1, 0x68, 0xCE, 0x3C, 0x80, //
+        0, 0, 0, 1, 0x65, 0x88, 0x84,
+    ];
+    // AUD + IDR slice only: an AMF natural IDR without parameter sets.
+    const BARE_KEYFRAME: &[u8] = &[0, 0, 0, 1, 0x09, 0xF0, 0, 0, 0, 1, 0x65, 0x88, 0x84];
+
+    #[test]
+    fn extracts_sps_and_pps_as_annexb() {
+        let ps = annexb_h264_parameter_sets(KEYFRAME).expect("SPS + PPS present");
+        assert_eq!(
+            ps,
+            vec![0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1F, 0, 0, 0, 1, 0x68, 0xCE, 0x3C, 0x80]
+        );
+    }
+
+    #[test]
+    fn no_parameter_sets_without_both() {
+        assert!(annexb_h264_parameter_sets(BARE_KEYFRAME).is_none());
+        // SPS but no PPS.
+        assert!(annexb_h264_parameter_sets(&[0, 0, 0, 1, 0x67, 0x42]).is_none());
+    }
+
+    #[test]
+    fn cached_sets_make_a_bare_keyframe_decodable() {
+        let ps = annexb_h264_parameter_sets(KEYFRAME).unwrap();
+        assert!(!contains_nal_type(BARE_KEYFRAME, NalCodec::H264, 7));
+        let fixed = insert_parameter_sets(BARE_KEYFRAME, &ps, NalCodec::H264);
+        assert!(contains_nal_type(&fixed, NalCodec::H264, 7));
+        assert!(contains_nal_type(&fixed, NalCodec::H264, 8));
+        // The AUD stays first.
+        assert_eq!(&fixed[..6], &[0, 0, 0, 1, 0x09, 0xF0]);
     }
 }

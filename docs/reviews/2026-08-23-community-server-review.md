@@ -1513,6 +1513,19 @@ Day keys are cached per message (WeakMap), like the epoch cache. Verified: tsc w
 build; harness with messages spread over four days in Nocturne / Matinee / Console (dividers between
 the days only, the midnight pair split, today's pair still grouped) and in a DM.
 
+**Client: Linux native H.264 streams showed nothing to watchers (2026-10-04) ✅** — the Linux native
+encoder (`encoder_linux.rs::build_encoded_frame`) converted FFmpeg's Annex B H.264 to AVCC
+(length-prefixed NALs) and moved SPS/PPS into an avcC description, but the wire only carries a
+description for HEVC/AV1 (`encoder_thread_linux.rs`, receiver strip in `media/mod.rs`) — so remote
+watchers got length-prefixed H.264 with nothing to configure from and decoded nothing, while the
+streamer's own preview (which got the description locally) looked fine. The receiver-side avcC
+derivation the old comment relied on left with the Tauri-era native decoder. H.264 now goes out as
+Annex B with SPS/PPS inline, no description — the same format Windows native and the WebCodecs
+encoder send — and a keyframe that arrives without SPS gets the last-seen parameter sets spliced in
+(AMF on Linux, like on Windows, only repeats them on forced IDRs). The dead avcC helpers are gone.
+Verified: `cargo test --lib` 194 (3 new), napi build. User-confirmed symptom; live re-test pending
+(watch a Linux NVENC H.264 stream from another machine). AV1 / HEVC paths unchanged.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
