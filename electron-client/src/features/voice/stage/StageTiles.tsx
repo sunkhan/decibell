@@ -560,7 +560,7 @@ function OverflowPopover({
       style={style}
       className="z-50 w-70 rounded-lg border border-border bg-bg-light p-1.5 shadow-float"
     >
-      <div className="px-2 pb-1.5 pt-2 font-meta text-section font-medium uppercase leading-none tracking-section text-text-muted">
+      <div className="px-2 pb-1.5 pt-2 font-section text-section font-medium uppercase leading-none tracking-section text-text-muted">
         {hidden.length} more in {channelName}
       </div>
       {hidden.map((u) => (

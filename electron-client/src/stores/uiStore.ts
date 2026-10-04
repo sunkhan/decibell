@@ -1,10 +1,13 @@
 import { create } from "zustand";
 
-/// The five selectable palettes. `console-split` is not a palette of
-/// its own — it pairs `console` chrome with the `console-light`
-/// canvas — but it is a first-class choice as far as the UI and the
-/// persisted config are concerned.
+/// The seven selectable palettes. `nocturne` (dark, the default) and
+/// `matinee` (its light twin) are the flagship pair; `console-split`
+/// is not a palette of its own — it pairs `console` chrome with the
+/// `console-light` canvas — but it is a first-class choice as far as
+/// the UI and the persisted config are concerned.
 export type ThemeId =
+  | "nocturne"
+  | "matinee"
   | "graphite"
   | "graphite-light"
   | "console"
@@ -12,6 +15,8 @@ export type ThemeId =
   | "console-split";
 
 export const THEME_IDS: readonly ThemeId[] = [
+  "nocturne",
+  "matinee",
   "graphite",
   "graphite-light",
   "console",
@@ -19,7 +24,7 @@ export const THEME_IDS: readonly ThemeId[] = [
   "console-split",
 ];
 
-export const DEFAULT_THEME: ThemeId = "graphite";
+export const DEFAULT_THEME: ThemeId = "nocturne";
 
 /// localStorage mirror of the persisted theme. The real store of
 /// record is the native config blob, but that only arrives after an

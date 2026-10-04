@@ -3,6 +3,7 @@ import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { UserAvatar } from "../../components/UserAvatar";
+import { BellMark } from "../../components/BellMark";
 import { EMPTY_LIST } from "../../lib/empty";
 import type { ServerMember } from "../../types";
 
@@ -75,7 +76,7 @@ export default function MembersList() {
         style={{ "--list-row-pad-y": "7px", "--list-row-pad-x": "8px", "--list-row-gap": "10px" } as React.CSSProperties}
       >
         <div className="px-1 pt-3 pb-1">
-          <h3 className="font-meta text-section font-medium uppercase leading-none tracking-section text-text-muted">
+          <h3 className="font-section text-section font-medium uppercase leading-none tracking-section text-text-muted">
             Online — {online.length}
           </h3>
         </div>
@@ -84,7 +85,7 @@ export default function MembersList() {
         {(offline.length > 0 || rosterMeta?.hasMore) && (
           <>
             <div className="px-1 pt-4 pb-1">
-              <h3 className="font-meta text-section font-medium uppercase leading-none tracking-section text-text-muted">
+              <h3 className="font-section text-section font-medium uppercase leading-none tracking-section text-text-muted">
                 Offline — {rosterMeta ? Math.max(0, rosterMeta.totalMembers - online.length) : offline.length}
               </h3>
             </div>
@@ -112,15 +113,7 @@ export default function MembersList() {
       </div>
 
       <div className="flex items-center gap-2 px-4 pb-3 pt-2">
-        <div className="flex items-end gap-[2px] opacity-25" style={{ height: 16 }}>
-          {[0, 0.15, 0.3, 0.45, 0.6].map((delay, i) => (
-            <div
-              key={i}
-              className="h-[14px] w-[3px] origin-bottom rounded-[2px] bg-accent"
-              style={{ animationDelay: `${delay}s` }}
-            />
-          ))}
-        </div>
+        <BellMark bars={7} height={14} barWidth={2} barClass="bg-text-muted" className="opacity-60" />
         <span className="font-meta text-[10px] font-emphasis uppercase tracking-wordmark text-text-muted">
           Decibell
         </span>
@@ -168,7 +161,7 @@ const MemberRow = memo(function MemberRow({
         className={`truncate font-channel text-member transition-colors ${
           isOnline
             ? "font-medium text-text-secondary group-hover:text-text-primary"
-            : "font-normal text-text-muted"
+            : "font-normal text-text-muted group-hover:text-text-primary"
         }`}
       >
         {m.nickname || m.username}

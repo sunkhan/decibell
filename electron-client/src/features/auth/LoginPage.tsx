@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
 import { handleCertMismatch } from "../../lib/certMismatch";
+import { BellMark } from "../../components/BellMark";
 
 export default function LoginPage() {
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -53,12 +54,8 @@ export default function LoginPage() {
         onSubmit={handleSubmit}
         className="w-full max-w-[400px] rounded-xl border border-border bg-bg-secondary p-8 shadow-modal"
       >
-        <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-br from-accent to-accent-bright">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
-            <path d="M9 18V5l12-2v13" />
-            <circle cx="6" cy="18" r="3" fill="white" stroke="none" />
-            <circle cx="18" cy="16" r="3" fill="white" stroke="none" />
-          </svg>
+        <div className="mb-5 flex h-12 items-end justify-center">
+          <BellMark bars={13} height={40} rise />
         </div>
 
         <h1 className="mb-1 text-center font-display text-[22px] font-semibold text-text-bright">

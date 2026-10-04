@@ -41,6 +41,34 @@ interface ThemeOption {
 
 const THEMES: ThemeOption[] = [
   {
+    id: "nocturne",
+    name: "Nocturne",
+    mode: "Dark",
+    preview: {
+      chrome: "#0f0d13",
+      sidebar: "#15121a",
+      content: "#1a171f",
+      divider: "rgba(232,224,248,.055)",
+      accent: "#e8b966",
+      textSecondary: "#b9b5c0",
+      textMuted: "#a9a5b2",
+    },
+  },
+  {
+    id: "matinee",
+    name: "Matinee",
+    mode: "Light",
+    preview: {
+      chrome: "#e7e5ed",
+      sidebar: "#f1eff5",
+      content: "#faf9fc",
+      divider: "rgba(28,20,40,.075)",
+      accent: "#6e3685",
+      textSecondary: "#5a5563",
+      textMuted: "#5c5866",
+    },
+  },
+  {
     id: "graphite",
     name: "Graphite",
     mode: "Dark",

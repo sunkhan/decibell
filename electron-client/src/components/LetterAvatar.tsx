@@ -6,7 +6,8 @@
 
 import { stringToGradient } from "../utils/colors";
 
-/// Avatar corner radius, per theme. `graphite*` keep the DS v1
+/// Avatar corner radius, per theme. `nocturne`, `matinee` and
+/// `graphite*` keep the DS v1
 /// squircle — a constant 26% radius-to-size ratio, so a 22px voice
 /// participant reads as the same shape instead of collapsing into a
 /// circle the way a fixed radius does at small sizes. `console*`

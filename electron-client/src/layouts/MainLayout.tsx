@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { invoke } from "../lib/ipc";
 import ServerBar from "../features/servers/ServerBar";
 import ServerBrowseView from "../features/servers/ServerBrowseView";
@@ -128,9 +128,7 @@ export default function MainLayout() {
                   four themes. */}
               <div className="chrome-scope relative flex shrink-0">
                 <ChannelSidebar />
-                <div className="absolute bottom-2 left-2 right-2 z-20">
-                  <UserPanel />
-                </div>
+                <FloatingUserPanel />
               </div>
               {activeView === "voice" ? (
                 <VoicePanel />
@@ -177,6 +175,34 @@ export default function MainLayout() {
       <PassphraseModal />
       <PersistentAudioLayer />
       <PersistentVideoLayer />
+    </div>
+  );
+}
+
+/// The UserPanel floats over the bottom of the sidebar, and its height
+/// moves: a voice session, the stream controls and the update chip all
+/// add rows. Publishing the live height as --user-panel-h on the sidebar
+/// group lets the lists (`.sidebar-above-panel`) end just above the
+/// panel instead of running underneath it. Written straight to the style
+/// so a resize never re-renders the layout.
+function FloatingUserPanel() {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const host = el?.parentElement;
+    if (!el || !host) return;
+    const publish = () => host.style.setProperty("--user-panel-h", `${el.offsetHeight}px`);
+    publish();
+    const ro = new ResizeObserver(publish);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      host.style.removeProperty("--user-panel-h");
+    };
+  }, []);
+  return (
+    <div ref={ref} className="absolute bottom-2 left-2 right-2 z-20">
+      <UserPanel />
     </div>
   );
 }

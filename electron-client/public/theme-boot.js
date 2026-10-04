@@ -3,7 +3,7 @@
 // The store of record for the selected theme is the native config
 // blob, but reading it costs an async IPC round-trip that lands well
 // after first paint. Without this, a user on one of the light themes
-// sees a full-window flash of graphite dark on every cold start.
+// sees a full-window flash of the default dark palette on every cold start.
 //
 // So setTheme() mirrors its choice into localStorage and this script —
 // loaded synchronously in <head>, before the stylesheet paints — reads
@@ -16,8 +16,8 @@
 // Keep the storage key in sync with THEME_STORAGE_KEY in
 // src/stores/uiStore.ts.
 (function () {
-  var THEMES = ["graphite", "graphite-light", "console", "console-light", "console-split"];
-  var theme = "graphite";
+  var THEMES = ["nocturne", "matinee", "graphite", "graphite-light", "console", "console-light", "console-split"];
+  var theme = "nocturne";
   try {
     var stored = localStorage.getItem("decibell.theme");
     if (stored && THEMES.indexOf(stored) !== -1) theme = stored;

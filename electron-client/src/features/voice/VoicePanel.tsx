@@ -140,7 +140,7 @@ export default function VoicePanel() {
 
 // ── header ───────────────────────────────────────────────────────
 
-const HEADER_TITLE = "font-channel text-title font-emphasis tracking-title text-text-bright";
+const HEADER_TITLE = "font-display text-title font-emphasis tracking-title text-text-bright";
 
 function VoiceHeader({
   channelName,

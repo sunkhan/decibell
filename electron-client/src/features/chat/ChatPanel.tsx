@@ -984,7 +984,7 @@ export default function ChatPanel() {
 
   return (
     <div ref={panelRef} className="flex min-w-0 flex-1 flex-col bg-bg-mid">
-      <div className="flex h-12 items-center border-b border-border-divider px-4 font-channel text-title font-emphasis tracking-title text-text-bright">
+      <div className="flex h-12 items-center border-b border-border-divider px-4 font-display text-title font-emphasis tracking-title text-text-bright">
         <span className="mr-1.5 text-text-muted">#</span>
         <span className="truncate">{channelName}</span>
         {channel?.encrypted ? (
@@ -1248,7 +1248,7 @@ function SendButton({
     <button
       onClick={onSend}
       disabled={!hasDraft && !hasLivePendings}
-      className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-on-accent transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+      className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-on-accent transition-all enabled:hover:bg-accent-hover enabled:active:scale-95 disabled:cursor-not-allowed disabled:bg-surface-active disabled:text-text-muted"
       title="Send"
     >
       <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">

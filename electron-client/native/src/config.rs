@@ -106,8 +106,8 @@ pub struct AppSettings {
     /// at runtime if the saved codec isn't in the user's encodeCaps.
     pub stream_enforced_codec: Option<u8>,
 
-    /// Selected UI palette: one of `graphite`, `graphite-light`,
-    /// `console`, `console-light`, `console-split`. Stored as a plain
+    /// Selected UI palette: one of `nocturne`, `matinee`, `graphite`,
+    /// `graphite-light`, `console`, `console-light`, `console-split`. Stored as a plain
     /// string rather than an enum so an unknown value from a newer
     /// build round-trips instead of failing the whole deserialise; the
     /// client whitelist-checks it on load and falls back to the
@@ -178,7 +178,7 @@ fn default_true() -> bool {
 }
 
 fn default_theme() -> String {
-    "graphite".to_string()
+    "nocturne".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,7 +399,7 @@ mod tests {
         assert!(d.use_av1 && d.use_h265);
         assert!(d.crash_reporting_enabled);
         assert!(d.link_previews_enabled);
-        assert_eq!(d.theme, "graphite");
+        assert_eq!(d.theme, "nocturne");
         assert!(!d.aec_enabled);
         assert!(d.input_device.is_none());
     }

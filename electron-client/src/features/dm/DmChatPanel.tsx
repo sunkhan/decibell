@@ -1086,7 +1086,7 @@ function DmSendButton({
     <button
       onClick={onSend}
       disabled={sending || !hasDraft}
-      className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-sm bg-accent text-on-accent transition-all hover:bg-accent-hover active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+      className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-sm bg-accent text-on-accent transition-all enabled:hover:bg-accent-hover enabled:active:scale-95 disabled:cursor-not-allowed disabled:bg-surface-active disabled:text-text-muted"
     >
       <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
         <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />

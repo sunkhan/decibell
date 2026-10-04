@@ -161,7 +161,7 @@ export default function FriendsList() {
           (section) =>
             section.items.length > 0 && (
               <div key={section.label} className="mb-3">
-                <h3 className="mb-1 px-2 font-channel text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                <h3 className="mb-1 px-2 font-section text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                   {section.label} — {section.items.length}
                 </h3>
                 {section.items.map((friend) => (

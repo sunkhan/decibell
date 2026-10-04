@@ -3,8 +3,12 @@
    ═══════════════════════════════════════ */
 
 @import "@fontsource-variable/inter/index.css";
-@import "@fontsource/ibm-plex-mono/400.css";
-@import "@fontsource/ibm-plex-mono/500.css";
+/* Mona Sans with both axes (wght 200–900, wdth 75–125): `nocturne`,
+ * `matinee` and `graphite*` set the UI at width 100 and the server tabs
+ * and the footer wordmark at the expanded end of the same family.
+ * Headers (`font-display`) and group labels (`font-section`) stay in
+ * Inter. */
+@import "@fontsource-variable/mona-sans/standard.css";
 /* JetBrains Mono comes from npm rather than the two local .ttf files
  * tauri-client vendored, because those only covered 400 and 500. The
  * console themes set almost all of their chrome in mono and lean on
@@ -131,20 +135,26 @@
 
   --font-sans: var(--t-font-ui);
   /* `font-meta` is the metadata face — timestamps, statuses, counts,
-     uppercase group labels, value readouts — and is each theme's
-     choice: Inter in graphite (2026-08-27; it was IBM Plex Mono, which
-     read as a terminal font against the Inter chrome), JetBrains Mono
-     in console. `font-mono` is real monospace in every theme — code,
+     value readouts — and is each theme's
+     choice: Mona Sans in nocturne / matinee / graphite (2026-10-04; it
+     was Inter, and IBM Plex Mono before that, which read as a terminal
+     font against the chrome), JetBrains Mono in console. `font-display`
+     is the header face — Inter everywhere except console. `font-mono`
+     is real monospace in every theme — code,
      fingerprints, invite codes, addresses, <kbd> — and never follows
      the theme's taste. */
   --font-meta: var(--t-font-meta);
   --font-mono: var(--t-font-code);
   --font-channel: var(--t-font-channel);
   --font-display: var(--t-font-display);
-  /* Server names in the ServerBar tiles: JetBrains Mono in every theme
-     (2026-08-27) — the one place the console themes' terminal face is
-     used as a deliberate accent in graphite, not a per-theme choice. */
-  --font-tile: var(--font-stack-jetbrains);
+  /* Uppercase group labels (ONLINE / OFFLINE, channel categories):
+     Inter in the Mona Sans themes — the owner preferred graphite's old
+     label face there — and the meta face (JetBrains Mono) in console. */
+  --font-section: var(--t-font-section);
+  /* Server names in the ServerBar tiles: Mona Sans semi-expanded under
+     nocturne / matinee / graphite (2026-10-04), JetBrains Mono under
+     console. */
+  --font-tile: var(--t-font-tile);
 
   /* ─── Type scale ───
      Per-theme, because the two families don't share a size. `console*`
@@ -188,8 +198,8 @@
   /* The user picks an absolute body size in px; --ui-text-size-n is
      that number, unitless. Everything else in the type scale is a
      multiple of it, so the scale is the ratio between what they asked
-     for and the theme's natural body size — 13.5 under graphite, 13
-     under console. Doing the division here rather than in JS means a
+     for and the theme's natural body size — 14.5 under the Mona Sans
+     themes, 13 under console. Doing the division here rather than in JS means a
      theme switch re-derives it for free and the pre-mount script
      doesn't need to know either number.
 
@@ -208,10 +218,22 @@
      darker and needs more to read, the light canvases less. */
   --tile-tint: var(--t-tile-tint);
 
+  /* Per-theme typography knobs with a shared default — the console
+     values (JetBrains Mono tiles, no width changes, tightened body
+     tracking). The Mona Sans themes restate them; see the block after
+     graphite-light for why graphite does so separately. */
+  --t-font-tile: var(--font-stack-jetbrains);
+  --t-font-section: var(--t-font-meta);
+  --t-ls-body: -0.01em;
+  /* font-stretch per role. Inert for any family without a wdth axis
+     (Inter, JetBrains Mono), so only Mona Sans themes move them. */
+  --t-tile-stretch: normal;
+  --t-wordmark-stretch: normal;
+
   /* Font stacks referenced by the palettes. */
   --font-stack-ui: "Inter Variable", "Inter", "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-stack-mona: "Mona Sans Variable", "Mona Sans", "Inter Variable", "Segoe UI Variable", ui-sans-serif, system-ui, sans-serif;
   --font-stack-jetbrains: "JetBrains Mono", ui-monospace, monospace;
-  --font-stack-plex: "IBM Plex Mono", ui-monospace, monospace;
 
   /* Identity ramp — avatar fills and sender-name colours, indexed by
      the same hash in utils/colors.ts. `av` is a fill (always paired
@@ -253,7 +275,13 @@
    wordmark, the composer placeholder — uses text-muted instead,
    which is why the two are equal in several themes.                */
 
-/* ─── graphite (dark) — default ─────────────────────────────────── */
+/* ─── graphite (dark) ───────────────────────────────────────────────
+   Also the bare-:root fallback, i.e. what paints if no data-theme is
+   set at all. theme-boot.js always sets one (nocturne by default), so
+   that only matters if the boot script fails to load. Kept here rather
+   than on nocturne because nocturne restates the shared typography
+   knobs (--t-font-tile, the stretches, --t-ls-body), and a bare :root
+   on its block would leak them into graphite and console. */
 :root,
 :root[data-theme="graphite"] {
   --t-chrome: #0e1116;
@@ -304,30 +332,29 @@
   --t-scrollbar: rgba(255, 255, 255, 0.08);
   --t-scrollbar-hover: rgba(255, 255, 255, 0.14);
 
-  --t-font-ui: var(--font-stack-ui);
-  --t-font-meta: var(--font-stack-ui);
-  --t-font-code: var(--font-stack-plex);
-  --t-font-channel: var(--font-stack-ui);
+  /* Nocturne's type (2026-10-04): Mona Sans for the UI, JetBrains Mono
+     for code, Inter kept for headers. The scale is nocturne's too —
+     it was tuned for Mona's metrics, not for the palette. */
+  --t-font-ui: var(--font-stack-mona);
+  --t-font-meta: var(--font-stack-mona);
+  --t-font-code: var(--font-stack-jetbrains);
+  --t-font-channel: var(--font-stack-mona);
   --t-font-display: var(--font-stack-ui);
 
-
-  /* Type scale — graphite (Inter throughout; Plex Mono only for code).
-     The meta / micro / section sizes sit 0.5px above where they were
-     with Plex Mono: Inter's glyphs are narrower, so the same px reads
-     lighter. */
-  --t-fs-title: 14px;
-  --t-fs-body-n: 13.5;
-  --t-lh-body: 1.4;
-  --t-fs-body: 13.5px;
-  --t-fs-sender: 13.5px;
-  --t-fs-channel: 13.5px;
-  --t-fs-member: 13px;
-  --t-fs-section: 10.5px;
-  --t-fs-meta: 11px;
-  --t-fs-micro: 10.5px;
+  --t-fs-title: 15px;
+  --t-fs-body-n: 14.5;
+  --t-lh-body: 1.45;
+  --t-fs-body: 14.5px;
+  --t-fs-sender: 14.5px;
+  --t-fs-channel: 14px;
+  --t-fs-member: 14px;
+  /* Graphite's old label size at the default body (10.5 × 14.5 / 13.5). */
+  --t-fs-section: 11.25px;
+  --t-fs-meta: 11.5px;
+  --t-fs-micro: 11px;
   --t-ls-title: -0.02em;
   --t-ls-section: 0.12em;
-  --t-ls-wordmark: 0.14em;
+  --t-ls-wordmark: 0.24em;
   --t-fw-emphasis: 600;
 
   /* DS v1 squircle: a ratio, so every avatar size reads as the same
@@ -405,30 +432,29 @@
   --t-scrollbar: rgba(15, 20, 30, 0.16);
   --t-scrollbar-hover: rgba(15, 20, 30, 0.28);
 
-  --t-font-ui: var(--font-stack-ui);
-  --t-font-meta: var(--font-stack-ui);
-  --t-font-code: var(--font-stack-plex);
-  --t-font-channel: var(--font-stack-ui);
+  /* Nocturne's type (2026-10-04): Mona Sans for the UI, JetBrains Mono
+     for code, Inter kept for headers. The scale is nocturne's too —
+     it was tuned for Mona's metrics, not for the palette. */
+  --t-font-ui: var(--font-stack-mona);
+  --t-font-meta: var(--font-stack-mona);
+  --t-font-code: var(--font-stack-jetbrains);
+  --t-font-channel: var(--font-stack-mona);
   --t-font-display: var(--font-stack-ui);
 
-
-  /* Type scale — graphite (Inter throughout; Plex Mono only for code).
-     The meta / micro / section sizes sit 0.5px above where they were
-     with Plex Mono: Inter's glyphs are narrower, so the same px reads
-     lighter. */
-  --t-fs-title: 14px;
-  --t-fs-body-n: 13.5;
-  --t-lh-body: 1.4;
-  --t-fs-body: 13.5px;
-  --t-fs-sender: 13.5px;
-  --t-fs-channel: 13.5px;
-  --t-fs-member: 13px;
-  --t-fs-section: 10.5px;
-  --t-fs-meta: 11px;
-  --t-fs-micro: 10.5px;
+  --t-fs-title: 15px;
+  --t-fs-body-n: 14.5;
+  --t-lh-body: 1.45;
+  --t-fs-body: 14.5px;
+  --t-fs-sender: 14.5px;
+  --t-fs-channel: 14px;
+  --t-fs-member: 14px;
+  /* Graphite's old label size at the default body (10.5 × 14.5 / 13.5). */
+  --t-fs-section: 11.25px;
+  --t-fs-meta: 11.5px;
+  --t-fs-micro: 11px;
   --t-ls-title: -0.02em;
   --t-ls-section: 0.12em;
-  --t-ls-wordmark: 0.14em;
+  --t-ls-wordmark: 0.24em;
   --t-fw-emphasis: 600;
 
   /* DS v1 squircle: a ratio, so every avatar size reads as the same
@@ -453,6 +479,19 @@
   --t-name-6: #b03a32;
   --t-name-7: #93359e;
   --t-name-8: #275f96;
+}
+
+/* The Mona Sans knobs graphite shares with nocturne. Their own block,
+   not the graphite one: that block also answers the bare `:root`
+   fallback, and anything it sets that console doesn't restate would
+   leak into console. */
+:root[data-theme="graphite"],
+:root[data-theme="graphite-light"] {
+  --t-font-tile: var(--font-stack-mona);
+  --t-tile-stretch: 112.5%;
+  --t-wordmark-stretch: 125%;
+  --t-font-section: var(--font-stack-ui);
+  --t-ls-body: 0em;
 }
 
 /* ─── console (dark) ────────────────────────────────────────────── */
@@ -718,6 +757,236 @@
   --tc-name-8: #a8c6d8;
 }
 
+/* ─── nocturne (dark) — default ─────────────────────────────────────
+   The studio after hours: plum-black lacquer instead of blue-grey,
+   brass hardware as the one accent, and Mona Sans — the UI at its
+   normal width, server tabs and the wordmark in the expanded cut, the
+   way gear-panel legends are set. Headers and group labels stay in
+   Inter. Every ramp is built in OKLCH at a fixed hue (300) so the
+   surfaces step in lightness only; the identity ramps share one lightness and chroma
+   and vary only in hue, so no member's colour shouts over another's. */
+:root[data-theme="nocturne"] {
+  --t-chrome: #0f0d13;
+  --t-sidebar: #15121a;
+  --t-content: #1a171f;
+  --t-raised: #232029;
+  --t-high: #2d2934;
+  --t-surface: #37333f;
+  --t-input: #15121a;
+
+  --t-border: rgba(232, 224, 248, 0.075);
+  --t-divider: rgba(232, 224, 248, 0.055);
+  --t-surface-hover: rgba(232, 224, 248, 0.045);
+  --t-surface-active: rgba(232, 224, 248, 0.08);
+  --t-row-hover: rgba(232, 224, 248, 0.018);
+
+  --t-accent: #e8b966;
+  --t-accent-bright: #efd093;
+  --t-accent-hover: #deaa54;
+  --t-accent-pressed: #d09945;
+  /* The washes are champagne, not brass: a saturated yellow at low
+     alpha over plum-black goes brown. A paler source reads as lamp
+     light on the lacquer instead. */
+  --t-accent-soft: rgba(255, 228, 184, 0.09);
+  --t-accent-mid: rgba(255, 226, 178, 0.15);
+  /* Brass is light: everything set on it is near-black lacquer. */
+  --t-on-accent: #24180a;
+
+  --t-success: #65d097;
+  --t-warning: #f7a062;
+  --t-error: #f0767e;
+  --t-on-error: #221011;
+  --t-tile-tint: 16%;
+
+  --t-text-primary: #e8e7ec;
+  --t-text-bright: #f7f6fa;
+  --t-text-secondary: #b9b5c0;
+  --t-text-muted: #a9a5b2;
+  --t-text-faint: #a9a5b2;
+
+  --t-radius-sm: 6px;
+  --t-radius-md: 10px;
+  --t-radius-lg: 12px;
+  --t-radius-xl: 18px;
+
+  /* A 1px top lip on everything that floats: the edge catching the
+     room light. Static, so it costs nothing per frame. */
+  --t-shadow-raised: 0 1px 2px rgb(0 0 0 / 0.45), inset 0 1px 0 rgb(255 255 255 / 0.035);
+  --t-shadow-float: 0 12px 32px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(232 224 248 / 0.08), inset 0 1px 0 rgb(255 255 255 / 0.05);
+  --t-shadow-modal: 0 28px 72px rgb(0 0 0 / 0.55), 0 0 0 1px rgb(232 224 248 / 0.09), inset 0 1px 0 rgb(255 255 255 / 0.06);
+  --t-shadow-ring: 0 0 0 2px rgba(232, 185, 102, 0.35);
+  --t-shadow-glow: 0 0 8px rgba(232, 185, 102, 0.5);
+
+  --t-scrollbar: rgba(232, 224, 248, 0.09);
+  --t-scrollbar-hover: rgba(232, 224, 248, 0.16);
+
+  --t-font-ui: var(--font-stack-mona);
+  --t-font-meta: var(--font-stack-mona);
+  --t-font-code: var(--font-stack-jetbrains);
+  --t-font-channel: var(--font-stack-mona);
+  /* Headers in Inter — the expanded Mona cut read too wide there. */
+  --t-font-display: var(--font-stack-ui);
+  --t-font-tile: var(--font-stack-mona);
+  --t-tile-stretch: 112.5%;
+  --t-wordmark-stretch: 125%;
+  --t-font-section: var(--font-stack-ui);
+
+  /* Type scale — nocturne. Written at the shipped 14.5px body so the
+     numbers read as what renders by default. Mona runs a touch wider
+     than Inter and wants its natural tracking at text sizes. */
+  --t-fs-title: 15px;
+  --t-fs-body-n: 14.5;
+  --t-lh-body: 1.45;
+  --t-fs-body: 14.5px;
+  --t-fs-sender: 14.5px;
+  --t-fs-channel: 14px;
+  --t-fs-member: 14px;
+  /* Graphite's old label size at the default body (10.5 × 14.5 / 13.5). */
+  --t-fs-section: 11.25px;
+  --t-fs-meta: 11.5px;
+  --t-fs-micro: 11px;
+  --t-ls-title: -0.02em;
+  --t-ls-section: 0.12em;
+  --t-ls-wordmark: 0.24em;
+  --t-ls-body: 0em;
+  --t-fw-emphasis: 600;
+
+  --radius-avatar: 26%;
+
+  --t-av-fg: #ffffff;
+  --t-av-1: #bf5e5e;
+  --t-av-2: #b8692c;
+  --t-av-3: #9f7a00;
+  --t-av-4: #449453;
+  --t-av-5: #009791;
+  --t-av-6: #2388c3;
+  --t-av-7: #7974c7;
+  --t-av-8: #a963a3;
+  --t-name-1: #f9adaa;
+  --t-name-2: #f2b58c;
+  --t-name-3: #dcc17f;
+  --t-name-4: #9cd5a3;
+  --t-name-5: #7ad7d1;
+  --t-name-6: #8dccf9;
+  --t-name-7: #bdbcfd;
+  --t-name-8: #e6afe0;
+}
+
+/* ─── matinee (light) ───────────────────────────────────────────────
+   Nocturne's daytime twin: the same hue-300 ramp lifted to a cool
+   lilac-tinted paper (never cream). The accent is velvet plum, not
+   brass: one token has to serve as a fill under white *and* as link
+   text on paper, and a gold dark enough for both is simply brown. Plum
+   is the ramp's own hue at full chroma, so it reads as part of the
+   room rather than a sticker on it. */
+:root[data-theme="matinee"] {
+  --t-chrome: #e7e5ed;
+  --t-sidebar: #f1eff5;
+  --t-content: #faf9fc;
+  --t-raised: #ffffff;
+  --t-high: #efedf3;
+  --t-surface: #e4e1ea;
+  --t-input: #ffffff;
+
+  --t-border: rgba(28, 20, 40, 0.1);
+  --t-divider: rgba(28, 20, 40, 0.075);
+  --t-surface-hover: rgba(28, 20, 40, 0.045);
+  --t-surface-active: rgba(28, 20, 40, 0.075);
+  --t-row-hover: rgba(28, 20, 40, 0.022);
+
+  --t-accent: #6e3685;
+  --t-accent-bright: #5e2974;
+  --t-accent-hover: #632d78;
+  --t-accent-pressed: #57276a;
+  --t-accent-soft: rgba(110, 54, 133, 0.085);
+  --t-accent-mid: rgba(110, 54, 133, 0.15);
+  --t-on-accent: #ffffff;
+
+  --t-success: #0f7f48;
+  --t-warning: #a8591a;
+  --t-error: #bd373f;
+  --t-on-error: #ffffff;
+  --t-tile-tint: 13%;
+
+  --t-text-primary: #1c1923;
+  --t-text-bright: #0f0b15;
+  --t-text-secondary: #5a5563;
+  --t-text-muted: #5c5866;
+  --t-text-faint: #5c5866;
+
+  --t-radius-sm: 6px;
+  --t-radius-md: 10px;
+  --t-radius-lg: 12px;
+  --t-radius-xl: 18px;
+
+  --t-shadow-raised: 0 1px 3px rgba(28, 20, 40, 0.1), inset 0 0 0 1px rgba(28, 20, 40, 0.07);
+  --t-shadow-float: 0 10px 28px rgba(28, 20, 40, 0.14), 0 0 0 1px rgba(28, 20, 40, 0.08);
+  --t-shadow-modal: 0 28px 72px rgba(28, 20, 40, 0.22), 0 0 0 1px rgba(28, 20, 40, 0.1);
+  --t-shadow-ring: 0 0 0 2px rgba(110, 54, 133, 0.26);
+  --t-shadow-glow: 0 0 0 3px rgba(110, 54, 133, 0.16);
+
+  --t-scrollbar: rgba(28, 20, 40, 0.16);
+  --t-scrollbar-hover: rgba(28, 20, 40, 0.28);
+
+  --t-font-ui: var(--font-stack-mona);
+  --t-font-meta: var(--font-stack-mona);
+  --t-font-code: var(--font-stack-jetbrains);
+  --t-font-channel: var(--font-stack-mona);
+  /* Headers in Inter — the expanded Mona cut read too wide there. */
+  --t-font-display: var(--font-stack-ui);
+  --t-font-tile: var(--font-stack-mona);
+  --t-tile-stretch: 112.5%;
+  --t-wordmark-stretch: 125%;
+  --t-font-section: var(--font-stack-ui);
+
+  --t-fs-title: 15px;
+  --t-fs-body-n: 14.5;
+  --t-lh-body: 1.45;
+  --t-fs-body: 14.5px;
+  --t-fs-sender: 14.5px;
+  --t-fs-channel: 14px;
+  --t-fs-member: 14px;
+  /* Graphite's old label size at the default body (10.5 × 14.5 / 13.5). */
+  --t-fs-section: 11.25px;
+  --t-fs-meta: 11.5px;
+  --t-fs-micro: 11px;
+  --t-ls-title: -0.02em;
+  --t-ls-section: 0.12em;
+  --t-ls-wordmark: 0.24em;
+  --t-ls-body: 0em;
+  --t-fw-emphasis: 600;
+
+  --radius-avatar: 26%;
+
+  --t-av-fg: #ffffff;
+  --t-av-1: #b75a59;
+  --t-av-2: #b0652a;
+  --t-av-3: #987500;
+  --t-av-4: #418d50;
+  --t-av-5: #00908a;
+  --t-av-6: #2382ba;
+  --t-av-7: #746fbe;
+  --t-av-8: #a15e9c;
+  --t-name-1: #963538;
+  --t-name-2: #904100;
+  --t-name-3: #795400;
+  --t-name-4: #0e6d2c;
+  --t-name-5: #00706b;
+  --t-name-6: #00619b;
+  --t-name-7: #554da0;
+  --t-name-8: #823b7d;
+}
+
+/* Width axis per role. Unlayered, so these sit beside the Tailwind
+   utilities of the same name without fighting them: the utility sets
+   the family or size, this adds the stretch. */
+.font-tile {
+  font-stretch: var(--t-tile-stretch);
+}
+.tracking-wordmark {
+  font-stretch: var(--t-wordmark-stretch);
+}
+
 /* ─── Chrome scope ──────────────────────────────────────────────────
    @theme's --color-* assignments are substituted once, at :root, so
    re-declaring --t-* further down the tree would do nothing. Split
@@ -825,6 +1094,46 @@
   gap: calc(var(--list-row-gap, 10px) * var(--ui-row-scale));
 }
 
+/* The channel / DM sidebars end their scroll area just above the
+   floating UserPanel: its 8px inset, its live height (published by
+   MainLayout's FloatingUserPanel, which follows voice / stream rows
+   coming and going), and an 8px gap matching the inset. The fallback
+   is the resting panel, for the first paint before it's measured. */
+.sidebar-above-panel {
+  padding-bottom: calc(var(--user-panel-h, 56px) + 16px);
+}
+
+/* A scroll list whose bottom edge dissolves instead of cutting rows in
+   half mid-scroll. The fade is exactly the list's own py-2.5 bottom
+   padding, so at the end of the list it covers only padding and the
+   last row stays fully opaque. */
+.fade-end {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 10px), transparent);
+}
+
+/* The type glyph at the head of a channel row — `#` for text, the mic
+   for voice. One square slot sized in em off the row's text-channel
+   size, so both glyphs grow with the Text size setting and the name
+   after them starts at the same x whichever kind the row is. The `#`
+   is set at the slot's font size; the mic is drawn a little smaller
+   because its strokes fill the whole box where a `#` sits inside its
+   line height. */
+.channel-icon {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.45em;
+  font-weight: 500;
+  line-height: 1;
+  width: 1em;
+  height: 1em;
+}
+.channel-icon svg {
+  width: 0.82em;
+  height: 0.82em;
+}
+
 /* Presence dot pinned to an avatar's corner. Tracks --avatar-scale so
    it stays proportional instead of shrinking into the corner as the
    avatar grows. */
@@ -878,7 +1187,7 @@
        anyway. Labels and emphasis are unchanged — they set their own
        weight. */
     font-weight: 400;
-    letter-spacing: -0.01em;
+    letter-spacing: var(--t-ls-body);
     /* Inter typographic alternates: cv11 (single-storey a), ss01
        (open digits), ss03 (alt curly braces). Matches tauri-client
        so identical text renders identically across both apps. */
@@ -1020,6 +1329,20 @@ html, body, #root {
 @keyframes breathe {
   0%, 100% { opacity: 0.4; }
   50%      { opacity: 1; }
+}
+
+/* BellMark's entrance on the login screen: the bars swell from the
+ * centre out (delays are inline), once. The only load-time motion in
+ * the app, so it is allowed to take its time. */
+@keyframes bellRise {
+  from { transform: scaleY(0.06); }
+  to   { transform: scaleY(1); }
+}
+.bell-rise {
+  animation: bellRise 0.75s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bell-rise { animation: none; }
 }
 
 @keyframes toastIn {

@@ -72,7 +72,7 @@ export default function ConversationSidebar() {
   return (
     <div
       ref={wrapperRef}
-      className="relative flex shrink-0 flex-col border-r border-border bg-bg-dark pb-14"
+      className="sidebar-above-panel relative flex shrink-0 flex-col border-r border-border bg-bg-dark"
       style={{ width }}
     >
       <div className="flex h-12 shrink-0 items-center border-b border-border px-4">
@@ -81,7 +81,7 @@ export default function ConversationSidebar() {
         </h2>
       </div>
       <div
-        className="flex-1 overflow-y-auto px-2 py-2.5"
+        className="fade-end flex-1 overflow-y-auto px-2 py-2.5"
         style={{ "--list-row-pad-y": "8px", "--list-row-pad-x": "10px", "--list-row-gap": "10px", "--avatar-dot-size": "10px" } as React.CSSProperties}
       >
         {sortedConversations.length === 0 ? (

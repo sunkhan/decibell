@@ -466,7 +466,7 @@ export default function FriendsPage() {
             {/* With one status selected the segment above already says
                 what you're looking at, so the header is noise. */}
             {filter === "all" && (
-              <h3 className="mb-1 flex items-center gap-2 px-2 font-meta text-section font-medium uppercase leading-none tracking-section text-text-muted">
+              <h3 className="mb-1 flex items-center gap-2 px-2 font-section text-section font-medium uppercase leading-none tracking-section text-text-muted">
                 {section.label}
                 <span className="tabular-nums opacity-75">{section.items.length}</span>
               </h3>

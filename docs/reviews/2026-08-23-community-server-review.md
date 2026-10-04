@@ -1302,6 +1302,40 @@ the volume slider never bounce you to the grid. Verified: tsc web 0; preview har
 gone, a click on the stats button keeps the stream focused, a real mouse click on the video clears
 `fullscreenStream` and the grid shows both watched streams live.
 
+**Client: Nocturne / Matinee — new default look (2026-10-04)** — Owner brief: a look that makes
+people want to leave Discord (modern, sleek, elegant) with the layout untouched. It's two new
+palettes, and `nocturne` replaces `graphite` as the default for new installs (`DEFAULT_THEME`,
+`theme-boot.js`, `config.rs::default_theme`). Console is unchanged. The idea is a recording studio
+after hours. *Type (shared by nocturne, matinee and both graphite themes):* Mona Sans (variable,
+wght + wdth, `@fontsource-variable/mona-sans`) at width 100 for the UI and its expanded cut for the
+server tabs (`--t-tile-stretch` 112.5 %) and the footer wordmark (`--t-wordmark-stretch` 125 %),
+like the lettering on audio gear. Headers (`font-display`, which the chat / voice headers now use
+too) stay in Inter at −0.02em: the owner found the expanded cut too wide there. The uppercase group
+labels (ONLINE / OFFLINE, friends groups, channel categories, the stage's "N more") go through a new
+`font-section` role: Inter at graphite's old size (11.25px at the default body) and 0.12em
+tracking, the owner's pick. It is the meta face (JetBrains Mono) in console, so console doesn't
+change. Code is JetBrains Mono, so
+IBM Plex Mono is dropped. The type scale is written at the shipped 14.5px body. The stretch rides
+on unlayered `.font-tile` / `.tracking-wordmark` rules and does nothing on fonts without a wdth axis.
+`--font-tile` and the body tracking are per-theme knobs whose shared defaults are console's.
+Graphite sets them in its own `[data-theme=graphite*]` block, because the graphite palette block
+also answers the bare `:root` and would leak them into console. *Colour:* both ramps are built in
+OKLCH at hue 300 (plum-black lacquer, not blue-grey). Nocturne's single accent is brass `#e8b966`
+with near-black text on it. Its selection washes are champagne rather than brass, because a
+saturated yellow at low alpha over plum goes brown. Matinee is a lilac-tinted paper (never cream)
+with a velvet-plum accent `#6e3685`. One accent token has to work both as a fill under white and as
+link text, and any gold dark enough for that is brown. The identity ramps (avatar and name colours)
+share one lightness and chroma and vary only in hue, and every text pair clears 4.5:1. *Brand:* a
+new `components/BellMark` draws the app icon's bell curve of level bars in the accent colour. It
+replaces the music-note tile on login (where the bars rise once from the centre, skipped under
+reduced motion) and the five flat bars in the members footer. *Small cross-theme fixes:* an empty
+composer's send button is neutral (`surface-active`) instead of the accent at 40 %, and it lights
+up when there's something to send. The chat and voice headers use `font-display`, which renders
+identically in Graphite and Console. Verified: tsc web 0, `cargo test --lib config`, vite renderer
+build (Mona Sans woff2 emitted, rules present in the CSS), and the preview harness across chat,
+home, DM, voice, settings and login in Nocturne, Matinee and Graphite. Open: the app icon is
+still azure (a brass variant would match the new default).
+
 **Client: attachment speed caps actually apply (2026-10-04) ✅** — The Settings → Network
 upload / download limits had done nothing since the Electron migration (0.6.0): the native
 `set_transfer_limits` only saved the values, and Tauri's `RateLimiter` went away with the Rust
@@ -1329,6 +1363,35 @@ upload and download against a real community server. An upload that takes over a
 as abandoned (`kUploadingTimeoutSeconds` counts from `created_at`), which a cap can only reach on a
 server with a raised `DECIBELL_MAX_ATTACHMENT_BYTES`. Save-as still shows no progress while a capped
 download runs.
+
+**Client: channel / DM lists end above the user panel (2026-10-04) ✅** — Owner report: in a server
+with a long channel list, the floating UserPanel covered the last channels, even when scrolled to
+the bottom. Both sidebars reserved a fixed `pb-14` (56px), but the resting panel plus its 8px inset
+is already 66px, and a voice session or stream controls (or the update chip) grow it to ~140px.
+MainLayout's new `FloatingUserPanel` measures the panel with a ResizeObserver and writes its height
+to `--user-panel-h` on the sidebar group (a style write, no re-render). `.sidebar-above-panel`
+reserves inset + height + an 8px gap, so the scroll area ends just above the panel and follows it
+as it grows and shrinks. `.fade-end` dissolves the list's bottom edge over its own 10px padding, so
+rows fade out mid-scroll while the last row stays fully opaque at the end. Applied to
+ServerChannelsSidebar and ConversationSidebar. Verified: tsc web 0, vite build, preview harness
+with 26 channels scrolled to the bottom (at rest, in voice + streaming in Nocturne, in voice in
+Graphite Light): the last channel sits 8px above the panel and the scrollbar stops there.
+
+**Client: bigger channel-type icons (2026-10-04) ✅** — Owner request: the `#` / microphone at
+the head of each channel row were small (a row-size `#` in a 14px box, and a fixed 14px mic that
+ignored the Text size setting). Both now sit in one `.channel-icon` slot sized at 1.45em of the
+row's `text-channel`, so they grow with the Text size setting in every theme. The `#` is set at
+the slot size and the mic is drawn at 0.82em, because its strokes fill the box where a `#` sits
+inside its line height. Names start at the same x for text and voice rows. Verified: tsc web 0,
+vite build, harness (Nocturne / Graphite / Matinee / Console, incl. the active and connected-voice
+states).
+
+**Client: offline members light up on hover (2026-10-04) ✅** — Owner request: hovering an offline
+member left the name muted, while an online member's name brightens. `MembersList` now brightens the
+offline name to `text-primary` on hover too, so both states end in the same place. The offline
+avatar keeps its dimming. The DM view's friends rail already brightened every name on hover, and the
+Friends page shows every name at full brightness, so neither needed a change. Verified: tsc web 0;
+harness hover on an offline member in Nocturne / Graphite / Matinee / Console Light.
 
 **Client: Transfers panel, phase 1 — downloads (2026-10-04) ✅** — A Chrome/Firefox-style downloads
 popover from a new title-bar button. Design: `docs/superpowers/specs/2026-10-04-transfers-panel-design.md`.

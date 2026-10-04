@@ -359,7 +359,7 @@ export default function ServerChannelsSidebar() {
   return (
     <div
       ref={wrapperRef}
-      className="relative flex shrink-0 flex-col border-r border-border bg-bg-dark pb-14"
+      className="sidebar-above-panel relative flex shrink-0 flex-col border-r border-border bg-bg-dark"
       style={{ width }}
     >
       {/* Server name header */}
@@ -436,7 +436,7 @@ export default function ServerChannelsSidebar() {
           at the top, then category blocks. Rows carry data-reorder-id;
           drag/drop + context-menu handlers are delegated here. */}
       <div
-        className="flex-1 overflow-y-auto px-2 py-2.5"
+        className="fade-end flex-1 overflow-y-auto px-2 py-2.5"
         style={{ "--list-row-pad-y": "7px", "--list-row-pad-x": "10px", "--list-row-gap": "8px" } as React.CSSProperties}
         onContextMenu={onListContextMenu}
         onDragStart={onListDragStart}
@@ -493,7 +493,7 @@ export default function ServerChannelsSidebar() {
                   >
                     <polyline points="6 9 12 15 18 9" />
                   </svg>
-                  <h3 className="truncate font-meta text-section font-medium uppercase leading-none tracking-section text-text-muted transition-colors group-hover:text-text-secondary">
+                  <h3 className="truncate font-section text-section font-medium uppercase leading-none tracking-section text-text-muted transition-colors group-hover:text-text-secondary">
                     {category.name}
                   </h3>
                   {canManageChannels && (
@@ -801,7 +801,7 @@ const TextChannelRow = memo(function TextChannelRow({
       }`}
     >
       <span
-        className={`flex h-[14px] w-[14px] shrink-0 items-center justify-center font-channel text-channel font-medium transition-colors ${
+        className={`channel-icon font-channel transition-colors ${
           isHoveredDrop
             ? "text-on-accent"
             : isActive
@@ -951,16 +951,8 @@ const VoiceRow = memo(function VoiceRow({
               : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
         }`}
       >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={`shrink-0 ${
+        <span
+          className={`channel-icon ${
             connected && activeView === "voice"
               ? "text-accent"
               : connected
@@ -968,11 +960,20 @@ const VoiceRow = memo(function VoiceRow({
                 : "text-text-muted"
           }`}
         >
-          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-          <line x1="12" y1="19" x2="12" y2="23" />
-          <line x1="8" y1="23" x2="16" y2="23" />
-        </svg>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
+          </svg>
+        </span>
         <span className="truncate font-channel">{channel.name}</span>
         {canManage && (
           <span
