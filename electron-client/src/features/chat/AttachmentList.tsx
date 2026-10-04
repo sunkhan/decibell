@@ -77,7 +77,12 @@ export default function AttachmentList({ attachments, serverId }: Props) {
   return (
     <div className="mt-1 flex flex-col gap-1">
       {gridable.length > 0 && (
-        <MediaWithDownload items={gridable} serverId={serverId}>
+        <MediaWithDownload
+          items={gridable}
+          serverId={serverId}
+          // The grid and a standalone video card carry an 8 px top margin.
+          mediaMarginTop={useGrid || gridable[0].kind === "video"}
+        >
           {useGrid ? (
             <MediaGrid items={gridable} serverId={serverId} />
           ) : (
@@ -100,16 +105,20 @@ export default function AttachmentList({ attachments, serverId }: Props) {
 /// click saves all of them to the download folder (progress in the
 /// Transfers panel). Shown on hover and keyboard focus; the media boxes
 /// keep MEDIA_ACTION_RESERVE_PX free for it, so it never overflows.
-/// Bottom-aligned: the message's hover toolbar owns the row's top-right
-/// corner, and on narrower panels it would cover a top-aligned button on
-/// a media-only follow-up message.
+/// Vertically centred on the media (not top-aligned: the message's hover
+/// toolbar owns the row's top-right corner, and on narrower panels it
+/// would cover a top-aligned button on a media-only follow-up message).
 function MediaWithDownload({
   items,
   serverId,
+  mediaMarginTop,
   children,
 }: {
   items: Attachment[];
   serverId: string | null;
+  /// The media has `mt-2`: the button takes the same margin so it
+  /// centres on the media, not on the media plus its margin.
+  mediaMarginTop: boolean;
   children: React.ReactNode;
 }) {
   const [saved, setSaved] = useState(false);
@@ -135,7 +144,7 @@ function MediaWithDownload({
   };
 
   return (
-    <div className="group/media flex items-end gap-1.5">
+    <div className="group/media flex items-center gap-1.5">
       <div className="min-w-0">{children}</div>
       {serverId && (
         <button
@@ -143,7 +152,7 @@ function MediaWithDownload({
           onClick={() => void download()}
           aria-label={label}
           title={label}
-          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-border bg-bg-secondary transition-[opacity,color,background-color] hover:bg-surface-hover focus-visible:opacity-100 group-hover/media:opacity-100 ${
+          className={`${mediaMarginTop ? "mt-2" : ""} flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-border bg-bg-secondary transition-[opacity,color,background-color] hover:bg-surface-hover focus-visible:opacity-100 group-hover/media:opacity-100 ${
             saved ? "text-accent opacity-100" : "text-text-muted opacity-0 hover:text-text-primary"
           }`}
         >

@@ -1486,14 +1486,16 @@ videos get one icon button to their right, shown on hover or keyboard focus. Cli
 every one of them straight to the download folder through the Transfers manager, one at a time, so
 "Ask where to save each file" still asks for each. The label reads "Download" or "Download all N",
 and the button shows a check for 1.6 s once they've started. Owner's call: beside the media rather
-than over its corner. It's bottom-aligned: the message's hover toolbar owns the row's top-right
-corner, and on chat panels under about 660 px it covered a top-aligned button on a media-only
-follow-up message. To make room, attachment media (not link previews) reserve 38 px more
+than over its corner, and vertically centred on the media (owner's call, after a first bottom-aligned
+cut). It isn't top-aligned because the message's hover toolbar owns the row's top-right corner: on
+chat panels under about 660 px it covered a top-aligned button on a media-only follow-up message.
+The grid and the video card carry `mt-2`, so the button takes the same margin to centre on the media
+itself. To make room, attachment media (not link previews) reserve 38 px more
 (`MEDIA_ACTION_RESERVE_PX`, inside `reserveBox`, so the thumbnail prefetcher stays byte-identical).
 That only shrinks media on chat panels under about 530 px. A grid's 320 px minimum now yields to that
 room (`gridWidth`) instead of overflowing into the button. `startDownload` reports whether a download
 started. Verified: tsc web 0. The preview harness with the real `ChatPanel` at 380 / 420 / 620 / 1100
-px: a 6 px gap, never past the column, bottom edges flush for an image, a grid, a video card and a
+px: a 6 px gap, never past the column, centred to the pixel on an image, a grid, a video card and a
 media-only follow-up, and clear of the hover toolbar at 620 px. Clicking "Download all 4" starts
 attachments 31–34 in order with no dialog, the right channel and message, and shows the check.
 
