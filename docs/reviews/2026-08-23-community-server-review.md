@@ -1600,6 +1600,13 @@ the picker; "Sync now" / "Sync all" stay immediate actions and wait until staged
 or discarded. Verified: tsc web 0; in the preview harness, clicking a toggle in the real dialog
 enables Save, and setting it back disables it again.
 
+**Client: bigger settings windows (2026-10-10) ✅** — Owner request: client and server settings were
+a fixed 820 × 560 px card (wider than the 800 px minimum window, so it ran off the edge there). Both
+shells now fill the window up to `max-w-275` × `max-h-190` (1100 × 760 px), with a `p-8` margin on
+the backdrop, so they grow on normal screens and shrink to fit small ones. The sidebar went from
+210 px to `w-60` (240 px). The two shells stay identical. Verified: tsc web 0; preview-harness
+screenshots of Appearance / Audio / server Overview / Roles at 1440 × 900 and 800 × 600.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

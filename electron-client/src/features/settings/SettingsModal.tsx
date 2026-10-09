@@ -135,13 +135,13 @@ export default function SettingsModal() {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center transition-colors duration-300"
+      className="fixed inset-0 z-50 flex items-center justify-center p-8 transition-colors duration-300"
       style={{ backgroundColor: visible ? "rgba(0,0,0,0.65)" : "rgba(0,0,0,0)" }}
       onClick={closeModal}
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="flex h-[560px] w-[820px] overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-[opacity,transform] duration-300"
+        className="flex h-full max-h-190 w-full max-w-275 overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-[opacity,transform] duration-300"
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",
@@ -149,7 +149,7 @@ export default function SettingsModal() {
         onClick={(e) => e.stopPropagation()}
       >
         {/* Left sidebar */}
-        <div className="flex w-[210px] shrink-0 flex-col gap-0.5 border-r border-border-divider bg-bg-darkest px-3 py-6">
+        <div className="flex w-60 shrink-0 flex-col gap-0.5 border-r border-border-divider bg-bg-darkest px-3 py-6">
           <div className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
             Settings
           </div>
