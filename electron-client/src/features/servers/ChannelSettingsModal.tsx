@@ -652,7 +652,9 @@ export default function ChannelSettingsModal() {
                       </div>
                       <p className="mt-0.5 text-[12px] leading-[1.55] text-text-muted">
                         {isCategory
-                          ? `Removes the ${channel.name} category. Its channels stay, move up to the group above, and keep this category's permissions.`
+                          ? `Removes the ${channel.name} category. Its channels stay and move up to the group above${
+                              channel.categorySync ? ", keeping the permissions they follow" : ""
+                            }.`
                           : `Removes #${channel.name} along with every message and attachment in it. Cannot be undone.`}
                         {channel.type === "voice" &&
                           " The channel must be empty first."}

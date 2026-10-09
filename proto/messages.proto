@@ -265,6 +265,9 @@ message Packet {
     // drop a channel's own overwrites and follow its category again.
     CHANNEL_PERMISSIONS_SYNC_REQ = 147; // client→community (MANAGE_ROLES in channel);
                                         // response via CHANNEL_ACTION_RES action="sync"
+    // Turn a category's permission sync on / off (off = visual grouping only).
+    CATEGORY_SYNC_SET_REQ = 148;        // client→community (MANAGE_ROLES in the category);
+                                        // response via CHANNEL_ACTION_RES action="category_sync"
   }
 
   Type type = 1;
@@ -455,6 +458,7 @@ message Packet {
     ChannelKeysPublishRes    channel_keys_publish_res = 147;
     ChannelKeysChanged       channel_keys_changed   = 148;
     ChannelPermissionsSyncRequest channel_permissions_sync_req = 149;
+    CategorySyncSetRequest   category_sync_set_req  = 150;
   }
 }
 
@@ -648,10 +652,15 @@ message ChannelInfo {
   // server refuses plaintext here (and envelopes elsewhere). Off by
   // default; MANAGE_CHANNELS flips it.
   bool encrypted = 12;
-  // Follows its category's overwrites (permissions v3). Editing the
-  // channel's own overwrites un-syncs it; CHANNEL_PERMISSIONS_SYNC_REQ
-  // re-syncs. Meaningless for categories and uncategorized channels.
+  // Follows its category's overwrites (permissions v3). Only ever true
+  // under a category with category_sync on. Editing the channel's own
+  // overwrites un-syncs it; CHANNEL_PERMISSIONS_SYNC_REQ re-syncs. Moves,
+  // turning the category's sync off and deleting the category never
+  // change what a channel allows: it keeps the rows it followed.
   bool permissions_synced = 13;
+  // CATEGORY rows: whether channels can follow this category's
+  // overwrites. Off (the default) = the category only groups channels.
+  bool category_sync = 14;
 }
 
 message CommunityAuthRequest {
@@ -864,8 +873,9 @@ message ChannelReorderRequest {
 }
 
 // Sets (or clears, with an empty nickname) a member's display nickname.
-// Self-changes are always allowed; changing someone else's requires
-// MANAGE_NICKNAMES and a strictly higher role. Result rides
+// Self-changes need CHANGE_NICKNAME; changing someone else's requires
+// MANAGE_NICKNAMES and a strictly higher role (or a peer, see
+// RoleInfo.manage_each_other). Result rides
 // MOD_ACTION_RES with action="nickname".
 message SetNicknameRequest {
   string username = 1;
@@ -901,9 +911,21 @@ message ChannelOverwritesRequest {
 
 // Drops the channel's own overwrites so it follows its category again.
 // MANAGE_ROLES in the channel; every bit that changes must be one the
-// actor holds there. See the permissions v3 spec.
+// actor holds there; the category must have category_sync on. A CATEGORY
+// id syncs every channel under it that isn't synced yet. See the
+// permissions v3 spec.
 message ChannelPermissionsSyncRequest {
   string channel_id = 1;
+  // The category the user agreed to sync with (e.g. right after dragging
+  // the channel into it). Refused if the channel is in another one by the
+  // time this lands, so a failed / raced reorder can't sync it with its
+  // old category. Empty = no check.
+  string category_id = 2;
+}
+
+message CategorySyncSetRequest {
+  string channel_id = 1;   // a CATEGORY
+  bool enabled = 2;
 }
 
 // For a channel synced to its category (ChannelInfo.permissions_synced)

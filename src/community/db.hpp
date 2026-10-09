@@ -48,9 +48,13 @@ struct DbChannel {
     // Text channels: end-to-end encrypted with member-held epoch keys
     // (spec 2026-09-04). The server enforces the wire format either way.
     bool encrypted = false;
-    // Follows its category's overwrites (permissions v3). Invariant: a
-    // synced channel has no overwrite rows of its own.
-    bool perm_synced = true;
+    // Follows its category's overwrites (permissions v3). Invariants: a
+    // synced channel has no overwrite rows of its own, and its category
+    // has category_sync on.
+    bool perm_synced = false;
+    // CATEGORY rows: channels may follow this category's overwrites.
+    // Off (default) = the category only groups channels.
+    bool category_sync = false;
 };
 
 struct DbMessage {
@@ -492,12 +496,23 @@ public:
     bool set_overwrite(const DbOverwrite& ow);
 
     // --- permissions v3: category sync ---
+    // Nothing but an explicit sync (or creating a channel inside a syncing
+    // category) ever makes a channel start following a category: moves,
+    // turning a category's sync off and deleting a category all leave the
+    // channel with the rows it was following, as its own.
+    //
     // Nearest CATEGORY row above the channel ("" when uncategorized or a
     // category itself).
     std::string parent_category(const std::string& channel_id) const;
     // Drops the channel's own rows and marks it synced. False when the
-    // channel is unknown / a category / has no parent category.
+    // channel is unknown / a category / has no parent category / the
+    // parent doesn't sync.
     bool sync_channel_permissions(const std::string& channel_id);
+    // Turns a category's sync on / off. Off: its synced channels get its
+    // rows as their own first. On: nothing changes until channels sync.
+    bool set_category_sync(const std::string& category_id, bool on);
+    // Non-category channels under `category_id`, display order.
+    std::vector<std::string> category_children(const std::string& category_id) const;
     // Undo for sync_channel_permissions: restores `rows` as the channel's
     // own and unsyncs it (lock-out guard revert).
     bool restore_channel_overwrites(const std::string& channel_id,
@@ -548,7 +563,9 @@ public:
     // Rewrites positions to match `ordered_ids` (0..N-1) in one
     // transaction. Fails without touching anything unless the id set
     // exactly matches the current channels table. The stored order is
-    // then normalized (text above voice within each group).
+    // then normalized (text above voice within each group). A synced
+    // channel that ends up under another category (or none) keeps the
+    // rows it was following, as its own, unsynced.
     bool reorder_channels(const std::vector<std::string>& ordered_ids);
     // Display-name change only — the id/slug stays. False if the
     // channel doesn't exist or the name is empty.
@@ -845,11 +862,15 @@ private:
     std::string overwrite_source_unlocked_(const std::string& channel_id) const;
     std::string parent_category_unlocked_(const std::string& channel_id) const;
     void rebuild_channel_layout_unlocked_() const;
+    // perm_synced only where the parent category syncs (open + after any
+    // layout change). Caller holds the mutex, no open transaction.
+    void enforce_sync_invariant_unlocked_();
     // Order / parent / sync changed: drop the layout + every resolution.
     void invalidate_channel_layout_();
     mutable bool layout_valid_ = false;
     mutable std::unordered_map<std::string, std::string> parent_of_;   // channel → category ("" none)
     mutable std::unordered_map<std::string, bool> synced_of_;
+    mutable std::unordered_map<std::string, bool> category_sync_of_;
     // username → channels they hold a voice pass for.
     std::unordered_map<std::string, std::set<std::string>> voice_passes_;
     uint64_t channel_permissions_unlocked_(const std::string& username,
@@ -860,6 +881,7 @@ private:
     void migrate_to_v9_e2ee_();
     void migrate_to_v10_upload_activity_();
     void migrate_to_v11_permissions_v3_();
+    void migrate_to_v12_category_sync_(int prior_version);
     // server_meta.owner, loaded at open() and kept in sync by set_meta_.
     std::string owner_cache_;
     void seed_if_empty_(const std::string& owner,

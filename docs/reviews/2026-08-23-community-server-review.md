@@ -1565,6 +1565,29 @@ thumbnail scope, category sync incl. guards and category delete), `cargo test --
 tsc web 0. Live tests pending: moving someone into a private voice channel and talking with them
 (MLS join under a pass), Speak-denied rooms, the role / channel permission UIs.
 
+**Category sync is opt-in and never silent (2026-10-09) ✅ — same community release + live test** —
+a review note on the entry above: following the new category on a drag (Discord's behaviour), and
+falling back to "no rows" when a synced channel was dragged *out* of its category, could quietly make
+a private channel public. Owner decision: categories are plain groups unless their **"Channels
+follow this category's permissions"** switch is on (`category_sync`, default off, which is how every
+server behaved before v3). Dropping a channel into a syncing category asks **Sync permissions /
+Keep permissions / Cancel** (`CategorySyncPrompt`; Sync needs Manage Roles in the channel). Server
+rule: nothing but an explicit sync changes what a channel allows. Moves (including channels shifted
+by a moved header), switching a category off, and deleting it all copy the rows a channel was
+following onto it and unsync it. Switching a category on changes nothing until channels sync.
+Channels created inside a syncing category follow it from the start. New wire:
+`CATEGORY_SYNC_SET_REQ = 148`, `ChannelInfo.category_sync = 14`, and
+`ChannelPermissionsSyncRequest.category_id`: the category the user agreed to, so a sync sent
+right after the reorder can't land on the old category if the reorder failed. A category id syncs
+every channel under it ("Sync all"). Migration v12: a v10 server's categories all stay plain,
+even ones carrying formerly inert overwrites; a DB that ran v11 live keeps syncing the categories
+whose rows were applying. Client: the switch + "N of M channels follow" + "Sync all" in category
+settings (overwrite editor hidden for a plain group), the channel sync row only under syncing
+categories, `ConfirmModal` gained an optional middle choice and an accent tone. Verified: community
+e2e 391 / 0 (v12 migration both ways; plain groups, opt-in, the expected-category guard, drag out /
+back in, switch off, Sync all, delete), `cargo test --lib` 194, napi build, tsc web 0; the prompt
+and both category states screenshotted in Nocturne + Matinee through the preview harness.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

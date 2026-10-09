@@ -288,7 +288,13 @@ export interface SetChannelOverwriteArgs {
 export declare function setChannelOverwrite(args: SetChannelOverwriteArgs): Promise<void>
 export interface SyncChannelPermissionsArgs {
   serverId: string
+  /** A channel, or a category (= sync every channel under it). */
   channelId: string
+  /**
+   * The category the user agreed to sync with; the server refuses if
+   * the channel sits elsewhere by then (a failed / raced reorder).
+   */
+  categoryId?: string
 }
 /**
  * Permissions v3: drop the channel's own overwrites so it follows its
@@ -296,6 +302,17 @@ export interface SyncChannelPermissionsArgs {
  * "sync"; the server re-pushes the channel list and the overwrites.
  */
 export declare function syncChannelPermissions(args: SyncChannelPermissionsArgs): Promise<void>
+export interface SetCategorySyncArgs {
+  serverId: string
+  channelId: string
+  enabled: boolean
+}
+/**
+ * Permissions v3: whether channels can follow this category's overwrites
+ * (off = it only groups channels). Neither direction changes what any
+ * channel allows. Result: channel_action_responded, action "category_sync".
+ */
+export declare function setCategorySync(args: SetCategorySyncArgs): Promise<void>
 export interface ListChannelOverwritesArgs {
   serverId: string
   channelId: string

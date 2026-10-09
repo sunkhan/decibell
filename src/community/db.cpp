@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <random>
 #include <set>
@@ -183,6 +184,8 @@ bool CommunityDb::open(const std::string& path,
     ensure_default_channels_();
     // Existing DBs may pre-date the text-above-voice ordering invariant.
     normalize_channel_order_();
+    // ...and the "synced only under a syncing category" one (v12).
+    enforce_sync_invariant_unlocked_();
     owner_cache_ = get_meta_("owner");
     return true;
 }
@@ -195,6 +198,8 @@ void CommunityDb::init_schema_() {
         "  key TEXT PRIMARY KEY,"
         "  value TEXT NOT NULL"
         ");");
+    // The version this DB was at before this boot's migrations (0 = fresh).
+    const int prior_version = std::atoi(get_meta_("schema_version").c_str());
 
     exec_sql(db_,
         "CREATE TABLE IF NOT EXISTS members ("
@@ -253,6 +258,28 @@ void CommunityDb::init_schema_() {
 
     // --- v11: permissions v3 (new bits, voice-mod split, peers, category sync) ---
     migrate_to_v11_permissions_v3_();
+
+    // --- v12: per-category sync switch (off = visual grouping only) ---
+    migrate_to_v12_category_sync_(prior_version);
+}
+
+void CommunityDb::migrate_to_v12_category_sync_(int prior_version) {
+    if (!column_exists(db_, "channels", "category_sync"))
+        exec_sql(db_, "ALTER TABLE channels ADD COLUMN category_sync INTEGER NOT NULL DEFAULT 0;");
+    if (get_meta_("category_sync_v12").empty()) {
+        // Categories start as plain groups — that's how every server behaved
+        // before permissions v3. Only a DB that already ran v11 live had
+        // categories whose rows applied to their channels; keep exactly
+        // those applying (enforce_sync_invariant_unlocked_ unsyncs the rest,
+        // which followed nothing).
+        if (prior_version >= 11) {
+            exec_sql(db_,
+                "UPDATE channels SET category_sync = 1 "
+                "WHERE type = 2 AND id IN (SELECT DISTINCT channel_id FROM channel_overwrites);");
+        }
+        set_meta_("category_sync_v12", "1");
+    }
+    set_meta_("schema_version", "12");
 }
 
 void CommunityDb::migrate_to_v11_permissions_v3_() {
@@ -1660,7 +1687,8 @@ std::vector<DbOverwrite> CommunityDb::list_overwrites(const std::string& channel
 void CommunityDb::rebuild_channel_layout_unlocked_() const {
     parent_of_.clear();
     synced_of_.clear();
-    Stmt q(db_, "SELECT id, type, perm_synced FROM channels ORDER BY position ASC, id ASC;");
+    category_sync_of_.clear();
+    Stmt q(db_, "SELECT id, type, perm_synced, category_sync FROM channels ORDER BY position ASC, id ASC;");
     if (q.s) {
         std::string current;   // nearest CATEGORY above
         while (q.step() == SQLITE_ROW) {
@@ -1669,6 +1697,7 @@ void CommunityDb::rebuild_channel_layout_unlocked_() const {
                 current = id;
                 parent_of_[id] = "";
                 synced_of_[id] = false;
+                category_sync_of_[id] = q.col_int(3) != 0;
             } else {
                 parent_of_[id] = current;
                 synced_of_[id] = q.col_int(2) != 0;
@@ -1694,7 +1723,32 @@ std::string CommunityDb::overwrite_source_unlocked_(const std::string& channel_i
     auto p = parent_of_.find(channel_id);
     if (p == parent_of_.end() || p->second.empty()) return channel_id;
     auto sy = synced_of_.find(channel_id);
-    return (sy != synced_of_.end() && sy->second) ? p->second : channel_id;
+    if (sy == synced_of_.end() || !sy->second) return channel_id;
+    // Belt and braces next to the invariant: a category that doesn't sync
+    // is never a source.
+    auto cs = category_sync_of_.find(p->second);
+    return (cs != category_sync_of_.end() && cs->second) ? p->second : channel_id;
+}
+
+void CommunityDb::enforce_sync_invariant_unlocked_() {
+    if (!layout_valid_) rebuild_channel_layout_unlocked_();
+    std::vector<std::string> stray;
+    for (const auto& [id, synced] : synced_of_) {
+        if (synced && overwrite_source_unlocked_(id) == id) stray.push_back(id);
+    }
+    if (stray.empty()) return;
+    // A synced channel has no rows of its own and followed nothing, so
+    // unsyncing it changes nothing it allows.
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return;   // DB1
+    bool ok = true;
+    for (const auto& id : stray) {
+        Stmt q(db_, "UPDATE channels SET perm_synced=0 WHERE id=?;");
+        ok = q.s != nullptr;
+        if (ok) { q.bind_text(1, id); ok = q.step() == SQLITE_DONE; }
+        if (!ok) break;
+    }
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    invalidate_channel_layout_();
 }
 
 std::string CommunityDb::parent_category(const std::string& channel_id) const {
@@ -1708,6 +1762,20 @@ std::vector<std::string> CommunityDb::synced_children(const std::string& categor
     if (!layout_valid_) rebuild_channel_layout_unlocked_();
     for (const auto& [id, parent] : parent_of_) {
         if (parent == category_id && overwrite_source_unlocked_(id) == category_id) out.push_back(id);
+    }
+    return out;
+}
+
+std::vector<std::string> CommunityDb::category_children(const std::string& category_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> out;
+    Stmt q(db_, "SELECT id FROM channels ORDER BY position ASC, id ASC;");
+    if (!q.s) return out;
+    if (!layout_valid_) rebuild_channel_layout_unlocked_();
+    while (q.step() == SQLITE_ROW) {
+        std::string id = q.col_text(0);
+        auto p = parent_of_.find(id);
+        if (p != parent_of_.end() && p->second == category_id) out.push_back(std::move(id));
     }
     return out;
 }
@@ -1748,10 +1816,45 @@ bool CommunityDb::sync_channel_permissions(const std::string& channel_id) {
     if (!layout_valid_) rebuild_channel_layout_unlocked_();
     auto p = parent_of_.find(channel_id);
     if (p == parent_of_.end() || p->second.empty()) return false;   // unknown / category / uncategorized
+    if (auto cs = category_sync_of_.find(p->second);
+        cs == category_sync_of_.end() || !cs->second) return false;  // a plain group
     if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
     const bool ok = write_own_overwrites(db_, channel_id, {}, /*synced=*/true);
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
     overwrites_cache_.erase(channel_id);
+    invalidate_channel_layout_();
+    return ok;
+}
+
+bool CommunityDb::set_category_sync(const std::string& category_id, bool on) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!layout_valid_) rebuild_channel_layout_unlocked_();
+    auto cs = category_sync_of_.find(category_id);
+    if (cs == category_sync_of_.end()) return false;   // unknown / not a category
+    if (cs->second == on) return true;
+    // Turning it off: whoever follows the category keeps its rows as
+    // their own — no channel changes what it allows.
+    std::vector<std::string> followers;
+    std::vector<DbOverwrite> rows;
+    if (!on) {
+        for (const auto& [id, parent] : parent_of_) {
+            if (parent == category_id && overwrite_source_unlocked_(id) == category_id) followers.push_back(id);
+        }
+        if (!followers.empty()) rows = overwrites_unlocked_(category_id);
+    }
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
+    bool ok = true;
+    for (const auto& id : followers) {
+        ok = write_own_overwrites(db_, id, rows, /*synced=*/false);
+        overwrites_cache_.erase(id);
+        if (!ok) break;
+    }
+    if (ok) {
+        Stmt q(db_, "UPDATE channels SET category_sync=? WHERE id=? AND type=2;");
+        ok = q.s != nullptr;
+        if (ok) { q.bind_int(1, on ? 1 : 0); q.bind_text(2, category_id); ok = q.step() == SQLITE_DONE; }
+    }
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
     invalidate_channel_layout_();
     return ok;
 }
@@ -2096,7 +2199,8 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
     Stmt q(db_,
         "SELECT id, name, type, position, voice_bitrate_kbps, "
         "  retention_days_text, retention_days_image, retention_days_video, "
-        "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted, perm_synced "
+        "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted, perm_synced, "
+        "  category_sync "
         "FROM channels ORDER BY position ASC, id ASC;");
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) {
@@ -2114,6 +2218,7 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
         c.slowmode_seconds        = q.col_int(10);
         c.encrypted               = q.col_int(11) != 0;
         c.perm_synced             = q.col_int(12) != 0;
+        c.category_sync           = q.col_int(13) != 0;
         out.push_back(std::move(c));
     }
     return out;
@@ -2124,7 +2229,8 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
     Stmt q(db_,
         "SELECT id, name, type, position, voice_bitrate_kbps, "
         "  retention_days_text, retention_days_image, retention_days_video, "
-        "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted, perm_synced "
+        "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted, perm_synced, "
+        "  category_sync "
         "FROM channels WHERE id=?;");
     if (!q.s) return std::nullopt;
     q.bind_text(1, channel_id);
@@ -2143,6 +2249,7 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
     c.slowmode_seconds        = q.col_int(10);
     c.encrypted               = q.col_int(11) != 0;
     c.perm_synced             = q.col_int(12) != 0;
+    c.category_sync           = q.col_int(13) != 0;
     return c;
 }
 
@@ -2249,10 +2356,15 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name
             ok = upd.step() == SQLITE_DONE;
         }
     }
+    // A new channel inside a syncing category follows it from the start
+    // (v3); anywhere else it starts with no permissions of its own.
+    if (!layout_valid_) rebuild_channel_layout_unlocked_();
+    const auto cat_sync = category_sync_of_.find(category_id);
+    const bool start_synced = type != 2 && cat_sync != category_sync_of_.end() && cat_sync->second;
     if (ok) {
         Stmt ins(db_,
-            "INSERT INTO channels(id, name, type, position, voice_bitrate_kbps) "
-            "VALUES(?, ?, ?, ?, ?);");
+            "INSERT INTO channels(id, name, type, position, voice_bitrate_kbps, perm_synced) "
+            "VALUES(?, ?, ?, ?, ?, ?);");
         ok = ins.s != nullptr;
         if (ok) {
             ins.bind_text(1, id);
@@ -2260,6 +2372,7 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name
             ins.bind_int(3, type);
             ins.bind_int(4, static_cast<int32_t>(idx));
             ins.bind_int(5, type == 1 ? voice_bitrate_kbps : 0);
+            ins.bind_int(6, start_synced ? 1 : 0);
             ok = ins.step() == SQLITE_DONE;
         }
     }
@@ -2280,6 +2393,7 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name
     c.type = type;
     c.position = static_cast<int32_t>(idx);
     c.voice_bitrate_kbps = type == 1 ? voice_bitrate_kbps : 0;
+    c.perm_synced = start_synced;
     return c;
 }
 
@@ -2349,6 +2463,13 @@ bool CommunityDb::reorder_channels(const std::vector<std::string>& ordered_ids) 
         if (current != requested) return false;
     }
 
+    // Who follows which category before the move (v3).
+    if (!layout_valid_) rebuild_channel_layout_unlocked_();
+    std::vector<std::pair<std::string, std::string>> followed;   // channel → category
+    for (const auto& [id, parent] : parent_of_) {
+        if (!parent.empty() && overwrite_source_unlocked_(id) == parent) followed.emplace_back(id, parent);
+    }
+
     if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
     bool ok = true;
     for (size_t i = 0; i < ordered_ids.size() && ok; ++i) {
@@ -2361,10 +2482,32 @@ bool CommunityDb::reorder_channels(const std::vector<std::string>& ordered_ids) 
         }
     }
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
-    // A synced channel dragged into another category follows the new one.
-    if (ok) normalize_channel_order_();
     invalidate_channel_layout_();
-    return ok;
+    if (!ok) return false;
+    normalize_channel_order_();
+
+    // A move never changes what a channel allows: one that followed a
+    // category and now sits under another (or none) keeps that category's
+    // rows as its own. Syncing with the new category is a separate,
+    // explicit CHANNEL_PERMISSIONS_SYNC_REQ (the client asks on drop).
+    rebuild_channel_layout_unlocked_();
+    std::vector<std::pair<std::string, std::string>> moved;
+    for (const auto& [id, old_parent] : followed) {
+        if (parent_category_unlocked_(id) != old_parent) moved.emplace_back(id, old_parent);
+    }
+    if (!moved.empty() && exec_sql(db_, "BEGIN IMMEDIATE;")) {
+        bool kept = true;
+        for (const auto& [id, old_parent] : moved) {
+            const std::vector<DbOverwrite> rows = overwrites_unlocked_(old_parent);
+            kept = write_own_overwrites(db_, id, rows, /*synced=*/false);
+            overwrites_cache_.erase(id);
+            if (!kept) break;
+        }
+        exec_sql(db_, kept ? "COMMIT;" : "ROLLBACK;");
+        invalidate_channel_layout_();
+    }
+    enforce_sync_invariant_unlocked_();
+    return true;
 }
 
 bool CommunityDb::rename_channel(const std::string& channel_id,

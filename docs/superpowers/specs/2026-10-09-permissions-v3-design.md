@@ -125,35 +125,62 @@ encrypted channels: it depends on the sender, not the content.
 
 ## Category sync
 
-Discord-style: a channel either follows its category's overwrites or
-has its own.
+Revised the same day (owner decision, after a review note that following
+the new category on a drag could quietly make a private channel public).
+The rule: **nothing but an explicit sync changes what a channel allows.**
 
-- `channels.perm_synced` (default 1), `ChannelInfo.permissions_synced = 13`.
-  Invariant: a synced channel has **no rows of its own**.
-- Resolution reads the overwrites of the channel's **source**: its
-  parent category (nearest CATEGORY row above it in position order) when
-  the channel is synced and has one, else the channel itself. Category
-  rows are their own source. `overwrite_source_` is cached and cleared
-  on create / delete / reorder / sync changes.
-- Editing a synced channel's overwrites un-syncs it first: the
-  category's rows are copied onto the channel (same effective result),
-  `perm_synced = 0`, then the edit applies. Any overwrite write on a
-  non-category channel leaves it unsynced.
-- `CHANNEL_PERMISSIONS_SYNC_REQ = 147` `{channel_id}` → `CHANNEL_ACTION_RES{action="sync"}`:
-  deletes the channel's own rows and sets `perm_synced = 1`. Needs
-  MANAGE_ROLES in the channel, a parent category, the usual escalation
-  guard (every bit that differs between the current rows and the
-  category's, per target, must be one the actor holds in the channel)
-  and lock-out guard (if the actor loses VIEW, revert).
-- `CHANNEL_OVERWRITES_RES` for a synced channel returns the category's
-  rows (what applies), and the client shows "Synced with <category>".
-- Moving a synced channel into another category makes it follow the new
-  one (Discord does the same). Deleting a category first copies its rows
-  onto its synced channels and unsyncs them, so a private category's
-  channels stay private instead of inheriting whichever category is now
-  above them.
-- Existing DBs: v11 sets `perm_synced = 1` exactly for channels with no
-  rows of their own.
+- A category is a **plain group** unless its switch "Channels follow this
+  category's permissions" is on (`channels.category_sync`,
+  `ChannelInfo.category_sync = 14`, default **off**, which is how every
+  server behaved before v3). Its rows then still decide whether its own
+  header shows, but never touch its channels.
+- A channel **follows** its category (`channels.perm_synced`,
+  `ChannelInfo.permissions_synced = 13`) only under a syncing category.
+  Invariants: a synced channel has no rows of its own, and its category
+  syncs (`enforce_sync_invariant_unlocked_` at open and after layout
+  changes).
+- Resolution reads the rows of the channel's **source**: its category when
+  it follows one, else itself. `overwrite_source_` is cached and cleared on
+  create / delete / reorder / sync changes.
+- How a channel starts following: it's created inside a syncing category,
+  or someone syncs it: "Sync now" in its settings, "Sync all" on the
+  category, or "Sync permissions" in the drop prompt.
+  `CHANNEL_PERMISSIONS_SYNC_REQ = 147` `{channel_id, category_id}` →
+  `CHANNEL_ACTION_RES{action="sync"}`. Needs MANAGE_ROLES in the channel,
+  a syncing category, the escalation guard (every bit that differs
+  between the channel's rows and the category's, per target, must be one
+  the actor holds in the channel) and the lock-out guard (actor loses VIEW
+  → restore). `category_id`, when set, must be the channel's category at
+  that moment (the drop prompt sends it right after the reorder; a failed
+  or raced reorder can't sync the channel with its old category). A
+  category id as `channel_id` syncs every channel under it that doesn't
+  follow yet, each guarded on its own, and reports "Synced N of M".
+- Everything else keeps what the channel allows, by copying the rows it
+  followed onto it and unsyncing it:
+  - **moves** (`reorder_channels`): any channel that followed a category
+    and ends up under another one (or none), including channels shifted
+    by a moved category header;
+  - **switching a category off** (`CATEGORY_SYNC_SET_REQ = 148`
+    `{channel_id, enabled}` → `CHANNEL_ACTION_RES{action="category_sync"}`,
+    MANAGE_ROLES in the category). Switching it on changes nothing until
+    channels sync;
+  - **deleting a category**.
+- Editing a following channel's overwrites copies the category's rows onto
+  it first (same effective result), then applies the edit; it no longer
+  follows.
+- The client asks on drop. A channel dropped into a different category
+  whose switch is on gets "Move #x into Category?" with **Sync
+  permissions** (needs MANAGE_ROLES in the channel), **Keep permissions**,
+  and **Cancel**. Sync = reorder + sync request; Keep = reorder only;
+  Cancel = nothing. No prompt anywhere else, since the server keeps
+  permissions on every other move anyway.
+- `CHANNEL_OVERWRITES_RES` for a following channel returns the category's
+  rows (what applies); the client shows "Synced with <category>" or "Not
+  synced … Sync now" under syncing categories only.
+- Migration v12: adds `category_sync` (off). A DB that ran v11 live keeps
+  syncing exactly the categories that carry rows (their channels were
+  following them); a v10 → v12 upgrade leaves every category plain, even
+  one with formerly inert rows.
 - Visibility: a category is listed when the user can VIEW it **or** any
   channel under it is visible (previously categories were always listed).
 
@@ -174,11 +201,13 @@ channels.)
   `PERM_EMBED_LINKS`, `PERM_SPEAK`.
 - `RoleInfo.manage_each_other = 7`, `RoleCreateRequest.manage_each_other = 4`,
   `RoleUpdateRequest.manage_each_other = 6`.
-- `ChannelInfo.permissions_synced = 13`.
+- `ChannelInfo.permissions_synced = 13`, `ChannelInfo.category_sync = 14`.
 - `ChannelMessage.suppress_embeds = 15`, `ChannelMessageEdited.suppress_embeds = 7`.
 - `VoiceUserState.is_suppressed = 6`.
-- `Packet.CHANNEL_PERMISSIONS_SYNC_REQ = 147`,
-  `ChannelPermissionsSyncRequest channel_permissions_sync_req = 149`.
+- `Packet.CHANNEL_PERMISSIONS_SYNC_REQ = 147` +
+  `ChannelPermissionsSyncRequest channel_permissions_sync_req = 149`
+  `{channel_id, category_id}`; `Packet.CATEGORY_SYNC_SET_REQ = 148` +
+  `CategorySyncSetRequest category_sync_set_req = 150` `{channel_id, enabled}`.
 
 ## Client
 
@@ -197,6 +226,11 @@ channels.)
 - Messages with `suppressEmbeds` render no link-preview / GIF media.
 - Voice: `isSuppressed` badge; the local mic shows blocked when the
   user can't speak in the connected channel.
-- Category settings get the Permissions section; a synced channel shows
-  "Synced with <category>" and editing it un-syncs; an unsynced channel
-  under a category gets "Sync with <category>".
+- Category settings: the "Channels follow this category's permissions"
+  switch; when on, "N of M channels follow these permissions" + "Sync
+  all" and the overwrite editor (hidden for a plain group). A channel under
+  a syncing category shows "Synced with <category>" (editing un-syncs) or
+  "Not synced … Sync now".
+- Sidebar drop into a syncing category → `CategorySyncPrompt` (Sync / Keep
+  / Cancel); `ConfirmModal` gained an optional middle choice and an
+  accent tone.

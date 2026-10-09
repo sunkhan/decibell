@@ -533,7 +533,11 @@ pub async fn set_channel_overwrite(args: SetChannelOverwriteArgs) -> napi::Resul
 #[napi(object)]
 pub struct SyncChannelPermissionsArgs {
     pub server_id: String,
+    /// A channel, or a category (= sync every channel under it).
     pub channel_id: String,
+    /// The category the user agreed to sync with; the server refuses if
+    /// the channel sits elsewhere by then (a failed / raced reorder).
+    pub category_id: Option<String>,
 }
 
 /// Permissions v3: drop the channel's own overwrites so it follows its
@@ -546,6 +550,30 @@ pub async fn sync_channel_permissions(args: SyncChannelPermissionsArgs) -> napi:
         packet::Type::ChannelPermissionsSyncReq,
         packet::Payload::ChannelPermissionsSyncReq(ChannelPermissionsSyncRequest {
             channel_id: args.channel_id,
+            category_id: args.category_id.unwrap_or_default(),
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct SetCategorySyncArgs {
+    pub server_id: String,
+    pub channel_id: String,
+    pub enabled: bool,
+}
+
+/// Permissions v3: whether channels can follow this category's overwrites
+/// (off = it only groups channels). Neither direction changes what any
+/// channel allows. Result: channel_action_responded, action "category_sync".
+#[napi]
+pub async fn set_category_sync(args: SetCategorySyncArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::CategorySyncSetReq,
+        packet::Payload::CategorySyncSetReq(CategorySyncSetRequest {
+            channel_id: args.channel_id,
+            enabled: args.enabled,
         }),
     )
     .await

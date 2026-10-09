@@ -13,6 +13,7 @@ import LeaveServerConfirmModal from "../../components/LeaveServerConfirmModal";
 import { PERM, hasBits, usePermission } from "../servers/permissions";
 import { toast } from "../../stores/toastStore";
 import CreateChannelModal from "./CreateChannelModal";
+import CategorySyncPrompt, { type CategorySyncPromptState } from "./CategorySyncPrompt";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { useSidebarResize } from "./useSidebarResize";
 import { EMPTY_LIST } from "../../lib/empty";
@@ -70,6 +71,10 @@ export default function ServerChannelsSidebar() {
   /// ("insert before item X", or END for the very bottom).
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropBefore, setDropBefore] = useState<string | "END" | null>(null);
+  /// A channel dropped into a category its channels can sync with waits
+  /// here for Sync / Keep / Cancel. Kept (with open=false) through the
+  /// dialog's fade-out so its text doesn't blank mid-animation.
+  const [syncPrompt, setSyncPrompt] = useState<CategorySyncPromptState | null>(null);
   const [showServerMenu, setShowServerMenu] = useState(false);
   const [leavePending, setLeavePending] = useState<{ id: string; name: string } | null>(null);
   const serverMenuRef = useRef<HTMLDivElement>(null);
@@ -170,8 +175,34 @@ export default function ServerChannelsSidebar() {
     if (target === -1) return;
     ids.splice(target, 0, ...block);
     if (ids.every((id, i) => id === orderedIds[i])) return;
-    // Optimistic: reorder locally now; the server's broadcast confirms
-    // (or resyncs on rejection).
+    // Dropped into a category whose permissions its channels can follow:
+    // ask (Sync / Keep / Cancel). The server never changes what a channel
+    // allows on a move, so anywhere else a move just moves.
+    const byId = new Map(channels.map((c) => [c.id, c]));
+    const categoryOf = (order: string[], id: string): string | null => {
+      let category: string | null = null;
+      for (const x of order) {
+        if (x === id) return category;
+        if (byId.get(x)?.type === "category") category = x;
+      }
+      return null;
+    };
+    if (byId.get(draggedId)?.type !== "category") {
+      const to = categoryOf(ids, draggedId);
+      if (to && to !== categoryOf(orderedIds, draggedId) && byId.get(to)?.categorySync) {
+        setSyncPrompt({ ids, channelId: draggedId, categoryId: to, open: true });
+        return;
+      }
+    }
+    commitReorder(ids);
+  };
+
+  /// Sends a new order (optimistically applied; the server's broadcast
+  /// confirms or resyncs on rejection), optionally followed by a sync of
+  /// one channel with the category it was dropped into. The sync names
+  /// that category, so it's refused if the reorder didn't land.
+  const commitReorder = (ids: string[], syncWith?: { channelId: string; categoryId: string }) => {
+    if (!activeServerId) return;
     const byId = new Map(channels.map((c) => [c.id, c]));
     const next = ids
       .map((id) => byId.get(id))
@@ -181,7 +212,15 @@ export default function ServerChannelsSidebar() {
       serverId: activeServerId,
       channelIds: ids,
     }).catch(console.error);
+    if (syncWith) {
+      invoke("sync_channel_permissions", {
+        serverId: activeServerId,
+        channelId: syncWith.channelId,
+        categoryId: syncWith.categoryId,
+      }).catch(console.error);
+    }
   };
+  const closeSyncPrompt = () => setSyncPrompt((p) => (p ? { ...p, open: false } : p));
 
   const onListDragStart = (e: React.DragEvent) => {
     const el = (e.target as HTMLElement).closest(
@@ -677,6 +716,26 @@ export default function ServerChannelsSidebar() {
           skipped the fade-out and forced a from-scratch mount on every
           open. */}
       {activeServerId && <ServerSettingsModal serverId={activeServerId} />}
+      {activeServerId && (
+        <CategorySyncPrompt
+          serverId={activeServerId}
+          prompt={syncPrompt}
+          onSync={() => {
+            if (!syncPrompt?.open) return;
+            commitReorder(syncPrompt.ids, {
+              channelId: syncPrompt.channelId,
+              categoryId: syncPrompt.categoryId,
+            });
+            closeSyncPrompt();
+          }}
+          onKeep={() => {
+            if (!syncPrompt?.open) return;
+            commitReorder(syncPrompt.ids);
+            closeSyncPrompt();
+          }}
+          onCancel={closeSyncPrompt}
+        />
+      )}
       {/* Always mounted; `open` drives it so the close can animate. */}
       <LeaveServerConfirmModal
         open={activeModal === "leave-server-confirm" && leavePending !== null}

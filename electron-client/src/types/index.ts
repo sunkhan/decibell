@@ -428,8 +428,13 @@ export interface ChannelInfo {
   /// Off by default; MANAGE_CHANNELS toggles it in channel settings.
   encrypted?: boolean;
   /// Follows its category's overwrites (permissions v3); editing its own
-  /// overwrites un-syncs it. Only meaningful under a category.
+  /// overwrites un-syncs it. Only ever true under a category with
+  /// categorySync on.
   permissionsSynced?: boolean;
+  /// Category rows: channels may follow its overwrites. Off = the category
+  /// only groups channels. Moves and switching it off never change what a
+  /// channel allows; following starts only with an explicit sync.
+  categorySync?: boolean;
 }
 
 /// One per-channel permission overwrite (permissions v2).

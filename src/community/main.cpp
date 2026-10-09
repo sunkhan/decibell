@@ -149,6 +149,7 @@ void fill_channel_info(chatproj::ChannelInfo* info, const chatproj::DbChannel& c
     info->set_slowmode_seconds(ch.slowmode_seconds);
     info->set_encrypted(ch.encrypted);
     info->set_permissions_synced(ch.type != 2 && ch.perm_synced);
+    info->set_category_sync(ch.type == 2 && ch.category_sync);
 }
 
 /// Builds a CHANNEL_LIST_UPDATE packet for ONE recipient: only channels
@@ -3113,9 +3114,12 @@ private:
         }
 
         // --- CHANNEL PERMISSIONS: SYNC WITH CATEGORY (v3) ---
+        // A channel id syncs that channel; a category id syncs every channel
+        // under it that isn't synced yet (each one guarded on its own).
         else if (packet.type() == chatproj::Packet::CHANNEL_PERMISSIONS_SYNC_REQ) {
             auto* db = manager_.db();
-            const std::string& channel_id = packet.channel_permissions_sync_req().channel_id();
+            const auto& req = packet.channel_permissions_sync_req();
+            const std::string& channel_id = req.channel_id();
             chatproj::Packet p;
             p.set_type(chatproj::Packet::CHANNEL_ACTION_RES);
             auto* res = p.mutable_channel_action_res();
@@ -3128,61 +3132,80 @@ private:
             if (!db) { fail("Server misconfigured."); return; }
             auto ch = db->get_channel(channel_id);
             if (!ch) { fail("Channel not found."); return; }
-            if (auto a = manager_.authz().check(chatproj::Action::ManageOverwrites,
-                                                {username_, channel_id, ""}); !a) {
-                fail(a.reason);
-                return;
-            }
-            const std::string category = db->parent_category(channel_id);
-            if (ch->type == 2 || category.empty()) { fail("This channel isn't in a category."); return; }
-            const std::vector<chatproj::DbOverwrite> own = db->list_overwrites(channel_id);
-            if (ch->perm_synced) {
+            std::vector<std::string> synced;
+            if (ch->type == 2) {
+                if (!ch->category_sync) { fail("This category doesn't sync permissions."); return; }
+                size_t wanted = 0;
+                std::string first_error;
+                for (const auto& child : db->category_children(channel_id)) {
+                    auto c = db->get_channel(child);
+                    if (!c || c->perm_synced) continue;
+                    ++wanted;
+                    std::string err;
+                    if (sync_channel_with_category(child, channel_id, err)) synced.push_back(child);
+                    else if (first_error.empty()) first_error = "#" + c->name + ": " + err;
+                }
+                if (synced.size() < wanted) {
+                    res->set_success(false);
+                    res->set_message("Synced " + std::to_string(synced.size()) + " of " +
+                                     std::to_string(wanted) + " channels. " + first_error);
+                } else {
+                    res->set_success(true);
+                }
+            } else {
+                std::string err;
+                if (!sync_channel_with_category(channel_id, req.category_id(), err)) { fail(err); return; }
+                synced.push_back(channel_id);
                 res->set_success(true);
-                fill_channel_info(res->mutable_channel(), *ch);
-                res->mutable_channel()->set_my_permissions(
-                    manager_.authz().channel_permissions(username_, channel_id));
-                send_packet(p);
-                return;
-            }
-            // Escalation guard, per target: every bit that differs between
-            // the channel's rows and the category's must be one the actor
-            // holds in this channel.
-            const uint64_t actor_perms = manager_.authz().channel_permissions(username_, channel_id);
-            uint64_t changed = 0;
-            {
-                // Per target, allow / deny XORed across both sides = the
-                // bits that change.
-                std::map<std::pair<int32_t, std::string>, std::pair<uint64_t, uint64_t>> rows;
-                for (const auto& ow : own) {
-                    auto& r = rows[{ow.target_type, ow.target_id}];
-                    r.first ^= ow.allow; r.second ^= ow.deny;
-                }
-                for (const auto& ow : db->list_overwrites(category)) {
-                    auto& r = rows[{ow.target_type, ow.target_id}];
-                    r.first ^= ow.allow; r.second ^= ow.deny;
-                }
-                for (const auto& [target, r] : rows) changed |= r.first | r.second;
-            }
-            if ((changed & ~actor_perms) != 0) {
-                fail("Syncing would change permissions you don't have in this channel.");
-                return;
-            }
-            if (!db->sync_channel_permissions(channel_id)) { fail("Failed to sync permissions."); return; }
-            if (!(manager_.authz().channel_permissions(username_, channel_id) & chatproj::perms::kViewChannel)) {
-                db->restore_channel_overwrites(channel_id, own);
-                fail("That would remove your own access to this channel.");
-                return;
             }
             if (auto fresh = db->get_channel(channel_id)) ch = fresh;
-            res->set_success(true);
             fill_channel_info(res->mutable_channel(), *ch);
             res->mutable_channel()->set_my_permissions(
                 manager_.authz().channel_permissions(username_, channel_id));
             send_packet(p);
-            db->add_audit(username_, "overwrite_sync", "", channel_id, "synced with category " + category);
-            std::cout << "[Community] #" << channel_id << " synced with its category by " << username_ << "\n";
+            if (synced.empty()) return;
             manager_.broadcast_channels();
-            manager_.broadcast_overwrites(channel_id);
+            for (const auto& id : synced) manager_.broadcast_overwrites(id);
+        }
+
+        // --- CATEGORY: PERMISSION SYNC ON / OFF (v3) ---
+        // Off: the category only groups channels; whoever followed it keeps
+        // its rows as their own. On: nothing changes until channels sync.
+        // Neither direction changes what any channel allows, so this needs
+        // the same MANAGE_ROLES-in-the-category as editing its rows.
+        else if (packet.type() == chatproj::Packet::CATEGORY_SYNC_SET_REQ) {
+            auto* db = manager_.db();
+            const auto& req = packet.category_sync_set_req();
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::CHANNEL_ACTION_RES);
+            auto* res = p.mutable_channel_action_res();
+            res->set_action("category_sync");
+            auto fail = [&](const std::string& msg) {
+                res->set_success(false);
+                res->set_message(msg);
+                send_packet(p);
+            };
+            if (!db) { fail("Server misconfigured."); return; }
+            auto ch = db->get_channel(req.channel_id());
+            if (!ch || ch->type != 2) { fail("Category not found."); return; }
+            if (auto a = manager_.authz().check(chatproj::Action::ManageOverwrites,
+                                                {username_, ch->id, ""}); !a) {
+                fail(a.reason);
+                return;
+            }
+            const std::vector<std::string> followers =
+                req.enabled() ? std::vector<std::string>{} : db->synced_children(ch->id);
+            if (!db->set_category_sync(ch->id, req.enabled())) { fail("Failed to update the category."); return; }
+            if (auto fresh = db->get_channel(ch->id)) ch = fresh;
+            res->set_success(true);
+            fill_channel_info(res->mutable_channel(), *ch);
+            res->mutable_channel()->set_my_permissions(manager_.authz().channel_permissions(username_, ch->id));
+            send_packet(p);
+            db->add_audit(username_, "category_sync", ch->name, ch->id, req.enabled() ? "on" : "off");
+            std::cout << "[Community] Category " << ch->id << " permission sync "
+                      << (req.enabled() ? "on" : "off") << " by " << username_ << "\n";
+            manager_.broadcast_channels();
+            for (const auto& id : followers) manager_.broadcast_overwrites(id);
         }
 
         // --- SERVER UPDATE (name / description) ---
@@ -3477,6 +3500,64 @@ private:
         send_packet(p);
     }
 
+    // Syncs one channel with its category on the actor's behalf (v3):
+    // MANAGE_ROLES in the channel, a syncing category (and, when
+    // `expected_category` is set, that one), the escalation guard (every
+    // bit that differs between the channel's rows and the category's, per
+    // target, must be one the actor holds here) and the lock-out guard.
+    // Audits on success; the caller broadcasts.
+    bool sync_channel_with_category(const std::string& channel_id,
+                                    const std::string& expected_category,
+                                    std::string& err) {
+        auto* db = manager_.db();
+        auto ch = db ? db->get_channel(channel_id) : std::nullopt;
+        if (!ch) { err = "Channel not found."; return false; }
+        if (auto a = manager_.authz().check(chatproj::Action::ManageOverwrites,
+                                            {username_, channel_id, ""}); !a) {
+            err = a.reason;
+            return false;
+        }
+        const std::string category = db->parent_category(channel_id);
+        if (ch->type == 2 || category.empty()) { err = "This channel isn't in a category."; return false; }
+        if (!expected_category.empty() && category != expected_category) {
+            err = "The channel isn't in that category any more.";
+            return false;
+        }
+        auto cat = db->get_channel(category);
+        if (!cat || !cat->category_sync) { err = "This category doesn't sync permissions."; return false; }
+        if (ch->perm_synced) return true;
+        const std::vector<chatproj::DbOverwrite> own = db->list_overwrites(channel_id);
+        const uint64_t actor_perms = manager_.authz().channel_permissions(username_, channel_id);
+        uint64_t changed = 0;
+        {
+            // Per target, allow / deny XORed across both sides = the
+            // bits that change.
+            std::map<std::pair<int32_t, std::string>, std::pair<uint64_t, uint64_t>> rows;
+            for (const auto& ow : own) {
+                auto& r = rows[{ow.target_type, ow.target_id}];
+                r.first ^= ow.allow; r.second ^= ow.deny;
+            }
+            for (const auto& ow : db->list_overwrites(category)) {
+                auto& r = rows[{ow.target_type, ow.target_id}];
+                r.first ^= ow.allow; r.second ^= ow.deny;
+            }
+            for (const auto& [target, r] : rows) changed |= r.first | r.second;
+        }
+        if ((changed & ~actor_perms) != 0) {
+            err = "Syncing would change permissions you don't have in this channel.";
+            return false;
+        }
+        if (!db->sync_channel_permissions(channel_id)) { err = "Failed to sync permissions."; return false; }
+        if (!(manager_.authz().channel_permissions(username_, channel_id) & chatproj::perms::kViewChannel)) {
+            db->restore_channel_overwrites(channel_id, own);
+            err = "That would remove your own access to this channel.";
+            return false;
+        }
+        db->add_audit(username_, "overwrite_sync", "", channel_id, "synced with category " + category);
+        std::cout << "[Community] #" << channel_id << " synced with its category by " << username_ << "\n";
+        return true;
+    }
+
     // A CHANNEL_MSG this server won't accept. The sender gets a typed
     // CHANNEL_MSG_REJECTED naming the request's nonce — so the client
     // withdraws exactly that optimistic bubble instead of leaving a
@@ -3548,6 +3629,7 @@ private:
             case T::SET_NICKNAME_REQ:
             case T::CHANNEL_OVERWRITE_SET_REQ:
             case T::CHANNEL_PERMISSIONS_SYNC_REQ:
+            case T::CATEGORY_SYNC_SET_REQ:
             case T::SERVER_UPDATE_REQ:
             case T::TIMEOUT_MEMBER_REQ:
             case T::VOICE_MOD_REQ:

@@ -13,6 +13,14 @@ interface Props {
   onConfirm: () => void;
   /// Cancel, Esc and a backdrop click.
   onCancel: () => void;
+  /// "danger" (default) for destructive confirmations, "accent" when the
+  /// confirm button is an ordinary choice.
+  confirmTone?: "danger" | "accent";
+  /// Greys the confirm button out (and Enter does nothing).
+  confirmDisabled?: boolean;
+  /// An optional middle choice between Cancel and the confirm button.
+  secondaryLabel?: string;
+  onSecondary?: () => void;
 }
 
 /// Shared shell for the small destructive-action confirmations (delete
@@ -27,6 +35,10 @@ export default function ConfirmModal({
   confirmLabel,
   onConfirm,
   onCancel,
+  confirmTone = "danger",
+  confirmDisabled = false,
+  secondaryLabel,
+  onSecondary,
 }: Props) {
   const [mounted, setMounted] = useState(false);
   const [visible, setVisible] = useState(false);
@@ -56,10 +68,13 @@ export default function ConfirmModal({
   // Ignore input during the close transition — the buttons are still
   // painted, and the parent may already have cleared its state.
   const confirm = () => {
-    if (open) onConfirm();
+    if (open && !confirmDisabled) onConfirm();
   };
   const cancel = () => {
     if (open) onCancel();
+  };
+  const secondary = () => {
+    if (open) onSecondary?.();
   };
 
   // Esc cancels, Enter confirms — on the document so they work with
@@ -72,12 +87,12 @@ export default function ConfirmModal({
         onCancel();
       } else if (e.key === "Enter") {
         e.preventDefault();
-        onConfirm();
+        if (!confirmDisabled) onConfirm();
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [open, onConfirm, onCancel]);
+  }, [open, onConfirm, onCancel, confirmDisabled]);
 
   // Last body rendered while open; shown during the fade-out instead of
   // whatever the parent has now.
@@ -94,7 +109,7 @@ export default function ConfirmModal({
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="w-full max-w-[400px] rounded-xl border border-border bg-bg-secondary p-6 shadow-modal transition-[opacity,transform] duration-300"
+        className={`w-full ${secondaryLabel ? "max-w-lg" : "max-w-[400px]"} rounded-xl border border-border bg-bg-secondary p-6 shadow-modal transition-[opacity,transform] duration-300`}
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",
@@ -103,16 +118,29 @@ export default function ConfirmModal({
       >
         <h2 className="text-[16px] font-semibold text-text-primary">{title}</h2>
         {open ? children : frozen.current}
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
           <button
             onClick={cancel}
             className="rounded-md border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
           >
             Cancel
           </button>
+          {secondaryLabel && (
+            <button
+              onClick={secondary}
+              className="rounded-md border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
+            >
+              {secondaryLabel}
+            </button>
+          )}
           <button
             onClick={confirm}
-            className="rounded-md bg-error px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-error/90"
+            disabled={confirmDisabled}
+            className={
+              confirmTone === "accent"
+                ? "rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
+                : "rounded-md bg-error px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-error/90 disabled:opacity-50"
+            }
           >
             {confirmLabel}
           </button>

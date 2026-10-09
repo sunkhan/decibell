@@ -2089,10 +2089,30 @@ def list_overwrites(c, channel_id):
     return {(o.target_type, o.target_id): (o.allow, o.deny) for o in r.channel_overwrites_res.overwrites} if r else None
 
 
-def sync_perms(c, channel_id):
-    c.send(pb.Packet.CHANNEL_PERMISSIONS_SYNC_REQ,
-           channel_permissions_sync_req=pb.ChannelPermissionsSyncRequest(channel_id=channel_id))
+def sync_perms(c, channel_id, category_id=""):
+    c.send(pb.Packet.CHANNEL_PERMISSIONS_SYNC_REQ, channel_permissions_sync_req=pb.ChannelPermissionsSyncRequest(
+        channel_id=channel_id, category_id=category_id))
     return c.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "sync")
+
+
+def set_category_sync(c, category_id, on):
+    c.send(pb.Packet.CATEGORY_SYNC_SET_REQ, category_sync_set_req=pb.CategorySyncSetRequest(
+        channel_id=category_id, enabled=on))
+    return c.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "category_sync")
+
+
+def reorder(c, ids):
+    c.send(pb.Packet.CHANNEL_REORDER_REQ, channel_reorder_req=pb.ChannelReorderRequest(channel_ids=ids))
+    return c.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "reorder")
+
+
+def channel_order():
+    return [r[0] for r in sql("select id from channels order by position, id")]
+
+
+def perm_synced(channel_id):
+    r = sql("select perm_synced from channels where id=?", channel_id)
+    return r[0][0] if r else None
 
 
 def fresh_list(c, timeout=3):
@@ -2123,12 +2143,35 @@ def test_v11_migration():
     check("... in overwrite allow", sql("select allow from channel_overwrites where channel_id='voice-lounge' and target_id=?", str(rid)) == [(split,)])
     check("... and in overwrite deny", sql("select deny from channel_overwrites where channel_id='voice-lounge-2' and target_id=?", str(rid)) == [(split,)])
     synced = dict(sql("select id, perm_synced from channels"))
-    check("channels with rows of their own start unsynced, the rest synced",
-          synced.get("voice-lounge") == 0 and synced.get("voice-lounge-2") == 0 and synced.get("general") == 1, str(synced))
+    check("no channel outside a syncing category is synced (rows of its own or not)",
+          synced.get("voice-lounge") == 0 and synced.get("voice-lounge-2") == 0 and synced.get("general") == 0, str(synced))
     check("v11 stamp written", sql("select value from server_meta where key='perm_bits_v11'") == [("1",)])
     sql("delete from channel_overwrites where target_id=?", str(rid))
     sql("delete from roles where id=?", rid)
-    sql("update channels set perm_synced=1")
+
+    # v12: an upgrade from before v3 keeps every category a plain group, even
+    # one carrying (formerly inert) overwrites.
+    ev_id = str(sql("select id from roles where is_default=1")[0][0])
+    sql("insert into channels(id, name, type, position) values('old-cat', 'Old', 2, 100), ('old-child', 'old-child', 0, 101)")
+    sql("insert into channel_overwrites(channel_id, target_type, target_id, allow, deny) values('old-cat', 0, ?, 0, ?)",
+        ev_id, pb.PERM_VIEW_CHANNEL)
+    sql("alter table channels drop column category_sync")
+    sql("update server_meta set value='10' where key='schema_version'")
+    sql("delete from server_meta where key in ('category_sync_v12', 'perm_bits_v11')")
+    sql("alter table channels drop column perm_synced")
+    proc = start_server(); stop_server(proc)
+    check("v10 → v12: a category with rows stays a plain group", sql("select category_sync from channels where id='old-cat'") == [(0,)])
+    check("...and its channel follows nothing", perm_synced("old-child") == 0)
+    check("schema at v12", sql("select value from server_meta where key='schema_version'") == [("12",)])
+    # A DB that ran v11 live keeps the categories whose rows were applying.
+    sql("update channels set perm_synced=1 where id='old-child'")
+    sql("update server_meta set value='11' where key='schema_version'")
+    sql("delete from server_meta where key='category_sync_v12'")
+    proc = start_server(); stop_server(proc)
+    check("v11 → v12: a category whose rows applied keeps syncing", sql("select category_sync from channels where id='old-cat'") == [(1,)])
+    check("...and its synced channel keeps following it", perm_synced("old-child") == 1)
+    sql("delete from channel_overwrites where channel_id='old-cat'")
+    sql("delete from channels where id in ('old-cat', 'old-child')")
 
 
 def test_v3_invites_and_nicknames():
@@ -2374,24 +2417,42 @@ def test_v3_thumbnail_scope():
 
 
 def test_v3_category_sync():
-    print("[v3] category permission sync")
+    print("[v3] category permission sync: opt-in per category, never silent")
     owner = Client("alice"); assert auth_ok(owner)[0]
     ev = everyone_role(owner)
+    evk = (0, str(ev.id))
     tom = join("tom", owner); val = join("val", owner)
-    cat = create_channel(owner, "Staff Area", pb.ChannelInfo.CATEGORY).id
+    cat = create_channel(owner, "Staff Area", pb.ChannelInfo.CATEGORY)
+    check("a new category is a plain group", not cat.category_sync)
+    cat = cat.id
     child = create_channel(owner, "staff-talk", pb.ChannelInfo.TEXT, category_id=cat)
-    check("a channel created in a category starts synced", child.permissions_synced)
+    check("a channel created in a plain group doesn't sync", not child.permissions_synced)
     child = child.id
     tom.flush(0.5)
     set_overwrite(owner, cat, pb.ChannelOverwrite.ROLE, ev.id, deny=pb.PERM_VIEW_CHANNEL)
     cl = fresh_list(tom)
-    check("hiding the category hides its synced channel and the empty header",
-          cl is not None and cat not in cl and child not in cl, str(sorted(cl)) if cl else None)
-    later = create_channel(owner, "staff-later", pb.ChannelInfo.TEXT, category_id=cat).id
+    check("a plain group's rows don't touch its channels (header shown for its visible channel)",
+          cl is not None and child in cl and cat in cl and cl[cat].my_permissions == 0)
+    r = set_category_sync(owner, cat, True)
+    check("category sync switched on", r is not None and r.channel_action_res.success and r.channel_action_res.channel.category_sync,
+          r.channel_action_res.message if r else None)
     cl = fresh_list(tom)
-    check("a channel created later in the hidden category is hidden too", cl is not None and later not in cl)
-    rows = list_overwrites(owner, child)
-    check("a synced channel reports its category's rows", rows == {(0, str(ev.id)): (0, pb.PERM_VIEW_CHANNEL)}, str(rows))
+    check("switching it on changes no channel", cl is not None and child in cl and perm_synced(child) == 0)
+    later = create_channel(owner, "staff-later", pb.ChannelInfo.TEXT, category_id=cat)
+    check("a channel created in a syncing category follows it", later.permissions_synced)
+    later = later.id
+    cl = fresh_list(tom)
+    check("...so it's hidden with the category", cl is not None and later not in cl)
+
+    r = sync_perms(owner, child, category_id="general")
+    check("sync refused when the channel isn't in the category the user agreed to", r is not None and not r.channel_action_res.success)
+    tom.flush(0.3)
+    r = sync_perms(owner, child, category_id=cat)
+    check("explicit sync", r is not None and r.channel_action_res.success and r.channel_action_res.channel.permissions_synced,
+          r.channel_action_res.message if r else None)
+    cl = fresh_list(tom)
+    check("after the sync tom loses the channel and the header", cl is not None and child not in cl and cat not in cl)
+    check("a synced channel reports its category's rows", list_overwrites(owner, child) == {evk: (0, pb.PERM_VIEW_CHANNEL)})
 
     tom.flush(0.3)
     r = set_overwrite(owner, child, pb.ChannelOverwrite.MEMBER, "tom", allow=pb.PERM_VIEW_CHANNEL)
@@ -2399,12 +2460,11 @@ def test_v3_category_sync():
           and not r.channel_action_res.channel.permissions_synced)
     rows = list_overwrites(owner, child)
     check("...after copying the category's rows onto it",
-          rows == {(0, str(ev.id)): (0, pb.PERM_VIEW_CHANNEL), (1, "tom"): (pb.PERM_VIEW_CHANNEL, 0)}, str(rows))
+          rows == {evk: (0, pb.PERM_VIEW_CHANNEL), (1, "tom"): (pb.PERM_VIEW_CHANNEL, 0)}, str(rows))
     cl = fresh_list(tom)
-    check("tom sees the channel, and its category header with it", cl is not None and child in cl and cat in cl
-          and later not in cl and cl[cat].my_permissions == 0)
+    check("tom sees the channel, and its category header with it", cl is not None and child in cl and cat in cl and later not in cl)
 
-    # escalation guard: val may manage the child's overwrites but lacks MANAGE_MESSAGES
+    # escalation + lock-out guards: val may manage the child's overwrites but lacks MANAGE_MESSAGES
     keeper = create_role(owner, "Keeper", 0)
     set_overwrite(owner, child, pb.ChannelOverwrite.MEMBER, "val", allow=pb.PERM_VIEW_CHANNEL | pb.PERM_MANAGE_ROLES)
     set_overwrite(owner, child, pb.ChannelOverwrite.ROLE, keeper.id, allow=pb.PERM_MANAGE_MESSAGES)
@@ -2418,13 +2478,44 @@ def test_v3_category_sync():
           and "access" in r.channel_action_res.message, r.channel_action_res.message if r else None)
     rows = list_overwrites(owner, child)
     check("...and the channel's own rows were restored", rows is not None and (1, "val") in rows and (1, "tom") in rows, str(rows))
+    set_overwrite(owner, child, pb.ChannelOverwrite.MEMBER, "val")
+    set_overwrite(owner, child, pb.ChannelOverwrite.MEMBER, "tom")
+    r = sync_perms(owner, child, category_id=cat)
+    check("owner re-syncs", r is not None and r.channel_action_res.success and perm_synced(child) == 1)
 
+    # Moves never change what a channel allows. (Fresh session: the
+    # management bucket is 20 burst / 2 per s.)
+    owner.close()
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ids = channel_order(); ids.remove(child); ids.insert(ids.index("general") + 1, child)
     tom.flush(0.3)
-    r = sync_perms(owner, child)
-    check("owner re-syncs", r is not None and r.channel_action_res.success and r.channel_action_res.channel.permissions_synced,
+    r = reorder(owner, ids)
+    check("synced channel dragged out of the category", r is not None and r.channel_action_res.success,
           r.channel_action_res.message if r else None)
+    check("...keeps the category's rows as its own, unsynced",
+          perm_synced(child) == 0 and list_overwrites(owner, child) == {evk: (0, pb.PERM_VIEW_CHANNEL)})
     cl = fresh_list(tom)
-    check("after the sync tom loses the channel again", cl is not None and child not in cl and cat not in cl)
+    check("...so it stays hidden", cl is not None and child not in cl)
+    ids = channel_order(); ids.remove(child); ids.insert(ids.index(later), child)
+    r = reorder(owner, ids)
+    check("dragged back in, it doesn't sync by itself", r is not None and r.channel_action_res.success and perm_synced(child) == 0)
+
+    # Turning sync off keeps every follower's permissions.
+    tom.flush(0.3)
+    r = set_category_sync(owner, cat, False)
+    check("category sync switched off", r is not None and r.channel_action_res.success and not r.channel_action_res.channel.category_sync)
+    check("...its follower keeps the rows as its own",
+          perm_synced(later) == 0 and list_overwrites(owner, later) == {evk: (0, pb.PERM_VIEW_CHANNEL)})
+    cl = fresh_list(tom)
+    check("...and stays hidden", cl is not None and later not in cl)
+    r = sync_perms(owner, later)
+    check("a plain group can't be synced with", r is not None and not r.channel_action_res.success)
+
+    # Sync all.
+    set_category_sync(owner, cat, True)
+    r = sync_perms(owner, cat)
+    check("syncing the category syncs every channel in it", r is not None and r.channel_action_res.success
+          and perm_synced(child) == 1 and perm_synced(later) == 1, r.channel_action_res.message if r else None)
     r = sync_perms(owner, "general")
     check("an uncategorized channel can't sync", r is not None and not r.channel_action_res.success)
 
@@ -2434,8 +2525,7 @@ def test_v3_category_sync():
     cl = fresh_list(tom)
     check("its synced channels stay hidden (rows copied, not inherited from the next category)",
           cl is not None and child not in cl and later not in cl, str(sorted(cl)) if cl else None)
-    rows = list_overwrites(owner, child)
-    check("...as their own rows", rows == {(0, str(ev.id)): (0, pb.PERM_VIEW_CHANNEL)}, str(rows))
+    check("...as their own rows", list_overwrites(owner, child) == {evk: (0, pb.PERM_VIEW_CHANNEL)})
     for ch in (child, later):
         owner.send(pb.Packet.CHANNEL_DELETE_REQ, channel_delete_req=pb.ChannelDeleteRequest(channel_id=ch))
         owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "delete")

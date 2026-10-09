@@ -42,6 +42,7 @@ fn channel_info_payload(c: ChannelInfo) -> events::ChannelInfoPayload {
         slowmode_seconds: c.slowmode_seconds,
         encrypted: c.encrypted,
         permissions_synced: c.permissions_synced,
+        category_sync: c.category_sync,
     }
 }
 

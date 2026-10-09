@@ -534,9 +534,12 @@ pub struct ChannelInfoPayload {
     pub slowmode_seconds: i32,
     /// Text channels: end-to-end encrypted (member-held epoch keys).
     pub encrypted: bool,
-    /// Follows its category's overwrites (permissions v3). Only meaningful
-    /// for a channel under a category.
+    /// Follows its category's overwrites (permissions v3). Only ever true
+    /// under a category with `category_sync` on.
     pub permissions_synced: bool,
+    /// Category rows: channels may follow its overwrites. Off = the
+    /// category only groups channels.
+    pub category_sync: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

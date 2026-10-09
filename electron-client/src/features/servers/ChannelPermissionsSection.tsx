@@ -34,10 +34,12 @@ function stateOf(ow: ChannelOverwrite | undefined, bit: number): TriState {
 /// refused: only bits the local user holds *in this channel* are
 /// toggleable, and roles at or above the user's level are not offered.
 ///
-/// Category sync (permissions v3): a channel under a category either
-/// follows the category's overwrites (what's listed is then the
-/// category's, and any edit gives the channel its own copy) or has its
-/// own, with a "Sync now" to drop them.
+/// Category sync (permissions v3): a category is a plain group unless its
+/// "channels follow this category's permissions" switch is on. Under a
+/// syncing category a channel either follows its overwrites (what's
+/// listed is then the category's, and any edit gives the channel its own
+/// copy) or has its own, with a "Sync now" to drop them. Nothing but an
+/// explicit sync changes what a channel allows.
 export function ChannelPermissionsSection({
   serverId,
   channel,
@@ -65,6 +67,22 @@ export function ChannelPermissionsSection({
     return undefined;
   }, [serverChannels, channel.id, channel.type]);
   const synced = !!parent && !!channel.permissionsSynced;
+  // A category's channels (as far as we can see them) and how many follow it.
+  const children = useMemo(() => {
+    if (channel.type !== "category") return EMPTY_LIST as ChannelInfo[];
+    const out: ChannelInfo[] = [];
+    let inside = false;
+    for (const c of serverChannels) {
+      if (c.type === "category") {
+        if (inside) break;
+        inside = c.id === channel.id;
+      } else if (inside) {
+        out.push(c);
+      }
+    }
+    return out;
+  }, [serverChannels, channel.id, channel.type]);
+  const followers = children.filter((c) => c.permissionsSynced).length;
   const canEdit = useChannelPermission(serverId, channel.id, PERM.MANAGE_ROLES);
   const canView =
     useChannelPermission(serverId, channel.id, PERM.MANAGE_CHANNELS) || canEdit;
@@ -133,17 +151,36 @@ export function ChannelPermissionsSection({
     }
   };
 
+  /// A channel syncs with `parent`; a category syncs every channel under it.
   const runSync = async () => {
     if (!canEdit || busy) return;
     setBusy(true);
     try {
-      await invoke("sync_channel_permissions", { serverId, channelId: channel.id });
+      await invoke("sync_channel_permissions", {
+        serverId,
+        channelId: channel.id,
+        categoryId: parent?.id,
+      });
     } catch (err) {
       toast.error("Couldn't sync permissions", String(err));
     } finally {
       setBusy(false);
     }
   };
+
+  const runCategorySync = async (enabled: boolean) => {
+    if (!canEdit || busy) return;
+    setBusy(true);
+    try {
+      await invoke("set_category_sync", { serverId, channelId: channel.id, enabled });
+    } catch (err) {
+      toast.error("Couldn't change the category", String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const isCategory = channel.type === "category";
+  const plainGroup = isCategory && !channel.categorySync;
 
   const targetsWithOverwrites = new Set(
     overwrites.map((o) => `${o.targetType}:${o.targetId}`),
@@ -154,8 +191,51 @@ export function ChannelPermissionsSection({
       <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
         Permissions
       </div>
+      {isCategory && (
+        <label
+          className={`mb-3 flex items-start gap-2.5 rounded-md border border-border-divider bg-bg-light px-3 py-2.5 ${
+            canEdit ? "cursor-pointer" : "opacity-60"
+          }`}
+        >
+          <input
+            type="checkbox"
+            checked={!!channel.categorySync}
+            disabled={!canEdit || busy}
+            onChange={() => runCategorySync(!channel.categorySync)}
+            className="mt-0.5 accent-[var(--color-accent)]"
+          />
+          <span className="flex-1">
+            <span className="block text-[13px] text-text-primary">
+              Channels follow this category's permissions
+            </span>
+            <span className="block text-[11px] leading-[1.4] text-text-muted">
+              When off, the category only groups channels. Switching it never changes what
+              any channel allows: a channel follows the category once it's synced.
+            </span>
+          </span>
+        </label>
+      )}
+      {isCategory && channel.categorySync && children.length > 0 && (
+        <div className="mb-3 flex items-center gap-3 rounded-md border border-border-divider bg-bg-light px-3 py-2.5">
+          <p className="min-w-0 flex-1 text-[12px] leading-[1.55] text-text-muted">
+            {followers} of {children.length} channel{children.length === 1 ? "" : "s"} follow
+            these permissions.
+          </p>
+          {followers < children.length && canEdit && (
+            <button
+              type="button"
+              onClick={runSync}
+              disabled={busy}
+              className="shrink-0 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
+            >
+              Sync all
+            </button>
+          )}
+        </div>
+      )}
+      {plainGroup ? null : (<>
       <p className="mb-3 text-[12px] leading-[1.55] text-text-muted">
-        {channel.type === "category" ? (
+        {isCategory ? (
           <>
             Channels synced to this category follow these permissions. Deny{" "}
             <span className="text-text-secondary">View Channel</span> for @everyone to hide
@@ -170,7 +250,7 @@ export function ChannelPermissionsSection({
         )}
       </p>
 
-      {parent && (
+      {parent?.categorySync && (
         <div className="mb-3 flex items-center gap-3 rounded-md border border-border-divider bg-bg-light px-3 py-2.5">
           <p className="min-w-0 flex-1 text-[12px] leading-[1.55] text-text-muted">
             {synced ? (
@@ -270,6 +350,7 @@ export function ChannelPermissionsSection({
           );
         })}
       </div>
+      </>)}
       {!canEdit && (
         <p className="mt-2 text-[12px] text-text-muted">
           You need Manage Roles in this channel to change these.
