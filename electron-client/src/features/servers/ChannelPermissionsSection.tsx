@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { EMPTY_LIST } from "../../lib/empty";
 import { useAuthStore } from "../../stores/authStore";
 import { channelKey } from "../../lib/channelKey";
 import { toast } from "../../stores/toastStore";
-import type { ChannelInfo, ChannelOverwrite } from "../../types";
+import type { ChannelInfo } from "../../types";
 import {
   CHANNEL_OVERWRITE_PERMISSIONS,
   PERM,
@@ -16,19 +16,38 @@ import {
 } from "./permissions";
 
 type TriState = "allow" | "inherit" | "deny";
+type Bits = { allow: number; deny: number };
 
-function stateOf(ow: ChannelOverwrite | undefined, bit: number): TriState {
-  if (!ow) return "inherit";
+const NO_BITS: Bits = { allow: 0, deny: 0 };
+
+function stateOf(ow: Bits, bit: number): TriState {
   if (hasBits(ow.deny, bit)) return "deny";
   if (hasBits(ow.allow, bit)) return "allow";
   return "inherit";
 }
 
+/// "role:<id>" | "member:<username>" → its two halves (usernames never
+/// contain ':', but split on the first one only anyway).
+function splitTarget(key: string): ["role" | "member", string] {
+  const i = key.indexOf(":");
+  return [key.slice(0, i) as "role" | "member", key.slice(i + 1)];
+}
+
+export interface ChannelPermissionsHandle {
+  /// Sends the staged changes: overwrites first, then the category switch
+  /// (so turning sync off hands its followers the rows as edited).
+  commit: () => Promise<void>;
+}
+
 /// Per-channel permission overwrites (permissions v2). Pick a role or a
 /// member, then set each channel-scoped bit to allow / inherit / deny.
-/// Changes apply immediately; the server re-pushes the channel's
-/// overwrites (and everyone's refreshed channel list) on success, and
-/// answers denials through channel_action_responded.
+/// Edits (and a category's sync switch) are staged like the rest of the
+/// channel settings: the parent's Save sends them through `commit()`,
+/// Cancel drops them, and `onDirtyChange` lights Save up. The server
+/// re-pushes the channel's overwrites (and everyone's refreshed channel
+/// list) on success and answers denials through channel_action_responded.
+/// "Sync now" / "Sync all" are actions, not settings: they run at once
+/// (and wait until staged edits are saved or discarded).
 ///
 /// Mirrors the server's guards so the UI doesn't offer what will be
 /// refused: only bits the local user holds *in this channel* are
@@ -40,13 +59,14 @@ function stateOf(ow: ChannelOverwrite | undefined, bit: number): TriState {
 /// listed is then the category's, and any edit gives the channel its own
 /// copy) or has its own, with a "Sync now" to drop them. Nothing but an
 /// explicit sync changes what a channel allows.
-export function ChannelPermissionsSection({
-  serverId,
-  channel,
-}: {
-  serverId: string;
-  channel: ChannelInfo;
-}) {
+export const ChannelPermissionsSection = forwardRef<
+  ChannelPermissionsHandle,
+  {
+    serverId: string;
+    channel: ChannelInfo;
+    onDirtyChange?: (dirty: boolean) => void;
+  }
+>(function ChannelPermissionsSection({ serverId, channel, onDirtyChange }, ref) {
   const localUsername = useAuthStore((s) => s.username);
   const owner = useChatStore((s) => s.serverOwner[serverId]);
   const roles = useChatStore((s) => s.rolesByServer[serverId] ?? EMPTY_LIST);
@@ -106,6 +126,48 @@ export function ChannelPermissionsSection({
 
   const [target, setTarget] = useState<string>(""); // "role:<id>" | "member:<username>"
   const [busy, setBusy] = useState(false);
+  /// Staged overwrites per target (full allow / deny), and the staged
+  /// category switch (null = unchanged).
+  const [pending, setPending] = useState<Record<string, Bits>>({});
+  const [syncDraft, setSyncDraft] = useState<boolean | null>(null);
+
+  const stored = (key: string): Bits => {
+    const ow = overwrites.find((o) => `${o.targetType}:${o.targetId}` === key);
+    return ow ? { allow: ow.allow, deny: ow.deny } : NO_BITS;
+  };
+  const categorySyncShown = syncDraft ?? !!channel.categorySync;
+  const dirty =
+    Object.keys(pending).length > 0 ||
+    (syncDraft !== null && syncDraft !== !!channel.categorySync);
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      commit: async () => {
+        for (const [key, bits] of Object.entries(pending)) {
+          const [targetType, targetId] = splitTarget(key);
+          await invoke("set_channel_overwrite", {
+            serverId,
+            channelId: channel.id,
+            targetType,
+            targetId,
+            allow: bits.allow,
+            deny: bits.deny,
+          });
+        }
+        if (syncDraft !== null && syncDraft !== !!channel.categorySync) {
+          await invoke("set_category_sync", { serverId, channelId: channel.id, enabled: syncDraft });
+        }
+        setPending({});
+        setSyncDraft(null);
+      },
+    }),
+    [pending, syncDraft, serverId, channel.id, channel.categorySync],
+  );
 
   useEffect(() => {
     if (!canView) return;
@@ -123,37 +185,26 @@ export function ChannelPermissionsSection({
 
   if (!canView) return null;
 
-  const [kind, id] = target.split(":", 2) as ["role" | "member", string];
-  const current = overwrites.find(
-    (o) => o.targetType === kind && o.targetId === id,
-  );
+  const current = pending[target] ?? stored(target);
 
-  const apply = async (bit: number, next: TriState) => {
+  /// Stages one bit for the selected target; back at the stored value
+  /// the target drops out of the draft.
+  const apply = (bit: number, next: TriState) => {
     if (!canEdit || busy || !target) return;
-    let allow = current?.allow ?? 0;
-    let deny = current?.deny ?? 0;
-    allow = toggleBit(allow, bit, next === "allow");
-    deny = toggleBit(deny, bit, next === "deny");
-    setBusy(true);
-    try {
-      await invoke("set_channel_overwrite", {
-        serverId,
-        channelId: channel.id,
-        targetType: kind,
-        targetId: id,
-        allow,
-        deny,
-      });
-    } catch (err) {
-      toast.error("Couldn't update permissions", String(err));
-    } finally {
-      setBusy(false);
-    }
+    const allow = toggleBit(current.allow, bit, next === "allow");
+    const deny = toggleBit(current.deny, bit, next === "deny");
+    const saved = stored(target);
+    setPending((p) => {
+      const out = { ...p };
+      if (allow === saved.allow && deny === saved.deny) delete out[target];
+      else out[target] = { allow, deny };
+      return out;
+    });
   };
 
   /// A channel syncs with `parent`; a category syncs every channel under it.
   const runSync = async () => {
-    if (!canEdit || busy) return;
+    if (!canEdit || busy || dirty) return;
     setBusy(true);
     try {
       await invoke("sync_channel_permissions", {
@@ -168,23 +219,18 @@ export function ChannelPermissionsSection({
     }
   };
 
-  const runCategorySync = async (enabled: boolean) => {
-    if (!canEdit || busy) return;
-    setBusy(true);
-    try {
-      await invoke("set_category_sync", { serverId, channelId: channel.id, enabled });
-    } catch (err) {
-      toast.error("Couldn't change the category", String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
   const isCategory = channel.type === "category";
-  const plainGroup = isCategory && !channel.categorySync;
+  const plainGroup = isCategory && !categorySyncShown;
+  const syncTitle = dirty ? "Save or discard your permission changes first." : undefined;
 
   const targetsWithOverwrites = new Set(
     overwrites.map((o) => `${o.targetType}:${o.targetId}`),
   );
+  const optionSuffix = (key: string) => {
+    const shown = pending[key] ?? stored(key);
+    const mark = shown.allow !== 0 || shown.deny !== 0 || targetsWithOverwrites.has(key) ? " •" : "";
+    return pending[key] ? `${mark} (unsaved)` : mark;
+  };
 
   return (
     <div className="mt-6">
@@ -199,9 +245,12 @@ export function ChannelPermissionsSection({
         >
           <input
             type="checkbox"
-            checked={!!channel.categorySync}
+            checked={categorySyncShown}
             disabled={!canEdit || busy}
-            onChange={() => runCategorySync(!channel.categorySync)}
+            onChange={() => {
+              const next = !categorySyncShown;
+              setSyncDraft(next === !!channel.categorySync ? null : next);
+            }}
             className="mt-0.5 accent-[var(--color-accent)]"
           />
           <span className="flex-1">
@@ -215,7 +264,7 @@ export function ChannelPermissionsSection({
           </span>
         </label>
       )}
-      {isCategory && channel.categorySync && children.length > 0 && (
+      {isCategory && channel.categorySync && categorySyncShown && children.length > 0 && (
         <div className="mb-3 flex items-center gap-3 rounded-md border border-border-divider bg-bg-light px-3 py-2.5">
           <p className="min-w-0 flex-1 text-[12px] leading-[1.55] text-text-muted">
             {followers} of {children.length} channel{children.length === 1 ? "" : "s"} follow
@@ -225,7 +274,8 @@ export function ChannelPermissionsSection({
             <button
               type="button"
               onClick={runSync}
-              disabled={busy}
+              disabled={busy || dirty}
+              title={syncTitle}
               className="shrink-0 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
             >
               Sync all
@@ -269,7 +319,8 @@ export function ChannelPermissionsSection({
             <button
               type="button"
               onClick={runSync}
-              disabled={busy}
+              disabled={busy || dirty}
+              title={syncTitle}
               className="shrink-0 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
             >
               Sync now
@@ -287,7 +338,7 @@ export function ChannelPermissionsSection({
           {offeredRoles.map((r) => (
             <option key={`role:${r.id}`} value={`role:${r.id}`}>
               {r.isDefault ? "@everyone" : r.name}
-              {targetsWithOverwrites.has(`role:${r.id}`) ? " •" : ""}
+              {optionSuffix(`role:${r.id}`)}
             </option>
           ))}
         </optgroup>
@@ -295,7 +346,7 @@ export function ChannelPermissionsSection({
           {members.map((m) => (
             <option key={`member:${m.username}`} value={`member:${m.username}`}>
               {m.nickname ? `${m.nickname} (${m.username})` : m.username}
-              {targetsWithOverwrites.has(`member:${m.username}`) ? " •" : ""}
+              {optionSuffix(`member:${m.username}`)}
             </option>
           ))}
         </optgroup>
@@ -358,4 +409,4 @@ export function ChannelPermissionsSection({
       )}
     </div>
   );
-}
+});

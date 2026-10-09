@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke, listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { toast } from "../../stores/toastStore";
 import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import { PERM, useChannelPermission } from "./permissions";
-import { ChannelPermissionsSection } from "./ChannelPermissionsSection";
+import { ChannelPermissionsSection, type ChannelPermissionsHandle } from "./ChannelPermissionsSection";
 import type { ChannelInfo } from "../../types";
 
 type RetentionField =
@@ -158,6 +158,10 @@ export default function ChannelSettingsModal() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [deleting, setDeleting] = useState(false);
+  // Staged permission edits live in ChannelPermissionsSection (MANAGE_ROLES
+  // there, not MANAGE_CHANNELS); Save sends them through its handle.
+  const permsRef = useRef<ChannelPermissionsHandle>(null);
+  const [permsDirty, setPermsDirty] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -204,6 +208,7 @@ export default function ChannelSettingsModal() {
     setDeleteConfirmOpen(false);
     setDeleteConfirmText("");
     setDeleting(false);
+    setPermsDirty(false);
   }, [activeModal, channel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Surface the server's CHANNEL_WIPE_RES as a toast. The CHANNEL_WIPED
@@ -260,20 +265,22 @@ export default function ChannelSettingsModal() {
   const encryptedDirty =
     !!channel && !isVoice && !isCategory && encryptedDraft !== (channel.encrypted ?? false);
   const dirty = retentionDirty || nameDirty || bitrateDirty || slowmodeDirty || encryptedDirty;
+  const settingsToSave = dirty && canManage;
+  const canSave = settingsToSave || permsDirty;
 
   const handleSave = async () => {
-    if (!canManage) return;
+    if (!canSave) return;
     setSaving(true);
     setError(null);
     try {
-      if (nameDirty) {
+      if (settingsToSave && nameDirty) {
         await invoke("rename_channel", {
           serverId: activeServerId,
           channelId: channel.id,
           name: nameDraft.trim(),
         });
       }
-      if (retentionDirty || bitrateDirty || slowmodeDirty || encryptedDirty) {
+      if (settingsToSave && (retentionDirty || bitrateDirty || slowmodeDirty || encryptedDirty)) {
         await invoke("update_channel_retention", {
           serverId: activeServerId,
           channelId: channel.id,
@@ -288,6 +295,7 @@ export default function ChannelSettingsModal() {
           encrypted: encryptedDirty ? encryptedDraft : undefined,
         });
       }
+      if (permsDirty) await permsRef.current?.commit();
       closeModal();
     } catch (err) {
       setError(String(err));
@@ -570,7 +578,13 @@ export default function ChannelSettingsModal() {
           )}
 
           {activeServerId && (
-            <ChannelPermissionsSection serverId={activeServerId} channel={channel} />
+            <ChannelPermissionsSection
+              key={channel.id}
+              ref={permsRef}
+              serverId={activeServerId}
+              channel={channel}
+              onDirtyChange={setPermsDirty}
+            />
           )}
 
           {canManage && (
@@ -724,7 +738,7 @@ export default function ChannelSettingsModal() {
           </button>
           <button
             onClick={handleSave}
-            disabled={saving || !dirty || !canManage}
+            disabled={saving || !canSave}
             className="flex-1 rounded-md bg-accent py-2.5 text-[13px] font-semibold text-on-accent transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50"
           >
             {saving ? "Saving..." : "Save"}

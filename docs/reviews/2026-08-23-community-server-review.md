@@ -1588,6 +1588,18 @@ e2e 391 / 0 (v12 migration both ways; plain groups, opt-in, the expected-categor
 back in, switch off, Sync all, delete), `cargo test --lib` 194, napi build, tsc web 0; the prompt
 and both category states screenshotted in Nocturne + Matinee through the preview harness.
 
+**Client: channel permission edits are saved with Save (2026-10-10) ✅** — Owner report: changing
+permissions in channel settings left the Save button grey (the changes still got saved). The
+overwrite toggles applied on every click while Save / Cancel only covered the other settings, so
+Cancel couldn't undo them either. `ChannelPermissionsSection` now stages edits per target (an edit
+back to the stored value drops out) and the category sync switch. It reports `onDirtyChange` and
+exposes `commit()`, which sends overwrites first and then the switch. `ChannelSettingsModal` lights
+Save for either kind of change and no longer requires Manage Channels to save permission edits (those
+need Manage Roles in the channel, which the section checks). Unsaved targets read "(unsaved)" in
+the picker; "Sync now" / "Sync all" stay immediate actions and wait until staged edits are saved
+or discarded. Verified: tsc web 0; in the preview harness, clicking a toggle in the real dialog
+enables Save, and setting it back disables it again.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
