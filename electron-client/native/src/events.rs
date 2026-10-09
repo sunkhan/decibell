@@ -534,6 +534,9 @@ pub struct ChannelInfoPayload {
     pub slowmode_seconds: i32,
     /// Text channels: end-to-end encrypted (member-held epoch keys).
     pub encrypted: bool,
+    /// Follows its category's overwrites (permissions v3). Only meaningful
+    /// for a channel under a category.
+    pub permissions_synced: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -618,6 +621,8 @@ pub struct ChannelMessagePayload {
     /// Encrypted channels: the real metadata + key of each attachment
     /// bound to this message (the server rows carry stand-ins).
     pub encrypted_attachments: Vec<EncryptedAttachmentMetaPayload>,
+    /// The sender lacked EMBED_LINKS: render no link previews / GIF media.
+    pub suppress_embeds: bool,
 }
 
 /// One entry of `EncryptedMessageBody.attachments`, opened for the
@@ -673,6 +678,9 @@ pub struct MessageReceivedPayload {
     /// Encrypted channels: the real metadata + key of each attachment
     /// bound to this message (the server rows carry stand-ins).
     pub encrypted_attachments: Vec<EncryptedAttachmentMetaPayload>,
+    /// Channel messages: the sender lacked EMBED_LINKS (no link previews /
+    /// GIF media). Always false for DMs.
+    pub suppress_embeds: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1120,6 +1128,9 @@ pub struct RoleInfoPayload {
     /// 2^53, so a plain JS number round-trips losslessly.
     pub permissions: u64,
     pub is_default: bool,
+    /// Members whose highest role is this one may manage each other
+    /// (nicknames, voice moderation) — permissions v3.
+    pub manage_each_other: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1268,6 +1279,8 @@ pub struct VoiceUserStatePayload {
     /// Moderator-applied (persisted on the member).
     pub is_server_muted: bool,
     pub is_server_deafened: bool,
+    /// No SPEAK in this channel: the relay drops their voice audio.
+    pub is_suppressed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1717,6 +1730,8 @@ pub struct ChannelMessageEditedPayload {
     /// Encrypted channels: the real metadata + key of each attachment
     /// bound to this message (the server rows carry stand-ins).
     pub encrypted_attachments: Vec<EncryptedAttachmentMetaPayload>,
+    /// Re-evaluated at edit time (see ChannelMessagePayload).
+    pub suppress_embeds: bool,
 }
 
 pub fn emit_dm_message_edit_responded(payload: DmMessageEditRespondedPayload) {

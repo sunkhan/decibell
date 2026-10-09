@@ -36,13 +36,20 @@ function LocalMuteIcon() {
 /// Moderator-applied mute/deafen (persisted on the member). Distinct
 /// from the user's own mute so people can tell "muted themselves" from
 /// "muted by a mod".
-function ServerMuteBadge({ deafened }: { deafened: boolean }) {
+/// Moderator mute / deafen, or no SPEAK permission in this channel
+/// (`suppressed`, permissions v3) — the server drops their audio either way.
+function ServerMuteBadge({ deafened, suppressed }: { deafened: boolean; suppressed?: boolean }) {
+  const title = deafened
+    ? "Server deafened by a moderator"
+    : suppressed
+      ? "Can't speak in this channel"
+      : "Server muted by a moderator";
   return (
     <span
-      title={deafened ? "Server deafened by a moderator" : "Server muted by a moderator"}
+      title={title}
       className="rounded-sm bg-error/15 px-1 py-px text-[9px] font-semibold uppercase tracking-[0.04em] text-error"
     >
-      {deafened ? "Srv deaf" : "Srv mute"}
+      {deafened ? "Srv deaf" : suppressed ? "No speak" : "Srv mute"}
     </span>
   );
 }
@@ -115,8 +122,11 @@ const PresenceRow = memo(function PresenceRow({
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         {isStreaming && <LiveBadge />}
         {isLocallyMuted && <LocalMuteIcon />}
-        {(userState?.isServerMuted || userState?.isServerDeafened) && (
-          <ServerMuteBadge deafened={!!userState?.isServerDeafened} />
+        {(userState?.isServerMuted || userState?.isServerDeafened || userState?.isSuppressed) && (
+          <ServerMuteBadge
+            deafened={!!userState?.isServerDeafened}
+            suppressed={!userState?.isServerMuted && !!userState?.isSuppressed}
+          />
         )}
         {userState?.isDeafened ? <DeafenIcon /> : userState?.isMuted ? <MuteIcon /> : null}
       </div>
@@ -134,6 +144,8 @@ interface ActiveRowProps {
   rosterDeafened: boolean;
   serverMuted?: boolean;
   serverDeafened?: boolean;
+  /// No SPEAK in this channel (permissions v3).
+  suppressed?: boolean;
   connectedServerId: string | null;
 }
 
@@ -144,6 +156,7 @@ const ActiveRow = memo(function ActiveRow({
   rosterDeafened,
   serverMuted,
   serverDeafened,
+  suppressed,
   connectedServerId,
 }: ActiveRowProps) {
   const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
@@ -201,7 +214,9 @@ const ActiveRow = memo(function ActiveRow({
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         {isStreaming && <LiveBadge />}
         {isLocallyMuted && <LocalMuteIcon />}
-        {(serverMuted || serverDeafened) && <ServerMuteBadge deafened={!!serverDeafened} />}
+        {(serverMuted || serverDeafened || suppressed) && (
+          <ServerMuteBadge deafened={!!serverDeafened} suppressed={!serverMuted && !!suppressed} />
+        )}
         {userDeafened ? <DeafenIcon /> : userMuted ? <MuteIcon /> : null}
       </div>
     </div>
@@ -242,6 +257,7 @@ export default function VoiceParticipantList({ usernames, channelId }: Props) {
           rosterDeafened={p.isDeafened}
           serverMuted={p.isServerMuted}
           serverDeafened={p.isServerDeafened}
+          suppressed={p.isSuppressed}
           connectedServerId={connectedServerId}
         />
       ))}

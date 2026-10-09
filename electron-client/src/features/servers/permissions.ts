@@ -28,108 +28,174 @@ export const PERM = {
   // server management + moderation
   VIEW_AUDIT_LOG: 65536,
   MODERATE_MEMBERS: 131072,
-  VOICE_MODERATE: 262144,
+  // permissions v3 (docs/superpowers/specs/2026-10-09-permissions-v3-design.md)
+  MUTE_MEMBERS: 262144, // was VOICE_MODERATE (same bit)
+  DEAFEN_MEMBERS: 524288,
+  MOVE_MEMBERS: 1048576,
+  CREATE_INVITE: 2097152,
+  CHANGE_NICKNAME: 4194304,
+  EMBED_LINKS: 8388608,
+  SPEAK: 16777216,
 } as const;
 
+export type PermissionGroup = "General" | "Members" | "Text" | "Voice";
+
 /// The permission bits surfaced in role editors and the per-channel
-/// overwrite editor, in display order. Since permissions v2 every bit
-/// here is enforced server-side.
+/// overwrite editor, in display order (grouped). Every bit here is
+/// enforced server-side.
 export const EDITABLE_PERMISSIONS: Array<{
   bit: number;
   label: string;
   description: string;
+  group: PermissionGroup;
 }> = [
   {
     bit: PERM.ADMINISTRATOR,
     label: "Administrator",
     description: "Grants every permission. Hierarchy still applies.",
-  },
-  {
-    bit: PERM.MANAGE_SERVER,
-    label: "Manage Server",
-    description: "Change the server name, description and picture.",
-  },
-  {
-    bit: PERM.MANAGE_CHANNELS,
-    label: "Manage Channels",
-    description: "Edit channel retention settings and wipe history.",
-  },
-  {
-    bit: PERM.MANAGE_ROLES,
-    label: "Manage Roles",
-    description: "Create, edit and assign roles below their own.",
-  },
-  {
-    bit: PERM.KICK_MEMBERS,
-    label: "Kick Members",
-    description: "Remove lower-ranked members from the server.",
-  },
-  {
-    bit: PERM.BAN_MEMBERS,
-    label: "Ban Members",
-    description: "Ban/unban lower-ranked members and see the ban list.",
-  },
-  {
-    bit: PERM.MANAGE_MESSAGES,
-    label: "Manage Messages",
-    description: "Delete other members' messages.",
-  },
-  {
-    bit: PERM.MANAGE_INVITES,
-    label: "Manage Invites",
-    description: "Create, list and revoke invites.",
-  },
-  {
-    bit: PERM.MANAGE_NICKNAMES,
-    label: "Manage Nicknames",
-    description: "Change lower-ranked members' nicknames.",
-  },
-  {
-    bit: PERM.MODERATE_MEMBERS,
-    label: "Moderate Members",
-    description: "Time out lower-ranked members.",
-  },
-  {
-    bit: PERM.VOICE_MODERATE,
-    label: "Moderate Voice",
-    description: "Server-mute, deafen, move and disconnect lower-ranked members in voice.",
-  },
-  {
-    bit: PERM.VIEW_AUDIT_LOG,
-    label: "View Audit Log",
-    description: "See who did what in server settings.",
+    group: "General",
   },
   {
     bit: PERM.VIEW_CHANNEL,
     label: "View Channel",
     description: "See the channel and receive its messages and presence.",
+    group: "General",
+  },
+  {
+    bit: PERM.MANAGE_SERVER,
+    label: "Manage Server",
+    description: "Change the server name, description, picture and storage settings.",
+    group: "General",
+  },
+  {
+    bit: PERM.MANAGE_ROLES,
+    label: "Manage Roles",
+    description: "Create, edit and assign roles below their own; edit channel permissions.",
+    group: "General",
+  },
+  {
+    bit: PERM.MANAGE_CHANNELS,
+    label: "Manage Channels",
+    description: "Create, edit, reorder and delete channels; retention, slowmode and wipes.",
+    group: "General",
+  },
+  {
+    bit: PERM.VIEW_AUDIT_LOG,
+    label: "View Audit Log",
+    description: "See who did what in server settings.",
+    group: "General",
+  },
+  {
+    bit: PERM.CREATE_INVITE,
+    label: "Create Invite",
+    description: "Invite people, and see or revoke their own invites.",
+    group: "Members",
+  },
+  {
+    bit: PERM.MANAGE_INVITES,
+    label: "Manage Invites",
+    description: "See and revoke everyone's invites.",
+    group: "Members",
+  },
+  {
+    bit: PERM.CHANGE_NICKNAME,
+    label: "Change Nickname",
+    description: "Set their own nickname in this server.",
+    group: "Members",
+  },
+  {
+    bit: PERM.MANAGE_NICKNAMES,
+    label: "Manage Nicknames",
+    description: "Change lower-ranked members' nicknames.",
+    group: "Members",
+  },
+  {
+    bit: PERM.KICK_MEMBERS,
+    label: "Kick Members",
+    description: "Remove lower-ranked members from the server.",
+    group: "Members",
+  },
+  {
+    bit: PERM.BAN_MEMBERS,
+    label: "Ban Members",
+    description: "Ban/unban lower-ranked members and see the ban list.",
+    group: "Members",
+  },
+  {
+    bit: PERM.MODERATE_MEMBERS,
+    label: "Time Out Members",
+    description: "Time out lower-ranked members.",
+    group: "Members",
   },
   {
     bit: PERM.READ_HISTORY,
     label: "Read Message History",
     description: "Load messages sent before joining the channel view.",
+    group: "Text",
   },
   {
     bit: PERM.SEND_MESSAGES,
     label: "Send Messages",
     description: "Post in text channels.",
+    group: "Text",
   },
   {
     bit: PERM.ATTACH_FILES,
     label: "Attach Files",
     description: "Upload files and images with messages.",
+    group: "Text",
+  },
+  {
+    bit: PERM.EMBED_LINKS,
+    label: "Embed Links",
+    description: "Links and GIFs in their messages show previews.",
+    group: "Text",
+  },
+  {
+    bit: PERM.MANAGE_MESSAGES,
+    label: "Manage Messages",
+    description: "Delete other members' messages and ignore slowmode.",
+    group: "Text",
   },
   {
     bit: PERM.CONNECT_VOICE,
     label: "Connect",
     description: "Join voice channels.",
+    group: "Voice",
+  },
+  {
+    bit: PERM.SPEAK,
+    label: "Speak",
+    description: "Talk in voice channels. Without it, others don't hear them.",
+    group: "Voice",
   },
   {
     bit: PERM.STREAM,
     label: "Stream",
     description: "Share the screen in voice channels.",
+    group: "Voice",
+  },
+  {
+    bit: PERM.MUTE_MEMBERS,
+    label: "Mute Members",
+    description: "Server-mute lower-ranked members in voice.",
+    group: "Voice",
+  },
+  {
+    bit: PERM.DEAFEN_MEMBERS,
+    label: "Deafen Members",
+    description: "Server-deafen lower-ranked members in voice.",
+    group: "Voice",
+  },
+  {
+    bit: PERM.MOVE_MEMBERS,
+    label: "Move Members",
+    description: "Move lower-ranked members to any voice channel they can see, or disconnect them.",
+    group: "Voice",
   },
 ];
+
+export const PERMISSION_GROUPS: PermissionGroup[] = ["General", "Members", "Text", "Voice"];
 
 /// The subset that makes sense as a per-channel overwrite (everything
 /// that is channel-scoped on the server).
@@ -140,8 +206,13 @@ export const CHANNEL_OVERWRITE_PERMISSIONS = EDITABLE_PERMISSIONS.filter((p) =>
       PERM.READ_HISTORY,
       PERM.SEND_MESSAGES,
       PERM.ATTACH_FILES,
+      PERM.EMBED_LINKS,
       PERM.CONNECT_VOICE,
+      PERM.SPEAK,
       PERM.STREAM,
+      PERM.MUTE_MEMBERS,
+      PERM.DEAFEN_MEMBERS,
+      PERM.MOVE_MEMBERS,
       PERM.MANAGE_CHANNELS,
       PERM.MANAGE_MESSAGES,
       PERM.MANAGE_ROLES,
@@ -228,8 +299,8 @@ export function usePermission(serverId: string | null, perm: number): boolean {
 
 /// True when the local user holds `perm` in one specific channel, from
 /// the server-resolved `ChannelInfo.myPermissions` (permissions v2). The
-/// owner always passes. Channels from a legacy server carry no
-/// myPermissions → no gating (matching that server's behavior).
+/// owner always passes. 0 is a real answer: a category header listed only
+/// because a channel under it is visible resolves to nothing.
 export function useChannelPermission(
   serverId: string | null,
   channelId: string | null,
@@ -246,18 +317,33 @@ export function useChannelPermission(
   });
   if (!serverId || !channelId) return false;
   if (!!owner && owner === localUsername) return true;
-  if (mine === undefined || mine === 0) return true; // legacy server
+  if (mine === undefined) return false;
   return hasBits(mine, perm);
+}
+
+/// The role at the member's level — their highest assigned role, or
+/// `everyone` with none. Carries the "manage each other" flag.
+function highestRole(
+  roles: ServerRole[] | undefined,
+  roleIds: number[] | undefined,
+): ServerRole | undefined {
+  const level = memberLevel(roles, roleIds);
+  if (level === 0) return roles?.find((r) => r.isDefault);
+  return roles?.find((r) => r.position === level && (roleIds ?? []).includes(r.id));
 }
 
 /// Hierarchy context for moderation UI: the local user's level, their
 /// ownership flag, and a resolver for any member's level. Buttons that
 /// act on another member should only show when
-/// `isOwner || levelOf(target) < level` — mirroring the server's gate.
+/// `isOwner || levelOf(target) < level` — mirroring the server's gate
+/// for kick / ban / timeout / roles. Nicknames and voice moderation use
+/// `canManage`, which also admits peers (same highest role with
+/// "members can manage each other" on — permissions v3).
 export function useHierarchy(serverId: string | null): {
   isOwner: boolean;
   level: number;
   levelOf: (username: string) => number;
+  canManage: (username: string) => boolean;
 } {
   const localUsername = useAuthStore((s) => s.username);
   const owner = useChatStore((s) =>
@@ -276,5 +362,13 @@ export function useHierarchy(serverId: string | null): {
     const m = members?.find((x) => x.username === username);
     return memberLevel(roles, m?.roleIds);
   };
-  return { isOwner, level, levelOf };
+  const peerFlag = !!highestRole(roles, me?.roleIds)?.manageEachOther;
+  const canManage = (username: string) => {
+    if (username === owner) return false;
+    if (isOwner) return true;
+    const theirs = levelOf(username);
+    if (theirs < level) return true;
+    return peerFlag && theirs === level && username !== localUsername;
+  };
+  return { isOwner, level, levelOf, canManage };
 }

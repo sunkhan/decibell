@@ -33,6 +33,11 @@ function stateOf(ow: ChannelOverwrite | undefined, bit: number): TriState {
 /// Mirrors the server's guards so the UI doesn't offer what will be
 /// refused: only bits the local user holds *in this channel* are
 /// toggleable, and roles at or above the user's level are not offered.
+///
+/// Category sync (permissions v3): a channel under a category either
+/// follows the category's overwrites (what's listed is then the
+/// category's, and any edit gives the channel its own copy) or has its
+/// own, with a "Sync now" to drop them.
 export function ChannelPermissionsSection({
   serverId,
   channel,
@@ -47,13 +52,26 @@ export function ChannelPermissionsSection({
   const overwrites = useChatStore(
     (s) => s.overwritesByChannel[channelKey(serverId, channel.id)] ?? EMPTY_LIST,
   );
+  const serverChannels = useChatStore((s) => s.channelsByServer[serverId] ?? EMPTY_LIST);
+  // Nearest category above the channel in the flat list (none for a
+  // category itself or an uncategorized channel).
+  const parent = useMemo(() => {
+    if (channel.type === "category") return undefined;
+    let category: ChannelInfo | undefined;
+    for (const c of serverChannels) {
+      if (c.id === channel.id) return category;
+      if (c.type === "category") category = c;
+    }
+    return undefined;
+  }, [serverChannels, channel.id, channel.type]);
+  const synced = !!parent && !!channel.permissionsSynced;
   const canEdit = useChannelPermission(serverId, channel.id, PERM.MANAGE_ROLES);
   const canView =
     useChannelPermission(serverId, channel.id, PERM.MANAGE_CHANNELS) || canEdit;
 
   const isOwner = !!owner && owner === localUsername;
   // Bits the local user may toggle here (escalation guard mirror).
-  const myBits = isOwner ? PERM_ALL : (channel.myPermissions ?? 0) || PERM_ALL;
+  const myBits = isOwner ? PERM_ALL : channel.myPermissions ?? 0;
 
   // Hierarchy: roles strictly below mine (everyone is always offered).
   const me = members.find((m) => m.username === localUsername);
@@ -115,6 +133,18 @@ export function ChannelPermissionsSection({
     }
   };
 
+  const runSync = async () => {
+    if (!canEdit || busy) return;
+    setBusy(true);
+    try {
+      await invoke("sync_channel_permissions", { serverId, channelId: channel.id });
+    } catch (err) {
+      toast.error("Couldn't sync permissions", String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const targetsWithOverwrites = new Set(
     overwrites.map((o) => `${o.targetType}:${o.targetId}`),
   );
@@ -125,10 +155,48 @@ export function ChannelPermissionsSection({
         Permissions
       </div>
       <p className="mb-3 text-[12px] leading-[1.55] text-text-muted">
-        Overwrite a role's or member's server permissions for this channel
-        only. Deny <span className="text-text-secondary">View Channel</span> for
-        @everyone and allow it for a role to make the channel private.
+        {channel.type === "category" ? (
+          <>
+            Channels synced to this category follow these permissions. Deny{" "}
+            <span className="text-text-secondary">View Channel</span> for @everyone to hide
+            the category and its synced channels.
+          </>
+        ) : (
+          <>
+            Overwrite a role's or member's server permissions for this channel
+            only. Deny <span className="text-text-secondary">View Channel</span> for
+            @everyone and allow it for a role to make the channel private.
+          </>
+        )}
       </p>
+
+      {parent && (
+        <div className="mb-3 flex items-center gap-3 rounded-md border border-border-divider bg-bg-light px-3 py-2.5">
+          <p className="min-w-0 flex-1 text-[12px] leading-[1.55] text-text-muted">
+            {synced ? (
+              <>
+                Synced with <span className="text-text-secondary">{parent.name}</span>. Changing
+                anything here gives this channel its own permissions.
+              </>
+            ) : (
+              <>
+                Not synced with <span className="text-text-secondary">{parent.name}</span>: this
+                channel has its own permissions.
+              </>
+            )}
+          </p>
+          {!synced && canEdit && (
+            <button
+              type="button"
+              onClick={runSync}
+              disabled={busy}
+              className="shrink-0 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
+            >
+              Sync now
+            </button>
+          )}
+        </div>
+      )}
 
       <select
         value={target}

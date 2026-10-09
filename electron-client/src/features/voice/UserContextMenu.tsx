@@ -11,7 +11,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import { saveSettings } from "../settings/saveSettings";
 import { useChatStore } from "../../stores/chatStore";
 import { toast } from "../../stores/toastStore";
-import { PERM, usePermission, useHierarchy } from "../servers/permissions";
+import { PERM, hasBits, useHierarchy } from "../servers/permissions";
 import {
   DEFAULT_DB,
   MAX_DB,
@@ -33,10 +33,11 @@ export default function UserContextMenu() {
   const localMutedUsers = useVoiceStore((s) => s.localMutedUsers);
   const toggleLocalMute = useVoiceStore((s) => s.toggleLocalMute);
   const currentUsername = useAuthStore((s) => s.username);
-  // Voice moderation (VOICE_MODERATE + hierarchy), only when the target is
-  // currently in a voice channel on the context server.
-  const canVoiceMod = usePermission(contextServerId, PERM.VOICE_MODERATE);
-  const { isOwner: localIsOwner, level: localLevel, levelOf } = useHierarchy(contextServerId);
+  // Voice moderation, only when the target is currently in a voice channel
+  // on the context server. Permissions v3: MUTE / DEAFEN / MOVE_MEMBERS are
+  // resolved in the TARGET's channel (our myPermissions there), and the
+  // hierarchy admits peers ("members can manage each other").
+  const { isOwner: localIsOwner, canManage } = useHierarchy(contextServerId);
   const serverOwner = useChatStore((s) => (contextServerId ? s.serverOwner[contextServerId] : undefined));
   const channelPresence = useVoiceStore((s) => s.channelPresence);
   const channelUserStates = useVoiceStore((s) => s.channelUserStates);
@@ -55,14 +56,27 @@ export default function UserContextMenu() {
   const targetVoiceState = username && targetVoiceChannel
     ? channelUserStates[targetVoiceChannel]?.[username]
     : undefined;
+  const targetChannelPerms = targetVoiceChannel
+    ? serverChannels.find((c) => c.id === targetVoiceChannel)?.myPermissions ?? 0
+    : 0;
+  const holds = (bit: number) => localIsOwner || hasBits(targetChannelPerms, bit);
+  const canMute = holds(PERM.MUTE_MEMBERS);
+  const canDeafen = holds(PERM.DEAFEN_MEMBERS);
+  const canMove = holds(PERM.MOVE_MEMBERS);
+  // "Move to…" offers every voice channel we can see — the target needs
+  // nothing there (the server grants them a voice pass).
+  const moveTargets = useMemo(
+    () => voiceChannels.filter((c) => c.id !== targetVoiceChannel),
+    [voiceChannels, targetVoiceChannel],
+  );
   const showVoiceMod =
     !!username &&
     !!contextServerId &&
-    canVoiceMod &&
     username !== currentUsername &&
     username !== serverOwner &&
-    (localIsOwner || levelOf(username) < localLevel) &&
-    !!targetVoiceChannel;
+    !!targetVoiceChannel &&
+    canManage(username) &&
+    (canMute || canDeafen || canMove);
   const runVoiceMod = useCallback(
     (action: string, channelId?: string) => {
       if (!username || !contextServerId) return;
@@ -264,19 +278,23 @@ export default function UserContextMenu() {
               <div className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                 Moderation
               </div>
-              <button
-                onClick={() => runVoiceMod(targetVoiceState?.isServerMuted ? "server_unmute" : "server_mute")}
-                className="flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-text-primary transition-colors hover:bg-surface-hover"
-              >
-                {targetVoiceState?.isServerMuted ? "Server unmute" : "Server mute"}
-              </button>
-              <button
-                onClick={() => runVoiceMod(targetVoiceState?.isServerDeafened ? "server_undeafen" : "server_deafen")}
-                className="flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-text-primary transition-colors hover:bg-surface-hover"
-              >
-                {targetVoiceState?.isServerDeafened ? "Server undeafen" : "Server deafen"}
-              </button>
-              {voiceChannels.filter((c) => c.id !== targetVoiceChannel).length > 0 && (
+              {canMute && (
+                <button
+                  onClick={() => runVoiceMod(targetVoiceState?.isServerMuted ? "server_unmute" : "server_mute")}
+                  className="flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-text-primary transition-colors hover:bg-surface-hover"
+                >
+                  {targetVoiceState?.isServerMuted ? "Server unmute" : "Server mute"}
+                </button>
+              )}
+              {canDeafen && (
+                <button
+                  onClick={() => runVoiceMod(targetVoiceState?.isServerDeafened ? "server_undeafen" : "server_deafen")}
+                  className="flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-text-primary transition-colors hover:bg-surface-hover"
+                >
+                  {targetVoiceState?.isServerDeafened ? "Server undeafen" : "Server deafen"}
+                </button>
+              )}
+              {canMove && moveTargets.length > 0 && (
                 <select
                   defaultValue=""
                   onChange={(e) => {
@@ -285,21 +303,21 @@ export default function UserContextMenu() {
                   className="mt-1 w-full appearance-none rounded-md border border-border bg-bg-lighter px-2.5 py-[6px] text-[12px] text-text-secondary outline-none focus:border-accent"
                 >
                   <option value="">Move to…</option>
-                  {voiceChannels
-                    .filter((c) => c.id !== targetVoiceChannel)
-                    .map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
+                  {moveTargets.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
                 </select>
               )}
-              <button
-                onClick={() => runVoiceMod("disconnect")}
-                className="mt-1 flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-error transition-colors hover:bg-error/10"
-              >
-                Disconnect from voice
-              </button>
+              {canMove && (
+                <button
+                  onClick={() => runVoiceMod("disconnect")}
+                  className="mt-1 flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-error transition-colors hover:bg-error/10"
+                >
+                  Disconnect from voice
+                </button>
+              )}
             </div>
           )}
         </>

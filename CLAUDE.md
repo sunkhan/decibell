@@ -74,7 +74,13 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
 
 ## Standing decisions (don't "fix" these)
 
-- Server-mute stops a member talking but their stream keeps its audio — intentional.
+- Server-mute stops a member talking but their stream keeps its audio — intentional. Same for
+  a member without SPEAK.
+- **Permissions v3** (`docs/superpowers/specs/2026-10-09-permissions-v3-design.md`): voice moves
+  check only the mover (MOVE_MEMBERS in the target's channel + VIEW on the destination); a target
+  who can't view / join it gets a runtime voice pass, by owner decision. "Members with this role
+  can manage each other" covers nicknames + voice moderation only, never kick / ban / timeout /
+  roles. Channels under a category follow its overwrites until edited (category sync).
 - No per-user storage quota; only the free-space headroom check before accepting uploads.
 - Backend identity is the **uid**, not the username, unless the username is the point.
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):

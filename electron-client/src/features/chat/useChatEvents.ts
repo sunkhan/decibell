@@ -129,6 +129,7 @@ export function useChatEvents() {
         replyToAttachmentKinds: mapReplyKinds(p.replyToAttachmentKinds),
         encrypted: p.encrypted || undefined,
         decryptError: p.decryptError || undefined,
+        suppressEmbeds: p.suppressEmbeds || undefined,
       });
     });
 
@@ -152,6 +153,7 @@ export function useChatEvents() {
           replyToAttachmentKinds: mapReplyKinds(m.replyToAttachmentKinds),
           encrypted: m.encrypted || undefined,
           decryptError: m.decryptError || undefined,
+          suppressEmbeds: m.suppressEmbeds || undefined,
         }));
         const store = useChatStore.getState();
         // Route by the request mode the server echoed back:

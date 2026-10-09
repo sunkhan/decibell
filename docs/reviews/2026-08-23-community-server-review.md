@@ -1526,6 +1526,45 @@ encoder send — and a keyframe that arrives without SPS gets the last-seen para
 Verified: `cargo test --lib` 194 (3 new), napi build. User-confirmed symptom; live re-test pending
 (watch a Linux NVENC H.264 stream from another machine). AV1 / HEVC paths unchanged.
 
+**Permissions v3 (2026-10-09) ✅ — needs a community-server release + live test** — the first
+step of the Discord-parity push: every community feature mapped to the permission that should gate
+it, then the gaps closed (spec: `docs/superpowers/specs/2026-10-09-permissions-v3-design.md`).
+New bits, all enforced server-side: **Create Invite** (on for everyone by default; makes invites and
+lists / revokes your own, while Manage Invites now means everyone's and implies create), **Change
+Nickname** (own nickname, default on), **Embed Links** (default on; the server marks a message
+`suppress_embeds` when the sender lacks it, persisted and carried on history + edits; clients skip
+link-preview / GIF cards and keep the URL text, invite cards still render), **Speak** (default on;
+the relay drops AUDIO and its sealed twin like server mute, presence carries `is_suppressed`, the
+local mic shows blocked; stream audio is untouched, as with server mute). **Voice Moderate split**
+into Mute / Deafen / Move Members, now channel-scoped: resolved in the target's current voice channel,
+or server-wide when they aren't in voice. Disconnect is Move. Migration v11 gives every role / overwrite that
+held the old bit (same value, now Mute) the other two. **Moves check only the mover** (owner
+decision): they must see the destination; a target who couldn't view / join it gets a runtime
+**voice pass** (VIEW + CONNECT there while any of their sessions is in it, everything else through
+the normal chain), and their channel list is re-sent before `VOICE_FORCE_NOTIFY{MOVED}`; leaving
+ends it. **"Members with this role can manage each other"** (`RoleInfo.manage_each_other`):
+members whose highest role is the same flagged role may change each other's nicknames and
+voice-moderate each other. Kick / ban / timeout / role changes stay strictly above-only, and the
+shared role sits at their own level, so a peer can never remove it. **Category sync**
+(`channels.perm_synced`, `ChannelInfo.permissions_synced`, `CHANNEL_PERMISSIONS_SYNC_REQ = 147`):
+a synced channel resolves through its category's overwrites; editing it copies them over first and
+un-syncs; "Sync now" drops its own rows behind the usual escalation and lock-out guards. Deleting a
+category copies its rows onto its synced channels so a private category's channels stay private. A
+category is now listed only when the user can view it or a channel under it. **Fix:**
+`FETCH_STREAM_THUMBNAIL_REQ` served any streamer's thumbnail by username, so anyone could
+pull the live thumbnail of a stream in a voice channel hidden from them. It now requires View
+Channel where the stream is (no live stream → no thumbnail). Invites follow their creator on a
+username rename. Client: grouped role editor (General / Members / Text / Voice) with the peer toggle,
+per-bit voice menu gated on the target's channel ("Move to" lists every voice channel you can see),
+`useHierarchy().canManage`, invite UI on Create Invite ("Your invites" without Manage), "No speak"
+badge, Speak blocked mic, category Permissions copy + "Synced with …" / "Sync now";
+`useChannelPermission` no longer treats `myPermissions = 0` as a legacy server (the community server
+must ship with or before this client). Verified: community e2e 371 / 0 (73 new: v11 migration on a
+downgraded DB, invites / nicknames, peers, voice split + passes, Speak relay drop, Embed Links,
+thumbnail scope, category sync incl. guards and category delete), `cargo test --lib` 194, napi build,
+tsc web 0. Live tests pending: moving someone into a private voice channel and talking with them
+(MLS join under a pass), Speak-denied rooms, the role / channel permission UIs.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

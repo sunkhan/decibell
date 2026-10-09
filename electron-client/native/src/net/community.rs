@@ -41,6 +41,7 @@ fn channel_info_payload(c: ChannelInfo) -> events::ChannelInfoPayload {
         my_permissions: c.my_permissions,
         slowmode_seconds: c.slowmode_seconds,
         encrypted: c.encrypted,
+        permissions_synced: c.permissions_synced,
     }
 }
 
@@ -862,6 +863,7 @@ impl CommunityClient {
                             position: r.position,
                             permissions: r.permissions,
                             is_default: r.is_default,
+                            manage_each_other: r.manage_each_other,
                         })
                         .collect();
                     events::emit_role_list_received(events::RoleListReceivedPayload {
@@ -879,6 +881,7 @@ impl CommunityClient {
                         position: r.position,
                         permissions: r.permissions,
                         is_default: r.is_default,
+                        manage_each_other: r.manage_each_other,
                     });
                     events::emit_role_action_responded(events::RoleActionRespondedPayload {
                         server_id: server_id.clone(),
@@ -908,6 +911,7 @@ impl CommunityClient {
                             is_deafened: s.is_deafened,
                             is_server_muted: s.is_server_muted,
                             is_server_deafened: s.is_server_deafened,
+                            is_suppressed: s.is_suppressed,
                         })
                         .collect();
 

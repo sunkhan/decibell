@@ -33,7 +33,8 @@ export default function MembersTab({ serverId }: { serverId: string }) {
   const canTimeout = usePermission(serverId, PERM.MODERATE_MEMBERS);
   const canManageRoles = usePermission(serverId, PERM.MANAGE_ROLES);
   const canManageNicknames = usePermission(serverId, PERM.MANAGE_NICKNAMES);
-  const { isOwner, level: myLevel, levelOf } = useHierarchy(serverId);
+  const canChangeOwnNickname = usePermission(serverId, PERM.CHANGE_NICKNAME);
+  const { isOwner, level: myLevel, levelOf, canManage } = useHierarchy(serverId);
 
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -251,7 +252,8 @@ export default function MembersTab({ serverId }: { serverId: string }) {
 
                   {/* Actions */}
                   <div className="flex shrink-0 gap-1.5">
-                    {(isSelf || (canManageNicknames && !m.isOwner && outranked)) && (
+                    {((isSelf && canChangeOwnNickname) ||
+                      (!isSelf && canManageNicknames && canManage(m.username))) && (
                       <button
                         onClick={() => {
                           if (nickOpen === m.username) {

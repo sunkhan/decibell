@@ -114,7 +114,9 @@ export default function ServerChannelsSidebar() {
       servers.find((s) => s.id === activeServerId)?.name,
     [activeServerId, serverMeta, servers],
   );
-  const canInvite = usePermission(activeServerId, PERM.MANAGE_INVITES);
+  const canCreateInvite = usePermission(activeServerId, PERM.CREATE_INVITE);
+  const canManageInvites = usePermission(activeServerId, PERM.MANAGE_INVITES);
+  const canInvite = canCreateInvite || canManageInvites;
   const canManageChannels = usePermission(activeServerId, PERM.MANAGE_CHANNELS);
   // Permissions v2: a per-channel overwrite can grant Manage Channels /
   // Manage Roles for one channel only — the gear must follow the

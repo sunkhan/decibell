@@ -649,6 +649,7 @@ async fn handle_msg(state: &Arc<Mutex<AppState>>, server_id: &str, msg: ChannelM
         encrypted,
         decrypt_error: err,
         encrypted_attachments: metas,
+        suppress_embeds: msg.suppress_embeds,
     });
 }
 
@@ -678,6 +679,7 @@ async fn handle_history(state: &Arc<Mutex<AppState>>, server_id: &str, resp: Cha
             encrypted,
             decrypt_error: err,
             encrypted_attachments: metas,
+            suppress_embeds: m.suppress_embeds,
         });
     }
     events::emit_channel_history_received(events::ChannelHistoryReceivedPayload {
@@ -703,6 +705,7 @@ async fn handle_edited(state: &Arc<Mutex<AppState>>, server_id: &str, b: Channel
         encrypted,
         decrypt_error: err,
         encrypted_attachments: metas,
+        suppress_embeds: b.suppress_embeds,
     });
 }
 

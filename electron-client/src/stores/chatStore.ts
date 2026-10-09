@@ -261,6 +261,7 @@ interface ChatState {
     editedAt: number,
     encrypted?: boolean,
     decryptError?: string,
+    suppressEmbeds?: boolean,
   ) => void;
   /// Remove an optimistic (id === 0) message by its nonce. Used when a
   /// send is abandoned (nothing left to send after all uploads failed) or
@@ -900,7 +901,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     }),
 
-  applyEdit: (serverId, channelId, messageId, content, editedAt, encrypted, decryptError) =>
+  applyEdit: (serverId, channelId, messageId, content, editedAt, encrypted, decryptError, suppressEmbeds) =>
     set((state) => {
       const key = channelKey(serverId, channelId);
       const list = state.messagesByChannel[key];
@@ -909,7 +910,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const next = list.map((m) => {
         if (m.id !== messageId) return m;
         changed = true;
-        return { ...m, content, editedAt, encrypted: encrypted || undefined, decryptError: decryptError || undefined };
+        return {
+          ...m,
+          content,
+          editedAt,
+          encrypted: encrypted || undefined,
+          decryptError: decryptError || undefined,
+          suppressEmbeds: suppressEmbeds || undefined,
+        };
       });
       if (!changed) return state;
       return {

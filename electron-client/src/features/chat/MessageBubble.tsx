@@ -329,13 +329,14 @@ function MessageBubble({
   // A message that is only a media link (a sent GIF, a pasted image URL)
   // shows just the embed once the link resolves to an image — the URL
   // text would be noise above its own picture. Until then (and with
-  // previews off, or for a non-image link) the text stays.
+  // previews off, embeds suppressed, or for a non-image link) the text stays.
   const lone = useMemo(() => loneLink(message.content), [message.content]);
   const loneEntry = useLinkPreviewStore((s) => (lone ? s.entries[lone] : undefined));
   const previewsOn = useUiStore((s) => s.linkPreviewsEnabled);
   const textHidden =
     lone !== null &&
     previewsOn &&
+    !message.suppressEmbeds &&
     loneEntry?.status === "done" &&
     loneEntry.preview?.kind === "image";
 
@@ -511,7 +512,7 @@ function MessageBubble({
           {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
             <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
           )}
-          {!editing && <LinkEmbeds content={message.content} sender={message.sender} />}
+          {!editing && <LinkEmbeds content={message.content} sender={message.sender} suppressed={message.suppressEmbeds} />}
         </div>
         {renderActions("top-0")}
       </div>
@@ -555,7 +556,7 @@ function MessageBubble({
         {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
           <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
         )}
-        {!editing && <LinkEmbeds content={message.content} sender={message.sender} />}
+        {!editing && <LinkEmbeds content={message.content} sender={message.sender} suppressed={message.suppressEmbeds} />}
       </div>
       {renderActions("top-1")}
     </div>

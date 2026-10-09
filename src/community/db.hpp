@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -47,6 +48,9 @@ struct DbChannel {
     // Text channels: end-to-end encrypted with member-held epoch keys
     // (spec 2026-09-04). The server enforces the wire format either way.
     bool encrypted = false;
+    // Follows its category's overwrites (permissions v3). Invariant: a
+    // synced channel has no overwrite rows of its own.
+    bool perm_synced = true;
 };
 
 struct DbMessage {
@@ -68,6 +72,8 @@ struct DbMessage {
     // Encrypted channels: the sealed body (opaque); empty = plaintext row.
     std::string envelope;
     std::string reply_to_envelope;
+    // Sender lacked EMBED_LINKS when sending / last editing.
+    bool suppress_embeds = false;
 };
 
 // One escrowed epoch key blob (opaque to the server).
@@ -176,6 +182,9 @@ struct DbRole {
     int32_t position = 0;
     uint64_t permissions = 0;  // chatproj::Permission bitfield
     bool is_default = false;
+    // Members whose highest role is this one may manage each other
+    // (nicknames, voice moderation) — permissions v3.
+    bool manage_each_other = false;
 };
 
 // Permission bits — mirror of chatproj::Permission (kept here so the DB
@@ -200,7 +209,14 @@ constexpr uint64_t kAttachFiles     = 1ull << 15;
 // server management + moderation
 constexpr uint64_t kViewAuditLog    = 1ull << 16;
 constexpr uint64_t kModerateMembers = 1ull << 17;   // timeouts
-constexpr uint64_t kVoiceModerate   = 1ull << 18;   // server mute/deafen/move/disconnect
+// permissions v3 — docs/superpowers/specs/2026-10-09-permissions-v3-design.md
+constexpr uint64_t kMuteMembers     = 1ull << 18;   // was VOICE_MODERATE
+constexpr uint64_t kDeafenMembers   = 1ull << 19;
+constexpr uint64_t kMoveMembers     = 1ull << 20;   // move + disconnect
+constexpr uint64_t kCreateInvite    = 1ull << 21;
+constexpr uint64_t kChangeNickname  = 1ull << 22;
+constexpr uint64_t kEmbedLinks      = 1ull << 23;
+constexpr uint64_t kSpeak           = 1ull << 24;
 constexpr uint64_t kAll             = ~0ull;
 // Every currently-defined permission bit. Role create/update mask
 // client-supplied bitfields with this so undefined bits never reach the
@@ -213,15 +229,17 @@ constexpr uint64_t kKnownMask =
     kKickMembers | kBanMembers | kManageMessages | kManageInvites |
     kManageNicknames | kSendMessages | kConnectVoice | kStream |
     kViewChannel | kReadHistory | kAttachFiles |
-    kViewAuditLog | kModerateMembers | kVoiceModerate;
+    kViewAuditLog | kModerateMembers |
+    kMuteMembers | kDeafenMembers | kMoveMembers |
+    kCreateInvite | kChangeNickname | kEmbedLinks | kSpeak;
 // What the seeded `everyone` role starts with: every "ordinary member"
 // bit on, so a fresh server behaves like one without permissions until
-// an operator tightens something. Migration v6 ORs the v2 bits into an
-// existing `everyone` once.
-constexpr uint64_t kDefaultEveryone =
-    kSendMessages | kConnectVoice | kStream |
-    kViewChannel | kReadHistory | kAttachFiles;
+// an operator tightens something. Migrations v6 / v11 OR the bits that
+// arrived later into an existing `everyone` once.
 constexpr uint64_t kV2Bits = kViewChannel | kReadHistory | kAttachFiles;
+constexpr uint64_t kV3Bits = kCreateInvite | kChangeNickname | kEmbedLinks | kSpeak;
+constexpr uint64_t kDefaultEveryone =
+    kSendMessages | kConnectVoice | kStream | kV2Bits | kV3Bits;
 } // namespace perms
 
 // Bounds a user-supplied display string (role/channel name, nickname) to
@@ -424,16 +442,18 @@ public:
     // roles up. Returns the created role, or nullopt on failure.
     std::optional<DbRole> create_role(const std::string& name,
                                       uint32_t color,
-                                      uint64_t permissions);
-    // Full-snapshot update. For the default role only `permissions` is
-    // applied (name/color/position are fixed). `position` is clamped to
+                                      uint64_t permissions,
+                                      bool manage_each_other = false);
+    // Full-snapshot update. For the default role only `permissions` and
+    // `manage_each_other` are applied (name/color/position are fixed). `position` is clamped to
     // [1, N] and the move keeps positions dense. Returns false if the
     // role doesn't exist or on DB error.
     bool update_role(int64_t role_id,
                      const std::string& name,
                      uint32_t color,
                      uint64_t permissions,
-                     int32_t position);
+                     int32_t position,
+                     bool manage_each_other = false);
     // Refuses the default role. Cascades member_roles rows and closes
     // the position gap. Returns false if missing/default/DB error.
     bool delete_role(int64_t role_id);
@@ -452,15 +472,48 @@ public:
     // Hierarchy level: highest assigned role position (0 with no roles).
     // Owner → INT32_MAX. Used for "can only act below yourself" checks.
     int32_t member_level(const std::string& username) const;
+    // Peers (permissions v3): both members' highest role is the same role
+    // (same level — positions are unique; level 0 = `everyone`) and it has
+    // manage_each_other set. Never true for the owner or for oneself.
+    bool are_peers(const std::string& a, const std::string& b) const;
 
     // --- permissions v2: per-channel overwrites ---
     // See docs/superpowers/specs/2026-08-22-permissions-v2-design.md.
+    // The rows that APPLY to `channel_id`: its category's when the channel
+    // is synced to one (permissions v3), else its own. Row channel_id is
+    // the source channel's.
     std::vector<DbOverwrite> list_overwrites(const std::string& channel_id) const;
     // Upserts; allow == deny == 0 deletes the row. Caller validates
     // authorization; this only checks the channel/target exist. Bits are
     // masked to perms::kKnownMask and a bit set in both allow and deny
-    // is treated as deny.
+    // is treated as deny. On a synced channel the category's rows are
+    // first copied onto it; any write leaves a non-category channel
+    // unsynced.
     bool set_overwrite(const DbOverwrite& ow);
+
+    // --- permissions v3: category sync ---
+    // Nearest CATEGORY row above the channel ("" when uncategorized or a
+    // category itself).
+    std::string parent_category(const std::string& channel_id) const;
+    // Drops the channel's own rows and marks it synced. False when the
+    // channel is unknown / a category / has no parent category.
+    bool sync_channel_permissions(const std::string& channel_id);
+    // Undo for sync_channel_permissions: restores `rows` as the channel's
+    // own and unsyncs it (lock-out guard revert).
+    bool restore_channel_overwrites(const std::string& channel_id,
+                                    const std::vector<DbOverwrite>& rows);
+    // Synced channels whose source is `category_id`.
+    std::vector<std::string> synced_children(const std::string& category_id) const;
+
+    // --- permissions v3: voice passes ---
+    // A member moved into a voice channel they can't otherwise view /
+    // join holds VIEW_CHANNEL + CONNECT there while in it. Runtime only
+    // (never persisted); the session layer grants on move and revokes
+    // when the user's last session leaves the channel.
+    void grant_voice_pass(const std::string& username, const std::string& channel_id);
+    // True if a pass was actually removed.
+    bool revoke_voice_pass(const std::string& username, const std::string& channel_id);
+    bool has_voice_pass(const std::string& username, const std::string& channel_id) const;
     // The user's resolved permissions in `channel_id`:
     //   base (effective_permissions) → everyone overwrite → OR of role
     //   overwrites → member overwrite; owner / ADMINISTRATOR bypass
@@ -536,7 +589,8 @@ public:
                            const std::string& content,
                            int64_t timestamp,
                            int64_t reply_to = 0,
-                           const std::string& envelope = std::string());
+                           const std::string& envelope = std::string(),
+                           bool suppress_embeds = false);
     // Newest-first page. `before_id = 0` means "most recent". Results are
     // ordered newest→oldest; caller reverses if they want oldest→newest.
     // `has_more` is set to true if more messages exist older than the page.
@@ -679,7 +733,8 @@ public:
     bool edit_message(const std::string& channel_id, int64_t message_id,
                       const std::string& editor, const std::string& content,
                       int64_t edited_at,
-                      const std::string& envelope = std::string());
+                      const std::string& envelope = std::string(),
+                      bool suppress_embeds = false);
 
     /// Hard-deletes the message + its bound attachments in one
     /// transaction. Returns storage_paths the caller should unlink
@@ -768,7 +823,9 @@ private:
     // (invalidate_perm_cache_ or targeted erase). has_permission() runs on
     // every roster broadcast per online user and on the hot message path
     // once SEND_MESSAGES is enforced, so it must not hit SQLite each time.
-    struct PermEntry { uint64_t permissions = 0; int32_t level = 0; };
+    // manage_peers: the highest role (everyone at level 0) has
+    // manage_each_other.
+    struct PermEntry { uint64_t permissions = 0; int32_t level = 0; bool manage_peers = false; };
     const PermEntry& perm_entry_unlocked_(const std::string& username) const;
     void invalidate_perm_cache_();
     // Targeted: one user's server-wide + per-channel entries.
@@ -782,6 +839,19 @@ private:
     // channel delete, role delete, member removal.
     mutable std::unordered_map<std::string, std::vector<DbOverwrite>> overwrites_cache_;
     const std::vector<DbOverwrite>& overwrites_unlocked_(const std::string& channel_id) const;
+    // Channel whose overwrite rows apply to `channel_id` (its category
+    // when synced to one, else itself). Cached; cleared with
+    // invalidate_channel_layout_().
+    std::string overwrite_source_unlocked_(const std::string& channel_id) const;
+    std::string parent_category_unlocked_(const std::string& channel_id) const;
+    void rebuild_channel_layout_unlocked_() const;
+    // Order / parent / sync changed: drop the layout + every resolution.
+    void invalidate_channel_layout_();
+    mutable bool layout_valid_ = false;
+    mutable std::unordered_map<std::string, std::string> parent_of_;   // channel → category ("" none)
+    mutable std::unordered_map<std::string, bool> synced_of_;
+    // username → channels they hold a voice pass for.
+    std::unordered_map<std::string, std::set<std::string>> voice_passes_;
     uint64_t channel_permissions_unlocked_(const std::string& username,
                                            const std::string& channel_id) const;
     void migrate_to_v6_overwrites_();
@@ -789,6 +859,7 @@ private:
     void migrate_to_v8_uid_();
     void migrate_to_v9_e2ee_();
     void migrate_to_v10_upload_activity_();
+    void migrate_to_v11_permissions_v3_();
     // server_meta.owner, loaded at open() and kept in sync by set_meta_.
     std::string owner_cache_;
     void seed_if_empty_(const std::string& owner,

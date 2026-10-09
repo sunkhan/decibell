@@ -250,6 +250,54 @@ void CommunityDb::init_schema_() {
 
     // --- v10: upload activity, so the abandoned-upload sweep goes by idle time ---
     migrate_to_v10_upload_activity_();
+
+    // --- v11: permissions v3 (new bits, voice-mod split, peers, category sync) ---
+    migrate_to_v11_permissions_v3_();
+}
+
+void CommunityDb::migrate_to_v11_permissions_v3_() {
+    if (!column_exists(db_, "roles", "manage_each_other"))
+        exec_sql(db_, "ALTER TABLE roles ADD COLUMN manage_each_other INTEGER NOT NULL DEFAULT 0;");
+    // New channels follow their category; existing rows are fixed up once
+    // below (only channels without rows of their own start synced).
+    const bool adding_synced = !column_exists(db_, "channels", "perm_synced");
+    if (adding_synced)
+        exec_sql(db_, "ALTER TABLE channels ADD COLUMN perm_synced INTEGER NOT NULL DEFAULT 1;");
+    if (!column_exists(db_, "messages", "suppress_embeds"))
+        exec_sql(db_, "ALTER TABLE messages ADD COLUMN suppress_embeds INTEGER NOT NULL DEFAULT 0;");
+    if (get_meta_("perm_bits_v11").empty()) {
+        if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return;   // DB1
+        bool ok = true;
+        // Everyone keeps doing what they could before: the new ordinary-
+        // member bits go to `everyone`...
+        {
+            Stmt q(db_, "UPDATE roles SET permissions = permissions | ? WHERE is_default = 1;");
+            ok = q.s != nullptr;
+            if (ok) { q.bind_int64(1, static_cast<int64_t>(perms::kV3Bits)); ok = q.step() == SQLITE_DONE; }
+        }
+        // ...and whoever held VOICE_MODERATE (now MUTE_MEMBERS, same bit)
+        // also gets DEAFEN / MOVE, in roles and in overwrite allow / deny.
+        const int64_t old_bit = static_cast<int64_t>(perms::kMuteMembers);
+        const int64_t split = static_cast<int64_t>(perms::kDeafenMembers | perms::kMoveMembers);
+        for (const char* sql : {
+                 "UPDATE roles SET permissions = permissions | ?2 WHERE (permissions & ?1) != 0;",
+                 "UPDATE channel_overwrites SET allow = allow | ?2 WHERE (allow & ?1) != 0;",
+                 "UPDATE channel_overwrites SET deny = deny | ?2 WHERE (deny & ?1) != 0;" }) {
+            if (!ok) break;
+            Stmt q(db_, sql);
+            ok = q.s != nullptr;
+            if (ok) { q.bind_int64(1, old_bit); q.bind_int64(2, split); ok = q.step() == SQLITE_DONE; }
+        }
+        if (ok && adding_synced) {
+            ok = exec_sql(db_,
+                "UPDATE channels SET perm_synced = 0 "
+                "WHERE id IN (SELECT DISTINCT channel_id FROM channel_overwrites);");
+        }
+        if (ok) set_meta_("perm_bits_v11", "1");
+        exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+        if (!ok) return;
+    }
+    set_meta_("schema_version", "11");
 }
 
 void CommunityDb::migrate_to_v10_upload_activity_() {
@@ -996,6 +1044,11 @@ bool CommunityDb::rename_member(const std::string& old_username,
         Stmt q(db_, "UPDATE channel_overwrites SET target_id=? WHERE target_type=1 AND target_id=?;");
         if (q.s) { q.bind_text(1, new_username); q.bind_text(2, old_username); q.step(); }
     }
+    if (ok) {
+        // Invites are owned since v3 (CREATE_INVITE holders manage their own).
+        Stmt q(db_, "UPDATE invites SET created_by=? WHERE created_by=?;");
+        if (q.s) { q.bind_text(1, new_username); q.bind_text(2, old_username); q.step(); }
+    }
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
     return ok;
 }
@@ -1004,6 +1057,7 @@ bool CommunityDb::remove_member(const std::string& username) {
     std::lock_guard<std::mutex> lock(mutex_);
     invalidate_user_perms_(username);
     overwrites_cache_.clear();
+    voice_passes_.erase(username);
     if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
     {
         Stmt q(db_, "DELETE FROM channel_overwrites WHERE target_type=1 AND target_id=?;");
@@ -1257,18 +1311,19 @@ DbRole role_from_row(const Stmt& q) {
     r.position = q.col_int(3);
     r.permissions = static_cast<uint64_t>(q.col_int64(4));
     r.is_default = q.col_int(5) != 0;
+    r.manage_each_other = q.col_int(6) != 0;
     return r;
 }
 constexpr const char* kRoleCols =
-    "id, name, color, position, permissions, is_default";
+    "id, name, color, position, permissions, is_default, manage_each_other";
 } // namespace
 
 std::vector<DbRole> CommunityDb::list_roles() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<DbRole> out;
-    Stmt q(db_,
-        "SELECT id, name, color, position, permissions, is_default "
-        "FROM roles ORDER BY position DESC, id ASC;");
+    std::string sql = std::string("SELECT ") + kRoleCols +
+                      " FROM roles ORDER BY position DESC, id ASC;";
+    Stmt q(db_, sql.c_str());
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) out.push_back(role_from_row(q));
     return out;
@@ -1297,7 +1352,8 @@ int32_t CommunityDb::max_role_position_unlocked_() const {
 
 std::optional<DbRole> CommunityDb::create_role(const std::string& raw_name,
                                                uint32_t color,
-                                               uint64_t permissions) {
+                                               uint64_t permissions,
+                                               bool manage_each_other) {
     // Clamp here too so no future caller can store a mid-codepoint cut.
     const std::string name = clamp_utf8(raw_name, kMaxRoleNameBytes);
     if (name.empty()) return std::nullopt;
@@ -1312,14 +1368,16 @@ std::optional<DbRole> CommunityDb::create_role(const std::string& raw_name,
     r.color = color;
     r.position = 1;
     r.permissions = permissions;
+    r.manage_each_other = manage_each_other;
     {
         Stmt ins(db_,
-            "INSERT INTO roles(name, color, position, permissions, is_default) "
-            "VALUES(?, ?, 1, ?, 0);");
+            "INSERT INTO roles(name, color, position, permissions, is_default, manage_each_other) "
+            "VALUES(?, ?, 1, ?, 0, ?);");
         if (!ins.s) { exec_sql(db_, "ROLLBACK;"); return std::nullopt; }
         ins.bind_text(1, name);
         ins.bind_int64(2, static_cast<int64_t>(color));
         ins.bind_int64(3, static_cast<int64_t>(permissions));
+        ins.bind_int(4, manage_each_other ? 1 : 0);
         if (ins.step() != SQLITE_DONE) { exec_sql(db_, "ROLLBACK;"); return std::nullopt; }
         r.id = sqlite3_last_insert_rowid(db_);
     }
@@ -1331,7 +1389,8 @@ bool CommunityDb::update_role(int64_t role_id,
                               const std::string& raw_name,
                               uint32_t color,
                               uint64_t permissions,
-                              int32_t position) {
+                              int32_t position,
+                              bool manage_each_other) {
     const std::string name = clamp_utf8(raw_name, kMaxRoleNameBytes);
     std::lock_guard<std::mutex> lock(mutex_);
     auto cur = get_role_unlocked_(role_id);
@@ -1339,11 +1398,12 @@ bool CommunityDb::update_role(int64_t role_id,
     invalidate_perm_cache_();
 
     if (cur->is_default) {
-        // Only the permission bits of `everyone` are editable.
-        Stmt q(db_, "UPDATE roles SET permissions=? WHERE id=?;");
+        // Only the permission bits (+ peer flag) of `everyone` are editable.
+        Stmt q(db_, "UPDATE roles SET permissions=?, manage_each_other=? WHERE id=?;");
         if (!q.s) return false;
         q.bind_int64(1, static_cast<int64_t>(permissions));
-        q.bind_int64(2, role_id);
+        q.bind_int(2, manage_each_other ? 1 : 0);
+        q.bind_int64(3, role_id);
         return q.step() == SQLITE_DONE;
     }
     if (name.empty()) return false;
@@ -1383,7 +1443,7 @@ bool CommunityDb::update_role(int64_t role_id,
     }
     if (ok) {
         Stmt q(db_,
-            "UPDATE roles SET name=?, color=?, permissions=?, position=? "
+            "UPDATE roles SET name=?, color=?, permissions=?, position=?, manage_each_other=? "
             "WHERE id=?;");
         ok = q.s != nullptr;
         if (ok) {
@@ -1391,7 +1451,8 @@ bool CommunityDb::update_role(int64_t role_id,
             q.bind_int64(2, static_cast<int64_t>(color));
             q.bind_int64(3, static_cast<int64_t>(permissions));
             q.bind_int(4, new_pos);
-            q.bind_int64(5, role_id);
+            q.bind_int(5, manage_each_other ? 1 : 0);
+            q.bind_int64(6, role_id);
             ok = q.step() == SQLITE_DONE;
         }
     }
@@ -1504,24 +1565,30 @@ const CommunityDb::PermEntry& CommunityDb::perm_entry_unlocked_(const std::strin
         e.level = INT32_MAX;
     } else {
         // Base bits from `everyone` + OR of the member's assigned roles,
-        // and the highest assigned position, in one pass.
+        // the highest assigned position, and that role's peer flag (the
+        // `everyone` row stands at level 0), in one pass.
         Stmt q(db_,
-            "SELECT permissions, 0 FROM roles WHERE is_default=1 "
+            "SELECT permissions, 0, manage_each_other FROM roles WHERE is_default=1 "
             "UNION ALL "
-            "SELECT r.permissions, r.position FROM roles r "
+            "SELECT r.permissions, r.position, r.manage_each_other FROM roles r "
             "JOIN member_roles mr ON mr.role_id = r.id "
             "WHERE mr.username=?1;");
         uint64_t p = 0;
-        int32_t level = 0;
+        int32_t level = -1;
+        bool peers = false;
         if (q.s) {
             q.bind_text(1, username);
             while (q.step() == SQLITE_ROW) {
                 p |= static_cast<uint64_t>(q.col_int64(0));
-                level = std::max(level, q.col_int(1));
+                if (q.col_int(1) > level) {
+                    level = q.col_int(1);
+                    peers = q.col_int(2) != 0;
+                }
             }
         }
         e.permissions = (p & perms::kAdministrator) ? perms::kAll : p;
-        e.level = level;
+        e.level = std::max(level, 0);
+        e.manage_peers = peers;
     }
     // Bounded: entries are per username and cleared on any role change;
     // a pathological churn of usernames still can't grow it past this.
@@ -1546,6 +1613,16 @@ bool CommunityDb::has_permission(const std::string& username, uint64_t perm) con
 int32_t CommunityDb::member_level(const std::string& username) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return perm_entry_unlocked_(username).level;
+}
+
+bool CommunityDb::are_peers(const std::string& a, const std::string& b) const {
+    if (a.empty() || b.empty() || a == b) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (a == owner_cache_ || b == owner_cache_) return false;
+    const PermEntry ea = perm_entry_unlocked_(a);
+    const PermEntry& eb = perm_entry_unlocked_(b);
+    // Same level ⇒ same highest role (positions are unique), so one flag.
+    return ea.level == eb.level && ea.manage_peers;
 }
 
 // --- permissions v2: per-channel overwrites ---
@@ -1575,16 +1652,153 @@ const std::vector<DbOverwrite>& CommunityDb::overwrites_unlocked_(const std::str
 
 std::vector<DbOverwrite> CommunityDb::list_overwrites(const std::string& channel_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return overwrites_unlocked_(channel_id);
+    return overwrites_unlocked_(overwrite_source_unlocked_(channel_id));
+}
+
+// --- permissions v3: category sync ---
+
+void CommunityDb::rebuild_channel_layout_unlocked_() const {
+    parent_of_.clear();
+    synced_of_.clear();
+    Stmt q(db_, "SELECT id, type, perm_synced FROM channels ORDER BY position ASC, id ASC;");
+    if (q.s) {
+        std::string current;   // nearest CATEGORY above
+        while (q.step() == SQLITE_ROW) {
+            const std::string id = q.col_text(0);
+            if (q.col_int(1) == 2) {
+                current = id;
+                parent_of_[id] = "";
+                synced_of_[id] = false;
+            } else {
+                parent_of_[id] = current;
+                synced_of_[id] = q.col_int(2) != 0;
+            }
+        }
+    }
+    layout_valid_ = true;
+}
+
+void CommunityDb::invalidate_channel_layout_() {
+    layout_valid_ = false;
+    channel_perm_cache_.clear();
+}
+
+std::string CommunityDb::parent_category_unlocked_(const std::string& channel_id) const {
+    if (!layout_valid_) rebuild_channel_layout_unlocked_();
+    auto it = parent_of_.find(channel_id);
+    return it == parent_of_.end() ? std::string() : it->second;
+}
+
+std::string CommunityDb::overwrite_source_unlocked_(const std::string& channel_id) const {
+    if (!layout_valid_) rebuild_channel_layout_unlocked_();
+    auto p = parent_of_.find(channel_id);
+    if (p == parent_of_.end() || p->second.empty()) return channel_id;
+    auto sy = synced_of_.find(channel_id);
+    return (sy != synced_of_.end() && sy->second) ? p->second : channel_id;
+}
+
+std::string CommunityDb::parent_category(const std::string& channel_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return parent_category_unlocked_(channel_id);
+}
+
+std::vector<std::string> CommunityDb::synced_children(const std::string& category_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> out;
+    if (!layout_valid_) rebuild_channel_layout_unlocked_();
+    for (const auto& [id, parent] : parent_of_) {
+        if (parent == category_id && overwrite_source_unlocked_(id) == category_id) out.push_back(id);
+    }
+    return out;
+}
+
+namespace {
+// Writes `rows` as `channel_id`'s own overwrites (replacing any) and sets
+// perm_synced. Caller holds the mutex and the transaction.
+bool write_own_overwrites(sqlite3* db, const std::string& channel_id,
+                          const std::vector<DbOverwrite>& rows, bool synced) {
+    {
+        Stmt del(db, "DELETE FROM channel_overwrites WHERE channel_id=?;");
+        if (!del.s) return false;
+        del.bind_text(1, channel_id);
+        if (del.step() != SQLITE_DONE) return false;
+    }
+    for (const auto& ow : rows) {
+        Stmt ins(db,
+            "INSERT INTO channel_overwrites(channel_id, target_type, target_id, allow, deny) "
+            "VALUES(?, ?, ?, ?, ?);");
+        if (!ins.s) return false;
+        ins.bind_text(1, channel_id);
+        ins.bind_int(2, ow.target_type);
+        ins.bind_text(3, ow.target_id);
+        ins.bind_int64(4, static_cast<int64_t>(ow.allow));
+        ins.bind_int64(5, static_cast<int64_t>(ow.deny));
+        if (ins.step() != SQLITE_DONE) return false;
+    }
+    Stmt upd(db, "UPDATE channels SET perm_synced=? WHERE id=?;");
+    if (!upd.s) return false;
+    upd.bind_int(1, synced ? 1 : 0);
+    upd.bind_text(2, channel_id);
+    return upd.step() == SQLITE_DONE;
+}
+} // namespace
+
+bool CommunityDb::sync_channel_permissions(const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!layout_valid_) rebuild_channel_layout_unlocked_();
+    auto p = parent_of_.find(channel_id);
+    if (p == parent_of_.end() || p->second.empty()) return false;   // unknown / category / uncategorized
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
+    const bool ok = write_own_overwrites(db_, channel_id, {}, /*synced=*/true);
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    overwrites_cache_.erase(channel_id);
+    invalidate_channel_layout_();
+    return ok;
+}
+
+bool CommunityDb::restore_channel_overwrites(const std::string& channel_id,
+                                             const std::vector<DbOverwrite>& rows) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
+    const bool ok = write_own_overwrites(db_, channel_id, rows, /*synced=*/false);
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    overwrites_cache_.erase(channel_id);
+    invalidate_channel_layout_();
+    return ok;
+}
+
+// --- permissions v3: voice passes ---
+
+void CommunityDb::grant_voice_pass(const std::string& username, const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    voice_passes_[username].insert(channel_id);
+    channel_perm_cache_.erase(username);
+}
+
+bool CommunityDb::revoke_voice_pass(const std::string& username, const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = voice_passes_.find(username);
+    if (it == voice_passes_.end() || it->second.erase(channel_id) == 0) return false;
+    if (it->second.empty()) voice_passes_.erase(it);
+    channel_perm_cache_.erase(username);
+    return true;
+}
+
+bool CommunityDb::has_voice_pass(const std::string& username, const std::string& channel_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = voice_passes_.find(username);
+    return it != voice_passes_.end() && it->second.count(channel_id) > 0;
 }
 
 bool CommunityDb::set_overwrite(const DbOverwrite& in) {
     std::lock_guard<std::mutex> lock(mutex_);
+    bool is_category = false;
     {
-        Stmt q(db_, "SELECT 1 FROM channels WHERE id=?;");
+        Stmt q(db_, "SELECT type FROM channels WHERE id=?;");
         if (!q.s) return false;
         q.bind_text(1, in.channel_id);
         if (q.step() != SQLITE_ROW) return false;
+        is_category = q.col_int(0) == 2;
     }
     if (in.target_type == 0) {
         int64_t rid = 0;
@@ -1601,31 +1815,55 @@ bool CommunityDb::set_overwrite(const DbOverwrite& in) {
     const uint64_t deny = in.deny & perms::kKnownMask;
     const uint64_t allow = (in.allow & perms::kKnownMask) & ~deny;
 
-    overwrites_cache_.erase(in.channel_id);
-    channel_perm_cache_.clear();
+    // Category sync (v3): editing a synced channel first copies the
+    // category's rows onto it (same effective result), and any write
+    // leaves a non-category channel unsynced.
+    const std::string source = overwrite_source_unlocked_(in.channel_id);
+    std::vector<DbOverwrite> inherited;
+    if (source != in.channel_id) inherited = overwrites_unlocked_(source);
 
-    if (allow == 0 && deny == 0) {
+    overwrites_cache_.erase(in.channel_id);
+    invalidate_channel_layout_();
+
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
+    bool ok = true;
+    if (!inherited.empty()) ok = write_own_overwrites(db_, in.channel_id, inherited, /*synced=*/false);
+    if (ok && !is_category) {
+        Stmt q(db_, "UPDATE channels SET perm_synced=0 WHERE id=?;");
+        ok = q.s != nullptr;
+        if (ok) { q.bind_text(1, in.channel_id); ok = q.step() == SQLITE_DONE; }
+    }
+    if (ok && allow == 0 && deny == 0) {
         Stmt q(db_,
             "DELETE FROM channel_overwrites "
             "WHERE channel_id=? AND target_type=? AND target_id=?;");
-        if (!q.s) return false;
-        q.bind_text(1, in.channel_id);
-        q.bind_int(2, in.target_type);
-        q.bind_text(3, in.target_id);
-        return q.step() == SQLITE_DONE;
+        ok = q.s != nullptr;
+        if (ok) {
+            q.bind_text(1, in.channel_id);
+            q.bind_int(2, in.target_type);
+            q.bind_text(3, in.target_id);
+            ok = q.step() == SQLITE_DONE;
+        }
+    } else if (ok) {
+        Stmt q(db_,
+            "INSERT INTO channel_overwrites(channel_id, target_type, target_id, allow, deny) "
+            "VALUES(?, ?, ?, ?, ?) "
+            "ON CONFLICT(channel_id, target_type, target_id) DO UPDATE SET "
+            "  allow=excluded.allow, deny=excluded.deny;");
+        ok = q.s != nullptr;
+        if (ok) {
+            q.bind_text(1, in.channel_id);
+            q.bind_int(2, in.target_type);
+            q.bind_text(3, in.target_id);
+            q.bind_int64(4, static_cast<int64_t>(allow));
+            q.bind_int64(5, static_cast<int64_t>(deny));
+            ok = q.step() == SQLITE_DONE;
+        }
     }
-    Stmt q(db_,
-        "INSERT INTO channel_overwrites(channel_id, target_type, target_id, allow, deny) "
-        "VALUES(?, ?, ?, ?, ?) "
-        "ON CONFLICT(channel_id, target_type, target_id) DO UPDATE SET "
-        "  allow=excluded.allow, deny=excluded.deny;");
-    if (!q.s) return false;
-    q.bind_text(1, in.channel_id);
-    q.bind_int(2, in.target_type);
-    q.bind_text(3, in.target_id);
-    q.bind_int64(4, static_cast<int64_t>(allow));
-    q.bind_int64(5, static_cast<int64_t>(deny));
-    return q.step() == SQLITE_DONE;
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    overwrites_cache_.erase(in.channel_id);
+    invalidate_channel_layout_();
+    return ok;
 }
 
 uint64_t CommunityDb::channel_permissions_unlocked_(const std::string& username,
@@ -1662,7 +1900,8 @@ uint64_t CommunityDb::channel_permissions_unlocked_(const std::string& username,
         }
         uint64_t p = base.permissions;
         uint64_t ev_allow = 0, ev_deny = 0, role_allow = 0, role_deny = 0, me_allow = 0, me_deny = 0;
-        for (const auto& ow : overwrites_unlocked_(channel_id)) {
+        // A synced channel resolves through its category's rows (v3).
+        for (const auto& ow : overwrites_unlocked_(overwrite_source_unlocked_(channel_id))) {
             if (ow.target_type == 0) {
                 if (ow.target_id == everyone_id) { ev_allow |= ow.allow; ev_deny |= ow.deny; }
                 else if (my_roles.count(ow.target_id)) { role_allow |= ow.allow; role_deny |= ow.deny; }
@@ -1673,6 +1912,12 @@ uint64_t CommunityDb::channel_permissions_unlocked_(const std::string& username,
         p = (p & ~ev_deny) | ev_allow;
         p = (p & ~role_deny) | role_allow;
         p = (p & ~me_deny) | me_allow;
+        // Voice pass (v3): moved here by a moderator — VIEW + CONNECT while
+        // in it; every other bit still follows the chain above.
+        if (auto vp = voice_passes_.find(username);
+            vp != voice_passes_.end() && vp->second.count(channel_id)) {
+            p |= perms::kViewChannel | perms::kConnectVoice;
+        }
         result = (p & perms::kViewChannel) ? p : 0;
     }
     if (per_user.size() >= 1024) per_user.clear();
@@ -1851,7 +2096,7 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
     Stmt q(db_,
         "SELECT id, name, type, position, voice_bitrate_kbps, "
         "  retention_days_text, retention_days_image, retention_days_video, "
-        "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted "
+        "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted, perm_synced "
         "FROM channels ORDER BY position ASC, id ASC;");
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) {
@@ -1868,6 +2113,7 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
         c.retention_days_audio    = q.col_int(9);
         c.slowmode_seconds        = q.col_int(10);
         c.encrypted               = q.col_int(11) != 0;
+        c.perm_synced             = q.col_int(12) != 0;
         out.push_back(std::move(c));
     }
     return out;
@@ -1878,7 +2124,7 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
     Stmt q(db_,
         "SELECT id, name, type, position, voice_bitrate_kbps, "
         "  retention_days_text, retention_days_image, retention_days_video, "
-        "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted "
+        "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted, perm_synced "
         "FROM channels WHERE id=?;");
     if (!q.s) return std::nullopt;
     q.bind_text(1, channel_id);
@@ -1896,6 +2142,7 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
     c.retention_days_audio    = q.col_int(9);
     c.slowmode_seconds        = q.col_int(10);
     c.encrypted               = q.col_int(11) != 0;
+    c.perm_synced             = q.col_int(12) != 0;
     return c;
 }
 
@@ -2023,8 +2270,9 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name
     // slug before it existed cached a "(user, id) → 0" (VIEW denied) entry,
     // which would keep the freshly-created channel invisible to them until an
     // unrelated cache-clearing mutation. A delete+recreate under the same
-    // slug is the common trigger (D1).
-    channel_perm_cache_.clear();
+    // slug is the common trigger (D1). The new row also shifts the
+    // category layout (it starts synced to its category).
+    invalidate_channel_layout_();
 
     DbChannel c;
     c.id = id;
@@ -2082,6 +2330,7 @@ void CommunityDb::normalize_channel_order_() {
         }
     }
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    invalidate_channel_layout_();
 }
 
 bool CommunityDb::reorder_channels(const std::vector<std::string>& ordered_ids) {
@@ -2112,7 +2361,9 @@ bool CommunityDb::reorder_channels(const std::vector<std::string>& ordered_ids) 
         }
     }
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    // A synced channel dragged into another category follows the new one.
     if (ok) normalize_channel_order_();
+    invalidate_channel_layout_();
     return ok;
 }
 
@@ -2148,6 +2399,18 @@ std::optional<CommunityDb::WipeChannelResult> CommunityDb::delete_channel(
         if (q.step() != SQLITE_ROW) return std::nullopt;
     }
 
+    // Deleting a category (v3): its synced channels would otherwise start
+    // following whichever category ends up above them — a private
+    // category's channels could turn public. Give them the category's
+    // rows as their own first.
+    std::vector<std::string> orphans;
+    std::vector<DbOverwrite> category_rows;
+    if (!layout_valid_) rebuild_channel_layout_unlocked_();
+    for (const auto& [id, parent] : parent_of_) {
+        if (parent == channel_id && overwrite_source_unlocked_(id) == channel_id) orphans.push_back(id);
+    }
+    if (!orphans.empty()) category_rows = overwrites_unlocked_(channel_id);
+
     WipeChannelResult out;
     // Collect blob paths before the rows go (mirrors wipe_channel).
     {
@@ -2164,6 +2427,11 @@ std::optional<CommunityDb::WipeChannelResult> CommunityDb::delete_channel(
 
     if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return std::nullopt;
     bool ok = true;
+    for (const auto& child : orphans) {
+        if (!ok) break;
+        ok = write_own_overwrites(db_, child, category_rows, /*synced=*/false);
+        overwrites_cache_.erase(child);
+    }
     {
         // Key escrow goes with the channel.
         Stmt del(db_, "DELETE FROM channel_key_blobs WHERE channel_id=?;");
@@ -2208,9 +2476,9 @@ std::optional<CommunityDb::WipeChannelResult> CommunityDb::delete_channel(
         }
     }
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
-    if (!ok) return std::nullopt;
     overwrites_cache_.erase(channel_id);
-    channel_perm_cache_.clear();
+    invalidate_channel_layout_();
+    if (!ok) return std::nullopt;
     normalize_channel_order_();
     return out;
 }
@@ -2292,7 +2560,8 @@ int64_t CommunityDb::insert_message(const std::string& channel_id,
                                     const std::string& content,
                                     int64_t timestamp,
                                     int64_t reply_to,
-                                    const std::string& envelope) {
+                                    const std::string& envelope,
+                                    bool suppress_embeds) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Only accept a reply_to that points at a real message in THIS channel;
     // otherwise store 0 (ignore a stale/cross-channel/forged reference).
@@ -2307,8 +2576,8 @@ int64_t CommunityDb::insert_message(const std::string& channel_id,
         if (!ok) reply_to = 0;
     }
     Stmt q(db_,
-        "INSERT INTO messages(channel_id, sender, content, timestamp, reply_to, envelope) "
-        "VALUES(?, ?, ?, ?, ?, ?);");
+        "INSERT INTO messages(channel_id, sender, content, timestamp, reply_to, envelope, suppress_embeds) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?);");
     if (!q.s) return 0;
     q.bind_text(1, channel_id);
     q.bind_text(2, sender);
@@ -2316,6 +2585,7 @@ int64_t CommunityDb::insert_message(const std::string& channel_id,
     q.bind_int64(4, timestamp);
     q.bind_int64(5, reply_to);
     q.bind_blob_or_null(6, envelope);
+    q.bind_int(7, suppress_embeds ? 1 : 0);
     if (q.step() != SQLITE_DONE) return 0;
     return sqlite3_last_insert_rowid(db_);
 }
@@ -2332,7 +2602,7 @@ constexpr const char* kMessageSelect =
     // not a reply) — parsed by parse_kind_list below.
     "COALESCE((SELECT GROUP_CONCAT(kind, ',') FROM "
     "  (SELECT kind FROM attachments WHERE message_id = p.id ORDER BY position)), ''), "
-    "m.envelope, p.envelope "
+    "m.envelope, p.envelope, m.suppress_embeds "
     "FROM messages m LEFT JOIN messages p "
     "ON p.id = m.reply_to AND p.channel_id = m.channel_id ";
 
@@ -2370,6 +2640,7 @@ DbMessage read_message_row(Stmt& q) {
     m.reply_to_attachment_kinds = parse_kind_list(q.col_text(9));
     m.envelope = q.col_blob(10);
     m.reply_to_envelope = q.col_blob(11);
+    m.suppress_embeds = q.col_int(12) != 0;
     return m;
 }
 } // namespace
@@ -2934,22 +3205,24 @@ std::optional<CommunityDb::MessagePreview> CommunityDb::get_message_preview(
 
 bool CommunityDb::edit_message(const std::string& channel_id, int64_t message_id,
                                const std::string& editor, const std::string& content,
-                               int64_t edited_at, const std::string& envelope) {
+                               int64_t edited_at, const std::string& envelope,
+                               bool suppress_embeds) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Ownership is enforced in the WHERE: the row updates only if it exists in
     // this channel AND was sent by `editor`. changes()==0 → not found or not
     // the owner (indistinguishable to the caller, which is fine). The
     // envelope column is always rewritten (NULL for a plaintext edit).
     Stmt q(db_,
-        "UPDATE messages SET content=?, edited_at=?, envelope=? "
+        "UPDATE messages SET content=?, edited_at=?, envelope=?, suppress_embeds=? "
         "WHERE id=? AND channel_id=? AND sender=?;");
     if (!q.s) return false;
     q.bind_text(1, content);
     q.bind_int64(2, edited_at);
     q.bind_blob_or_null(3, envelope);
-    q.bind_int64(4, message_id);
-    q.bind_text(5, channel_id);
-    q.bind_text(6, editor);
+    q.bind_int(4, suppress_embeds ? 1 : 0);
+    q.bind_int64(5, message_id);
+    q.bind_text(6, channel_id);
+    q.bind_text(7, editor);
     if (q.step() != SQLITE_DONE) return false;
     return sqlite3_changes(db_) > 0;
 }

@@ -54,12 +54,22 @@ function isGifUrl(url: string): boolean {
   }
 }
 
-function LinkEmbeds({ content, sender }: { content: string; sender: string }) {
-  const enabled = useUiStore((s) => s.linkPreviewsEnabled);
+function LinkEmbeds({
+  content,
+  sender,
+  suppressed,
+}: {
+  content: string;
+  sender: string;
+  /// The sender lacked EMBED_LINKS in this channel (server-marked).
+  suppressed?: boolean;
+}) {
+  const previewsOn = useUiStore((s) => s.linkPreviewsEnabled);
+  const enabled = previewsOn && !suppressed;
   const urls = useMemo(() => extractLinks(content, MAX_EMBEDS), [content]);
   if (urls.length === 0) return null;
   // Invite cards resolve against our own central, not the linked site,
-  // so the link-previews privacy toggle doesn't gate them.
+  // so neither the link-previews privacy toggle nor EMBED_LINKS gates them.
   return (
     <>
       {urls.map((url) =>

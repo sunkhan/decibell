@@ -41,10 +41,12 @@ export default function InviteModal() {
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
   const invites = activeServerId ? invitesByServer[activeServerId] ?? [] : [];
-  // The server gates invite create/list/revoke on MANAGE_INVITES (roles
-  // v1); this modal was still owner-only, so a role holder who opened it
-  // from the (correctly gated) sidebar entry got a dead "owner only" card.
-  const canManage = usePermission(activeServerId, PERM.MANAGE_INVITES);
+  // Permissions v3: CREATE_INVITE (on for everyone by default) creates and
+  // sees / revokes your own invites; MANAGE_INVITES sees and revokes
+  // everyone's (and implies create). The server filters the list.
+  const canCreateInvite = usePermission(activeServerId, PERM.CREATE_INVITE);
+  const canSeeAll = usePermission(activeServerId, PERM.MANAGE_INVITES);
+  const canManage = canCreateInvite || canSeeAll;
 
   useEffect(() => {
     if (activeModal === "invite-manage" && activeServerId && canManage) {
@@ -71,7 +73,7 @@ export default function InviteModal() {
             Invites
           </h2>
           <p className="text-[13px] text-text-secondary">
-            You don't have permission to manage invites.
+            You don't have permission to create invites.
           </p>
           <button
             onClick={closeModal}
@@ -312,7 +314,7 @@ export default function InviteModal() {
         {/* Invite list */}
         <div className="flex-1 overflow-y-auto border-t border-border-divider px-6 py-5">
           <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-            Active invites ({invites.length})
+            {canSeeAll ? "Active invites" : "Your invites"} ({invites.length})
           </div>
 
           {invites.length === 0 ? (

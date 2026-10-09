@@ -564,6 +564,7 @@ const Filmstrip = memo(function Filmstrip({ focused }: { focused: string }) {
             rosterDeafened={p?.isDeafened ?? false}
             serverMuted={p?.isServerMuted}
             serverDeafened={p?.isServerDeafened}
+            suppressed={p?.isSuppressed}
             connectedServerId={connectedServerId}
             width={STRIP_TILE_W}
             mini

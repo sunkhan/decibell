@@ -5,6 +5,7 @@ import { EMPTY_LIST } from "../../../lib/empty";
 import type { ServerRole } from "../../../types";
 import {
   EDITABLE_PERMISSIONS,
+  PERMISSION_GROUPS,
   hasBits,
   toggleBit,
   usePermission,
@@ -21,6 +22,7 @@ interface RoleDraft {
   permissions: number;
   position: number;
   isDefault: boolean;
+  manageEachOther: boolean;
 }
 
 /// Roles: list, create/edit/delete, reorder. Hierarchy mirrors the
@@ -54,6 +56,7 @@ export default function RolesTab({ serverId }: { serverId: string }) {
           name: roleDraft.name.trim(),
           color: roleDraft.color,
           permissions: roleDraft.permissions,
+          manageEachOther: roleDraft.manageEachOther,
         });
       } else {
         await invoke("update_role", {
@@ -63,6 +66,7 @@ export default function RolesTab({ serverId }: { serverId: string }) {
           color: roleDraft.color,
           permissions: roleDraft.permissions,
           position: roleDraft.position,
+          manageEachOther: roleDraft.manageEachOther,
         });
       }
       setRoleDraft(null);
@@ -99,6 +103,7 @@ export default function RolesTab({ serverId }: { serverId: string }) {
         color: role.color,
         permissions: role.permissions,
         position: role.position + delta,
+        manageEachOther: !!role.manageEachOther,
       });
     } catch (err) {
       setError(String(err));
@@ -126,6 +131,7 @@ export default function RolesTab({ serverId }: { serverId: string }) {
               permissions: 0,
               position: 1,
               isDefault: false,
+              manageEachOther: false,
             })
           }
           className="mb-2 w-full rounded-md border border-dashed border-border py-2.5 text-[13px] font-medium text-text-muted transition-colors hover:border-accent hover:text-accent-bright"
@@ -191,6 +197,7 @@ export default function RolesTab({ serverId }: { serverId: string }) {
                               permissions: r.permissions,
                               position: r.position,
                               isDefault: r.isDefault,
+                              manageEachOther: !!r.manageEachOther,
                             },
                       )
                     }
@@ -334,40 +341,64 @@ function RoleEditor({
           </div>
         </>
       )}
+      <label className="flex cursor-pointer items-start gap-2.5 rounded-sm px-2 py-1.5 transition-colors hover:bg-surface-hover">
+        <input
+          type="checkbox"
+          checked={draft.manageEachOther}
+          onChange={() => onChange({ ...draft, manageEachOther: !draft.manageEachOther })}
+          className="mt-0.5 accent-[var(--color-accent)]"
+        />
+        <span className="flex-1">
+          <span className="block text-[12px] font-medium text-text-primary">
+            Members with this role can manage each other
+          </span>
+          <span className="block text-[11px] leading-[1.4] text-text-muted">
+            When it's their highest role, they can change each other's nicknames and use voice
+            moderation on each other. Kicks, bans, timeouts and roles still need a higher role.
+          </span>
+        </span>
+      </label>
       <div>
         <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
           Permissions
         </label>
-        <div className="flex flex-col gap-0.5">
-          {EDITABLE_PERMISSIONS.map((p) => {
-            const on = hasBits(draft.permissions, p.bit);
-            return (
-              <label
-                key={p.bit}
-                className="flex cursor-pointer items-start gap-2.5 rounded-sm px-2 py-1.5 transition-colors hover:bg-surface-hover"
-              >
-                <input
-                  type="checkbox"
-                  checked={on}
-                  onChange={() =>
-                    onChange({
-                      ...draft,
-                      permissions: toggleBit(draft.permissions, p.bit, !on),
-                    })
-                  }
-                  className="mt-0.5 accent-[var(--color-accent)]"
-                />
-                <span className="flex-1">
-                  <span className="block text-[12px] font-medium text-text-primary">
-                    {p.label}
-                  </span>
-                  <span className="block text-[11px] leading-[1.4] text-text-muted">
-                    {p.description}
-                  </span>
-                </span>
-              </label>
-            );
-          })}
+        <div className="flex flex-col gap-2.5">
+          {PERMISSION_GROUPS.map((group) => (
+            <div key={group} className="flex flex-col gap-0.5">
+              <span className="px-2 text-[10px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                {group}
+              </span>
+              {EDITABLE_PERMISSIONS.filter((p) => p.group === group).map((p) => {
+                const on = hasBits(draft.permissions, p.bit);
+                return (
+                  <label
+                    key={p.bit}
+                    className="flex cursor-pointer items-start gap-2.5 rounded-sm px-2 py-1.5 transition-colors hover:bg-surface-hover"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() =>
+                        onChange({
+                          ...draft,
+                          permissions: toggleBit(draft.permissions, p.bit, !on),
+                        })
+                      }
+                      className="mt-0.5 accent-[var(--color-accent)]"
+                    />
+                    <span className="flex-1">
+                      <span className="block text-[12px] font-medium text-text-primary">
+                        {p.label}
+                      </span>
+                      <span className="block text-[11px] leading-[1.4] text-text-muted">
+                        {p.description}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          ))}
         </div>
       </div>
       <div className="flex gap-2">

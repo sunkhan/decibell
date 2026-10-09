@@ -13,6 +13,7 @@ import ConnectionStatsPopover from "../voice/ConnectionStatsPopover";
 import CaptureSourcePicker from "../voice/CaptureSourcePicker";
 import { StreamAudioButton } from "../voice/StreamAudioPopover";
 import { announceCallStreamStop, endCall } from "../call/callActions";
+import { PERM, useChannelPermission } from "../servers/permissions";
 
 const EMPTY_CHANNELS: never[] = [];
 
@@ -34,6 +35,11 @@ export default function UserPanel() {
   const inSession = connectedChannelId != null || callPeer != null;
   const isMuted = useVoiceStore((s) => s.isMuted);
   const isDeafened = useVoiceStore((s) => s.isDeafened);
+  // No SPEAK in the connected voice channel (permissions v3): the server
+  // drops our audio, so the mic reads as muted whatever the toggle says.
+  const canSpeak = useChannelPermission(connectedServerId, connectedChannelId, PERM.SPEAK);
+  const speakBlocked = connectedChannelId != null && !canSpeak;
+  const micOff = isMuted || speakBlocked;
   const isStreaming = useVoiceStore((s) => s.isStreaming);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
   const latencyMs = useVoiceStore((s) => s.latencyMs);
@@ -255,16 +261,16 @@ export default function UserPanel() {
             </PanelButton>
           )}
           <PanelButton
-            title={isMuted ? "Unmute" : "Mute"}
+            title={speakBlocked ? "You can't speak in this channel" : isMuted ? "Unmute" : "Mute"}
             onClick={handleMute}
             onContextMenu={(e) => {
               e.preventDefault();
               openDeviceMenu("input", e);
             }}
-            active={isMuted}
-            variant={isMuted ? "danger" : "default"}
+            active={micOff}
+            variant={micOff ? "danger" : "default"}
           >
-            {isMuted ? (
+            {micOff ? (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <line x1="1" y1="1" x2="23" y2="23" />
                 <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />

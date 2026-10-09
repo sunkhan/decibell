@@ -405,6 +405,8 @@ pub struct CreateRoleArgs {
     /// 0xRRGGBB; 0 = default color.
     pub color: u32,
     pub permissions: i64,
+    /// Members whose highest role is this one may manage each other.
+    pub manage_each_other: Option<bool>,
 }
 
 #[napi]
@@ -416,6 +418,7 @@ pub async fn create_role(args: CreateRoleArgs) -> napi::Result<()> {
             name: args.name,
             color: args.color,
             permissions: args.permissions.max(0) as u64,
+            manage_each_other: args.manage_each_other.unwrap_or(false),
         }),
     )
     .await
@@ -429,6 +432,8 @@ pub struct UpdateRoleArgs {
     pub color: u32,
     pub permissions: i64,
     pub position: i32,
+    /// Full snapshot like the rest: omitting it clears the flag.
+    pub manage_each_other: Option<bool>,
 }
 
 #[napi]
@@ -442,6 +447,7 @@ pub async fn update_role(args: UpdateRoleArgs) -> napi::Result<()> {
             color: args.color,
             permissions: args.permissions.max(0) as u64,
             position: args.position,
+            manage_each_other: args.manage_each_other.unwrap_or(false),
         }),
     )
     .await

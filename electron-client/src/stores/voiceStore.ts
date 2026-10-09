@@ -52,7 +52,7 @@ interface VoiceState {
   channelPresence: Record<string, string[]>;
   channelUserStates: Record<
     string,
-    Record<string, { isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean }>
+    Record<string, { isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean; isSuppressed?: boolean }>
   >;
   setConnectedChannel: (serverId: string | null, channelId: string | null) => void;
   setParticipants: (participants: VoiceParticipant[]) => void;
@@ -66,7 +66,7 @@ interface VoiceState {
   setChannelPresence: (
     channelId: string,
     users: string[],
-    userStates?: { username: string; isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean }[],
+    userStates?: { username: string; isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean; isSuppressed?: boolean }[],
     userCapabilities?: ClientCapabilities[],
   ) => void;
   /// Username → that user's advertised codec capabilities. Populated
@@ -162,7 +162,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   setError: (error) => set({ error }),
   setChannelPresence: (channelId, users, userStates, userCapabilities) =>
     set((state) => {
-      const stateMap: Record<string, { isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean }> = {};
+      const stateMap: Record<string, { isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean; isSuppressed?: boolean }> = {};
       if (userStates) {
         for (const s of userStates) {
           stateMap[s.username] = {
@@ -170,6 +170,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
             isDeafened: s.isDeafened,
             isServerMuted: s.isServerMuted,
             isServerDeafened: s.isServerDeafened,
+            isSuppressed: s.isSuppressed,
           };
         }
       }

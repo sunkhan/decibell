@@ -12,7 +12,8 @@
 //     }
 //
 // and the rules live here. See
-// docs/superpowers/specs/2026-08-22-permissions-v2-design.md.
+// docs/superpowers/specs/2026-08-22-permissions-v2-design.md and
+// docs/superpowers/specs/2026-10-09-permissions-v3-design.md.
 #include <chrono>
 #include <cstdint>
 #include <ctime>
@@ -28,18 +29,25 @@ enum class Action {
     // Server-wide (base permissions; overwrites don't apply).
     ManageServer,       // picture, name/description
     ManageRoles,        // role CRUD + assignment (hierarchy checked by caller on the role)
-    ManageInvites,
+    ManageInvites,      // everyone's invites (list / revoke); implies create
+    CreateInvite,       // CREATE_INVITE or MANAGE_INVITES; list / revoke own
     ViewBans,
     KickMember,         // + can_moderate(target)
     BanMember,          // + can_moderate(target)
     UnbanMember,
-    ManageNicknameOf,   // + can_moderate(target); self always allowed
+    ManageNicknameOf,   // self: CHANGE_NICKNAME; others: MANAGE_NICKNAMES + can_manage(target)
     CreateChannel,      // MANAGE_CHANNELS server-wide (no channel yet)
     ReorderChannels,    // MANAGE_CHANNELS server-wide
     ViewAuditLog,
     TimeoutMember,      // MODERATE_MEMBERS + can_moderate(target), never the owner
-    VoiceModerate,      // VOICE_MODERATE + can_moderate(target)
     TransferOwnership,  // owner only
+
+    // Voice moderation (v3): resolved in the TARGET's current voice
+    // channel (ctx.channel_id; "" = not in voice → server-wide bits),
+    // + can_manage(target), never the owner.
+    MuteMember,         // MUTE_MEMBERS
+    DeafenMember,       // DEAFEN_MEMBERS
+    MoveMember,         // MOVE_MEMBERS (move + disconnect)
 
     // Channel-scoped (channel_permissions: base → overwrites).
     ViewChannel,
@@ -75,8 +83,16 @@ public:
     // position (0 with none), owner = INT32_MAX. Two members who only hold
     // `everyone` can't moderate each other even if `everyone` carries
     // KICK_MEMBERS — grant a real role. ADMINISTRATOR never bypasses this.
+    // Used for the heavy actions: kick, ban, timeout, roles.
     bool can_moderate(const std::string& actor, const std::string& target) const {
         return db_.member_level(actor) > db_.member_level(target);
+    }
+
+    // The light actions (nicknames, voice moderation) also work between
+    // peers: members whose highest role is the same one, when that role
+    // has "members can manage each other" on (v3).
+    bool can_manage(const std::string& actor, const std::string& target) const {
+        return can_moderate(actor, target) || db_.are_peers(actor, target);
     }
 
     // Active timeout end (unix seconds) or 0. A timed-out member can't send,
@@ -95,14 +111,28 @@ public:
         return db_.channel_permissions(user, channel_id);
     }
 
-    // Channels the user can VIEW, in display order. Category rows are
-    // always included so the sidebar keeps its structure.
+    // Channels the user can VIEW, in display order. A category is listed
+    // when the user can view it or any channel under it (v3: hiding a
+    // category hides its synced channels, and an empty hidden header
+    // shouldn't linger). Never a hidden category with nothing under it,
+    // so the client's "nearest category above" stays right.
     std::vector<DbChannel> visible_channels(const std::string& user) const {
         std::vector<DbChannel> out;
+        std::optional<DbChannel> pending_category;
         for (auto& ch : db_.list_channels()) {
-            if (ch.type == 2 || (channel_permissions(user, ch.id) & perms::kViewChannel)) {
-                out.push_back(std::move(ch));
+            const bool viewable = (channel_permissions(user, ch.id) & perms::kViewChannel) != 0;
+            if (ch.type == 2) {
+                pending_category.reset();
+                if (viewable) out.push_back(std::move(ch));
+                else pending_category = std::move(ch);
+                continue;
             }
+            if (!viewable) continue;
+            if (pending_category) {
+                out.push_back(std::move(*pending_category));
+                pending_category.reset();
+            }
+            out.push_back(std::move(ch));
         }
         return out;
     }
@@ -138,6 +168,10 @@ public:
                 return base(ctx, perms::kManageRoles, "You don't have permission to manage roles.");
             case Action::ManageInvites:
                 return base(ctx, perms::kManageInvites, "You don't have permission to manage invites.");
+            case Action::CreateInvite:
+                return (db_.has_permission(ctx.user, perms::kCreateInvite) ||
+                        db_.has_permission(ctx.user, perms::kManageInvites))
+                    ? ok() : deny("You don't have permission to create invites.");
             case Action::ViewBans:
                 return base(ctx, perms::kBanMembers, "You don't have permission to view bans.");
             case Action::UnbanMember:
@@ -157,15 +191,12 @@ public:
                 }
                 return ok();
             }
-            case Action::VoiceModerate: {
-                auto r = base(ctx, perms::kVoiceModerate, "You don't have permission to moderate voice.");
-                if (!r) return r;
-                if (ctx.target == db_.owner()) return deny("The server owner can't be voice-moderated.");
-                if (!can_moderate(ctx.user, ctx.target)) {
-                    return deny("You can't voice-moderate a member with an equal or higher role.");
-                }
-                return ok();
-            }
+            case Action::MuteMember:
+                return voice_mod(ctx, perms::kMuteMembers, "You don't have permission to server-mute members.");
+            case Action::DeafenMember:
+                return voice_mod(ctx, perms::kDeafenMembers, "You don't have permission to server-deafen members.");
+            case Action::MoveMember:
+                return voice_mod(ctx, perms::kMoveMembers, "You don't have permission to move members.");
             case Action::TransferOwnership:
                 return ctx.user == db_.owner() ? ok() : deny("Only the server owner can transfer ownership.");
             case Action::KickMember: {
@@ -179,10 +210,12 @@ public:
                 return moderation_target(ctx, "ban");
             }
             case Action::ManageNicknameOf: {
-                if (ctx.target == ctx.user) return ok();
+                if (ctx.target == ctx.user) {
+                    return base(ctx, perms::kChangeNickname, "You don't have permission to change your nickname.");
+                }
                 auto r = base(ctx, perms::kManageNicknames, "You don't have permission to manage nicknames.");
                 if (!r) return r;
-                if (!can_moderate(ctx.user, ctx.target)) {
+                if (!can_manage(ctx.user, ctx.target)) {
                     return deny("You can't change the nickname of a member with an equal or higher role.");
                 }
                 return ok();
@@ -248,6 +281,17 @@ private:
     }
     AuthResult channel(const AuthCtx& ctx, uint64_t bit, const char* why) const {
         return (channel_permissions(ctx.user, ctx.channel_id) & bit) == bit ? ok() : deny(why);
+    }
+    // Voice moderation: the bit in the target's channel (server-wide when
+    // they aren't in voice), then owner / hierarchy-or-peer.
+    AuthResult voice_mod(const AuthCtx& ctx, uint64_t bit, const char* why) const {
+        auto r = ctx.channel_id.empty() ? base(ctx, bit, why) : channel(ctx, bit, why);
+        if (!r) return r;
+        if (ctx.target == db_.owner()) return deny("The server owner can't be voice-moderated.");
+        if (!can_manage(ctx.user, ctx.target)) {
+            return deny("You can't voice-moderate a member with an equal or higher role.");
+        }
+        return ok();
     }
     AuthResult moderation_target(const AuthCtx& ctx, const char* verb) const {
         if (ctx.target == db_.owner()) {

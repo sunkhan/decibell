@@ -147,6 +147,8 @@ interface ParticipantTileProps {
   rosterDeafened: boolean;
   serverMuted?: boolean;
   serverDeafened?: boolean;
+  /// No SPEAK in this channel (permissions v3).
+  suppressed?: boolean;
   connectedServerId: string | null;
   width: number;
   /// Filmstrip size: tighter chip, no "you" tag.
@@ -160,6 +162,7 @@ export const ParticipantTile = memo(function ParticipantTile({
   rosterDeafened,
   serverMuted,
   serverDeafened,
+  suppressed,
   connectedServerId,
   width,
   mini,
@@ -214,9 +217,15 @@ export const ParticipantTile = memo(function ParticipantTile({
       >
         <span className="truncate">{displayName}</span>
         {isLocal && !mini && <span className="font-normal text-text-muted">you</span>}
-        {(serverMuted || serverDeafened) && (
+        {(serverMuted || serverDeafened || suppressed) && (
           <span
-            title={serverDeafened ? "Server deafened by a moderator" : "Server muted by a moderator"}
+            title={
+              serverDeafened
+                ? "Server deafened by a moderator"
+                : serverMuted
+                  ? "Server muted by a moderator"
+                  : "Can't speak in this channel"
+            }
             className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm bg-error text-on-error"
           >
             {serverDeafened ? <HeadphonesOffIcon size={10} bold /> : <MicOffIcon size={10} bold />}
@@ -612,8 +621,17 @@ const HiddenRow = memo(function HiddenRow({
         {displayName}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
-        {(p?.isServerMuted || p?.isServerDeafened) && (
-          <span className="flex h-4 w-4 items-center justify-center rounded-sm bg-error text-on-error">
+        {(p?.isServerMuted || p?.isServerDeafened || p?.isSuppressed) && (
+          <span
+            title={
+              p.isServerDeafened
+                ? "Server deafened by a moderator"
+                : p.isServerMuted
+                  ? "Server muted by a moderator"
+                  : "Can't speak in this channel"
+            }
+            className="flex h-4 w-4 items-center justify-center rounded-sm bg-error text-on-error"
+          >
             {p.isServerDeafened ? <HeadphonesOffIcon size={10} bold /> : <MicOffIcon size={10} bold />}
           </span>
         )}

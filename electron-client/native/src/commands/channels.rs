@@ -307,6 +307,8 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
                 reply_to_attachment_kinds: Vec::new(),
                 envelope,
                 reply_to_envelope: Vec::new(),
+                // Server-set from the sender's EMBED_LINKS; ignored if sent.
+                suppress_embeds: false,
             }),
             Some(&client.jwt),
         );
@@ -523,6 +525,27 @@ pub async fn set_channel_overwrite(args: SetChannelOverwriteArgs) -> napi::Resul
                 allow: args.allow.max(0) as u64,
                 deny: args.deny.max(0) as u64,
             }),
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
+pub struct SyncChannelPermissionsArgs {
+    pub server_id: String,
+    pub channel_id: String,
+}
+
+/// Permissions v3: drop the channel's own overwrites so it follows its
+/// category again. Result arrives as channel_action_responded with action
+/// "sync"; the server re-pushes the channel list and the overwrites.
+#[napi]
+pub async fn sync_channel_permissions(args: SyncChannelPermissionsArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::ChannelPermissionsSyncReq,
+        packet::Payload::ChannelPermissionsSyncReq(ChannelPermissionsSyncRequest {
+            channel_id: args.channel_id,
         }),
     )
     .await

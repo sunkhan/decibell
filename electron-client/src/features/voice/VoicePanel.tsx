@@ -331,6 +331,7 @@ function VoiceStage({
             rosterDeafened={p?.isDeafened ?? false}
             serverMuted={p?.isServerMuted}
             serverDeafened={p?.isServerDeafened}
+            suppressed={p?.isSuppressed}
             connectedServerId={connectedServerId}
             width={peopleW}
           />
@@ -427,13 +428,16 @@ function AloneStage({
   canStream: boolean;
   onShare: () => void;
 }) {
+  // Create Invite (on for everyone by default) or Manage Invites, which
+  // implies it. Two hooks, never `&&`-combined (rules of hooks).
+  const canCreateInvite = usePermission(connectedServerId, PERM.CREATE_INVITE);
   const canManageInvites = usePermission(connectedServerId, PERM.MANAGE_INVITES);
   // InviteModal manages the *active* server's invites.
   const activeServerId = useChatStore((s) => s.activeServerId);
   const serverName = useChatStore(
     (s) => s.servers.find((sv) => sv.id === connectedServerId)?.name ?? "the server",
   );
-  const canInvite = canManageInvites && activeServerId === connectedServerId;
+  const canInvite = (canCreateInvite || canManageInvites) && activeServerId === connectedServerId;
   // Room for the copy + buttons under the tile.
   const tileW = Math.max(160, Math.min(480, width, Math.floor((height - 140) * TILE_ASPECT)));
   const copy = canInvite
@@ -452,6 +456,7 @@ function AloneStage({
         rosterDeafened={participant?.isDeafened ?? false}
         serverMuted={participant?.isServerMuted}
         serverDeafened={participant?.isServerDeafened}
+        suppressed={participant?.isSuppressed}
         connectedServerId={connectedServerId}
         width={tileW}
       />

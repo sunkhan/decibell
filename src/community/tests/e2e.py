@@ -785,8 +785,10 @@ def channel_list(c, timeout=3):
     return {ch.id: ch for ch in u.channel_list_update.channels} if u else None
 
 
+# The seeded `everyone` default (perms::kDefaultEveryone); tests restore to it.
+V3_DEFAULT_BITS = (pb.PERM_CREATE_INVITE | pb.PERM_CHANGE_NICKNAME | pb.PERM_EMBED_LINKS | pb.PERM_SPEAK)
 ALL_MEMBER_BITS = (pb.PERM_SEND_MESSAGES | pb.PERM_CONNECT_VOICE | pb.PERM_STREAM |
-                   pb.PERM_VIEW_CHANNEL | pb.PERM_READ_HISTORY | pb.PERM_ATTACH_FILES)
+                   pb.PERM_VIEW_CHANNEL | pb.PERM_READ_HISTORY | pb.PERM_ATTACH_FILES | V3_DEFAULT_BITS)
 
 
 def test_v2_enforced_bits():
@@ -1149,7 +1151,7 @@ def test_voice_moderation():
     owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "dee" in p.voice_presence_update.active_users)
     dee.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="alice", action=pb.VoiceModRequest.SERVER_MUTE))
     r = dee.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
-    check("denied without VOICE_MODERATE", r is not None and not r.mod_action_res.success)
+    check("denied without MUTE_MEMBERS", r is not None and not r.mod_action_res.success)
     owner.flush(0.3)
     owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", action=pb.VoiceModRequest.SERVER_MUTE))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
@@ -2028,8 +2030,422 @@ def test_m3_session_cap():
     owner.close()
 
 
+# ---------------------------------------------------------------- permissions v3
+# docs/superpowers/specs/2026-10-09-permissions-v3-design.md
+
+def create_role(owner, name, perms, manage_each_other=False):
+    owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(
+        name=name, color=0, permissions=perms, manage_each_other=manage_each_other))
+    r = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create")
+    assert r and r.role_action_res.success, r
+    return r.role_action_res.role
+
+
+def delete_role(owner, role_id):
+    owner.send(pb.Packet.ROLE_DELETE_REQ, role_delete_req=pb.RoleDeleteRequest(role_id=role_id))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "delete")
+
+
+def assign_roles(actor, username, role_ids):
+    actor.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(
+        username=username, role_ids=role_ids))
+    return actor.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
+
+
+def mod_res(c, action, timeout=3.0):
+    return c.wait(pb.Packet.MOD_ACTION_RES, timeout=timeout, pred=lambda p: p.mod_action_res.action == action)
+
+
+def mod_ok(r):
+    return r is not None and r.mod_action_res.success
+
+
+def voice_mod(c, username, action, channel_id=""):
+    c.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username=username, action=action, channel_id=channel_id))
+    return mod_res(c, "voice_mod")
+
+
+def set_nick(c, username, nickname):
+    c.send(pb.Packet.SET_NICKNAME_REQ, set_nickname_req=pb.SetNicknameRequest(username=username, nickname=nickname))
+    return mod_res(c, "nickname")
+
+
+def create_channel(owner, name, ctype, category_id=""):
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(
+        name=name, type=ctype, category_id=category_id))
+    r = owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "create")
+    assert r and r.channel_action_res.success, r
+    return r.channel_action_res.channel
+
+
+def list_overwrites(c, channel_id):
+    # Managers also get CHANNEL_OVERWRITES_RES pushed after every change;
+    # drop queued ones so the answer reflects the state as of now.
+    c.drain(0.3)
+    c.inbox = [p for p in c.inbox if not (p.type == pb.Packet.CHANNEL_OVERWRITES_RES
+                                          and p.channel_overwrites_res.channel_id == channel_id)]
+    c.send(pb.Packet.CHANNEL_OVERWRITES_REQ, channel_overwrites_req=pb.ChannelOverwritesRequest(channel_id=channel_id))
+    r = c.wait(pb.Packet.CHANNEL_OVERWRITES_RES, pred=lambda p: p.channel_overwrites_res.channel_id == channel_id)
+    return {(o.target_type, o.target_id): (o.allow, o.deny) for o in r.channel_overwrites_res.overwrites} if r else None
+
+
+def sync_perms(c, channel_id):
+    c.send(pb.Packet.CHANNEL_PERMISSIONS_SYNC_REQ,
+           channel_permissions_sync_req=pb.ChannelPermissionsSyncRequest(channel_id=channel_id))
+    return c.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "sync")
+
+
+def fresh_list(c, timeout=3):
+    """Next CHANNEL_LIST_UPDATE that arrives from now on (drops queued ones)."""
+    c.inbox = [p for p in c.inbox if p.type != pb.Packet.CHANNEL_LIST_UPDATE]
+    return channel_list(c, timeout)
+
+
+def test_v11_migration():
+    print("[v11] permissions v3 migration on an upgraded DB")
+    proc = start_server(); stop_server(proc)
+    old_everyone = (pb.PERM_SEND_MESSAGES | pb.PERM_CONNECT_VOICE | pb.PERM_STREAM |
+                    pb.PERM_VIEW_CHANNEL | pb.PERM_READ_HISTORY | pb.PERM_ATTACH_FILES)
+    sql("update roles set permissions=? where is_default=1", old_everyone)
+    rid = sql("insert into roles(name, color, position, permissions, is_default) "
+              "values('OldVoiceMod', 0, 1, ?, 0) returning id", pb.PERM_MUTE_MEMBERS)[0][0]
+    sql("insert into channel_overwrites(channel_id, target_type, target_id, allow, deny) values('voice-lounge', 0, ?, ?, 0)",
+        str(rid), pb.PERM_MUTE_MEMBERS)
+    sql("insert into channel_overwrites(channel_id, target_type, target_id, allow, deny) values('voice-lounge-2', 0, ?, 0, ?)",
+        str(rid), pb.PERM_MUTE_MEMBERS)
+    sql("delete from server_meta where key='perm_bits_v11'")
+    sql("alter table channels drop column perm_synced")   # pre-v11 shape
+    proc = start_server(); stop_server(proc)
+    ev = sql("select permissions from roles where is_default=1")[0][0]
+    check("everyone gained the v3 default bits", ev & V3_DEFAULT_BITS == V3_DEFAULT_BITS and ev & old_everyone == old_everyone, hex(ev))
+    split = pb.PERM_MUTE_MEMBERS | pb.PERM_DEAFEN_MEMBERS | pb.PERM_MOVE_MEMBERS
+    check("VOICE_MODERATE role gained DEAFEN + MOVE", sql("select permissions from roles where id=?", rid) == [(split,)])
+    check("... in overwrite allow", sql("select allow from channel_overwrites where channel_id='voice-lounge' and target_id=?", str(rid)) == [(split,)])
+    check("... and in overwrite deny", sql("select deny from channel_overwrites where channel_id='voice-lounge-2' and target_id=?", str(rid)) == [(split,)])
+    synced = dict(sql("select id, perm_synced from channels"))
+    check("channels with rows of their own start unsynced, the rest synced",
+          synced.get("voice-lounge") == 0 and synced.get("voice-lounge-2") == 0 and synced.get("general") == 1, str(synced))
+    check("v11 stamp written", sql("select value from server_meta where key='perm_bits_v11'") == [("1",)])
+    sql("delete from channel_overwrites where target_id=?", str(rid))
+    sql("delete from roles where id=?", rid)
+    sql("update channels set perm_synced=1")
+
+
+def test_v3_invites_and_nicknames():
+    print("[v3] Create Invite / Manage Invites / Change Nickname")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ivy = join("ivy", owner); jon = join("jon", owner)
+    owner.flush(0.5); ivy.flush(0.5); jon.flush(0.5)
+
+    def create(c):
+        c.send(pb.Packet.INVITE_CREATE_REQ, invite_create_req=pb.InviteCreateRequest(expires_at=0, max_uses=0))
+        return c.wait(pb.Packet.INVITE_CREATE_RES)
+
+    def codes(c):
+        c.send(pb.Packet.INVITE_LIST_REQ, invite_list_req=pb.InviteListRequest())
+        r = c.wait(pb.Packet.INVITE_LIST_RES)
+        return (r.invite_list_res.success, {i.code for i in r.invite_list_res.invites}) if r else (False, set())
+
+    r = create(ivy)
+    check("member creates an invite (CREATE_INVITE on by default)", r is not None and r.invite_create_res.success,
+          r.invite_create_res.message if r else None)
+    ivy_code = r.invite_create_res.invite.code
+    jon_code = create(jon).invite_create_res.invite.code
+    ok, mine = codes(ivy)
+    check("member lists only their own invites", ok and mine == {ivy_code}, str(mine))
+    ok, every = codes(owner)
+    check("MANAGE_INVITES lists everyone's", ok and {ivy_code, jon_code} <= every)
+    ivy.send(pb.Packet.INVITE_REVOKE_REQ, invite_revoke_req=pb.InviteRevokeRequest(code=jon_code))
+    r = ivy.wait(pb.Packet.INVITE_REVOKE_RES)
+    check("member can't revoke someone else's invite", r is not None and not r.invite_revoke_res.success)
+    ivy.send(pb.Packet.INVITE_REVOKE_REQ, invite_revoke_req=pb.InviteRevokeRequest(code=ivy_code))
+    r = ivy.wait(pb.Packet.INVITE_REVOKE_RES)
+    check("member revokes their own invite", r is not None and r.invite_revoke_res.success)
+    check("member sets their own nickname (CHANGE_NICKNAME on by default)", mod_ok(set_nick(ivy, "ivy", "Ivy V")))
+
+    set_everyone_perms(owner, ALL_MEMBER_BITS & ~(pb.PERM_CHANGE_NICKNAME | pb.PERM_CREATE_INVITE))
+    ivy.flush(0.5)
+    check("own nickname denied without CHANGE_NICKNAME", not mod_ok(set_nick(ivy, "ivy", "Ivy W")))
+    r = create(ivy)
+    check("invite create denied without CREATE_INVITE", r is not None and not r.invite_create_res.success)
+    ok, _ = codes(ivy)
+    check("invite list denied without CREATE_INVITE", not ok)
+    r = create(owner)
+    check("MANAGE_INVITES alone still creates", r is not None and r.invite_create_res.success)
+    set_everyone_perms(owner, ALL_MEMBER_BITS)
+    ivy.close(); jon.close(); owner.close()
+
+
+def test_v3_peer_management():
+    print("[v3] 'members with this role can manage each other'")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    kip = join("kip", owner); lev = join("lev", owner)
+    bits = (pb.PERM_MANAGE_NICKNAMES | pb.PERM_MUTE_MEMBERS | pb.PERM_KICK_MEMBERS |
+            pb.PERM_BAN_MEMBERS | pb.PERM_MODERATE_MEMBERS | pb.PERM_MANAGE_ROLES)
+    mods = create_role(owner, "PeerMods", bits)
+    assign_roles(owner, "kip", [mods.id]); assign_roles(owner, "lev", [mods.id])
+    owner.flush(0.5); kip.flush(0.5); lev.flush(0.5)
+    check("peer nickname denied while the flag is off", not mod_ok(set_nick(kip, "lev", "Levvy")))
+    owner.send(pb.Packet.ROLE_UPDATE_REQ, role_update_req=pb.RoleUpdateRequest(
+        role_id=mods.id, name="PeerMods", color=0, permissions=bits, position=mods.position, manage_each_other=True))
+    r = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "update")
+    check("flag saved and echoed", r is not None and r.role_action_res.success and r.role_action_res.role.manage_each_other)
+    kip.flush(0.5)
+    check("peer nickname allowed with the flag", mod_ok(set_nick(kip, "lev", "Levvy")))
+    check("peer server-mute allowed", mod_ok(voice_mod(kip, "lev", pb.VoiceModRequest.SERVER_MUTE)))
+    voice_mod(kip, "lev", pb.VoiceModRequest.SERVER_UNMUTE)
+    kip.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="lev", reason=""))
+    check("peer kick still denied", not mod_ok(mod_res(kip, "kick")))
+    kip.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="lev", reason=""))
+    check("peer ban still denied", not mod_ok(mod_res(kip, "ban")))
+    kip.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="lev", until=int(time.time()) + 60))
+    check("peer timeout still denied", not mod_ok(mod_res(kip, "timeout")))
+    r = assign_roles(kip, "lev", [])
+    check("removing the shared role from a peer denied", r is not None and not r.role_action_res.success)
+    check("the owner is never a peer", not mod_ok(set_nick(kip, "alice", "boss")))
+    check("lev still in the server", not lev.is_closed(0.3))
+    delete_role(owner, mods.id)
+    kip.close(); lev.close(); owner.close()
+
+
+def test_v3_voice_split_and_passes():
+    print("[v3] voice moderation split (channel-scoped) + moves grant a voice pass")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ev = everyone_role(owner)
+    mox = join("max", owner); nox = join("nox", owner)
+    muter = create_role(owner, "Muter", pb.PERM_MUTE_MEMBERS)
+    assign_roles(owner, "max", [muter.id])
+    nox.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "nox" in p.voice_presence_update.active_users)
+    mox.flush(0.5)
+    check("MUTE_MEMBERS: server mute allowed", mod_ok(voice_mod(mox, "nox", pb.VoiceModRequest.SERVER_MUTE)))
+    check("no DEAFEN_MEMBERS: deafen denied", not mod_ok(voice_mod(mox, "nox", pb.VoiceModRequest.SERVER_DEAFEN)))
+    check("no MOVE_MEMBERS: disconnect denied", not mod_ok(voice_mod(mox, "nox", pb.VoiceModRequest.DISCONNECT)))
+    voice_mod(mox, "nox", pb.VoiceModRequest.SERVER_UNMUTE)
+    set_overwrite(owner, "voice-lounge", pb.ChannelOverwrite.ROLE, muter.id, allow=pb.PERM_MOVE_MEMBERS)
+    mox.flush(0.5); nox.flush(0.5)
+    check("MOVE_MEMBERS via an overwrite in the target's channel: move allowed",
+          mod_ok(voice_mod(mox, "nox", pb.VoiceModRequest.MOVE, "voice-lounge-2")))
+    nox.wait(pb.Packet.VOICE_FORCE_NOTIFY, timeout=2)
+    check("...but not out of a channel where the mover lacks it",
+          not mod_ok(voice_mod(mox, "nox", pb.VoiceModRequest.MOVE, "voice-lounge")))
+    set_overwrite(owner, "voice-lounge", pb.ChannelOverwrite.ROLE, muter.id)
+
+    vault = create_channel(owner, "vault", pb.ChannelInfo.VOICE).id
+    set_overwrite(owner, vault, pb.ChannelOverwrite.ROLE, ev.id, deny=pb.PERM_VIEW_CHANNEL | pb.PERM_CONNECT_VOICE)
+    set_overwrite(owner, "voice-lounge-2", pb.ChannelOverwrite.ROLE, muter.id, allow=pb.PERM_MOVE_MEMBERS)
+    nox.flush(0.5); mox.flush(0.5)
+    nox.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id=vault))
+    check("nox can't join the vault himself", not mod_ok(mod_res(nox, "voice")))
+    r = voice_mod(mox, "nox", pb.VoiceModRequest.MOVE, vault)
+    check("a mover who can't see the destination is refused", not mod_ok(r) and r is not None
+          and "Unknown voice channel" in r.mod_action_res.message, r.mod_action_res.message if r else None)
+    nox.flush(0.5)
+    check("owner moves nox into a channel he can neither view nor join",
+          mod_ok(voice_mod(owner, "nox", pb.VoiceModRequest.MOVE, vault)))
+    cl = channel_list(nox)
+    vc = pb.PERM_VIEW_CHANNEL | pb.PERM_CONNECT_VOICE
+    check("pass: the vault lands in nox's list with VIEW + CONNECT",
+          cl is not None and vault in cl and cl[vault].my_permissions & vc == vc)
+    n = nox.wait(pb.Packet.VOICE_FORCE_NOTIFY, timeout=2)
+    check("...then the MOVED notify names it", n is not None and n.voice_force_notify.channel_id == vault)
+    vp = nox.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2,
+                  pred=lambda p: p.voice_presence_update.channel_id == vault and "nox" in p.voice_presence_update.active_users)
+    check("nox receives the vault's voice presence", vp is not None)
+    check("SPEAK follows the normal chain (not suppressed)",
+          vp is not None and not any(s.is_suppressed for s in vp.voice_presence_update.user_states if s.username == "nox"))
+    nox.flush(0.3)
+    nox.send(pb.Packet.LEAVE_VOICE_REQ, leave_voice_req=pb.LeaveVoiceRequest())
+    cl = channel_list(nox)
+    check("leaving ends the pass: the vault leaves nox's list", cl is not None and vault not in cl)
+    nox.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id=vault))
+    check("...and he can't rejoin it", not mod_ok(mod_res(nox, "voice")))
+    set_overwrite(owner, "voice-lounge-2", pb.ChannelOverwrite.ROLE, muter.id)
+    owner.send(pb.Packet.CHANNEL_DELETE_REQ, channel_delete_req=pb.ChannelDeleteRequest(channel_id=vault))
+    owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "delete")
+    delete_role(owner, muter.id)
+    mox.close(); nox.close(); owner.close()
+
+
+def test_v3_speak():
+    print("[v3] SPEAK: suppressed in presence, audio dropped at the relay")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ev = everyone_role(owner)
+    orr = join("orr", owner); pia = join("pia", owner)
+    for c in (orr, pia):
+        c.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "pia" in p.voice_presence_update.active_users and "orr" in p.voice_presence_update.active_users)
+    uo = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); uo.bind((HOST, 0)); uo.settimeout(2)
+    up = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); up.bind((HOST, 0)); up.settimeout(2)
+    up.sendto(udp_audio_packet(pia.jwt, 1, b"p0"), (HOST, 8083))
+    uo.sendto(udp_audio_packet(orr.jwt, 1, b"o0"), (HOST, 8083))
+
+    def heard(timeout=1.0):
+        up.settimeout(timeout)
+        try:
+            return up.recv(2048)
+        except socket.timeout:
+            return None
+
+    got = heard(2.0)
+    check("baseline: orr's audio relayed", got is not None and got[-2:] == b"o0")
+    owner.flush(0.3)
+    set_overwrite(owner, "voice-lounge", pb.ChannelOverwrite.ROLE, ev.id, deny=pb.PERM_SPEAK)
+    vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge"
+                    and any(s.username == "orr" and s.is_suppressed for s in p.voice_presence_update.user_states))
+    check("presence marks orr suppressed once SPEAK is denied", vp is not None)
+    time.sleep(0.2)
+    uo.sendto(udp_audio_packet(orr.jwt, 2, b"hush"), (HOST, 8083))
+    check("audio from a member without SPEAK dropped by the relay", heard() is None)
+    owner.flush(0.3)
+    set_overwrite(owner, "voice-lounge", pb.ChannelOverwrite.ROLE, ev.id)
+    vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge"
+                    and any(s.username == "orr" and not s.is_suppressed for s in p.voice_presence_update.user_states))
+    check("cleared: no longer suppressed", vp is not None)
+    time.sleep(0.2)
+    uo.sendto(udp_audio_packet(orr.jwt, 3, b"ok"), (HOST, 8083))
+    got = heard(2.0)
+    check("...and relayed again", got is not None and got[-2:] == b"ok")
+    uo.close(); up.close()
+    orr.close(); pia.close(); owner.close()
+
+
+def test_v3_embed_links():
+    print("[v3] EMBED_LINKS: server marks the message, history + edits carry it")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ev = everyone_role(owner)
+    qin = join("qin", owner)
+    set_overwrite(owner, "general", pb.ChannelOverwrite.ROLE, ev.id, deny=pb.PERM_EMBED_LINKS)
+    owner.flush(0.5); qin.flush(0.5)
+    qin.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="https://example.com/a", nonce="emb-1"))
+    m = owner.wait(pb.Packet.CHANNEL_MSG, pred=lambda p: p.channel_msg.nonce == "emb-1")
+    check("message from a sender without EMBED_LINKS is marked", m is not None and m.channel_msg.suppress_embeds)
+    owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="https://example.com/b", nonce="emb-2"))
+    m2 = qin.wait(pb.Packet.CHANNEL_MSG, pred=lambda p: p.channel_msg.nonce == "emb-2")
+    check("the owner's message isn't", m2 is not None and not m2.channel_msg.suppress_embeds)
+    qin.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="x", nonce="emb-3", suppress_embeds=False))
+    m3 = owner.wait(pb.Packet.CHANNEL_MSG, pred=lambda p: p.channel_msg.nonce == "emb-3")
+    check("a client can't clear the mark itself", m3 is not None and m3.channel_msg.suppress_embeds)
+    mid = m.channel_msg.id if m else 0
+    owner.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", before_id=0, limit=20))
+    h = owner.wait(pb.Packet.CHANNEL_HISTORY_RES)
+    row = next((x for x in h.channel_history_res.messages if x.id == mid), None) if h else None
+    check("history carries the mark", row is not None and row.suppress_embeds)
+    set_overwrite(owner, "general", pb.ChannelOverwrite.ROLE, ev.id)
+    qin.flush(0.5); owner.flush(0.5)
+    qin.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id="general", message_id=mid, content="https://example.com/c"))
+    e = owner.wait(pb.Packet.CHANNEL_MESSAGE_EDITED, pred=lambda p: p.channel_message_edited.message_id == mid)
+    check("an edit re-evaluates (EMBED_LINKS back → unmarked)", e is not None and not e.channel_message_edited.suppress_embeds)
+    check("...and persists", sql("select suppress_embeds from messages where id=?", mid) == [(0,)])
+    qin.close(); owner.close()
+
+
+def test_v3_thumbnail_scope():
+    print("[v3] stream thumbnails don't leak out of hidden channels")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ev = everyone_role(owner)
+    rex = join("rex", owner); sid = join("sid", owner)
+    back = create_channel(owner, "backroom", pb.ChannelInfo.VOICE).id
+    set_overwrite(owner, back, pb.ChannelOverwrite.ROLE, ev.id, deny=pb.PERM_VIEW_CHANNEL)
+    set_overwrite(owner, back, pb.ChannelOverwrite.MEMBER, "rex", allow=pb.PERM_VIEW_CHANNEL)
+    rex.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id=back))
+    rex.send(pb.Packet.START_STREAM_REQ, start_stream_req=pb.StartStreamRequest(channel_id=back, target_fps=30))
+    time.sleep(0.5)
+    rex.send(pb.Packet.STREAM_THUMBNAIL_UPDATE, stream_thumbnail_update=pb.StreamThumbnailUpdate(
+        channel_id=back, thumbnail_data=b"\x07" * 2048))
+    time.sleep(0.5)
+
+    def fetch(c):
+        c.send(pb.Packet.FETCH_STREAM_THUMBNAIL_REQ, fetch_stream_thumbnail_req=pb.FetchStreamThumbnailReq(owner_username="rex"))
+        r = c.wait(pb.Packet.FETCH_STREAM_THUMBNAIL_RES, timeout=3)
+        return r.fetch_stream_thumbnail_res.thumbnail_data if r is not None else None
+
+    d = fetch(sid)
+    check("a member who can't see the channel gets no thumbnail", d is not None and len(d) == 0, None if d is None else len(d))
+    d = fetch(owner)
+    check("a member who can see it does", d is not None and len(d) == 2048)
+    rex.close()
+    time.sleep(0.5)
+    d = fetch(owner)
+    check("no live stream, no thumbnail", d is not None and len(d) == 0)
+    owner.send(pb.Packet.CHANNEL_DELETE_REQ, channel_delete_req=pb.ChannelDeleteRequest(channel_id=back))
+    owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "delete")
+    sid.close(); owner.close()
+
+
+def test_v3_category_sync():
+    print("[v3] category permission sync")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ev = everyone_role(owner)
+    tom = join("tom", owner); val = join("val", owner)
+    cat = create_channel(owner, "Staff Area", pb.ChannelInfo.CATEGORY).id
+    child = create_channel(owner, "staff-talk", pb.ChannelInfo.TEXT, category_id=cat)
+    check("a channel created in a category starts synced", child.permissions_synced)
+    child = child.id
+    tom.flush(0.5)
+    set_overwrite(owner, cat, pb.ChannelOverwrite.ROLE, ev.id, deny=pb.PERM_VIEW_CHANNEL)
+    cl = fresh_list(tom)
+    check("hiding the category hides its synced channel and the empty header",
+          cl is not None and cat not in cl and child not in cl, str(sorted(cl)) if cl else None)
+    later = create_channel(owner, "staff-later", pb.ChannelInfo.TEXT, category_id=cat).id
+    cl = fresh_list(tom)
+    check("a channel created later in the hidden category is hidden too", cl is not None and later not in cl)
+    rows = list_overwrites(owner, child)
+    check("a synced channel reports its category's rows", rows == {(0, str(ev.id)): (0, pb.PERM_VIEW_CHANNEL)}, str(rows))
+
+    tom.flush(0.3)
+    r = set_overwrite(owner, child, pb.ChannelOverwrite.MEMBER, "tom", allow=pb.PERM_VIEW_CHANNEL)
+    check("editing a synced channel un-syncs it", r is not None and r.channel_action_res.success
+          and not r.channel_action_res.channel.permissions_synced)
+    rows = list_overwrites(owner, child)
+    check("...after copying the category's rows onto it",
+          rows == {(0, str(ev.id)): (0, pb.PERM_VIEW_CHANNEL), (1, "tom"): (pb.PERM_VIEW_CHANNEL, 0)}, str(rows))
+    cl = fresh_list(tom)
+    check("tom sees the channel, and its category header with it", cl is not None and child in cl and cat in cl
+          and later not in cl and cl[cat].my_permissions == 0)
+
+    # escalation guard: val may manage the child's overwrites but lacks MANAGE_MESSAGES
+    keeper = create_role(owner, "Keeper", 0)
+    set_overwrite(owner, child, pb.ChannelOverwrite.MEMBER, "val", allow=pb.PERM_VIEW_CHANNEL | pb.PERM_MANAGE_ROLES)
+    set_overwrite(owner, child, pb.ChannelOverwrite.ROLE, keeper.id, allow=pb.PERM_MANAGE_MESSAGES)
+    val.flush(0.5)
+    r = sync_perms(val, child)
+    check("sync refused when it would change bits the actor lacks", r is not None and not r.channel_action_res.success,
+          r.channel_action_res.message if r else None)
+    set_overwrite(owner, child, pb.ChannelOverwrite.ROLE, keeper.id)
+    r = sync_perms(val, child)
+    check("sync refused when it would lock the actor out", r is not None and not r.channel_action_res.success
+          and "access" in r.channel_action_res.message, r.channel_action_res.message if r else None)
+    rows = list_overwrites(owner, child)
+    check("...and the channel's own rows were restored", rows is not None and (1, "val") in rows and (1, "tom") in rows, str(rows))
+
+    tom.flush(0.3)
+    r = sync_perms(owner, child)
+    check("owner re-syncs", r is not None and r.channel_action_res.success and r.channel_action_res.channel.permissions_synced,
+          r.channel_action_res.message if r else None)
+    cl = fresh_list(tom)
+    check("after the sync tom loses the channel again", cl is not None and child not in cl and cat not in cl)
+    r = sync_perms(owner, "general")
+    check("an uncategorized channel can't sync", r is not None and not r.channel_action_res.success)
+
+    owner.send(pb.Packet.CHANNEL_DELETE_REQ, channel_delete_req=pb.ChannelDeleteRequest(channel_id=cat))
+    r = owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "delete")
+    check("category deleted", r is not None and r.channel_action_res.success)
+    cl = fresh_list(tom)
+    check("its synced channels stay hidden (rows copied, not inherited from the next category)",
+          cl is not None and child not in cl and later not in cl, str(sorted(cl)) if cl else None)
+    rows = list_overwrites(owner, child)
+    check("...as their own rows", rows == {(0, str(ev.id)): (0, pb.PERM_VIEW_CHANNEL)}, str(rows))
+    for ch in (child, later):
+        owner.send(pb.Packet.CHANNEL_DELETE_REQ, channel_delete_req=pb.ChannelDeleteRequest(channel_id=ch))
+        owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "delete")
+    delete_role(owner, keeper.id)
+    tom.close(); val.close(); owner.close()
+
+
 if __name__ == "__main__":
     test_b1_seed_resurrection()
+    test_v11_migration()
     proc = start_server()
     try:
         test_auth_failure_closes()
@@ -2066,6 +2482,13 @@ if __name__ == "__main__":
         test_voice_moderation()
         test_udp_relay()
         test_mls_delivery_service()
+        test_v3_invites_and_nicknames()
+        test_v3_peer_management()
+        test_v3_voice_split_and_passes()
+        test_v3_speak()
+        test_v3_embed_links()
+        test_v3_thumbnail_scope()
+        test_v3_category_sync()
         test_encrypted_channels()
         test_http_keepalive_and_fts()
         test_message_edit()

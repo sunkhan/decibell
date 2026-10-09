@@ -105,8 +105,11 @@ export interface ServerRole {
   /// Bitfield of PERM values — see features/servers/permissions.ts.
   permissions: number;
   /// The seeded `everyone` role: undeletable, position 0, implicit on
-  /// every member; only its permissions are editable.
+  /// every member; only its permissions (and manageEachOther) are editable.
   isDefault: boolean;
+  /// Members whose highest role is this one may manage each other:
+  /// nicknames and voice moderation, never kick / ban / timeout / roles.
+  manageEachOther?: boolean;
 }
 
 export interface ServerInvite {
@@ -161,6 +164,8 @@ export interface VoiceParticipant {
   /// Moderator-applied (server mute/deafen), persisted on the member.
   isServerMuted?: boolean;
   isServerDeafened?: boolean;
+  /// No SPEAK in this channel: the server drops their voice audio.
+  isSuppressed?: boolean;
   isSpeaking: boolean;
   audioLevel: number;
 }
@@ -390,6 +395,9 @@ export interface Message {
   /// E2EE (DMs only) — see DmMessage.encrypted / decryptError.
   encrypted?: boolean;
   decryptError?: string;
+  /// Channel messages: the sender lacked EMBED_LINKS when sending / last
+  /// editing — no link-preview cards or GIF media (invite cards still show).
+  suppressEmbeds?: boolean;
 }
 
 export interface ChannelInfo {
@@ -419,6 +427,9 @@ export interface ChannelInfo {
   /// (docs/superpowers/specs/2026-09-04-encrypted-text-channels-design.md).
   /// Off by default; MANAGE_CHANNELS toggles it in channel settings.
   encrypted?: boolean;
+  /// Follows its category's overwrites (permissions v3); editing its own
+  /// overwrites un-syncs it. Only meaningful under a category.
+  permissionsSynced?: boolean;
 }
 
 /// One per-channel permission overwrite (permissions v2).
@@ -612,6 +623,8 @@ export interface MessageReceivedPayload {
   decryptError: string;
   /// Encrypted channels: real metadata + key of each sealed attachment.
   encryptedAttachments?: EncryptedAttachmentMetaPayload[];
+  /// Channel messages: sender lacked EMBED_LINKS. Always false for DMs.
+  suppressEmbeds?: boolean;
 }
 
 // ── End-to-end encrypted DMs ─────────────────────────────────────────
@@ -676,6 +689,7 @@ export interface ChannelHistoryReceivedPayload {
     encrypted?: boolean;
     decryptError?: string;
     encryptedAttachments?: EncryptedAttachmentMetaPayload[];
+    suppressEmbeds?: boolean;
   }>;
   hasMore: boolean;
   hasMoreAfter: boolean;

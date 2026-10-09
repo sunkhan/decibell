@@ -286,6 +286,16 @@ export interface SetChannelOverwriteArgs {
  * (with refreshed myPermissions) and channel_overwrites_received.
  */
 export declare function setChannelOverwrite(args: SetChannelOverwriteArgs): Promise<void>
+export interface SyncChannelPermissionsArgs {
+  serverId: string
+  channelId: string
+}
+/**
+ * Permissions v3: drop the channel's own overwrites so it follows its
+ * category again. Result arrives as channel_action_responded with action
+ * "sync"; the server re-pushes the channel list and the overwrites.
+ */
+export declare function syncChannelPermissions(args: SyncChannelPermissionsArgs): Promise<void>
 export interface ListChannelOverwritesArgs {
   serverId: string
   channelId: string
@@ -443,6 +453,8 @@ export interface CreateRoleArgs {
   /** 0xRRGGBB; 0 = default color. */
   color: number
   permissions: number
+  /** Members whose highest role is this one may manage each other. */
+  manageEachOther?: boolean
 }
 export declare function createRole(args: CreateRoleArgs): Promise<void>
 export interface UpdateRoleArgs {
@@ -452,6 +464,8 @@ export interface UpdateRoleArgs {
   color: number
   permissions: number
   position: number
+  /** Full snapshot like the rest: omitting it clears the flag. */
+  manageEachOther?: boolean
 }
 export declare function updateRole(args: UpdateRoleArgs): Promise<void>
 export interface DeleteRoleArgs {

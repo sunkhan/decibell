@@ -261,6 +261,10 @@ message Packet {
     CHANNEL_KEYS_PUBLISH_REQ = 144; // client→community (new epoch or gap fill)
     CHANNEL_KEYS_PUBLISH_RES = 145; // community→publisher
     CHANNEL_KEYS_CHANGED     = 146; // community→viewers of the channel
+    // Permissions v3 (docs/superpowers/specs/2026-10-09-permissions-v3-design.md):
+    // drop a channel's own overwrites and follow its category again.
+    CHANNEL_PERMISSIONS_SYNC_REQ = 147; // client→community (MANAGE_ROLES in channel);
+                                        // response via CHANNEL_ACTION_RES action="sync"
   }
 
   Type type = 1;
@@ -450,6 +454,7 @@ message Packet {
     ChannelKeysPublishReq    channel_keys_publish_req = 146;
     ChannelKeysPublishRes    channel_keys_publish_res = 147;
     ChannelKeysChanged       channel_keys_changed   = 148;
+    ChannelPermissionsSyncRequest channel_permissions_sync_req = 149;
   }
 }
 
@@ -643,6 +648,10 @@ message ChannelInfo {
   // server refuses plaintext here (and envelopes elsewhere). Off by
   // default; MANAGE_CHANNELS flips it.
   bool encrypted = 12;
+  // Follows its category's overwrites (permissions v3). Editing the
+  // channel's own overwrites un-syncs it; CHANNEL_PERMISSIONS_SYNC_REQ
+  // re-syncs. Meaningless for categories and uncategorized channels.
+  bool permissions_synced = 13;
 }
 
 message CommunityAuthRequest {
@@ -724,6 +733,9 @@ message ChannelMessage {
   // Server-populated reply_to_envelope mirrors reply_to_content.
   bytes envelope = 13;
   bytes reply_to_envelope = 14;
+  // The sender lacked EMBED_LINKS in this channel when sending (or last
+  // editing): clients render no link-preview / GIF media for it.
+  bool suppress_embeds = 15;
 }
 
 message Attachment {
@@ -887,6 +899,15 @@ message ChannelOverwritesRequest {
   string channel_id = 1;
 }
 
+// Drops the channel's own overwrites so it follows its category again.
+// MANAGE_ROLES in the channel; every bit that changes must be one the
+// actor holds there. See the permissions v3 spec.
+message ChannelPermissionsSyncRequest {
+  string channel_id = 1;
+}
+
+// For a channel synced to its category (ChannelInfo.permissions_synced)
+// `overwrites` are the category's rows: what actually applies.
 message ChannelOverwritesResponse {
   bool success = 1;
   string message = 2;
@@ -1012,6 +1033,8 @@ message VoiceUserState {
   // user receives no audio (and is implicitly muted).
   bool is_server_muted = 4;
   bool is_server_deafened = 5;
+  // Lacks SPEAK in this channel: the relay drops their voice audio.
+  bool is_suppressed = 6;
 }
 
 message VoicePresenceUpdate {
@@ -1242,10 +1265,10 @@ message BanListResponse {
 //   role management and kick/ban still require the actor's highest role
 //   to sit above the role/member being acted on; only the owner bypasses
 //   hierarchy).
-//   The three reserved bits are defined now so their values are stable,
-//   but the server does not enforce them yet — they default ON in the
-//   seeded `everyone` role so enforcement can ship later without a
-//   migration.
+//   Every bit is enforced server-side. Channel-scoped bits (VIEW, READ,
+//   SEND, ATTACH, EMBED, CONNECT, SPEAK, STREAM, MUTE/DEAFEN/MOVE,
+//   MANAGE_CHANNELS/MESSAGES/ROLES) resolve through per-channel
+//   overwrites; the rest are server-wide.
 enum Permission {
   PERM_NONE             = 0;
   PERM_ADMINISTRATOR    = 1;     // 1<<0  — all permissions
@@ -1255,8 +1278,8 @@ enum Permission {
   PERM_KICK_MEMBERS     = 16;    // 1<<4
   PERM_BAN_MEMBERS      = 32;    // 1<<5  — ban/unban + see the ban list
   PERM_MANAGE_MESSAGES  = 64;    // 1<<6  — delete other members' messages
-  PERM_MANAGE_INVITES   = 128;   // 1<<7  — create/list/revoke invites
-  PERM_MANAGE_NICKNAMES = 256;   // 1<<8  — reserved (ships with nickname editing)
+  PERM_MANAGE_INVITES   = 128;   // 1<<7  — list/revoke everyone's invites (implies create)
+  PERM_MANAGE_NICKNAMES = 256;   // 1<<8  — change other members' nicknames
   PERM_SEND_MESSAGES    = 1024;  // 1<<10 — post in a text channel (enforced since v2)
   PERM_CONNECT_VOICE    = 2048;  // 1<<11 — join a voice channel (enforced since v2)
   PERM_STREAM           = 4096;  // 1<<12 — start a screen share (enforced since v2)
@@ -1267,7 +1290,14 @@ enum Permission {
   // --- server management + moderation ---
   PERM_VIEW_AUDIT_LOG   = 65536;  // 1<<16
   PERM_MODERATE_MEMBERS = 131072; // 1<<17 — timeouts
-  PERM_VOICE_MODERATE   = 262144; // 1<<18 — server mute/deafen, move, disconnect
+  // --- permissions v3 ---
+  PERM_MUTE_MEMBERS     = 262144;   // 1<<18 — server mute (was VOICE_MODERATE)
+  PERM_DEAFEN_MEMBERS   = 524288;   // 1<<19 — server deafen
+  PERM_MOVE_MEMBERS     = 1048576;  // 1<<20 — move / disconnect from voice
+  PERM_CREATE_INVITE    = 2097152;  // 1<<21 — create invites; list/revoke own
+  PERM_CHANGE_NICKNAME  = 4194304;  // 1<<22 — set own nickname
+  PERM_EMBED_LINKS      = 8388608;  // 1<<23 — link previews on own messages
+  PERM_SPEAK            = 16777216; // 1<<24 — voice audio is relayed
 }
 
 message RoleInfo {
@@ -1280,8 +1310,14 @@ message RoleInfo {
   int32 position = 4;
   uint64 permissions = 5;
   // True only for the seeded `everyone` role: undeletable, unmovable,
-  // implicit on every member; only its permissions can be edited.
+  // implicit on every member; only its permissions (and
+  // manage_each_other) can be edited.
   bool is_default = 6;
+  // Members whose HIGHEST role is this one may manage each other:
+  // nicknames and voice moderation (with the matching permission bit).
+  // Never kick / ban / timeout / role changes — those stay strictly
+  // above-only.
+  bool manage_each_other = 7;
 }
 
 message RoleListRequest {}
@@ -1299,6 +1335,7 @@ message RoleCreateRequest {
   uint64 permissions = 3;
   // New roles are always inserted at position 1 (just above `everyone`);
   // move them afterwards with RoleUpdateRequest.position.
+  bool manage_each_other = 4;
 }
 
 // Full snapshot — the client sends every field (it has the current role
@@ -1310,6 +1347,7 @@ message RoleUpdateRequest {
   uint32 color = 3;
   uint64 permissions = 4;
   int32 position = 5;
+  bool manage_each_other = 6;
 }
 
 message RoleDeleteRequest {
@@ -1447,9 +1485,13 @@ message VoiceModRequest {
     SERVER_UNMUTE = 1;
     SERVER_DEAFEN = 2;
     SERVER_UNDEAFEN = 3;
-    MOVE = 4;          // requires channel_id
+    MOVE = 4;          // requires channel_id; the actor must see it, the
+                       // target needs nothing there (a voice pass is granted)
     DISCONNECT = 5;
   }
+  // Permissions v3: MUTE_MEMBERS / DEAFEN_MEMBERS / MOVE_MEMBERS, resolved
+  // in the target's current voice channel, plus the role hierarchy
+  // (strictly above, or a peer via RoleInfo.manage_each_other).
   string username = 1;
   Action action = 2;
   string channel_id = 3;
@@ -1808,6 +1850,7 @@ message ChannelMessageEdited {
   int64  edited_at = 4;
   string editor = 5;    // the message's sender (who edited it)
   bytes  envelope = 6;  // encrypted channels
+  bool   suppress_embeds = 7;  // re-evaluated at edit time (see ChannelMessage)
 }
 
 // See Packet.CHANNEL_MSG_REJECTED.
