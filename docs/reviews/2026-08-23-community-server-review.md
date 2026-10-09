@@ -1602,10 +1602,11 @@ enables Save, and setting it back disables it again.
 
 **Client: bigger settings windows (2026-10-10) ✅** — Owner request: client and server settings were
 a fixed 820 × 560 px card (wider than the 800 px minimum window, so it ran off the edge there). Both
-shells now fill the window up to `max-w-275` × `max-h-190` (1100 × 760 px), with a `p-8` margin on
-the backdrop, so they grow on normal screens and shrink to fit small ones. The sidebar went from
-210 px to `w-60` (240 px). The two shells stay identical. Verified: tsc web 0; preview-harness
-screenshots of Appearance / Audio / server Overview / Roles at 1440 × 900 and 800 × 600.
+shells now fill the window up to `max-w-400` × `max-h-280` (1600 × 1120 px; first 1100 × 760, raised
+for fullscreen use), with a `p-8` margin on the backdrop: a 1080p fullscreen window is filled
+apart from the margin, and they shrink to fit small windows. The sidebar went from 210 px to `w-60`
+(240 px). The two shells stay identical. Verified: tsc web 0; preview-harness screenshots at
+800 × 600, 1440 × 900, 1920 × 1080 and 2560 × 1440.
 
 ## 5. Suggested order of work
 

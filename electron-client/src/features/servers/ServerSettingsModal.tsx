@@ -199,7 +199,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="flex h-full max-h-190 w-full max-w-275 overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-[opacity,transform] duration-300"
+        className="flex h-full max-h-280 w-full max-w-400 overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-[opacity,transform] duration-300"
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",
