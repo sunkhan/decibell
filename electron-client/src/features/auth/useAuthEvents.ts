@@ -6,6 +6,7 @@ import { useAvatarStore } from "../../stores/avatarStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import type { ServerInfoPayload } from "../../types";
+import { clearRetainedImages } from "../chat/imageRetention";
 
 export function useAuthEvents() {
   const navigate = useNavigate();
@@ -80,6 +81,7 @@ export function useAuthEvents() {
       useChatStore.getState().resetForLogout();
       useUiStore.getState().setActiveView("home");
       useAvatarStore.getState().clearAll();
+      clearRetainedImages();
       navigate("/login", { replace: true });
     });
 

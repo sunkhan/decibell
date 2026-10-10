@@ -15,6 +15,7 @@ import {
 } from "./attachmentSizing";
 import { previewUrlFor } from "./attachmentPreviewUrl";
 import { thumbHashToDataUrl } from "./thumbhash";
+import { retainImage, thumbnailBytes } from "./imageRetention";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { useActiveAudioStore } from "../../stores/activeAudioStore";
@@ -351,6 +352,15 @@ function ImageItem({
         // must not block the scroll frame.
         decoding={isThumbVariant ? "sync" : "async"}
         draggable={false}
+        // Keep it in memory past this row's unmount (imageRetention.ts),
+        // or a channel switch or two can cost a re-download.
+        onLoad={(e) => {
+          const el = e.currentTarget;
+          retainImage(
+            previewSrc,
+            isThumbVariant ? thumbnailBytes(el.naturalWidth, el.naturalHeight) : attachment.sizeBytes,
+          );
+        }}
       />
       )}
     </button>
@@ -439,6 +449,17 @@ function VideoItem({
       ? buildAttachmentUrl(serverId, attachment, { thumb: true, size: thumbSize })
       : null;
   const posterUrl = livePoster ?? serverThumb;
+  // The server poster is fetched like an image row; keep it the same way
+  // (imageRetention.ts). Live captures are local data: URLs.
+  useEffect(() => {
+    if (!serverThumb || thumbSize === null) return;
+    const longEdge = Math.max(attachment.width, attachment.height);
+    const scale = longEdge > 0 ? Math.min(1, thumbSize / longEdge) : 1;
+    retainImage(
+      serverThumb,
+      thumbnailBytes(attachment.width * scale || thumbSize, attachment.height * scale || thumbSize),
+    );
+  }, [serverThumb, thumbSize, attachment.width, attachment.height]);
   // Same placeholder treatment as ImageItem — a video's poster is
   // fetched exactly like an image and pops in the same way. Painted
   // under the poster so it's only ever seen before one exists.

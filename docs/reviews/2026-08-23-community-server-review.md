@@ -1885,6 +1885,22 @@ config field are gone (old configs carrying the key still load — no deny_unkno
 Verified: tsc web 0; cargo build + `cargo test --lib` 221; a node run of the store (ten channels stay
 cached, an eleventh evicts the least recent, no enforce action left).
 
+**Client: images stay loaded across channel switches (2026-10-10) ✅** — Owner report: images seen in
+a channel reloaded after switching through a few other channels (or ping-ponging between two),
+unreliably. Cause: `decibell-attachment://` responses never reach Chromium's disk cache (custom
+protocol), and the community server sends no cache headers, so the only copy is Blink's memory cache —
+which holds an image no element references only weakly past a few MB per page, so the next GC
+(channel switches allocate plenty) drops it and the next view is a full server round trip. Measured in
+an offscreen Electron harness with a counting protocol: with a GC between switches, 29 of 30 images of
+the channel left behind were fetched again; without GC, none — i.e. timing, as reported. New
+`features/chat/imageRetention.ts`: an LRU of `Image` holders keyed by URL (128 MB estimated encoded
+budget, ~0.4 B/px for bounded thumbnails, `sizeBytes` for full-size fallbacks), fed from ImageItem's
+`onLoad` and VideoItem's server poster; the holder joins the in-flight / finished request, so it costs
+no fetch. Cleared on sign-out; nothing survives a restart (owner: not wanted). Verified with the real
+`AttachmentList` in the harness, GC between switches: control build (retention stubbed) 29/30 refetched
+on A → B → A and after six more channels; with retention 0/30 both; over-budget entries are released
+(30/30 refetch when each claims 20 MB); tsc web 0.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
