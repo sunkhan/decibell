@@ -113,6 +113,11 @@ export default function Select<T extends string | number>({
   const [query, setQuery] = useState("");
   const [placement, setPlacement] = useState<Placement | null>(null);
   const typeahead = useRef({ buffer: "", at: 0 });
+  // Who moved the active row last. Only the keyboard (and opening, and the
+  // filter) scrolls it into view: scrolling for the pointer revealed the
+  // half-visible row under it, Chromium's synthetic mousemove after the
+  // scroll made the next row active, and the list ran away to the end.
+  const activeBy = useRef<"key" | "pointer">("key");
 
   const groups: SelectGroup<T>[] = useMemo(
     () => (isGrouped(options) ? options : [{ label: "", options }]),
@@ -146,6 +151,7 @@ export default function Select<T extends string | number>({
 
   const openMenu = () => {
     if (disabled || open) return;
+    activeBy.current = "key";
     // The query is "" here (close clears it), so `flat` is `all`.
     const sel = all.findIndex((o) => o.value === value);
     setActive(sel >= 0 && !all[sel].disabled ? sel : enabledFromAll(all));
@@ -168,7 +174,9 @@ export default function Select<T extends string | number>({
 
   // A query change re-targets the first match.
   useEffect(() => {
-    if (open) setActive(enabledFrom(0, 1));
+    if (!open) return;
+    activeBy.current = "key";
+    setActive(enabledFrom(0, 1));
   }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Place the popup under (or, short of room, over) the trigger before the
@@ -241,6 +249,7 @@ export default function Select<T extends string | number>({
       return;
     }
     if (!placement || active < 0) return;
+    if (!firstScroll.current && activeBy.current === "pointer") return;
     const el = document.getElementById(optionId(active));
     el?.scrollIntoView({ block: firstScroll.current ? "center" : "nearest" });
     firstScroll.current = false;
@@ -266,6 +275,7 @@ export default function Select<T extends string | number>({
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
     if (disabled) return;
+    activeBy.current = "key";
     const key = e.key;
     if (!open) {
       if (key === "ArrowDown" || key === "ArrowUp" || key === "Enter" || key === " ") {
@@ -443,7 +453,9 @@ export default function Select<T extends string | number>({
                         aria-disabled={o.disabled || undefined}
                         data-active={i === active || undefined}
                         onMouseMove={() => {
-                          if (i !== active && !o.disabled) setActive(i);
+                          if (i === active || o.disabled) return;
+                          activeBy.current = "pointer";
+                          setActive(i);
                         }}
                         onClick={() => choose(i)}
                         className={`dsel-option relative flex items-center gap-2 rounded-md ${

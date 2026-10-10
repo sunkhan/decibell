@@ -1855,6 +1855,14 @@ Escape isolation, outside click, disabled click, filter + Enter, upward flip ins
 screenshots in all seven themes (design review artifact shared with the owner, approved). Live pass
 over the real settings / channel / server modals pending.
 
+**Client: hovering a picker's bottom row no longer scrolls the list (2026-10-10) ✅** — Owner report:
+resting the pointer near the last visible entry scrolled the dropdown down. Hover made the row active
+and the keep-active-in-view effect (meant for the keyboard) revealed the half-visible row; Chromium's
+synthetic mousemove after the scroll made the next row active, and so on to the end. Now only the
+keyboard, opening and the filter scroll the active row into view (`activeBy` ref in `Select.tsx`).
+Verified in the harness: pointer parked on the bottom row → scrollTop stays 0 (was revealing the row);
+ArrowDown still scrolls to the end; the 20 interaction checks pass; tsc web 0.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
