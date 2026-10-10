@@ -346,10 +346,13 @@ export function useServerEvents() {
           }
           // Our watcher entries were dropped server-side on leaving the
           // old channel; clear the local mirror so no ghost players linger.
+          // Native has rebound the MLS group to the new channel — its
+          // state events repaint e2ee from "joining".
           useVoiceStore.setState({
             watchingStreams: [],
             fullscreenStream: null,
             pipStream: null,
+            e2ee: null,
           });
           voice.setConnectedChannel(serverId, channelId);
           // The destination's presence broadcast arrived BEFORE this

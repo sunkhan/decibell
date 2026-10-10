@@ -433,6 +433,11 @@ impl CommunityClient {
         mut server_id: String,
         terminated: Arc<AtomicBool>,
     ) {
+        // Last roster per voice channel: a move's destination presence
+        // arrives before VOICE_FORCE_NOTIFY, while the group driver still
+        // points at the old channel, so the rebound driver is seeded here.
+        let mut voice_rosters: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         while let Some(packet) = read_rx.recv().await {
             match packet.payload {
                 Some(packet::Payload::CommunityAuthRes(resp)) => {
@@ -798,16 +803,36 @@ impl CommunityClient {
                     });
                 }
                 Some(packet::Payload::VoiceForceNotify(n)) => {
+                    let moved = !matches!(
+                        voice_force_notify::Action::try_from(n.action),
+                        Ok(voice_force_notify::Action::Disconnected)
+                    );
                     events::emit_voice_force_notify(events::VoiceForceNotifyPayload {
                         server_id: server_id.clone(),
-                        action: match voice_force_notify::Action::try_from(n.action) {
-                            Ok(voice_force_notify::Action::Disconnected) => "disconnected",
-                            _ => "moved",
-                        }
-                        .to_string(),
-                        channel_id: n.channel_id,
+                        action: if moved { "moved" } else { "disconnected" }.to_string(),
+                        channel_id: n.channel_id.clone(),
                         actor: n.actor,
                     });
+                    // Rebind the MLS group here, not from the renderer, so
+                    // the new channel's GroupInfo / commits that follow on
+                    // this loop already find the new driver.
+                    if moved {
+                        let mut s = state.lock().await;
+                        match crate::commands::voice::rebind_voice_group(
+                            &mut s,
+                            state.clone(),
+                            &server_id,
+                            &n.channel_id,
+                        ) {
+                            Ok(Some(tx)) => {
+                                if let Some(roster) = voice_rosters.get(&n.channel_id) {
+                                    let _ = tx.send(crate::e2ee::group::GroupCmd::Presence(roster.clone()));
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => log::warn!("[mls] rebind after move to {} failed: {e}", n.channel_id),
+                        }
+                    }
                 }
                 Some(packet::Payload::ChannelMsgRejected(r)) => {
                     events::emit_channel_message_rejected(events::ChannelMessageRejectedPayload {
@@ -983,6 +1008,7 @@ impl CommunityClient {
                     }
                     drop(cache_arc);
 
+                    voice_rosters.insert(update.channel_id.clone(), participants.clone());
                     // The MLS group driver reconciles the roster (ghost
                     // removal, elected remover) from this same update.
                     {

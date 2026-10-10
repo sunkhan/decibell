@@ -1763,6 +1763,20 @@ list's menu. The participant rows sit inside the list container, whose delegated
 manage channels. The list handler now returns when `e.defaultPrevented`: a nested row that opened
 its own menu already called `preventDefault`. Verified: tsc web 0.
 
+**Native: a moved member can talk in the new channel (2026-10-10) ✅ — live test pending** — Owner
+report: after moving someone into another voice channel and joining it, neither side heard the
+other. The server switches the session and relays UDP by its live channel, but the moved client
+only updated the renderer: its MLS group driver stayed bound to the *old* channel (its requests
+there were refused, the new channel's GroupInfo / commits were filtered out by channel id), so it
+never joined the destination's group and its media was sealed under keys nobody there had. Now
+the community read loop handles `VOICE_FORCE_NOTIFY{MOVED}` itself (`rebind_voice_group` in
+`commands/voice.rs`): the engine keeps running, the old driver is dropped, the shared key ring is
+emptied (nothing is sealed until the new epoch), native watches are cleared, and a driver for the
+new channel starts on the same ring — seeded with that channel's roster from a per-loop cache,
+because the destination's presence update arrives *before* the notice. No leave / rejoin, so a
+voice pass granted by the move stays held. The renderer resets its e2ee badge on the move.
+Verified: napi build, `cargo test --lib` 221, tsc web 0; two-client move test pending.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
