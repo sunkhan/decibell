@@ -3,7 +3,6 @@ import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { UserAvatar } from "../../components/UserAvatar";
-import { BellMark } from "../../components/BellMark";
 import { EMPTY_LIST } from "../../lib/empty";
 import type { ServerMember } from "../../types";
 
@@ -72,7 +71,7 @@ export default function MembersList() {
   return (
     <div className="flex w-[260px] shrink-0 flex-col border-l border-border bg-bg-dark">
       <div
-        className="flex-1 overflow-y-auto px-3 py-1"
+        className="flex-1 overflow-y-auto px-3 pt-1 pb-3"
         style={{ "--list-row-pad-y": "7px", "--list-row-pad-x": "8px", "--list-row-gap": "10px" } as React.CSSProperties}
       >
         <div className="px-1 pt-3 pb-1">
@@ -110,13 +109,6 @@ export default function MembersList() {
             No members yet
           </p>
         )}
-      </div>
-
-      <div className="flex items-center gap-2 px-4 pb-3 pt-2">
-        <BellMark bars={7} height={14} barWidth={2} barClass="bg-text-muted" className="opacity-60" />
-        <span className="font-meta text-[10px] font-emphasis uppercase tracking-wordmark text-text-muted">
-          Decibell
-        </span>
       </div>
     </div>
   );

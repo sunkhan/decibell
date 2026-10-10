@@ -1722,6 +1722,11 @@ the window — max(56 px, 5 % of width) at the sides, max(48 px, 6 % of height) 
 of stepping to 32 px on larger windows. 1280×800 → 1152 × 704, 1440×900 → 1296 × 792, 1920×1080 →
 1600 × 950 (was 1600 × 1015); small windows as before; the 1600 × 1120 cap is unchanged.
 
+**Client: no wordmark under the members list (2026-10-10) ✅** — Owner request: drop the bell mark +
+"DECIBELL" footer at the bottom of `MembersList`. Removed; the list keeps 12 px of bottom padding in
+its place so the last row doesn't sit on the edge. `BellMark` stays (login page). Verified: tsc web 0;
+the list rendered with 20 members.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
