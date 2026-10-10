@@ -7,6 +7,7 @@ import { toast } from "../../../stores/toastStore";
 import { stringToGradient } from "../../../utils/colors";
 import { ServerPictureCropperModal } from "../ServerPictureCropperModal";
 import { PERM, usePermission } from "../permissions";
+import Switch from "../../../components/Switch";
 
 const MAX_BYTES = 1024 * 1024;
 
@@ -203,21 +204,12 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
                     invite. Off keeps it hidden and invite-only.
                   </div>
                 </div>
-                <button
-                  role="switch"
-                  aria-checked={publicListing}
-                  onClick={togglePublic}
+                <Switch
+                  checked={publicListing}
+                  onToggle={togglePublic}
                   disabled={savingPublic}
-                  className={`relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-                    publicListing ? "bg-accent" : "bg-bg-lighter"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-                      publicListing ? "translate-x-[18px]" : "translate-x-0.5"
-                    }`}
-                  />
-                </button>
+                  label="Public listing"
+                />
               </div>
             </>
           ) : (

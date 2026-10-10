@@ -2,6 +2,7 @@ import { invoke } from "../../../lib/ipc";
 import { useDmStore } from "../../../stores/dmStore";
 import { useUiStore } from "../../../stores/uiStore";
 import { saveSettings } from "../saveSettings";
+import Switch from "../../../components/Switch";
 import E2eeSection from "../../e2ee/E2eeSection";
 
 export default function PrivacyTab() {
@@ -84,20 +85,7 @@ function ToggleRow({
           {description}
         </div>
       </div>
-      <button
-        onClick={onToggle}
-        className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
-          value
-            ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
-            : "border-border bg-bg-lighter"
-        }`}
-      >
-        <div
-          className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
-            value ? "translate-x-[18px] bg-on-accent" : "translate-x-[3px] bg-text-muted"
-          }`}
-        />
-      </button>
+      <Switch checked={value} onToggle={onToggle} label={title} />
     </div>
   );
 }

@@ -1696,6 +1696,18 @@ now says exactly that, including how to avoid it. Verified: hotkeys tests 19, th
 Xvfb with a new keymap-read counter (zero reads for toggles, exact-modifier misses, taps, typing and a
 mouse hold; reads only during a B hold, none after), and a deliberate always-read mutation fails it.
 
+**Client: one on/off switch, drawn right (2026-10-10) ✅** — Owner report: some switches look off,
+Public listing in server settings for sure when on. Six hand-rolled copies. Public listing's knob was
+an absolutely positioned `<span>` with no inset, so it sat where the button centres inline content:
+measured 20 px in when *off* (reads as on) and 16 px past the track when on. The other five (Audio,
+Privacy, Codecs, Downloads, capture picker) shared one markup whose knob sat 1 px low (3 / 1 px
+top / bottom) and stopped 4 px short of the end when on (3 px start when off). All six are now
+`components/Switch.tsx`: the track lays the knob out (inline-flex, 2 px padding), so it's 2 px from
+every edge in both states, with `role="switch"` / `aria-checked` everywhere (three copies lacked
+them) and a dimmed disabled state. Verified: tsc web 0; knob geometry measured in Nocturne,
+Matinee and Console (2 / 2 / 2 / 2 px, off and on, disabled too); real Server Settings → Overview
+(Public listing off / on) and Settings → Privacy screenshotted.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

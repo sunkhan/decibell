@@ -13,6 +13,7 @@ import {
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { announceCallStreamStart, announceCallStreamStop } from "../call/callActions";
 import SegmentedControl from "../../components/SegmentedControl";
+import Switch from "../../components/Switch";
 import StreamAudioAppPicker from "./StreamAudioAppPicker";
 import { canPickStreamAudioApps } from "./streamAudioFilter";
 
@@ -534,39 +535,6 @@ export default function CaptureSourcePicker({
 const FIELD_LABEL =
   "mb-2 block text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted";
 const GROUP_HEADING = "font-display text-[13px] font-semibold text-text-primary";
-
-/// The settings on/off switch. Put it inside a <label> to name it by the
-/// label's text, or pass `label` when it stands next to a heading.
-function Switch({
-  checked,
-  onToggle,
-  label,
-}: {
-  checked: boolean;
-  onToggle: () => void;
-  label?: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      onClick={onToggle}
-      className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
-        checked
-          ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
-          : "border-border bg-bg-lighter"
-      }`}
-    >
-      <div
-        className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
-          checked ? "translate-x-[18px] bg-on-accent" : "translate-x-[3px] bg-text-muted"
-        }`}
-      />
-    </button>
-  );
-}
 
 /// Tabbed grid of screens + windows, populated from Chromium's
 /// desktopCapturer via the preload bridge. Thumbnails are JPEG data URLs

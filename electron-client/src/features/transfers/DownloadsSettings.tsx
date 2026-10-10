@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTransfersStore } from "../../stores/transfersStore";
 import { saveSettings } from "../settings/saveSettings";
+import Switch from "../../components/Switch";
 import { pushDownloadConfig } from "./downloads";
 
 /// "/home/me/…/Decibell downloads" — keep both ends of a long path.
@@ -92,24 +93,7 @@ export default function DownloadsSettings() {
             Show a save dialog for every download instead of saving straight to the folder above.
           </div>
         </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={ask}
-          aria-label="Ask where to save each file"
-          onClick={toggleAsk}
-          className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
-            ask
-              ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
-              : "border-border bg-bg-lighter"
-          }`}
-        >
-          <div
-            className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
-              ask ? "translate-x-[18px] bg-on-accent" : "translate-x-[3px] bg-text-muted"
-            }`}
-          />
-        </button>
+        <Switch checked={ask} onToggle={toggleAsk} label="Ask where to save each file" />
       </div>
     </div>
   );

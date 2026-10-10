@@ -89,6 +89,8 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):
   no arbitrary px/shadows; radii via `rounded-*` so themes (e.g. console) can flatten them.
   Buttons copy the settings idiom: `rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover`.
+  On/off switches are `components/Switch.tsx` — never hand-roll one (an absolutely positioned knob
+  without an inset lands wherever the button centres content, i.e. off the track).
 - Server nicknames render through `useDisplayName(serverId, username)`; avatars/colors key
   on the real username.
 - Message list: `features/chat/RealMessageList.tsx` (real-DOM sliding window, both panels;

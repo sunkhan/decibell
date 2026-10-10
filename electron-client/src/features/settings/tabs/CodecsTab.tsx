@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useCodecSettingsStore } from "../../../stores/codecSettingsStore";
 import { useUiStore } from "../../../stores/uiStore";
 import { saveSettings } from "../saveSettings";
+import Switch from "../../../components/Switch";
 import { VideoCodec, type CodecCapability } from "../../../types";
 
 const codecLabel = (c: VideoCodec): string => {
@@ -39,25 +40,7 @@ function ToggleRow({ label, hint, checked, disabled, disabledHint, onToggle }: T
           {disabled && disabledHint ? disabledHint : hint}
         </div>
       </div>
-      <button
-        onClick={disabled ? undefined : onToggle}
-        disabled={disabled}
-        className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
-          disabled
-            ? "cursor-not-allowed border-border bg-bg-lighter opacity-50"
-            : checked
-            ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
-            : "border-border bg-bg-lighter"
-        }`}
-      >
-        <div
-          className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
-            checked
-              ? "translate-x-[18px] bg-on-accent"
-              : "translate-x-[3px] bg-text-muted"
-          }`}
-        />
-      </button>
+      <Switch checked={checked} onToggle={onToggle} disabled={disabled} label={label} />
     </div>
   );
 }

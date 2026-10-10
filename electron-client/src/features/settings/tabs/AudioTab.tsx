@@ -5,6 +5,7 @@ import { useVoiceStore } from "../../../stores/voiceStore";
 import { useAudioDevicesStore, type AudioDevice } from "../../../stores/audioDevicesStore";
 import { saveSettings } from "../saveSettings";
 import SegmentedControl from "../../../components/SegmentedControl";
+import Switch from "../../../components/Switch";
 import {
   useHotkeysStore,
   MAX_PTT_RELEASE_DELAY_MS,
@@ -487,22 +488,7 @@ function ToggleSwitch({ label, description, enabled, onToggle }: {
         <div className="text-[14px] font-medium text-text-primary">{label}</div>
         <div className="mt-1 text-[12px] leading-[1.55] text-text-muted">{description}</div>
       </div>
-      <button
-        onClick={onToggle}
-        className={`relative h-[22px] w-[40px] shrink-0 rounded-full border transition-all ${
-          enabled
-            ? "border-accent bg-accent shadow-[0_0_8px_color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
-            : "border-border bg-bg-lighter"
-        }`}
-      >
-        <div
-          className={`absolute top-[3px] h-[16px] w-[16px] rounded-full transition-all ${
-            enabled
-              ? "translate-x-[18px] bg-on-accent"
-              : "translate-x-[3px] bg-text-muted"
-          }`}
-        />
-      </button>
+      <Switch checked={enabled} onToggle={onToggle} label={label} />
     </div>
   );
 }
