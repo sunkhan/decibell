@@ -1684,6 +1684,17 @@ affected Keybinds row and once in the "On this computer" card. Audio → Input M
 talk key(s) with the same pill, the desktop's own trigger when it differs, and "Change in Keybinds".
 Verified: tsc web 0; screenshots in Nocturne + Matinee (portal) and Nocturne (Windows: no pill).
 
+**Client: X11 hotkeys read the keyboard only while a key hold is down (2026-10-10) ✅** — A
+side-agent note: after every grabbed press the X11 listener sampled `XQueryKeymap` until release,
+and X answers that with every key held, so the Keybinds tab's "nothing else you type" overstated it.
+Now press actions fire straight from the grabbed event (the grab already matched exact modifiers)
+with no state read; a hold on a mouse button or a lone modifier polls only `XIQueryPointer`
+(buttons + modifier state); only a hold on an ordinary key polls the keymap, while it's down, and only
+its bit is read. The X11 path no longer goes through the shared matcher. The tab's X11 / XWayland text
+now says exactly that, including how to avoid it. Verified: hotkeys tests 19, the X11 e2e against
+Xvfb with a new keymap-read counter (zero reads for toggles, exact-modifier misses, taps, typing and a
+mouse hold; reads only during a B hold, none after), and a deliberate always-read mutation fails it.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

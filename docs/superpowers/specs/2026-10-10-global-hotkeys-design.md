@@ -79,7 +79,7 @@ binding matches either side.
 | backend | what Decibell learns | bound key swallowed? |
 |---|---|---|
 | `portal` | `Activated` / `Deactivated` for its own shortcut ids | yes (the desktop grabs it) |
-| `x11` / `xwayland` | a grabbed press of a bound combo, then the bound keys' state until release | yes (the press) |
+| `x11` / `xwayland` | a grabbed press of a bound combo; for a held key combo, its release (see below) | yes (the press) |
 | `windows` | the state of the watched keys, polled | no |
 | `electron` (macOS) | its own accelerators firing | yes |
 | focused fallback | keys typed into Decibell's own window | no |
@@ -157,10 +157,16 @@ combos on the root window:
 - grabs are **synchronous**: on a grabbed press the server freezes input, we
   ungrab at once, and anything typed in that instant goes to the focused app
   afterwards, never to us;
-- we then sample the watched keys every 10 ms (`XQueryKeymap` bits for
-  keys, `XIQueryPointer` for buttons past 5), feeding transitions to the
-  matcher, until no named key is down. A press already released by the
-  first sample still counts once (a quick tap);
+- the grab already matched the exact modifiers, so a **press action fires
+  straight from the grabbed event** — no state is read;
+- a **hold** needs its release, which X reports only to whoever has the
+  key, so it is polled every 10 ms while down, asking as little as the
+  binding allows: a mouse button or a lone modifier key → `XIQueryPointer`
+  (buttons + modifier state only); an ordinary key → `XQueryKeymap`, which
+  is X's only key-state question and lists every key down at that moment
+  (only the bound key's bit is read). The keymap is asked only while such
+  a hold is down; the e2e test counts the reads and fails otherwise. The
+  Keybinds tab says exactly this;
 - a grab another client holds fails with BadAccess → that binding id goes
   into `Status::failed` ("Another app already uses this shortcut").
 

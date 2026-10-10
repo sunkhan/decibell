@@ -327,9 +327,9 @@ function backendSummary(status: HotkeysStatus | null): string {
     case "portal":
       return "Your desktop runs these shortcuts and tells Decibell only when one of them fires. New keybinds are confirmed in a desktop dialog, and you can change their keys in your system settings too.";
     case "x11":
-      return "Keybinds work in every app, including games. Decibell is only told about your bound keys — nothing else you type.";
+      return "Keybinds work in every app, including games. X tells Decibell only when a bound combo is pressed. One exception: while a push to talk or push to mute key is held, Decibell asks X every 10 ms whether it's still down, and X answers with every key held at that moment — Decibell reads only yours. A mouse button or a lone Ctrl, Shift, Alt or Super key avoids that.";
     case "xwayland":
-      return "Your desktop has no global shortcut service, so keybinds work while Decibell or an X11 app (most games) is focused, and Decibell is only told about your bound keys. For everything else, bind the command line below in your window manager.";
+      return "Your desktop has no global shortcut service, so keybinds work while Decibell or an X11 app (most games) is focused. X tells Decibell only when a bound combo is pressed — except while a push to talk or push to mute key is held, when Decibell checks every 10 ms and X answers with every key held at that moment (Decibell reads only yours). For everything else, bind the command line below in your window manager.";
     case "windows":
       return "Keybinds work in every app, including games. Decibell checks only your bound keys (and Ctrl, Shift, Alt and Win when a combo needs them), never anything else you type, and the keys still reach the app you're in. A game running as administrator may hide its keys unless Decibell runs as administrator too.";
     case "electron":

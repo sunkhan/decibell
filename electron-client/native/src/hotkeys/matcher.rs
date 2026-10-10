@@ -140,10 +140,11 @@ impl Matcher {
     }
 }
 
-/// The only keys a polling listener may look at: every key a binding
+/// The only keys the Windows poller may look at: every key a binding
 /// names (a generic modifier → both sides), plus all eight modifier keys
 /// when a press binding needs its modifiers to match exactly. Modifiers
 /// come first so a combo sampled in one go completes on its real key.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn watched_keys(bindings: &[super::Binding]) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     let mut push = |k: &'static str| {

@@ -257,8 +257,9 @@ impl Mods {
     }
 }
 
-/// Every physical modifier key. The listeners watch these alongside the
-/// bound keys when a press binding needs its modifiers to match exactly.
+/// Every physical modifier key. The Windows poller watches these alongside
+/// the bound keys when a press binding needs its modifiers to match exactly.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub const SIDED_MODIFIERS: [&str; 8] = [
     "ControlLeft",
     "ControlRight",

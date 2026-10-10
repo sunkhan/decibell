@@ -1,13 +1,14 @@
 //! Global hotkeys: keybinds that work while Decibell isn't focused.
 //! Design: docs/superpowers/specs/2026-10-10-global-hotkeys-design.md.
 //!
-//! One listener per platform feeds `dispatch`. Every one of them learns
-//! about the bound keys only — never a stream of everything typed:
+//! One listener per platform feeds `dispatch`. None of them receives a
+//! stream of what's typed; each learns when a bound combo fires:
 //! - Linux Wayland: the GlobalShortcuts portal (`portal.rs`); the desktop
 //!   matches keys and reports only our shortcuts. Falls back to the X11
 //!   listener through XWayland when the desktop has no such portal;
-//! - Linux X11: passive grabs on exactly the bound combos, then the bound
-//!   keys' state until release (`x11.rs`);
+//! - Linux X11: passive grabs on exactly the bound combos; a held combo's
+//!   release is polled — from the pointer query, or for an ordinary key
+//!   from the keymap, which X only gives whole (`x11.rs`);
 //! - Windows: the state of the bound keys only, polled (`windows.rs`);
 //! - macOS: none here — Electron main registers accelerators and injects.
 //!
@@ -215,10 +216,8 @@ fn fire(fired: Vec<Fired>) {
 }
 
 /// A raw key / button transition from a matcher-based listener.
-#[allow(dead_code)] // unused on macOS
+#[allow(dead_code)] // the Windows poller's
 pub(crate) fn raw_key(key: &'static str, down: bool) {
-    #[cfg(test)]
-    tests::RAW_KEYS.lock().unwrap().push(key);
     let fired = matcher().key(key, down);
     fire(fired);
 }
@@ -342,8 +341,6 @@ mod tests {
 
     /// Every `hotkey_action` the hub would have emitted (tests only).
     pub(super) static FIRED: Mutex<Vec<(Action, bool)>> = Mutex::new(Vec::new());
-    /// Every key a listener reported to the matcher (tests only).
-    pub(super) static RAW_KEYS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
     /// The X11 listener end to end against a disposable X server with
     /// XTEST (e.g. `Xvfb :97`), driven by synthetic input:
@@ -376,20 +373,23 @@ mod tests {
         const SHIFT_L: u8 = 50;
         const KEY_M: u8 = 58;
         const KEY_A: u8 = 38;
+        const KEY_B: u8 = 56;
         const KEY_S: u8 = 39;
         const SPACE: u8 = 65;
 
         let bindings = vec![
             Binding { id: "mute".into(), action: Action::ToggleMute, keys: vec!["Control".into(), "KeyM".into()] },
             Binding { id: "ptt".into(), action: Action::PushToTalk, keys: vec!["Mouse4".into()] },
+            Binding { id: "ptm".into(), action: Action::PushToMute, keys: vec!["KeyB".into()] },
         ];
+        let keymap_reads = || x11::KEYMAP_QUERIES.load(std::sync::atomic::Ordering::Relaxed);
         set_bindings(&bindings);
         x11::apply(&bindings, false);
         settle();
         assert_eq!(status().state, "active", "{:?}", status().detail);
         assert!(status().failed.is_empty());
         take();
-        RAW_KEYS.lock().unwrap().clear();
+        let reads_at_start = keymap_reads();
 
         // Ctrl+M fires toggle mute once, auto-repeat-free.
         fake(2, CONTROL_L);
@@ -431,9 +431,8 @@ mod tests {
         settle();
         assert_eq!(take(), vec![(Action::ToggleMute, true)]);
 
-        // Typing unbound keys — idle, and while push-to-talk is held (the
-        // listener is sampling then) — fires nothing, and no key outside
-        // the watch list ever reaches the matcher.
+        // Typing unbound keys — idle, and while mouse push-to-talk is held —
+        // fires nothing.
         for kc in [KEY_A, KEY_S, SPACE] {
             fake(2, kc);
             fake(3, kc);
@@ -446,12 +445,25 @@ mod tests {
         fake(5, 8);
         settle();
         assert_eq!(take(), vec![(Action::PushToTalk, true), (Action::PushToTalk, false)]);
-        let watched = matcher::watched_keys(&bindings);
-        let seen = std::mem::take(&mut *RAW_KEYS.lock().unwrap());
-        assert!(!seen.is_empty());
-        for k in &seen {
-            assert!(watched.contains(k), "listener reported unbound key {}", k);
+        // Toggles and a mouse hold never read the keyboard's state.
+        assert_eq!(keymap_reads(), reads_at_start, "keymap read outside a key hold");
+
+        // A hold on an ordinary key: the keymap is read while it's down
+        // (X has no single-key question), and only then.
+        fake(2, KEY_B);
+        for kc in [KEY_A, KEY_S] {
+            fake(2, kc);
+            fake(3, kc);
         }
+        fake(3, KEY_B);
+        settle();
+        assert_eq!(take(), vec![(Action::PushToMute, true), (Action::PushToMute, false)]);
+        let during_hold = keymap_reads();
+        assert!(during_hold > reads_at_start);
+        fake(2, KEY_A);
+        fake(3, KEY_A);
+        settle();
+        assert_eq!(keymap_reads(), during_hold, "keymap read after the hold ended");
 
         // Unbinding drops every grab and ends the listener thread.
         set_bindings(&[]);

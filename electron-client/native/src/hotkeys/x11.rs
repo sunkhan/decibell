@@ -5,10 +5,17 @@
 //! a bound combo — there is no stream of other input. The grabs are
 //! synchronous: on a grabbed press the server freezes input until we drop
 //! the grab, which we do at once, so anything typed in that instant goes to
-//! the focused app afterwards and never to us. Then, to learn when the
-//! combo is released (push-to-talk), we read the state of the bound keys
-//! every 10 ms until they're up. `XQueryKeymap` returns the whole key
-//! bitmap; only the bound keys' bits are read.
+//! the focused app afterwards and never to us. The grab already matched
+//! the exact modifiers, so a press action fires straight from that event.
+//!
+//! A hold (push-to-talk / push-to-mute) also needs its release, which X
+//! only reports to whoever has the key — so we poll every 10 ms while it's
+//! held, asking as little as the binding allows:
+//! - a mouse button, or a modifier key on its own: the pointer query, which
+//!   carries the mouse buttons and the Ctrl/Shift/Alt/Super state only;
+//! - any other key: `XQueryKeymap`. X has no single-key question, so this
+//!   answer lists every key down at that moment; only the bound key's bit
+//!   is read. It is asked only while such a hold is down.
 //!
 //! The trade-off of grabbing: the bound press itself doesn't reach the
 //! focused app (as with the desktop's own shortcuts on Wayland and macOS),
@@ -28,7 +35,7 @@ use x11rb::protocol::xproto::{
 use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 
-use super::{keys, matcher, raw_key, update_status, Binding};
+use super::{dispatch, keys, update_status, Action, Binding};
 
 const POLL_INTERVAL_MS: i32 = 10;
 
@@ -108,14 +115,23 @@ fn source_of(key: &str) -> Option<Source> {
     }
 }
 
-struct Watched {
-    key: &'static str,
+/// A bound combo as grabbed, and how its release is told apart.
+struct Grabbed {
+    id: String,
+    action: Action,
     source: Source,
-    /// Named by a binding (not just a modifier we watch for exact matching):
-    /// sampling continues while one of these is down.
-    named: bool,
-    down: bool,
+    /// Modifiers the rest of the combo requires (exact for press actions
+    /// and modified holds).
+    required: u16,
+    /// A hold with no modifiers: grabbed under any modifiers.
+    any: bool,
+    /// Modifier mask of the main key itself, when it is a modifier
+    /// (modifier-only combos): its release shows in the pointer query.
+    main_modifier: u16,
 }
+
+#[cfg(test)]
+pub(super) static KEYMAP_QUERIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Which ModN bits Alt, Super and NumLock live on (from the server's
 /// modifier mapping; the usual Mod1 / Mod4 / Mod2 if not found).
@@ -153,6 +169,11 @@ impl Masks {
         })
     }
 
+    /// The modifier bits a combo can require (locks excluded).
+    fn relevant(&self) -> u16 {
+        u16::from(ModMask::CONTROL) | u16::from(ModMask::SHIFT) | self.alt | self.meta
+    }
+
     fn of(&self, m: keys::Modifier) -> u16 {
         match m {
             keys::Modifier::Control => u16::from(ModMask::CONTROL),
@@ -174,8 +195,9 @@ impl Masks {
 }
 
 /// The grab a binding needs: its main key (the non-modifier, or the last
-/// key of a modifier-only combo) plus the modifiers the rest require.
-fn grab_spec(b: &Binding, masks: &Masks) -> Option<(Source, u16)> {
+/// key of a modifier-only combo), the modifiers the rest require, and the
+/// main key's own modifier bit when it is one.
+fn grab_spec(b: &Binding, masks: &Masks) -> Option<(Source, u16, u16)> {
     let parts: Vec<&'static str> = b.keys.iter().map(|k| keys::intern(k)).collect::<Option<_>>()?;
     let main_idx = parts
         .iter()
@@ -193,15 +215,24 @@ fn grab_spec(b: &Binding, masks: &Masks) -> Option<(Source, u16)> {
             }
         }
     }
-    Some((source_of(main)?, required))
+    let main_modifier = keys::sided_modifier(main).map_or(0, |m| masks.of(m));
+    Some((source_of(main)?, required, main_modifier))
 }
 
-/// Grab every binding's combo on the root window. Returns the binding ids
-/// whose grab the server refused (another client holds it).
-fn grab_all(conn: &RustConnection, root: Window, masks: &Masks, xi: bool, bindings: &[Binding]) -> Vec<String> {
+/// Grab every binding's combo on the root window. Returns what was
+/// grabbed and the binding ids the server refused (another client holds
+/// the combo).
+fn grab_all(
+    conn: &RustConnection,
+    root: Window,
+    masks: &Masks,
+    xi: bool,
+    bindings: &[Binding],
+) -> (Vec<Grabbed>, Vec<String>) {
+    let mut grabbed = Vec::new();
     let mut failed = Vec::new();
     for b in bindings {
-        let Some((source, required)) = grab_spec(b, masks) else {
+        let Some((source, required, main_modifier)) = grab_spec(b, masks) else {
             failed.push(b.id.clone());
             continue;
         };
@@ -240,11 +271,20 @@ fn grab_all(conn: &RustConnection, root: Window, masks: &Masks, xi: bool, bindin
                 ok = false;
             }
         }
-        if !ok {
+        if ok {
+            grabbed.push(Grabbed {
+                id: b.id.clone(),
+                action: b.action,
+                source,
+                required,
+                any: b.action.is_hold() && required == 0,
+                main_modifier,
+            });
+        } else {
             failed.push(b.id.clone());
         }
     }
-    failed
+    (grabbed, failed)
 }
 
 fn ungrab_all(conn: &RustConnection, root: Window) -> Result<(), String> {
@@ -290,9 +330,10 @@ fn run(
     backend: &'static str,
 ) -> Result<(), String> {
     let mut generation = u64::MAX;
-    let mut watched: Vec<Watched> = Vec::new();
-    let mut sampling = false;
-    let mut pressed: Vec<Source> = Vec::new();
+    let mut grabbed: Vec<Grabbed> = Vec::new();
+    // Indices into `grabbed` of holds currently down.
+    let mut held: Vec<usize> = Vec::new();
+    let mut presses: Vec<(Source, u16)> = Vec::new();
     loop {
         let current = GENERATION.load(Ordering::Acquire);
         if current != generation {
@@ -311,20 +352,10 @@ fn run(
                 continue;
             }
             super::release_all_bindings();
-            sampling = false;
-            pressed.clear();
-            let failed = grab_all(conn, root, masks, pointer.is_some(), &bindings);
-            let named: Vec<&'static str> = bindings
-                .iter()
-                .flat_map(|b| b.keys.iter().filter_map(|k| keys::intern(k)))
-                .filter(|k| keys::generic_modifier(k).is_none())
-                .collect();
-            watched = matcher::watched_keys(&bindings)
-                .into_iter()
-                .filter_map(|k| {
-                    Some(Watched { key: k, source: source_of(k)?, named: named.contains(&k), down: false })
-                })
-                .collect();
+            held.clear();
+            presses.clear();
+            let failed;
+            (grabbed, failed) = grab_all(conn, root, masks, pointer.is_some(), &bindings);
             update_status(|s| {
                 s.backend = backend;
                 s.state = "active";
@@ -335,92 +366,115 @@ fn run(
 
         // Grabbed presses (plus anything a reply read brought in with it).
         while let Some(event) = conn.poll_for_event().map_err(|e| e.to_string())? {
-            take_press(conn, event, &mut pressed)?;
+            take_press(conn, event, &mut presses)?;
         }
-        if !pressed.is_empty() || sampling {
+        if !presses.is_empty() {
             conn.flush().map_err(|e| e.to_string())?;
-            sampling = sample(conn, root, pointer, &mut watched, &pressed)?;
-            pressed.clear();
+        }
+        for (source, state) in presses.drain(..) {
+            for (i, g) in grabbed.iter().enumerate() {
+                let mods = state & masks.relevant();
+                if g.source != source || !(g.any || mods == g.required) {
+                    continue;
+                }
+                if !g.action.is_hold() {
+                    dispatch(&g.id, g.action, true);
+                } else if !held.contains(&i) {
+                    // Auto-repeat re-grabs a held key; only the first counts.
+                    held.push(i);
+                    dispatch(&g.id, g.action, true);
+                }
+            }
+        }
+        if !held.is_empty() {
+            check_releases(conn, root, pointer, &grabbed, &mut held)?;
             if let Some(event) = conn.poll_for_event().map_err(|e| e.to_string())? {
-                take_press(conn, event, &mut pressed)?;
+                take_press(conn, event, &mut presses)?;
                 continue;
             }
         }
         conn.flush().map_err(|e| e.to_string())?;
-        wait(conn.stream().as_raw_fd(), wake_fd, if sampling { POLL_INTERVAL_MS } else { -1 })?;
+        wait(conn.stream().as_raw_fd(), wake_fd, if held.is_empty() { -1 } else { POLL_INTERVAL_MS })?;
     }
 }
 
 /// A grabbed press: drop the grab at once (input was frozen for it).
-fn take_press(conn: &RustConnection, event: Event, pressed: &mut Vec<Source>) -> Result<(), String> {
+fn take_press(conn: &RustConnection, event: Event, presses: &mut Vec<(Source, u16)>) -> Result<(), String> {
     match event {
         Event::KeyPress(e) => {
             conn.ungrab_keyboard(x11rb::CURRENT_TIME).map_err(|e| e.to_string())?;
-            pressed.push(Source::Key(e.detail));
+            presses.push((Source::Key(e.detail), u16::from(e.state)));
         }
         Event::ButtonPress(e) => {
             conn.ungrab_pointer(x11rb::CURRENT_TIME).map_err(|e| e.to_string())?;
-            pressed.push(Source::Button(e.detail));
+            presses.push((Source::Button(e.detail), u16::from(e.state)));
         }
         _ => {}
     }
     Ok(())
 }
 
-/// Read the watched keys' state and feed the changes to the matcher.
-/// Returns whether to keep sampling (a named key is still down).
-fn sample(
+/// Release every held combo whose main key, button or a required modifier
+/// is up. Asks the pointer query (buttons + modifier state) always, and
+/// the keymap only while a hold on an ordinary key is down.
+fn check_releases(
     conn: &RustConnection,
     root: Window,
     pointer: Option<u16>,
-    watched: &mut [Watched],
-    pressed: &[Source],
-) -> Result<bool, String> {
-    let keymap = conn
-        .query_keymap()
-        .map_err(|e| e.to_string())?
-        .reply()
-        .map_err(|e| format!("QueryKeymap: {}", e))?
-        .keys;
-    let buttons = match pointer {
-        Some(device) if watched.iter().any(|w| matches!(w.source, Source::Button(_))) => conn
-            .xinput_xi_query_pointer(root, device)
-            .map_err(|e| e.to_string())?
-            .reply()
-            .map_err(|e| format!("XIQueryPointer: {}", e))?
-            .buttons,
-        _ => Vec::new(),
-    };
-    let is_down = |source: Source| match source {
-        Source::Key(kc) => keymap[kc as usize / 8] & (1 << (kc % 8)) != 0,
-        Source::Button(n) => buttons.get(n as usize / 32).is_some_and(|w| w & (1 << (n % 32)) != 0),
-    };
-    // Modifiers come first in `watched`, so a combo completes on its key.
-    for w in watched.iter_mut() {
-        let now = is_down(w.source);
-        if now != w.down {
-            w.down = now;
-            raw_key(w.key, now);
+    grabbed: &[Grabbed],
+    held: &mut Vec<usize>,
+) -> Result<(), String> {
+    let (mods, buttons): (u16, Vec<u32>) = match pointer {
+        Some(device) => {
+            let r = conn
+                .xinput_xi_query_pointer(root, device)
+                .map_err(|e| e.to_string())?
+                .reply()
+                .map_err(|e| format!("XIQueryPointer: {}", e))?;
+            ((r.mods.effective & 0xff) as u16, r.buttons)
         }
-    }
-    // A grabbed press already released by the time we looked (a quick tap)
-    // still counts once.
-    for p in pressed {
-        if let Some(w) = watched.iter().find(|w| w.source == *p && !w.down) {
-            raw_key(w.key, true);
-            raw_key(w.key, false);
+        None => {
+            // Core query: modifiers in the low byte, buttons 1–5 above.
+            let mask = u16::from(
+                conn.query_pointer(root)
+                    .map_err(|e| e.to_string())?
+                    .reply()
+                    .map_err(|e| format!("QueryPointer: {}", e))?
+                    .mask,
+            );
+            let buttons = (1..=5u32).filter(|b| mask & (1 << (7 + b)) != 0).fold(0u32, |w, b| w | 1 << b);
+            (mask & 0xff, vec![buttons])
         }
-    }
-    if watched.iter().any(|w| w.named && w.down) {
-        return Ok(true);
-    }
-    // Done until the next grabbed press: forget the modifiers too, so the
-    // next press starts from what's actually held then.
-    for w in watched.iter_mut().filter(|w| w.down) {
-        w.down = false;
-        raw_key(w.key, false);
-    }
-    Ok(false)
+    };
+    let ordinary_key = |g: &Grabbed| matches!(g.source, Source::Key(_)) && g.main_modifier == 0;
+    let keymap = if held.iter().any(|&i| ordinary_key(&grabbed[i])) {
+        #[cfg(test)]
+        KEYMAP_QUERIES.fetch_add(1, Ordering::Relaxed);
+        Some(
+            conn.query_keymap()
+                .map_err(|e| e.to_string())?
+                .reply()
+                .map_err(|e| format!("QueryKeymap: {}", e))?
+                .keys,
+        )
+    } else {
+        None
+    };
+    held.retain(|&i| {
+        let g = &grabbed[i];
+        let main_down = match g.source {
+            Source::Button(n) => buttons.get(n as usize / 32).is_some_and(|w| w & (1 << (n % 32)) != 0),
+            Source::Key(_) if g.main_modifier != 0 => mods & g.main_modifier != 0,
+            // Only this key's bit is read.
+            Source::Key(kc) => keymap.is_some_and(|k| k[kc as usize / 8] & (1 << (kc % 8)) != 0),
+        };
+        let still = main_down && mods & g.required == g.required;
+        if !still {
+            dispatch(&g.id, g.action, false);
+        }
+        still
+    });
+    Ok(())
 }
 
 fn wait(x_fd: i32, wake_fd: i32, timeout_ms: i32) -> Result<(), String> {
@@ -462,12 +516,14 @@ mod tests {
         let shift = u16::from(ModMask::SHIFT);
         // KeyM = evdev 50 → keycode 58.
         assert!(grab_spec(&binding(Action::ToggleMute, &["Control", "Shift", "KeyM"]), &m)
-            == Some((Source::Key(58), control | shift)));
-        assert!(grab_spec(&binding(Action::PushToTalk, &["Meta", "Mouse4"]), &m) == Some((Source::Button(8), 64)));
-        // Modifier-only: the last key is the grab, the rest its modifiers.
-        assert!(grab_spec(&binding(Action::PushToTalk, &["ControlRight"]), &m) == Some((Source::Key(105), 0)));
+            == Some((Source::Key(58), control | shift, 0)));
+        assert!(grab_spec(&binding(Action::PushToTalk, &["Meta", "Mouse4"]), &m) == Some((Source::Button(8), 64, 0)));
+        // Modifier-only: the last key is the grab, the rest its modifiers,
+        // and its own modifier bit tells the release.
+        assert!(grab_spec(&binding(Action::PushToTalk, &["ControlRight"]), &m) == Some((Source::Key(105), 0, control)));
         assert!(
-            grab_spec(&binding(Action::PushToTalk, &["ControlLeft", "AltLeft"]), &m) == Some((Source::Key(64), control))
+            grab_spec(&binding(Action::PushToTalk, &["ControlLeft", "AltLeft"]), &m)
+                == Some((Source::Key(64), control, 8))
         );
         assert!(grab_spec(&binding(Action::ToggleMute, &["Nope"]), &m).is_none());
     }
