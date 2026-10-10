@@ -10,7 +10,9 @@
 // `devicechange` frequently, and each re-push hot-swapped the CPAL streams
 // mid-call, producing an audible pop each time. The native pipeline keeps
 // running on its chosen device; the user re-selects explicitly from Settings if
-// they want to switch.
+// they want to switch. A selection of "Default" follows the OS default device
+// natively instead (native/src/media/default_device_watch.rs), and only when
+// the default really becomes a different device.
 
 import { useEffect } from "react";
 import { useAudioDevicesStore } from "../stores/audioDevicesStore";

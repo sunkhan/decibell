@@ -1738,6 +1738,23 @@ redirects a signed-in user to the app (`SignedOutRoute`). Verified: a real back 
 CDP `Input.dispatchMouseEvent` moves `#/` → `#/login` without the guard and stays on `#/` with it;
 tsc web 0 / node 0.
 
+**Native: "Default" audio devices follow the OS default (2026-10-10) ✅ — Windows live test pending** —
+Field report (Windows): with Default chosen, changing the system default left Decibell on the old
+device. WASAPI (and CoreAudio) bind a stream to the endpoint that was default when it opened;
+PipeWire / PulseAudio move unpinned streams themselves, so Linux never had this. New
+`media/default_device_watch.rs`: a thread per pipeline (not on Linux) reads the defaults about once
+a second — Windows: the default communications + console endpoint IDs through one
+`IMMDeviceEnumerator`, matching `get_default_device`'s preference; macOS: CPAL's default names — and
+on a real change sends `DefaultInputChanged` / `DefaultOutputChanged`. The pipeline now tracks the
+selections and turns those into the same `SetInputDevice(None)` / `SetOutputDevice(None)` /
+`SetStreamOutputDevice(None)` hot-swaps a Settings pick sends, only for what is on Default — the
+2026-08 "don't re-push on every devicechange" rule (pops on device churn) holds, since only a
+different default endpoint triggers a swap. Also fixed: toggling "Separate stream output device"
+rebuilt the voice output on the default device instead of the chosen one. Verified: watcher unit
+tests (scripted defaults: only real per-direction changes fire, a gap with no default is ignored,
+a refused send ends the thread), `cargo test --lib` 221, the Windows probe type-checked against
+`windows` 0.61 (planted error caught), napi build, tsc web 0.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

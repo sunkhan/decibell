@@ -49,6 +49,13 @@ pub enum ControlMessage {
     /// 0=off, 1=light(6dB), 2=moderate(12dB), 3=aggressive(18dB), 4=very aggressive(21dB)
     SetNoiseSuppressionLevel(u8),
     SetAgcEnabled(bool),
+    /// The OS default capture / render device became a different device
+    /// (default_device_watch.rs). Followed only by what's on "Default".
+    /// Never sent on Linux, where PipeWire / PulseAudio follow by themselves.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    DefaultInputChanged,
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    DefaultOutputChanged,
     Shutdown,
 }
 
@@ -154,6 +161,12 @@ pub fn run_audio_pipeline(
     let (render_ref_prod, render_ref_cons) = render_ref_rb.split();
     let render_ref_prod = Arc::new(std::sync::Mutex::new(render_ref_prod));
     let render_ref_cons = Arc::new(std::sync::Mutex::new(render_ref_cons));
+
+    // The user's device selections (None = the system default), kept so a
+    // default-device change only moves what follows the default, and so
+    // rebuilding the voice output keeps the chosen device.
+    let mut input_device_name = initial_input_device.clone();
+    let mut output_device_name = initial_output_device.clone();
 
     // ── Build output stream first (we need its sample rate for input matching) ─
     let stream_stereo = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -453,8 +466,30 @@ pub fn run_audio_pipeline(
         let loop_start = Instant::now();
 
         // 1. Drain control messages ────────────────────────────────────────────
+        // A default-device change expands into the same hot-swaps a Settings
+        // pick would send, queued here and handled first.
+        let mut follow_default: std::collections::VecDeque<ControlMessage> = std::collections::VecDeque::new();
         loop {
-            match control_rx.try_recv() {
+            let next = match follow_default.pop_front() {
+                Some(msg) => Ok(msg),
+                None => control_rx.try_recv(),
+            };
+            match next {
+                Ok(ControlMessage::DefaultInputChanged) => {
+                    if input_device_name.is_none() {
+                        log::info!("[pipeline] System default input changed — following it");
+                        follow_default.push_back(ControlMessage::SetInputDevice(None));
+                    }
+                }
+                Ok(ControlMessage::DefaultOutputChanged) => {
+                    if output_device_name.is_none() {
+                        log::info!("[pipeline] System default output changed — following it");
+                        follow_default.push_back(ControlMessage::SetOutputDevice(None));
+                    }
+                    if separate_stream_enabled && stream_output_device_name.is_none() {
+                        follow_default.push_back(ControlMessage::SetStreamOutputDevice(None));
+                    }
+                }
                 Ok(ControlMessage::Shutdown) => break 'main,
                 Ok(ControlMessage::SetMute(m)) => {
                     if !deafened {
@@ -495,6 +530,7 @@ pub fn run_audio_pipeline(
                 }
                 Ok(ControlMessage::SetInputDevice(name)) => {
                     log::info!("[pipeline] Hot-swapping input device to: {:?}", name);
+                    input_device_name = name.clone();
                     input_stream_opt = None; // drop old stream
                     { let mut g = capture_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     capture_48k_buf.clear();
@@ -525,6 +561,7 @@ pub fn run_audio_pipeline(
                 }
                 Ok(ControlMessage::SetOutputDevice(name)) => {
                     log::info!("[pipeline] Hot-swapping output device to: {:?}", name);
+                    output_device_name = name.clone();
                     output_stream = None; // drop old stream
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     for peer in remote_peers.values_mut() { peer.drain_ring(); }
@@ -574,8 +611,8 @@ pub fn run_audio_pipeline(
                     playback_stream_accum_l.clear();
                     playback_stream_accum_r.clear();
                     if enabled {
-                        // Main output: voice-only
-                        if let Some((stream, rate, _ch)) = build_voice_output_stream(&host, None, Arc::clone(&peers), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
+                        // Main output: voice-only, on the device the user chose
+                        if let Some((stream, rate, _ch)) = build_voice_output_stream(&host, output_device_name.as_deref(), Arc::clone(&peers), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
                             output_sample_rate = rate;
                             output_stream = Some(stream);
                         }
@@ -586,7 +623,7 @@ pub fn run_audio_pipeline(
                         }
                     } else {
                         // Back to mixed mode — stream plays on same device as voice
-                        if let Some((stream, rate, _ch)) = build_output_stream(&host, None, Arc::clone(&peers), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
+                        if let Some((stream, rate, _ch)) = build_output_stream(&host, output_device_name.as_deref(), Arc::clone(&peers), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
                             output_sample_rate = rate;
                             stream_output_sample_rate = rate;
                             output_stream = Some(stream);

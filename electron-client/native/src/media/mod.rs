@@ -98,6 +98,7 @@ pub mod video_packet;
 pub mod video_pipeline;
 pub mod video_receiver;
 pub mod voice_gate;
+pub mod default_device_watch;
 pub mod frame_crypto;
 
 use std::net::UdpSocket;
@@ -282,9 +283,13 @@ impl VoiceEngine {
 
         let voice_socket_for_audio = voice_socket.clone();
         let sender_id_for_audio = sender_id.clone();
+        let watch_tx = control_tx.clone();
         let audio_thread = thread::Builder::new()
             .name("decibell-audio".to_string())
             .spawn(move || {
+                // Lives exactly as long as this pipeline: follows the OS
+                // default devices for whatever is set to "Default".
+                let _default_watch = default_device_watch::DefaultDeviceWatch::start(watch_tx);
                 // Guard the whole pipeline. A panic here (e.g. a virtual audio
                 // driver reporting a config that trips a resampler or a
                 // downmix assumption) used to silently terminate this thread,
