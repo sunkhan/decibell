@@ -8,6 +8,8 @@ import { stringToGradient } from "../../../utils/colors";
 import { ServerPictureCropperModal } from "../ServerPictureCropperModal";
 import { PERM, usePermission } from "../permissions";
 import Switch from "../../../components/Switch";
+import Select from "../../../components/Select";
+import { UserAvatar } from "../../../components/UserAvatar";
 
 const MAX_BYTES = 1024 * 1024;
 
@@ -258,21 +260,21 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
               The new owner gets every permission and outranks every role; you
               keep only the roles you hold. This can't be undone by you.
             </p>
-            <select
-              value={transferTarget}
-              onChange={(e) => {
-                setTransferTarget(e.target.value);
+            <Select
+              className="mt-3"
+              aria-label="New owner"
+              placeholder="Choose a member…"
+              value={transferTarget || null}
+              onChange={(v) => {
+                setTransferTarget(v);
                 setTransferConfirm("");
               }}
-              className="mt-3 w-full appearance-none rounded-md border border-border bg-bg-lighter px-3 py-2.5 pr-9 text-[13px] text-text-primary outline-none transition-all hover:border-text-faint focus:border-accent focus:shadow-ring"
-            >
-              <option value="">Choose a member…</option>
-              {transferCandidates.map((m) => (
-                <option key={m.username} value={m.username}>
-                  {m.nickname ? `${m.nickname} (${m.username})` : m.username}
-                </option>
-              ))}
-            </select>
+              options={transferCandidates.map((m) => ({
+                value: m.username,
+                label: m.nickname ? `${m.nickname} (${m.username})` : m.username,
+                icon: <UserAvatar username={m.username} size={18} />,
+              }))}
+            />
             {transferTarget && (
               <>
                 <input

@@ -1833,6 +1833,28 @@ drag events — draggable only under MOVE_MEMBERS, higher role / owner refused a
 a target, member rows inside a target accept, one `voice_mod` per drop with the right args, a stray
 drop clears state — plus a screenshot of the in-flight styling.
 
+**Client: themed dropdown pickers replace native selects (2026-10-10) ✅** — Owner request: the
+dropdowns looked "system default" (a native `<select>` popup is drawn by the OS and ignores the theme).
+New `components/Select.tsx` — select-only combobox (ARIA 1.2: focus stays on the trigger or the filter
+field, aria-activedescendant), keyboard parity with the native control (arrows, Home / End,
+PageUp / PageDown, Enter / Space, type-to-jump with repeat-cycling, Tab), Escape stopped so it never
+reaches a modal's window listener, groups, hints, leading icons, disabled rows, a filter field past 10
+options, md / sm sizes and field / sunken tones. The popup is portaled to `<body>` with fixed
+positioning (flips above near the bottom edge; closes on outside press, outside scroll, blur), so a
+scrolling modal can't clip it. Per-family styling in `globals.css` (`.dsel-*`): nocturne / matinee get a
+champagne wash + brass rule on the chosen row and a sheen; graphite* a solid-accent active row with a
+leading check; console* the meta face, a `›` cursor, `//` group labels, a typed `▾` and a print-in
+wipe. All 11 native selects moved over (invite expiry, ownership transfer with avatars, keybind
+action, composer code language, ban duration / purge / timeout, slowmode, retention presets, channel
+permission targets with role dots / avatars / override hints) plus the Audio tab's hand-rolled device
+list (an unplugged saved device shows as "Not connected"). The user menu's "Move to…" became an
+in-menu expanding list — a dropdown inside a context menu would stack a second popup (and trip the
+menu's outside-click). Verified: tsc web 0; a harness rendering the component with real input passed
+20 interaction checks (keyboard open / move / skip disabled / choose, focus return, type-to-jump,
+Escape isolation, outside click, disabled click, filter + Enter, upward flip inside the window);
+screenshots in all seven themes (design review artifact shared with the owner, approved). Live pass
+over the real settings / channel / server modals pending.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

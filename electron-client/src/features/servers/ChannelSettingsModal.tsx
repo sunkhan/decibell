@@ -7,6 +7,7 @@ import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import { PERM, useChannelPermission } from "./permissions";
 import { ChannelPermissionsSection, type ChannelPermissionsHandle } from "./ChannelPermissionsSection";
 import type { ChannelInfo } from "../../types";
+import Select from "../../components/Select";
 
 type RetentionField =
   | "retentionDaysText"
@@ -67,30 +68,20 @@ function RetentionRow({
           <div className="mt-0.5 truncate text-[11px] text-text-muted">{hint}</div>
         )}
       </div>
-      <div className="relative shrink-0">
-        <select
-          value={presetMatch ? String(value) : "custom"}
-          disabled={disabled}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (v === "custom") return;
-            onChange(parseInt(v, 10));
-          }}
-          className="appearance-none rounded-sm border border-border bg-bg-lighter px-3 py-1.5 pr-8 text-[12px] text-text-primary outline-none transition-all hover:border-text-faint focus:border-accent disabled:cursor-not-allowed"
-        >
-          {PRESETS.map((p) => (
-            <option key={p.days} value={p.days}>
-              {p.label}
-            </option>
-          ))}
-          {!presetMatch && <option value="custom">{value} days</option>}
-        </select>
-        <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-text-muted">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-            <path d="M6 9l6 6 6-6" />
-          </svg>
-        </div>
-      </div>
+      {/* A value set outside the presets (server config) shows as its own
+          entry; choosing it again is a no-op. */}
+      <Select
+        size="sm"
+        className="w-32 shrink-0"
+        aria-label={`${label} retention`}
+        disabled={disabled}
+        value={value}
+        onChange={onChange}
+        options={[
+          ...PRESETS.map((p) => ({ value: p.days, label: p.label })),
+          ...(presetMatch ? [] : [{ value, label: `${value} days`, hint: "Custom" }]),
+        ]}
+      />
     </div>
   );
 }
@@ -504,22 +495,24 @@ export default function ChannelSettingsModal() {
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
               Slowmode
             </div>
-            <select
+            <Select
+              aria-label="Slowmode"
               value={slowmodeDraft}
               disabled={!canManage}
-              onChange={(e) => setSlowmodeDraft(parseInt(e.target.value, 10))}
-              className="w-full appearance-none rounded-md border border-border bg-bg-lighter px-3 py-2.5 pr-9 text-[13px] text-text-primary outline-none transition-all hover:border-text-faint focus:border-accent focus:shadow-ring disabled:opacity-60"
-            >
-              <option value={0}>Off</option>
-              <option value={5}>5 seconds</option>
-              <option value={10}>10 seconds</option>
-              <option value={30}>30 seconds</option>
-              <option value={60}>1 minute</option>
-              <option value={300}>5 minutes</option>
-              <option value={900}>15 minutes</option>
-              <option value={3600}>1 hour</option>
-              <option value={21600}>6 hours</option>
-            </select>
+              onChange={setSlowmodeDraft}
+              searchable={false}
+              options={[
+                { value: 0, label: "Off" },
+                { value: 5, label: "5 seconds" },
+                { value: 10, label: "10 seconds" },
+                { value: 30, label: "30 seconds" },
+                { value: 60, label: "1 minute" },
+                { value: 300, label: "5 minutes" },
+                { value: 900, label: "15 minutes" },
+                { value: 3600, label: "1 hour" },
+                { value: 21600, label: "6 hours" },
+              ]}
+            />
             <p className="mt-2 text-[12px] leading-[1.5] text-text-muted">
               Members wait this long between messages. Members who can Manage
               Messages here are exempt.

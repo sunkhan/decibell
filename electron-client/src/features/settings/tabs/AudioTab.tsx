@@ -11,6 +11,7 @@ import {
   MAX_PTT_RELEASE_DELAY_MS,
   type InputMode,
 } from "../../../stores/hotkeysStore";
+import Select from "../../../components/Select";
 import {
   KeyChips,
   SwallowBadge,
@@ -32,77 +33,25 @@ function DeviceSelector({
   selected: string | null;
   onChange: (name: string | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handleClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [open]);
-
-  const displayName = devices.find((d) => d.name === selected)?.label ?? selected ?? "Default";
-
+  // "" stands for Default (null) inside the picker. A saved device that is
+  // unplugged keeps showing under its stored name rather than falling back.
+  const missing = selected !== null && !devices.some((d) => d.name === selected);
   return (
-    <div className="rounded-md border border-border-divider bg-bg-light p-4" ref={ref}>
+    <div className="rounded-md border border-border-divider bg-bg-light p-4">
       <div className="mb-2.5 flex items-center gap-2.5">
         <span className="text-text-muted">{icon}</span>
         <span className="text-[13px] font-medium text-text-secondary">{label}</span>
       </div>
-      <div className="relative">
-        <button
-          onClick={() => setOpen(!open)}
-          className="flex w-full items-center justify-between rounded-sm border border-border bg-bg-lighter px-3.5 py-2.5 text-left text-[13px] text-text-primary transition-all hover:border-accent/40 focus:border-accent focus:shadow-ring focus:outline-none"
-        >
-          <span className="truncate">{displayName}</span>
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            className={`shrink-0 text-text-muted transition-transform ${open ? "rotate-180" : ""}`}
-          >
-            <path d="M6 9l6 6 6-6" />
-          </svg>
-        </button>
-        {open && (
-          <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-y-auto rounded-md border border-border bg-bg-lighter shadow-float">
-            <button
-              onClick={() => {
-                onChange(null);
-                setOpen(false);
-              }}
-              className={`flex w-full items-center px-3.5 py-2.5 text-left text-[13px] transition-colors hover:bg-surface-hover ${
-                selected === null ? "font-medium text-accent-bright" : "text-text-secondary"
-              }`}
-            >
-              Default
-            </button>
-            {devices.map((device) => (
-              <button
-                key={device.name}
-                onClick={() => {
-                  onChange(device.name);
-                  setOpen(false);
-                }}
-                className={`flex w-full items-center px-3.5 py-2.5 text-left text-[13px] transition-colors hover:bg-surface-hover ${
-                  selected === device.name ? "font-medium text-accent-bright" : "text-text-secondary"
-                }`}
-              >
-                {device.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      <Select
+        aria-label={label}
+        value={selected ?? ""}
+        onChange={(v) => onChange(v === "" ? null : v)}
+        options={[
+          { value: "", label: "Default", hint: "Follows the system" },
+          ...devices.map((d) => ({ value: d.name, label: d.label })),
+          ...(missing ? [{ value: selected, label: selected, hint: "Not connected", disabled: true }] : []),
+        ]}
+      />
     </div>
   );
 }

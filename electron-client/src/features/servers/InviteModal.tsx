@@ -6,6 +6,7 @@ import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import type { ServerInvite } from "../../types";
 import { PERM, usePermission } from "./permissions";
 import { buildInviteLink } from "./inviteLink";
+import Select from "../../components/Select";
 
 const EXPIRY_OPTIONS: { label: string; seconds: number }[] = [
   { label: "1 hour", seconds: 3600 },
@@ -186,22 +187,12 @@ export default function InviteModal() {
               <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                 Expires
               </label>
-              <div className="relative">
-                <select
-                  value={expirySec}
-                  onChange={(e) => setExpirySec(parseInt(e.target.value, 10))}
-                  className="w-full appearance-none rounded-md border border-border bg-bg-lighter px-3 py-2.5 pr-9 text-[13px] text-text-primary outline-none transition-all hover:border-text-faint focus:border-accent focus:shadow-ring"
-                >
-                  {EXPIRY_OPTIONS.map((opt) => (
-                    <option key={opt.seconds} value={opt.seconds} className="bg-bg-lighter">
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-text-muted">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9l6 6 6-6" /></svg>
-                </div>
-              </div>
+              <Select
+                aria-label="Expires"
+                value={expirySec}
+                onChange={setExpirySec}
+                options={EXPIRY_OPTIONS.map((opt) => ({ value: opt.seconds, label: opt.label }))}
+              />
             </div>
 
             {/* Max uses */}

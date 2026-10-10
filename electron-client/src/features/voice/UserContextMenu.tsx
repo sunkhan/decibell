@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useCallback } from "react";
+import { useEffect, useMemo, useCallback, useState } from "react";
 import { EMPTY_LIST } from "../../lib/empty";
 import { createPortal } from "react-dom";
 import { invoke } from "../../lib/ipc";
@@ -96,6 +96,10 @@ export default function UserContextMenu() {
   // targets, so a fixed "approximate height" clamp left it clipped at the
   // bottom edge. The hook flips it above the cursor when it doesn't fit.
   const { ref: menuRef, style: menuStyle } = useMenuPosition(anchor);
+  // "Move to…" unfolds the voice channels in place: a dropdown nested in a
+  // context menu would open a second floating layer over the first.
+  const [moveOpen, setMoveOpen] = useState(false);
+  useEffect(() => setMoveOpen(false), [anchor]);
   const isLocallyMuted = username ? localMutedUsers.has(username) : false;
 
   const currentDb = username ? userVolumes[username] ?? DEFAULT_DB : DEFAULT_DB;
@@ -300,20 +304,35 @@ export default function UserContextMenu() {
                 </button>
               )}
               {canMove && moveTargets.length > 0 && (
-                <select
-                  defaultValue=""
-                  onChange={(e) => {
-                    if (e.target.value) runVoiceMod("move", e.target.value);
-                  }}
-                  className="mt-1 w-full appearance-none rounded-md border border-border bg-bg-lighter px-2.5 py-[6px] text-[12px] text-text-secondary outline-none focus:border-accent"
-                >
-                  <option value="">Move to…</option>
-                  {moveTargets.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                <>
+                  <button
+                    onClick={() => setMoveOpen((o) => !o)}
+                    aria-expanded={moveOpen}
+                    className="group flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-text-primary transition-colors hover:bg-surface-hover"
+                  >
+                    <span className="flex-1 text-left">Move to…</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-text-muted transition-transform duration-150 group-aria-expanded:rotate-90 group-aria-expanded:text-accent">
+                      <path d="M9 6l6 6-6 6" />
+                    </svg>
+                  </button>
+                  {moveOpen && (
+                    <div className="mb-1 ml-2.5 max-h-48 overflow-y-auto border-l border-border-divider pl-1">
+                      {moveTargets.map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => runVoiceMod("move", c.id)}
+                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-text-muted">
+                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                          </svg>
+                          <span className="truncate">{c.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
               {canMove && (
                 <button

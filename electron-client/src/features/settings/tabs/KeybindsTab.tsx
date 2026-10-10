@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "../../../lib/ipc";
 import { useHotkeysStore, type HotkeysStatus } from "../../../stores/hotkeysStore";
 import { saveSettings } from "../saveSettings";
+import Select from "../../../components/Select";
 import {
   HOTKEY_ACTIONS,
   actionLabel,
@@ -246,28 +247,23 @@ function BindingRow({
   return (
     <div className="rounded-md border border-border-divider bg-bg-light px-4 py-3">
       <div className="flex items-center gap-3">
-        <div className="relative w-[210px] shrink-0">
-          <select
-            value={binding.action}
-            onChange={(e) => onAction(e.target.value as HotkeyAction)}
+        <div className="w-[210px] shrink-0">
+          <Select
             aria-label="Action"
-            className="w-full appearance-none rounded-md border border-border bg-bg-lighter px-3 py-2 pr-9 text-[13px] text-text-primary outline-none transition-all hover:border-text-faint focus:border-accent focus:shadow-ring"
-          >
-            {HOTKEY_ACTIONS.map((a) => (
-              <option key={a.id} value={a.id} className="bg-bg-lighter">
-                {a.label}
-              </option>
-            ))}
-          </select>
-          <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-text-muted">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9l6 6 6-6" /></svg>
-          </div>
+            value={binding.action}
+            onChange={onAction}
+            options={HOTKEY_ACTIONS.map((a) => ({
+              value: a.id,
+              label: a.label,
+              hint: a.hold ? "Hold the keys" : undefined,
+            }))}
+          />
         </div>
         <button
           type="button"
           onClick={onRecord}
           title={recording ? undefined : "Click to change"}
-          className={`flex min-h-[38px] flex-1 items-center rounded-md border px-3 py-1.5 text-left text-[13px] transition-all ${
+          className={`flex min-h-10 flex-1 items-center rounded-md border px-3 py-1.5 text-left text-[13px] transition-all ${
             recording
               ? "border-accent bg-accent-soft text-accent-bright shadow-ring"
               : "border-border bg-bg-lighter text-text-primary hover:border-accent/40"

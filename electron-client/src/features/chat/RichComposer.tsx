@@ -18,6 +18,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import MathTex from "./MathTex";
 import { highlightNodes } from "./CodeBlock";
+import Select from "../../components/Select";
 
 /// Language choices for the dropdown — the registered grammar set from
 /// CodeBlock.tsx keyed by their shortest common alias, labeled with
@@ -211,32 +212,16 @@ export default function RichComposer({ onInsert }: { onInsert: (snippet: string)
                 {mode === "code" ? "Code block" : "Math (LaTeX)"}
               </span>
               {mode === "code" && (
-                // Native select (keyboard + a11y for free) with the
-                // chrome hidden via appearance-none and our own chevron.
-                <span className="relative inline-flex items-center">
-                  <select
-                    value={lang}
-                    onChange={(e) => setLang(e.target.value)}
-                    className="cursor-pointer appearance-none rounded-md border border-border bg-bg-darkest py-1 pl-2.5 pr-7 font-channel text-[12px] text-text-secondary outline-none transition-colors hover:text-text-primary focus:border-accent"
-                  >
-                    {LANGS.map((l) => (
-                      <option key={l.value} value={l.value}>{l.label}</option>
-                    ))}
-                  </select>
-                  <svg
-                    width="10"
-                    height="10"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="pointer-events-none absolute right-2.5 text-text-muted"
-                  >
-                    <polyline points="6 9 12 15 18 9" />
-                  </svg>
-                </span>
+                <Select
+                  size="sm"
+                  variant="sunken"
+                  className="w-auto"
+                  menuMinWidth={180}
+                  aria-label="Language"
+                  value={lang}
+                  onChange={setLang}
+                  options={LANGS}
+                />
               )}
             </div>
             <button

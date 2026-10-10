@@ -4,6 +4,7 @@ import { useChatStore } from "../../../stores/chatStore";
 import { EMPTY_LIST } from "../../../lib/empty";
 import { useAuthStore } from "../../../stores/authStore";
 import { UserAvatar } from "../../../components/UserAvatar";
+import Select from "../../../components/Select";
 import type { ServerRole } from "../../../types";
 import { PERM, usePermission, useHierarchy } from "../permissions";
 import { formatJoined, roleColor } from "./helpers";
@@ -442,48 +443,48 @@ export default function MembersTab({ serverId }: { serverId: string }) {
               <div className="mb-3 grid grid-cols-2 gap-2">
                 <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                   Duration
-                  <select
+                  <Select
                     value={banDurationSec}
-                    onChange={(e) => setBanDurationSec(parseInt(e.target.value, 10))}
-                    className="appearance-none rounded-md border border-border bg-bg-lighter px-2.5 py-2 text-[13px] font-normal normal-case tracking-normal text-text-primary outline-none focus:border-accent"
-                  >
-                    <option value={0}>Permanent</option>
-                    <option value={3600}>1 hour</option>
-                    <option value={86400}>1 day</option>
-                    <option value={7 * 86400}>7 days</option>
-                    <option value={30 * 86400}>30 days</option>
-                  </select>
+                    onChange={setBanDurationSec}
+                    options={[
+                      { value: 0, label: "Permanent" },
+                      { value: 3600, label: "1 hour" },
+                      { value: 86400, label: "1 day" },
+                      { value: 7 * 86400, label: "7 days" },
+                      { value: 30 * 86400, label: "30 days" },
+                    ]}
+                  />
                 </label>
                 <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                   Delete messages
-                  <select
+                  <Select
                     value={purgeSec}
-                    onChange={(e) => setPurgeSec(parseInt(e.target.value, 10))}
-                    className="appearance-none rounded-md border border-border bg-bg-lighter px-2.5 py-2 text-[13px] font-normal normal-case tracking-normal text-text-primary outline-none focus:border-accent"
-                  >
-                    <option value={0}>Don't delete any</option>
-                    <option value={3600}>Last hour</option>
-                    <option value={86400}>Last 24 hours</option>
-                    <option value={7 * 86400}>Last 7 days</option>
-                  </select>
+                    onChange={setPurgeSec}
+                    options={[
+                      { value: 0, label: "Don't delete any" },
+                      { value: 3600, label: "Last hour" },
+                      { value: 86400, label: "Last 24 hours" },
+                      { value: 7 * 86400, label: "Last 7 days" },
+                    ]}
+                  />
                 </label>
               </div>
             )}
             {confirm.kind === "timeout" && (
               <label className="mb-3 flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                 Duration
-                <select
+                <Select
                   value={timeoutSec}
-                  onChange={(e) => setTimeoutSec(parseInt(e.target.value, 10))}
-                  className="appearance-none rounded-md border border-border bg-bg-lighter px-2.5 py-2 text-[13px] font-normal normal-case tracking-normal text-text-primary outline-none focus:border-accent"
-                >
-                  <option value={60}>60 seconds</option>
-                  <option value={300}>5 minutes</option>
-                  <option value={600}>10 minutes</option>
-                  <option value={3600}>1 hour</option>
-                  <option value={86400}>1 day</option>
-                  <option value={7 * 86400}>1 week</option>
-                </select>
+                  onChange={setTimeoutSec}
+                  options={[
+                    { value: 60, label: "60 seconds" },
+                    { value: 300, label: "5 minutes" },
+                    { value: 600, label: "10 minutes" },
+                    { value: 3600, label: "1 hour" },
+                    { value: 86400, label: "1 day" },
+                    { value: 7 * 86400, label: "1 week" },
+                  ]}
+                />
               </label>
             )}
             <div className="flex gap-2.5">

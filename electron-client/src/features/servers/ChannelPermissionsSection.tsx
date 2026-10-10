@@ -6,6 +6,9 @@ import { useAuthStore } from "../../stores/authStore";
 import { channelKey } from "../../lib/channelKey";
 import { toast } from "../../stores/toastStore";
 import type { ChannelInfo } from "../../types";
+import Select from "../../components/Select";
+import { UserAvatar } from "../../components/UserAvatar";
+import { roleColor } from "./tabs/helpers";
 import {
   CHANNEL_OVERWRITE_PERMISSIONS,
   PERM,
@@ -226,10 +229,12 @@ export const ChannelPermissionsSection = forwardRef<
   const targetsWithOverwrites = new Set(
     overwrites.map((o) => `${o.targetType}:${o.targetId}`),
   );
-  const optionSuffix = (key: string) => {
-    const shown = pending[key] ?? stored(key);
-    const mark = shown.allow !== 0 || shown.deny !== 0 || targetsWithOverwrites.has(key) ? " •" : "";
-    return pending[key] ? `${mark} (unsaved)` : mark;
+  const optionHint = (key: string): string | undefined => {
+    if (pending[key]) return "Unsaved changes";
+    const shown = stored(key);
+    return shown.allow !== 0 || shown.deny !== 0 || targetsWithOverwrites.has(key)
+      ? "Has overrides"
+      : undefined;
   };
 
   return (
@@ -329,28 +334,32 @@ export const ChannelPermissionsSection = forwardRef<
         </div>
       )}
 
-      <select
+      <Select
+        className="mb-3"
+        aria-label="Overwrite target"
         value={target}
-        onChange={(e) => setTarget(e.target.value)}
-        className="mb-3 w-full appearance-none rounded-md border border-border bg-bg-lighter px-3 py-2.5 pr-9 text-[13px] text-text-primary outline-none transition-all hover:border-text-faint focus:border-accent focus:shadow-ring"
-      >
-        <optgroup label="Roles">
-          {offeredRoles.map((r) => (
-            <option key={`role:${r.id}`} value={`role:${r.id}`}>
-              {r.isDefault ? "@everyone" : r.name}
-              {optionSuffix(`role:${r.id}`)}
-            </option>
-          ))}
-        </optgroup>
-        <optgroup label="Members">
-          {members.map((m) => (
-            <option key={`member:${m.username}`} value={`member:${m.username}`}>
-              {m.nickname ? `${m.nickname} (${m.username})` : m.username}
-              {optionSuffix(`member:${m.username}`)}
-            </option>
-          ))}
-        </optgroup>
-      </select>
+        onChange={setTarget}
+        options={[
+          {
+            label: "Roles",
+            options: offeredRoles.map((r) => ({
+              value: `role:${r.id}`,
+              label: r.isDefault ? "@everyone" : r.name,
+              hint: optionHint(`role:${r.id}`),
+              icon: <span className="h-2.5 w-2.5 rounded-full" style={{ background: roleColor(r.color) }} />,
+            })),
+          },
+          {
+            label: "Members",
+            options: members.map((m) => ({
+              value: `member:${m.username}`,
+              label: m.nickname ? `${m.nickname} (${m.username})` : m.username,
+              hint: optionHint(`member:${m.username}`),
+              icon: <UserAvatar username={m.username} size={18} />,
+            })),
+          },
+        ]}
+      />
 
       <div className="flex flex-col divide-y divide-border-divider rounded-md border border-border">
         {CHANNEL_OVERWRITE_PERMISSIONS.map((p) => {

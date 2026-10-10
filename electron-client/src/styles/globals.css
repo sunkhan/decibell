@@ -1360,6 +1360,157 @@ html, body, #root {
   to   { opacity: 1; transform: translateX(0) scale(1); }
 }
 
+/* ─── Select (components/Select.tsx) ─────────────────────────────────
+   The dropdown picker that replaced native <select> (whose popup the OS
+   draws). One structure; each theme family gives it its own hand:
+
+     nocturne / matinee  lacquer — the chosen row sits in a champagne
+                         wash with a brass rule at its edge, the card
+                         catches a faint sheen; fades up into place.
+     graphite*           crisp — the row under the pointer fills solid
+                         accent like a desktop menu, the check leads.
+     console*            terminal — set in the meta face, a › cursor on
+                         the active row, // group labels, a typed ▾,
+                         and the list prints in top to bottom.
+
+   Everything is drawn from tokens, so each light/dark twin follows. */
+.dsel-option {
+  transition: none;
+}
+.dsel-option[data-active] {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+.dsel-option[aria-selected="true"] {
+  color: var(--color-text-bright);
+}
+.dsel-check {
+  order: 10;
+  color: var(--color-accent);
+  visibility: hidden;
+}
+.dsel-option[aria-selected="true"] .dsel-check {
+  visibility: visible;
+}
+.dsel-marker,
+.dsel-glyph {
+  display: none;
+}
+.dsel-menu {
+  animation: dselIn 0.14s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  transform-origin: top center;
+}
+.dsel-menu[data-side="above"] {
+  --dsel-dy: 4px;
+  transform-origin: bottom center;
+}
+@keyframes dselIn {
+  from { opacity: 0; transform: translateY(var(--dsel-dy, -4px)) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* lacquer */
+:root[data-theme="nocturne"] .dsel-option[aria-selected="true"],
+:root[data-theme="matinee"] .dsel-option[aria-selected="true"] {
+  background: var(--color-accent-soft);
+}
+:root[data-theme="nocturne"] .dsel-option[aria-selected="true"][data-active],
+:root[data-theme="matinee"] .dsel-option[aria-selected="true"][data-active] {
+  background: var(--color-accent-mid);
+}
+:root[data-theme="nocturne"] .dsel-option[aria-selected="true"]::before,
+:root[data-theme="matinee"] .dsel-option[aria-selected="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 22%;
+  bottom: 22%;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--color-accent);
+}
+:root[data-theme="nocturne"] .dsel-menu {
+  background-image: linear-gradient(to bottom, rgb(255 244 228 / 0.035), transparent 56px);
+}
+
+/* crisp */
+:root[data-theme^="graphite"] .dsel-check {
+  order: -1;
+}
+:root[data-theme^="graphite"] .dsel-option[data-active] {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+:root[data-theme^="graphite"] .dsel-option[data-active] .dsel-check,
+:root[data-theme^="graphite"] .dsel-option[data-active] .dsel-hint {
+  color: var(--color-on-accent);
+}
+:root[data-theme^="graphite"] .dsel-option[data-active] .dsel-hint {
+  opacity: 0.8;
+}
+:root[data-theme^="graphite"] .dsel-menu {
+  animation: dselPop 0.12s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+@keyframes dselPop {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* terminal */
+:root[data-theme^="console"] .dsel-trigger,
+:root[data-theme^="console"] .dsel-menu {
+  font-family: var(--font-meta);
+}
+:root[data-theme^="console"] .dsel-chevron {
+  display: none;
+}
+:root[data-theme^="console"] .dsel-glyph {
+  display: inline;
+  line-height: 1;
+}
+:root[data-theme^="console"] .dsel-marker {
+  display: inline-block;
+  order: -2;
+  width: 1ch;
+  color: var(--color-accent);
+  visibility: hidden;
+}
+:root[data-theme^="console"] .dsel-option[data-active] {
+  background: var(--color-accent-soft);
+  color: var(--color-text-bright);
+}
+:root[data-theme^="console"] .dsel-option[data-active] .dsel-marker {
+  visibility: visible;
+}
+:root[data-theme^="console"] .dsel-option[aria-selected="true"] .dsel-label {
+  color: var(--color-accent-bright);
+}
+:root[data-theme^="console"] .dsel-group::before {
+  content: "// ";
+  color: var(--color-accent);
+}
+:root[data-theme^="console"] .dsel-menu {
+  animation: dselPrint 0.12s steps(5, end) both;
+}
+:root[data-theme^="console"] .dsel-menu[data-side="above"] {
+  animation-name: dselPrintUp;
+}
+@keyframes dselPrint {
+  from { clip-path: inset(0 0 100% 0); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+@keyframes dselPrintUp {
+  from { clip-path: inset(100% 0 0 0); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsel-menu,
+  :root[data-theme] .dsel-menu {
+    animation: none;
+  }
+}
+
 /* Rich contentEditable input — matches textarea visuals, inlines Twemoji */
 .rich-input {
   min-height: 1.4em;
