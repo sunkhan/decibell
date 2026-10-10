@@ -126,8 +126,11 @@ function bindingProblem(
   if (b.keys.length === 0) return null;
   const twin = bindings.find((o) => o.id !== b.id && sameCombo(o.keys, b.keys));
   if (twin) return `Same keys as “${actionLabel(twin.action)}”.`;
+  if (status?.backend === "portal" && b.keys.some(isMouseKey)) {
+    return "Your desktop's shortcut system only takes keys. Click the keys and press the button to see how to remap it.";
+  }
   if (status?.backend === "portal" && !portalCanBind(b.keys)) {
-    return "Your desktop's shortcut system needs a key, optionally with modifiers — not a mouse button or a modifier on its own.";
+    return "Your desktop's shortcut system needs a key, optionally with modifiers — not a modifier on its own.";
   }
   if (status?.backend === "electron" && !isHoldAction(b.action)) {
     if (b.keys.some(isMouseKey) || b.keys.every((k) => modifierOf(k) || ["Control", "Shift", "Alt", "Meta"].includes(k))) {
@@ -161,6 +164,90 @@ function KeyChips({ keys }: { keys: string[] }) {
   );
 }
 
+type Desktop = "kde" | "gnome" | "other";
+
+/// The desktop's shortcut service (Wayland portal) binds keys only, and
+/// nothing outside the compositor may watch a mouse — so a side button
+/// becomes a key combination in the desktop's own settings first, and
+/// Decibell binds that.
+function MouseButtonGuide({
+  button,
+  desktop,
+  onRecordAgain,
+  onDismiss,
+}: {
+  button: string;
+  desktop: Desktop;
+  onRecordAgain: () => void;
+  onDismiss: () => void;
+}) {
+  const name = keyLabel(button);
+  const [openFailed, setOpenFailed] = useState(false);
+  const openSettings = () => {
+    window.decibell.hotkeys
+      .openMouseSettings()
+      .then((ok) => setOpenFailed(!ok))
+      .catch(() => setOpenFailed(true));
+  };
+  return (
+    <div className="mt-3 rounded-md border border-border-divider bg-bg-lighter px-3.5 py-3 text-[12px] leading-[1.6] text-text-secondary">
+      <div className="text-[13px] font-medium text-text-primary">Turn {name} into a key first</div>
+      <div className="mt-0.5 text-text-muted">
+        Your desktop's shortcut system only takes keys, and only the desktop can see your mouse.
+      </div>
+      {desktop === "kde" ? (
+        <ol className="mt-2 list-decimal space-y-1 pl-4">
+          <li>
+            Open your mouse settings and go to <span className="font-medium text-text-primary">Extra Mouse Buttons</span>.
+          </li>
+          <li>
+            Click <span className="font-medium text-text-primary">Add Binding</span>, press {name}, then type a
+            combination you don't use anywhere else. One with the Meta key, like Meta + F9, stays out of your
+            games' way.
+          </li>
+          <li>Come back and press {name} here — Decibell records that combination.</li>
+        </ol>
+      ) : desktop === "gnome" ? (
+        <div className="mt-2">
+          GNOME can't remap mouse buttons on its own. A tool like Piper (for gaming mice) or input-remapper can turn{" "}
+          {name} into a key combination — then press it here again.
+        </div>
+      ) : (
+        <div className="mt-2">
+          If your desktop's input settings can remap {name} to a key combination, do that and press it here again. Sway
+          and Hyprland can also bind the button to the command line below.
+        </div>
+      )}
+      {openFailed && <div className="mt-2 text-danger">Couldn't open System Settings — open it from your app menu.</div>}
+      <div className="mt-3 flex items-center gap-2">
+        {desktop === "kde" && (
+          <button
+            type="button"
+            onClick={openSettings}
+            className="rounded-sm bg-accent px-3 py-1.5 text-[12px] font-semibold text-on-accent hover:bg-accent-hover"
+          >
+            Open mouse settings
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onRecordAgain}
+          className="rounded-sm border border-border px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary"
+        >
+          Record again
+        </button>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="rounded-sm px-2 py-1.5 text-[12px] font-medium text-text-muted transition-colors hover:text-text-primary"
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function BindingRow({
   binding,
   recording,
@@ -169,6 +256,7 @@ function BindingRow({
   onRemove,
   status,
   problem,
+  guide,
 }: {
   binding: HotkeyBinding;
   recording: boolean;
@@ -177,6 +265,8 @@ function BindingRow({
   onRemove: () => void;
   status: HotkeysStatus | null;
   problem: string | null;
+  /// Shown under the row instead of the usual notes.
+  guide?: React.ReactNode;
 }) {
   const portal = status?.backend === "portal";
   const trigger = portal ? status?.triggers[binding.id] : undefined;
@@ -243,16 +333,21 @@ function BindingRow({
       </div>
       {recording && (
         <div className="mt-2 text-[12px] leading-[1.55] text-text-muted">
-          Press a key or a combo{status?.backend === "portal" || status?.backend === "electron" ? "" : ", or a middle / back / forward mouse button"}. Esc cancels.
+          {status?.backend === "portal"
+            ? "Press a key or a combo. Mouse side buttons need a quick remap in your desktop first — press one to see how. Esc cancels."
+            : status?.backend === "electron"
+              ? "Press a key or a combo. Esc cancels."
+              : "Press a key or a combo, or a middle / back / forward mouse button. Esc cancels."}
         </div>
       )}
-      {!recording && problem && (
+      {!recording && guide}
+      {!recording && !guide && problem && (
         <div className="mt-2 text-[12px] leading-[1.55] text-danger">{problem}</div>
       )}
-      {!recording && portalNote && (
+      {!recording && !guide && portalNote && (
         <div className="mt-2 text-[12px] leading-[1.55] text-text-muted">{portalNote}</div>
       )}
-      {!recording && !problem && swallowNote(binding, status) && (
+      {!recording && !guide && !problem && swallowNote(binding, status) && (
         <div className="mt-2 text-[12px] leading-[1.55] text-text-muted">{swallowNote(binding, status)}</div>
       )}
     </div>
@@ -287,8 +382,14 @@ export default function KeybindsTab() {
   const [command, setCommand] = useState("decibell");
   const [, relabel] = useState(0);
   const [configureError, setConfigureError] = useState<string | null>(null);
+  const [desktop, setDesktop] = useState<Desktop>("other");
+  /// A side button recorded where the desktop can't bind it: guide the remap.
+  const [mouseGuide, setMouseGuide] = useState<{ id: string; button: string } | null>(null);
 
   useEffect(() => onKeyboardLayout(() => relabel((n) => n + 1)), []);
+  useEffect(() => {
+    window.decibell.hotkeys.desktop().then(setDesktop).catch(() => {});
+  }, []);
   useEffect(() => {
     window.decibell.hotkeys
       .launchCommand()
@@ -304,7 +405,11 @@ export default function KeybindsTab() {
     const stop = recordCombo((keys) => {
       const s = useHotkeysStore.getState();
       const b = s.bindings.find((x) => x.id === recordingId);
-      if (keys && b) {
+      const button = keys?.find(isMouseKey);
+      if (b && button && s.status?.backend === "portal") {
+        // Keep whatever the row had; the guide explains the remap.
+        setMouseGuide({ id: recordingId, button });
+      } else if (keys && b) {
         // A fresh id: the desktop keeps its own assignment per id, so a
         // new combo only takes effect under a new one.
         s.updateBinding(recordingId, { keys, id: newBindingId() });
@@ -328,7 +433,7 @@ export default function KeybindsTab() {
         : HOTKEY_ACTIONS.find((a) => !bound.has(a.id))?.id ?? "toggle_mute";
     const id = newBindingId();
     useHotkeysStore.getState().addBinding({ id, action, keys: [] });
-    setRecordingId(id);
+    startRecording(id);
   };
 
   const setAction = (id: string, action: HotkeyAction) => {
@@ -336,7 +441,22 @@ export default function KeybindsTab() {
     saveSettings();
   };
 
+  const startRecording = (id: string | null) => {
+    setMouseGuide(null);
+    setRecordingId(id);
+  };
+
+  const dismissGuide = () => {
+    const id = mouseGuide?.id;
+    setMouseGuide(null);
+    // A new row that never got a key isn't worth keeping.
+    if (id && useHotkeysStore.getState().bindings.find((b) => b.id === id)?.keys.length === 0) {
+      useHotkeysStore.getState().removeBinding(id);
+    }
+  };
+
   const remove = (id: string) => {
+    if (mouseGuide?.id === id) setMouseGuide(null);
     if (recordingId === id) setRecordingId(null);
     useHotkeysStore.getState().removeBinding(id);
     saveSettings();
@@ -353,7 +473,7 @@ export default function KeybindsTab() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <SectionLabel>Keybinds</SectionLabel>
+        <SectionLabel>On this computer</SectionLabel>
         <div className="rounded-md border border-border-divider bg-bg-light px-4 py-3.5">
           <div className="text-[13px] leading-[1.6] text-text-secondary">{backendSummary(status)}</div>
           {status?.state === "starting" && status.backend === "portal" && (
@@ -376,6 +496,7 @@ export default function KeybindsTab() {
       </div>
 
       <div className="flex flex-col gap-2.5">
+        <SectionLabel>Your keybinds</SectionLabel>
         {bindings.length === 0 && (
           <div className="rounded-md border border-dashed border-border-divider px-4 py-6 text-center text-[13px] text-text-muted">
             No keybinds yet.
@@ -386,11 +507,21 @@ export default function KeybindsTab() {
             key={b.id}
             binding={b}
             recording={recordingId === b.id}
-            onRecord={() => setRecordingId(recordingId === b.id ? null : b.id)}
+            onRecord={() => startRecording(recordingId === b.id ? null : b.id)}
             onAction={(a) => setAction(b.id, a)}
             onRemove={() => remove(b.id)}
             status={status}
             problem={bindingProblem(b, bindings, status, acceleratorFailures)}
+            guide={
+              mouseGuide?.id === b.id ? (
+                <MouseButtonGuide
+                  button={mouseGuide.button}
+                  desktop={desktop}
+                  onRecordAgain={() => startRecording(b.id)}
+                  onDismiss={dismissGuide}
+                />
+              ) : undefined
+            }
           />
         ))}
         <div className="flex items-center gap-3">

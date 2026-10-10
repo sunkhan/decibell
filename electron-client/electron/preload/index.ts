@@ -465,5 +465,12 @@ contextBridge.exposeInMainWorld("decibell", {
     /// null in a dev checkout.
     launchCommand: (): Promise<string | null> =>
       ipcRenderer.invoke("decibell:hotkeys:launchCommand") as Promise<string | null>,
+    /// Which Linux desktop is running ("other" off Linux), to tailor the
+    /// mouse-button guide on desktops whose shortcut service binds keys only.
+    desktop: (): Promise<"kde" | "gnome" | "other"> =>
+      ipcRenderer.invoke("decibell:hotkeys:desktop") as Promise<"kde" | "gnome" | "other">,
+    /// KDE: open System Settings → Mouse. Resolves false elsewhere.
+    openMouseSettings: (): Promise<boolean> =>
+      ipcRenderer.invoke("decibell:hotkeys:openMouseSettings") as Promise<boolean>,
   },
 });

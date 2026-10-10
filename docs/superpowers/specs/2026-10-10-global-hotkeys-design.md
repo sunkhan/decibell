@@ -125,7 +125,22 @@ zbus (already a Linux dependency), own connection, own thread.
    button.
 
 No bindings means no session, so a user who never opens Keybinds never sees a
-dialog. Mouse bindings are skipped on this backend; the tab says so.
+dialog.
+
+**Mouse buttons on Wayland.** The shortcuts spec behind `preferred_trigger`
+describes modifiers + one keyboard key, so the portal can't bind a mouse
+button, and nothing outside the compositor may watch the mouse:
+`/dev/input/event*` is `root:input 0660` and logind's `uaccess` covers
+joysticks only, by design. Reading evdev would need the `input` group, which
+exposes every keyboard too — ruled out (bound keys only). So a side button
+becomes a key in the desktop first: recording a mouse button on the
+`portal` backend opens a guide in that row instead of saving it. KDE (Plasma
+6.1+, verified on 6.7.5): System Settings → Mouse → Extra Mouse Buttons →
+Add Binding (KWin's `buttonsrebind`), with an "Open mouse settings" button
+(`systemsettings kcm_mouse`); suggest a typeable Meta combo (the dialog
+records keys, most keyboards have no F13, and games rarely bind Super).
+GNOME: no built-in remap (Piper / input-remapper). Others: their input
+settings, or the command line. Decibell never writes desktop config.
 
 ### X11: passive grabs on the bound combos
 

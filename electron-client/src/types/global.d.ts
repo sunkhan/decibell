@@ -191,6 +191,8 @@ declare global {
           bindings: Array<{ id: string; action: string; keys: string[] }>,
         ) => Promise<string[]>;
         launchCommand: () => Promise<string | null>;
+        desktop: () => Promise<"kde" | "gnome" | "other">;
+        openMouseSettings: () => Promise<boolean>;
       };
     };
   }

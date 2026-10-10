@@ -1658,6 +1658,21 @@ throwaway Xvfb driven over XTEST) passes: Ctrl+M fires once, Ctrl+Shift+M and ba
 Mouse4 push-to-talk press/release reaches the voice gate, a sub-10 ms tap counts once, unbound keys
 typed idle and while push-to-talk is held never reach the matcher, and unbinding drops every grab.
 
+**Client: mouse side buttons on Wayland get a remap guide (2026-10-10) ✅ — live test pending** — A
+side-agent note: on KDE / GNOME the portal can't bind mouse buttons, and many gamers keep
+push-to-talk on a side button. Owner asked whether a different listening approach could fix it. It
+can't within bound-keys-only: the shortcuts spec is keys-only, and `/dev/input` is `root:input` with
+logind `uaccess` for joysticks only, so reading the mouse would mean the `input` group and every
+keyboard with it. Owner call: guide the user rather than write desktop config. Recording a side
+button on the portal backend now opens a guide in that row: KDE → Extra Mouse Buttons (KWin
+`buttonsrebind`, confirmed on Plasma 6.7.5) with an "Open mouse settings" button
+(`systemsettings kcm_mouse`) and a suggested Meta combo, then record the button again; GNOME →
+Piper / input-remapper; others → their input settings or the command line. The recording hint says
+side buttons need a remap; the Keybinds tab's top card is "On this computer", the list "Your
+keybinds". Verified: tsc web 0 / node 0; the guide, triggered by a synthetic back-button press in
+the real recorder, screenshotted in Nocturne and Matinee, plus Audio → Input Mode. Pending: whether
+KWin's remap delivers press and release (push-to-talk) through the portal.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

@@ -12,6 +12,7 @@
 // Both end in the addon's `hotkeysInject`, the same dispatcher the native
 // listeners use. Design: docs/superpowers/specs/2026-10-10-global-hotkeys-design.md.
 
+import { spawn } from "child_process";
 import * as fs from "fs";
 import { app, globalShortcut, ipcMain } from "electron";
 import { callCommand } from "./addon";
@@ -172,7 +173,38 @@ function launchCommand(): string | null {
   return process.execPath;
 }
 
+// ── Mouse buttons on Wayland ───────────────────────────────────────────
+// The desktop's shortcut service only binds keys, so a side button has to
+// become a key in the desktop's own settings first (KDE: Mouse → Extra
+// Mouse Buttons). The Keybinds tab guides that; these two calls tailor it.
+
+type Desktop = "kde" | "gnome" | "other";
+
+function desktop(): Desktop {
+  if (process.platform !== "linux") return "other";
+  const d = (process.env.XDG_CURRENT_DESKTOP ?? "").toUpperCase().split(":");
+  if (d.includes("KDE")) return "kde";
+  if (d.includes("GNOME")) return "gnome";
+  return "other";
+}
+
+/// KDE only: open System Settings on the Mouse page.
+function openMouseSettings(): boolean {
+  if (desktop() !== "kde") return false;
+  try {
+    const child = spawn("systemsettings", ["kcm_mouse"], { detached: true, stdio: "ignore" });
+    child.on("error", (e) => console.warn("[hotkeys] systemsettings failed:", e));
+    child.unref();
+    return true;
+  } catch (e) {
+    console.warn("[hotkeys] systemsettings failed:", e);
+    return false;
+  }
+}
+
 export function registerHotkeyIpc(): void {
+  ipcMain.handle("decibell:hotkeys:desktop", () => desktop());
+  ipcMain.handle("decibell:hotkeys:openMouseSettings", () => openMouseSettings());
   ipcMain.handle("decibell:hotkeys:setAccelerators", (_e, bindings: unknown) => {
     if (!Array.isArray(bindings)) return [];
     const valid = bindings.filter(
