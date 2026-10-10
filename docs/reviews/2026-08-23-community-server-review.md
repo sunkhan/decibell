@@ -1717,6 +1717,10 @@ a little smaller at small window sizes, max unchanged. Both shells' backdrop mar
 Follow-up (owner: start shrinking at a larger window size): thresholds raised to 1280 px wide /
 860 px tall. 1024×768 → 912 × 672, 1280×800 → 1216 × 704, 1366×768 → 1302 × 672; 1440×900,
 1920×1000, 1920×1080 and 2560×1440 unchanged (max 1600 × 1120 intact). Measured at all of them.
+Then (owner: always keep distance from the edges, feel like a floating menu): the margin scales with
+the window — max(56 px, 5 % of width) at the sides, max(48 px, 6 % of height) top and bottom — instead
+of stepping to 32 px on larger windows. 1280×800 → 1152 × 704, 1440×900 → 1296 × 792, 1920×1080 →
+1600 × 950 (was 1600 × 1015); small windows as before; the 1600 × 1120 cap is unchanged.
 
 ## 5. Suggested order of work
 
