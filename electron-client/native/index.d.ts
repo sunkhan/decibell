@@ -1209,14 +1209,13 @@ export interface SetInputLevelReportingArgs {
 export declare function setInputLevelReporting(args: SetInputLevelReportingArgs): void
 /**
  * Boot-time options pushed in from Electron main. Everything platform-
- * path-shaped (userData, cache) is resolved Node-side via
+ * path-shaped (userData) is resolved Node-side via
  * `app.getPath()` and shipped here so Rust never has to figure out
  * platform-specific dirs itself — the Electron main process is the
  * authority.
  */
 export interface InitOptions {
   userDataDir: string
-  cacheDir: string
   appVersion: string
   /**
    * base64 of a random 32-byte key that Electron main keeps wrapped by
