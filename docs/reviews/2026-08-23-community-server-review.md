@@ -1873,6 +1873,18 @@ committed and the fixed component: with a neighbouring list scrolling itself eve
 closed, the new one stays open; scrolling a container around the trigger still closes it; scrolling
 the list itself doesn't; the 20 interaction + hover checks pass; tsc web 0.
 
+**Client: "Channel cache" setting removed (2026-10-10) ✅** — Owner asked what Network → Channel cache
+did. It was wired end to end (uiStore → `channel_cache_size` in the native config → chatStore's LRU on
+every channel switch, `enforceChannelCacheSize` on change): it set how many visited text channels keep
+their messages, history flags and scroll position. But since the real-DOM list every slice is capped at
+150 messages, so the RAM it guarded is small, and its copy ("~1000 messages, 0.5–1 MB per channel") was
+stale; it didn't touch server traffic (every viewable channel's messages arrive regardless; uncached
+channels' live messages are dropped) or DMs. Owner decision: remove it. The cap is now
+`CHANNEL_CACHE_SIZE = 10` in chatStore; the tab section, uiStore field, save / load and the native
+config field are gone (old configs carrying the key still load — no deny_unknown_fields).
+Verified: tsc web 0; cargo build + `cargo test --lib` 221; a node run of the store (ten channels stay
+cached, an eleventh evicts the least recent, no enforce action left).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

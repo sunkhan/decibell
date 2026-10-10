@@ -45,7 +45,6 @@ interface LoadedConfigShape {
     agc_enabled: boolean;
     upload_limit_bps: number;
     download_limit_bps: number;
-    channel_cache_size: number;
     media_audio_volume: number | null;
     media_audio_muted: boolean;
     media_video_volume: number | null;
@@ -160,9 +159,6 @@ export async function loadSettings(): Promise<void> {
   );
   hotkeys.setInputMode(settings.input_mode === "push_to_talk" ? "push_to_talk" : "voice_activity");
   hotkeys.setPttReleaseDelayMs(settings.ptt_release_delay_ms ?? DEFAULT_PTT_RELEASE_DELAY_MS);
-
-  // 0 means "no value persisted" — keep the in-store default of 10.
-  useUiStore.getState().setChannelCacheSize(settings.channel_cache_size || 10);
 
   // Media-player volumes. null = never saved → keep store defaults
   // instead of overwriting them with 0.

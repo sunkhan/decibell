@@ -273,8 +273,6 @@ interface UiState {
   downloadLimitBps: number;
   setUploadLimitBps: (value: number) => void;
   setDownloadLimitBps: (value: number) => void;
-  channelCacheSize: number;
-  setChannelCacheSize: (value: number) => void;
   mediaAudioVolume: number;
   mediaAudioMuted: boolean;
   mediaVideoVolume: number;
@@ -415,8 +413,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   downloadLimitBps: 0,
   setUploadLimitBps: (value) => set({ uploadLimitBps: value }),
   setDownloadLimitBps: (value) => set({ downloadLimitBps: value }),
-  channelCacheSize: 10,
-  setChannelCacheSize: (value) => set({ channelCacheSize: value }),
   mediaAudioVolume: 1,
   mediaAudioMuted: false,
   mediaVideoVolume: 1,

@@ -59,7 +59,6 @@ function doSave(): void {
     agc_enabled: ui.agcEnabled,
     upload_limit_bps: ui.uploadLimitBps,
     download_limit_bps: ui.downloadLimitBps,
-    channel_cache_size: ui.channelCacheSize,
     media_audio_volume: ui.mediaAudioVolume,
     media_audio_muted: ui.mediaAudioMuted,
     media_video_volume: ui.mediaVideoVolume,

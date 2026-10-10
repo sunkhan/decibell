@@ -11,16 +11,13 @@ import type {
   ServerMember,
   ServerRole,
 } from "../types";
-import { useUiStore } from "./uiStore";
 import { channelKey, type ChannelKey } from "../lib/channelKey";
 
 // PR4 chatStore — text channels, messages, history paging, optimistic
 // bubbles. Members/bans/invites are deferred to later PRs. The LRU
 // channel cache uses `channelAccessOrder` (most-recent first); each
 // `setActiveChannel` moves the channel to the front and prunes any
-// tail beyond `useUiStore.channelCacheSize` to keep RAM bounded.
-// `enforceChannelCacheSize` runs the same prune on demand (called from
-// NetworkTab when the user lowers the cap mid-session).
+// tail beyond CHANNEL_CACHE_SIZE.
 //
 // Every per-channel map is keyed by ChannelKey (serverId + channelId)
 // — bare channel ids collide across servers (each has a "general").
@@ -124,8 +121,8 @@ interface ChatState {
   chatViewSize: { width: number; height: number } | null;
   /// LRU access order for cached channels — front (index 0) is the
   /// most recently visited, tail is the least. Channels beyond
-  /// `useUiStore.channelCacheSize` get evicted from every per-channel
-  /// map below on the next setActiveChannel or enforceChannelCacheSize.
+  /// CHANNEL_CACHE_SIZE get evicted from every per-channel map below on
+  /// the next setActiveChannel.
   channelAccessOrder: ChannelKey[];
   /// "Go to message" from outside the chat panel (the Transfers panel).
   /// ChatPanel runs it once that channel is active and its first page is
@@ -290,10 +287,6 @@ interface ChatState {
   /// ResizeObserver. Pass `null` on unmount so AttachmentList's sizing
   /// helpers fall back to their fixed defaults.
   setChatViewSize: (size: { width: number; height: number } | null) => void;
-  /// Drop cached channels beyond `useUiStore.channelCacheSize`. Called
-  /// when the cap shrinks so eviction is immediate, not deferred to
-  /// the next channel switch.
-  enforceChannelCacheSize: () => void;
 }
 
 /// The channel whose RealMessageList is mounted right now (set by
@@ -313,6 +306,13 @@ export function setDisplayedChannelKey(key: ChannelKey | null): void {
 /// RealMessageList's MAX_ROWS so a revisit mounts no more than a normal
 /// visit does.
 const BACKGROUND_SLICE_CAP = 150;
+
+/// How many recently visited channels keep their messages, history flags
+/// and scroll position (a revisit is instant and lands where you left off;
+/// past this a revisit refetches the newest page). Each slice is capped at
+/// 150 messages, so this costs little memory. Was a Network setting until
+/// 2026-10-10; it changed so little that it went.
+const CHANNEL_CACHE_SIZE = 10;
 
 // Merge a new message into a channel's list, sorted by id ascending
 // and deduped by id. id=0 entries (optimistic bubbles) sit at the tail
@@ -446,7 +446,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // does, and every event handler checks activeServerId first).
       if (!state.activeServerId) return { activeChannelId: channelId };
       const key = channelKey(state.activeServerId, channelId);
-      const cap = Math.max(1, useUiStore.getState().channelCacheSize || 10);
+      const cap = CHANNEL_CACHE_SIZE;
       // Move the activated channel to the front of the access order.
       const reordered = [
         key,
@@ -1037,37 +1037,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       overwritesByChannel: {},
       invitesByServer: {},
       pendingInvite: null,
-    }),
-
-  enforceChannelCacheSize: () =>
-    set((state) => {
-      const cap = Math.max(1, useUiStore.getState().channelCacheSize || 10);
-      if (state.channelAccessOrder.length <= cap) return state;
-      // Always retain the active channel even if it's somehow not in
-      // the top `cap` of the access order (defensive — shouldn't
-      // happen since setActiveChannel reorders).
-      const keep = state.channelAccessOrder.slice(0, cap);
-      if (state.activeServerId && state.activeChannelId) {
-        const activeKey = channelKey(state.activeServerId, state.activeChannelId);
-        if (!keep.includes(activeKey)) {
-          keep.pop();
-          keep.unshift(activeKey);
-        }
-      }
-      const keepSet = new Set<string>(keep);
-      const filter = <T,>(rec: Record<ChannelKey, T>): Record<ChannelKey, T> =>
-        Object.fromEntries(
-          Object.entries(rec).filter(([k]) => keepSet.has(k)),
-        ) as Record<ChannelKey, T>;
-      return {
-        channelAccessOrder: keep,
-        messagesByChannel: filter(state.messagesByChannel),
-        hasMoreHistory: filter(state.hasMoreHistory),
-        hasMoreAfter: filter(state.hasMoreAfter),
-        historyLoading: filter(state.historyLoading),
-        historyFetched: filter(state.historyFetched),
-        scrollPositionsByChannel: filter(state.scrollPositionsByChannel),
-      };
     }),
 
   setScrollPosition: (serverId, channelId, position) =>

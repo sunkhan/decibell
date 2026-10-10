@@ -62,11 +62,6 @@ pub struct AppSettings {
     /// Attachment download cap in bytes per second. 0 = unlimited.
     #[serde(default)]
     pub download_limit_bps: u64,
-    /// How many recently-visited channels keep their messages, scroll
-    /// position, and history flags cached in RAM. The rest is dropped.
-    /// 0 means "use the client default" (currently 10).
-    #[serde(default)]
-    pub channel_cache_size: u32,
     /// Persisted volume (0.0–1.0) for the chat audio-attachment player.
     /// None = never set; client falls back to 1.0.
     pub media_audio_volume: Option<f64>,
