@@ -5,7 +5,6 @@ import { saveSettings } from "../saveSettings";
 import {
   HOTKEY_ACTIONS,
   actionLabel,
-  comboLabel,
   isHoldAction,
   isMouseKey,
   keyLabel,
@@ -19,6 +18,13 @@ import {
   type HotkeyAction,
   type HotkeyBinding,
 } from "../../hotkeys/keys";
+import {
+  KeyChips,
+  SwallowBadge,
+  assignedTrigger,
+  isSwallowed,
+  typesText,
+} from "../../hotkeys/KeybindDisplay";
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -90,32 +96,6 @@ function recordCombo(onDone: (keys: string[] | null) => void): () => void {
   };
 }
 
-/// A combo that types text in other apps: no Ctrl / Alt / Super and a
-/// character key (Shift alone still types).
-function typesText(keys: string[]): boolean {
-  const commandMod = keys.some((k) => {
-    const m = ["Control", "Alt", "Meta"].includes(k) ? k : modifierOf(k);
-    return m === "Control" || m === "Alt" || m === "Meta";
-  });
-  return (
-    !commandMod &&
-    keys.some((k) =>
-      /^(Key[A-Z]|Digit[0-9]|Space|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Backquote|Comma|Period|Slash|IntlBackslash|Enter|Backspace|Tab)$/.test(k),
-    )
-  );
-}
-
-/// Where a bound press is taken from the focused app (the desktop's or the
-/// X server's key grab), a typing key would stop typing everywhere else.
-function swallowNote(b: HotkeyBinding, status: HotkeysStatus | null): string | null {
-  const swallows =
-    status?.backend === "portal" ||
-    status?.backend === "x11" ||
-    status?.backend === "xwayland" ||
-    (status?.backend === "electron" && !isHoldAction(b.action));
-  return swallows && typesText(b.keys) ? "While bound, this key won't type in other apps." : null;
-}
-
 /// Why a binding won't work as recorded on this machine, if it won't.
 function bindingProblem(
   b: HotkeyBinding,
@@ -147,21 +127,6 @@ function bindingProblem(
     return "Mouse buttons aren't available here.";
   }
   return null;
-}
-
-function KeyChips({ keys }: { keys: string[] }) {
-  return (
-    <span className="flex flex-wrap items-center gap-1">
-      {keys.map((k, i) => (
-        <span key={k} className="flex items-center gap-1">
-          {i > 0 && <span className="text-[11px] text-text-faint">+</span>}
-          <kbd className="rounded-sm border border-border bg-bg-lighter px-1.5 py-0.5 font-meta text-[12px] font-medium text-text-primary">
-            {keyLabel(k)}
-          </kbd>
-        </span>
-      ))}
-    </span>
-  );
 }
 
 type Desktop = "kde" | "gnome" | "other";
@@ -268,18 +233,16 @@ function BindingRow({
   /// Shown under the row instead of the usual notes.
   guide?: React.ReactNode;
 }) {
-  const portal = status?.backend === "portal";
-  const trigger = portal ? status?.triggers[binding.id] : undefined;
+  const assigned = assignedTrigger(binding, status);
   const portalNote =
-    !portal || binding.keys.length === 0 || problem
+    status?.backend !== "portal" || binding.keys.length === 0 || problem
       ? null
-      : trigger
-        ? trigger.replace(/\s/g, "").toLowerCase() !== comboLabel(binding.keys).replace(/\s/g, "").toLowerCase()
-          ? `Your desktop assigned ${trigger}.`
-          : null
-        : status?.state === "active"
+      : assigned
+        ? `Your desktop assigned ${assigned}.`
+        : !status.triggers[binding.id] && status.state === "active"
           ? "No key assigned in your desktop's shortcut settings."
           : null;
+  const swallowed = !problem && isSwallowed(binding, status);
 
   return (
     <div className="rounded-md border border-border-divider bg-bg-light px-4 py-3">
@@ -314,7 +277,10 @@ function BindingRow({
           {recording ? (
             <span>Press keys…</span>
           ) : binding.keys.length > 0 ? (
-            <KeyChips keys={binding.keys} />
+            <span className="flex w-full items-center justify-between gap-3">
+              <KeyChips keys={binding.keys} />
+              {swallowed && <SwallowBadge typing={typesText(binding.keys)} />}
+            </span>
           ) : (
             <span className="text-text-muted">Click to record</span>
           )}
@@ -347,8 +313,10 @@ function BindingRow({
       {!recording && !guide && portalNote && (
         <div className="mt-2 text-[12px] leading-[1.55] text-text-muted">{portalNote}</div>
       )}
-      {!recording && !guide && !problem && swallowNote(binding, status) && (
-        <div className="mt-2 text-[12px] leading-[1.55] text-text-muted">{swallowNote(binding, status)}</div>
+      {!recording && !guide && swallowed && typesText(binding.keys) && (
+        <div className="mt-2 text-[12px] leading-[1.55] text-text-muted">
+          While bound, this key won't type in other apps.
+        </div>
       )}
     </div>
   );
@@ -359,7 +327,7 @@ function backendSummary(status: HotkeysStatus | null): string {
     case "portal":
       return "Your desktop runs these shortcuts and tells Decibell only when one of them fires. New keybinds are confirmed in a desktop dialog, and you can change their keys in your system settings too.";
     case "x11":
-      return "Keybinds work in every app, including games. Decibell is only told about your bound keys — nothing else you type — and a bound key press doesn't also reach the app you're in.";
+      return "Keybinds work in every app, including games. Decibell is only told about your bound keys — nothing else you type.";
     case "xwayland":
       return "Your desktop has no global shortcut service, so keybinds work while Decibell or an X11 app (most games) is focused, and Decibell is only told about your bound keys. For everything else, bind the command line below in your window manager.";
     case "windows":
@@ -476,6 +444,15 @@ export default function KeybindsTab() {
         <SectionLabel>On this computer</SectionLabel>
         <div className="rounded-md border border-border-divider bg-bg-light px-4 py-3.5">
           <div className="text-[13px] leading-[1.6] text-text-secondary">{backendSummary(status)}</div>
+          {bindings.some((b) => isSwallowed(b, status)) && (
+            <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-[1.55] text-text-muted">
+              <SwallowBadge typing={false} />
+              <span>
+                Here, a bound key press goes to Decibell only — the game or app you're in won't register it. Pick keys
+                your games don't use.
+              </span>
+            </div>
+          )}
           {status?.state === "starting" && status.backend === "portal" && (
             <div className="mt-2 text-[12px] text-text-muted">Waiting for your desktop to confirm…</div>
           )}

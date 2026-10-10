@@ -1673,6 +1673,17 @@ keybinds". Verified: tsc web 0 / node 0; the guide, triggered by a synthetic bac
 the real recorder, screenshotted in Nocturne and Matinee, plus Audio → Input Mode. Pending: whether
 KWin's remap delivers press and release (push-to-talk) through the portal.
 
+**Client: "games won't see it" badge + the push-to-talk key in Audio (2026-10-10) ✅** — Owner live
+test on KDE Plasma 6.7.5 (Wayland portal): keybinds and push-to-talk work. Owner requests: (1) mark,
+where the desktop takes the bound press, that the game in front won't register it; (2) show the
+bound push-to-talk key in Audio when push to talk is on. A shared `features/hotkeys/KeybindDisplay`
+now holds the key chips, `isSwallowed` (portal / x11 / xwayland, and press actions on macOS; never
+Windows polling or the focused fallback), the typing-key check and the desktop-assigned trigger. A
+warning pill, "Games won't see it" (tooltip explains and suggests a key games don't use), sits in each
+affected Keybinds row and once in the "On this computer" card. Audio → Input Mode lists the push to
+talk key(s) with the same pill, the desktop's own trigger when it differs, and "Change in Keybinds".
+Verified: tsc web 0; screenshots in Nocturne + Matinee (portal) and Nocturne (Windows: no pill).
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { invoke, listen } from "../../../lib/ipc";
 import { useUiStore } from "../../../stores/uiStore";
 import { useVoiceStore } from "../../../stores/voiceStore";
@@ -10,6 +10,13 @@ import {
   MAX_PTT_RELEASE_DELAY_MS,
   type InputMode,
 } from "../../../stores/hotkeysStore";
+import {
+  KeyChips,
+  SwallowBadge,
+  assignedTrigger,
+  isSwallowed,
+  typesText,
+} from "../../hotkeys/KeybindDisplay";
 
 function DeviceSelector({
   label,
@@ -374,9 +381,14 @@ function VoiceThresholdBar() {
 function InputModeCard() {
   const inputMode = useHotkeysStore((s) => s.inputMode);
   const releaseDelayMs = useHotkeysStore((s) => s.pttReleaseDelayMs);
-  const hasPttKey = useHotkeysStore((s) =>
-    s.bindings.some((b) => b.action === "push_to_talk" && b.keys.length > 0),
+  const bindings = useHotkeysStore((s) => s.bindings);
+  const status = useHotkeysStore((s) => s.status);
+  const pttBindings = useMemo(
+    () => bindings.filter((b) => b.action === "push_to_talk" && b.keys.length > 0),
+    [bindings],
   );
+  const hasPttKey = pttBindings.length > 0;
+  const openKeybinds = () => useUiStore.getState().setSettingsTab("keybinds");
 
   const setMode = (mode: InputMode) => {
     useHotkeysStore.getState().setInputMode(mode);
@@ -400,11 +412,40 @@ function InputModeCard() {
               No push to talk key yet — your mic stays closed.{" "}
               <button
                 type="button"
-                onClick={() => useUiStore.getState().setSettingsTab("keybinds")}
+                onClick={openKeybinds}
                 className="font-medium text-accent-bright hover:underline"
               >
                 Add one in Keybinds
               </button>
+            </div>
+          )}
+          {hasPttKey && (
+            <div className="mt-4 flex items-start justify-between gap-4">
+              <span className="pt-0.5 text-[13px] font-medium text-text-secondary">
+                Push to talk {pttBindings.length > 1 ? "keys" : "key"}
+              </span>
+              <div className="flex min-w-0 flex-col items-end gap-1.5">
+                {pttBindings.map((b, i) => {
+                  const assigned = assignedTrigger(b, status);
+                  return (
+                    <div key={b.id} className="flex flex-wrap items-center justify-end gap-2">
+                      {i > 0 && <span className="text-[11px] text-text-muted">or</span>}
+                      <KeyChips keys={b.keys} />
+                      {isSwallowed(b, status) && <SwallowBadge typing={typesText(b.keys)} />}
+                      {assigned && (
+                        <span className="text-[11px] text-text-muted">(your desktop: {assigned})</span>
+                      )}
+                    </div>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={openKeybinds}
+                  className="text-[12px] font-medium text-accent-bright hover:underline"
+                >
+                  Change in Keybinds
+                </button>
+              </div>
             </div>
           )}
           <div className="mt-4 flex items-baseline justify-between">
