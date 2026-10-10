@@ -1708,6 +1708,13 @@ them) and a dimmed disabled state. Verified: tsc web 0; knob geometry measured i
 Matinee and Console (2 / 2 / 2 / 2 px, off and on, disabled too); real Server Settings → Overview
 (Public listing off / on) and Settings → Privacy screenshotted.
 
+**Client: settings windows leave more room on small app windows (2026-10-10) ✅** — Owner request:
+a little smaller at small window sizes, max unchanged. Both shells' backdrop margin is now 56 px
+(sides) / 48 px (top-bottom) below 1024 px wide / 720 px tall and stays 32 px above, so at the
+800 × 600 minimum the card is 688 × 504 (was 736 × 536) while 1024 × 768 and up — and the
+1600 × 1120 cap — are untouched. Verified: card measured at 800×600, 900×700, 1024×768, 1280×800,
+1920×1080, 2560×1440 before / after (identical from 1024×768 up); tsc web 0.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
