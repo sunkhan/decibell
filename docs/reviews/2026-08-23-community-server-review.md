@@ -1901,6 +1901,20 @@ no fetch. Cleared on sign-out; nothing survives a restart (owner: not wanted). V
 on A → B → A and after six more channels; with retention 0/30 both; over-budget entries are released
 (30/30 refetch when each claims 20 MB); tsc web 0.
 
+**Client + native: dead cache code removed (2026-10-10) ✅** — Owner request, after the attachment
+caching audit. Gone: the Tauri-era `decibell-asset://` scheme (`registerProtocol`, `cacheDir`, its
+privileged-scheme entry) and the `media-cache` folder it served — nothing in the renderer used it;
+the `cacheDir` / `cache_dir` boot option Electron passed to native, which native stored and never read;
+and native `voice_caps_cache` + `PeerCaps`, filled from every channel's presence update (cleared and
+refilled each time, so it held the last-updated channel's members, not ours) and never read — the
+renderer's voiceStore carries the same caps for watch gating. Also: upstream attachment fetches (the
+attachment protocol, the loopback media server, encrypted-attachment chunks, downloads) now use
+Fetch `cache: "no-store"` (`electron/main/noStore.ts`). The community server sends no cache headers,
+so Chromium stored those responses (61 on the owner's machine) but could never reuse them; the
+renderer's own retention covers reuse. Verified: Electron honours the mode (a no-store response is
+never stored — checked against a cacheable local server: 2 server hits vs 1 by default); tsc web 0 /
+node 0; napi build (index.d.ts no longer has cacheDir); `cargo test --lib` 221.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

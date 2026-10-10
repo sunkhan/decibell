@@ -39,14 +39,13 @@ fn on_load() {
 }
 
 /// Boot-time options pushed in from Electron main. Everything platform-
-/// path-shaped (userData, cache) is resolved Node-side via
+/// path-shaped (userData) is resolved Node-side via
 /// `app.getPath()` and shipped here so Rust never has to figure out
 /// platform-specific dirs itself — the Electron main process is the
 /// authority.
 #[napi(object)]
 pub struct InitOptions {
     pub user_data_dir: String,
-    pub cache_dir: String,
     pub app_version: String,
     /// base64 of a random 32-byte key that Electron main keeps wrapped by
     /// `safeStorage` — the at-rest key for the E2EE key store. Absent when
@@ -91,7 +90,6 @@ pub fn init(
     });
     state::set_boot(state::BootConfig {
         user_data_dir: opts.user_data_dir.into(),
-        cache_dir: opts.cache_dir.into(),
         app_version: opts.app_version,
         e2ee_local_key,
     });

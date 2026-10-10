@@ -19,7 +19,6 @@ type StreamThumbnail = {
 };
 type InitOptions = {
   userDataDir: string;
-  cacheDir: string;
   appVersion: string;
   /// base64 32-byte at-rest key for the E2EE key store (safeStorage-
   /// wrapped on disk); null when no keychain backend is available.
@@ -149,7 +148,6 @@ export function initAddon(): void {
   init(
     {
       userDataDir: app.getPath("userData"),
-      cacheDir: path.join(app.getPath("userData"), "media-cache"),
       appVersion: app.getVersion(),
       e2eeLocalKey: loadOrCreateE2eeLocalKey(),
     },

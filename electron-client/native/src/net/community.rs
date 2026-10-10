@@ -941,11 +941,8 @@ impl CommunityClient {
                         })
                         .collect();
 
-                    // Mirror per-user capabilities into voice_caps_cache so the
-                    // streamer-side CodecSelector can read watcher decode caps
-                    // without bouncing back through JS. Bus payload below
-                    // carries the same data so the renderer's voiceStore can
-                    // drive watch-button gating + badges.
+                    // Per-user codec capabilities for the renderer's voiceStore
+                    // (watch-button gating + codec badges).
                     let participants = update.active_users.clone();
                     let user_capabilities: Vec<events::ClientCapabilitiesPayload> = update
                         .user_capabilities
@@ -974,39 +971,6 @@ impl CommunityClient {
                         })
                         .collect();
 
-                    let cache_arc = {
-                        let s = state.lock().await;
-                        s.voice_caps_cache.clone()
-                    };
-                    if let Ok(mut cache) = cache_arc.write() {
-                        cache.clear();
-                        for (idx, username) in participants.iter().enumerate() {
-                            let raw = match update.user_capabilities.get(idx) {
-                                Some(c) => c,
-                                None => continue,
-                            };
-                            let to_cap = |c: &CodecCapability| crate::media::caps::CodecCap {
-                                codec: match c.codec {
-                                    1 => crate::media::caps::CodecKind::H264Hw,
-                                    2 => crate::media::caps::CodecKind::H264Sw,
-                                    3 => crate::media::caps::CodecKind::H265,
-                                    4 => crate::media::caps::CodecKind::Av1,
-                                    _ => crate::media::caps::CodecKind::Unknown,
-                                },
-                                max_width: c.max_width,
-                                max_height: c.max_height,
-                                max_fps: c.max_fps,
-                            };
-                            cache.insert(
-                                username.clone(),
-                                crate::media::caps::PeerCaps {
-                                    encode: raw.encode.iter().map(to_cap).collect(),
-                                    decode: raw.decode.iter().map(to_cap).collect(),
-                                },
-                            );
-                        }
-                    }
-                    drop(cache_arc);
 
                     voice_rosters.insert(update.channel_id.clone(), participants.clone());
                     // The MLS group driver reconciles the roster (ghost

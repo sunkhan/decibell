@@ -61,17 +61,6 @@ pub struct CodecCap {
     pub max_fps: u32,
 }
 
-/// Plan C: per-user encode + decode capability snapshot held in
-/// AppState.voice_caps_cache. Populated from VoicePresenceUpdate
-/// payloads; the streamer reads watcher decode caps from here when a
-/// STREAM_WATCHER_NOTIFY event arrives so the LCD picker can choose
-/// the best codec all watchers can decode.
-#[derive(Clone, Debug, Default)]
-pub struct PeerCaps {
-    pub encode: Vec<CodecCap>,
-    pub decode: Vec<CodecCap>,
-}
-
 /// Build the proto ClientCapabilities message from current encoder + decoder
 /// caps held in state. Used by `join_voice_channel` to advertise capability
 /// in JoinVoiceRequest.

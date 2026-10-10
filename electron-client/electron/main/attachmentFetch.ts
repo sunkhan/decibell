@@ -32,6 +32,7 @@ import {
   parseRange,
   planRange,
 } from "./attachmentCrypto";
+import { NO_STORE } from "./noStore";
 
 export interface DecryptedResponse {
   status: number;
@@ -81,7 +82,8 @@ export async function fetchDecryptedWith(
 
   if (params.get("variant") === "thumb") {
     const sizePx = Number(params.get("size")) || 0;
-    const resp = await net.fetch(upstream, { method: "GET", headers: auth, signal });
+    // no-store: see protocol.ts.
+    const resp = await net.fetch(upstream, { method: "GET", headers: auth, signal, ...NO_STORE });
     if (!resp.ok) return text(resp.status, resp.statusText, `upstream ${resp.status}`);
     const raw = await readPaced(resp, serverId, attachmentId, signal);
     const sealed = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
@@ -126,7 +128,7 @@ export async function fetchDecryptedWith(
   const plan = planRange(info, range);
   const headers: Record<string, string> = { ...auth };
   if (plan.upstreamRange) headers.Range = plan.upstreamRange;
-  const resp = await net.fetch(upstream, { method: "GET", headers, signal });
+  const resp = await net.fetch(upstream, { method: "GET", headers, signal, ...NO_STORE });
   if (resp.status !== 200 && resp.status !== 206) {
     return text(resp.status, resp.statusText, `upstream ${resp.status}`);
   }

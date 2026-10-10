@@ -207,8 +207,7 @@ mod tests {
             ));
             let _ = std::fs::create_dir_all(&dir);
             crate::state::set_boot(crate::state::BootConfig {
-                user_data_dir: dir.clone(),
-                cache_dir: dir,
+                user_data_dir: dir,
                 app_version: "test".into(),
                 e2ee_local_key: Some([7u8; 32]),
             });

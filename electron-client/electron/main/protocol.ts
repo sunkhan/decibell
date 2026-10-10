@@ -1,50 +1,18 @@
 import { protocol, net } from "electron";
-import * as path from "path";
-import * as fs from "fs";
 import { app } from "electron";
 import { getAttachmentTarget } from "./attachmentRegistry";
 import { lookupFile } from "./fileRegistry";
 import { fetchDecryptedAttachment } from "./attachmentFetch";
 import { pacedBody } from "./downloadPacer";
+import { NO_STORE } from "./noStore";
 
-const SCHEME = "decibell-asset";
 const ATTACHMENT_SCHEME = "decibell-attachment";
 const FILE_SCHEME = "decibell-file";
 
-// Replaces tauri-client's local_media_server.rs — instead of running an
-// HTTP server on a random localhost port, register a custom protocol
-// that streams from the on-disk media cache. Renderer references files
-// as `decibell-asset:///<filename>`; protocol.handle resolves to a
-// file:// URL inside the cache dir, which Electron's net.fetch streams
-// with proper Range support for <video>/<audio> seeking.
-export function registerProtocol(): void {
-  protocol.handle(SCHEME, async (req) => {
-    try {
-      const url = new URL(req.url);
-      // Strip leading slash from pathname; reject anything that escapes
-      // the cache dir via .. or absolute paths.
-      const rel = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
-      if (rel.includes("..") || path.isAbsolute(rel)) {
-        return new Response("forbidden", { status: 403 });
-      }
-      const abs = path.join(cacheDir(), rel);
-      if (!fs.existsSync(abs)) {
-        return new Response("not found", { status: 404 });
-      }
-      return await net.fetch(`file://${abs}`);
-    } catch (e) {
-      return new Response(`bad request: ${(e as Error).message}`, { status: 400 });
-    }
-  });
-}
-
-export function cacheDir(): string {
-  // Mirrors tauri-client/src-tauri/src/local_media_server.rs::cache_dir.
-  // Linux: ~/.cache/com.decibell.app, Windows: %LOCALAPPDATA%/com.decibell.app/cache,
-  // macOS: ~/Library/Caches/com.decibell.app. app.getPath('userData') is per-app
-  // already, so we nest 'media-cache' under it for clarity.
-  return path.join(app.getPath("userData"), "media-cache");
-}
+// Attachment bytes are fetched with cache: "no-store": the community server
+// sends no cache headers, so Chromium's disk cache could store these but
+// never reuse them — every copy was dead weight on disk. The renderer keeps
+// what it shows in memory instead (features/chat/imageRetention.ts).
 
 // Custom schemes need to be registered as privileged BEFORE app.whenReady()
 // for them to support fetch, streaming, CSP bypass, etc.
@@ -64,16 +32,6 @@ export function cacheDir(): string {
 // — which is why this only manifests in release builds.
 export function registerCustomSchemes(): void {
   protocol.registerSchemesAsPrivileged([
-    {
-      scheme: SCHEME,
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        stream: true,
-        bypassCSP: false,
-      },
-    },
     {
       scheme: ATTACHMENT_SCHEME,
       privileges: {
@@ -167,6 +125,7 @@ export function registerAttachmentProtocol(): void {
       const resp = await net.fetch(upstream, {
         method: "GET",
         headers: upstreamHeaders,
+        ...NO_STORE,
       });
       // Attachment bytes are immutable: the id is server-assigned and
       // unique, and thumbnail variants carry their size in the query

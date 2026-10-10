@@ -23,6 +23,7 @@ import { app, net } from "electron";
 import { getAttachmentTarget } from "./attachmentRegistry";
 import { fetchDecryptedAttachment } from "./attachmentFetch";
 import { pacedBody } from "./downloadPacer";
+import { NO_STORE } from "./noStore";
 
 let server: http.Server | null = null;
 let port = 0;
@@ -109,9 +110,11 @@ async function handleRequest(
         `[mediaServer] GET ${upstream}${upstreamHeaders.range ? ` ${upstreamHeaders.range}` : ""}`,
       );
     }
+    // no-store: see protocol.ts.
     const upstreamResp = await net.fetch(upstream, {
       method: "GET",
       headers: upstreamHeaders,
+      ...NO_STORE,
     });
     if (!app.isPackaged) {
       // eslint-disable-next-line no-console

@@ -29,6 +29,7 @@ import { getAttachmentKey } from "./attachmentKeys";
 import type { AttachmentKeyInfo } from "./attachmentCrypto";
 import { fetchDecryptedWith } from "./attachmentFetch";
 import { downloadRateBps, pacedBody } from "./downloadPacer";
+import { NO_STORE } from "./noStore";
 
 const PART = ".part";
 const MAX_RECORDS = 100;
@@ -354,7 +355,9 @@ async function runPlain(rec: DownloadRecord, run: Run, fh: fsp.FileHandle, offse
   if (offset > 0) headers.Range = `bytes=${offset}-`;
   const resp = await net.fetch(
     `https://${target.host}:${target.port}/attachments/${rec.attachmentId}`,
-    { method: "GET", headers, signal: run.abort.signal },
+    // The file lands on disk where the user chose; a second copy in the
+    // HTTP cache would only take space (see protocol.ts).
+    { method: "GET", headers, signal: run.abort.signal, ...NO_STORE },
   );
   if (resp.status === 416 && offset > 0 && offset === rec.totalBytes) return;
   if (resp.status !== 200 && resp.status !== 206) throw httpError(resp.status);

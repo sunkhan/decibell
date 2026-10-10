@@ -3,7 +3,6 @@ import * as path from "path";
 import * as fs from "node:fs";
 import { registerInvokeHandler } from "./ipc";
 import {
-  registerProtocol,
   registerAttachmentProtocol,
   registerFileProtocol,
   registerCustomSchemes,
@@ -681,7 +680,6 @@ ipcMain.handle(
 );
 
 app.whenReady().then(async () => {
-  registerProtocol();
   registerAttachmentProtocol();
   registerAttachmentKeyHandlers();
   registerDownloadLimitHandler();

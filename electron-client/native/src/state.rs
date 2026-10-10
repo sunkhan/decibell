@@ -12,10 +12,10 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 use tokio::sync::{broadcast, oneshot, Mutex};
 
-use crate::media::caps::{CodecCap, PeerCaps};
+use crate::media::caps::CodecCap;
 use crate::media::{AudioStreamEngine, VideoEngine, VoiceEngine};
 use crate::net::central::CentralClient;
 use crate::net::community::CommunityClient;
@@ -57,7 +57,6 @@ pub struct ActiveCall {
 
 pub struct BootConfig {
     pub user_data_dir: PathBuf,
-    pub cache_dir: PathBuf,
     pub app_version: String,
     /// At-rest key for the E2EE key store (from Electron safeStorage);
     /// None → config.rs derivation. See e2ee/keystore.rs.
@@ -112,11 +111,6 @@ pub struct AppState {
     /// went away with the FFmpeg removal.
     pub decoder_caps: Vec<CodecCap>,
     pub encoder_caps: Vec<CodecCap>,
-    /// Plan C: per-user encode + decode capability snapshot mirrored
-    /// from VoicePresenceUpdate. Pipeline reads from here when a
-    /// STREAM_WATCHER_NOTIFY arrives so the LCD picker can plug in
-    /// the joining watcher's decode caps without an AppState round-trip.
-    pub voice_caps_cache: Arc<RwLock<HashMap<String, PeerCaps>>>,
     /// P2P DM calls — from LoginResponse. `stun_servers` empty means
     /// "use the built-in default list"; `call_signaling` is false on an
     /// older central that never relays CALL_SIGNAL (the renderer gates
@@ -203,7 +197,6 @@ impl Default for AppState {
             mic_test_stop: None,
             decoder_caps: Vec::new(),
             encoder_caps: Vec::new(),
-            voice_caps_cache: Arc::new(RwLock::new(HashMap::new())),
             stun_servers: Vec::new(),
             call_signaling: false,
             pending_call: None,
