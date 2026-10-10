@@ -1863,6 +1863,16 @@ keyboard, opening and the filter scroll the active row into view (`activeBy` ref
 Verified in the harness: pointer parked on the bottom row → scrollTop stays 0 (was revealing the row);
 ArrowDown still scrolls to the end; the 20 interaction checks pass; tsc web 0.
 
+**Client: pickers no longer close when something else scrolls (2026-10-10) ✅** — Caught in review (a
+side-agent note, confirmed in code): the picker closed on *any* scroll outside its list, but the
+settings / server / channel modals render over a still-mounted chat, and `RealMessageList` writes
+`scrollTop` to stay pinned to the bottom on each new message — so a busy channel could snap a dropdown
+shut mid-choice. It now closes only when the scrolled element contains the trigger (a scroll container
+holding it, or the page) — the scrolls that actually move it. Verified in the harness against the
+committed and the fixed component: with a neighbouring list scrolling itself every 100 ms the old one
+closed, the new one stays open; scrolling a container around the trigger still closes it; scrolling
+the list itself doesn't; the 20 interaction + hover checks pass; tsc web 0.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

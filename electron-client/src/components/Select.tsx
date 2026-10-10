@@ -212,9 +212,11 @@ export default function Select<T extends string | number>({
     return () => window.removeEventListener("resize", place);
   }, [open, menuMinWidth, visibleGroups]);
 
-  // Dismiss: a press outside, the window losing focus, or anything but the
-  // list itself scrolling (the trigger would slide out from under it —
-  // native selects close too).
+  // Dismiss: a press outside, the window losing focus, or a scroll that
+  // moves the trigger (a container holding it, or the page) — it would
+  // slide out from under the list; native selects close too. Other scrolls
+  // are left alone: the chat behind a settings modal stays mounted and
+  // pins itself to the bottom on every new message.
   useEffect(() => {
     if (!open) return;
     const inside = (n: EventTarget | null) =>
@@ -223,7 +225,8 @@ export default function Select<T extends string | number>({
       if (!inside(e.target)) close(false);
     };
     const onScroll = (e: Event) => {
-      if (!(e.target instanceof Node && menuRef.current?.contains(e.target))) close(false);
+      const trigger = triggerRef.current;
+      if (trigger && e.target instanceof Node && e.target.contains(trigger)) close(false);
     };
     const onBlur = () => close(false);
     document.addEventListener("mousedown", onDown, true);
