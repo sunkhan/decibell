@@ -4280,6 +4280,10 @@ void SessionManager::broadcast_channels() {
             it = by_user.emplace(user, frame_packet(build_channel_list_packet(*authz_, user))).first;
         }
         session->deliver(it->second);
+        // A channel that just became visible has had no presence sent to
+        // this user (broadcasts go to viewers only): re-send the snapshot
+        // after the list, or its members stay invisible until it changes.
+        send_initial_voice_presences(session);
     }
     // Every role / overwrite / membership change lands here: SPEAK may
     // have flipped for someone in voice.
@@ -4291,7 +4295,10 @@ void SessionManager::send_channels_to_user(const std::string& username) {
     auto sessions = find_sessions_by_username(username);
     if (sessions.empty()) return;
     auto framed = frame_packet(build_channel_list_packet(*authz_, username));
-    for (const auto& s : sessions) s->deliver(framed);
+    for (const auto& s : sessions) {
+        s->deliver(framed);
+        send_initial_voice_presences(s);   // see broadcast_channels
+    }
     refresh_voice_permissions(username);
 }
 

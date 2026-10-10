@@ -5,7 +5,7 @@ import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { useMenuPosition } from "../../hooks/useMenuPosition";
-import { useVoiceStore } from "../../stores/voiceStore";
+import { useVoiceStore, voiceKey } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { saveSettings } from "../settings/saveSettings";
@@ -50,11 +50,16 @@ export default function UserContextMenu() {
     () => serverChannels.filter((c) => c.type === "voice"),
     [serverChannels],
   );
-  const targetVoiceChannel = username
-    ? Object.entries(channelPresence).find(([, users]) => users.includes(username))?.[0] ?? null
-    : null;
-  const targetVoiceState = username && targetVoiceChannel
-    ? channelUserStates[targetVoiceChannel]?.[username]
+  // Only this server's channels: presence covers every community, and the
+  // same channel slug (or the same user) can be in voice on another one.
+  const targetVoiceChannel =
+    username && contextServerId
+      ? voiceChannels.find((c) =>
+          channelPresence[voiceKey(contextServerId, c.id)]?.includes(username),
+        )?.id ?? null
+      : null;
+  const targetVoiceState = username && contextServerId && targetVoiceChannel
+    ? channelUserStates[voiceKey(contextServerId, targetVoiceChannel)]?.[username]
     : undefined;
   const targetChannelPerms = targetVoiceChannel
     ? serverChannels.find((c) => c.id === targetVoiceChannel)?.myPermissions ?? 0

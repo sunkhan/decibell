@@ -45,10 +45,10 @@ export default function UserPanel() {
   const activeStreams = useVoiceStore((s) => s.activeStreams);
   const latencyMs = useVoiceStore((s) => s.latencyMs);
   const error = useVoiceStore((s) => s.error);
-  const channels = useChatStore((s) => {
-    const serverId = s.activeServerId;
-    return serverId ? s.channelsByServer[serverId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
-  });
+  // The connected channel's server, not the one being viewed.
+  const channels = useChatStore((s) =>
+    connectedServerId ? s.channelsByServer[connectedServerId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS,
+  );
   const updateStatus = useUpdateStore((s) => s.status);
   const updateMode = useUpdateStore((s) => s.mode);
   const showChip =

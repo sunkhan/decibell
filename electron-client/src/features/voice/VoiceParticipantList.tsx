@@ -1,12 +1,16 @@
 import { memo } from "react";
-import { useVoiceStore } from "../../stores/voiceStore";
+import { useVoiceStore, voiceKey } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { UserAvatar } from "../../components/UserAvatar";
 
+/// `usernames` (+ the channel's `serverId` / `channelId`) renders another
+/// channel's roster from presence; without it, the connected channel's
+/// live participants.
 interface Props {
   usernames?: string[];
+  serverId?: string;
   channelId?: string;
 }
 
@@ -78,26 +82,27 @@ function LiveBadge() {
 
 interface PresenceRowProps {
   username: string;
-  channelId?: string;
-  connectedServerId: string | null;
+  serverId: string;
+  channelId: string;
 }
 
+/// A member of a channel we may not be in — possibly on no voice session
+/// at all, or one on another server — so everything keys on the row's
+/// own server: nickname, profile, the context menu's moderation, LIVE.
 const PresenceRow = memo(function PresenceRow({
   username,
+  serverId,
   channelId,
-  connectedServerId,
 }: PresenceRowProps) {
-  const isStreaming = useVoiceStore((s) =>
-    s.activeStreams.some((st) => st.ownerUsername === username),
-  );
-  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
-  const userState = useVoiceStore((s) => {
-    if (!channelId) return undefined;
-    return s.channelUserStates[channelId]?.[username];
+  const isStreaming = useVoiceStore((s) => {
+    const loc = s.streamsByUser.get(username);
+    return !!loc && loc.serverId === serverId && loc.channelId === channelId;
   });
+  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
+  const userState = useVoiceStore((s) => s.channelUserStates[voiceKey(serverId, channelId)]?.[username]);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
-  const displayName = useDisplayName(connectedServerId, username);
+  const displayName = useDisplayName(serverId, username);
 
   return (
     <div
@@ -107,12 +112,12 @@ const PresenceRow = memo(function PresenceRow({
         openProfilePopup(
           username,
           { x: rect.right + 8, y: rect.top },
-          connectedServerId,
+          serverId,
         );
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY }, connectedServerId);
+        openContextMenu(username, { x: e.clientX, y: e.clientY }, serverId);
       }}
     >
       <UserAvatar username={username} size={22} />
@@ -223,21 +228,21 @@ const ActiveRow = memo(function ActiveRow({
   );
 });
 
-export default function VoiceParticipantList({ usernames, channelId }: Props) {
+export default function VoiceParticipantList({ usernames, serverId, channelId }: Props) {
   const participants = useVoiceStore((s) => s.participants);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const localUsername = useAuthStore((s) => s.username);
 
   if (usernames) {
-    if (usernames.length === 0) return null;
+    if (usernames.length === 0 || !serverId || !channelId) return null;
     return (
       <div className="space-y-0.5 pb-1 pl-5">
         {usernames.map((u) => (
           <PresenceRow
             key={u}
             username={u}
+            serverId={serverId}
             channelId={channelId}
-            connectedServerId={connectedServerId}
           />
         ))}
       </div>

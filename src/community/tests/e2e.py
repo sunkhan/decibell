@@ -2533,6 +2533,30 @@ def test_v3_category_sync():
     tom.close(); val.close(); owner.close()
 
 
+def test_presence_follows_visibility():
+    print("[presence] a voice channel that becomes visible arrives with its roster")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    ev = everyone_role(owner)
+    ola = join("ola", owner)
+    hideout = create_channel(owner, "hideout", pb.ChannelInfo.VOICE).id
+    set_overwrite(owner, hideout, pb.ChannelOverwrite.ROLE, ev.id, deny=pb.PERM_VIEW_CHANNEL)
+    owner.flush(0.3); ola.flush(0.3)
+    owner.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id=hideout))
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: p.voice_presence_update.channel_id == hideout)
+    check("hidden: no presence for it reaches the member",
+          ola.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=1.0, pred=lambda p: p.voice_presence_update.channel_id == hideout) is None)
+    ola.flush(0.3)
+    set_overwrite(owner, hideout, pb.ChannelOverwrite.MEMBER, "ola", allow=pb.PERM_VIEW_CHANNEL)
+    cl = channel_list(ola)
+    check("granted VIEW: the channel lands in the member's list", cl is not None and hideout in cl)
+    vp = ola.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2, pred=lambda p: p.voice_presence_update.channel_id == hideout)
+    check("...followed by its current roster", vp is not None and "alice" in vp.voice_presence_update.active_users)
+    owner.send(pb.Packet.LEAVE_VOICE_REQ, leave_voice_req=pb.LeaveVoiceRequest())
+    owner.send(pb.Packet.CHANNEL_DELETE_REQ, channel_delete_req=pb.ChannelDeleteRequest(channel_id=hideout))
+    owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "delete")
+    ola.close(); owner.close()
+
+
 if __name__ == "__main__":
     test_b1_seed_resurrection()
     test_v11_migration()
@@ -2570,6 +2594,7 @@ if __name__ == "__main__":
         test_m3_slowmode_per_user()
         test_m3_session_cap()
         test_voice_moderation()
+        test_presence_follows_visibility()
         test_udp_relay()
         test_mls_delivery_service()
         test_v3_invites_and_nicknames()

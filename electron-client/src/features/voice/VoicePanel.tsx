@@ -78,10 +78,10 @@ export default function VoicePanel() {
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const pipStream = useVoiceStore((s) => s.pipStream);
   const isStreamFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
-  const channels = useChatStore((s) => {
-    const serverId = s.activeServerId;
-    return serverId ? s.channelsByServer[serverId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
-  });
+  // The connected channel's server, not the one being viewed.
+  const channels = useChatStore((s) =>
+    connectedServerId ? s.channelsByServer[connectedServerId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS,
+  );
   const ownUsername = useAuthStore((s) => s.username);
 
   const [showPicker, setShowPicker] = useState(false);

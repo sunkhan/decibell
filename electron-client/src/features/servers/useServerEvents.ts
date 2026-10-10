@@ -178,6 +178,10 @@ export function useServerEvents() {
         }
         // The server's message bucket is per session and starts full.
         resetSendPacing(p.serverId);
+        // The voice / stream presence snapshot follows this response and
+        // lists only non-empty channels: drop what we had, or a channel
+        // that emptied while we were away (reconnect) keeps ghost members.
+        useVoiceStore.getState().clearServerPresence(p.serverId);
         useChatStore.getState().mergeServers([
           {
             id: p.serverId,
@@ -363,19 +367,8 @@ export function useServerEvents() {
           // (users appear under two channels at once) and a move back to
           // a channel shows an empty room.
           const st = useVoiceStore.getState();
-          const roster = st.channelPresence[channelId] ?? [];
-          const states = st.channelUserStates[channelId] ?? {};
-          st.setParticipants(
-            roster.map((u) => ({
-              username: u,
-              isMuted: states[u]?.isMuted ?? false,
-              isDeafened: states[u]?.isDeafened ?? false,
-              isServerMuted: states[u]?.isServerMuted ?? false,
-              isServerDeafened: states[u]?.isServerDeafened ?? false,
-              isSpeaking: st.speakingUsers.has(u),
-              audioLevel: 0,
-            })),
-          );
+          st.seedParticipants(serverId, channelId);
+          const roster = useVoiceStore.getState().participants.map((p) => p.username);
           st.setActiveStreams(
             [...st.streamsByUser.values()]
               .filter((loc) => loc.serverId === serverId && loc.channelId === channelId)
@@ -415,6 +408,10 @@ export function useServerEvents() {
           if (!nextIds.has(ch.id)) chat.purgeChannelState(serverId, ch.id);
         }
         chat.setChannelsForServer(serverId, channels);
+        // A channel we can no longer see (or that was deleted) gets no more
+        // presence updates; drop its roster so it can't reappear stale.
+        // Newly visible channels get a fresh snapshot after this list.
+        useVoiceStore.getState().clearServerPresence(serverId, nextIds);
         // If the active channel vanished, land on the first text channel.
         if (
           chat.activeServerId === serverId &&
@@ -508,6 +505,7 @@ export function useServerEvents() {
       (event) => {
         const { serverId } = event.payload;
         useChatStore.getState().removeConnectedServer(serverId);
+        useVoiceStore.getState().clearServerPresence(serverId);
         useUiStore.getState().setMembershipRevocationNotice({
           serverId,
           action: event.payload.action,
@@ -586,6 +584,9 @@ export function useServerEvents() {
         const { serverType, serverId } = event.payload;
         if (serverType === "community" && serverId) {
           useChatStore.getState().removeConnectedServer(serverId);
+          // No updates arrive while we're cut off; show nothing rather
+          // than a roster that silently goes stale.
+          useVoiceStore.getState().clearServerPresence(serverId);
           window.decibell.attachmentRegistry
             .clear(serverId)
             .catch((err) => console.error("attachmentRegistry.clear:", err));

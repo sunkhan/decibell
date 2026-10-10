@@ -1777,6 +1777,45 @@ because the destination's presence update arrives *before* the notice. No leave 
 voice pass granted by the move stays held. The renderer resets its e2ee badge on the move.
 Verified: napi build, `cargo test --lib` 221, tsc web 0; two-client move test pending.
 
+**Client + community: voice channel rosters in the sidebar (2026-10-10) ✅ — community deploy pending
+for item 7** — Owner report: with people in two channels, leaving one hid the members of the other
+until rejoining and leaving it. Audit of the presence path found:
+1. *The reported bug.* `voiceStore.disconnect()` wiped `channelPresence` / `channelUserStates` /
+   `streamsByUser` — but those mirror every channel of every community (the server sends them to all
+   members: a snapshot at auth, then each change), not the voice session. Every other channel stayed
+   empty until it next changed. Same on a DM-call hang-up, a failed join and a forced disconnect.
+   `disconnect()` now clears session state only.
+2. *Channel ids are name slugs*, so communities share them (`general`, `lounge`), yet presence was keyed
+   by channel id alone and the listener ignored `serverId`: another server's same-named channel
+   overwrote this one's roster, could replace the connected channel's participants, lit up as
+   "connected" in the sidebar (clicking it opened the voice view instead of joining), and wasn't seen
+   as a switch by the join flow. Presence is now keyed by `voiceKey(serverId, channelId)`, and the
+   connected checks compare the server too.
+3. *Rows of channels we're not in* used the connected voice session's server for nicknames, the profile
+   popup and the context menu — no server-scoped actions (move / mute) when not in voice, the wrong
+   server when in voice elsewhere — and took LIVE from the connected channel's streams, so nobody
+   streaming in another channel showed LIVE. They now use their own server and `streamsByUser`. The
+   context menu looks the target up on its own server only.
+4. *Join / leave sounds* compared against the previous channel's roster after a switch or a later
+   rejoin, playing one per member of both channels; the baselines now re-seed from the cache whenever
+   the connected channel changes. Same for stream start / stop.
+5. *Optimistic switch* kept the old channel's members under the new one until the server's update;
+   the roster is seeded from the cache (shared with the move handler: `seedParticipants`).
+6. *Stale rosters*: the auth snapshot omits empty channels, so a channel that emptied during a
+   reconnect kept ghost members; a channel that became hidden kept its last roster. A community's
+   presence is now cleared at auth, on connection loss and on membership revocation, and pruned to the
+   channels still listed on each channel-list push.
+7. *Community:* a channel that became visible (role / overwrite change) got no presence until it next
+   changed — broadcasts go to viewers only. `broadcast_channels` / `send_channels_to_user` now re-send
+   the presence snapshot after the list.
+8. `setParticipants` kept each existing participant's mute / deafen over the server's fresh roster,
+   so icons lagged until the next audio-packet flags; the roster now wins.
+Also: the voice panel, user panel and stream view looked the connected channel's name up in the
+*viewed* server (showed "Voice" or the wrong name while browsing elsewhere). Verified: tsc web 0;
+e2e 394 (new `test_presence_follows_visibility`, which fails on the old server); a node run of the
+store (slug collision, leave keeps rosters + streams, prune / clear per server, no-op identity,
+seeding). Live multi-channel / multi-server test pending.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

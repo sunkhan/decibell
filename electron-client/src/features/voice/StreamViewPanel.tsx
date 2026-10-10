@@ -506,7 +506,7 @@ const Filmstrip = memo(function Filmstrip({ focused }: { focused: string }) {
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
   const ownUsername = useAuthStore((s) => s.username);
   const channelName = useChatStore((s) => {
-    const list = s.activeServerId ? s.channelsByServer[s.activeServerId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
+    const list = connectedServerId ? s.channelsByServer[connectedServerId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
     return list.find((ch) => ch.id === connectedChannelId)?.name ?? "Voice";
   });
 

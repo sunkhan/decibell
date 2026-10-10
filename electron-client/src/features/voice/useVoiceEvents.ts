@@ -1,7 +1,7 @@
 import type { VoiceE2eeStatePayload } from "../../types";
 import { useEffect } from "react";
 import { invoke, listen } from "../../lib/ipc";
-import { useVoiceStore } from "../../stores/voiceStore";
+import { useVoiceStore, voiceKey } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useVoiceStatsStore } from "../../stores/voiceStatsStore";
 import {
@@ -41,11 +41,33 @@ import { applySavedUserGains } from "./userGain";
 ///   - `prevParticipants` / `prevStreamOwners` closures stay alive for
 ///     the component's lifetime. Otherwise every re-subscribe wiped the
 ///     remembered roster, suppressing the join/leave sound effects on
-///     the very next presence update.
+///     the very next presence update. They are re-seeded from the
+///     presence cache whenever the connected channel changes (join,
+///     switch, move, leave): carried over, switching — or rejoining
+///     later — played a join / leave sound for everyone in both channels.
 export function useVoiceEvents() {
   useEffect(() => {
     const promises: Promise<() => void>[] = [];
     let prevParticipants: Set<string> | null = null;
+    let prevStreamOwners: Set<string> | null = null;
+    const unsubSession = useVoiceStore.subscribe((s, prev) => {
+      if (s.connectedServerId === prev.connectedServerId && s.connectedChannelId === prev.connectedChannelId) {
+        return;
+      }
+      if (!s.connectedServerId || !s.connectedChannelId) {
+        prevParticipants = null;
+        prevStreamOwners = null;
+        return;
+      }
+      const serverId = s.connectedServerId;
+      const channelId = s.connectedChannelId;
+      prevParticipants = new Set(s.channelPresence[voiceKey(serverId, channelId)] ?? []);
+      prevStreamOwners = new Set(
+        [...s.streamsByUser]
+          .filter(([, loc]) => loc.serverId === serverId && loc.channelId === channelId)
+          .map(([user]) => user),
+      );
+    });
 
     // MLS encryption state of the connected channel (native's group
     // driver). Keyed by server + channel so a stale event from the
@@ -76,26 +98,27 @@ export function useVoiceEvents() {
         userStates: { username: string; isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean; isSuppressed?: boolean }[];
         userCapabilities?: ClientCapabilities[];
       }>("voice_presence_updated", (event) => {
-        const { channelId, participants, userStates, userCapabilities } = event.payload;
+        const { serverId, channelId, participants, userStates, userCapabilities } = event.payload;
         const store = useVoiceStore.getState();
         const username = useAuthStore.getState().username;
-        store.setChannelPresence(channelId, participants, userStates, userCapabilities);
+        store.setChannelPresence(serverId, channelId, participants, userStates, userCapabilities);
 
-        const connectedId = store.connectedChannelId;
-        if (channelId === connectedId && prevParticipants) {
+        const isConnected =
+          serverId === store.connectedServerId && channelId === store.connectedChannelId;
+        if (isConnected) {
           const current = new Set(participants);
-          for (const u of participants) {
-            if (!prevParticipants.has(u) && u !== username) playSound("user_join");
+          if (prevParticipants) {
+            for (const u of participants) {
+              if (!prevParticipants.has(u) && u !== username) playSound("user_join");
+            }
+            for (const u of prevParticipants) {
+              if (!current.has(u) && u !== username) playSound("user_leave");
+            }
           }
-          for (const u of prevParticipants) {
-            if (!current.has(u) && u !== username) playSound("user_leave");
-          }
-        }
-        if (channelId === connectedId) {
-          prevParticipants = new Set(participants);
+          prevParticipants = current;
         }
 
-        if (channelId === connectedId) {
+        if (isConnected) {
           const stateMap = new Map(userStates?.map((s) => [s.username, s]) ?? []);
           store.setParticipants(
             participants.map((u) => ({
@@ -205,8 +228,6 @@ export function useVoiceEvents() {
       }),
     );
 
-    let prevStreamOwners: Set<string> | null = null;
-
     promises.push(
       listen<{
         serverId: string;
@@ -273,18 +294,18 @@ export function useVoiceEvents() {
         const connCh = useVoiceStore.getState().connectedChannelId;
         if (serverId !== connSrv || channelId !== connCh) return;
 
+        const owners = new Set(mapped.map((s) => s.ownerUsername));
         if (prevStreamOwners) {
-          const current = new Set(mapped.map((s) => s.ownerUsername));
-          for (const owner of current) {
+          for (const owner of owners) {
             if (!prevStreamOwners.has(owner) && owner !== username)
               playSound("stream_start");
           }
           for (const owner of prevStreamOwners) {
-            if (!current.has(owner) && owner !== username)
+            if (!owners.has(owner) && owner !== username)
               playSound("stream_stop");
           }
         }
-        prevStreamOwners = new Set(mapped.map((s) => s.ownerUsername));
+        prevStreamOwners = owners;
 
         useVoiceStore.getState().setActiveStreams(mapped);
 
@@ -392,6 +413,7 @@ export function useVoiceEvents() {
     );
 
     return () => {
+      unsubSession();
       for (const p of promises) {
         p.then((fn) => fn());
       }

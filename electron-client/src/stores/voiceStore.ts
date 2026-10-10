@@ -13,6 +13,13 @@ export interface StreamLocation {
   streamInfo: StreamInfo;
 }
 
+/// Key for the per-channel presence maps. Channel ids are name slugs
+/// ("general", "lounge"), so two communities routinely share one — every
+/// roster lookup goes through the server too.
+export const voiceKey = (serverId: string, channelId: string): string => `${serverId}/${channelId}`;
+
+type VoiceUserState = { isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean; isSuppressed?: boolean };
+
 // Full voice store — the streaming-related slices (active streams,
 // watching, stream settings, isStreaming) live alongside voice state
 // because they share the same connection lifecycle and presence
@@ -49,13 +56,21 @@ interface VoiceState {
   speakingUsers: Set<string>;
   latencyMs: number | null;
   error: string | null;
+  /// Every visible voice channel's roster on every connected community,
+  /// keyed by `voiceKey(serverId, channelId)`. The community sends these to
+  /// all members (snapshot at auth, then each change), so they are
+  /// community state, not voice-session state: leaving voice keeps them.
   channelPresence: Record<string, string[]>;
-  channelUserStates: Record<
-    string,
-    Record<string, { isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean; isSuppressed?: boolean }>
-  >;
+  channelUserStates: Record<string, Record<string, VoiceUserState>>;
   setConnectedChannel: (serverId: string | null, channelId: string | null) => void;
   setParticipants: (participants: VoiceParticipant[]) => void;
+  /// Rebuild the connected-channel roster from the presence cache — for a
+  /// channel switch or move, before the server's next update for it.
+  seedParticipants: (serverId: string, channelId: string) => void;
+  /// Drop one community's rosters + streams (its auth snapshot replaces
+  /// them, and it omits empty channels). With `keepChannelIds`, drop only
+  /// the channels not in it (hidden or deleted ones).
+  clearServerPresence: (serverId: string, keepChannelIds?: Set<string>) => void;
   setActiveStreams: (streams: StreamInfo[]) => void;
   setStreamsByUser: (m: Map<string, StreamLocation>) => void;
   setMuted: (muted: boolean) => void;
@@ -64,9 +79,10 @@ interface VoiceState {
   setLatency: (ms: number) => void;
   setError: (error: string | null) => void;
   setChannelPresence: (
+    serverId: string,
     channelId: string,
     users: string[],
-    userStates?: { username: string; isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean; isSuppressed?: boolean }[],
+    userStates?: ({ username: string } & VoiceUserState)[],
     userCapabilities?: ClientCapabilities[],
   ) => void;
   /// Username → that user's advertised codec capabilities. Populated
@@ -132,15 +148,52 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   channelUserStates: {},
   setConnectedChannel: (serverId, channelId) =>
     set({ connectedServerId: serverId, connectedChannelId: channelId }),
-  setParticipants: (participants) =>
-    set((state) => ({
-      participants: participants.map((p) => {
-        const existing = state.participants.find((e) => e.username === p.username);
-        return existing
-          ? { ...p, isMuted: existing.isMuted, isDeafened: existing.isDeafened }
-          : p;
-      }),
-    })),
+  // The roster's mute / deafen is the server's current state (it rebroadcasts
+  // on every VOICE_STATE_NOTIFY), so it replaces what the audio-packet flags
+  // last said rather than being overridden by it.
+  setParticipants: (participants) => set({ participants }),
+  seedParticipants: (serverId, channelId) =>
+    set((state) => {
+      const key = voiceKey(serverId, channelId);
+      const roster = state.channelPresence[key] ?? [];
+      const states = state.channelUserStates[key] ?? {};
+      return {
+        participants: roster.map((u) => ({
+          username: u,
+          isMuted: states[u]?.isMuted ?? false,
+          isDeafened: states[u]?.isDeafened ?? false,
+          isServerMuted: states[u]?.isServerMuted ?? false,
+          isServerDeafened: states[u]?.isServerDeafened ?? false,
+          isSuppressed: states[u]?.isSuppressed ?? false,
+          isSpeaking: state.speakingUsers.has(u),
+          audioLevel: 0,
+        })),
+      };
+    }),
+  clearServerPresence: (serverId, keepChannelIds) =>
+    set((state) => {
+      const prefix = `${serverId}/`;
+      const drop = (key: string) =>
+        key.startsWith(prefix) && !keepChannelIds?.has(key.slice(prefix.length));
+      const channelPresence = Object.fromEntries(
+        Object.entries(state.channelPresence).filter(([k]) => !drop(k)),
+      );
+      const channelUserStates = Object.fromEntries(
+        Object.entries(state.channelUserStates).filter(([k]) => !drop(k)),
+      );
+      let streamsByUser = state.streamsByUser;
+      for (const [user, loc] of state.streamsByUser) {
+        if (loc.serverId === serverId && !keepChannelIds?.has(loc.channelId)) {
+          if (streamsByUser === state.streamsByUser) streamsByUser = new Map(state.streamsByUser);
+          streamsByUser.delete(user);
+        }
+      }
+      const unchanged =
+        Object.keys(channelPresence).length === Object.keys(state.channelPresence).length &&
+        Object.keys(channelUserStates).length === Object.keys(state.channelUserStates).length &&
+        streamsByUser === state.streamsByUser;
+      return unchanged ? state : { channelPresence, channelUserStates, streamsByUser };
+    }),
   setActiveStreams: (streams) => set({ activeStreams: streams }),
   setStreamsByUser: (m) => set({ streamsByUser: m }),
   setMuted: (muted) => set({ isMuted: muted }),
@@ -160,9 +213,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     }),
   setLatency: (ms) => set({ latencyMs: ms }),
   setError: (error) => set({ error }),
-  setChannelPresence: (channelId, users, userStates, userCapabilities) =>
+  setChannelPresence: (serverId, channelId, users, userStates, userCapabilities) =>
     set((state) => {
-      const stateMap: Record<string, { isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean; isSuppressed?: boolean }> = {};
+      const key = voiceKey(serverId, channelId);
+      const stateMap: Record<string, VoiceUserState> = {};
       if (userStates) {
         for (const s of userStates) {
           stateMap[s.username] = {
@@ -181,8 +235,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         });
       }
       return {
-        channelPresence: { ...state.channelPresence, [channelId]: users },
-        channelUserStates: { ...state.channelUserStates, [channelId]: stateMap },
+        channelPresence: { ...state.channelPresence, [key]: users },
+        channelUserStates: { ...state.channelUserStates, [key]: stateMap },
         userCapabilities: newCaps,
       };
     }),
@@ -295,14 +349,13 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       isStreamFullscreen: false,
       isStreaming: false,
       streamThumbnails: {},
-      streamsByUser: new Map(),
-      // Clear per-channel session state too, otherwise rejoining shows
-      // ghost "Live" cards / stale mute badges from the previous channel
-      // until the next presence broadcast, and userCapabilities grows
-      // unbounded across a long session.
+      // Session state only. channelPresence / channelUserStates /
+      // streamsByUser stay: they mirror every channel of every community
+      // and the server keeps them current whether or not we're in voice —
+      // wiping them blanked every other channel's members until that
+      // channel next changed. userCapabilities is refilled by the next
+      // join's presence; clearing it keeps it from growing unbounded.
       activeStreams: [],
-      channelPresence: {},
-      channelUserStates: {},
       userCapabilities: {},
     });
   },

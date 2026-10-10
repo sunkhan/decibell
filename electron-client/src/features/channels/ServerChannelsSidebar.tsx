@@ -4,7 +4,7 @@ import { useMenuPosition } from "../../hooks/useMenuPosition";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
-import { useVoiceStore } from "../../stores/voiceStore";
+import { useVoiceStore, voiceKey } from "../../stores/voiceStore";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import VoiceParticipantList from "../voice/VoiceParticipantList";
 import ServerActionsDropdown from "../servers/ServerActionsDropdown";
@@ -32,7 +32,12 @@ export default function ServerChannelsSidebar() {
   const servers = useChatStore((s) => s.servers);
   const serverMeta = useChatStore((s) => s.serverMeta);
   const setActiveChannel = useChatStore((s) => s.setActiveChannel);
-  const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
+  // The voice channel we're in, if it's on the server shown here. Channel
+  // ids are name slugs, so another community's "lounge" must not light up
+  // (or open the voice view for) this one's.
+  const connectedChannelId = useVoiceStore((s) =>
+    s.connectedServerId !== null && s.connectedServerId === activeServerId ? s.connectedChannelId : null,
+  );
   // channelPresence is read per VoiceRow: it changes on every join, leave,
   // mute and deafen in any channel of any server, and subscribing here
   // re-rendered the whole sidebar for each one.
@@ -495,6 +500,7 @@ export default function ServerChannelsSidebar() {
               {dragId && dropBefore === ch.id && <DropLine />}
               {ch.type === "voice" ? (
                 <VoiceRow
+                  serverId={activeServerId}
                   channel={ch}
                   connectedChannelId={connectedChannelId}
                   activeView={activeView}
@@ -567,6 +573,7 @@ export default function ServerChannelsSidebar() {
                       {dragId && dropBefore === ch.id && <DropLine />}
                       {ch.type === "voice" ? (
                         <VoiceRow
+                          serverId={activeServerId}
                           channel={ch}
                           connectedChannelId={connectedChannelId}
                           activeView={activeView}
@@ -987,19 +994,24 @@ function ContextMenuItem({
 /// voice rows anywhere in the list. Memoised, and subscribes to its own
 /// channel's presence, so a voice update elsewhere doesn't re-render it.
 const VoiceRow = memo(function VoiceRow({
+  serverId,
   channel,
   connectedChannelId,
   activeView,
   canManage,
   onClick,
 }: {
+  serverId: string;
   channel: ChannelInfo;
+  /// Only set when the connected channel is on `serverId`.
   connectedChannelId: string | null;
   activeView: string;
   canManage: boolean;
   onClick: (channelId: string) => void;
 }) {
-  const presence = useVoiceStore((s): string[] => s.channelPresence[channel.id] ?? EMPTY_LIST);
+  const presence = useVoiceStore(
+    (s): string[] => s.channelPresence[voiceKey(serverId, channel.id)] ?? EMPTY_LIST,
+  );
   const connected = connectedChannelId === channel.id;
   return (
     <div>
@@ -1059,7 +1071,7 @@ const VoiceRow = memo(function VoiceRow({
       {connected ? (
         <VoiceParticipantList />
       ) : presence.length > 0 ? (
-        <VoiceParticipantList usernames={presence} channelId={channel.id} />
+        <VoiceParticipantList usernames={presence} serverId={serverId} channelId={channel.id} />
       ) : null}
     </div>
   );

@@ -60,7 +60,9 @@ export async function joinVoiceChannel(
   const voice = useVoiceStore.getState();
   const prevServerId = voice.connectedServerId;
   const prevChannelId = voice.connectedChannelId;
-  const switchingChannel = prevChannelId !== null && prevChannelId !== channelId;
+  // Channel ids are slugs, so the same id on another server is a switch too.
+  const switchingChannel =
+    prevChannelId !== null && (prevChannelId !== channelId || prevServerId !== serverId);
   const wasStreaming = voice.isStreaming && !!prevServerId && !!prevChannelId;
   // "Take stream with me" applies only to a same-server channel switch while
   // streaming, and only when the user opted in. Cross-server moves (and the
@@ -115,9 +117,13 @@ export async function joinVoiceChannel(
     }
   }
 
-  // Optimistic update — sidebar reflects the pending-join immediately.
+  // Optimistic update — sidebar reflects the pending-join immediately. The
+  // roster comes from the presence cache until the server's update for the
+  // new channel lands; left as is, the old channel's members showed under
+  // the new one in the meantime.
   playSound("connect");
   useVoiceStore.getState().setConnectedChannel(serverId, channelId);
+  useVoiceStore.getState().seedParticipants(serverId, channelId);
 
   const channel = useChatStore
     .getState()
