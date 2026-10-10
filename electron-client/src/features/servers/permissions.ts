@@ -1,7 +1,7 @@
 import { useAuthStore } from "../../stores/authStore";
 import { findMember } from "../../hooks/useDisplayName";
 import { useChatStore } from "../../stores/chatStore";
-import type { ServerRole } from "../../types";
+import type { ServerMember, ServerRole } from "../../types";
 
 /// Permission bits — mirror of chatproj.Permission in proto/messages.proto.
 /// Wire contract: values never change, only new bits get appended. The
@@ -355,6 +355,28 @@ export function useHierarchy(serverId: string | null): {
   const members = useChatStore((s) =>
     serverId ? s.membersByServer[serverId] : undefined,
   );
+  return hierarchyOf(localUsername, owner, roles, members);
+}
+
+/// `useHierarchy`'s `canManage` read once from the stores — for event
+/// handlers (e.g. a drag start) where a per-row subscription to the whole
+/// member list would re-render every row on each member delta.
+export function canManageMember(serverId: string, username: string): boolean {
+  const chat = useChatStore.getState();
+  return hierarchyOf(
+    useAuthStore.getState().username,
+    chat.serverOwner[serverId],
+    chat.rolesByServer[serverId],
+    chat.membersByServer[serverId],
+  ).canManage(username);
+}
+
+function hierarchyOf(
+  localUsername: string | null | undefined,
+  owner: string | undefined,
+  roles: ServerRole[] | undefined,
+  members: ServerMember[] | undefined,
+) {
   const isOwner = !!localUsername && !!owner && owner === localUsername;
   const me = members?.find((m) => m.username === localUsername);
   const level = memberLevel(roles, me?.roleIds);

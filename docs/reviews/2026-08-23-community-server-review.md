@@ -1816,6 +1816,23 @@ e2e 394 (new `test_presence_follows_visibility`, which fails on the old server);
 store (slug collision, leave keeps rosters + streams, prune / clear per server, no-op identity,
 seeding). Live multi-channel / multi-server test pending.
 
+**Client: drag a voice member onto another channel to move them (2026-10-10) ✅ — live test pending** —
+Owner request (Discord-style). In the channel sidebar, a voice participant row is draggable where we
+hold MOVE_MEMBERS in its channel (the owner always); the hierarchy (above them, or a peer with "manage
+each other") is checked when the drag starts, so a refused drag never starts and rows don't each
+subscribe to the member list — `canManageMember` reads the same rule as `useHierarchy` once. Our own
+row, the owner and anyone we can't manage don't drag. While a drag is in flight every other voice
+channel on that server pulses like a file-drop target and the hovered one fills with accent; the row
+and its member list are one drop zone, the source channel isn't one. A drop sends the same
+`voice_mod` MOVE as "Move to…" (server checks and voice passes unchanged; refusals toast via
+`mod_action_responded`). Works without being in voice ourselves. `features/voice/memberDrag.ts`; the
+member drag stops propagation so the list's delegated reorder handler (which cancels drags that don't
+start on a channel row) never sees it, and window-level dragend / drop end a drag whose source row
+unmounted. Verified: tsc web 0; a harness rendering the real sidebar with seeded stores fired real
+drag events — draggable only under MOVE_MEMBERS, higher role / owner refused at dragstart, source not
+a target, member rows inside a target accept, one `voice_mod` per drop with the right args, a stray
+drop clears state — plus a screenshot of the in-flight styling.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

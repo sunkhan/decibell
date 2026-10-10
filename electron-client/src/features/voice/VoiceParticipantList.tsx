@@ -4,6 +4,8 @@ import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { UserAvatar } from "../../components/UserAvatar";
+import { PERM, useChannelPermission } from "../servers/permissions";
+import { onMemberDragEnd, onMemberDragStart } from "./memberDrag";
 
 /// `usernames` (+ the channel's `serverId` / `channelId`) renders another
 /// channel's roster from presence; without it, the connected channel's
@@ -84,6 +86,8 @@ interface PresenceRowProps {
   username: string;
   serverId: string;
   channelId: string;
+  /// We hold MOVE_MEMBERS here: drag the row onto another voice channel.
+  draggable: boolean;
 }
 
 /// A member of a channel we may not be in — possibly on no voice session
@@ -93,6 +97,7 @@ const PresenceRow = memo(function PresenceRow({
   username,
   serverId,
   channelId,
+  draggable,
 }: PresenceRowProps) {
   const isStreaming = useVoiceStore((s) => {
     const loc = s.streamsByUser.get(username);
@@ -119,6 +124,9 @@ const PresenceRow = memo(function PresenceRow({
         e.preventDefault();
         openContextMenu(username, { x: e.clientX, y: e.clientY }, serverId);
       }}
+      draggable={draggable}
+      onDragStart={draggable ? (e) => onMemberDragStart(e, serverId, channelId, username) : undefined}
+      onDragEnd={draggable ? onMemberDragEnd : undefined}
     >
       <UserAvatar username={username} size={22} />
       <span className="min-w-0 truncate text-text-secondary transition-colors group-hover:text-text-primary">
@@ -152,6 +160,9 @@ interface ActiveRowProps {
   /// No SPEAK in this channel (permissions v3).
   suppressed?: boolean;
   connectedServerId: string | null;
+  connectedChannelId: string | null;
+  /// We hold MOVE_MEMBERS here and it isn't us: drag onto another channel.
+  draggable: boolean;
 }
 
 const ActiveRow = memo(function ActiveRow({
@@ -163,6 +174,8 @@ const ActiveRow = memo(function ActiveRow({
   serverDeafened,
   suppressed,
   connectedServerId,
+  connectedChannelId,
+  draggable,
 }: ActiveRowProps) {
   const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
   const isStreaming = useVoiceStore((s) =>
@@ -195,6 +208,13 @@ const ActiveRow = memo(function ActiveRow({
         e.preventDefault();
         openContextMenu(username, { x: e.clientX, y: e.clientY }, connectedServerId);
       }}
+      draggable={draggable}
+      onDragStart={
+        draggable && connectedServerId && connectedChannelId
+          ? (e) => onMemberDragStart(e, connectedServerId, connectedChannelId, username)
+          : undefined
+      }
+      onDragEnd={draggable ? onMemberDragEnd : undefined}
     >
       {/* Ring and name colour flip instantly (no transition), like
           UserPanel's ring: a 150 ms box-shadow / colour transition on every
@@ -231,7 +251,15 @@ const ActiveRow = memo(function ActiveRow({
 export default function VoiceParticipantList({ usernames, serverId, channelId }: Props) {
   const participants = useVoiceStore((s) => s.participants);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
+  const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
   const localUsername = useAuthStore((s) => s.username);
+  // Drag-to-move (memberDrag.ts): MOVE_MEMBERS in the channel these rows
+  // are in. The hierarchy is checked when a drag starts.
+  const canMoveHere = useChannelPermission(
+    usernames ? serverId ?? null : connectedServerId,
+    usernames ? channelId ?? null : connectedChannelId,
+    PERM.MOVE_MEMBERS,
+  );
 
   if (usernames) {
     if (usernames.length === 0 || !serverId || !channelId) return null;
@@ -243,6 +271,7 @@ export default function VoiceParticipantList({ usernames, serverId, channelId }:
             username={u}
             serverId={serverId}
             channelId={channelId}
+            draggable={canMoveHere && u !== localUsername}
           />
         ))}
       </div>
@@ -264,6 +293,8 @@ export default function VoiceParticipantList({ usernames, serverId, channelId }:
           serverDeafened={p.isServerDeafened}
           suppressed={p.isSuppressed}
           connectedServerId={connectedServerId}
+          connectedChannelId={connectedChannelId}
+          draggable={canMoveHere && p.username !== localUsername}
         />
       ))}
     </div>

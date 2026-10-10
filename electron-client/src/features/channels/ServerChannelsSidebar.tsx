@@ -15,6 +15,7 @@ import { toast } from "../../stores/toastStore";
 import CreateChannelModal from "./CreateChannelModal";
 import CategorySyncPrompt, { type CategorySyncPromptState } from "./CategorySyncPrompt";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
+import { acceptsMemberDrop, memberDropHandlers, useMemberDragStore } from "../voice/memberDrag";
 import { useSidebarResize } from "./useSidebarResize";
 import { EMPTY_LIST } from "../../lib/empty";
 import type { ChannelInfo } from "../../types";
@@ -1013,27 +1014,40 @@ const VoiceRow = memo(function VoiceRow({
     (s): string[] => s.channelPresence[voiceKey(serverId, channel.id)] ?? EMPTY_LIST,
   );
   const connected = connectedChannelId === channel.id;
+  // A voice member is being dragged (memberDrag.ts) and could land here;
+  // the row and its member list are one drop zone, styled like a file
+  // drop onto a text channel.
+  const dropOpen = useMemberDragStore(acceptsMemberDrop(serverId, channel.id));
+  const dropHovered = useMemberDragStore((s) => dropOpen && s.hover === channel.id);
   return (
-    <div>
+    <div {...memberDropHandlers(serverId, channel.id)}>
       <button
         onClick={() => onClick(channel.id)}
         data-reorder-id={channel.id}
         draggable={canManage}
-        className={`list-row group flex w-full cursor-pointer items-center rounded-sm text-channel transition-colors ${
-          connected && activeView === "voice"
-            ? "bg-accent-soft text-text-bright font-semibold"
-            : connected
-              ? "text-success font-semibold hover:bg-surface-hover"
-              : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+        className={`list-row group relative flex w-full cursor-pointer items-center rounded-sm text-channel transition-colors ${
+          dropHovered
+            ? "animate-[dropTargetIn_0.18s_ease_both] bg-accent text-on-accent font-semibold"
+            : dropOpen
+              ? "drop-pulse bg-accent-soft/30 text-text-secondary"
+              : connected && activeView === "voice"
+                ? "bg-accent-soft text-text-bright font-semibold"
+                : connected
+                  ? "text-success font-semibold hover:bg-surface-hover"
+                  : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
         }`}
       >
         <span
           className={`channel-icon ${
-            connected && activeView === "voice"
-              ? "text-accent"
-              : connected
-                ? "text-success"
-                : "text-text-muted"
+            dropHovered
+              ? "text-on-accent"
+              : dropOpen
+                ? "text-accent"
+                : connected && activeView === "voice"
+                  ? "text-accent"
+                  : connected
+                    ? "text-success"
+                    : "text-text-muted"
           }`}
         >
           <svg
