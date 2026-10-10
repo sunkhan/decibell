@@ -1714,6 +1714,9 @@ a little smaller at small window sizes, max unchanged. Both shells' backdrop mar
 800 × 600 minimum the card is 688 × 504 (was 736 × 536) while 1024 × 768 and up — and the
 1600 × 1120 cap — are untouched. Verified: card measured at 800×600, 900×700, 1024×768, 1280×800,
 1920×1080, 2560×1440 before / after (identical from 1024×768 up); tsc web 0.
+Follow-up (owner: start shrinking at a larger window size): thresholds raised to 1280 px wide /
+860 px tall. 1024×768 → 912 × 672, 1280×800 → 1216 × 704, 1366×768 → 1302 × 672; 1440×900,
+1920×1000, 1920×1080 and 2560×1440 unchanged (max 1600 × 1120 intact). Measured at all of them.
 
 ## 5. Suggested order of work
 

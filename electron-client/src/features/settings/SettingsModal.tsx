@@ -147,7 +147,7 @@ export default function SettingsModal() {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center px-14 py-12 transition-colors duration-300 lg:px-8 [@media(min-height:720px)]:py-8"
+      className="fixed inset-0 z-50 flex items-center justify-center px-14 py-12 transition-colors duration-300 xl:px-8 [@media(min-height:860px)]:py-8"
       style={{ backgroundColor: visible ? "rgba(0,0,0,0.65)" : "rgba(0,0,0,0)" }}
       onClick={closeModal}
       onTransitionEnd={handleTransitionEnd}
