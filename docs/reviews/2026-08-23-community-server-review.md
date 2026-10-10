@@ -1755,6 +1755,14 @@ tests (scripted defaults: only real per-direction changes fire, a gap with no de
 a refused send ends the thread), `cargo test --lib` 221, the Windows probe type-checked against
 `windows` 0.61 (planted error caught), napi build, tsc web 0.
 
+**Client: right-clicking a voice participant opens one menu (2026-10-10) ✅** — Owner report: in the
+channels list, right-clicking a user under a voice channel opened the user menu *and* the channel
+list's menu. The participant rows sit inside the list container, whose delegated
+`onListContextMenu` ran after the row's handler (React bubbling) and, finding no
+`[data-reorder-id]` above the row, opened the "empty area" menu on top — only for members who can
+manage channels. The list handler now returns when `e.defaultPrevented`: a nested row that opened
+its own menu already called `preventDefault`. Verified: tsc web 0.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

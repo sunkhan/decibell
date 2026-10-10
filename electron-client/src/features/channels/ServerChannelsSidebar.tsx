@@ -339,6 +339,9 @@ export default function ServerChannelsSidebar() {
   };
 
   const onListContextMenu = (e: React.MouseEvent) => {
+    // A nested row with its own menu (voice participants) already claimed
+    // this right-click — it bubbles here after that handler ran.
+    if (e.defaultPrevented) return;
     if (!canManageChannels || !activeServerId) return;
     e.preventDefault();
     const el = (e.target as HTMLElement).closest(
