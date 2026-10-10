@@ -1637,6 +1637,24 @@ type-checked on Linux against `windows` 0.61, napi build, tsc web 0 / node 0, th
 the Rust cases. Pending: KDE dialog + push-to-talk end to end, X11, Windows, macOS.
 Design: `docs/superpowers/specs/2026-10-10-global-hotkeys-design.md`.
 
+**Client: global hotkeys watch bound keys only (2026-10-10) ✅ — live tests pending** — Owner
+question: "is the client listening for every key press?" On X11 and Windows it was (XInput2 raw
+events / Raw Input deliver everything; the matcher dropped what wasn't bound), and both listeners
+kept running after the last binding was removed. Owner call: bound keys only — the other way "gives
+keylogger vibes". Windows now polls `GetAsyncKeyState` for just the watched keys (the bound ones,
+plus Ctrl/Shift/Alt/Win when a press binding needs exact modifiers) every 10 ms: nothing hooked or
+registered, nothing swallowed, mouse buttons and modifier-only combos still work; layout-dependent
+keys resolve through `MapVirtualKey(scancode)`. X11 (and XWayland) grabs exactly the bound combos
+(synchronous grabs, ungrabbed the instant they fire so input typed meanwhile goes to the focused
+app, never to us), then samples the bound keys' bits until release; a combo another client grabs
+lands in `Status::failed` and the row says so. Both threads exist only while a binding does. Cost of
+grabbing on X11 (as with the portal and macOS): the bound press doesn't also reach the focused app —
+the Keybinds tab warns when a typing key is bound there. Discord, for comparison, listens to all
+input on every platform as far as its permissions and failure modes show. Verified: hotkeys unit
+tests 19 (+ watch list, VK table, X11 grab specs / lock variants), the Windows poller type-checked on
+Linux against `windows` 0.61 (planted error caught), tsc web 0. New ignored X11 end-to-end test
+(`hotkeys::tests::x11_listener_end_to_end`) needs a disposable Xvfb — not run yet.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

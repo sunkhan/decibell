@@ -1,11 +1,14 @@
 //! Global hotkeys: keybinds that work while Decibell isn't focused.
 //! Design: docs/superpowers/specs/2026-10-10-global-hotkeys-design.md.
 //!
-//! One listener per platform feeds `dispatch`:
-//! - Linux Wayland: the GlobalShortcuts portal (`portal.rs`), falling back
-//!   to XInput2 through XWayland when the desktop has no such portal;
-//! - Linux X11: XInput2 raw events (`x11.rs`);
-//! - Windows: Raw Input (`windows.rs`);
+//! One listener per platform feeds `dispatch`. Every one of them learns
+//! about the bound keys only — never a stream of everything typed:
+//! - Linux Wayland: the GlobalShortcuts portal (`portal.rs`); the desktop
+//!   matches keys and reports only our shortcuts. Falls back to the X11
+//!   listener through XWayland when the desktop has no such portal;
+//! - Linux X11: passive grabs on exactly the bound combos, then the bound
+//!   keys' state until release (`x11.rs`);
+//! - Windows: the state of the bound keys only, polled (`windows.rs`);
 //! - macOS: none here — Electron main registers accelerators and injects.
 //!
 //! `dispatch` drives push-to-talk / push-to-mute straight into the voice
@@ -91,6 +94,9 @@ pub struct Status {
     pub can_configure: bool,
     /// Binding id → the trigger the desktop actually assigned (portal).
     pub triggers: HashMap<String, String>,
+    /// Binding ids the listener couldn't register (X11: another app
+    /// already grabs that combo).
+    pub failed: Vec<String>,
 }
 
 fn initial_backend() -> &'static str {
@@ -116,6 +122,7 @@ impl Status {
             focused_fallback: matches!(backend, "electron" | "none"),
             can_configure: false,
             triggers: HashMap::new(),
+            failed: Vec::new(),
         }
     }
 }
@@ -197,7 +204,9 @@ fn emit_action(action: Action, pressed: bool) {
     crate::events::emit_hotkey_action(action, pressed);
 }
 #[cfg(test)]
-fn emit_action(_: Action, _: bool) {}
+fn emit_action(action: Action, pressed: bool) {
+    tests::FIRED.lock().unwrap().push((action, pressed));
+}
 
 fn fire(fired: Vec<Fired>) {
     for f in fired {
@@ -213,7 +222,7 @@ pub(crate) fn raw_key(key: &'static str, down: bool) {
 }
 
 /// Release everything held through bindings (not the CLI).
-fn release_all_bindings() {
+pub(crate) fn release_all_bindings() {
     let released = matcher().release_all();
     fire(released);
     let held: Vec<(Action, String)> = hub()
@@ -228,11 +237,16 @@ fn release_all_bindings() {
 }
 
 pub fn configure(bindings: Vec<Binding>) {
-    release_all_bindings();
-    let released = matcher().set_bindings(&bindings);
-    fire(released);
-    hub().bindings = bindings.clone();
+    set_bindings(&bindings);
     apply_backend(&bindings);
+}
+
+/// Hub + matcher half of `configure`; the backend is applied after.
+fn set_bindings(bindings: &[Binding]) {
+    release_all_bindings();
+    let released = matcher().set_bindings(bindings);
+    fire(released);
+    hub().bindings = bindings.to_vec();
 }
 
 pub fn set_paused(paused: bool) {
@@ -258,9 +272,10 @@ pub(crate) fn update_status(f: impl FnOnce(&mut Status)) {
     let _ = snapshot;
 }
 
-#[allow(dead_code)] // read by the platform listeners
-pub(crate) fn uses_mouse() -> bool {
-    matcher().uses_mouse()
+/// The current bindings, for listeners that (re)build their watch list.
+#[allow(dead_code)] // unused on macOS
+pub(crate) fn bindings() -> Vec<Binding> {
+    hub().bindings.clone()
 }
 
 /// Open the desktop's own shortcut editor (portal v2).
@@ -322,6 +337,91 @@ fn apply_backend(bindings: &[Binding]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `hotkey_action` the hub would have emitted (tests only).
+    pub(super) static FIRED: Mutex<Vec<(Action, bool)>> = Mutex::new(Vec::new());
+
+    /// The X11 listener end to end against a disposable X server with
+    /// XTEST (e.g. `Xvfb :97`), driven by synthetic input:
+    /// `DECIBELL_X11_TEST_DISPLAY=:97 cargo test --lib x11_listener -- --ignored`.
+    /// Never point it at a real session: it grabs keys there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs a disposable X server with XTEST (Xvfb)"]
+    fn x11_listener_end_to_end() {
+        use std::time::Duration;
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xtest::ConnectionExt as _;
+
+        let display = std::env::var("DECIBELL_X11_TEST_DISPLAY").expect("DECIBELL_X11_TEST_DISPLAY");
+        std::env::set_var("DISPLAY", &display);
+        let (conn, screen) = x11rb::connect(Some(&display)).expect("test X server");
+        let root = conn.setup().roots[screen].root;
+        // xproto event codes for XTEST: 2/3 key press/release, 4/5 button.
+        let fake = |kind: u8, detail: u8| {
+            conn.xtest_fake_input(kind, detail, 0, root, 0, 0, 0).unwrap();
+            conn.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(60));
+        };
+        let settle = || std::thread::sleep(Duration::from_millis(150));
+        let take = || std::mem::take(&mut *FIRED.lock().unwrap());
+        const CONTROL_L: u8 = 37;
+        const SHIFT_L: u8 = 50;
+        const KEY_M: u8 = 58;
+
+        let bindings = vec![
+            Binding { id: "mute".into(), action: Action::ToggleMute, keys: vec!["Control".into(), "KeyM".into()] },
+            Binding { id: "ptt".into(), action: Action::PushToTalk, keys: vec!["Mouse4".into()] },
+        ];
+        set_bindings(&bindings);
+        x11::apply(&bindings, false);
+        settle();
+        assert_eq!(status().state, "active", "{:?}", status().detail);
+        assert!(status().failed.is_empty());
+        take();
+
+        // Ctrl+M fires toggle mute once, auto-repeat-free.
+        fake(2, CONTROL_L);
+        fake(2, KEY_M);
+        fake(3, KEY_M);
+        fake(3, CONTROL_L);
+        settle();
+        assert_eq!(take(), vec![(Action::ToggleMute, true)]);
+
+        // Exact modifiers: Ctrl+Shift+M is not Ctrl+M; M alone isn't either.
+        fake(2, CONTROL_L);
+        fake(2, SHIFT_L);
+        fake(2, KEY_M);
+        fake(3, KEY_M);
+        fake(3, SHIFT_L);
+        fake(3, CONTROL_L);
+        fake(2, KEY_M);
+        fake(3, KEY_M);
+        settle();
+        assert_eq!(take(), vec![]);
+
+        // Push to talk on a side button: press and release both arrive,
+        // and the voice gate sees the hold.
+        fake(4, 8);
+        settle();
+        assert_eq!(take(), vec![(Action::PushToTalk, true)]);
+        assert!(hub().held.get(&Action::PushToTalk).is_some_and(|s| !s.is_empty()));
+        fake(5, 8);
+        settle();
+        assert_eq!(take(), vec![(Action::PushToTalk, false)]);
+
+        // Unbinding drops every grab and ends the listener thread.
+        set_bindings(&[]);
+        x11::apply(&[], false);
+        settle();
+        fake(2, CONTROL_L);
+        fake(2, KEY_M);
+        fake(3, KEY_M);
+        fake(3, CONTROL_L);
+        settle();
+        assert_eq!(take(), vec![]);
+        assert_eq!(status().state, "idle");
+    }
 
     #[test]
     fn action_names_round_trip() {

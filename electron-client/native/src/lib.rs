@@ -135,7 +135,7 @@ pub fn init(
 /// System32), so we pin exactly the module FFmpeg will resolve, and never
 /// pick a planted copy from the current directory / PATH. Missing on
 /// non-AMD machines — that's fine, nothing to pin. Declared by hand
-/// rather than through the windows crate's LibraryLoader bindings.
+/// because the windows crate's LibraryLoader feature isn't enabled.
 #[cfg(target_os = "windows")]
 fn pin_amf_runtime() {
     #[link(name = "kernel32")]

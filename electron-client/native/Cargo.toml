@@ -98,6 +98,11 @@ ffmpeg-next = { version = "8", features = ["static"] }
 # the Windows encoder thread uses.
 jpeg-encoder = "0.6"
 
+# The X11 hotkey listener's end-to-end test drives a disposable X server
+# with XTEST (hotkeys/mod.rs, ignored by default).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb = { version = "0.13", default-features = false, features = ["xinput", "xtest"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 # windows-core must be a direct dep so the `#[implement]` macro's
 # generated `::windows_core::IUnknownImpl` paths resolve at our crate
@@ -130,11 +135,9 @@ windows = { version = "0.61", features = [
     # window HWND to the owning process PID, so stream-audio capture can
     # target that process tree via WASAPI Process Loopback.
     "Win32_UI_WindowsAndMessaging",
-    # Global hotkeys (hotkeys/windows.rs): Raw Input on a message-only
-    # window, VK → scancode fallback, GetModuleHandle for the window class.
-    "Win32_UI_Input",
+    # Global hotkeys (hotkeys/windows.rs): GetAsyncKeyState on the bound
+    # keys only, MapVirtualKey for layout-dependent ones.
     "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_System_LibraryLoader",
     # Windows Graphics Capture + D3D11 surfaces for the native HW
     # encoder pipeline (see docs/superpowers/specs/2026-05-12-windows-
     # native-ffmpeg-encoder-design.md §5-§6).

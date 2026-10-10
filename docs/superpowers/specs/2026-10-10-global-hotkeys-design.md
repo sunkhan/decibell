@@ -19,7 +19,10 @@ Keybinds that work while Decibell is not focused (in a game, in another app):
 
 Owner decisions (2026-10-10): all seven actions; macOS gets the press actions
 through Electron's `globalShortcut` only (no Input Monitoring prompt), with hold
-actions working while the window is focused.
+actions working while the window is focused. **Bound keys only** (revised the
+same day): no backend may receive a stream of everything typed. Global input
+hooks, raw input and XInput2 raw events "give keylogger vibes", so the first
+cut's Raw Input / XInput2 listeners were replaced (see "Bound keys only").
 
 ## Why not Electron `globalShortcut` everywhere
 
@@ -57,6 +60,11 @@ trigger needs a fresh id to take effect).
 
 ### Matching (X11 / Windows / focused fallback)
 
+`hotkeys/matcher.rs` (mirrored in `features/hotkeys/keys.ts`) is fed
+transitions of the *watched* keys only: the keys the bindings name (a generic
+modifier → both sides) plus the eight modifier keys when a press binding
+needs its modifiers to match exactly (`matcher::watched_keys`).
+
 The listener tracks the set of held physical keys. A generic modifier in a
 binding matches either side.
 
@@ -66,8 +74,21 @@ binding matches either side.
   held modifiers are exactly the binding's modifiers (Ctrl+Shift+M does not
   fire a Ctrl+M binding). Auto-repeat never re-fires.
 
-Passive listening: keys are observed, never swallowed, so the focused game
-still gets them (Discord's behaviour).
+## Bound keys only
+
+| backend | what Decibell learns | bound key swallowed? |
+|---|---|---|
+| `portal` | `Activated` / `Deactivated` for its own shortcut ids | yes (the desktop grabs it) |
+| `x11` / `xwayland` | a grabbed press of a bound combo, then the bound keys' state until release | yes (the press) |
+| `windows` | the state of the watched keys, polled | no |
+| `electron` (macOS) | its own accelerators firing | yes |
+| focused fallback | keys typed into Decibell's own window | no |
+
+Discord, for comparison, is closed source but every observable trait says it
+listens to all input: macOS push-to-talk needs Input Monitoring /
+Accessibility, the common Windows failure is an elevated game (a global hook
+blocked by UIPI), and on Wayland it works only while an XWayland window is
+focused.
 
 ## Backends (`native/src/hotkeys/`)
 
@@ -75,8 +96,8 @@ still gets them (Discord's behaviour).
 |---|---|---|---|---|
 | Linux, Wayland with the GlobalShortcuts portal | `portal` | ✓ | ✓ (`Deactivated`) | ✗ |
 | Linux, Wayland without the portal, XWayland present | `xwayland` | while an X11 app is focused (most games) | same | ✓ |
-| Linux, X11 session | `x11` (XInput2 raw events) | ✓ | ✓ | ✓ |
-| Windows | `windows` (Raw Input) | ✓ | ✓ | ✓ |
+| Linux, X11 session | `x11` (passive grabs on the bound combos) | ✓ | ✓ | ✓ |
+| Windows | `windows` (`GetAsyncKeyState` on the watched keys) | ✓ | ✓ | ✓ |
 | macOS | `electron` (main process `globalShortcut`) | ✓ | focused only | ✗ |
 
 Any backend that can't see keys while Decibell itself is focused (`xwayland`,
@@ -106,23 +127,46 @@ zbus (already a Linux dependency), own connection, own thread.
 No bindings means no session, so a user who never opens Keybinds never sees a
 dialog. Mouse bindings are skipped on this backend; the tab says so.
 
-### X11: XInput2 raw events
+### X11: passive grabs on the bound combos
 
-x11rb (pure Rust, no libX11 link), `XISelectEvents(root, XIAllMasterDevices,
-RawKeyPress|RawKeyRelease|RawButtonPress|RawButtonRelease)`. Raw events reach
-every client regardless of focus or grabs. Keycode − 8 = evdev code. Buttons
-2/8/9 = Mouse3/4/5.
+X11 has no passive per-key subscription (XInput2 raw events and XRecord both
+deliver everything), so x11rb (pure Rust, no libX11) grabs exactly the bound
+combos on the root window:
 
-### Windows: Raw Input
+- each binding grabs its main key (the non-modifier, or the last key of a
+  modifier-only combo; keycode = evdev + 8) or button (2/8/9 = Mouse3/4/5)
+  with the modifiers the rest of the combo requires, in every Caps Lock /
+  Num Lock variant. A hold with no modifiers grabs under `AnyModifier`, so
+  Shift+V still talks when push-to-talk is V. Alt / Super / Num Lock masks
+  come from the server's modifier mapping;
+- grabs are **synchronous**: on a grabbed press the server freezes input, we
+  ungrab at once, and anything typed in that instant goes to the focused app
+  afterwards, never to us;
+- we then sample the watched keys every 10 ms (`XQueryKeymap` bits for
+  keys, `XIQueryPointer` for buttons past 5), feeding transitions to the
+  matcher, until no named key is down. A press already released by the
+  first sample still counts once (a quick tap);
+- a grab another client holds fails with BadAccess → that binding id goes
+  into `Status::failed` ("Another app already uses this shortcut").
 
-A thread owns a message-only window and
-`RegisterRawInputDevices(keyboard [+ mouse], RIDEV_INPUTSINK)`. The scancode is
-`MakeCode | (E0 ? 0xe000 : 0)` with the known fixups: VKey 0xFF (fake shift)
-dropped; the `E1` half of Pause becomes `0x0045`; `VK_NUMLOCK` becomes
-`0xe045`; MakeCode 0 falls back to `MapVirtualKey(VK, VK_TO_VSC_EX)`. Mouse is
-registered only while a binding uses a mouse button, because every mouse move
-is a WM_INPUT. Known limit, shared with Discord: no input while an elevated
-(admin) window has focus.
+The thread sleeps in `poll()` on the X socket and a wake-up pipe (no idle
+timer), regrabs when the bindings change and exits — dropping every grab —
+when the last binding goes. The trade-off of grabbing: the bound press
+doesn't also reach the focused app, so the Keybinds tab warns when a
+typing key (e.g. bare V) is bound on a grabbing backend.
+
+### Windows: polling the watched keys
+
+`GetAsyncKeyState` answers for one key, so a thread polls only the watched
+keys every 10 ms and feeds transitions to the matcher. Nothing is
+registered or hooked, nothing is swallowed, mouse buttons and modifier-only
+combos work. Layout-independent keys use a fixed virtual-key table
+(`keys::win_fixed_vk`); character keys go through
+`MapVirtualKey(scancode, VSC_TO_VK_EX)` under the active layout whenever the
+bindings change, so they stay the recorded physical keys. Costs: up to one
+poll of latency, a sub-10 ms tap can be missed, and both Enters share one
+virtual key. The thread exists only while a binding does. An elevated
+(admin) game may hide its keys from a non-elevated Decibell.
 
 ### macOS
 
@@ -199,4 +243,7 @@ UI:
 - `pipeline` gate behaviour through the existing voice sim tests.
 - Live: KDE Wayland portal (dialog, Activated / Deactivated, rebinding,
   ShortcutsChanged); X11 and Windows by hand; macOS press actions.
-- Windows Raw Input: Linux-side type-check crate + Windows Native Check CI.
+- X11 end to end: `hotkeys::tests::x11_listener_end_to_end` (ignored) drives
+  the real listener against a disposable X server with XTEST:
+  `Xvfb :97 & DECIBELL_X11_TEST_DISPLAY=:97 cargo test --lib x11_listener -- --ignored`.
+- Windows poller: Linux-side type-check crate + Windows Native Check CI.

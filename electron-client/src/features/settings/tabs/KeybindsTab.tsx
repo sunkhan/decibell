@@ -90,6 +90,32 @@ function recordCombo(onDone: (keys: string[] | null) => void): () => void {
   };
 }
 
+/// A combo that types text in other apps: no Ctrl / Alt / Super and a
+/// character key (Shift alone still types).
+function typesText(keys: string[]): boolean {
+  const commandMod = keys.some((k) => {
+    const m = ["Control", "Alt", "Meta"].includes(k) ? k : modifierOf(k);
+    return m === "Control" || m === "Alt" || m === "Meta";
+  });
+  return (
+    !commandMod &&
+    keys.some((k) =>
+      /^(Key[A-Z]|Digit[0-9]|Space|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Backquote|Comma|Period|Slash|IntlBackslash|Enter|Backspace|Tab)$/.test(k),
+    )
+  );
+}
+
+/// Where a bound press is taken from the focused app (the desktop's or the
+/// X server's key grab), a typing key would stop typing everywhere else.
+function swallowNote(b: HotkeyBinding, status: HotkeysStatus | null): string | null {
+  const swallows =
+    status?.backend === "portal" ||
+    status?.backend === "x11" ||
+    status?.backend === "xwayland" ||
+    (status?.backend === "electron" && !isHoldAction(b.action));
+  return swallows && typesText(b.keys) ? "While bound, this key won't type in other apps." : null;
+}
+
 /// Why a binding won't work as recorded on this machine, if it won't.
 function bindingProblem(
   b: HotkeyBinding,
@@ -110,6 +136,9 @@ function bindingProblem(
     if (acceleratorFailures.includes(b.id)) {
       return "macOS refused this shortcut — another app may already use it.";
     }
+  }
+  if (status?.failed?.includes(b.id)) {
+    return "Another app already uses this shortcut.";
   }
   if (b.keys.some(isMouseKey) && status && !status.mouse && !status.focusedFallback) {
     return "Mouse buttons aren't available here.";
@@ -223,6 +252,9 @@ function BindingRow({
       {!recording && portalNote && (
         <div className="mt-2 text-[12px] leading-[1.55] text-text-muted">{portalNote}</div>
       )}
+      {!recording && !problem && swallowNote(binding, status) && (
+        <div className="mt-2 text-[12px] leading-[1.55] text-text-muted">{swallowNote(binding, status)}</div>
+      )}
     </div>
   );
 }
@@ -230,15 +262,15 @@ function BindingRow({
 function backendSummary(status: HotkeysStatus | null): string {
   switch (status?.backend) {
     case "portal":
-      return "Your desktop runs these shortcuts. New keybinds are confirmed in a desktop dialog, and you can change their keys in your system settings too.";
+      return "Your desktop runs these shortcuts and tells Decibell only when one of them fires. New keybinds are confirmed in a desktop dialog, and you can change their keys in your system settings too.";
     case "x11":
-      return "Keybinds work in every app, including games.";
+      return "Keybinds work in every app, including games. Decibell is only told about your bound keys — nothing else you type — and a bound key press doesn't also reach the app you're in.";
     case "xwayland":
-      return "Your desktop has no global shortcut service, so keybinds work while Decibell or an X11 app (most games) is focused. For everything else, bind the command line below in your window manager.";
+      return "Your desktop has no global shortcut service, so keybinds work while Decibell or an X11 app (most games) is focused, and Decibell is only told about your bound keys. For everything else, bind the command line below in your window manager.";
     case "windows":
-      return "Keybinds work in every app, including games. A game running as administrator hides its keys unless Decibell runs as administrator too.";
+      return "Keybinds work in every app, including games. Decibell checks only your bound keys (and Ctrl, Shift, Alt and Win when a combo needs them), never anything else you type, and the keys still reach the app you're in. A game running as administrator may hide its keys unless Decibell runs as administrator too.";
     case "electron":
-      return "Mute, deafen, leave and call keybinds work in every app. Push to talk and push to mute work while Decibell is focused.";
+      return "Mute, deafen, leave and call keybinds work in every app; macOS tells Decibell only when one of them fires. Push to talk and push to mute work while Decibell is focused.";
     case "none":
       return "Global keys aren't available here, so keybinds work while Decibell is focused.";
     default:

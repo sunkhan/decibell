@@ -20,6 +20,9 @@ export interface HotkeysStatus {
   canConfigure: boolean;
   /// Binding id → the trigger the desktop actually assigned (portal).
   triggers: Record<string, string>;
+  /// Binding ids the listener couldn't register (X11: another app
+  /// already grabs that combo).
+  failed: string[];
 }
 
 interface HotkeysState {

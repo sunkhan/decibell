@@ -257,19 +257,90 @@ impl Mods {
     }
 }
 
-pub fn from_evdev(code: u16) -> Option<&'static str> {
-    if code == 0 {
-        return None;
-    }
-    KEYS.iter().find(|k| k.1 == code).map(|k| k.0)
+/// Every physical modifier key. The listeners watch these alongside the
+/// bound keys when a press binding needs its modifiers to match exactly.
+pub const SIDED_MODIFIERS: [&str; 8] = [
+    "ControlLeft",
+    "ControlRight",
+    "ShiftLeft",
+    "ShiftRight",
+    "AltLeft",
+    "AltRight",
+    "MetaLeft",
+    "MetaRight",
+];
+
+/// evdev code of a key (X11 keycode = this + 8).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn evdev_code(key: &str) -> Option<u16> {
+    KEYS.iter().find(|k| k.0 == key).map(|k| k.1).filter(|&c| c != 0)
 }
 
+/// Windows set-1 scancode of a key (`0xe0xx` = extended).
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-pub fn from_win_scancode(scancode: u16) -> Option<&'static str> {
-    if scancode == 0 {
-        return None;
+pub fn win_scancode(key: &str) -> Option<u16> {
+    KEYS.iter().find(|k| k.0 == key).map(|k| k.2).filter(|&c| c != 0)
+}
+
+/// Windows virtual-key codes that don't depend on the keyboard layout.
+/// Character keys (letters, digits, punctuation) return None: their VK
+/// comes from `MapVirtualKey(scancode)` under the active layout.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn win_fixed_vk(key: &str) -> Option<u16> {
+    if let Some(n) = key.strip_prefix('F').and_then(|n| n.parse::<u16>().ok()) {
+        return (1..=24).contains(&n).then(|| 0x70 + n - 1);
     }
-    KEYS.iter().find(|k| k.2 == scancode).map(|k| k.0)
+    if let Some(n) = key.strip_prefix("Numpad").and_then(|n| n.parse::<u16>().ok()) {
+        return (n <= 9).then(|| 0x60 + n);
+    }
+    Some(match key {
+        MOUSE_MIDDLE => 0x04,
+        MOUSE_BACK => 0x05,
+        MOUSE_FORWARD => 0x06,
+        "ShiftLeft" => 0xa0,
+        "ShiftRight" => 0xa1,
+        "ControlLeft" => 0xa2,
+        "ControlRight" => 0xa3,
+        "AltLeft" => 0xa4,
+        "AltRight" => 0xa5,
+        "MetaLeft" => 0x5b,
+        "MetaRight" => 0x5c,
+        "Backspace" => 0x08,
+        "Tab" => 0x09,
+        // Windows has one VK for both Enters.
+        "Enter" | "NumpadEnter" => 0x0d,
+        "Pause" => 0x13,
+        "CapsLock" => 0x14,
+        "Escape" => 0x1b,
+        "Space" => 0x20,
+        "PageUp" => 0x21,
+        "PageDown" => 0x22,
+        "End" => 0x23,
+        "Home" => 0x24,
+        "ArrowLeft" => 0x25,
+        "ArrowUp" => 0x26,
+        "ArrowRight" => 0x27,
+        "ArrowDown" => 0x28,
+        "PrintScreen" => 0x2c,
+        "Insert" => 0x2d,
+        "Delete" => 0x2e,
+        "ContextMenu" => 0x5d,
+        "NumpadMultiply" => 0x6a,
+        "NumpadAdd" => 0x6b,
+        "NumpadSubtract" => 0x6d,
+        "NumpadDecimal" => 0x6e,
+        "NumpadDivide" => 0x6f,
+        "NumLock" => 0x90,
+        "ScrollLock" => 0x91,
+        "AudioVolumeMute" => 0xad,
+        "AudioVolumeDown" => 0xae,
+        "AudioVolumeUp" => 0xaf,
+        "MediaTrackNext" => 0xb0,
+        "MediaTrackPrevious" => 0xb1,
+        "MediaStop" => 0xb2,
+        "MediaPlayPause" => 0xb3,
+        _ => return None,
+    })
 }
 
 /// Canonical `&'static str` for a key a binding names, so the listener
@@ -400,14 +471,30 @@ mod tests {
 
     #[test]
     fn evdev_and_scancode_spellings_agree() {
-        assert_eq!(from_evdev(50), Some("KeyM"));
-        assert_eq!(from_win_scancode(0x32), Some("KeyM"));
-        assert_eq!(from_evdev(97), Some("ControlRight"));
-        assert_eq!(from_win_scancode(0xe01d), Some("ControlRight"));
-        assert_eq!(from_win_scancode(0xe045), Some("NumLock"));
-        assert_eq!(from_win_scancode(0x0045), Some("Pause"));
-        assert_eq!(from_evdev(183), Some("F13"));
-        assert_eq!(from_evdev(0), None);
+        assert_eq!(evdev_code("KeyM"), Some(50));
+        assert_eq!(win_scancode("KeyM"), Some(0x32));
+        assert_eq!(evdev_code("ControlRight"), Some(97));
+        assert_eq!(win_scancode("ControlRight"), Some(0xe01d));
+        assert_eq!(win_scancode("NumLock"), Some(0xe045));
+        assert_eq!(evdev_code("F13"), Some(183));
+        assert_eq!(evdev_code("Mouse4"), None);
+        for m in SIDED_MODIFIERS {
+            assert!(evdev_code(m).is_some() && win_fixed_vk(m).is_some(), "{}", m);
+        }
+    }
+
+    #[test]
+    fn fixed_virtual_keys() {
+        assert_eq!(win_fixed_vk("F1"), Some(0x70));
+        assert_eq!(win_fixed_vk("F24"), Some(0x87));
+        assert_eq!(win_fixed_vk("F25"), None);
+        assert_eq!(win_fixed_vk("Numpad7"), Some(0x67));
+        assert_eq!(win_fixed_vk("Mouse5"), Some(0x06));
+        assert_eq!(win_fixed_vk("ControlRight"), Some(0xa3));
+        // Layout-dependent: resolved through the scancode at runtime.
+        assert_eq!(win_fixed_vk("KeyQ"), None);
+        assert_eq!(win_fixed_vk("Backquote"), None);
+        assert!(win_scancode("KeyQ").is_some() && win_scancode("Backquote").is_some());
     }
 
     #[test]

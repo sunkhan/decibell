@@ -76,12 +76,6 @@ impl Matcher {
         released
     }
 
-    pub fn uses_mouse(&self) -> bool {
-        self.bindings
-            .iter()
-            .any(|b| b.parts.iter().any(|p| matches!(p, Part::Key(k) if keys::is_mouse(k))))
-    }
-
     /// Release every held key and binding (focus loss, pause, rebinding).
     pub fn release_all(&mut self) -> Vec<Fired> {
         self.held.clear();
@@ -144,6 +138,36 @@ impl Matcher {
             Part::Modifier(m) => self.held.iter().any(|h| keys::sided_modifier(h) == Some(*m)),
         })
     }
+}
+
+/// The only keys a polling listener may look at: every key a binding
+/// names (a generic modifier → both sides), plus all eight modifier keys
+/// when a press binding needs its modifiers to match exactly. Modifiers
+/// come first so a combo sampled in one go completes on its real key.
+pub fn watched_keys(bindings: &[super::Binding]) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    let mut push = |k: &'static str| {
+        if !out.contains(&k) {
+            out.push(k);
+        }
+    };
+    if bindings.iter().any(|b| !b.action.is_hold()) {
+        keys::SIDED_MODIFIERS.into_iter().for_each(&mut push);
+    }
+    for b in bindings {
+        for k in b.keys.iter().filter_map(|k| keys::intern(k)) {
+            match keys::generic_modifier(k) {
+                Some(m) => keys::SIDED_MODIFIERS
+                    .into_iter()
+                    .filter(|s| keys::sided_modifier(s) == Some(m))
+                    .for_each(&mut push),
+                None => push(k),
+            }
+        }
+    }
+    let modifier_first = |k: &&str| keys::sided_modifier(k).is_none();
+    out.sort_by_key(modifier_first);
+    out
 }
 
 fn part_matches_any(b: &Compiled, key: &str) -> bool {
@@ -243,8 +267,21 @@ mod tests {
         m.set_bindings(&[binding("x", Action::ToggleMute, &["Control", "Bogus"])]);
         m.key("ControlLeft", true);
         assert!(m.key("KeyM", true).is_empty());
-        assert!(!m.uses_mouse());
-        m.set_bindings(&[binding("y", Action::PushToTalk, &["Mouse5"])]);
-        assert!(m.uses_mouse());
+    }
+
+    #[test]
+    fn watches_only_bound_keys_and_needed_modifiers() {
+        // Hold-only: just the bound keys, generic modifiers as both sides.
+        let w = watched_keys(&[
+            binding("p", Action::PushToTalk, &["Mouse4"]),
+            binding("q", Action::PushToMute, &["Control", "KeyB"]),
+        ]);
+        assert_eq!(w, vec!["ControlLeft", "ControlRight", "Mouse4", "KeyB"]);
+        // A press binding needs every modifier for the exact-match check.
+        let w = watched_keys(&[binding("a", Action::ToggleMute, &["F13"])]);
+        assert_eq!(w.len(), 9);
+        assert_eq!(w.last(), Some(&"F13"));
+        assert!(w[..8].iter().all(|k| keys::sided_modifier(k).is_some()));
+        assert!(watched_keys(&[]).is_empty());
     }
 }
