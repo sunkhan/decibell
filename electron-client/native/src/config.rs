@@ -161,6 +161,27 @@ pub struct AppSettings {
     /// `download_dir`. Default off.
     #[serde(default)]
     pub ask_download_location: bool,
+
+    /// Global hotkeys (Settings → Keybinds; see hotkeys/mod.rs). Empty by
+    /// default — nothing is bound out of the box.
+    #[serde(default)]
+    pub hotkeys: Vec<HotkeyBindingSetting>,
+    /// "voice_activity" (default) or "push_to_talk".
+    #[serde(default)]
+    pub input_mode: Option<String>,
+    /// How long push-to-talk keeps transmitting after release, in ms.
+    /// None = the default (100).
+    pub ptt_release_delay_ms: Option<u32>,
+}
+
+/// One persisted keybind. `action` stays a string so a config written by
+/// a newer build with an action this one doesn't know still loads (the
+/// binding is skipped, not the whole settings file).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotkeyBindingSetting {
+    pub id: String,
+    pub action: String,
+    pub keys: Vec<String>,
 }
 
 /// The defaults are the serde ones. A derived `Default` would zero every

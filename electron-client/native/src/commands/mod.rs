@@ -12,6 +12,7 @@ pub mod community;
 pub mod dm;
 pub mod e2ee;
 pub mod friends;
+pub mod hotkeys;
 pub mod messaging;
 pub mod servers;
 pub mod settings;

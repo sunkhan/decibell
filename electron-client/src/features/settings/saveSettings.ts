@@ -23,6 +23,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useTransfersStore } from "../../stores/transfersStore";
+import { useHotkeysStore } from "../../stores/hotkeysStore";
 
 const DEBOUNCE_MS = 250;
 let pendingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -32,6 +33,7 @@ function doSave(): void {
   const { friendsOnlyDms } = useDmStore.getState();
   const { userVolumes, localMutedUsers, streamSettings } = useVoiceStore.getState();
   const { downloadDir, askDownloadLocation } = useTransfersStore.getState();
+  const hotkeys = useHotkeysStore.getState();
 
   // napi-rs binds a single positional argument of type
   // `serde_json::Value` directly from the JS arg — the param name on
@@ -81,6 +83,11 @@ function doSave(): void {
     gif_unfiltered: ui.gifUnfiltered,
     download_dir: downloadDir,
     ask_download_location: askDownloadLocation,
+    hotkeys: hotkeys.bindings
+      .filter((b) => b.keys.length > 0)
+      .map(({ id, action, keys }) => ({ id, action, keys })),
+    input_mode: hotkeys.inputMode,
+    ptt_release_delay_ms: hotkeys.pttReleaseDelayMs,
   }).catch((e) => console.error("[saveSettings] failed:", e));
 }
 

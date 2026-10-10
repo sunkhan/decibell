@@ -11,6 +11,8 @@
 import { invoke } from "../../lib/ipc";
 import { useTransfersStore } from "../../stores/transfersStore";
 import { pushDownloadConfig } from "../transfers/downloads";
+import { useHotkeysStore, DEFAULT_PTT_RELEASE_DELAY_MS } from "../../stores/hotkeysStore";
+import { isHotkeyAction } from "../hotkeys/keys";
 import {
   useUiStore,
   THEME_IDS,
@@ -69,6 +71,9 @@ interface LoadedConfigShape {
     gif_unfiltered?: boolean;
     download_dir?: string;
     ask_download_location?: boolean;
+    hotkeys?: { id: string; action: string; keys: string[] }[];
+    input_mode?: string | null;
+    ptt_release_delay_ms?: number | null;
   };
 }
 
@@ -141,6 +146,20 @@ export async function loadSettings(): Promise<void> {
   useTransfersStore.getState().setDownloadDir(settings.download_dir ?? "");
   useTransfersStore.getState().setAskDownloadLocation(settings.ask_download_location ?? false);
   pushDownloadConfig();
+
+  // Keybinds + input mode. Setting the store pushes them to native
+  // (hotkeyRuntime); a binding whose action this build doesn't know is
+  // dropped rather than guessed at.
+  const hotkeys = useHotkeysStore.getState();
+  hotkeys.setBindings(
+    (settings.hotkeys ?? []).flatMap((b) =>
+      isHotkeyAction(b.action) && Array.isArray(b.keys) && b.keys.length > 0
+        ? [{ id: b.id, action: b.action, keys: b.keys }]
+        : [],
+    ),
+  );
+  hotkeys.setInputMode(settings.input_mode === "push_to_talk" ? "push_to_talk" : "voice_activity");
+  hotkeys.setPttReleaseDelayMs(settings.ptt_release_delay_ms ?? DEFAULT_PTT_RELEASE_DELAY_MS);
 
   // 0 means "no value persisted" — keep the in-store default of 10.
   useUiStore.getState().setChannelCacheSize(settings.channel_cache_size || 10);

@@ -61,6 +61,10 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = "0.9"
 zbus = { version = "5", default-features = false, features = ["blocking-api", "tokio"] }
+# Global hotkeys on X11 (and through XWayland on Wayland desktops without
+# the GlobalShortcuts portal): XInput2 raw key/button events. Pure-Rust
+# protocol client — no libX11/libXi link.
+x11rb = { version = "0.13", default-features = false, features = ["xinput"] }
 # wlroots compositors (Niri, Sway, Hyprland, river) — capture goes
 # straight through wlr-screencopy + a self-allocated SHM buffer,
 # bypassing xdg-desktop-portal entirely. Mutter/KWin fall through to
@@ -126,6 +130,11 @@ windows = { version = "0.61", features = [
     # window HWND to the owning process PID, so stream-audio capture can
     # target that process tree via WASAPI Process Loopback.
     "Win32_UI_WindowsAndMessaging",
+    # Global hotkeys (hotkeys/windows.rs): Raw Input on a message-only
+    # window, VK → scancode fallback, GetModuleHandle for the window class.
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_LibraryLoader",
     # Windows Graphics Capture + D3D11 surfaces for the native HW
     # encoder pipeline (see docs/superpowers/specs/2026-05-12-windows-
     # native-ffmpeg-encoder-design.md §5-§6).

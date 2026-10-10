@@ -414,6 +414,8 @@ pub const INVITE_CREATE_RESPONDED: &str = "invite_create_responded";
 pub const INVITE_REVOKE_RESPONDED: &str = "invite_revoke_responded";
 pub const VOICE_PRESENCE_UPDATED: &str = "voice_presence_updated";
 pub const VOICE_STATE_CHANGED: &str = "voice_state_changed";
+pub const HOTKEY_ACTION: &str = "hotkey_action";
+pub const HOTKEYS_STATUS: &str = "hotkeys_status";
 pub const VOICE_USER_SPEAKING: &str = "voice_user_speaking";
 pub const VOICE_USER_STATE_CHANGED: &str = "voice_user_state_changed";
 pub const VOICE_INPUT_LEVEL: &str = "voice_input_level";
@@ -1372,6 +1374,22 @@ pub fn emit_voice_state_changed(is_muted: bool, is_deafened: bool) {
             is_deafened,
         },
     );
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotkeyActionPayload {
+    pub action: crate::hotkeys::Action,
+    pub pressed: bool,
+}
+
+/// A global hotkey fired (hold actions also report their release).
+pub fn emit_hotkey_action(action: crate::hotkeys::Action, pressed: bool) {
+    send(HOTKEY_ACTION, HotkeyActionPayload { action, pressed });
+}
+
+pub fn emit_hotkeys_status(status: &crate::hotkeys::Status) {
+    send(HOTKEYS_STATUS, status);
 }
 
 pub fn emit_voice_user_speaking(username: String, speaking: bool) {

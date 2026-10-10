@@ -7,6 +7,7 @@ mod commands;
 mod config;
 mod e2ee;
 mod events;
+mod hotkeys;
 mod media;
 mod net;
 mod state;
@@ -134,7 +135,7 @@ pub fn init(
 /// System32), so we pin exactly the module FFmpeg will resolve, and never
 /// pick a planted copy from the current directory / PATH. Missing on
 /// non-AMD machines — that's fine, nothing to pin. Declared by hand
-/// because the windows crate's LibraryLoader feature isn't enabled.
+/// rather than through the windows crate's LibraryLoader bindings.
 #[cfg(target_os = "windows")]
 fn pin_amf_runtime() {
     #[link(name = "kernel32")]

@@ -4,6 +4,12 @@ import { useUiStore } from "../../../stores/uiStore";
 import { useVoiceStore } from "../../../stores/voiceStore";
 import { useAudioDevicesStore, type AudioDevice } from "../../../stores/audioDevicesStore";
 import { saveSettings } from "../saveSettings";
+import SegmentedControl from "../../../components/SegmentedControl";
+import {
+  useHotkeysStore,
+  MAX_PTT_RELEASE_DELAY_MS,
+  type InputMode,
+} from "../../../stores/hotkeysStore";
 
 function DeviceSelector({
   label,
@@ -363,6 +369,71 @@ function VoiceThresholdBar() {
   );
 }
 
+/// Voice activity vs push to talk. The push-to-talk key itself lives in
+/// Settings → Keybinds; native gates the mic (media/voice_gate.rs).
+function InputModeCard() {
+  const inputMode = useHotkeysStore((s) => s.inputMode);
+  const releaseDelayMs = useHotkeysStore((s) => s.pttReleaseDelayMs);
+  const hasPttKey = useHotkeysStore((s) =>
+    s.bindings.some((b) => b.action === "push_to_talk" && b.keys.length > 0),
+  );
+
+  const setMode = (mode: InputMode) => {
+    useHotkeysStore.getState().setInputMode(mode);
+    saveSettings();
+  };
+
+  return (
+    <div className="rounded-md border border-border-divider bg-bg-light p-4">
+      <SegmentedControl<InputMode>
+        options={[
+          { value: "voice_activity", label: "Voice activity" },
+          { value: "push_to_talk", label: "Push to talk" },
+        ]}
+        value={inputMode}
+        onChange={setMode}
+      />
+      {inputMode === "push_to_talk" && (
+        <>
+          {!hasPttKey && (
+            <div className="mt-3 text-[12px] leading-[1.55] text-danger">
+              No push to talk key yet — your mic stays closed.{" "}
+              <button
+                type="button"
+                onClick={() => useUiStore.getState().setSettingsTab("keybinds")}
+                className="font-medium text-accent-bright hover:underline"
+              >
+                Add one in Keybinds
+              </button>
+            </div>
+          )}
+          <div className="mt-4 flex items-baseline justify-between">
+            <span className="text-[13px] font-medium text-text-secondary">Release delay</span>
+            <span className="rounded-sm bg-accent-soft px-2 py-0.5 text-[12px] font-medium text-accent-bright">
+              {releaseDelayMs} ms
+            </span>
+          </div>
+          <input
+            type="range"
+            aria-label="Push to talk release delay"
+            min={0}
+            max={MAX_PTT_RELEASE_DELAY_MS}
+            step={10}
+            value={releaseDelayMs}
+            onChange={(e) => useHotkeysStore.getState().setPttReleaseDelayMs(Number(e.target.value))}
+            onMouseUp={saveSettings}
+            onKeyUp={saveSettings}
+            className="mt-2.5 h-[4px] w-full cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-light [&::-webkit-slider-thumb]:shadow-[0_0_6px_var(--color-accent-mid)]"
+          />
+          <div className="mt-2 text-[12px] leading-[1.55] text-text-muted">
+            Keeps your mic open briefly after you let go, so the end of a word isn't cut off.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ToggleSwitch({ label, description, enabled, onToggle }: {
   label: string;
   description: string;
@@ -406,6 +477,7 @@ export default function AudioTab() {
   const aecEnabled = useUiStore((s) => s.aecEnabled);
   const nsLevel = useUiStore((s) => s.noiseSuppressionLevel);
   const agcEnabled = useUiStore((s) => s.agcEnabled);
+  const inputMode = useHotkeysStore((s) => s.inputMode);
 
   // Ensure the roster is fresh whenever the tab opens (coalesced with the
   // app-global devicechange sync). Reads come from the shared store so a
@@ -510,13 +582,23 @@ export default function AudioTab() {
         </div>
       </div>
 
-      {/* Voice Threshold section */}
+      {/* Input mode: voice activity or push to talk */}
       <div>
         <div className="mb-2.5 pl-0.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-          Input Sensitivity
+          Input Mode
         </div>
-        <VoiceThresholdBar />
+        <InputModeCard />
       </div>
+
+      {/* Voice Threshold section — push to talk ignores it */}
+      {inputMode === "voice_activity" && (
+        <div>
+          <div className="mb-2.5 pl-0.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+            Input Sensitivity
+          </div>
+          <VoiceThresholdBar />
+        </div>
+      )}
 
       {/* Voice Processing section */}
       <div>

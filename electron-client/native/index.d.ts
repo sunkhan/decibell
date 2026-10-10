@@ -595,6 +595,63 @@ export interface SendFriendActionArgs {
   targetUsername: string
 }
 export declare function sendFriendAction(args: SendFriendActionArgs): Promise<void>
+export interface HotkeyBindingArg {
+  id: string
+  /**
+   * `toggle_mute` | `toggle_deafen` | `push_to_talk` | `push_to_mute`
+   * | `leave_voice` | `answer_call` | `decline_call`
+   */
+  action: string
+  /**
+   * DOM `KeyboardEvent.code`s, generic `Control`/`Shift`/`Alt`/`Meta`,
+   * `Mouse3`/`Mouse4`/`Mouse5`.
+   */
+  keys: Array<string>
+}
+export interface HotkeysConfigureArgs {
+  bindings: Array<HotkeyBindingArg>
+}
+/**
+ * Replace the bindings and (re)start this platform's listener. Unknown
+ * actions are skipped so a config from a newer build can't break it.
+ * Status changes arrive as `hotkeys_status` events only — a snapshot
+ * returned here could land after a newer event and roll it back.
+ */
+export declare function hotkeysConfigure(args: HotkeysConfigureArgs): Promise<void>
+export declare function hotkeysGetStatus(): any
+export interface HotkeysSetPausedArgs {
+  paused: boolean
+}
+/**
+ * Swallow presses while the Keybinds tab records a combo, so recording
+ * Ctrl+M doesn't also toggle mute.
+ */
+export declare function hotkeysSetPaused(args: HotkeysSetPausedArgs): void
+export interface HotkeysInjectArgs {
+  action: string
+  pressed: boolean
+  /**
+   * What is held: a binding id (renderer focused fallback, macOS
+   * accelerators) or `cli`.
+   */
+  source: string
+}
+/**
+ * A press / release from outside the native listeners: the renderer's
+ * focused fallback, macOS accelerators, `decibell --hotkey=…`.
+ */
+export declare function hotkeysInject(args: HotkeysInjectArgs): void
+/** Open the desktop's own shortcut editor (GlobalShortcuts portal v2). */
+export declare function hotkeysOpenSystemSettings(): Promise<void>
+export interface SetInputModeArgs {
+  pushToTalk: boolean
+  releaseDelayMs: number
+}
+/**
+ * Voice activity vs push-to-talk. Process-wide: applies to the current
+ * and every later voice session / DM call.
+ */
+export declare function setInputMode(args: SetInputModeArgs): void
 export interface SendPrivateMessageArgs {
   recipient: string
   message: string

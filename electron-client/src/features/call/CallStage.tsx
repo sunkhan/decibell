@@ -19,6 +19,7 @@ import CaptureSourcePicker from "../voice/CaptureSourcePicker";
 import { StreamAudioButton } from "../voice/StreamAudioPopover";
 import { CodecBadge } from "../voice/CodecBadge";
 import StreamStatsOverlay from "../voice/StreamStatsOverlay";
+import { toggleDeafen, toggleMute } from "../voice/voiceActions";
 import { getStreamPipHost, placeStreamPip, recordFullViewRect } from "../voice/streamPipHost";
 import { saveSettings } from "../settings/saveSettings";
 import {
@@ -212,20 +213,6 @@ function Stage({ peer }: { peer: string }) {
   }, [isFullscreen, pokeOverlay]);
 
   // ── handlers ──
-  const handleMute = () => {
-    if (isDeafened) {
-      playSound("undeafen");
-      invoke("set_voice_deafen", { deafened: false }).catch(console.error);
-      invoke("set_voice_mute", { muted: false }).catch(console.error);
-    } else {
-      playSound(isMuted ? "unmute" : "mute");
-      invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
-    }
-  };
-  const handleDeafen = () => {
-    playSound(isDeafened ? "undeafen" : "deafen");
-    invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
-  };
   const handleHangUp = () => {
     if (isFullscreen) void exitFullscreen();
     void endCall(status === "outgoing" ? "Cancelled" : "Call ended");
@@ -420,10 +407,10 @@ function Stage({ peer }: { peer: string }) {
         <div className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-border bg-bg-light p-1.5 shadow-float">
           {live && (
             <>
-              <DockButton title={isMuted ? "Unmute" : "Mute"} onClick={handleMute} tone={isMuted ? "danger" : "soft"}>
+              <DockButton title={isMuted ? "Unmute" : "Mute"} onClick={toggleMute} tone={isMuted ? "danger" : "soft"}>
                 {isMuted ? <MicOffIcon /> : <MicIcon />}
               </DockButton>
-              <DockButton title={isDeafened ? "Undeafen" : "Deafen"} onClick={handleDeafen} tone={isDeafened ? "danger" : "soft"}>
+              <DockButton title={isDeafened ? "Undeafen" : "Deafen"} onClick={toggleDeafen} tone={isDeafened ? "danger" : "soft"}>
                 {isDeafened ? <DeafenOffIcon /> : <DeafenIcon />}
               </DockButton>
               <DockButton

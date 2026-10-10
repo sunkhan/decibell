@@ -9,6 +9,7 @@ import { flushSaveSettings } from "./features/settings/saveSettings";
 import { endCall } from "./features/call/callActions";
 import { useCodecSettingsStore } from "./stores/codecSettingsStore";
 import { initRendererSentry } from "./lib/sentry";
+import { startHotkeyRuntime } from "./features/hotkeys/hotkeyRuntime";
 import "./styles/globals.css";
 
 // Initialize Sentry FIRST, before any other boot work. Any throw
@@ -27,6 +28,10 @@ window.addEventListener("beforeunload", () => {
   // sends the same HANGUP on app quit; this covers a bare window reload).
   void endCall(null);
 });
+
+// Before loadSettings: hydrating the keybind store is what pushes the
+// bindings to native, so the subscription must already be in place.
+startHotkeyRuntime();
 
 // Hydrate persisted settings + auto-login (if credentials saved)
 // before the React tree mounts. Fire-and-forget — if it fails the

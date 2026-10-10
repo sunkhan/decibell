@@ -11,6 +11,7 @@ import StreamViewPanel from "./StreamViewPanel";
 import CaptureSourcePicker from "./CaptureSourcePicker";
 import { StreamAudioButton } from "./StreamAudioPopover";
 import { useStreamThumbnails } from "./useStreamThumbnails";
+import { leaveVoiceChannel, toggleDeafen, toggleMute } from "./voiceActions";
 import { PERM, useChannelPermission, usePermission } from "../servers/permissions";
 import { LockGlyph } from "../chat/MessageBubble";
 import {
@@ -530,23 +531,6 @@ function VoiceDock({ canStream, onShare }: { canStream: boolean; onShare: () => 
   const isDeafened = useVoiceStore((s) => s.isDeafened);
   const isStreaming = useVoiceStore((s) => s.isStreaming);
 
-  // Sounds match UserPanel's controls for the same actions.
-  const handleMute = () => {
-    if (isDeafened) {
-      playSound("undeafen");
-      invoke("set_voice_deafen", { deafened: false }).catch(console.error);
-      invoke("set_voice_mute", { muted: false }).catch(console.error);
-    } else {
-      playSound(isMuted ? "unmute" : "mute");
-      invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
-    }
-  };
-
-  const handleDeafen = () => {
-    playSound(isDeafened ? "undeafen" : "deafen");
-    invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
-  };
-
   const handleStopSharing = async () => {
     playSound("stream_stop");
     const { connectedServerId, connectedChannelId } = useVoiceStore.getState();
@@ -561,51 +545,13 @@ function VoiceDock({ canStream, onShare }: { canStream: boolean; onShare: () => 
     useVoiceStore.getState().setIsStreaming(false);
   };
 
-  const handleDisconnect = async () => {
-    playSound("disconnect");
-    const v = useVoiceStore.getState();
-    const { connectedServerId, connectedChannelId } = v;
-    // If we're streaming, stop the capture/encoder and tell native to
-    // stop BEFORE leaving. Otherwise capture keeps running and, since
-    // disconnect() hides the dock, there's no UI left to end it.
-    if (v.isStreaming) {
-      const { stopActiveStream } = await import("./streaming/StreamCapture");
-      await stopActiveStream();
-      if (connectedServerId && connectedChannelId) {
-        await invoke("stop_screen_share", {
-          serverId: connectedServerId,
-          channelId: connectedChannelId,
-        }).catch(console.error);
-      }
-      useVoiceStore.getState().setIsStreaming(false);
-    }
-    if (connectedServerId && connectedChannelId) {
-      // Best-effort, un-awaited: leave_voice_channel below drops all watch
-      // subscriptions server-side, so don't serialize N round-trips into the
-      // disconnect path.
-      const own = useAuthStore.getState().username;
-      for (const username of useVoiceStore.getState().watchingStreams) {
-        if (username !== own) {
-          invoke("stop_watching", {
-            serverId: connectedServerId,
-            channelId: connectedChannelId,
-            targetUsername: username,
-          }).catch(() => {});
-        }
-      }
-    }
-    invoke("leave_voice_channel").catch(console.error);
-    useVoiceStore.getState().disconnect();
-    useUiStore.getState().setActiveView("server");
-  };
-
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center">
       <div className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-border bg-bg-light p-1.5 shadow-float">
-        <DockButton title={isMuted ? "Unmute" : "Mute"} tone={isMuted ? "danger" : "soft"} onClick={handleMute}>
+        <DockButton title={isMuted ? "Unmute" : "Mute"} tone={isMuted ? "danger" : "soft"} onClick={toggleMute}>
           {isMuted ? <MicOffIcon /> : <MicIcon />}
         </DockButton>
-        <DockButton title={isDeafened ? "Undeafen" : "Deafen"} tone={isDeafened ? "danger" : "soft"} onClick={handleDeafen}>
+        <DockButton title={isDeafened ? "Undeafen" : "Deafen"} tone={isDeafened ? "danger" : "soft"} onClick={toggleDeafen}>
           {isDeafened ? <HeadphonesOffIcon /> : <HeadphonesIcon />}
         </DockButton>
         {(canStream || isStreaming) && (
@@ -626,7 +572,7 @@ function VoiceDock({ canStream, onShare }: { canStream: boolean; onShare: () => 
           type="button"
           title="Disconnect"
           aria-label="Disconnect"
-          onClick={() => void handleDisconnect()}
+          onClick={() => void leaveVoiceChannel()}
           className="flex h-10 w-14 items-center justify-center rounded-md bg-error text-on-error hover:bg-error/85"
         >
           <LeaveIcon />

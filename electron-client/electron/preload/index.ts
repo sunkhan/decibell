@@ -453,4 +453,17 @@ contextBridge.exposeInMainWorld("decibell", {
     openReleasePage: (): Promise<void> =>
       ipcRenderer.invoke("decibell:update:openReleasePage") as Promise<void>,
   },
+  hotkeys: {
+    /// macOS: register press-action bindings as global accelerators
+    /// (no-op elsewhere — the native listeners cover those platforms).
+    /// Resolves to the binding ids that couldn't be registered.
+    setAccelerators: (
+      bindings: Array<{ id: string; action: string; keys: string[] }>,
+    ): Promise<string[]> =>
+      ipcRenderer.invoke("decibell:hotkeys:setAccelerators", bindings) as Promise<string[]>,
+    /// The command a compositor binding should run (`<cmd> --hotkey=…`);
+    /// null in a dev checkout.
+    launchCommand: (): Promise<string | null> =>
+      ipcRenderer.invoke("decibell:hotkeys:launchCommand") as Promise<string | null>,
+  },
 });

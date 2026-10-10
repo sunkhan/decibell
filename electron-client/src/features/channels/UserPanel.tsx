@@ -14,6 +14,7 @@ import CaptureSourcePicker from "../voice/CaptureSourcePicker";
 import { StreamAudioButton } from "../voice/StreamAudioPopover";
 import { announceCallStreamStop, endCall } from "../call/callActions";
 import { PERM, useChannelPermission } from "../servers/permissions";
+import { leaveVoiceChannel, toggleDeafen, toggleMute } from "../voice/voiceActions";
 
 const EMPTY_CHANNELS: never[] = [];
 
@@ -44,8 +45,6 @@ export default function UserPanel() {
   const activeStreams = useVoiceStore((s) => s.activeStreams);
   const latencyMs = useVoiceStore((s) => s.latencyMs);
   const error = useVoiceStore((s) => s.error);
-  const disconnect = useVoiceStore((s) => s.disconnect);
-  const setActiveView = useUiStore((s) => s.setActiveView);
   const channels = useChatStore((s) => {
     const serverId = s.activeServerId;
     return serverId ? s.channelsByServer[serverId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
@@ -80,42 +79,7 @@ export default function UserPanel() {
       ? channels.find((ch) => ch.id === connectedChannelId)?.name ?? "Voice"
       : null;
 
-  const handleMute = () => {
-    if (isDeafened) {
-      playSound("undeafen");
-      invoke("set_voice_deafen", { deafened: false }).catch(console.error);
-      invoke("set_voice_mute", { muted: false }).catch(console.error);
-    } else {
-      playSound(isMuted ? "unmute" : "mute");
-      invoke("set_voice_mute", { muted: !isMuted }).catch(console.error);
-    }
-  };
-
-  const handleDeafen = () => {
-    playSound(isDeafened ? "undeafen" : "deafen");
-    invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
-  };
-
-  const handleDisconnect = async () => {
-    playSound("disconnect");
-    // If streaming, stop the capture/encoder + native stream before
-    // leaving; otherwise capture keeps running after disconnect with no
-    // UI left to stop it.
-    if (useVoiceStore.getState().isStreaming) {
-      const { stopActiveStream } = await import(
-        "../voice/streaming/StreamCapture"
-      );
-      await stopActiveStream();
-      await invoke("stop_screen_share", {
-        serverId: connectedServerId ?? undefined,
-        channelId: connectedChannelId ?? undefined,
-      }).catch(console.error);
-      useVoiceStore.getState().setIsStreaming(false);
-    }
-    invoke("leave_voice_channel").catch(console.error);
-    disconnect();
-    setActiveView("server");
-  };
+  const handleDisconnect = () => void leaveVoiceChannel();
 
   const handleHangUp = () => {
     void endCall("Call ended");
@@ -262,7 +226,7 @@ export default function UserPanel() {
           )}
           <PanelButton
             title={speakBlocked ? "You can't speak in this channel" : isMuted ? "Unmute" : "Mute"}
-            onClick={handleMute}
+            onClick={toggleMute}
             onContextMenu={(e) => {
               e.preventDefault();
               openDeviceMenu("input", e);
@@ -289,7 +253,7 @@ export default function UserPanel() {
           </PanelButton>
           <PanelButton
             title={isDeafened ? "Undeafen" : "Deafen"}
-            onClick={handleDeafen}
+            onClick={toggleDeafen}
             onContextMenu={(e) => {
               e.preventDefault();
               openDeviceMenu("output", e);

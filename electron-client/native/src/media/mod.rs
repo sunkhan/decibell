@@ -97,6 +97,7 @@ pub mod voice_sim_tests;
 pub mod video_packet;
 pub mod video_pipeline;
 pub mod video_receiver;
+pub mod voice_gate;
 pub mod frame_crypto;
 
 use std::net::UdpSocket;

@@ -23,6 +23,7 @@ import { registerDownloadLimitHandler } from "./downloadPacer";
 import { registerDownloadHandlers, pauseAllForQuit } from "./downloads";
 import { registerLinkPreviewHandlers } from "./linkPreview";
 import { registerGifHandlers } from "./gifs";
+import { injectHotkey, parseHotkeyArg, registerHotkeyIpc } from "./hotkeys";
 import { startMediaServer, stopMediaServer, getMediaServerPort } from "./mediaServer";
 import { initUpdater, kickoffInitialCheck, cancelInitialCheck } from "./update";
 import { sweepStale } from "./fileRegistry";
@@ -33,8 +34,9 @@ import { verifyHostFingerprint } from "./attachmentRegistry";
 // Single-instance lock — second launches focus the existing window.
 // Required for deep-link handling on Windows/Linux (so a second
 // `decibell://invite/...` invocation forwards the URL to the running
-// app rather than spawning a fresh one).
-if (!app.requestSingleInstanceLock()) {
+// app rather than spawning a fresh one). `decibell --hotkey=…` with no
+// instance running has nothing to act on, so it exits too.
+if (!app.requestSingleInstanceLock() || parseHotkeyArg(process.argv)) {
   app.quit();
   process.exit(0);
 }
@@ -508,6 +510,12 @@ function createWindow(): void {
 }
 
 app.on("second-instance", (_event, argv) => {
+  // `decibell --hotkey=…` from a compositor binding: act, don't focus.
+  const hotkey = parseHotkeyArg(argv);
+  if (hotkey) {
+    injectHotkey(hotkey, "cli");
+    return;
+  }
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
@@ -686,6 +694,7 @@ app.whenReady().then(async () => {
   registerNetHandlers();
   registerLinkPreviewHandlers();
   registerGifHandlers();
+  registerHotkeyIpc();
 
   // GC abandoned decibell-file:// registrations (renderer crash or
   // forgotten upload). Entries expire after 1h; sweep every 5 min.

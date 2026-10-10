@@ -23,6 +23,7 @@ use super::packet::{
     PACKET_TYPE_STREAM_AUDIO,
 };
 use super::speaking::SpeakingDetector;
+use super::voice_gate::Gate as VoiceGate;
 use super::video_receiver::ReassembledFrame;
 
 // ── Control / Event messages ──────────────────────────────────────────────────
@@ -780,9 +781,16 @@ pub fn run_audio_pipeline(
                 };
                 let open_threshold = voice_threshold_db;
                 let close_threshold = voice_threshold_db - GATE_HYSTERESIS_DB;
+                // Push-to-talk / push-to-mute (global hotkeys) force the gate
+                // either way; a forced close is a closed gate, not a mute, so
+                // peers see "not speaking" and the fade tail still runs.
+                let hotkey_gate = crate::media::voice_gate::gate();
                 let gate_was_open = gate_open;
-                if muted {
+                if muted || hotkey_gate == VoiceGate::Closed {
                     gate_open = false;
+                    gate_hang_remaining = 0;
+                } else if hotkey_gate == VoiceGate::Open {
+                    gate_open = true;
                     gate_hang_remaining = 0;
                 } else if rms_db >= open_threshold {
                     gate_open = true;
@@ -817,7 +825,14 @@ pub fn run_audio_pipeline(
 
                 // Speaking detection based on threshold (no hysteresis — this is
                 // just for the UI speaking ring, user wants it to react immediately)
-                if let Some(state) = local_speaking.process_threshold(!muted && rms_db >= open_threshold) {
+                // Under push-to-talk the threshold slider is out of play; use
+                // the same -50 dB the remote side judges our audio by.
+                let local_voice = match hotkey_gate {
+                    VoiceGate::Vad => rms_db >= open_threshold,
+                    VoiceGate::Open => rms_db >= -50.0,
+                    VoiceGate::Closed => false,
+                };
+                if let Some(state) = local_speaking.process_threshold(!muted && local_voice) {
                     let _ =
                         event_tx.send(VoiceEvent::SpeakingChanged("__local__".to_string(), state));
                 }
@@ -839,7 +854,10 @@ pub fn run_audio_pipeline(
                 const GATE_FADE_IN: usize = 480; // 10ms
                 let mut pre_roll_frame: Option<[i16; FRAME_SIZE]> = None;
                 if gate_opened {
-                    match gate_pre_roll.take() {
+                    // No pre-roll on a push-to-talk press: that frame is audio
+                    // from before the key went down. Fade this one in instead.
+                    let held_back = gate_pre_roll.take();
+                    match if hotkey_gate == VoiceGate::Open { None } else { held_back } {
                         Some(mut pr) => {
                             for (i, s) in pr.iter_mut().take(GATE_FADE_IN).enumerate() {
                                 *s = (*s as f32 * (i as f32 / GATE_FADE_IN as f32)) as i16;

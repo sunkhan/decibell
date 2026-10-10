@@ -1608,6 +1608,35 @@ apart from the margin, and they shrink to fit small windows. The sidebar went fr
 (240 px). The two shells stay identical. Verified: tsc web 0; preview-harness screenshots at
 800 × 600, 1440 × 900, 1920 × 1080 and 2560 × 1440.
 
+**Client: global hotkeys + push-to-talk (2026-10-10) ✅ — live tests pending** — Owner request:
+mute / deafen etc. from anywhere. Seven actions: toggle mute, toggle deafen, push to talk, push to
+mute, leave voice / hang up, answer / decline a DM call. Owner calls: all seven; macOS gets press
+actions through Electron `globalShortcut` only (no Input Monitoring prompt). Electron's own
+`globalShortcut` can't be the base: Electron 33 has no Wayland backend (we run native Wayland) and it
+never reports releases. So the listener is native (`native/src/hotkeys/`): the GlobalShortcuts
+portal on Wayland (zbus; host `Registry.Register("decibell")`, preferred triggers, KDE's confirm
+dialog, `Activated` / `Deactivated` → push-to-talk works; v2 `ConfigureShortcuts` behind "Open
+system shortcut settings"), falling back to XInput2 through XWayland on desktops without the portal;
+XInput2 raw events on X11 (x11rb, new dep); Raw Input on a message-only window on Windows
+(passive, nothing swallowed; mouse registered only while a binding uses it). Bindings are DOM
+`code`s (generic modifiers, sided only when modifier-only, Mouse3–5) mapped to evdev / scancodes by a
+table generated from Chromium's `dom_code_data.inc`. One shared matcher (Rust, mirrored in TS for
+the renderer's focused fallback). Push-to-talk / push-to-mute drive `media/voice_gate.rs` straight
+from native: a forced-closed gate isn't a mute (no `FLAG_MUTED`, the fade tail still runs), and PTT
+sends no pre-roll from before the key went down. Press actions round-trip to the renderer as
+`hotkey_action` and run `features/voice/voiceActions.ts`, now the only copy of the mute / deafen /
+leave logic (UserPanel, the voice dock and CallStage each had one). `decibell --hotkey=<action>`
+(`:down` / `:up` for holds) goes through the single-instance handshake for window managers that
+bind commands. Settings → Keybinds (recorder, per-backend notes, the desktop's actual trigger) and
+Settings → Audio → Input Mode (voice activity / push to talk + release delay, default 100 ms).
+Found on the way: a `ShortcutsChanged` body read as `(o, Value)` types as `ov` and never matches
+`oa(sa{sv})` — read it with its real signature (now unit-tested through a real message encode).
+Verified: `cargo test --lib` 215 (+ key table, matcher, gate timing, portal message parsing), the
+live portal test against KDE 6.7 (Register, v2, CreateSession, ListShortcuts), the Windows module
+type-checked on Linux against `windows` 0.61, napi build, tsc web 0 / node 0, the TS matcher against
+the Rust cases. Pending: KDE dialog + push-to-talk end to end, X11, Windows, macOS.
+Design: `docs/superpowers/specs/2026-10-10-global-hotkeys-design.md`.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

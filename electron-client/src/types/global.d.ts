@@ -186,6 +186,12 @@ declare global {
         quitAndInstall: () => Promise<void>;
         openReleasePage: () => Promise<void>;
       };
+      hotkeys: {
+        setAccelerators: (
+          bindings: Array<{ id: string; action: string; keys: string[] }>,
+        ) => Promise<string[]>;
+        launchCommand: () => Promise<string | null>;
+      };
     };
   }
 }
