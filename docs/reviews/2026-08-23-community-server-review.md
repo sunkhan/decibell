@@ -1666,7 +1666,8 @@ logind `uaccess` for joysticks only, so reading the mouse would mean the `input`
 keyboard with it. Owner call: guide the user rather than write desktop config. Recording a side
 button on the portal backend now opens a guide in that row: KDE → Extra Mouse Buttons (KWin
 `buttonsrebind`, confirmed on Plasma 6.7.5) with an "Open mouse settings" button
-(`systemsettings kcm_mouse`) and a suggested Meta combo, then record the button again; GNOME →
+(`systemsettings kcm_mouse`) and a suggested combo (Ctrl + Meta + F9 since the owner noted Meta + F9 is a
+KDE default), then record the button again; GNOME →
 Piper / input-remapper; others → their input settings or the command line. The recording hint says
 side buttons need a remap; the Keybinds tab's top card is "On this computer", the list "Your
 keybinds". Verified: tsc web 0 / node 0; the guide, triggered by a synthetic back-button press in

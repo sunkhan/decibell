@@ -167,8 +167,7 @@ function MouseButtonGuide({
           </li>
           <li>
             Click <span className="font-medium text-text-primary">Add Binding</span>, press {name}, then type a
-            combination you don't use anywhere else. One with the Meta key, like Meta + F9, stays out of your
-            games' way.
+            combination you don't use anywhere else, like Ctrl + Meta + F9.
           </li>
           <li>Come back and press {name} here — Decibell records that combination.</li>
         </ol>
