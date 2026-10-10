@@ -1652,8 +1652,11 @@ grabbing on X11 (as with the portal and macOS): the bound press doesn't also rea
 the Keybinds tab warns when a typing key is bound there. Discord, for comparison, listens to all
 input on every platform as far as its permissions and failure modes show. Verified: hotkeys unit
 tests 19 (+ watch list, VK table, X11 grab specs / lock variants), the Windows poller type-checked on
-Linux against `windows` 0.61 (planted error caught), tsc web 0. New ignored X11 end-to-end test
-(`hotkeys::tests::x11_listener_end_to_end`) needs a disposable Xvfb — not run yet.
+Linux against `windows` 0.61 (planted error caught) and green on the Windows Native Check, tsc
+web 0. X11 end to end (`hotkeys::tests::x11_listener_end_to_end`, ignored; real listener vs. a
+throwaway Xvfb driven over XTEST) passes: Ctrl+M fires once, Ctrl+Shift+M and bare M don't, a
+Mouse4 push-to-talk press/release reaches the voice gate, a sub-10 ms tap counts once, unbound keys
+typed idle and while push-to-talk is held never reach the matcher, and unbinding drops every grab.
 
 ## 5. Suggested order of work
 

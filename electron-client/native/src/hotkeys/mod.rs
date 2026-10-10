@@ -217,6 +217,8 @@ fn fire(fired: Vec<Fired>) {
 /// A raw key / button transition from a matcher-based listener.
 #[allow(dead_code)] // unused on macOS
 pub(crate) fn raw_key(key: &'static str, down: bool) {
+    #[cfg(test)]
+    tests::RAW_KEYS.lock().unwrap().push(key);
     let fired = matcher().key(key, down);
     fire(fired);
 }
@@ -340,6 +342,8 @@ mod tests {
 
     /// Every `hotkey_action` the hub would have emitted (tests only).
     pub(super) static FIRED: Mutex<Vec<(Action, bool)>> = Mutex::new(Vec::new());
+    /// Every key a listener reported to the matcher (tests only).
+    pub(super) static RAW_KEYS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
     /// The X11 listener end to end against a disposable X server with
     /// XTEST (e.g. `Xvfb :97`), driven by synthetic input:
@@ -363,11 +367,17 @@ mod tests {
             conn.flush().unwrap();
             std::thread::sleep(Duration::from_millis(60));
         };
+        let fake_now = |kind: u8, detail: u8| {
+            conn.xtest_fake_input(kind, detail, 0, root, 0, 0, 0).unwrap();
+        };
         let settle = || std::thread::sleep(Duration::from_millis(150));
         let take = || std::mem::take(&mut *FIRED.lock().unwrap());
         const CONTROL_L: u8 = 37;
         const SHIFT_L: u8 = 50;
         const KEY_M: u8 = 58;
+        const KEY_A: u8 = 38;
+        const KEY_S: u8 = 39;
+        const SPACE: u8 = 65;
 
         let bindings = vec![
             Binding { id: "mute".into(), action: Action::ToggleMute, keys: vec!["Control".into(), "KeyM".into()] },
@@ -379,6 +389,7 @@ mod tests {
         assert_eq!(status().state, "active", "{:?}", status().detail);
         assert!(status().failed.is_empty());
         take();
+        RAW_KEYS.lock().unwrap().clear();
 
         // Ctrl+M fires toggle mute once, auto-repeat-free.
         fake(2, CONTROL_L);
@@ -409,6 +420,38 @@ mod tests {
         fake(5, 8);
         settle();
         assert_eq!(take(), vec![(Action::PushToTalk, false)]);
+
+        // A tap faster than the 10 ms sampling still counts once.
+        fake(2, CONTROL_L);
+        fake_now(2, KEY_M);
+        fake_now(3, KEY_M);
+        conn.flush().unwrap();
+        settle();
+        fake(3, CONTROL_L);
+        settle();
+        assert_eq!(take(), vec![(Action::ToggleMute, true)]);
+
+        // Typing unbound keys — idle, and while push-to-talk is held (the
+        // listener is sampling then) — fires nothing, and no key outside
+        // the watch list ever reaches the matcher.
+        for kc in [KEY_A, KEY_S, SPACE] {
+            fake(2, kc);
+            fake(3, kc);
+        }
+        fake(4, 8);
+        for kc in [KEY_A, KEY_S, SPACE] {
+            fake(2, kc);
+            fake(3, kc);
+        }
+        fake(5, 8);
+        settle();
+        assert_eq!(take(), vec![(Action::PushToTalk, true), (Action::PushToTalk, false)]);
+        let watched = matcher::watched_keys(&bindings);
+        let seen = std::mem::take(&mut *RAW_KEYS.lock().unwrap());
+        assert!(!seen.is_empty());
+        for k in &seen {
+            assert!(watched.contains(k), "listener reported unbound key {}", k);
+        }
 
         // Unbinding drops every grab and ends the listener thread.
         set_bindings(&[]);
