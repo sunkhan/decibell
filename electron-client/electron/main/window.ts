@@ -123,11 +123,12 @@ export function hardenNavigation(win: BrowserWindow, allowedOrigin: string): voi
     e.preventDefault();
   });
 
-  // Mouse back/forward buttons (XButton1/2) arrive as browser-nav app
-  // commands on Windows and Linux. The renderer is a state-driven SPA,
-  // so walking webContents history lands on a stale document — going
-  // "back" right after signing in dropped users onto the login screen.
-  // Swallow the commands outright.
+  // Browser back/forward as app commands (keyboard Back keys; XButton1/2
+  // on Windows). The renderer is a state-driven SPA, so walking history
+  // lands on a stale screen — going "back" right after signing in dropped
+  // users onto the login screen. Swallow the commands outright. The mouse
+  // buttons themselves navigate inside the renderer on release, which
+  // this never sees: src/lib/mouseNavGuard.ts cancels those.
   win.on("app-command", (e, cmd) => {
     if (cmd === "browser-backward" || cmd === "browser-forward") {
       e.preventDefault();
@@ -136,7 +137,8 @@ export function hardenNavigation(win: BrowserWindow, allowedOrigin: string): voi
   // Belt-and-suspenders for traversal paths app-command doesn't cover
   // (e.g. macOS trackpad swipe, or anything driving goBack directly —
   // which notably does NOT fire will-navigate): keep the back-stack
-  // empty so there is never an entry to traverse to.
+  // empty so there is never an entry to traverse to. In-page router
+  // navigations replace their entry (useAuthEvents) so it stays empty.
   win.webContents.on("did-finish-load", () => {
     win.webContents.navigationHistory.clear();
   });

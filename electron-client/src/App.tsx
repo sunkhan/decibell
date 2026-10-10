@@ -22,6 +22,14 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/// The login screen is for signed-out users only; however a signed-in
+/// user ends up on /login, send them back to the app.
+function SignedOutRoute({ children }: { children: ReactNode }) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  if (isAuthenticated) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
 // All listen()-based hooks live inside the Router so they can call
 // useNavigate. They mount once at app start and stay mounted across
 // route transitions.
@@ -35,7 +43,14 @@ function AppRoutes() {
   return (
     <Routes>
       <Route element={<AppLayout />}>
-        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="/login"
+          element={
+            <SignedOutRoute>
+              <LoginPage />
+            </SignedOutRoute>
+          }
+        />
         <Route
           path="/"
           element={

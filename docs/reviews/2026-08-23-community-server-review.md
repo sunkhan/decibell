@@ -1727,6 +1727,17 @@ of stepping to 32 px on larger windows. 1280×800 → 1152 × 704, 1440×900 →
 its place so the last row doesn't sit on the edge. `BellMark` stays (login page). Verified: tsc web 0;
 the list rendered with 20 members.
 
+**Client: mouse back / forward no longer walk history (2026-10-10) ✅** — Owner report: the side
+buttons step between screens, back to the login screen too. Main already swallowed the
+`browser-backward/forward` app-commands and cleared history on load, but Chromium navigates on the
+buttons' *release inside the renderer*, which app-command never sees, and login / logout pushed new
+hash entries after that one clear. Now: `lib/mouseNavGuard.ts` cancels the default of a back /
+forward `mouseup` (capture phase; the buttons still reach the keybind recorder and the hotkey
+fallback); login and logout `navigate(…, { replace: true })`, so history never grows; and /login
+redirects a signed-in user to the app (`SignedOutRoute`). Verified: a real back press sent through
+CDP `Input.dispatchMouseEvent` moves `#/` → `#/login` without the guard and stays on `#/` with it;
+tsc web 0 / node 0.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

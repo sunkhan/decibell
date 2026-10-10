@@ -15,7 +15,9 @@ export function useAuthEvents() {
       "login_succeeded",
       (event) => {
         useAuthStore.getState().login(event.payload.username);
-        navigate("/");
+        // Replace, never push: a history entry is something back/forward
+        // could walk to, and the app has no page worth walking back to.
+        navigate("/", { replace: true });
         // Pull the server list immediately after login so ServerBar +
         // ServerBrowseView have data to render. Response arrives via
         // `server_list_received` below.
@@ -78,7 +80,7 @@ export function useAuthEvents() {
       useChatStore.getState().resetForLogout();
       useUiStore.getState().setActiveView("home");
       useAvatarStore.getState().clearAll();
-      navigate("/login");
+      navigate("/login", { replace: true });
     });
 
     // AvatarChanged broadcast: server tells us a user just updated

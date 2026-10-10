@@ -10,6 +10,7 @@ import { endCall } from "./features/call/callActions";
 import { useCodecSettingsStore } from "./stores/codecSettingsStore";
 import { initRendererSentry } from "./lib/sentry";
 import { startHotkeyRuntime } from "./features/hotkeys/hotkeyRuntime";
+import { installMouseNavGuard } from "./lib/mouseNavGuard";
 import "./styles/globals.css";
 
 // Initialize Sentry FIRST, before any other boot work. Any throw
@@ -28,6 +29,8 @@ window.addEventListener("beforeunload", () => {
   // sends the same HANGUP on app quit; this covers a bare window reload).
   void endCall(null);
 });
+
+installMouseNavGuard();
 
 // Before loadSettings: hydrating the keybind store is what pushes the
 // bindings to native, so the subscription must already be in place.
