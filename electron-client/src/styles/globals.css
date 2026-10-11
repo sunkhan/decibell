@@ -173,6 +173,11 @@
   --text-member: calc(var(--t-fs-member) * var(--ui-text-scale));      /* member + participant rows*/
   --text-section: calc(var(--t-fs-section) * var(--ui-text-scale));    /* uppercase group labels   */
   --text-meta: calc(var(--t-fs-meta) * var(--ui-text-scale));          /* timestamps, file meta    */
+  --text-reply: calc(var(--t-fs-body) * 0.9 * var(--ui-text-scale));   /* quoted reply line        */
+  /* Whole pixels on purpose: a fractional line box (13.05 × 1.375) left a
+     sub-pixel remainder in every reply row, which Chromium's scroll
+     anchoring rounds away as a ±0.5px nudge when a history page lands. */
+  --text-reply--line-height: round(up, calc(var(--t-fs-body) * 0.9 * var(--ui-text-scale) * 1.375), 1px);
   --text-micro: calc(var(--t-fs-micro) * var(--ui-text-scale));        /* counts, transport times  */
 
   /* Message-body leading. The design bundle asks for 1.55 (1.5 under

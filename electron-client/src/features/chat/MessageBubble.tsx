@@ -11,22 +11,7 @@ import AttachmentList from "./AttachmentList";
 import LinkEmbeds from "./LinkEmbeds";
 import BubbleInflightAttachments from "./BubbleInflightAttachments";
 import { useRowHeightAudit } from "./devRowHeightAudit";
-
-// Label for a reply whose parent has attachments but no text — Discord
-// shows "Click to see attachment"; we name the kind(s) instead.
-const KIND_LABEL: Record<AttachmentKind, string> = {
-  image: "Image",
-  video: "Video",
-  document: "Document",
-  audio: "Audio",
-};
-function attachmentPreviewLabel(kinds: AttachmentKind[]): string {
-  if (kinds.length === 1) return KIND_LABEL[kinds[0]];
-  const first = kinds[0];
-  return kinds.every((k) => k === first)
-    ? `${kinds.length} ${KIND_LABEL[first]}s`
-    : `${kinds.length} Attachments`;
-}
+import { ReplyHeader } from "./ReplyPreview";
 
 // Inline edit box shown in place of a message's content. Plain textarea over
 // the raw wire string (MessageText re-renders it on save). Enter submits,
@@ -293,6 +278,10 @@ interface Props {
   onJumpToReply?: (messageId: number) => void;
   /// Briefly flag this row (a jump target) so it flashes a highlight.
   highlighted?: boolean;
+  /// This row replies to the local user — tinted with an accent rail.
+  repliesToMe?: boolean;
+  /// The composer is replying to this row — same rail while it's pending.
+  replyTarget?: boolean;
 }
 
 function MessageBubble({
@@ -315,6 +304,8 @@ function MessageBubble({
   replyToAttachmentKinds,
   onJumpToReply,
   highlighted = false,
+  repliesToMe = false,
+  replyTarget = false,
 }: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
@@ -445,56 +436,21 @@ function MessageBubble({
     );
   };
 
-  // Quoted preview of the parent message, shown above a reply's content.
-  const renderReplyPreview = () => {
-    if (!message.replyTo) return null;
-    const snippet = replyToContent
-      ? replyToContent.replace(/\s+/g, " ").trim()
-      : "";
-    // No text but attachments → name the attachment kind(s) instead.
-    const attachmentLabel =
-      !snippet && replyToAttachmentKinds && replyToAttachmentKinds.length > 0
-        ? attachmentPreviewLabel(replyToAttachmentKinds)
-        : "";
-    const parentId = message.replyTo;
-    // The panels resolve replyToSender from the loaded window, falling back
-    // to the server-embedded parent preview — so an unresolvable sender means
-    // the parent was deleted (or a pre-embed server): render the tombstone,
-    // not clickable. Everything else is jumpable; the panels' jumpToMessage
-    // fetches an around-window when the target isn't loaded.
-    const jumpable = !!onJumpToReply && !!replyToSender;
-    return (
-      <button
-        type="button"
-        disabled={!jumpable}
-        onClick={jumpable ? () => onJumpToReply!(parentId) : undefined}
-        className={`mb-0.5 flex min-w-0 max-w-full items-center gap-1 text-meta text-text-muted ${
-          jumpable ? "cursor-pointer hover:text-text-secondary" : "cursor-default"
-        }`}
-      >
-        <svg className="h-3 w-3 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="9 17 4 12 9 7" />
-          <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
-        </svg>
-        <span className="shrink-0 font-medium text-text-secondary">
-          {replyToSender ? `@${replyToSender}` : "Original message was deleted"}
-        </span>
-        {snippet ? (
-          <span className="truncate opacity-80">{snippet}</span>
-        ) : attachmentLabel ? (
-          <span className="truncate italic opacity-80">{attachmentLabel}</span>
-        ) : null}
-      </button>
-    );
-  };
+  // Row wash: jump flash > pending-reply target / replies to me > hover.
+  // The rail is an inset pill on the row's left edge (clear of the
+  // rounded corners).
+  const railed = replyTarget || repliesToMe;
+  const rowTone = highlighted
+    ? "bg-accent-soft"
+    : railed
+      ? "bg-accent-soft before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-accent"
+      : "hover:bg-row-hover";
 
   if (grouped) {
     return (
       <div
         ref={auditRef}
-        className={`group relative flex gap-3 rounded-lg py-px pr-2 transition-colors ${
-          highlighted ? "bg-accent-soft" : "hover:bg-row-hover"
-        }`}
+        className={`group relative flex gap-3 rounded-lg py-px pr-2 transition-colors ${rowTone}`}
         style={{ paddingLeft }}
       >
         <div className="flex w-[38px] shrink-0 items-baseline justify-end">
@@ -503,7 +459,6 @@ function MessageBubble({
           </span>
         </div>
         <div className={`select-text min-w-0 flex-1${message.pending ? " opacity-50" : ""}`}>
-          {renderReplyPreview()}
           {/* div, not p: rich text renders block children (pre code
               blocks, display math) and a block inside <p> is invalid
               HTML — the browser force-closes the paragraph around it. */}
@@ -522,41 +477,52 @@ function MessageBubble({
   return (
     <div
       ref={auditRef}
-      className={`group relative flex gap-3 rounded-lg pr-2 pt-2.5 pb-0.5 transition-colors ${
-        highlighted ? "bg-accent-soft" : "hover:bg-row-hover"
-      }${isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""}`}
+      className={`group relative rounded-lg pr-2 pt-2.5 pb-0.5 transition-colors ${rowTone}${
+        isLast ? " animate-[fadeUp_0.3s_ease_both]" : ""
+      }`}
       style={{ paddingLeft }}
     >
-      <div
-        className="cursor-pointer"
-        onClick={handleSenderClick}
-        onContextMenu={handleSenderContextMenu}
-      >
-        <UserAvatar username={message.sender} size={38} />
-      </div>
-
-      <div className={`select-text min-w-0 flex-1${message.pending ? " opacity-50" : ""}`}>
-        {renderReplyPreview()}
-        <div className="flex items-baseline gap-2">
-          <span
-            className="cursor-pointer font-channel text-sender font-emphasis hover:underline"
-            style={{ color: stringToColor(message.sender) }}
-            onClick={handleSenderClick}
-            onContextMenu={handleSenderContextMenu}
-          >
-            {displayName}
-          </span>
-          <span className="font-meta text-meta font-normal tabular-nums text-text-muted">
-            {formatTimestamp(message.timestamp)}
-          </span>
+      {message.replyTo ? (
+        <ReplyHeader
+          serverId={serverId}
+          parentId={message.replyTo}
+          sender={replyToSender}
+          content={replyToContent}
+          attachmentKinds={replyToAttachmentKinds}
+          onJump={onJumpToReply}
+        />
+      ) : null}
+      <div className="flex gap-3">
+        <div
+          className="cursor-pointer"
+          onClick={handleSenderClick}
+          onContextMenu={handleSenderContextMenu}
+        >
+          <UserAvatar username={message.sender} size={38} />
         </div>
-        {/* div, not p — see the grouped branch above. */}
-        {renderContent("mt-0.5")}
-        <AttachmentList attachments={message.attachments} serverId={serverId ?? null} />
-        {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
-          <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
-        )}
-        {!editing && <LinkEmbeds content={message.content} sender={message.sender} suppressed={message.suppressEmbeds} />}
+
+        <div className={`select-text min-w-0 flex-1${message.pending ? " opacity-50" : ""}`}>
+          <div className="flex items-baseline gap-2">
+            <span
+              className="cursor-pointer font-channel text-sender font-emphasis hover:underline"
+              style={{ color: stringToColor(message.sender) }}
+              onClick={handleSenderClick}
+              onContextMenu={handleSenderContextMenu}
+            >
+              {displayName}
+            </span>
+            <span className="font-meta text-meta font-normal tabular-nums text-text-muted">
+              {formatTimestamp(message.timestamp)}
+            </span>
+          </div>
+          {/* div, not p — see the grouped branch above. */}
+          {renderContent("mt-0.5")}
+          <AttachmentList attachments={message.attachments} serverId={serverId ?? null} />
+          {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
+            <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
+          )}
+          {!editing && <LinkEmbeds content={message.content} sender={message.sender} suppressed={message.suppressEmbeds} />}
+        </div>
       </div>
       {renderActions("top-1")}
     </div>

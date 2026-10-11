@@ -15,6 +15,7 @@ import { toast } from "../../stores/toastStore";
 import { stringToColor } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import MessageBubble, { DayDivider, shouldGroup, startsNewDay } from "../chat/MessageBubble";
+import { ReplyComposerBar } from "../chat/ReplyPreview";
 import { useTypeToFocusComposer } from "../chat/useTypeToFocusComposer";
 import MessagePreview from "../chat/MessagePreview";
 import RichComposer from "../chat/RichComposer";
@@ -275,6 +276,15 @@ export default function DmChatPanel() {
     for (const m of messages) if (typeof m.id === "number" && m.id > 0) map.set(m.id, m);
     return map;
   }, [messages]);
+  // The composer strip follows edits to the target while it's loaded.
+  const replyParent = replyingTo ? messagesById.get(replyingTo.id) ?? replyingTo : null;
+  // Esc in the composer drops a pending reply — unless the emoji picker is
+  // open, whose own Esc listener closes it.
+  const escapeReply = useCallback(() => {
+    if (!replyingTo || pickerOpen) return false;
+    setReplyingTo(null);
+    return true;
+  }, [replyingTo, pickerOpen]);
   // Reset transient composer + jump state when switching conversations.
   useEffect(() => {
     setReplyingTo(null);
@@ -771,6 +781,8 @@ export default function DmChatPanel() {
         }
         onJumpToReply={jumpToMessage}
         highlighted={highlightId === msg.id && msg.id > 0}
+        // No repliesToMe here: in a DM nearly every reply is to you.
+        replyTarget={!!replyingTo && replyingTo.id === msg.id}
       />
     );
   };
@@ -991,23 +1003,12 @@ export default function DmChatPanel() {
           ChatPanel's spacing. */}
       <div className="px-3 py-2">
         <div className="relative flex min-h-[54px] flex-col gap-2.5 rounded-lg border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-ring">
-          {replyingTo && (
-            <div className="flex items-center justify-between gap-2 text-meta text-text-muted">
-              <span className="min-w-0 truncate">
-                Replying to{" "}
-                <span className="font-medium text-text-secondary">@{replyingTo.sender}</span>
-              </span>
-              <button
-                onClick={cancelReply}
-                title="Cancel reply"
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-text-muted hover:bg-row-hover hover:text-text-primary"
-              >
-                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
+          {replyParent && (
+            <ReplyComposerBar
+              sender={replyParent.sender}
+              content={replyParent.content}
+              onCancel={cancelReply}
+            />
           )}
           <DmDraftPreview peer={activeDmUser} />
           <div className="flex items-center gap-2.5">
@@ -1016,6 +1017,7 @@ export default function DmChatPanel() {
             onChange={handleInputChange}
             onEnter={handleSend}
             onArrowUpEmpty={editLatestOwn}
+            onEscape={escapeReply}
             placeholder={`Message @${activeDmUser}`}
             className="flex-1 bg-transparent text-sm leading-snug text-text-primary"
             maxHeight={160}

@@ -1915,6 +1915,36 @@ renderer's own retention covers reuse. Verified: Electron honours the mode (a no
 never stored — checked against a cacheable local server: 2 server hits vs 1 by default); tsc web 0 /
 node 0; napi build (index.d.ts no longer has cacheDir); `cargo test --lib` 221.
 
+**Client: reply redesign (2026-10-11) ✅** — Owner: replies looked "sloppy and unpolished". Before: the
+quote sat inside the text column (so the avatar lined up with it, not the author), showed `@username`
+(no nickname), raw markup / shortcodes / GIF CDN URLs, everything in one 11.5px muted line, and a
+deleted-parent notice styled like a name; the composer said only "Replying to @x". Now
+(`features/chat/ReplyPreview.tsx`): the reply line sits above the avatar + name, indented to the text
+column, with a 2px spine curling from the avatar's centre line into a 16px avatar, the parent's server
+nickname in identity colour (sender face, so mono under console) and a one-line snippet through
+MessageText's preview mode (no markers, Twemoji, "GIF"/"Image" for lone media links); attachment-only
+parents show kind + count + glyph; deleted parents a muted tombstone. Name opens the profile, the rest
+jumps. Composer strip shows avatar, name and snippet with a divider; Esc cancels a pending reply (not
+while the emoji picker is open). Owner decisions: rows that reply to you get the accent wash + left rail
+(server channels only — in a DM nearly every reply is to you), the row being replied to gets the same
+rail while composing, and the name/jump split. Proposal page (before/after, every theme, alternative
+quote-card considered and rejected — 2–3× taller, reads as a link embed):
+https://claude.ai/artifact/R625CcFWKHy6n6BhzgzazS. Scroll safety: the reply line's box is a fixed
+whole-pixel height (`text-reply` = 0.9 × body with `--text-reply--line-height` rounded up to 1px; box =
+max(16px, that)) and the snippet emoji scales with the text size — a content-sized 17.94px line, and a
+15px emoji poking out of the 17px line at text size 13, gave rows fractional heights that Chromium's
+anchoring rounded into ±0.5–1px nudges on history prepends. Long no-space nicknames truncate at half
+the line instead of pushing the list into horizontal scroll. Verified in the offscreen harness with the
+real RealMessageList + MessageBubble (400 rows, mixed reply kinds, dev build so the row-height audit
+runs): 7 themes × text 11/14.5/17 × DPR 1/2 = 42 configs all pass — bottom pin through reply-mode
+toggles, zero anchor drift on 80-row prepends mid-scroll (parents arriving), no row height change on
+nickname/avatar arrival or parent edits, no post-mount settles, no horizontal overflow at 340px with a
+32-byte nickname. Visual drift on prepend (rect-measured) is now 0 in nocturne at every size/DPR (old
+build: up to 0.875px at non-default sizes) and ≤ old in console. Seen while testing, pre-existing and
+untouched: if a web font first loads after a list mounts at the bottom, the bottom pin is lost by the
+font's height delta (harness-only so far — the app loads fonts before any channel mounts); message
+bodies use `break-all`, so words split mid-word at narrow widths. tsc web 0.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

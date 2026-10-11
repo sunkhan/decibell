@@ -60,6 +60,9 @@ interface RichInputProps {
   /// Fired when ArrowUp is pressed while the input is empty — used to start
   /// editing the latest own message (Discord-style). Return value ignored.
   onArrowUpEmpty?: () => void;
+  /// Fired on Escape; return true when it was handled (e.g. a pending reply
+  /// was dropped) to swallow the key.
+  onEscape?: () => boolean;
   placeholder?: string;
   disabled?: boolean;
   maxHeight?: number;
@@ -358,7 +361,7 @@ function serialize(root: HTMLElement): string {
 }
 
 const RichInput = forwardRef<RichInputHandle, RichInputProps>(function RichInput(
-  { onChange, onEnter, onArrowUpEmpty, placeholder, disabled, maxHeight = 160, className },
+  { onChange, onEnter, onArrowUpEmpty, onEscape, placeholder, disabled, maxHeight = 160, className },
   ref
 ) {
   const editorRef = useRef<HTMLDivElement>(null);
@@ -467,6 +470,11 @@ const RichInput = forwardRef<RichInputHandle, RichInputProps>(function RichInput
         return;
       }
 
+      if (e.key === "Escape" && onEscape && !composingRef.current) {
+        if (onEscape()) e.preventDefault();
+        return;
+      }
+
       // ArrowUp on an empty composer → edit the latest own message.
       if (e.key === "ArrowUp" && onArrowUpEmpty && !composingRef.current) {
         const el = editorRef.current;
@@ -511,7 +519,7 @@ const RichInput = forwardRef<RichInputHandle, RichInputProps>(function RichInput
         notifyChange();
       }
     },
-    [onEnter, onArrowUpEmpty, notifyChange]
+    [onEnter, onArrowUpEmpty, onEscape, notifyChange]
   );
 
   const handleBeforeInput = useCallback(

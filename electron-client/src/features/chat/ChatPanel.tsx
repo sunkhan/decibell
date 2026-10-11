@@ -15,6 +15,7 @@ import { EMPTY_LIST } from "../../lib/empty";
 import { findMember } from "../../hooks/useDisplayName";
 import { toast } from "../../stores/toastStore";
 import MessageBubble, { DayDivider, shouldGroup, startsNewDay } from "./MessageBubble";
+import { ReplyComposerBar } from "./ReplyPreview";
 import { useTypeToFocusComposer } from "./useTypeToFocusComposer";
 import PendingAttachmentsRow from "./PendingAttachmentsRow";
 import MessagePreview from "./MessagePreview";
@@ -778,6 +779,15 @@ export default function ChatPanel() {
     for (const m of messages) if (m.id > 0) map.set(m.id, m);
     return map;
   }, [messages]);
+  // The composer strip follows edits to the target while it's loaded.
+  const replyParent = replyingTo ? messagesById.get(replyingTo.id) ?? replyingTo : null;
+  // Esc in the composer drops a pending reply — unless the emoji picker is
+  // open, whose own Esc listener closes it.
+  const escapeReply = useCallback(() => {
+    if (!replyingTo || pickerOpen) return false;
+    setReplyingTo(null);
+    return true;
+  }, [replyingTo, pickerOpen]);
   // Reset transient composer + jump state when switching channels.
   useEffect(() => {
     setReplyingTo(null);
@@ -899,6 +909,10 @@ export default function ChatPanel() {
   // messages[i - 1]). The divider lives inside the row, above the bubble.
   const renderBubble = (message: Message, i: number) => {
     const prev = i > 0 ? messages[i - 1] : undefined;
+    const parent = message.replyTo ? messagesById.get(message.replyTo) : undefined;
+    const replySender = message.replyTo
+      ? parent?.sender ?? (message.replyToSender || undefined)
+      : undefined;
     return (
       <>
         {startsNewDay(prev, message) && <DayDivider timestamp={message.timestamp} />}
@@ -931,28 +945,23 @@ export default function ChatPanel() {
           onCancelEdit={cancelEdit}
           canReply={typeof message.id === "number" && message.id > 0}
           onReply={startReply}
-          replyToSender={
-            message.replyTo
-              ? messagesById.get(message.replyTo)?.sender ??
-                (message.replyToSender || undefined)
-              : undefined
-          }
+          replyToSender={replySender}
           replyToContent={
             message.replyTo
-              ? messagesById.get(message.replyTo)?.content ??
-                (message.replyToContent || undefined)
+              ? parent?.content ?? (message.replyToContent || undefined)
               : undefined
           }
           replyToAttachmentKinds={
             message.replyTo
-              ? (() => {
-                  const parent = messagesById.get(message.replyTo);
-                  return parent ? attachmentKindsOf(parent) : message.replyToAttachmentKinds;
-                })()
+              ? parent
+                ? attachmentKindsOf(parent)
+                : message.replyToAttachmentKinds
               : undefined
           }
           onJumpToReply={jumpToMessage}
           highlighted={highlightId === message.id && message.id > 0}
+          repliesToMe={!!replySender && replySender === username}
+          replyTarget={!!replyingTo && replyingTo.id === message.id}
         />
       </>
     );
@@ -1091,23 +1100,14 @@ export default function ChatPanel() {
                 : "border-border"
           }`}
         >
-          {replyingTo && (
-            <div className="flex items-center justify-between gap-2 text-meta text-text-muted">
-              <span className="min-w-0 truncate">
-                Replying to{" "}
-                <span className="font-medium text-text-secondary">@{replyingTo.sender}</span>
-              </span>
-              <button
-                onClick={cancelReply}
-                title="Cancel reply"
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-text-muted hover:bg-row-hover hover:text-text-primary"
-              >
-                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
+          {replyParent && (
+            <ReplyComposerBar
+              serverId={activeServerId}
+              sender={replyParent.sender}
+              content={replyParent.content}
+              attachmentKinds={attachmentKindsOf(replyParent)}
+              onCancel={cancelReply}
+            />
           )}
           <DraftPreview serverId={activeServerId} channelId={activeChannelId} />
           <PendingAttachmentsRow />
@@ -1155,6 +1155,7 @@ export default function ChatPanel() {
               }}
               onEnter={handleSend}
               onArrowUpEmpty={editLatestOwn}
+              onEscape={escapeReply}
               placeholder={
                 channel?.slowmodeSeconds && !canBypassSlowmode
                   ? `Message #${channelName ?? "channel"} · slowmode ${formatRemaining(channel.slowmodeSeconds)}`
