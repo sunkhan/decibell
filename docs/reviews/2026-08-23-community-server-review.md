@@ -1925,8 +1925,9 @@ nickname in identity colour (sender face, so mono under console) and a one-line 
 MessageText's preview mode (no markers, Twemoji, "GIF"/"Image" for lone media links); attachment-only
 parents show kind + count + glyph; deleted parents a muted tombstone. Name opens the profile, the rest
 jumps. Composer strip shows avatar, name and snippet with a divider; Esc cancels a pending reply (not
-while the emoji picker is open). Owner decisions: rows that reply to you get the accent wash + left rail
-(server channels only — in a DM nearly every reply is to you), the row being replied to gets the same
+while the emoji picker is open). Owner decisions: rows where someone else replies to you get the accent
+wash + left rail (server channels only — in a DM nearly every reply is to you; your own follow-ups to
+yourself stay plain, fixed in a follow-up commit), the row being replied to gets the same
 rail while composing, and the name/jump split. Proposal page (before/after, every theme, alternative
 quote-card considered and rejected — 2–3× taller, reads as a link embed):
 https://claude.ai/artifact/R625CcFWKHy6n6BhzgzazS. Scroll safety: the reply line's box is a fixed

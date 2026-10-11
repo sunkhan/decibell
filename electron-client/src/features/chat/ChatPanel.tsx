@@ -960,7 +960,8 @@ export default function ChatPanel() {
           }
           onJumpToReply={jumpToMessage}
           highlighted={highlightId === message.id && message.id > 0}
-          repliesToMe={!!replySender && replySender === username}
+          // Someone else answering you — a follow-up to your own message isn't.
+          repliesToMe={!!replySender && replySender === username && message.sender !== username}
           replyTarget={!!replyingTo && replyingTo.id === message.id}
         />
       </>
