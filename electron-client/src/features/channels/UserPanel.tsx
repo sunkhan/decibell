@@ -7,6 +7,14 @@ import { useChatStore } from "../../stores/chatStore";
 import { useUpdateStore } from "../../stores/updateStore";
 import { useAudioDevicesStore } from "../../stores/audioDevicesStore";
 import { UserAvatar } from "../../components/UserAvatar";
+import { StatusDot } from "../../components/StatusDot";
+import {
+  STATUS_LABEL,
+  useOwnDisplayStatus,
+  usePresenceStore,
+  type DisplayStatus,
+} from "../../stores/presenceStore";
+import StatusMenu from "../presence/StatusMenu";
 import { playSound } from "../../utils/sounds";
 import DeviceContextMenu from "../voice/DeviceContextMenu";
 import ConnectionStatsPopover from "../voice/ConnectionStatsPopover";
@@ -203,12 +211,7 @@ export default function UserPanel() {
       )}
 
       <div className="flex items-center gap-2">
-        <SelfAvatar username={username} />
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-channel text-member font-emphasis text-text-bright">
-            {username}
-          </div>
-        </div>
+        <SelfIdentity username={username} />
 
         <div className="flex shrink-0 items-center gap-1">
           {inSession && (
@@ -329,11 +332,50 @@ function PanelButton({
   );
 }
 
-// Our avatar + speaking ring. Its own component so a speaking flip (a few
-// per second while talking) re-renders just this, not the whole panel. A
-// derived boolean, not the whole Set, so other users' speaking events are
-// no-ops here.
-function SelfAvatar({ username }: { username: string | null }) {
+// Avatar + name + status line. Clicking opens the status menu (when this
+// central understands statuses). Its own component so a status change
+// re-renders just this, not the whole panel.
+function SelfIdentity({ username }: { username: string | null }) {
+  const supported = usePresenceStore((s) => s.supported);
+  const status = useOwnDisplayStatus();
+  const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
+  const body = (
+    <>
+      <SelfAvatar username={username} status={supported ? status : null} />
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-channel text-member font-emphasis text-text-bright">
+          {username}
+        </div>
+        {supported && (
+          <div className="truncate font-meta text-micro text-text-muted">{STATUS_LABEL[status]}</div>
+        )}
+      </div>
+    </>
+  );
+  if (!supported) return <div className="flex min-w-0 flex-1 items-center gap-2">{body}</div>;
+  return (
+    <>
+      <button
+        type="button"
+        title="Set status"
+        aria-haspopup="menu"
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setMenuAnchor({ x: r.left, y: r.top - 6 });
+        }}
+        className="-my-1 -ml-1 flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 pl-1 text-left transition-colors hover:bg-surface-hover"
+      >
+        {body}
+      </button>
+      {menuAnchor && <StatusMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} />}
+    </>
+  );
+}
+
+// Our avatar + speaking ring + status dot. Its own component so a speaking
+// flip (a few per second while talking) re-renders just this. A derived
+// boolean, not the whole Set, so other users' speaking events are no-ops.
+function SelfAvatar({ username, status }: { username: string | null; status: DisplayStatus | null }) {
   const isSpeaking = useVoiceStore((s) =>
     username ? s.speakingUsers.has(username) : false,
   );
@@ -345,6 +387,13 @@ function SelfAvatar({ username }: { username: string | null }) {
       }}
     >
       <UserAvatar username={username ?? ""} size={36} />
+      {status && (
+        <StatusDot
+          status={status}
+          ring="var(--color-bg-light)"
+          className="avatar-dot absolute -bottom-px -right-px"
+        />
+      )}
     </div>
   );
 }

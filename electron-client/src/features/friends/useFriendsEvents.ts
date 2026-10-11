@@ -2,8 +2,6 @@ import { useEffect } from "react";
 import { listen } from "../../lib/ipc";
 import { useAvatarStore } from "../../stores/avatarStore";
 import { useFriendsStore } from "../../stores/friendsStore";
-import { useChatStore } from "../../stores/chatStore";
-import type { UserPresence } from "../../types";
 
 export function useFriendsEvents() {
   useEffect(() => {
@@ -44,49 +42,9 @@ export function useFriendsEvents() {
       },
     );
 
-    // Global online-user list update from central. Updates the chat
-    // store's `onlineUsers` (ConversationSidebar's presence dots) and reconciles
-    // friend statuses (online/offline transitions) without touching
-    // pending/blocked rows. Also primes the avatar cache with every
-    // online user's current version.
-    const unlistenPresence = listen<{ users: UserPresence[] }>(
-      "user_list_updated",
-      (event) => {
-        const usernames = event.payload.users.map((u) => u.username);
-        const onlineSet = new Set(usernames);
-        useChatStore.getState().setOnlineUsers(usernames);
-
-        useAvatarStore.getState().setVersions(
-          event.payload.users.map((u) => ({ username: u.username, version: u.avatarVersion })),
-        );
-
-        const { friends, setFriends } = useFriendsStore.getState();
-        if (friends.length === 0) return;
-        let changed = false;
-        const updated = friends.map((f) => {
-          if (f.status === "online" || f.status === "offline") {
-            const shouldBeOnline = onlineSet.has(f.username);
-            if ((f.status === "online") !== shouldBeOnline) {
-              changed = true;
-              return {
-                ...f,
-                status: shouldBeOnline ? ("online" as const) : ("offline" as const),
-              };
-            }
-          }
-          return f;
-        });
-        // Skip the store write (and the re-render of every friends
-        // subscriber) when no presence actually flipped — this fires on
-        // every presence broadcast.
-        if (changed) setFriends(updated);
-      },
-    );
-
     return () => {
       unlistenList.then((fn) => fn());
       unlistenAction.then((fn) => fn());
-      unlistenPresence.then((fn) => fn());
     };
   }, []);
 }

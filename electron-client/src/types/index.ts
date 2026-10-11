@@ -46,6 +46,8 @@ export interface FriendInfo {
 export interface UserPresence {
   username: string;
   avatarVersion: string;
+  /// "online" | "away" | "dnd" — see stores/presenceStore.ts.
+  status: string;
 }
 
 export interface DmMessage {

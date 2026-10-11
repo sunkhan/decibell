@@ -132,6 +132,7 @@ pub async fn logout() -> napi::Result<()> {
     // voice channel or streaming leaves those threads alive and pumping
     // UDP under the old session (privacy leak), and leaves connected_voice_*
     // pointing at a channel we've left.
+    crate::presence::reset();
     let (old_central, old_communities, voice, video, audio) = {
         let mut s = state_arc.lock().await;
         let central = s.central.take();

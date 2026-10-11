@@ -46,11 +46,20 @@ public:
     void broadcast_to_users(const chatproj::Packet& packet,
                             const std::vector<std::string>& usernames);
 
-    bool is_user_online(const std::string& username);
+    /// Online as others see it: some authenticated session of `username`
+    /// that isn't invisible. Every presence-revealing path (friend lists,
+    /// call invites) asks this, never "is there a session".
+    bool is_user_visible(const std::string& username);
 
     bool check_dm_allowed(const std::string& sender, const std::string& recipient, AuthManager& auth_manager);
 
-    void broadcast_presence();
+    /// User statuses (docs/superpowers/specs/2026-10-11-user-status-design.md).
+    /// Every visible online user, to one session (at its login).
+    void send_presence_snapshot(std::shared_ptr<Session> session);
+    /// `username`'s presence changed in a way others can see: a
+    /// PresenceDelta to delta-capable sessions, a full snapshot to older
+    /// clients. Callers decide whether a change is visible.
+    void broadcast_presence_change(const std::string& username);
 
     /// Push AvatarChanged to every active authenticated session.
     /// Fires on every UPDATE_AVATAR_REQ that mutates a user's avatar
@@ -79,11 +88,16 @@ public:
         broadcast(packet);
     }
 
-    void kick_user(const std::string& username);
+    /// Evict `username`'s session(s) other than `except` (the new login).
+    void kick_user(const std::string& username, std::shared_ptr<Session> except);
 
     void sweep_stale(std::chrono::seconds timeout);
 
 private:
+    // Callers hold mutex_.
+    bool user_visible_locked(const std::string& username) const;
+    void fill_presence_snapshot_locked(chatproj::PresenceUpdate* presence) const;
+
     std::set<std::shared_ptr<Session>> sessions_;
     std::mutex mutex_;
 };

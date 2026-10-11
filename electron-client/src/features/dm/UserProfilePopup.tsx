@@ -4,7 +4,6 @@ import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useDmStore } from "../../stores/dmStore";
-import { useFriendsStore } from "../../stores/friendsStore";
 import { useChatStore } from "../../stores/chatStore";
 import { openServer } from "../servers/openServer";
 import { useVoiceStore } from "../../stores/voiceStore";
@@ -12,6 +11,8 @@ import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
 import { canWatchStream } from "../../utils/canWatchStream";
 import { stringToGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
+import { StatusDot, StatusPill } from "../../components/StatusDot";
+import { usePresence } from "../../stores/presenceStore";
 import { CodecBadge } from "../voice/CodecBadge";
 import { THUMBNAIL_INTERVAL_MS } from "../voice/thumbnailConfig";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
@@ -40,8 +41,6 @@ export default function UserProfilePopup() {
   const setActiveView = useUiStore((s) => s.setActiveView);
   const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
   const currentUsername = useAuthStore((s) => s.username);
-  const friends = useFriendsStore((s) => s.friends);
-  const onlineUsers = useChatStore((s) => s.onlineUsers);
   // Server roles for the Roles row: resolve the member's role_ids
   // against the server's role list. Both empty on legacy servers.
   const serverRoles = useChatStore((s) =>
@@ -52,6 +51,7 @@ export default function UserProfilePopup() {
       ? s.membersByServer[serverId]?.find((m) => m.username === username)
       : undefined,
   );
+  const presence = usePresence(username ?? "", memberEntry?.isOnline);
 
   // Live-stream popup integration: read the stream's location (if
   // any), pull the decode caps for the codec gate, and look up the
@@ -210,9 +210,6 @@ export default function UserProfilePopup() {
 
   if (!username || !anchor) return null;
 
-  const friend = friends.find((f) => f.username === username);
-  const isOnline =
-    friend?.status === "online" || onlineUsers.includes(username);
 
   const popupWidth = 300;
   const x = Math.min(anchor.x, window.innerWidth - popupWidth - 16);
@@ -288,10 +285,11 @@ export default function UserProfilePopup() {
               <br />
               profile
             </span>
-            <div
-              className={`absolute -bottom-px -right-px h-[14px] w-[14px] rounded-full border-[3px] border-bg-light ${
-                isOnline ? "bg-success" : "bg-text-muted"
-              }`}
+            <StatusDot
+              status={presence}
+              ring="var(--color-bg-light)"
+              ringWidth={3}
+              className="absolute -bottom-px -right-px h-[14px] w-[14px]"
             />
           </button>
         </div>
@@ -304,17 +302,7 @@ export default function UserProfilePopup() {
             <div className="text-[12px] text-text-muted">{username}</div>
           )}
           <div className="mt-1.5">
-            {isOnline ? (
-              <span className="inline-flex items-center gap-[5px] rounded-sm bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
-                <span className="h-1.5 w-1.5 rounded-full bg-success" />
-                Online
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-[5px] rounded-sm bg-text-muted/15 px-2 py-0.5 text-[11px] font-medium text-text-muted">
-                <span className="h-1.5 w-1.5 rounded-full bg-text-muted" />
-                Offline
-              </span>
-            )}
+            <StatusPill status={presence} />
           </div>
         </div>
 

@@ -68,7 +68,7 @@ def ed25519_sign(key_pem, data):
 
 
 class Client:
-    def __init__(self, username, invite="", nonce="", timeout=3.0, uid=None):
+    def __init__(self, username, invite="", nonce="", timeout=3.0, uid=None, hidden=False):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -80,7 +80,7 @@ class Client:
         self.inbox = []
         self.closed = False
         self.send(pb.Packet.COMMUNITY_AUTH_REQ, community_auth_req=pb.CommunityAuthRequest(
-            jwt_token=self.jwt, invite_code=invite))
+            jwt_token=self.jwt, invite_code=invite, presence_hidden=hidden))
 
     def send(self, ptype, **payload):
         p = pb.Packet(type=ptype, auth_token=self.jwt, **payload)
@@ -212,9 +212,9 @@ def make_invite(owner):
     return r.invite_create_res.invite.code
 
 
-def join(username, owner, nonce=""):
+def join(username, owner, nonce="", hidden=False):
     code = make_invite(owner)
-    c = Client(username, invite=code, nonce=nonce)
+    c = Client(username, invite=code, nonce=nonce, hidden=hidden)
     ok, _ = auth_ok(c)
     assert ok, f"{username} could not join"
     return c
@@ -1000,6 +1000,45 @@ def test_roster_deltas():
     check("owner gets ban list", bl is not None)
     sql("delete from members where username like 'zz%'")
     xan.close(); owner.close()
+
+
+def test_presence_hidden():
+    print("[presence] invisible members stay offline in rosters (presence_hidden / PRESENCE_VISIBILITY)")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.flush(0.5)
+    is_ivy = lambda online: (lambda p: p.member_upsert.member.username == "ivy"
+                             and p.member_upsert.member.is_online == online)
+    any_ivy = lambda p: p.member_upsert.member.username == "ivy"
+    # A brand-new member joining invisible still reaches every roster — offline.
+    ivy = join("ivy", owner, hidden=True)
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=any_ivy)
+    check("new member joining invisible → upsert, offline", up is not None and not up.member_upsert.member.is_online)
+    owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(after="", limit=100))
+    page = owner.wait(pb.Packet.MEMBER_LIST_RES, pred=lambda p: p.member_list_res.first_page)
+    entry = [m for m in page.member_list_res.members if m.username == "ivy"] if page else []
+    check("first page lists the invisible member offline", len(entry) == 1 and not entry[0].is_online)
+    # Disconnecting and reconnecting invisible: no roster traffic at all —
+    # an upsert at either moment would give the connection away.
+    ivy.close()
+    check("invisible disconnect → no upsert", owner.wait(pb.Packet.MEMBER_UPSERT, timeout=1.5, pred=any_ivy) is None)
+    ivy = Client("ivy", hidden=True); assert auth_ok(ivy)[0]
+    check("invisible reconnect → no upsert", owner.wait(pb.Packet.MEMBER_UPSERT, timeout=1.5, pred=any_ivy) is None)
+    # Toggling flips the roster both ways; a repeat is a no-op.
+    ivy.send(pb.Packet.PRESENCE_VISIBILITY, presence_visibility=pb.PresenceVisibility(hidden=False))
+    check("PRESENCE_VISIBILITY hidden=false → upsert online", owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=is_ivy(True)) is not None)
+    ivy.send(pb.Packet.PRESENCE_VISIBILITY, presence_visibility=pb.PresenceVisibility(hidden=False))
+    check("repeat hidden=false → no upsert", owner.wait(pb.Packet.MEMBER_UPSERT, timeout=1.0, pred=any_ivy) is None)
+    ivy.send(pb.Packet.PRESENCE_VISIBILITY, presence_visibility=pb.PresenceVisibility(hidden=True))
+    check("PRESENCE_VISIBILITY hidden=true → upsert offline", owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=is_ivy(False)) is not None)
+    # A second, visible session shows them online; the hidden one leaving
+    # changes nothing; the visible one leaving flips them offline.
+    ivy2 = Client("ivy", nonce="b"); assert auth_ok(ivy2)[0]
+    check("visible second session → upsert online", owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=is_ivy(True)) is not None)
+    ivy.close()
+    check("hidden session leaving while a visible one stays → no upsert", owner.wait(pb.Packet.MEMBER_UPSERT, timeout=1.5, pred=any_ivy) is None)
+    ivy2.close()
+    check("last visible session leaving → upsert offline", owner.wait(pb.Packet.MEMBER_UPSERT, timeout=3, pred=is_ivy(False)) is not None)
+    owner.close()
 
 
 def test_server_update_and_transfer():
@@ -2584,6 +2623,7 @@ if __name__ == "__main__":
         test_v2_private_channel()
         test_v2_overwrite_guards()
         test_roster_deltas()
+        test_presence_hidden()
         test_public_join()
         test_server_update_and_transfer()
         test_audit_log()

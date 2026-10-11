@@ -121,6 +121,12 @@ declare global {
           unfiltered: boolean,
         ) => Promise<GifSearchResult>;
       };
+      /// Auto-away: the OS idle state for a threshold, and lock / sleep
+      /// (true) or unlock / resume (false) as they happen.
+      idle: {
+        getState: (thresholdSeconds: number) => Promise<"active" | "idle" | "locked" | "unknown">;
+        onAwayEvent: (cb: (away: boolean) => void) => () => void;
+      };
       window: {
         minimize: () => Promise<void>;
         maximize: () => Promise<void>;

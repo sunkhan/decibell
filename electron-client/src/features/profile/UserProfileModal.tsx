@@ -14,6 +14,8 @@ import { usePeerE2ee } from "../e2ee/usePeerE2ee";
 import { formatJoined } from "../servers/tabs/helpers";
 import { stringToGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
+import { StatusDot, StatusPill } from "../../components/StatusDot";
+import { STATUS_LABEL, usePresence, type DisplayStatus } from "../../stores/presenceStore";
 import { LockGlyph } from "../chat/MessageBubble";
 import { RoleChips } from "./RoleChips";
 import type { FriendInfo, ServerMember, ServerRole } from "../../types";
@@ -75,11 +77,10 @@ function ProfileScreen({
   const displayName = useDisplayName(serverId, username);
   // `find` returns the stored object (or undefined) — a stable ref.
   const friend = useFriendsStore((s) => s.friends.find((f) => f.username === username));
-  const onlineUsers = useChatStore((s) => s.onlineUsers);
-  const isOnline = friend?.status === "online" || onlineUsers.includes(username);
   const memberEntry = useChatStore((s) =>
     serverId ? s.membersByServer[serverId]?.find((m) => m.username === username) : undefined,
   );
+  const presence = usePresence(username, memberEntry?.isOnline);
   const serverRoles = useChatStore((s) => (serverId ? s.rolesByServer[serverId] : undefined));
   const serverName = useChatStore((s) =>
     serverId ? s.servers.find((sv) => sv.id === serverId)?.name : undefined,
@@ -126,10 +127,11 @@ function ProfileScreen({
       <div className="relative shrink-0 px-6">
         <div className="absolute -top-12 left-6 rounded-2xl border-[6px] border-bg-dark bg-bg-dark">
           <UserAvatar username={username} size={96} />
-          <div
-            className={`absolute -bottom-0.5 -right-0.5 h-5 w-5 rounded-full border-[4px] border-bg-dark ${
-              isOnline ? "bg-success" : "bg-text-muted"
-            }`}
+          <StatusDot
+            status={presence}
+            ring="var(--color-bg-dark)"
+            ringWidth={4}
+            className="absolute -bottom-0.5 -right-0.5 h-5 w-5"
           />
         </div>
         <div className="flex min-h-[56px] items-start justify-end gap-2 pt-3">
@@ -150,7 +152,7 @@ function ProfileScreen({
             <div className="mt-0.5 text-[13px] text-text-muted">{username}</div>
           )}
           <div className="mt-2">
-            <StatusPill online={isOnline} />
+            <StatusPill status={presence} />
           </div>
         </div>
       </div>
@@ -177,7 +179,7 @@ function ProfileScreen({
           <ProfileTab
             username={username}
             isSelf={isSelf}
-            isOnline={isOnline}
+            presence={presence}
             friend={friend}
             memberEntry={memberEntry}
             serverRoles={serverRoles}
@@ -207,7 +209,7 @@ const FRIEND_LABEL: Record<FriendInfo["status"], string> = {
 function ProfileTab({
   username,
   isSelf,
-  isOnline,
+  presence,
   friend,
   memberEntry,
   serverRoles,
@@ -216,7 +218,7 @@ function ProfileTab({
 }: {
   username: string;
   isSelf: boolean;
-  isOnline: boolean;
+  presence: DisplayStatus;
   friend: FriendInfo | undefined;
   memberEntry: ServerMember | undefined;
   serverRoles: ServerRole[] | undefined;
@@ -231,7 +233,7 @@ function ProfileTab({
         <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-[13px]">
           <Row label="Username" value={username} />
           {nickname && <Row label="Nickname" value={nickname} />}
-          <Row label="Status" value={isOnline ? "Online" : "Offline"} />
+          <Row label="Status" value={STATUS_LABEL[presence]} />
           {!isSelf && <Row label="Friends" value={friend ? FRIEND_LABEL[friend.status] : "Not friends"} />}
           {memberEntry && memberEntry.joinedAt > 0 && (
             <Row
@@ -518,20 +520,6 @@ function Mono({ label, value }: { label: string; value: string }) {
         {value}
       </div>
     </div>
-  );
-}
-
-function StatusPill({ online }: { online: boolean }) {
-  return online ? (
-    <span className="inline-flex items-center gap-[5px] rounded-sm bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
-      <span className="h-1.5 w-1.5 rounded-full bg-success" />
-      Online
-    </span>
-  ) : (
-    <span className="inline-flex items-center gap-[5px] rounded-sm bg-text-muted/15 px-2 py-0.5 text-[11px] font-medium text-text-muted">
-      <span className="h-1.5 w-1.5 rounded-full bg-text-muted" />
-      Offline
-    </span>
   );
 }
 

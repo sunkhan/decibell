@@ -2,7 +2,15 @@ import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useAuthStore } from "../../stores/authStore";
+import {
+  isOnlineStatus,
+  resolvePresence,
+  usePresenceStore,
+  type DisplayStatus,
+} from "../../stores/presenceStore";
 import { UserAvatar } from "../../components/UserAvatar";
+import { StatusDot } from "../../components/StatusDot";
 import { EMPTY_LIST } from "../../lib/empty";
 import type { ServerMember } from "../../types";
 
@@ -55,17 +63,33 @@ export default function MembersList() {
     return () => io.disconnect();
   }, [loadMore]);
 
-  const { online, offline } = useMemo(() => {
-    const onlineList = roster.filter((m) => m.isOnline);
-    const offlineList = roster.filter((m) => !m.isOnline);
+  // Status comes from central (presenceStore); the community's own
+  // isOnline only stands in until central's first snapshot. Away and Do
+  // Not Disturb are online.
+  const me = useAuthStore((s) => s.username);
+  const statuses = usePresenceStore((s) => s.statuses);
+  const loaded = usePresenceStore((s) => s.loaded);
+  const ownStatus = usePresenceStore((s) => s.ownStatus);
+  const idle = usePresenceStore((s) => s.idle);
+  const { online, offline, statusOf } = useMemo(() => {
+    const presence = { statuses, loaded, ownStatus, idle };
+    const statusOf = new Map<string, DisplayStatus>();
+    for (const m of roster) statusOf.set(m.username, resolvePresence(presence, me, m.username, m.isOnline));
+    const onlineList = roster.filter((m) => isOnlineStatus(statusOf.get(m.username)!));
+    const offlineList = roster.filter((m) => !isOnlineStatus(statusOf.get(m.username)!));
     // Sort by display name (nickname when set), matching how the list reads.
     onlineList.sort(byName);
     offlineList.sort(byName);
-    return { online: onlineList, offline: offlineList };
-  }, [roster]);
+    return { online: onlineList, offline: offlineList, statusOf };
+  }, [roster, statuses, loaded, ownStatus, idle, me]);
 
-  const renderRow = (m: ServerMember, isOnline: boolean) => (
-    <MemberRow key={m.username} member={m} isOnline={isOnline} serverId={activeServerId} />
+  const renderRow = (m: ServerMember) => (
+    <MemberRow
+      key={m.username}
+      member={m}
+      status={statusOf.get(m.username) ?? "offline"}
+      serverId={activeServerId}
+    />
   );
 
   return (
@@ -79,7 +103,7 @@ export default function MembersList() {
             Online — {online.length}
           </h3>
         </div>
-        {online.map((m) => renderRow(m, true))}
+        {online.map(renderRow)}
 
         {(offline.length > 0 || rosterMeta?.hasMore) && (
           <>
@@ -88,7 +112,7 @@ export default function MembersList() {
                 Offline — {rosterMeta ? Math.max(0, rosterMeta.totalMembers - online.length) : offline.length}
               </h3>
             </div>
-            {offline.map((m) => renderRow(m, false))}
+            {offline.map(renderRow)}
             {rosterMeta?.hasMore && (
               <div ref={sentinelRef} className="px-1 py-2">
                 <button
@@ -118,13 +142,14 @@ export default function MembersList() {
 // presence flip re-renders that one row instead of the whole list.
 const MemberRow = memo(function MemberRow({
   member: m,
-  isOnline,
+  status,
   serverId,
 }: {
   member: ServerMember;
-  isOnline: boolean;
+  status: DisplayStatus;
   serverId: string | null;
 }) {
+  const isOnline = isOnlineStatus(status);
   return (
     <div
       className="list-row group flex cursor-pointer items-center rounded-sm transition-colors hover:bg-surface-hover"
@@ -143,10 +168,10 @@ const MemberRow = memo(function MemberRow({
     >
       <div className={`relative shrink-0 ${isOnline ? "" : "opacity-[0.62]"}`}>
         <UserAvatar username={m.username} size={34} />
-        <div
-          className={`absolute -bottom-px -right-px avatar-dot rounded-full border-[2.5px] border-bg-tertiary ${
-            isOnline ? "bg-success" : "bg-text-muted"
-          }`}
+        <StatusDot
+          status={status}
+          ring="var(--color-bg-tertiary)"
+          className="avatar-dot absolute -bottom-px -right-px"
         />
       </div>
       <span

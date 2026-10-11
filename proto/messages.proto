@@ -268,6 +268,12 @@ message Packet {
     // Turn a category's permission sync on / off (off = visual grouping only).
     CATEGORY_SYNC_SET_REQ = 148;        // client→community (MANAGE_ROLES in the category);
                                         // response via CHANNEL_ACTION_RES action="category_sync"
+    // User statuses (docs/superpowers/specs/2026-10-11-user-status-design.md):
+    // central owns the chosen status; communities only learn "hide me".
+    PRESENCE_DELTA      = 149;  // central→authenticated sessions: one user's presence changed
+    SET_STATUS_REQ      = 150;  // client→central: chosen status (persisted)
+    SET_IDLE_REQ        = 151;  // client→central: auto-away idle flag (session only)
+    PRESENCE_VISIBILITY = 152;  // client→community: report me offline while invisible
   }
 
   Type type = 1;
@@ -459,6 +465,10 @@ message Packet {
     ChannelKeysChanged       channel_keys_changed   = 148;
     ChannelPermissionsSyncRequest channel_permissions_sync_req = 149;
     CategorySyncSetRequest   category_sync_set_req  = 150;
+    PresenceDelta            presence_delta         = 151;
+    SetStatusRequest         set_status_req         = 152;
+    SetIdleRequest           set_idle_req           = 153;
+    PresenceVisibility       presence_visibility    = 154;
   }
 }
 
@@ -481,6 +491,11 @@ message RegisterResponse {
 message LoginRequest {
   string username = 1;
   string password = 2;
+  // The client applies PRESENCE_DELTA packets. Central then sends this
+  // session one PRESENCE_UPDATE snapshot at login and deltas after; a
+  // session without the flag (an older client) keeps getting a full
+  // snapshot on every change.
+  bool presence_deltas = 3;
 }
 
 message LoginResponse {
@@ -503,6 +518,12 @@ message LoginResponse {
   // on an older central → the client sends plaintext DMs and hides the
   // encryption setup entirely.
   bool e2ee_keys = 7;
+  // User statuses: true when this central understands SET_STATUS_REQ /
+  // SET_IDLE_REQ (false on an older central → the client hides the
+  // status menu). `status` is the user's saved choice, applied before
+  // anyone was told this login happened.
+  bool presence_statuses = 8;
+  PresenceStatus status = 9;
 }
 
 message DirectMessage {
@@ -536,16 +557,54 @@ message DirectMessage {
   bytes reply_to_envelope = 12;
 }
 
+// A user's status. The chosen value is saved on central; AWAY is also
+// what others see while an ONLINE user is idle. INVISIBLE never goes on
+// the wire to other users: an invisible user is simply absent (offline).
+enum PresenceStatus {
+  PRESENCE_ONLINE    = 0;
+  PRESENCE_AWAY      = 1;
+  PRESENCE_DND       = 2;
+  PRESENCE_INVISIBLE = 3;
+}
+
 message UserPresence {
   string username = 1;
   string avatar_version = 2;   // '' when no avatar set
+  // Effective status: ONLINE, AWAY or DND (never INVISIBLE).
+  PresenceStatus status = 3;
 }
 
 // Wire-breaking change from `repeated string online_users = 1;` —
 // each online user now carries their current avatar_version so
 // clients can detect cache misses without an explicit poll.
+// Every visible online user. Sent to a session once at login (and on
+// every change to sessions without LoginRequest.presence_deltas).
 message PresenceUpdate {
   repeated UserPresence users = 1;
+}
+
+// One user's presence changed: came online, went offline (or invisible),
+// or changed status. Idempotent — always the user's full current state.
+message PresenceDelta {
+  UserPresence user = 1;
+  bool online = 2;
+}
+
+// The user's chosen status. Central saves it and applies it at every login.
+message SetStatusRequest {
+  PresenceStatus status = 1;
+}
+
+// Auto-away: the client reports no input for its idle threshold (or a
+// locked screen / sleep). Session-only; turns an ONLINE user AWAY.
+message SetIdleRequest {
+  bool idle = 1;
+}
+
+// Client→community: while true, the community reports this member as
+// offline in rosters (MemberInfo.is_online) even though connected.
+message PresenceVisibility {
+  bool hidden = 1;
 }
 
 message ServerListRequest {
@@ -668,6 +727,9 @@ message CommunityAuthRequest {
   // Optional — when present, the user joins the server (consuming the invite)
   // as part of the same authentication handshake. Required for non-members.
   string invite_code = 2;
+  // Invisible at connect time: start hidden, so the roster never shows
+  // this member online (PRESENCE_VISIBILITY changes it later).
+  bool presence_hidden = 3;
 }
 
 message CommunityAuthResponse {

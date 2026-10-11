@@ -27,6 +27,7 @@ import UserProfilePopup from "../features/dm/UserProfilePopup";
 import UserProfileModal from "../features/profile/UserProfileModal";
 import { useDmEvents } from "../features/dm/useDmEvents";
 import { useCallEvents } from "../features/call/useCallEvents";
+import { useAutoAway } from "../features/presence/useAutoAway";
 import IncomingCallModal from "../features/call/IncomingCallModal";
 import { useE2eeEvents } from "../features/e2ee/useE2eeEvents";
 import PassphraseModal from "../features/e2ee/PassphraseModal";
@@ -75,6 +76,7 @@ export default function MainLayout() {
   useDmEvents();
   // P2P DM calls: central call-config + CALL_SIGNAL relay listener.
   useCallEvents();
+  useAutoAway();
   // E2EE DMs: status pushes from native (drives the unlock prompt and
   // the post-unlock history reload) + peer key-change notices.
   useE2eeEvents();

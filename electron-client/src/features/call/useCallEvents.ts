@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { ownDisplayStatus } from "../../stores/presenceStore";
 import { invoke, listen } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
 import { useCallStore } from "../../stores/callStore";
@@ -107,8 +108,12 @@ export function useCallEvents() {
             keyId: sig.keyId ?? 0,
           });
           sendSignal(sig.callId, sig.from, "RINGING").catch(() => {});
-          startRing();
-          window.decibell.window.flash().catch(() => {});
+          // Do Not Disturb: the call still shows, silently — no ring, no
+          // taskbar flash (owner decision). Unanswered, it's a missed call.
+          if (ownDisplayStatus() !== "dnd") {
+            startRing();
+            window.decibell.window.flash().catch(() => {});
+          }
           clearIncomingTimer();
           incomingTimer = setTimeout(() => {
             const c = useCallStore.getState();

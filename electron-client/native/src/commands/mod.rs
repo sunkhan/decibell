@@ -14,6 +14,7 @@ pub mod e2ee;
 pub mod friends;
 pub mod hotkeys;
 pub mod messaging;
+pub mod presence;
 pub mod servers;
 pub mod settings;
 pub mod stream_audio;

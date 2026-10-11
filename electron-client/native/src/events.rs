@@ -390,6 +390,8 @@ pub const CHANNEL_UPDATED: &str = "channel_updated";
 pub const CHANNEL_WIPE_RESPONDED: &str = "channel_wipe_responded";
 pub const CHANNEL_WIPED: &str = "channel_wiped";
 pub const USER_LIST_UPDATED: &str = "user_list_updated";
+pub const PRESENCE_DELTA: &str = "presence_delta";
+pub const OWN_PRESENCE: &str = "own_presence";
 pub const FRIEND_LIST_RECEIVED: &str = "friend_list_received";
 pub const FRIEND_ACTION_RESPONDED: &str = "friend_action_responded";
 pub const MEMBER_LIST_RECEIVED: &str = "member_list_received";
@@ -882,6 +884,30 @@ pub struct UserPresencePayload {
     /// avatar set. avatarStore consumes this for cache invalidation
     /// (see docs/superpowers/specs/2026-05-12-custom-profile-pictures-design.md §7).
     pub avatar_version: String,
+    /// "online" | "away" | "dnd" (others are never "invisible" — absent).
+    pub status: String,
+}
+
+/// One user's presence changed (central PresenceDelta): the full current
+/// state, so applying it is idempotent.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceDeltaPayload {
+    pub username: String,
+    pub online: bool,
+    pub status: String,
+    pub avatar_version: String,
+}
+
+/// The local user's saved status from LoginResponse, and whether this
+/// central understands statuses at all (false → the renderer hides the
+/// status menu).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnPresencePayload {
+    pub supported: bool,
+    /// "online" | "away" | "dnd" | "invisible"
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -907,6 +933,14 @@ pub struct FriendActionRespondedPayload {
 
 pub fn emit_user_list_updated(users: Vec<UserPresencePayload>) {
     send(USER_LIST_UPDATED, UserListUpdatedPayload { users });
+}
+
+pub fn emit_presence_delta(payload: PresenceDeltaPayload) {
+    send(PRESENCE_DELTA, payload);
+}
+
+pub fn emit_own_presence(supported: bool, status: String) {
+    send(OWN_PRESENCE, OwnPresencePayload { supported, status });
 }
 
 pub fn emit_friend_list_received(friends: Vec<FriendInfoPayload>) {

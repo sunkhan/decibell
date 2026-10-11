@@ -8,6 +8,7 @@ import {
   registerCustomSchemes,
 } from "./protocol";
 import { callCommand, initAddon, shutdownAddon } from "./addon";
+import { registerIdleHandlers } from "./idle";
 import {
   registerWindowHandlers,
   attachWindowEvents,
@@ -687,6 +688,7 @@ app.whenReady().then(async () => {
   registerFileProtocol();
   registerInvokeHandler();
   registerWindowHandlers();
+  registerIdleHandlers();
   registerDialogHandlers();
   registerFsHandlers();
   registerNetHandlers();

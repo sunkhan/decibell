@@ -32,6 +32,20 @@ void AuthManager::initializeDatabase() {
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
             "avatar_version VARCHAR(64) NOT NULL DEFAULT ''"
         );
+        // User statuses (2026-10-11, docs/superpowers/specs/
+        // 2026-10-11-user-status-design.md): the chosen status as the
+        // PresenceStatus enum value (0 online, 1 away, 2 dnd, 3 invisible),
+        // and the friends-only DM setting, which used to live only in the
+        // session (reset on every reconnect, and its online/offline
+        // difference could see through Invisible).
+        txn.exec(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+            "presence_status SMALLINT NOT NULL DEFAULT 0"
+        );
+        txn.exec(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+            "dm_friends_only BOOLEAN NOT NULL DEFAULT FALSE"
+        );
         // The (user1, user2) pair is stored in *byte* order — C++
         // std::min/std::max in handleFriendAction/isBlocked. The CHECK
         // must use the same ordering: an unqualified `user1 < user2`
@@ -740,19 +754,68 @@ std::pair<std::string, std::string> AuthManager::getAvatar(
     }
 }
 
-std::string AuthManager::getAvatarVersion(const std::string& username) {
+AuthManager::PresenceProfile AuthManager::getPresenceProfile(const std::string& username) {
+    PresenceProfile profile;
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
-            "SELECT avatar_version FROM users WHERE username = $1",
+            "SELECT avatar_version, presence_status, dm_friends_only "
+            "FROM users WHERE username = $1",
             username);
         txn.commit();
-        if (rs.empty()) return std::string();
-        return rs[0][0].as<std::string>("");
+        if (rs.empty()) return profile;
+        profile.avatar_version = rs[0][0].as<std::string>("");
+        const int status = rs[0][1].as<int>(0);
+        if (chatproj::PresenceStatus_IsValid(status)) {
+            profile.status = static_cast<chatproj::PresenceStatus>(status);
+        }
+        profile.dm_friends_only = rs[0][2].as<bool>(false);
     } catch (const std::exception& e) {
-        std::cerr << "[DB Error] getAvatarVersion: " << e.what() << "\n";
-        return std::string();
+        std::cerr << "[DB Error] getPresenceProfile: " << e.what() << "\n";
+    }
+    return profile;
+}
+
+void AuthManager::setPresenceStatus(const std::string& username, int status) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        txn.exec_params(
+            "UPDATE users SET presence_status = $1 WHERE username = $2",
+            status, username);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] setPresenceStatus: " << e.what() << "\n";
+    }
+}
+
+void AuthManager::setDmFriendsOnly(const std::string& username, bool friends_only) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        txn.exec_params(
+            "UPDATE users SET dm_friends_only = $1 WHERE username = $2",
+            friends_only, username);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] setDmFriendsOnly: " << e.what() << "\n";
+    }
+}
+
+bool AuthManager::getDmFriendsOnly(const std::string& username) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "SELECT dm_friends_only FROM users WHERE username = $1",
+            username);
+        txn.commit();
+        if (rs.empty()) return false;
+        return rs[0][0].as<bool>(false);
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getDmFriendsOnly: " << e.what() << "\n";
+        return false;
     }
 }
 

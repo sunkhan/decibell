@@ -6,14 +6,14 @@ import RealMessageList, {
 } from "../chat/RealMessageList";
 import { invoke } from "../../lib/ipc";
 import { useDmStore } from "../../stores/dmStore";
-import { useFriendsStore } from "../../stores/friendsStore";
-import { useChatStore } from "../../stores/chatStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraftsStore } from "../../stores/draftsStore";
 import { toast } from "../../stores/toastStore";
 import { stringToColor } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
+import { StatusDot, StatusPill } from "../../components/StatusDot";
+import { isOnlineStatus, usePresence } from "../../stores/presenceStore";
 import MessageBubble, { DayDivider, shouldGroup, startsNewDay } from "../chat/MessageBubble";
 import { ReplyComposerBar } from "../chat/ReplyPreview";
 import { useTypeToFocusComposer } from "../chat/useTypeToFocusComposer";
@@ -95,14 +95,9 @@ export default function DmChatPanel() {
   const conversation = useDmStore((s) =>
     activeDmUser ? s.conversations[activeDmUser] : undefined,
   );
-  // Booleans, not the friend list / central's global online list, so a
-  // presence broadcast about someone else doesn't re-render the panel.
-  const friendOnline = useFriendsStore((s) =>
-    s.friends.some((f) => f.username === activeDmUser && f.status === "online"),
-  );
-  const peerOnline = useChatStore((s) =>
-    activeDmUser ? s.onlineUsers.includes(activeDmUser) : false,
-  );
+  // The peer's status alone (a string), so a presence change about
+  // someone else doesn't re-render the panel.
+  const peerPresence = usePresence(activeDmUser ?? "");
 
   const localUsername = useAuthStore((s) => s.username);
   const dmFriendsPanelVisible = useUiStore((s) => s.dmFriendsPanelVisible);
@@ -311,7 +306,8 @@ export default function DmChatPanel() {
 
   const bubbleMessages = useMemo(() => messages.map(toBubble), [messages]);
 
-  const isOnline = friendOnline || peerOnline;
+  // Away and Do Not Disturb can still be called; Invisible looks offline.
+  const isOnline = isOnlineStatus(peerPresence);
 
   // Restore draft on conversation switch.
   useEffect(() => {
@@ -803,26 +799,17 @@ export default function DmChatPanel() {
       <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border px-4">
         <div className="relative">
           <UserAvatar username={activeDmUser} size={26} />
-          <div
-            className={`absolute -bottom-px -right-px h-2.5 w-2.5 rounded-full border-2 border-bg-tertiary ${
-              isOnline ? "bg-success" : "bg-text-muted"
-            }`}
+          <StatusDot
+            status={peerPresence}
+            ring="var(--color-bg-tertiary)"
+            ringWidth={2}
+            className="absolute -bottom-px -right-px h-2.5 w-2.5"
           />
         </div>
         <span className="font-display text-title font-emphasis tracking-title text-text-bright">
           {activeDmUser}
         </span>
-        {isOnline ? (
-          <div className="flex items-center gap-[5px] rounded-sm bg-success/15 px-2 py-0.5 font-channel text-[11px] font-medium text-success">
-            <div className="h-1.5 w-1.5 rounded-full bg-success" />
-            Online
-          </div>
-        ) : (
-          <div className="flex items-center gap-[5px] rounded-sm bg-text-muted/15 px-2 py-0.5 font-channel text-[11px] font-medium text-text-muted">
-            <div className="h-1.5 w-1.5 rounded-full bg-text-muted" />
-            Offline
-          </div>
-        )}
+        <StatusPill status={peerPresence} className="font-channel" />
         <EncryptionBadge peer={activeDmUser} />
         <div className="flex-1" />
         <div className="flex gap-1">

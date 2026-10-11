@@ -148,6 +148,11 @@ pub struct AppSettings {
     #[serde(default)]
     pub gif_unfiltered: bool,
 
+    /// Auto-away: minutes without input before the user shows as Away
+    /// (also on screen lock / sleep). 0 = never. Default 10.
+    #[serde(default = "default_away_after_minutes")]
+    pub away_after_minutes: u32,
+
     /// Folder attachments download into (Transfers panel). Empty = the
     /// OS Downloads folder.
     #[serde(default)]
@@ -191,6 +196,10 @@ impl Default for AppSettings {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_away_after_minutes() -> u32 {
+    10
 }
 
 fn default_theme() -> String {
@@ -415,6 +424,7 @@ mod tests {
         assert!(d.use_av1 && d.use_h265);
         assert!(d.crash_reporting_enabled);
         assert!(d.link_previews_enabled);
+        assert_eq!(d.away_after_minutes, 10);
         assert_eq!(d.theme, "nocturne");
         assert!(!d.aec_enabled);
         assert!(d.input_device.is_none());

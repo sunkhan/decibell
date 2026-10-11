@@ -134,6 +134,7 @@ impl CommunityClient {
             packet::Payload::CommunityAuthReq(CommunityAuthRequest {
                 jwt_token: jwt.clone(),
                 invite_code: invite_code.unwrap_or_default(),
+                presence_hidden: crate::presence::hidden(),
             }),
             Some(&jwt),
         );
@@ -350,6 +351,7 @@ impl CommunityClient {
                             packet::Payload::CommunityAuthReq(CommunityAuthRequest {
                                 jwt_token: jwt.clone(),
                                 invite_code: String::new(),
+                                presence_hidden: crate::presence::hidden(),
                             }),
                             Some(&jwt),
                         );

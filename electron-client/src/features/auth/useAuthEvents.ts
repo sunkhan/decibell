@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke, listen } from "../../lib/ipc";
+import { usePresenceStore } from "../../stores/presenceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useAvatarStore } from "../../stores/avatarStore";
 import { useChatStore } from "../../stores/chatStore";
@@ -79,6 +80,7 @@ export function useAuthEvents() {
     const unlistenLoggedOut = listen("logged_out", () => {
       useAuthStore.getState().logout();
       useChatStore.getState().resetForLogout();
+      usePresenceStore.getState().reset();
       useUiStore.getState().setActiveView("home");
       useAvatarStore.getState().clearAll();
       clearRetainedImages();

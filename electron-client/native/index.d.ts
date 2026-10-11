@@ -664,6 +664,19 @@ export interface SendPrivateMessageArgs {
   nonce?: string
 }
 export declare function sendPrivateMessage(args: SendPrivateMessageArgs): Promise<void>
+export interface SetStatusArgs {
+  /** "online" | "away" | "dnd" | "invisible" */
+  status: string
+}
+export declare function setStatus(args: SetStatusArgs): Promise<void>
+export interface SetIdleArgs {
+  idle: boolean
+}
+/**
+ * Auto-away: no input for the user's idle threshold, a locked screen or
+ * sleep (renderer-detected). Central turns an ONLINE user AWAY meanwhile.
+ */
+export declare function setIdle(args: SetIdleArgs): Promise<void>
 /**
  * Ask the central server for the user's server list. The response
  * arrives asynchronously as a `server_list_received` event.

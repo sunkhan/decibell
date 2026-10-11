@@ -1946,6 +1946,31 @@ untouched: if a web font first loads after a list mounts at the bottom, the bott
 font's height delta (harness-only so far — the app loads fonts before any channel mounts); message
 bodies use `break-all`, so words split mid-word at narrow widths. tsc web 0.
 
+**Central + community + client: user statuses (2026-10-12) ✅** — Owner: online / away / do not
+disturb / offline statuses, managed by central. Design: `docs/superpowers/specs/2026-10-11-user-status-design.md`.
+Owner decisions: Invisible airtight (communities told too), auto-away after a user-adjustable idle
+time (default 10 min, or never) plus screen lock / sleep, DND = incoming calls arrive silently, statuses
+visible to everyone. Central: `users.presence_status` (+ `dm_friends_only`, see below) read at login
+before the user is announced; per-session idle flag; `PRESENCE_DELTA` per visible change instead of a
+full snapshot to every socket on every login/logout (snapshot once at login; older clients without
+`LoginRequest.presence_deltas` keep snapshots); presence now reaches authenticated sessions only (it
+went to pre-login and community-sync sockets too); a reconnect no longer flickers the user offline
+(kick after `username_` is set, `leave()` announces only the last *visible* session); invisible users
+are offline for friend lists and call INVITEs. Found while closing Invisible's leaks: friends-only DMs
+lived only in the session — reset on every reconnect (the client only sent it on toggle), and its
+connected/offline difference let a DM probe see through Invisible — now saved on the account and
+re-pushed by the client after login. Community: `CommunityAuthRequest.presence_hidden` +
+`PRESENCE_VISIBILITY`; rosters report `is_online` = has a non-hidden session, upserts only on a visible
+change (an invisible member's connect/disconnect is silent; new/renamed members still get an offline
+upsert). Client: `presenceStore` (central truth, community flag only before the first snapshot; replaces
+`chatStore.onlineUsers`), shaped `StatusDot` (disc / moon / bar / ring) + `StatusPill` at every presence
+site, status menu on the user panel, `useAutoAway` (`powerMonitor.getSystemIdleState` polled 15 s,
+lock/suspend pushed), DND skips the call ring + taskbar flash. Verified: community e2e 404/0 incl. 10 new
+`test_presence_hidden` checks; central main.cpp + auth_manager.cpp syntax-checked against real Boost /
+jwt-cpp / protobuf headers with a pqxx stand-in; native napi build + `cargo test --lib` 223 (2 new);
+tsc web 0 / node 0; dots, pills, menu and member grouping captured in six themes. Pending: Hetzner
+central rebuild + community release + live two-account test; idle/lock detection on KDE Wayland.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

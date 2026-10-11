@@ -99,7 +99,21 @@ public:
     // Lookup just the version (no bytes). Used by broadcast_presence
     // to populate UserPresence.avatar_version cheaply without
     // reading the BYTEA payload.
-    std::string getAvatarVersion(const std::string& username);
+
+    // --- User statuses (docs/superpowers/specs/2026-10-11-user-status-design.md) ---
+    /// What a login needs for presence, in one users-row read.
+    struct PresenceProfile {
+        std::string avatar_version;
+        chatproj::PresenceStatus status = chatproj::PRESENCE_ONLINE;
+        bool dm_friends_only = false;
+    };
+    PresenceProfile getPresenceProfile(const std::string& username);
+    /// `status` is a PresenceStatus value (the caller validated it).
+    void setPresenceStatus(const std::string& username, int status);
+    void setDmFriendsOnly(const std::string& username, bool friends_only);
+    /// For DMs to an offline (or invisible) recipient — an online one's
+    /// session caches the same value.
+    bool getDmFriendsOnly(const std::string& username);
 
     // --- Persistent DMs ---
     // (see docs/superpowers/specs/2026-05-14-persistent-dms-design.md)

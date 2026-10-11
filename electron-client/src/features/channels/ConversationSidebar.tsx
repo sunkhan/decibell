@@ -1,9 +1,9 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import { useUiStore } from "../../stores/uiStore";
 import { useDmStore, conversationActivityTime } from "../../stores/dmStore";
-import { useFriendsStore } from "../../stores/friendsStore";
-import { useChatStore } from "../../stores/chatStore";
+import { usePresence } from "../../stores/presenceStore";
 import { UserAvatar } from "../../components/UserAvatar";
+import { StatusDot } from "../../components/StatusDot";
 import MessageText from "../chat/MessageText";
 import { useSidebarResize } from "./useSidebarResize";
 
@@ -30,8 +30,6 @@ export default function ConversationSidebar() {
   const conversations = useDmStore((s) => s.conversations);
   const activeDmUser = useDmStore((s) => s.activeDmUser);
   const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
-  const friends = useFriendsStore((s) => s.friends);
-  const onlineUsers = useChatStore((s) => s.onlineUsers);
   const activeView = useUiStore((s) => s.activeView);
   const setActiveView = useUiStore((s) => s.setActiveView);
 
@@ -46,13 +44,6 @@ export default function ConversationSidebar() {
       ),
     [conversations],
   );
-  // One lookup set instead of scanning the friend list and central's global
-  // online list once per row per render.
-  const onlineSet = useMemo(() => {
-    const set = new Set(onlineUsers);
-    for (const f of friends) if (f.status === "online") set.add(f.username);
-    return set;
-  }, [friends, onlineUsers]);
   // Rows are memoised, so the relative times ("5m") need their own clock.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -102,7 +93,6 @@ export default function ConversationSidebar() {
                 // home — but on home the user is looking at the friends
                 // page, not at it, so only highlight it in the dm view.
                 isActive={activeView === "dm" && activeDmUser === conv.username}
-                isOnline={onlineSet.has(conv.username)}
                 unreadCount={conv.unreadCount}
                 lastContent={lastMsg?.content}
                 lastMessageTime={conv.lastMessageTime}
@@ -127,7 +117,6 @@ export default function ConversationSidebar() {
 const ConversationRow = memo(function ConversationRow({
   username,
   isActive,
-  isOnline,
   unreadCount,
   lastContent,
   lastMessageTime,
@@ -136,13 +125,15 @@ const ConversationRow = memo(function ConversationRow({
 }: {
   username: string;
   isActive: boolean;
-  isOnline: boolean;
   unreadCount: number;
   lastContent: string | undefined;
   lastMessageTime: number;
   now: number;
   onOpen: (username: string) => void;
 }) {
+  // Each row subscribes to its own user, so a status change re-renders
+  // that row only.
+  const status = usePresence(username);
   return (
     <button
       onClick={() => onOpen(username)}
@@ -154,10 +145,11 @@ const ConversationRow = memo(function ConversationRow({
     >
       <div className="relative shrink-0">
         <UserAvatar username={username} size={34} />
-        <div
-          className={`absolute -bottom-px -right-px avatar-dot rounded-full border-2 border-bg-dmbar ${
-            isOnline ? "bg-success" : "bg-text-muted"
-          }`}
+        <StatusDot
+          status={status}
+          ring="var(--color-bg-dmbar)"
+          ringWidth={2}
+          className="avatar-dot absolute -bottom-px -right-px"
         />
         {unreadCount > 0 && (
           <div

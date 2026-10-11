@@ -68,6 +68,7 @@ interface LoadedConfigShape {
     crash_reporting_consent_shown: boolean;
     link_previews_enabled?: boolean;
     gif_unfiltered?: boolean;
+    away_after_minutes?: number;
     download_dir?: string;
     ask_download_location?: boolean;
     hotkeys?: { id: string; action: string; keys: string[] }[];
@@ -117,6 +118,7 @@ export async function loadSettings(): Promise<void> {
   // Link previews. Absent (older native build) → on, matching serde.
   useUiStore.getState().setLinkPreviewsEnabled(settings.link_previews_enabled ?? true);
   useUiStore.getState().setGifUnfiltered(settings.gif_unfiltered ?? false);
+  useUiStore.getState().setAwayAfterMinutes(settings.away_after_minutes ?? 10);
 
   // Voice / audio
   if (settings.voice_threshold_db != null) {

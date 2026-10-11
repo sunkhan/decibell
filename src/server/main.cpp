@@ -14,6 +14,7 @@
 #include <deque>
 #include <utility>
 #include <functional>
+#include <optional>
 #ifdef __linux__
 #include <netinet/tcp.h>
 #endif
@@ -43,20 +44,25 @@ constexpr size_t E2EE_PUB_LEN = 32;
 constexpr size_t E2EE_SIG_LEN = 64;
 constexpr size_t MAX_E2EE_BACKUP = 8 * 1024;
 
-/// Minimal per-session token bucket for CALL_SIGNAL. Central has no other
-/// rate limiting and runs a single io thread with synchronous Postgres, so
-/// an unthrottled signal storm from one client would stall every user.
-/// 20 burst / 5 per second is far above a real handshake (~6 signals per
-/// call) and keeps the INVITE-only DB touch (check_dm_allowed) bounded.
-struct CallSignalBucket {
-    double tokens = 20.0;
+/// Minimal per-session token bucket. Central has no general rate limiting
+/// and runs a single io thread with synchronous Postgres, so an unthrottled
+/// storm from one client would stall every user. Used for CALL_SIGNAL
+/// (20 burst / 5 per second: far above a real handshake, ~6 signals per
+/// call, and keeps the INVITE-only DB touch bounded), the E2EE key
+/// endpoints, and status changes.
+struct RateBucket {
+    RateBucket(double capacity, double per_second)
+        : capacity(capacity), per_second(per_second), tokens(capacity) {}
+    double capacity;
+    double per_second;
+    double tokens;
     std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
     bool take() {
         auto now = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(now - last).count();
         last = now;
-        tokens += elapsed * 5.0;
-        if (tokens > 20.0) tokens = 20.0;
+        tokens += elapsed * per_second;
+        if (tokens > capacity) tokens = capacity;
         if (tokens < 1.0) return false;
         tokens -= 1.0;
         return true;
@@ -117,6 +123,7 @@ public:
     }
 
     std::string username() const { return username_; }
+    bool authenticated() const { return authenticated_; }
 
     /// Cancel in-flight I/O and close the socket. SessionManager::leave()
     /// calls this: removing the session from the set was never enough —
@@ -135,6 +142,19 @@ public:
     /// without an extra DB query per broadcast.
     const std::string& avatar_version() const { return avatar_version_; }
     bool dm_friends_only() const { return dm_friends_only_; }
+
+    // --- User statuses (docs/superpowers/specs/2026-10-11-user-status-design.md) ---
+    /// Seen by others: authenticated and not invisible.
+    bool presence_visible() const {
+        return authenticated_ && presence_status_ != chatproj::PRESENCE_INVISIBLE;
+    }
+    /// What others see: the chosen status, AWAY while an ONLINE user idles.
+    chatproj::PresenceStatus effective_status() const {
+        if (presence_status_ == chatproj::PRESENCE_ONLINE && idle_) return chatproj::PRESENCE_AWAY;
+        return presence_status_;
+    }
+    /// The client applies PresenceDelta (LoginRequest.presence_deltas).
+    bool presence_deltas() const { return presence_deltas_; }
 
     SessionManager& manager_;
 
@@ -259,22 +279,33 @@ private:
             auto token_opt = auth_manager_.authenticateUser(req.username(), req.password());
 
             if (token_opt.has_value()) {
-                // Only now that the password is verified, force-kick any
-                // stale session for this user (previous connection died
-                // without a clean TCP close). Kicking BEFORE the password
-                // check let any unauthenticated client evict any user by
-                // name (send LOGIN_REQ{victim} with a bogus password).
-                manager_.kick_user(req.username());
                 authenticated_ = true;
                 username_ = req.username();
-                // Prime avatar_version_ so broadcast_presence below
-                // includes the right version on the user's
-                // UserPresence entry. Pulled from the users table
-                // once at login; later UPDATE_AVATAR_REQ handlers
-                // refresh it inline before broadcasting.
-                avatar_version_ = auth_manager_.getAvatarVersion(username_);
+                presence_deltas_ = req.presence_deltas();
+                // One users-row read for presence: avatar_version (each
+                // UserPresence entry carries it; UPDATE_AVATAR_REQ refreshes
+                // it inline), the saved status — applied before anyone hears
+                // about this login, so an invisible user never flashes
+                // online — and the friends-only DM setting.
+                const auto profile = auth_manager_.getPresenceProfile(username_);
+                avatar_version_ = profile.avatar_version;
+                presence_status_ = profile.status;
+                dm_friends_only_ = profile.dm_friends_only;
+                idle_ = false;
+                // Only now that the password is verified, force-kick any
+                // stale session for this user (previous connection died
+                // without a clean TCP close, or another device). Kicking
+                // BEFORE the password check let any unauthenticated client
+                // evict any user by name (send LOGIN_REQ{victim} with a
+                // bogus password). After username_ is set, so the old
+                // session's leave() sees this one and a reconnect doesn't
+                // announce the user offline in between.
+                manager_.kick_user(username_, shared_from_this());
                 send_response(chatproj::Packet::LOGIN_RES, true, "Login successful!", token_opt.value());
-                manager_.broadcast_presence();
+                manager_.send_presence_snapshot(shared_from_this());
+                // Announce only a login others can see: an "offline" delta
+                // for an invisible login would itself give it away.
+                if (presence_visible()) manager_.broadcast_presence_change(username_);
             } else {
                 send_response(chatproj::Packet::LOGIN_RES, false, "Invalid username or password.");
             }
@@ -420,6 +451,14 @@ private:
             if (sig->kind() == chatproj::CallSignal::INVITE &&
                 !manager_.check_dm_allowed(username_, sig->to(), auth_manager_)) {
                 send_call_reply(chatproj::CallSignal::NOT_ALLOWED, sig->call_id(), sig->to());
+                return;
+            }
+            // An invisible user looks offline to callers too (owner
+            // decision). Only the INVITE: an invisible user can still place
+            // calls, and the rest of that handshake must reach them.
+            if (sig->kind() == chatproj::CallSignal::INVITE &&
+                !manager_.is_user_visible(sig->to())) {
+                send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(), sig->to());
                 return;
             }
 
@@ -826,7 +865,7 @@ private:
                 my_list_pkt.set_type(chatproj::Packet::FRIEND_LIST_RES);
                 auto* my_list = my_list_pkt.mutable_friend_list_res();
                 for (auto& f : my_friends) {
-                    if (f.status() == chatproj::FriendInfo::OFFLINE && manager_.is_user_online(f.username())) {
+                    if (f.status() == chatproj::FriendInfo::OFFLINE && manager_.is_user_visible(f.username())) {
                         f.set_status(chatproj::FriendInfo::ONLINE);
                     }
                     *my_list->add_friends() = f;
@@ -842,7 +881,7 @@ private:
                 target_list_pkt.set_type(chatproj::Packet::FRIEND_LIST_RES);
                 auto* target_list = target_list_pkt.mutable_friend_list_res();
                 for (auto& f : target_friends) {
-                    if (f.status() == chatproj::FriendInfo::OFFLINE && manager_.is_user_online(f.username())) {
+                    if (f.status() == chatproj::FriendInfo::OFFLINE && manager_.is_user_visible(f.username())) {
                         f.set_status(chatproj::FriendInfo::ONLINE);
                     }
                     *target_list->add_friends() = f;
@@ -862,7 +901,7 @@ private:
             for (auto& f : friends) {
                 // Determine online presence if they are ACCEPTED
                 if (f.status() == chatproj::FriendInfo::OFFLINE) {
-                    if (manager_.is_user_online(f.username())) {
+                    if (manager_.is_user_visible(f.username())) {
                         f.set_status(chatproj::FriendInfo::ONLINE);
                     }
                 }
@@ -967,10 +1006,52 @@ private:
         }
 
         // --- DM PRIVACY SETTING ---
+        // Saved on the account (users.dm_friends_only) so it holds while
+        // the user is offline too. It used to live only in this session,
+        // which reset it on every reconnect and let a DM probe tell an
+        // online friends-only user (rejected) from an offline one
+        // (accepted) — i.e. see through Invisible.
         else if (packet.type() == chatproj::Packet::DM_PRIVACY) {
             if (!authenticated_) return;
-            dm_friends_only_ = packet.dm_privacy().friends_only();
+            if (!status_bucket_.take()) return;
+            const bool friends_only = packet.dm_privacy().friends_only();
+            if (friends_only == dm_friends_only_) return;
+            dm_friends_only_ = friends_only;
+            auth_manager_.setDmFriendsOnly(username_, friends_only);
             std::cout << "[Server] User " << username_ << " set dm_friends_only to " << dm_friends_only_ << "\n";
+        }
+
+        // --- USER STATUS ---
+        // The chosen status (online / away / dnd / invisible): saved on the
+        // account and applied to this session. Others hear about it only
+        // when what they can see changes.
+        else if (packet.type() == chatproj::Packet::SET_STATUS_REQ) {
+            if (!authenticated_ || !packet.has_set_status_req()) return;
+            if (!status_bucket_.take()) {
+                std::cout << "[Status] Rate limit hit for " << username_ << "\n";
+                return;
+            }
+            const int raw = static_cast<int>(packet.set_status_req().status());
+            if (!chatproj::PresenceStatus_IsValid(raw)) return;
+            const auto status = static_cast<chatproj::PresenceStatus>(raw);
+            if (status == presence_status_) return;
+            const PresenceView before = presence_view();
+            presence_status_ = status;
+            auth_manager_.setPresenceStatus(username_, raw);
+            if (presence_view() != before) manager_.broadcast_presence_change(username_);
+        }
+
+        // --- AUTO-AWAY ---
+        // No input for the client's idle threshold, a locked screen or
+        // sleep. Session-only: turns an ONLINE user AWAY until activity.
+        else if (packet.type() == chatproj::Packet::SET_IDLE_REQ) {
+            if (!authenticated_ || !packet.has_set_idle_req()) return;
+            if (!status_bucket_.take()) return;
+            const bool idle = packet.set_idle_req().idle();
+            if (idle == idle_) return;
+            const PresenceView before = presence_view();
+            idle_ = idle;
+            if (presence_view() != before) manager_.broadcast_presence_change(username_);
         }
 
         // --- COMMUNITY SERVER HEARTBEAT ---
@@ -1208,6 +1289,10 @@ private:
                 resp->set_call_signaling(true);
                 // E2EE DMs: this build serves the key endpoints.
                 resp->set_e2ee_keys(true);
+                // User statuses: this build understands SET_STATUS_REQ /
+                // SET_IDLE_REQ; echo the saved choice.
+                resp->set_presence_statuses(true);
+                resp->set_status(presence_status_);
             }
         }
 
@@ -1227,11 +1312,32 @@ private:
     /// Cached on login from users.avatar_version; updated inline on
     /// UPDATE_AVATAR_REQ. Read by broadcast_presence.
     std::string avatar_version_;
+    /// Mirrors users.dm_friends_only: loaded at login, written by DM_PRIVACY.
     bool dm_friends_only_ = false;
-    CallSignalBucket call_bucket_;
+    /// The saved status choice (users.presence_status), loaded at login.
+    chatproj::PresenceStatus presence_status_ = chatproj::PRESENCE_ONLINE;
+    /// Auto-away: the client reported no input (SET_IDLE_REQ). Session only.
+    bool idle_ = false;
+    bool presence_deltas_ = false;
+    /// What others can see of this session's presence; a change is what
+    /// warrants a PresenceDelta. Status is only meaningful while visible.
+    struct PresenceView {
+        bool visible;
+        chatproj::PresenceStatus status;
+        bool operator!=(const PresenceView& o) const {
+            return visible != o.visible || (visible && status != o.status);
+        }
+    };
+    PresenceView presence_view() const { return {presence_visible(), effective_status()}; }
+    RateBucket call_bucket_{20.0, 5.0};
     /// Same shape for the E2EE key endpoints (publish / fetch / backup):
     /// each is a synchronous DB round-trip on the io thread.
-    CallSignalBucket key_bucket_;
+    RateBucket key_bucket_{20.0, 5.0};
+    /// Status / idle / DM-privacy changes: each is a DB write or a fan-out
+    /// to every session. A person picks a status a few times a day and
+    /// auto-away flips at most every few minutes; 10 burst / 1 per 2 s
+    /// never refuses a real client.
+    RateBucket status_bucket_{10.0, 0.5};
     AuthManager& auth_manager_;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
     std::chrono::steady_clock::time_point last_activity_;
@@ -1255,68 +1361,119 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
     bool removed = false;
     size_t total = 0;
     std::string user = session->username();
-    
+    const bool was_visible = session->presence_visible();
+    bool still_visible = false;
+
     {
         std::lock_guard<std::mutex> lock(mutex_);
         removed = sessions_.erase(session) > 0;
         total = sessions_.size();
+        if (removed && was_visible) still_visible = user_visible_locked(user);
     }
-    
+
     if (removed) {
         // Actually end the connection. Idempotent on an already-closed
         // socket (the read/write error paths arrive here too).
         session->close_connection();
         std::cout << "[Manager] Session left. Total: " << total << "\n";
-        if (!user.empty()) {
-            broadcast_presence();  
+        // Announce only what others could see: the user's last visible
+        // session going away. An invisible user's disconnect says nothing,
+        // and neither does the kick of a reconnecting user's old session.
+        if (was_visible && !still_visible) {
+            broadcast_presence_change(user);
         }
     }
 }
 
-void SessionManager::broadcast_presence() {
-    chatproj::Packet packet;
-    packet.set_type(chatproj::Packet::PRESENCE_UPDATE);
-    auto* presence = packet.mutable_presence_update();
-
-    // Collect (username, avatar_version) for each session. Read each
-    // session's cached avatar_version (updated at login + on every
-    // UPDATE_AVATAR_REQ) rather than hitting the DB per broadcast.
-    std::vector<std::pair<std::string, std::string>> active_users;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& session : sessions_) {
-            std::string uname = session->username();
-            if (!uname.empty()) {
-                active_users.emplace_back(uname, session->avatar_version());
-            }
-        }
-    }
-
-    for (const auto& [uname, ver] : active_users) {
-        auto* entry = presence->add_users();
-        entry->set_username(uname);
-        entry->set_avatar_version(ver);
-    }
-
-    broadcast(packet);
-}
-
-bool SessionManager::is_user_online(const std::string& username) {
-    std::lock_guard<std::mutex> lock(mutex_);
+bool SessionManager::user_visible_locked(const std::string& username) const {
     for (const auto& session : sessions_) {
-        if (session->username() == username) {
-            return true;
-        }
+        if (session->username() == username && session->presence_visible()) return true;
     }
     return false;
 }
 
-void SessionManager::kick_user(const std::string& username) {
+void SessionManager::fill_presence_snapshot_locked(chatproj::PresenceUpdate* presence) const {
+    // Read each session's cached avatar_version (updated at login + on
+    // every UPDATE_AVATAR_REQ) rather than hitting the DB per broadcast.
+    // Invisible users are left out: to everyone else they are offline.
+    for (const auto& session : sessions_) {
+        if (!session->presence_visible()) continue;
+        auto* entry = presence->add_users();
+        entry->set_username(session->username());
+        entry->set_avatar_version(session->avatar_version());
+        entry->set_status(session->effective_status());
+    }
+}
+
+void SessionManager::send_presence_snapshot(std::shared_ptr<Session> session) {
+    chatproj::Packet packet;
+    packet.set_type(chatproj::Packet::PRESENCE_UPDATE);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        fill_presence_snapshot_locked(packet.mutable_presence_update());
+    }
+    std::string serialized;
+    packet.SerializeToString(&serialized);
+    session->deliver(std::make_shared<std::vector<uint8_t>>(
+        chatproj::create_framed_packet(serialized)));
+}
+
+void SessionManager::broadcast_presence_change(const std::string& username) {
+    // One PresenceDelta with the user's full current state: online with
+    // their effective status if any visible session is theirs, else
+    // offline. Older clients (no LoginRequest.presence_deltas) get the
+    // full snapshot instead, as before. Authenticated sessions only — the
+    // pre-login and community-sync connections never needed presence.
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    chatproj::Packet delta;
+    delta.set_type(chatproj::Packet::PRESENCE_DELTA);
+    auto* d = delta.mutable_presence_delta();
+    d->mutable_user()->set_username(username);
+    for (const auto& session : sessions_) {
+        if (session->username() == username && session->presence_visible()) {
+            d->set_online(true);
+            d->mutable_user()->set_avatar_version(session->avatar_version());
+            d->mutable_user()->set_status(session->effective_status());
+            break;
+        }
+    }
+    std::string delta_ser;
+    delta.SerializeToString(&delta_ser);
+    auto delta_framed = std::make_shared<std::vector<uint8_t>>(
+        chatproj::create_framed_packet(delta_ser));
+
+    std::shared_ptr<std::vector<uint8_t>> snapshot_framed;
+    for (auto& session : sessions_) {
+        if (!session->authenticated()) continue;
+        if (session->presence_deltas()) {
+            session->deliver(delta_framed);
+            continue;
+        }
+        if (!snapshot_framed) {
+            chatproj::Packet snapshot;
+            snapshot.set_type(chatproj::Packet::PRESENCE_UPDATE);
+            fill_presence_snapshot_locked(snapshot.mutable_presence_update());
+            std::string snapshot_ser;
+            snapshot.SerializeToString(&snapshot_ser);
+            snapshot_framed = std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(snapshot_ser));
+        }
+        session->deliver(snapshot_framed);
+    }
+}
+
+bool SessionManager::is_user_visible(const std::string& username) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return user_visible_locked(username);
+}
+
+void SessionManager::kick_user(const std::string& username, std::shared_ptr<Session> except) {
     std::shared_ptr<Session> stale;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const auto& session : sessions_) {
-            if (session->username() == username) {
+            if (session != except && session->username() == username) {
                 stale = session;
                 break;
             }
@@ -1386,28 +1543,27 @@ bool SessionManager::check_dm_allowed(const std::string& sender, const std::stri
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    // Find recipient's session
-    std::shared_ptr<Session> recipient_session;
-    for (const auto& session : sessions_) {
-        if (session->username() == recipient) {
-            recipient_session = session;
-            break;
+    // Friends-only is saved on the account, so an online recipient (the
+    // session's cached copy) and an offline or invisible one (read from
+    // the DB) get the same answer — the result must never reveal whether
+    // the recipient is connected.
+    std::optional<bool> friends_only;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& session : sessions_) {
+            if (session->authenticated() && session->username() == recipient) {
+                friends_only = session->dm_friends_only();
+                break;
+            }
         }
     }
-
-    // If recipient is offline, allow (offline queuing will handle later)
-    if (!recipient_session) {
+    if (!friends_only) friends_only = auth_manager.getDmFriendsOnly(recipient);
+    if (!*friends_only) {
         return true;
     }
 
-    // If recipient allows DMs from everyone, allow
-    if (!recipient_session->dm_friends_only()) {
-        return true;
-    }
-
-    // Recipient only allows DMs from friends — check friend list
+    // Recipient only allows DMs from friends — check friend list (outside
+    // the lock: getFriends is a DB round trip).
     auto friends = auth_manager.getFriends(recipient);
     for (const auto& f : friends) {
         if (f.username() == sender &&

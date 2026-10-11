@@ -14,6 +14,8 @@ import { useFriendsStore } from "../../stores/friendsStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDmStore } from "../../stores/dmStore";
 import { UserAvatar } from "../../components/UserAvatar";
+import { StatusDot } from "../../components/StatusDot";
+import { STATUS_LABEL as PRESENCE_LABEL, usePresence } from "../../stores/presenceStore";
 import type { FriendInfo } from "../../types";
 
 // Mirrors FriendActionType in proto/messages.proto.
@@ -145,6 +147,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
   const setActiveView = useUiStore((s) => s.setActiveView);
   const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
   const { username, status } = friend;
+  const presence = usePresence(username);
 
   const act = (action: number) => {
     invoke("send_friend_action", { action, targetUsername: username }).catch(
@@ -221,10 +224,10 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
       <div className="relative shrink-0">
         <UserAvatar username={username} size={36} />
         {(status === "online" || status === "offline") && (
-          <div
-            className={`avatar-dot absolute -bottom-px -right-px rounded-full border-[2.5px] border-bg-mid ${
-              status === "online" ? "bg-success" : "bg-text-muted"
-            }`}
+          <StatusDot
+            status={presence}
+            ring="var(--color-bg-mid)"
+            className="avatar-dot absolute -bottom-px -right-px"
           />
         )}
       </div>
@@ -232,7 +235,9 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
         <div className="truncate font-channel text-body font-medium text-text-primary">
           {username}
         </div>
-        <div className="font-meta text-micro text-text-muted">{STATUS_LABEL[status]}</div>
+        <div className="font-meta text-micro text-text-muted">
+          {status === "online" || status === "offline" ? PRESENCE_LABEL[presence] : STATUS_LABEL[status]}
+        </div>
       </div>
       <div
         className={`flex shrink-0 items-center gap-1.5 transition-opacity ${

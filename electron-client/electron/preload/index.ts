@@ -26,6 +26,12 @@ ipcRenderer.on("decibell:window:resized", (_e, maximized: boolean) => {
   for (const cb of resizeSubs) cb(maximized);
 });
 
+// Auto-away: screen lock / sleep (true) and unlock / resume (false).
+const awayEventSubs = new Set<(away: boolean) => void>();
+ipcRenderer.on("decibell:idle:awayEvent", (_e, away: boolean) => {
+  for (const cb of awayEventSubs) cb(away);
+});
+
 // PR7c: stream frame fan-out. Encoded video bytes arrive as Uint8Array
 // (no JSON, no base64). Subscribers register for one specific
 // streamer's frames, keyed by username — the dispatch below does an
@@ -349,6 +355,18 @@ contextBridge.exposeInMainWorld("decibell", {
         locale,
         unfiltered,
       ) as Promise<GifSearchResult>,
+  },
+  idle: {
+    getState: (thresholdSeconds: number) =>
+      ipcRenderer.invoke("decibell:idle:getState", thresholdSeconds) as Promise<
+        "active" | "idle" | "locked" | "unknown"
+      >,
+    onAwayEvent: (cb: (away: boolean) => void): (() => void) => {
+      awayEventSubs.add(cb);
+      return () => {
+        awayEventSubs.delete(cb);
+      };
+    },
   },
   window: {
     minimize: () => ipcRenderer.invoke("decibell:window:minimize"),

@@ -12,6 +12,7 @@ import {
 } from "../../../stores/uiStore";
 import { saveSettings } from "../saveSettings";
 import { LetterAvatar } from "../../../components/LetterAvatar";
+import { StatusDot } from "../../../components/StatusDot";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { useAuthStore } from "../../../stores/authStore";
 import { stringToColor } from "../../../utils/colors";
@@ -477,10 +478,10 @@ export default function AppearanceTab() {
             <div key={row.name} className="list-row flex items-center rounded-sm">
               <div className="relative shrink-0">
                 <LetterAvatar username={row.name} size={34} />
-                <span
-                  className={`avatar-dot absolute -bottom-px -right-px rounded-full border-[2.5px] border-bg-light ${
-                    row.online ? "bg-success" : "bg-text-muted"
-                  }`}
+                <StatusDot
+                  status={row.online ? "online" : "offline"}
+                  ring="var(--color-bg-light)"
+                  className="avatar-dot absolute -bottom-px -right-px"
                 />
               </div>
               <span

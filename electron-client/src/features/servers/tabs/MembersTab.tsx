@@ -4,6 +4,7 @@ import { useChatStore } from "../../../stores/chatStore";
 import { EMPTY_LIST } from "../../../lib/empty";
 import { useAuthStore } from "../../../stores/authStore";
 import { UserAvatar } from "../../../components/UserAvatar";
+import { PresenceDot } from "../../../components/StatusDot";
 import Select from "../../../components/Select";
 import type { ServerRole } from "../../../types";
 import { PERM, usePermission, useHierarchy } from "../permissions";
@@ -195,10 +196,11 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                   {/* Avatar */}
                   <div className="relative shrink-0">
                     <UserAvatar username={m.username} size={36} />
-                    <div
-                      className={`absolute -bottom-px -right-px h-[11px] w-[11px] rounded-full border-[2.5px] border-bg-dark ${
-                        m.isOnline ? "bg-success" : "bg-text-muted"
-                      }`}
+                    <PresenceDot
+                      username={m.username}
+                      communityOnline={m.isOnline}
+                      ring="var(--color-bg-dark)"
+                      className="absolute -bottom-px -right-px h-[11px] w-[11px]"
                     />
                   </div>
 

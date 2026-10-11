@@ -96,6 +96,7 @@ impl CentralClient {
             packet::Payload::LoginReq(LoginRequest {
                 username: username.into(),
                 password: password.into(),
+                presence_deltas: true,
             }),
             None,
         );
@@ -199,6 +200,7 @@ impl CentralClient {
                                     packet::Payload::LoginReq(LoginRequest {
                                         username: user.clone(),
                                         password: pass.clone(),
+                                        presence_deltas: true,
                                     }),
                                     None,
                                 );
@@ -287,7 +289,36 @@ impl CentralClient {
                         // backup lookup) runs off the router so the
                         // E2EE_FETCH_BACKUP_RES it waits for can be routed.
                         s.e2ee.supported = resp.e2ee_keys;
+                        // User statuses: Invisible must be known before the
+                        // auto-rejoin below connects to any community (each
+                        // auth carries it). Auto-away is session-only on
+                        // central, so a reconnect re-reports it.
+                        let invisible =
+                            resp.status == crate::net::proto::PresenceStatus::PresenceInvisible as i32;
+                        crate::presence::set_hidden(resp.presence_statuses && invisible);
+                        let idle_resend = (resp.presence_statuses && crate::presence::idle())
+                            .then(|| s.central.as_ref().and_then(|c| c.connection_write_tx()))
+                            .flatten()
+                            .map(|tx| {
+                                let pkt = build_packet(
+                                    packet::Type::SetIdleReq,
+                                    packet::Payload::SetIdleReq(crate::net::proto::SetIdleRequest {
+                                        idle: true,
+                                    }),
+                                    Some(&resp.jwt_token),
+                                );
+                                (tx, pkt)
+                            });
                         drop(s);
+                        if let Some((tx, pkt)) = idle_resend {
+                            tokio::spawn(async move {
+                                let _ = tx.send(pkt).await;
+                            });
+                        }
+                        events::emit_own_presence(
+                            resp.presence_statuses,
+                            crate::presence::status_name(resp.status).to_string(),
+                        );
                         events::emit_login_succeeded(username);
                         tokio::spawn(crate::e2ee::session::bootstrap(state.clone()));
 
@@ -374,9 +405,19 @@ impl CentralClient {
                         .map(|u| events::UserPresencePayload {
                             username: u.username,
                             avatar_version: u.avatar_version,
+                            status: crate::presence::status_name(u.status).to_string(),
                         })
                         .collect();
                     events::emit_user_list_updated(users);
+                }
+                Some(packet::Payload::PresenceDelta(delta)) => {
+                    let user = delta.user.unwrap_or_default();
+                    events::emit_presence_delta(events::PresenceDeltaPayload {
+                        username: user.username,
+                        online: delta.online,
+                        status: crate::presence::status_name(user.status).to_string(),
+                        avatar_version: user.avatar_version,
+                    });
                 }
                 Some(packet::Payload::FriendListRes(resp)) => {
                     let friends: Vec<events::FriendInfoPayload> = resp

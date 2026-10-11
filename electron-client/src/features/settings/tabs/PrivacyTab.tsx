@@ -3,13 +3,19 @@ import { useDmStore } from "../../../stores/dmStore";
 import { useUiStore } from "../../../stores/uiStore";
 import { saveSettings } from "../saveSettings";
 import Switch from "../../../components/Switch";
+import Select from "../../../components/Select";
+import { awayAfterLabel } from "../../presence/StatusMenu";
 import E2eeSection from "../../e2ee/E2eeSection";
+
+/// Auto-away thresholds, minutes (0 = never).
+const AWAY_AFTER_OPTIONS = [0, 1, 5, 10, 15, 30, 60];
 
 export default function PrivacyTab() {
   const friendsOnlyDms = useDmStore((s) => s.friendsOnlyDms);
   const crashReportingEnabled = useUiStore((s) => s.crashReportingEnabled);
   const linkPreviewsEnabled = useUiStore((s) => s.linkPreviewsEnabled);
   const gifUnfiltered = useUiStore((s) => s.gifUnfiltered);
+  const awayAfterMinutes = useUiStore((s) => s.awayAfterMinutes);
 
   const handleToggleDms = () => {
     const newValue = !friendsOnlyDms;
@@ -44,6 +50,29 @@ export default function PrivacyTab() {
         value={friendsOnlyDms}
         onToggle={handleToggleDms}
       />
+      <div className="flex items-center justify-between rounded-md border border-border-divider bg-bg-light px-4 py-3.5 transition-colors hover:bg-bg-lighter">
+        <div className="pr-4">
+          <div className="text-[14px] font-medium text-text-primary">Show me as Away</div>
+          <div className="mt-1 text-[12px] leading-[1.55] text-text-muted">
+            After this long without keyboard or mouse input, and right away when your screen locks or the computer sleeps. Only while your status is Online.
+          </div>
+        </div>
+        <div className="w-36 shrink-0">
+          <Select
+            aria-label="Show me as Away"
+            size="sm"
+            value={awayAfterMinutes}
+            onChange={(v) => {
+              useUiStore.getState().setAwayAfterMinutes(v);
+              saveSettings();
+            }}
+            options={AWAY_AFTER_OPTIONS.map((m) => ({
+              value: m,
+              label: m === 0 ? "Never" : `After ${awayAfterLabel(m)}`,
+            }))}
+          />
+        </div>
+      </div>
       <ToggleRow
         title="Show link previews"
         description="Fetches a title, description and thumbnail for links in messages. Each site you preview sees your IP address, the same as opening the link would."

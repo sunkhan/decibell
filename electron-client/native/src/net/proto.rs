@@ -10,6 +10,7 @@ mod tests {
         let req = LoginRequest {
             username: "alice".into(),
             password: "secret123".into(),
+            presence_deltas: true,
         };
         let bytes = req.encode_to_vec();
         let decoded = LoginRequest::decode(&bytes[..]).unwrap();
@@ -26,6 +27,7 @@ mod tests {
             payload: Some(packet::Payload::LoginReq(LoginRequest {
                 username: "bob".into(),
                 password: "pass".into(),
+                presence_deltas: true,
             })),
         };
         let bytes = packet.encode_to_vec();
@@ -51,11 +53,42 @@ mod tests {
             stun_servers: vec![],
             call_signaling: false,
             e2ee_keys: false,
+            presence_statuses: true,
+            status: PresenceStatus::PresenceInvisible as i32,
         };
         let bytes = resp.encode_to_vec();
         let decoded = LoginResponse::decode(&bytes[..]).unwrap();
         assert!(decoded.success);
         assert_eq!(decoded.jwt_token, "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.test");
+        assert!(decoded.presence_statuses);
+        assert_eq!(decoded.status, PresenceStatus::PresenceInvisible as i32);
+    }
+
+    #[test]
+    fn test_presence_delta_roundtrip() {
+        let packet = Packet {
+            r#type: packet::Type::PresenceDelta as i32,
+            timestamp: 0,
+            auth_token: String::new(),
+            payload: Some(packet::Payload::PresenceDelta(PresenceDelta {
+                user: Some(UserPresence {
+                    username: "ivy".into(),
+                    avatar_version: "v1".into(),
+                    status: PresenceStatus::PresenceDnd as i32,
+                }),
+                online: true,
+            })),
+        };
+        let decoded = Packet::decode(&packet.encode_to_vec()[..]).unwrap();
+        match decoded.payload {
+            Some(packet::Payload::PresenceDelta(d)) => {
+                assert!(d.online);
+                let u = d.user.unwrap();
+                assert_eq!(u.username, "ivy");
+                assert_eq!(crate::presence::status_name(u.status), "dnd");
+            }
+            other => panic!("Expected PresenceDelta payload, got {:?}", other),
+        }
     }
 
     #[test]

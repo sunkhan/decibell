@@ -329,6 +329,9 @@ interface UiState {
   /// content included). Off = the provider's `low` filter.
   gifUnfiltered: boolean;
   setGifUnfiltered: (v: boolean) => void;
+  /// Auto-away threshold in minutes (0 = never). See useAutoAway.
+  awayAfterMinutes: number;
+  setAwayAfterMinutes: (v: number) => void;
 }
 
 export const useUiStore = create<UiState>((set, get) => ({
@@ -507,4 +510,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   setLinkPreviewsEnabled: (v) => set({ linkPreviewsEnabled: v }),
   gifUnfiltered: false,
   setGifUnfiltered: (v) => set({ gifUnfiltered: v }),
+  awayAfterMinutes: 10,
+  setAwayAfterMinutes: (v) => set({ awayAfterMinutes: v }),
 }));

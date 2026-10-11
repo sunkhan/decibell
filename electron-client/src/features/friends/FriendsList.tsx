@@ -5,11 +5,13 @@ import { useUiStore } from "../../stores/uiStore";
 import FriendActionButton from "./FriendActionButton";
 import type { FriendInfo } from "../../types";
 import { UserAvatar } from "../../components/UserAvatar";
+import { StatusDot } from "../../components/StatusDot";
+import { usePresence } from "../../stores/presenceStore";
 
 function FriendRow({ friend }: { friend: FriendInfo }) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
-  const isOnline = friend.status === "online";
+  const status = usePresence(friend.username);
   const isPendingIn = friend.status === "pending_incoming";
   const isPendingOut = friend.status === "pending_outgoing";
 
@@ -28,10 +30,10 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
       <div className="relative shrink-0">
         <UserAvatar username={friend.username} size={32} />
         {(friend.status === "online" || friend.status === "offline") && (
-          <div
-            className={`absolute -bottom-px -right-px h-[10px] w-[10px] rounded-full border-[2.5px] border-bg-secondary ${
-              isOnline ? "bg-success" : "bg-text-muted"
-            }`}
+          <StatusDot
+            status={status}
+            ring="var(--color-bg-secondary)"
+            className="absolute -bottom-px -right-px h-[10px] w-[10px]"
           />
         )}
       </div>

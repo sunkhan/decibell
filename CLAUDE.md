@@ -156,6 +156,15 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   here (offline members, readable history, multi-device). The server enforces the wire format
   both ways. Turning a channel off never decrypts its history. Design:
   `2026-09-04-encrypted-text-channels-design.md`.
+- **User statuses are central's** (online / away / dnd / invisible; `users.presence_status`), shown
+  to every signed-in user. Others see only `PRESENCE_DELTA` / snapshot entries; an invisible user is
+  absent, never "invisible" on the wire. Invisible is airtight by owner decision: every
+  presence-revealing path asks `is_user_visible` (friend lists, call INVITE → PEER_OFFLINE), friends-only
+  DMs are saved on the account so the DM gate answers the same online or not, and clients tell each
+  community `presence_hidden` / `PRESENCE_VISIBILITY` so rosters list them offline. Auto-away is a
+  session idle flag (user threshold, default 10 min, + lock/sleep); DND only silences the call ring /
+  flash. Member lists show central's status, the community's `is_online` only before the first snapshot.
+  Design: `docs/superpowers/specs/2026-10-11-user-status-design.md`.
 - **Attachments in encrypted channels are sealed client-side** (random key per file, 64 KiB
   AES-256-GCM chunks, sealed thumbnails; `features/chat/attachmentCrypto.ts` encrypts,
   `electron/main/attachmentCrypto.ts` + `attachmentFetch.ts` decrypt in the protocol / media

@@ -10,6 +10,7 @@ mod events;
 mod hotkeys;
 mod media;
 mod net;
+mod presence;
 mod state;
 
 use napi::JsFunction;

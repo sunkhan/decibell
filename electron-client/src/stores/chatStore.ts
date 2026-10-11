@@ -46,7 +46,6 @@ interface ChatState {
   /// Public discovery-directory results — the Discover/browse view's source.
   /// Populated only by server_list_received; wholesale-replaced each refresh.
   discoverableServers: CommunityServer[];
-  onlineUsers: string[];
   activeServerId: string | null;
   activeChannelId: string | null;
   connectedServers: Set<string>;
@@ -132,7 +131,6 @@ interface ChatState {
   // Mutators
   requestJump: (serverId: string, channelId: string, messageId: number) => void;
   clearJumpRequest: () => void;
-  setOnlineUsers: (users: string[]) => void;
   setActiveServer: (serverId: string | null) => void;
   setActiveChannel: (channelId: string | null) => void;
   setChannelsForServer: (serverId: string, channels: ChannelInfo[]) => void;
@@ -396,7 +394,6 @@ function mergeMessage(existing: Message[], incoming: Message): Message[] {
 export const useChatStore = create<ChatState>((set, get) => ({
   servers: [],
   discoverableServers: [],
-  onlineUsers: [],
   activeServerId: null,
   activeChannelId: null,
   connectedServers: new Set(),
@@ -425,15 +422,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   chatViewSize: null,
   channelAccessOrder: [],
   jumpRequest: null,
-  // Central re-sends the whole global online list on every login/logout;
-  // keep the old array when nothing changed so its subscribers (DM panel,
-  // conversation list, profile popup) don't re-render for nothing.
-  setOnlineUsers: (users) =>
-    set((state) => {
-      const cur = state.onlineUsers;
-      if (cur.length === users.length && cur.every((u, i) => u === users[i])) return state;
-      return { onlineUsers: users };
-    }),
   setActiveServer: (serverId) => set({ activeServerId: serverId }),
   requestJump: (serverId, channelId, messageId) =>
     set({ jumpRequest: { serverId, channelId, messageId, at: Date.now() } }),
@@ -1010,7 +998,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       servers: [],
       discoverableServers: [],
-      onlineUsers: [],
       activeServerId: null,
       activeChannelId: null,
       connectedServers: new Set(),

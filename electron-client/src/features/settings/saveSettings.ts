@@ -80,6 +80,7 @@ function doSave(): void {
     crash_reporting_consent_shown: ui.crashReportingConsentShown,
     link_previews_enabled: ui.linkPreviewsEnabled,
     gif_unfiltered: ui.gifUnfiltered,
+    away_after_minutes: ui.awayAfterMinutes,
     download_dir: downloadDir,
     ask_download_location: askDownloadLocation,
     hotkeys: hotkeys.bindings

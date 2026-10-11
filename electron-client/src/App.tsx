@@ -7,6 +7,7 @@ import { useAuthEvents } from "./features/auth/useAuthEvents";
 import { useChatEvents } from "./features/chat/useChatEvents";
 import { useServerEvents } from "./features/servers/useServerEvents";
 import { useFriendsEvents } from "./features/friends/useFriendsEvents";
+import { usePresenceEvents } from "./features/presence/usePresenceEvents";
 import { useVoiceEvents } from "./features/voice/useVoiceEvents";
 import { useAudioDeviceSync } from "./hooks/useAudioDeviceSync";
 import { useAuthStore } from "./stores/authStore";
@@ -38,6 +39,7 @@ function AppRoutes() {
   useServerEvents();
   useChatEvents();
   useFriendsEvents();
+  usePresenceEvents();
   useVoiceEvents();
   useAudioDeviceSync();
   return (

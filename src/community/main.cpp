@@ -426,6 +426,11 @@ public:
     // Returns the set of usernames that currently have an authenticated live
     // session. Used for the members-list "online" flag.
     std::set<std::string> get_online_usernames();
+    /// Online as the roster reports it: some authenticated session of the
+    /// user that isn't hidden (invisible). get_online_usernames() is the
+    /// raw connection set, for internal routing (key fillers) only.
+    std::set<std::string> get_visible_usernames();
+    bool user_presence_visible(const std::string& username);
 
     // Persistent state.
     void set_db(chatproj::CommunityDb* db) { db_ = db; }
@@ -583,6 +588,7 @@ private:
     // the linear scans of sessions_ on the NACK/keyframe relay path and
     // lets kick/ban reach all of a user's sessions, not just the first.
     std::unordered_map<std::string, std::vector<std::shared_ptr<Session>>> sessions_by_user_;
+    bool user_visible_locked(const std::string& username) const;
     // Max live authenticated sessions per user. Beyond this the oldest is
     // evicted — bounds the per-session rate-limit / slowmode multiplication
     // (M3) while leaving room for a few genuine devices.
@@ -730,6 +736,10 @@ public:
     std::string get_token() const { return token_; }
     std::string get_udp_key() const { return udp_key_; }
     bool is_authenticated() const { return authenticated_; }
+    /// Invisible on central: report this member offline in rosters even
+    /// though connected (CommunityAuthRequest.presence_hidden at connect,
+    /// PRESENCE_VISIBILITY after). See user_presence_visible().
+    bool presence_hidden() const { return presence_hidden_; }
 
     // Codec capabilities advertised by this client. Populated from
     // JoinVoiceRequest.capabilities and updated mid-session by
@@ -970,9 +980,13 @@ private:
             // holder's member row / roles (this was C2); a member renamed at
             // central keeps theirs.
             bool member = false;
+            // A new or renamed member must reach every roster even when
+            // they connect invisible (as an offline entry).
+            bool roster_changed = false;
             if (candidate_uid > 0) {
                 if (auto by_uid = db->get_member_by_uid(candidate_uid)) {
                     if (by_uid->username != candidate_username) {
+                        roster_changed = true;
                         // Same account, new display name — carry roles over.
                         db->rename_member(by_uid->username, candidate_username);
                         std::cout << "[Community] uid " << candidate_uid << " renamed "
@@ -993,6 +1007,7 @@ private:
                 member = db->is_member(candidate_username);
             }
             if (!member) {
+                roster_changed = true;
                 if (invite_code.empty()) {
                     // Public servers accept invite-less joins straight from the
                     // discovery list; private servers stay invite-only. (Bans
@@ -1053,6 +1068,7 @@ private:
 
             // Step 3: accept.
             authenticated_ = true;
+            presence_hidden_ = req.presence_hidden();
             username_ = candidate_username;
             uid_ = candidate_uid;
             token_ = token;
@@ -1077,9 +1093,13 @@ private:
             // member role_ids and gate its admin UI without a round trip.
             send_packet(build_role_list_packet(manager_.db()));
             manager_.send_initial_voice_presences(shared_from_this());
-            // Roster delta: a brand-new member (invite redemption) or a
-            // returning member flipping online — one MemberInfo to everyone.
-            manager_.emit_member_upsert(username_);
+            // Roster delta: a brand-new or renamed member, or a returning
+            // member flipping online — one MemberInfo to everyone. Not for
+            // an invisible member already on the roster: an upsert at
+            // connect time would itself give the connection away.
+            if (roster_changed || manager_.user_presence_visible(username_)) {
+                manager_.emit_member_upsert(username_);
+            }
             // Encrypted channels: if this member lacks epoch keys anywhere
             // they can see, ask an online holder to seal them.
             manager_.channel_keys_on_join(username_);
@@ -1195,6 +1215,18 @@ private:
                 if (!current_voice_channel_.empty()) {
                     manager_.broadcast_voice_presence(current_voice_channel_);
                 }
+            }
+        }
+        // User statuses: the member went invisible on central (or came
+        // back). Rosters follow only when what they show changes — another
+        // visible session of the same user keeps them online.
+        else if (packet.type() == chatproj::Packet::PRESENCE_VISIBILITY) {
+            const bool hidden = packet.presence_visibility().hidden();
+            if (hidden == presence_hidden_) return;
+            const bool was_visible = manager_.user_presence_visible(username_);
+            presence_hidden_ = hidden;
+            if (manager_.user_presence_visible(username_) != was_visible) {
+                manager_.emit_member_upsert(username_);
             }
         }
 
@@ -3594,6 +3626,7 @@ private:
             case T::WATCH_STREAM_REQ:
             case T::STOP_WATCHING_REQ:
             case T::STREAM_CODEC_CHANGED_NOTIFY:
+            case T::PRESENCE_VISIBILITY:
                 return presence_bucket_.try_take();
             case T::MLS_GROUP_INFO_REQ:
             case T::MLS_GROUP_CREATE_REQ:
@@ -3723,6 +3756,7 @@ private:
 
     std::string jwt_public_pem_;
     bool authenticated_ = false;
+    bool presence_hidden_ = false;
     int64_t uid_ = 0;
     // Set by close_after_flush(): the session has been rejected, the
     // read loop must not re-arm, and the socket closes once the write
@@ -3764,6 +3798,8 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
     // refresh to the rest of the server. Kicks/bans/self-leaves all funnel
     // through here via force_disconnect → socket close → read error → leave.
     const bool was_authenticated = session->is_authenticated();
+    // Whether rosters showed the user online before this session went.
+    bool was_visible = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         // Idempotent: the read-error, write-error and backlog-overflow
@@ -3785,6 +3821,7 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
         }
         const std::string username = session->get_username();
         if (!username.empty()) {
+            was_visible = user_visible_locked(username);
             auto by_user = sessions_by_user_.find(username);
             if (by_user != sessions_by_user_.end()) {
                 auto& vec = by_user->second;
@@ -3865,17 +3902,15 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
     for (const auto& ch : affected_stream_channels) {
         broadcast_stream_presence(ch);
     }
-    if (was_authenticated) {
-        // Presence flip only once the user's LAST session is gone; a
-        // kicked/left user is no longer a member and emit_member_upsert
-        // then skips (their MEMBER_REMOVE was already broadcast).
-        bool still_online;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            auto it = sessions_by_user_.find(session->get_username());
-            still_online = it != sessions_by_user_.end() && !it->second.empty();
+    if (was_authenticated && was_visible) {
+        // Presence flip only once the user's last VISIBLE session is gone
+        // (an invisible member was never shown online, so their disconnect
+        // says nothing); a kicked/left user is no longer a member and
+        // emit_member_upsert then skips (their MEMBER_REMOVE was already
+        // broadcast).
+        if (!user_presence_visible(session->get_username())) {
+            emit_member_upsert(session->get_username());
         }
-        if (!still_online) emit_member_upsert(session->get_username());
     }
 }
 
@@ -4155,8 +4190,7 @@ std::optional<chatproj::MemberInfo> SessionManager::build_member_info(const std:
     info.set_timed_out_until(m->timed_out_until);
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = sessions_by_user_.find(username);
-        info.set_is_online(it != sessions_by_user_.end() && !it->second.empty());
+        info.set_is_online(user_visible_locked(username));
     }
     for (int64_t rid : db_->get_member_role_ids(username)) info.add_role_ids(rid);
     return info;
@@ -4188,7 +4222,7 @@ void SessionManager::fill_member_page(const std::string& after, int32_t limit,
     if (limit <= 0) limit = 100;
     if (limit > 200) limit = 200;
     const std::string owner_name = db_->owner();
-    auto online = get_online_usernames();
+    auto online = get_visible_usernames();
     // One roster scan + one member_roles scan; both are cheap at the
     // scale a single community server serves, and this only runs on
     // demand (page fetches), never on every roster event.
@@ -5249,6 +5283,31 @@ std::set<std::string> SessionManager::get_online_usernames() {
     for (const auto& s : sessions_) {
         if (s->is_authenticated() && !s->get_username().empty()) {
             out.insert(s->get_username());
+        }
+    }
+    return out;
+}
+
+bool SessionManager::user_visible_locked(const std::string& username) const {
+    auto it = sessions_by_user_.find(username);
+    if (it == sessions_by_user_.end()) return false;
+    for (const auto& s : it->second) {
+        if (!s->presence_hidden()) return true;
+    }
+    return false;
+}
+
+bool SessionManager::user_presence_visible(const std::string& username) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return user_visible_locked(username);
+}
+
+std::set<std::string> SessionManager::get_visible_usernames() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::set<std::string> out;
+    for (const auto& [username, sessions] : sessions_by_user_) {
+        for (const auto& s : sessions) {
+            if (!s->presence_hidden()) { out.insert(username); break; }
         }
     }
     return out;
