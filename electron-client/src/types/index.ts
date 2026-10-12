@@ -115,6 +115,9 @@ export interface ServerRole {
   /// Members whose highest role is this one may manage each other:
   /// nicknames and voice moderation, never kick / ban / timeout / roles.
   manageEachOther?: boolean;
+  /// Members holding the role (every member for `everyone`), from the
+  /// server's role-list pushes.
+  memberCount?: number;
 }
 
 export interface ServerInvite {
@@ -527,6 +530,22 @@ export interface AuditLogReceivedPayload {
   message: string;
   entries: AuditEntry[];
   hasMore: boolean;
+  /// The request's seq (drop answers to superseded searches).
+  seq: number;
+}
+
+/// One page of a settings-screen member search (MEMBER_SEARCH_RES):
+/// every member matching the query and role, online or not, by username.
+export interface MemberSearchReceivedPayload {
+  serverId: string;
+  success: boolean;
+  message: string;
+  members: ServerMember[];
+  totalMatches: number;
+  hasMore: boolean;
+  nextAfter: string;
+  seq: number;
+  firstPage: boolean;
 }
 
 // Mirrors StorageInfoReceivedPayload in native/src/events.rs (← StorageInfoResponse

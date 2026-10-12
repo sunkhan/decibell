@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { invoke } from "../../../lib/ipc";
 import { useChatStore } from "../../../stores/chatStore";
 import { EMPTY_LIST } from "../../../lib/empty";
@@ -6,27 +6,42 @@ import { useAuthStore } from "../../../stores/authStore";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { PresenceDot } from "../../../components/StatusDot";
 import Select from "../../../components/Select";
-import type { ServerRole } from "../../../types";
-import { PERM, usePermission, useHierarchy } from "../permissions";
-import { formatJoined, roleColor } from "./helpers";
+import type { MenuAnchor } from "../../../hooks/useMenuPosition";
+import type { ServerMember, ServerRole } from "../../../types";
+import { PERM, memberLevel, usePermission, useHierarchy } from "../permissions";
+import { useMemberSearch } from "./useMemberSearch";
+import { roleColor } from "./helpers";
+import {
+  Icon,
+  MenuDivider,
+  MenuItem,
+  Popover,
+  RoleChip,
+  SearchField,
+  SectionLabel,
+  anchorBelow,
+  formatDate,
+  formatRemaining,
+} from "./settingsUi";
+import { EmptyState } from "./AuditLogTab";
 
-/// Members: roster with role chips, inline nickname editor, inline role
-/// assignment, and hierarchy-aware kick/ban. Moved out of the old
-/// MembersAdminPanel into the unified server-settings screen.
+/// Visible role chips per row before the rest fold into "+N".
+const MAX_CHIPS = 3;
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const GRID = "grid grid-cols-[minmax(0,1.15fr)_minmax(0,1.35fr)_7rem_2.25rem] items-center gap-4";
+
+type ModKind = "kick" | "ban" | "timeout";
+type Acts = { nick: boolean; roles: boolean; timeout: boolean; endTimeout: boolean; kick: boolean; ban: boolean };
+
+/// Members: a searchable, role-filterable roster. Each row shows who the
+/// member is, their roles (assignable in place) and when they joined;
+/// every moderation action lives behind the row's ⋯ menu (or a right
+/// click), so rows stay quiet. Hierarchy gates mirror the server.
 export default function MembersTab({ serverId }: { serverId: string }) {
-  const members = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
-  const rosterMeta = useChatStore((s) => s.memberRosterMeta[serverId]);
-  const setMembersLoadingMore = useChatStore((s) => s.setMembersLoadingMore);
-  const loadMore = () => {
-    if (!rosterMeta?.hasMore || rosterMeta.loadingMore) return;
-    setMembersLoadingMore(serverId, true);
-    invoke("list_members", { serverId, after: rosterMeta.nextAfter, limit: 100 }).catch(
-      (err) => {
-        console.error("list_members:", err);
-        setMembersLoadingMore(serverId, false);
-      },
-    );
-  };
+  // The roster (sidebar data) only feeds the header counts: page 1 of it
+  // carries every online member. The table itself is a server search.
+  const roster = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
+  const totalMembers = useChatStore((s) => s.memberRosterMeta[serverId]?.totalMembers);
   const roles = useChatStore((s) => s.rolesByServer[serverId] ?? EMPTY_LIST);
   const currentUser = useAuthStore((s) => s.username);
 
@@ -36,31 +51,29 @@ export default function MembersTab({ serverId }: { serverId: string }) {
   const canManageRoles = usePermission(serverId, PERM.MANAGE_ROLES);
   const canManageNicknames = usePermission(serverId, PERM.MANAGE_NICKNAMES);
   const canChangeOwnNickname = usePermission(serverId, PERM.CHANGE_NICKNAME);
-  const { isOwner, level: myLevel, levelOf, canManage } = useHierarchy(serverId);
+  const { isOwner, level: myLevel, canManageRecord } = useHierarchy(serverId);
 
+  const [query, setQuery] = useState("");
+  const [roleFilter, setRoleFilter] = useState<string>("all");
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<
-    | { kind: "kick" | "ban" | "timeout"; username: string }
-    | null
-  >(null);
+  const [confirm, setConfirm] = useState<{ kind: ModKind; username: string } | null>(null);
+  const [menu, setMenu] = useState<{ username: string; anchor: MenuAnchor } | null>(null);
+  const [rolePicker, setRolePicker] = useState<{ username: string; anchor: MenuAnchor } | null>(null);
+  const [nickOpen, setNickOpen] = useState<string | null>(null);
+  const [nickDraft, setNickDraft] = useState("");
   // Moderation dialog fields (reset when the dialog opens).
   const [reason, setReason] = useState("");
-  const [banDurationSec, setBanDurationSec] = useState(0);        // 0 = permanent
-  const [purgeSec, setPurgeSec] = useState(0);                    // 0 = none
+  const [banDurationSec, setBanDurationSec] = useState(0); // 0 = permanent
+  const [purgeSec, setPurgeSec] = useState(0); // 0 = none
   const [timeoutSec, setTimeoutSec] = useState(600);
-  const openConfirm = (kind: "kick" | "ban" | "timeout", username: string) => {
+  const openConfirm = (kind: ModKind, username: string) => {
     setReason("");
     setBanDurationSec(0);
     setPurgeSec(0);
     setTimeoutSec(600);
     setConfirm({ kind, username });
   };
-  /// Username whose inline role-assignment checkbox list is open.
-  const [assignOpen, setAssignOpen] = useState<string | null>(null);
-  /// Username whose inline nickname editor is open, and its draft.
-  const [nickOpen, setNickOpen] = useState<string | null>(null);
-  const [nickDraft, setNickDraft] = useState("");
 
   const rolesById = useMemo(() => {
     const m = new Map<number, ServerRole>();
@@ -75,127 +88,209 @@ export default function MembersTab({ serverId }: { serverId: string }) {
     () => roles.filter((r) => !r.isDefault && (isOwner || r.position < myLevel)),
     [roles, isOwner, myLevel],
   );
+  const assignable = useMemo(() => new Set(assignableRoles.map((r) => r.id)), [assignableRoles]);
 
-  const runKick = async (username: string) => {
-    setPendingAction(`kick:${username}`);
+  const search = useMemberSearch(
+    serverId,
+    query,
+    roleFilter === "all" ? 0 : roleFilter === "none" ? -1 : Number(roleFilter),
+  );
+  const visible = search.members;
+  const filtering = !!query.trim() || roleFilter !== "all";
+  const onlineCount = useMemo(() => roster.filter((m) => m.isOnline).length, [roster]);
+
+  /// What the local user may do to `m` — one place, read by the row and
+  /// its menu alike.
+  const actionsFor = (m: ServerMember): Acts => {
+    const isSelf = m.username === currentUser;
+    // From the record itself: an offline member found by search may not
+    // be in the roster at all.
+    const outranked = isOwner || memberLevel(roles, m.roleIds) < myLevel;
+    const timedOut = (m.timedOutUntil ?? 0) * 1000 > Date.now();
+    const mod = !m.isOwner && !isSelf && outranked;
+    return {
+      nick: (isSelf && canChangeOwnNickname) || (!isSelf && canManageNicknames && canManageRecord(m)),
+      roles: canManageRoles && !m.isOwner && assignableRoles.length > 0,
+      timeout: mod && canTimeout && !timedOut,
+      endTimeout: mod && canTimeout && timedOut,
+      kick: mod && canKick,
+      ban: mod && canBan,
+    };
+  };
+
+  const run = async (key: string, fn: () => Promise<unknown>) => {
+    setPendingAction(key);
     setError(null);
     try {
-      await invoke("kick_member", { serverId, username, reason: reason.trim() });
+      await fn();
     } catch (err) {
       setError(String(err));
     } finally {
       setPendingAction(null);
-      setConfirm(null);
     }
   };
 
-  const runBan = async (username: string) => {
-    setPendingAction(`ban:${username}`);
-    setError(null);
-    try {
-      await invoke("ban_member", {
+  const runKick = (username: string) =>
+    run(`kick:${username}`, () => invoke("kick_member", { serverId, username, reason: reason.trim() })).then(() =>
+      setConfirm(null),
+    );
+  const runBan = (username: string) =>
+    run(`ban:${username}`, () =>
+      invoke("ban_member", {
         serverId,
         username,
         reason: reason.trim(),
         expiresAt: banDurationSec > 0 ? Math.floor(Date.now() / 1000) + banDurationSec : 0,
         deleteMessageSeconds: purgeSec,
-      });
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setPendingAction(null);
-      setConfirm(null);
-    }
-  };
-
-  const runTimeout = async (username: string, clear = false) => {
-    setPendingAction(`timeout:${username}`);
-    setError(null);
-    try {
-      await invoke("timeout_member", {
+      }),
+    ).then(() => setConfirm(null));
+  const runTimeout = (username: string, clear = false) =>
+    run(`timeout:${username}`, () =>
+      invoke("timeout_member", {
         serverId,
         username,
         until: clear ? 0 : Math.floor(Date.now() / 1000) + timeoutSec,
-        reason: reason.trim(),
-      });
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setPendingAction(null);
-      setConfirm(null);
-    }
-  };
-
-  const runSetNickname = async (username: string) => {
-    setPendingAction(`nick:${username}`);
-    setError(null);
-    try {
-      await invoke("set_nickname", {
-        serverId,
-        username,
-        nickname: nickDraft.trim(),
-      });
-      setNickOpen(null);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setPendingAction(null);
-    }
-  };
-
-  const runToggleMemberRole = async (username: string, roleId: number) => {
-    const member = members.find((m) => m.username === username);
+        reason: clear ? "" : reason.trim(),
+      }),
+    ).then(() => setConfirm(null));
+  const runSetNickname = (username: string) =>
+    run(`nick:${username}`, () => invoke("set_nickname", { serverId, username, nickname: nickDraft.trim() })).then(() =>
+      setNickOpen(null),
+    );
+  const runToggleMemberRole = (username: string, roleId: number) => {
+    const member = visible.find((m) => m.username === username);
     if (!member) return;
     const current = new Set(member.roleIds);
     if (current.has(roleId)) current.delete(roleId);
     else current.add(roleId);
-    setPendingAction(`assign:${username}`);
-    setError(null);
-    try {
-      await invoke("set_member_roles", {
-        serverId,
-        username,
-        roleIds: Array.from(current),
-      });
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setPendingAction(null);
-    }
+    run(`assign:${username}`, () =>
+      invoke("set_member_roles", { serverId, username, roleIds: Array.from(current) }),
+    );
   };
+
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const closeRolePicker = useCallback(() => setRolePicker(null), []);
+
+  const menuMember = menu ? visible.find((m) => m.username === menu.username) : undefined;
+  const pickerMember = rolePicker ? visible.find((m) => m.username === rolePicker.username) : undefined;
 
   return (
     <div className="flex flex-col">
-      {error && <p className="mb-3 text-[12px] text-error">{error}</p>}
-
-      {members.length === 0 ? (
-        <div className="flex flex-col items-center gap-2.5 py-8 text-text-muted">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-text-muted/10">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-              <circle cx="9" cy="7" r="4" />
-            </svg>
+      {/* Toolbar + column heads stay put while the roster scrolls. */}
+      <div className="sticky top-0 z-20 -mx-2 bg-bg-dark px-2">
+        <div className="flex items-center gap-2 pb-4">
+          <SearchField value={query} onChange={setQuery} placeholder="Search members" className="min-w-0 max-w-80 flex-1" />
+          <div className="w-48 shrink-0">
+          <Select
+            aria-label="Filter by role"
+            value={roleFilter}
+            onChange={setRoleFilter}
+            options={[
+              { value: "all", label: "All roles" },
+              ...roles
+                .filter((r) => !r.isDefault)
+                .map((r) => ({
+                  value: String(r.id),
+                  label: r.name,
+                  hint: plural(r.memberCount ?? 0, "member"),
+                  icon: <span className="h-2.5 w-2.5 rounded-full" style={{ background: roleColor(r.color) }} />,
+                })),
+              { value: "none", label: "No roles" },
+            ]}
+          />
           </div>
-          <span className="text-[13px]">No members yet.</span>
+          <div className="ml-auto shrink-0 pl-2 text-right font-meta text-meta tabular-nums text-text-muted">
+            {filtering ? (
+              search.loaded && !search.settling ? (
+                <>
+                  <span className="text-text-secondary">{search.total.toLocaleString()}</span>{" "}
+                  {search.total === 1 ? "match" : "matches"}
+                </>
+              ) : (
+                "Searching…"
+              )
+            ) : (
+              <>
+                <span className="text-text-secondary">{(totalMembers ?? search.total).toLocaleString()}</span> members
+                <span className="mx-1.5 text-text-faint">·</span>
+                <span className="text-success">●</span> {onlineCount} online
+              </>
+            )}
+          </div>
         </div>
+        <div className={`${GRID} border-b border-border-divider px-3 pb-2`}>
+          <SectionLabel>Member</SectionLabel>
+          <SectionLabel>Roles</SectionLabel>
+          <SectionLabel>Joined</SectionLabel>
+          <span />
+        </div>
+      </div>
+
+      {(error ?? search.error) && (
+        <div className="mt-3 flex items-center gap-2 rounded-md border border-error/30 bg-error/10 px-3 py-2.5 text-[13px] text-error">
+          <Icon name="alert" size={15} />
+          <span className="min-w-0 flex-1">{error ?? search.error}</span>
+          {error && (
+            <button type="button" onClick={() => setError(null)} aria-label="Dismiss" className="rounded-sm p-1 hover:bg-error/10">
+              <Icon name="x" size={12} strokeWidth={2.5} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {!search.loaded ? (
+        <p className="px-3 py-6 text-[13px] text-text-muted">Loading members…</p>
+      ) : visible.length === 0 && search.error ? null : visible.length === 0 && !filtering ? (
+        <EmptyState icon="users" title="No members yet" body="Invite people and they'll show up here." />
+      ) : visible.length === 0 ? (
+        <EmptyState
+          icon="search"
+          title="No matching members"
+          body="Try another name, or a different role in the filter."
+          action={
+            <button
+              type="button"
+              onClick={() => {
+                setQuery("");
+                setRoleFilter("all");
+              }}
+              className="rounded-sm bg-bg-lighter px-4 py-2 text-[13px] font-semibold text-text-primary hover:bg-surface-active"
+            >
+              Clear filters
+            </button>
+          }
+        />
       ) : (
-        <div className="flex flex-col gap-1">
-          {members.map((m) => {
+        <div className="flex flex-col pt-1.5">
+          {visible.map((m) => {
             const isSelf = m.username === currentUser;
-            const outranked = isOwner || levelOf(m.username) < myLevel;
-            const canModerate =
-              (canKick || canBan) && !m.isOwner && !isSelf && outranked;
-            const displayName = m.nickname || m.username;
+            const acts = actionsFor(m);
+            const anyAction = acts.nick || acts.roles || acts.timeout || acts.endTimeout || acts.kick || acts.ban;
             const memberRoles = m.roleIds
               .map((id) => rolesById.get(id))
-              .filter((r): r is ServerRole => !!r);
-            const topRole = memberRoles[0];
+              .filter((r): r is ServerRole => !!r)
+              .sort((a, b) => b.position - a.position);
+            const topColor = memberRoles.find((r) => r.color)?.color;
+            const timedOut = (m.timedOutUntil ?? 0) * 1000 > Date.now();
+            const menuOpen = menu?.username === m.username || rolePicker?.username === m.username;
+            const openMenuAt = (anchor: MenuAnchor) => {
+              setRolePicker(null);
+              setMenu({ username: m.username, anchor });
+            };
             return (
-              <div key={m.username}>
-                <div className="flex items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-hover">
-                  {/* Avatar */}
+              <div
+                key={m.username}
+                onContextMenu={(e) => {
+                  if (!anyAction) return;
+                  e.preventDefault();
+                  openMenuAt({ x: e.clientX, y: e.clientY });
+                }}
+                className={`group ${GRID} h-14 rounded-md px-3 hover:bg-surface-hover ${menuOpen ? "bg-surface-hover" : ""}`}
+              >
+                {/* Who */}
+                <div className="flex min-w-0 items-center gap-3">
                   <div className="relative shrink-0">
-                    <UserAvatar username={m.username} size={36} />
+                    <UserAvatar username={m.username} size={32} />
                     <PresenceDot
                       username={m.username}
                       communityOnline={m.isOnline}
@@ -203,314 +298,464 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                       className="avatar-dot absolute -bottom-px -right-px"
                     />
                   </div>
-
-                  {/* Info */}
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <span
-                        className="truncate text-[13px] font-medium text-text-primary"
-                        style={
-                          topRole && topRole.color
-                            ? { color: roleColor(topRole.color) }
-                            : undefined
-                        }
-                      >
-                        {displayName}
-                      </span>
-                      {m.isOwner && (
-                        <span className="rounded-sm bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-warning">
-                          Owner
-                        </span>
-                      )}
-                      {isSelf && (
-                        <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-accent-bright">
-                          You
-                        </span>
-                      )}
-                      {(m.timedOutUntil ?? 0) * 1000 > Date.now() && (
-                        <span
-                          title={`Timed out until ${new Date((m.timedOutUntil ?? 0) * 1000).toLocaleString()}`}
-                          className="rounded-sm bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-warning"
-                        >
-                          Timed out
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-text-muted">
-                      <span>Joined {formatJoined(m.joinedAt)}</span>
-                      {memberRoles.map((r) => (
-                        <span
-                          key={r.id}
-                          className="inline-flex items-center gap-1 rounded-sm border border-border-divider bg-bg-lighter px-1.5 py-px text-[10px] font-medium text-text-secondary"
-                        >
-                          <span
-                            className="h-[7px] w-[7px] rounded-full"
-                            style={{ backgroundColor: roleColor(r.color) }}
-                          />
-                          {r.name}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex shrink-0 gap-1.5">
-                    {((isSelf && canChangeOwnNickname) ||
-                      (!isSelf && canManageNicknames && canManage(m.username))) && (
-                      <button
-                        onClick={() => {
-                          if (nickOpen === m.username) {
+                  {nickOpen === m.username ? (
+                    <form
+                      className="flex min-w-0 flex-1 items-center gap-1.5"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        runSetNickname(m.username);
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        value={nickDraft}
+                        onChange={(e) => setNickDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            e.stopPropagation();
                             setNickOpen(null);
-                          } else {
-                            setNickOpen(m.username);
-                            setNickDraft(m.nickname);
-                            setAssignOpen(null);
                           }
                         }}
-                        className={`rounded-sm px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
-                          nickOpen === m.username
-                            ? "bg-accent-soft text-accent-bright"
-                            : "bg-bg-light text-text-muted hover:bg-bg-lighter hover:text-text-secondary"
-                        }`}
-                      >
-                        Nick
-                      </button>
-                    )}
-                    {canManageRoles && !m.isOwner && assignableRoles.length > 0 && (
+                        maxLength={32}
+                        placeholder={m.username}
+                        className="h-8 min-w-0 flex-1 rounded-sm border border-accent bg-bg-lighter px-2.5 text-[13px] text-text-primary shadow-ring outline-none"
+                      />
                       <button
-                        onClick={() => {
-                          setAssignOpen(
-                            assignOpen === m.username ? null : m.username,
-                          );
-                          setNickOpen(null);
-                        }}
-                        className={`rounded-sm px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
-                          assignOpen === m.username
-                            ? "bg-accent-soft text-accent-bright"
-                            : "bg-bg-light text-text-muted hover:bg-bg-lighter hover:text-text-secondary"
-                        }`}
+                        type="submit"
+                        disabled={pendingAction === `nick:${m.username}`}
+                        aria-label="Save nickname"
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50"
                       >
-                        Roles
+                        <Icon name="check" size={14} strokeWidth={2.5} />
                       </button>
-                    )}
-                    {!m.isOwner && !isSelf && outranked && canTimeout && (
-                      (m.timedOutUntil ?? 0) * 1000 > Date.now() ? (
-                        <button
-                          onClick={() => {
-                            setReason("");
-                            runTimeout(m.username, true);
-                          }}
-                          disabled={pendingAction === `timeout:${m.username}`}
-                          className="rounded-sm bg-bg-light px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-success/15 hover:text-success disabled:opacity-50"
+                    </form>
+                  ) : (
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span
+                          className="truncate text-[14px] font-medium text-text-primary"
+                          style={topColor ? { color: roleColor(topColor) } : undefined}
                         >
-                          End timeout
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => openConfirm("timeout", m.username)}
-                          disabled={pendingAction === `timeout:${m.username}`}
-                          className="rounded-sm bg-bg-light px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-warning/15 hover:text-warning disabled:opacity-50"
-                        >
-                          Timeout
-                        </button>
-                      )
-                    )}
-                    {canModerate && canKick && (
-                      <button
-                        onClick={() => openConfirm("kick", m.username)}
-                        disabled={pendingAction === `kick:${m.username}`}
-                        className="rounded-sm bg-warning/10 px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-warning/20 hover:text-warning disabled:opacity-50"
-                      >
-                        Kick
-                      </button>
-                    )}
-                    {canModerate && canBan && (
-                      <button
-                        onClick={() => openConfirm("ban", m.username)}
-                        disabled={pendingAction === `ban:${m.username}`}
-                        className="rounded-sm bg-error/10 px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-error/20 hover:text-error disabled:opacity-50"
-                      >
-                        Ban
-                      </button>
-                    )}
-                  </div>
+                          {m.nickname || m.username}
+                        </span>
+                        {m.isOwner && (
+                          <span title="Server owner" className="flex shrink-0 text-warning">
+                            <Icon name="crown" size={13} strokeWidth={2.25} />
+                          </span>
+                        )}
+                        {isSelf && (
+                          <span className="shrink-0 rounded-sm bg-accent-soft px-1.5 py-px text-[11px] font-semibold text-accent-bright">
+                            You
+                          </span>
+                        )}
+                        {timedOut && (
+                          <span
+                            title={`Timed out until ${new Date((m.timedOutUntil ?? 0) * 1000).toLocaleString()}`}
+                            className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-warning/12 px-1.5 py-px text-[11px] font-semibold tabular-nums text-warning"
+                          >
+                            <Icon name="clock" size={11} strokeWidth={2.5} />
+                            {formatRemaining(m.timedOutUntil ?? 0)}
+                          </span>
+                        )}
+                      </div>
+                      {m.nickname && (
+                        <div className="truncate font-meta text-meta text-text-muted">{m.username}</div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
-                {/* Inline nickname editor */}
-                {nickOpen === m.username && (
-                  <div className="mb-1 ml-[52px] mr-3 flex gap-2 rounded-md border border-border-divider bg-bg-light p-2.5">
-                    <input
-                      autoFocus
-                      value={nickDraft}
-                      onChange={(e) => setNickDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") runSetNickname(m.username);
-                      }}
-                      maxLength={32}
-                      placeholder="Nickname (empty to clear)"
-                      className="min-w-0 flex-1 rounded-sm border border-border bg-bg-dark px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-accent"
+                {/* Roles */}
+                <div className="flex min-w-0 items-center gap-1.5">
+                  {memberRoles.slice(0, MAX_CHIPS).map((r) => (
+                    <RoleChip
+                      key={r.id}
+                      role={r}
+                      onRemove={acts.roles && assignable.has(r.id) ? () => runToggleMemberRole(m.username, r.id) : undefined}
                     />
-                    <button
-                      onClick={() => runSetNickname(m.username)}
-                      disabled={pendingAction === `nick:${m.username}`}
-                      className="shrink-0 rounded-sm bg-accent px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-accent/85 disabled:opacity-50"
+                  ))}
+                  {memberRoles.length > MAX_CHIPS && (
+                    <span
+                      title={memberRoles.slice(MAX_CHIPS).map((r) => r.name).join(", ")}
+                      className="inline-flex h-6 shrink-0 items-center rounded-sm border border-border-divider bg-bg-light px-1.5 text-[12px] font-medium tabular-nums text-text-muted"
                     >
-                      Save
-                    </button>
-                  </div>
-                )}
-
-                {/* Inline role assignment */}
-                {assignOpen === m.username && (
-                  <div className="mb-1 ml-[52px] mr-3 rounded-md border border-border-divider bg-bg-light p-2.5">
-                    {assignableRoles.map((r) => {
-                      const has = m.roleIds.includes(r.id);
-                      return (
-                        <label
-                          key={r.id}
-                          className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 transition-colors hover:bg-surface-hover"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={has}
-                            disabled={pendingAction === `assign:${m.username}`}
-                            onChange={() => runToggleMemberRole(m.username, r.id)}
-                            className="accent-[var(--color-accent)]"
-                          />
-                          <span
-                            className="h-2 w-2 rounded-full"
-                            style={{ backgroundColor: roleColor(r.color) }}
-                          />
-                          <span className="text-[12px] text-text-secondary">
-                            {r.name}
+                      +{memberRoles.length - MAX_CHIPS}
+                    </span>
+                  )}
+                  {acts.roles && (
+                    <button
+                      type="button"
+                      aria-label={`Edit roles for ${m.nickname || m.username}`}
+                      title={memberRoles.length ? "Add role" : undefined}
+                      onClick={(e) => {
+                        setMenu(null);
+                        setRolePicker(
+                          rolePicker?.username === m.username ? null : { username: m.username, anchor: anchorBelow(e.currentTarget) },
+                        );
+                      }}
+                      className={`flex h-6 shrink-0 items-center justify-center gap-1 rounded-sm border text-text-muted hover:border-accent hover:text-accent-bright focus-visible:opacity-100 ${
+                        memberRoles.length ? "w-6" : "-ml-2 px-2 text-[12px] font-medium"
+                      } ${
+                        rolePicker?.username === m.username
+                          ? "border-accent text-accent-bright"
+                          : memberRoles.length
+                            ? "border-border opacity-0 group-hover:opacity-100"
+                            : "border-transparent group-hover:border-border"
+                      }`}
+                    >
+                      {memberRoles.length ? (
+                        <Icon name="plus" size={12} strokeWidth={2.5} />
+                      ) : (
+                        <>
+                          <span className={rolePicker?.username === m.username ? "hidden" : "group-hover:hidden"}>No roles</span>
+                          <span className={`items-center gap-1 ${rolePicker?.username === m.username ? "inline-flex" : "hidden group-hover:inline-flex"}`}>
+                            <Icon name="plus" size={12} strokeWidth={2.5} />
+                            Add role
                           </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
+                        </>
+                      )}
+                    </button>
+                  )}
+                  {!memberRoles.length && !acts.roles && <span className="text-[12px] text-text-muted">No roles</span>}
+                </div>
+
+                {/* Joined */}
+                <div className="truncate font-meta text-meta tabular-nums text-text-secondary" title={new Date(m.joinedAt * 1000).toLocaleString()}>
+                  {formatDate(m.joinedAt)}
+                </div>
+
+                {/* ⋯ */}
+                <div className="flex justify-end">
+                  {anyAction && (
+                    <button
+                      type="button"
+                      aria-label={`Actions for ${m.nickname || m.username}`}
+                      aria-haspopup="menu"
+                      aria-expanded={menu?.username === m.username}
+                      onClick={(e) => (menu?.username === m.username ? setMenu(null) : openMenuAt(anchorBelow(e.currentTarget)))}
+                      className={`flex h-8 w-8 items-center justify-center rounded-sm text-text-muted hover:bg-surface-active hover:text-text-primary ${
+                        menu?.username === m.username ? "bg-surface-active text-text-primary" : ""
+                      }`}
+                    >
+                      <Icon name="more" size={16} />
+                    </button>
+                  )}
+                </div>
               </div>
             );
           })}
-          {rosterMeta?.hasMore && (
-            <button
-              type="button"
-              onClick={loadMore}
-              disabled={rosterMeta.loadingMore}
-              className="mt-1 w-full rounded-md bg-bg-light py-2 text-[12px] text-text-secondary transition-colors hover:bg-bg-lighter disabled:cursor-default disabled:opacity-60"
-            >
-              {rosterMeta.loadingMore
-                ? "Loading…"
-                : `Load more (${Math.max(0, rosterMeta.totalMembers - members.length)} remaining)`}
-            </button>
+          {search.hasMore && (
+            <div className="flex justify-center pt-3">
+              <button
+                type="button"
+                onClick={search.loadMore}
+                disabled={search.loading}
+                className="rounded-sm border border-border px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary disabled:cursor-default disabled:opacity-60"
+              >
+                {search.loading
+                  ? "Loading…"
+                  : `Show ${Math.max(0, search.total - visible.length).toLocaleString()} more`}
+              </button>
+            </div>
           )}
         </div>
       )}
 
-      {/* Kick/ban confirmation */}
-      {confirm && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50"
-          onClick={(e) => {
-            e.stopPropagation();
-            setConfirm(null);
+      {/* Row menu */}
+      {menu && menuMember && (
+        <MemberMenu
+          member={menuMember}
+          anchor={menu.anchor}
+          onClose={closeMenu}
+          acts={actionsFor(menuMember)}
+          onNick={() => {
+            setNickDraft(menuMember.nickname);
+            setNickOpen(menuMember.username);
+            setMenu(null);
           }}
-        >
-          <div
-            className="w-full max-w-sm animate-[cardIn_0.2s_ease] rounded-xl border border-border bg-bg-dark p-6 shadow-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="mb-2 font-display text-[16px] font-semibold text-text-primary">
-              {confirm.kind === "kick"
-                ? `Kick ${confirm.username}?`
-                : confirm.kind === "ban"
-                  ? `Ban ${confirm.username}?`
-                  : `Time out ${confirm.username}?`}
-            </h3>
-            <p className="mb-3 text-[13px] leading-[1.55] text-text-secondary">
-              {confirm.kind === "kick"
-                ? "They will be disconnected but can rejoin with a valid invite."
-                : confirm.kind === "ban"
-                  ? "They will be disconnected and prevented from rejoining."
-                  : "They stay in the server but can't send messages, join voice or stream until it ends."}
+          onRoles={() => {
+            setRolePicker({ username: menuMember.username, anchor: menu.anchor });
+            setMenu(null);
+          }}
+          onEndTimeout={() => {
+            runTimeout(menuMember.username, true);
+            setMenu(null);
+          }}
+          onMod={(kind) => {
+            openConfirm(kind, menuMember.username);
+            setMenu(null);
+          }}
+        />
+      )}
+
+      {/* Role picker */}
+      {rolePicker && pickerMember && (
+        <Popover anchor={rolePicker.anchor} onClose={closeRolePicker} className="w-60 p-1.5">
+          <div className="px-2 pb-1.5 pt-1">
+            <SectionLabel>Roles</SectionLabel>
+          </div>
+          {assignableRoles.map((r) => {
+            const has = pickerMember.roleIds.includes(r.id);
+            return (
+              <button
+                key={r.id}
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={has}
+                disabled={pendingAction === `assign:${pickerMember.username}`}
+                onClick={() => runToggleMemberRole(pickerMember.username, r.id)}
+                className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-text-primary hover:bg-surface-hover"
+              >
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: roleColor(r.color) }} />
+                <span className="min-w-0 flex-1 truncate">{r.name}</span>
+                <span
+                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border ${
+                    has ? "border-accent bg-accent text-on-accent" : "border-border bg-bg-lighter"
+                  }`}
+                >
+                  {has && <Icon name="check" size={11} strokeWidth={3} />}
+                </span>
+              </button>
+            );
+          })}
+          {roles.some((r) => !r.isDefault && !assignable.has(r.id)) && (
+            <p className="px-2 pb-1 pt-2 text-[11px] leading-[1.45] text-text-muted">
+              Roles at or above your highest role aren’t listed.
             </p>
-            <input
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              maxLength={200}
-              placeholder="Reason (shown to them and in the audit log)"
-              className="mb-3 w-full rounded-md border border-border bg-bg-lighter px-3 py-2 text-[13px] text-text-primary outline-none transition-all focus:border-accent focus:shadow-ring"
-            />
-            {confirm.kind === "ban" && (
-              <div className="mb-3 grid grid-cols-2 gap-2">
-                <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                  Duration
-                  <Select
-                    value={banDurationSec}
-                    onChange={setBanDurationSec}
-                    options={[
-                      { value: 0, label: "Permanent" },
-                      { value: 3600, label: "1 hour" },
-                      { value: 86400, label: "1 day" },
-                      { value: 7 * 86400, label: "7 days" },
-                      { value: 30 * 86400, label: "30 days" },
-                    ]}
-                  />
-                </label>
-                <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                  Delete messages
-                  <Select
-                    value={purgeSec}
-                    onChange={setPurgeSec}
-                    options={[
-                      { value: 0, label: "Don't delete any" },
-                      { value: 3600, label: "Last hour" },
-                      { value: 86400, label: "Last 24 hours" },
-                      { value: 7 * 86400, label: "Last 7 days" },
-                    ]}
-                  />
-                </label>
-              </div>
-            )}
-            {confirm.kind === "timeout" && (
-              <label className="mb-3 flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                Duration
-                <Select
-                  value={timeoutSec}
-                  onChange={setTimeoutSec}
-                  options={[
-                    { value: 60, label: "60 seconds" },
-                    { value: 300, label: "5 minutes" },
-                    { value: 600, label: "10 minutes" },
-                    { value: 3600, label: "1 hour" },
-                    { value: 86400, label: "1 day" },
-                    { value: 7 * 86400, label: "1 week" },
-                  ]}
-                />
-              </label>
-            )}
-            <div className="flex gap-2.5">
-              <button
-                onClick={() => setConfirm(null)}
-                className="flex-1 rounded-md bg-bg-light py-2.5 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  if (confirm.kind === "kick") runKick(confirm.username);
-                  else if (confirm.kind === "ban") runBan(confirm.username);
-                  else runTimeout(confirm.username);
-                }}
-                disabled={!!pendingAction}
-                className="flex-1 rounded-md bg-error py-2.5 text-[13px] font-semibold text-white transition-colors hover:bg-error/85 disabled:opacity-50"
-              >
-                {pendingAction ? "Working..." : "Confirm"}
-              </button>
-            </div>
+          )}
+        </Popover>
+      )}
+
+      {/* Kick / ban / timeout dialog */}
+      {confirm && (
+        <ModerationDialog
+          serverId={serverId}
+          kind={confirm.kind}
+          username={confirm.username}
+          member={visible.find((m) => m.username === confirm.username)}
+          reason={reason}
+          setReason={setReason}
+          banDurationSec={banDurationSec}
+          setBanDurationSec={setBanDurationSec}
+          purgeSec={purgeSec}
+          setPurgeSec={setPurgeSec}
+          timeoutSec={timeoutSec}
+          setTimeoutSec={setTimeoutSec}
+          busy={!!pendingAction}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            if (confirm.kind === "kick") runKick(confirm.username);
+            else if (confirm.kind === "ban") runBan(confirm.username);
+            else runTimeout(confirm.username);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function MemberMenu({
+  member: m,
+  anchor,
+  onClose,
+  acts,
+  onNick,
+  onRoles,
+  onEndTimeout,
+  onMod,
+}: {
+  member: ServerMember;
+  anchor: MenuAnchor;
+  onClose: () => void;
+  acts: Acts;
+  onNick: () => void;
+  onRoles: () => void;
+  onEndTimeout: () => void;
+  onMod: (k: ModKind) => void;
+}) {
+  const name = m.nickname || m.username;
+  const anchorRef = useRef<HTMLElement | null>(null);
+  return (
+    <Popover anchor={anchor} onClose={onClose} ignore={anchorRef} className="w-56 p-1.5">
+      <div role="menu" aria-label={`Actions for ${name}`}>
+        <div className="flex items-center gap-2.5 px-2 pb-2 pt-1">
+          <UserAvatar username={m.username} size={24} />
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-semibold text-text-primary">{name}</div>
+            {m.nickname && <div className="truncate font-meta text-meta text-text-muted">{m.username}</div>}
           </div>
         </div>
-      )}
+        <MenuDivider />
+        {acts.nick && <MenuItem icon="pencil" label={m.nickname ? "Change nickname" : "Set nickname"} onClick={onNick} />}
+        {acts.roles && <MenuItem icon="tag" label="Edit roles" onClick={onRoles} />}
+        {acts.timeout && <MenuItem icon="clock" label="Time out…" onClick={() => onMod("timeout")} />}
+        {acts.endTimeout && <MenuItem icon="clock" label="End timeout" onClick={onEndTimeout} />}
+        {(acts.kick || acts.ban) && <MenuDivider />}
+        {acts.kick && <MenuItem icon="userX" label={`Kick ${name}…`} onClick={() => onMod("kick")} danger />}
+        {acts.ban && <MenuItem icon="ban" label={`Ban ${name}…`} onClick={() => onMod("ban")} danger />}
+      </div>
+    </Popover>
+  );
+}
+
+const TIMEOUTS = [
+  { value: 60, label: "60 s" },
+  { value: 300, label: "5 min" },
+  { value: 600, label: "10 min" },
+  { value: 3600, label: "1 hour" },
+  { value: 86400, label: "1 day" },
+  { value: 7 * 86400, label: "1 week" },
+];
+
+function ModerationDialog(p: {
+  serverId: string;
+  kind: ModKind;
+  username: string;
+  member?: ServerMember;
+  reason: string;
+  setReason: (v: string) => void;
+  banDurationSec: number;
+  setBanDurationSec: (v: number) => void;
+  purgeSec: number;
+  setPurgeSec: (v: number) => void;
+  timeoutSec: number;
+  setTimeoutSec: (v: number) => void;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const name = p.member?.nickname || p.username;
+  const copy = {
+    kick: {
+      title: `Kick ${name}`,
+      body: "They're disconnected now and can come back with a valid invite.",
+      cta: "Kick",
+      icon: "userX" as const,
+    },
+    ban: {
+      title: `Ban ${name}`,
+      body: "They're disconnected and can't rejoin until the ban ends or someone lifts it.",
+      cta: "Ban",
+      icon: "ban" as const,
+    },
+    timeout: {
+      title: `Time out ${name}`,
+      body: "They stay in the server but can't send messages, join voice or stream until it ends.",
+      cta: "Time out",
+      icon: "clock" as const,
+    },
+  }[p.kind];
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50"
+      onClick={(e) => {
+        e.stopPropagation();
+        p.onCancel();
+      }}
+    >
+      <div
+        className="w-full max-w-md animate-[cardIn_0.2s_ease] rounded-xl border border-border bg-bg-dark p-6 shadow-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center gap-3">
+          <div className="relative shrink-0">
+            <UserAvatar username={p.username} size={40} />
+            <span
+              className={`absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border-2 border-bg-dark ${
+                p.kind === "timeout" ? "bg-warning text-bg-dark" : "bg-error text-on-error"
+              }`}
+            >
+              <Icon name={copy.icon} size={11} strokeWidth={2.75} />
+            </span>
+          </div>
+          <div className="min-w-0">
+            <h3 className="truncate font-display text-[16px] font-semibold text-text-primary">{copy.title}</h3>
+            {p.member?.nickname && <div className="truncate font-meta text-meta text-text-muted">{p.username}</div>}
+          </div>
+        </div>
+        <p className="mb-4 text-[13px] leading-[1.55] text-text-secondary">{copy.body}</p>
+
+        {p.kind === "timeout" && (
+          <div className="mb-4">
+            <SectionLabel className="mb-2">Duration</SectionLabel>
+            <div className="grid grid-cols-6 gap-1.5">
+              {TIMEOUTS.map((t) => (
+                <button
+                  key={t.value}
+                  type="button"
+                  onClick={() => p.setTimeoutSec(t.value)}
+                  className={`rounded-sm border py-2 text-[12px] font-semibold ${
+                    p.timeoutSec === t.value
+                      ? "border-accent bg-accent-soft text-accent-bright"
+                      : "border-border text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {p.kind === "ban" && (
+          <div className="mb-4 grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-2">
+              <SectionLabel>Duration</SectionLabel>
+              <Select
+                value={p.banDurationSec}
+                onChange={p.setBanDurationSec}
+                options={[
+                  { value: 0, label: "Permanent" },
+                  { value: 3600, label: "1 hour" },
+                  { value: 86400, label: "1 day" },
+                  { value: 7 * 86400, label: "7 days" },
+                  { value: 30 * 86400, label: "30 days" },
+                ]}
+              />
+            </label>
+            <label className="flex flex-col gap-2">
+              <SectionLabel>Delete their messages</SectionLabel>
+              <Select
+                value={p.purgeSec}
+                onChange={p.setPurgeSec}
+                options={[
+                  { value: 0, label: "Keep all" },
+                  { value: 3600, label: "Last hour" },
+                  { value: 86400, label: "Last 24 hours" },
+                  { value: 7 * 86400, label: "Last 7 days" },
+                ]}
+              />
+            </label>
+          </div>
+        )}
+        <label className="mb-5 flex flex-col gap-2">
+          <SectionLabel>Reason</SectionLabel>
+          <textarea
+            value={p.reason}
+            onChange={(e) => p.setReason(e.target.value)}
+            maxLength={200}
+            rows={2}
+            placeholder="Optional. They see it, and so does the audit log."
+            className="resize-none rounded-md border border-border bg-bg-lighter px-3 py-2.5 text-[13px] leading-[1.5] text-text-primary outline-none transition-all placeholder:text-text-muted focus:border-accent focus:shadow-ring"
+          />
+        </label>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={p.onCancel}
+            className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={p.onConfirm}
+            disabled={p.busy}
+            className="rounded-sm bg-error px-4 py-2 text-[13px] font-semibold text-on-error hover:bg-error/85 disabled:opacity-50"
+          >
+            {p.busy ? "Working…" : copy.cta}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

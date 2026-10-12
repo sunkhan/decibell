@@ -2025,6 +2025,54 @@ Verified:
 
 Pending: Hetzner central rebuild, then a live two-account test.
 
+**Community + client: Members, Roles and Audit Log redesign with server-side search (2026-10-12) ✅** —
+Owner: rework the three server-settings tabs to look "modern, polished and pleasing" in every theme
+before 0.8.10. Approved from a proposal page (https://claude.ai/artifact/E1oE5pNjeSF9XLKiBbj8vL) with
+three decisions: a Members section inside each role (yes), search on the **server** rather than over
+the loaded pages, and unsaved role edits shake the save bar instead of being dropped.
+
+- **Members:** search + role filter + counts toolbar; Member / Roles / Joined columns; role chips whose
+  dot turns into ✕ to remove, a + popover to add; one ⋯ menu per row (also right-click) instead of five
+  buttons per row (76 on a 16-member page); nickname edited in place; a new kick / ban / timeout dialog
+  (timeout duration chips).
+- **Roles:** sticky hierarchy list (drag to reorder, Alt+↑/↓, locks on roles at or above yours), editor
+  with Display (swatches + a live chat preview), Permissions (Switch rows, search, Administrator
+  callout, "manage each other" under Hierarchy) and Members (holders + a multi-select add picker). Edits
+  are a draft behind a sticky save bar; the old editor put Save 1,523px down.
+- **Audit Log:** day-grouped timeline with tone tiles and a rail; a readable sentence for each of the 25
+  actions the server writes, decoding `role:N`, `allow/deny` bitmasks, voice_mod verbs, storage bytes
+  and the details grammar into chips; action-group filter + search.
+- **Wire:** `MEMBER_SEARCH_REQ/RES` (154/155): every member whose username or nickname contains the
+  query (ASCII case-insensitive) and/or who holds a role (`role_id` > 0, or -1 = no roles), online or
+  not, by username, paged, `seq` echoed. Its own packet so results never land in the sidebar roster.
+  `AuditLogRequest.query/actions/seq`: one cached statement (`instr` for the verb list, LIKE with the
+  user's `%`/`_` escaped) matching actor, target, action, details, the channel's name and the nickname /
+  role name behind actor or target (`role:<id>`, `member:<user>`). `RoleInfo.member_count`, re-pushed
+  with the role list on role assignment and on every member removal, so counts include offline members
+  the sidebar never loaded. Search shares the `query_bucket_` (20 / 4 per s); the client debounces
+  typing by 250 ms and drops answers to superseded seqs. An older community never answers, so the tabs
+  say so after 8 s instead of spinning.
+- **Client:** `tabs/useMemberSearch.ts` (debounce, seq, roster deltas patch the loaded pages: replaced,
+  dropped when they stop matching, slotted in when they start), `tabs/settingsUi.tsx` (icons, search
+  field, viewport-clamped popover with arrow-key menus, role chip). Moderation gates read the record's
+  own role ids (`useHierarchy().canManageRecord`) since a search hit may not be in the roster.
+- **Fixed on the way:** `text-white` on accent / error fills (1.8:1 on Nocturne's brass, 1.4:1 on
+  Console's mint, 2.8:1 on Console's coral) in the role and nickname Save buttons, the moderation
+  confirms and `ConfirmModal`'s danger button → `on-accent` / `on-error`.
+
+Verified:
+- community e2e 423/0, with 19 new checks (search by name / nickname / role / no role, paging, seq,
+  literal `%` and `_`, nickname / role-name / channel-name audit matches, action filter, filtered
+  paging, member_count + its push on assignment);
+- native napi build + `cargo test --lib` 223;
+- tsc web 0 / node 0;
+- the real tabs driven in the offscreen harness against a stub server (search, role filter, paging,
+  live upsert / remove, role holders + picker, audit search / filter / no match, the save-bar shake,
+  the no-answer message), in all seven themes for the proposal.
+
+Pending: the community server must be rebuilt with (or before) the 0.8.10 client, since the tabs need
+the new search; then a live test, including drag-reorder with a real mouse.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

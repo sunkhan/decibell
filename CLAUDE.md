@@ -167,6 +167,11 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   Design: `docs/superpowers/specs/2026-10-11-user-status-design.md`. Custom status messages (emoji + 128
   chars, clear-after) ride the same presence entries, so others see them only while the user is visible;
   DM list rows keep the last-message preview instead (`2026-10-12-status-messages-design.md`).
+- **Server-settings search runs on the community server** (owner decision): `MEMBER_SEARCH_REQ` for
+  the Members tab / a role's holders / the add-members picker, `AuditLogRequest.query/actions` for the
+  audit log, `RoleInfo.member_count` for role counts. Never filter only the loaded pages, and keep
+  search results out of the roster store (`tabs/useMemberSearch.ts` owns them, patched by roster
+  deltas). Unsaved role edits shake the save bar on a role switch; they're never silently dropped.
 - **Attachments in encrypted channels are sealed client-side** (random key per file, 64 KiB
   AES-256-GCM chunks, sealed thumbnails; `features/chat/attachmentCrypto.ts` encrypts,
   `electron/main/attachmentCrypto.ts` + `attachmentFetch.ts` decrypt in the protocol / media

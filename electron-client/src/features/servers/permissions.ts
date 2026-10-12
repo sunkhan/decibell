@@ -344,6 +344,9 @@ export function useHierarchy(serverId: string | null): {
   level: number;
   levelOf: (username: string) => number;
   canManage: (username: string) => boolean;
+  /// `canManage` for a member record held outside the roster (a search
+  /// result for an offline member the sidebar never loaded).
+  canManageRecord: (member: Pick<ServerMember, "username" | "roleIds">) => boolean;
 } {
   const localUsername = useAuthStore((s) => s.username);
   const owner = useChatStore((s) =>
@@ -385,12 +388,14 @@ function hierarchyOf(
     return memberLevel(roles, m?.roleIds);
   };
   const peerFlag = !!highestRole(roles, me?.roleIds)?.manageEachOther;
-  const canManage = (username: string) => {
+  const manages = (username: string, theirs: number) => {
     if (username === owner) return false;
     if (isOwner) return true;
-    const theirs = levelOf(username);
     if (theirs < level) return true;
     return peerFlag && theirs === level && username !== localUsername;
   };
-  return { isOwner, level, levelOf, canManage };
+  const canManage = (username: string) => manages(username, levelOf(username));
+  const canManageRecord = (m: Pick<ServerMember, "username" | "roleIds">) =>
+    manages(m.username, memberLevel(roles, m.roleIds));
+  return { isOwner, level, levelOf, canManage, canManageRecord };
 }
