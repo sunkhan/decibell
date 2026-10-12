@@ -71,6 +71,9 @@ x11rb = { version = "0.13", default-features = false, features = ["xinput"] }
 # the portal path in capture_pipewire.rs.
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# Auto-away: ext-idle-notify-v1 (staging), the compositor's idle signal on
+# Wayland, where Electron's powerMonitor reads no idle time (system_idle.rs).
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 memfd = "0.6"
 # EGL + GL bindings for the GPU zero-copy path (DMA-BUF import on
 # Intel/AMD VAAPI, CUDA registration on NVIDIA). Loaded dynamically

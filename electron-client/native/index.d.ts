@@ -669,6 +669,15 @@ export interface SetStatusArgs {
   status: string
 }
 export declare function setStatus(args: SetStatusArgs): Promise<void>
+export interface SystemIdleArgs {
+  thresholdSeconds: number
+}
+/**
+ * Auto-away's idle source where Electron's powerMonitor reads nothing
+ * (Linux Wayland — see system_idle.rs): "idle" | "active" | "locked", or
+ * "unsupported" and the renderer asks powerMonitor instead.
+ */
+export declare function systemIdleState(args: SystemIdleArgs): Promise<string>
 export interface SetIdleArgs {
   idle: boolean
 }

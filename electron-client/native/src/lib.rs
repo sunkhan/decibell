@@ -11,6 +11,7 @@ mod hotkeys;
 mod media;
 mod net;
 mod presence;
+mod system_idle;
 mod state;
 
 use napi::JsFunction;

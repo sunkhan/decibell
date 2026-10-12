@@ -814,6 +814,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-wlr",
  "windows 0.61.3",
  "windows-core 0.61.2",

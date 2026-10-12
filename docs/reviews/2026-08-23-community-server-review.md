@@ -1982,6 +1982,18 @@ wherever the dot lands; compared old vs new pixel-for-pixel at 1× and 1.25× wi
 density. (3) Dots 2px larger everywhere (`.avatar-dot` 11→13px, DM list 10→12, DM header 10→12,
 profile popup 14→16, profile card 20→24, status menu 10→12). tsc web 0.
 
+**Client + native: auto-away on Linux Wayland (2026-10-12) ✅** — Owner report: a 1-minute idle timer
+never turned them Away (KDE Plasma Wayland). Measured: Electron's `powerMonitor` reports 0 s idle /
+"active" forever there, native Wayland and XWayland alike, and KDE's org.freedesktop.ScreenSaver answers
+GetSessionIdleTime with "not supported on this platform". New native `system_idle.rs` +
+`system_idle_state` command: ext-idle-notify-v1 from the compositor (KWin offers v2 → input-idle
+notification, unaffected by video inhibitors), one watcher thread per threshold polled with a 1 s
+timeout so a threshold change replaces it; GNOME via org.gnome.Mutter.IdleMonitor; screen lock via
+ScreenSaver GetActive. The renderer asks native first and falls back to powerMonitor on "unsupported"
+(Windows, macOS, X11). Verified on this KDE Wayland box: 5 s threshold → "idle" after 5 s with no
+input (powerMonitor: 0 s throughout), threshold changes swap the watcher and leave one thread; cargo test
+223, tsc web 0. GNOME path untested.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

@@ -1,6 +1,8 @@
 // Auto-away (docs/superpowers/specs/2026-10-11-user-status-design.md): Away
-// after the user's threshold without keyboard / mouse input, or at once on
-// screen lock or sleep; back on activity. Central applies it only while the
+// after the user's threshold without keyboard / mouse input, or on screen
+// lock or sleep; back on activity. Idle comes from native's system_idle
+// (Wayland idle-notify, GNOME's idle monitor, the screensaver's lock flag)
+// or, where native has no source, Electron's powerMonitor. Central applies it only while the
 // chosen status is Online, and keeps it per session (native re-reports it
 // after a reconnect).
 
@@ -31,8 +33,16 @@ export function useAutoAway() {
     let locked = false;
     let cancelled = false;
     const poll = async () => {
+      const threshold = minutes * 60;
       try {
-        const state = await window.decibell.idle.getState(minutes * 60);
+        // Native first: on a Linux Wayland session Electron's powerMonitor
+        // reads no idle time at all (always "active" on KDE), so the
+        // compositor's idle-notify answers there. "unsupported" (Windows,
+        // macOS, X11) → powerMonitor, which works on those.
+        const native = await invoke<string>("system_idle_state", { thresholdSeconds: threshold }).catch(
+          () => "unsupported",
+        );
+        const state = native === "unsupported" ? await window.decibell.idle.getState(threshold) : native;
         if (!cancelled) report(locked || state === "idle" || state === "locked");
       } catch (e) {
         console.error("[auto-away] idle state:", e);

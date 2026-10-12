@@ -82,8 +82,12 @@ told to communities beyond "hidden".
 - `features/presence/usePresenceEvents.ts` — `user_list_updated` (snapshot), `presence_delta`,
   `own_presence` (+ friends-only re-push), central `connection_lost`. Friend rows' online/offline flag
   follows presence (pending/blocked untouched).
-- `features/presence/StatusMenu.tsx`, `useAutoAway.ts`; `electron/main/idle.ts`
-  (`powerMonitor.getSystemIdleState` polled every 15 s, lock/unlock/suspend/resume pushed).
+- `features/presence/StatusMenu.tsx`, `useAutoAway.ts` (polled every 15 s). Idle comes from native
+  `system_idle.rs` first: on Linux Wayland Electron's powerMonitor reads no idle time (0 s / "active"
+  forever on KDE, natively and through XWayland; KDE's ScreenSaver refuses GetSessionIdleTime), so the
+  compositor's ext-idle-notify-v1 (v2 input-idle when offered) announces idle/resumed; GNOME answers
+  org.gnome.Mutter.IdleMonitor; lock is the ScreenSaver's GetActive. "unsupported" (Windows, macOS,
+  X11) falls back to `electron/main/idle.ts` (`powerMonitor.getSystemIdleState`, lock/suspend events).
 - Native: `presence.rs` (lock-free hidden/idle flags), `commands/presence.rs` (`set_status`,
   `set_idle`), events `presence_delta`, `own_presence`.
 
@@ -100,4 +104,4 @@ Central adds its two columns on start (`ADD COLUMN IF NOT EXISTS`).
 ## Open
 
 - Live two-account test (status changes, auto-away, invisible against a second client, DND call).
-- `getSystemIdleState` on Linux/Wayland — confirm idle and lock detection on KDE Wayland.
+- GNOME Wayland path (Mutter IdleMonitor) is untested; KDE Wayland verified 2026-10-12.

@@ -70,6 +70,22 @@ pub async fn set_status(args: SetStatusArgs) -> napi::Result<()> {
 }
 
 #[napi(object)]
+pub struct SystemIdleArgs {
+    pub threshold_seconds: u32,
+}
+
+/// Auto-away's idle source where Electron's powerMonitor reads nothing
+/// (Linux Wayland — see system_idle.rs): "idle" | "active" | "locked", or
+/// "unsupported" and the renderer asks powerMonitor instead.
+#[napi]
+pub async fn system_idle_state(args: SystemIdleArgs) -> napi::Result<String> {
+    let threshold = args.threshold_seconds.max(1);
+    tokio::task::spawn_blocking(move || crate::system_idle::state(threshold).to_string())
+        .await
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
+}
+
+#[napi(object)]
 pub struct SetIdleArgs {
     pub idle: bool,
 }
