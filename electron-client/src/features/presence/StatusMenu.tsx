@@ -8,14 +8,13 @@ import { createPortal } from "react-dom";
 import { invoke } from "../../lib/ipc";
 import { useMenuPosition, type MenuAnchor } from "../../hooks/useMenuPosition";
 import { STATUS_LABEL, usePresenceStore, type OwnStatus } from "../../stores/presenceStore";
-import { useUiStore } from "../../stores/uiStore";
 import { StatusDot } from "../../components/StatusDot";
 
 const OPTIONS: { status: OwnStatus; hint?: string }[] = [
   { status: "online" },
   { status: "away" },
-  { status: "dnd", hint: "Incoming calls arrive without ringing" },
-  { status: "invisible", hint: "You appear offline but can use Decibell as usual" },
+  { status: "dnd", hint: "Mutes notifications" },
+  { status: "invisible", hint: "Appear offline" },
 ];
 
 /// Optimistic: the menu reflects the pick at once; central applies it and
@@ -34,7 +33,6 @@ export function awayAfterLabel(minutes: number): string {
 export default function StatusMenu({ anchor, onClose }: { anchor: MenuAnchor; onClose: () => void }) {
   const { ref, style } = useMenuPosition(anchor, { prefer: "above" });
   const ownStatus = usePresenceStore((s) => s.ownStatus);
-  const awayAfter = useUiStore((s) => s.awayAfterMinutes);
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
@@ -95,20 +93,6 @@ export default function StatusMenu({ anchor, onClose }: { anchor: MenuAnchor; on
           </button>
         );
       })}
-      <div className="mx-1.5 my-1 h-px bg-border-divider" />
-      <button
-        type="button"
-        onClick={() => {
-          useUiStore.getState().setSettingsTab("privacy");
-          useUiStore.getState().openModal("settings");
-          onClose();
-        }}
-        className="w-full rounded-sm px-2.5 py-2 text-left text-[12px] text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
-      >
-        {awayAfter > 0
-          ? `Away after ${awayAfterLabel(awayAfter)} idle or when locked`
-          : "Automatic away is off"}
-      </button>
     </div>,
     document.body,
   );
