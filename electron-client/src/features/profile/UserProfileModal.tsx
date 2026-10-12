@@ -131,7 +131,7 @@ function ProfileScreen({
             status={presence}
             ring="var(--color-bg-dark)"
             ringWidth={4}
-            className="absolute -bottom-0.5 -right-0.5 h-5 w-5"
+            className="absolute -bottom-0.5 -right-0.5 h-6 w-6"
           />
         </div>
         <div className="flex min-h-[56px] items-start justify-end gap-2 pt-3">

@@ -1141,10 +1141,11 @@
 
 /* Presence dot pinned to an avatar's corner. Tracks --avatar-scale so
    it stays proportional instead of shrinking into the corner as the
-   avatar grows. */
+   avatar grows. 13px since the status shapes (2026-10-12): at 11px the
+   moon / bar / ring had a 6px canvas inside the ring. */
 .avatar-dot {
-  width: calc(var(--avatar-dot-size, 11px) * var(--avatar-scale, 1));
-  height: calc(var(--avatar-dot-size, 11px) * var(--avatar-scale, 1));
+  width: calc(var(--avatar-dot-size, 13px) * var(--avatar-scale, 1));
+  height: calc(var(--avatar-dot-size, 13px) * var(--avatar-scale, 1));
 }
 
 /* The video attachment's meta bar reads its size/resume stamp in the

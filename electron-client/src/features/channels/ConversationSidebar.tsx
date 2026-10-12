@@ -73,7 +73,7 @@ export default function ConversationSidebar() {
       </div>
       <div
         className="fade-end flex-1 overflow-y-auto px-2 py-2.5"
-        style={{ "--list-row-pad-y": "8px", "--list-row-pad-x": "10px", "--list-row-gap": "10px", "--avatar-dot-size": "10px" } as React.CSSProperties}
+        style={{ "--list-row-pad-y": "8px", "--list-row-pad-x": "10px", "--list-row-gap": "10px", "--avatar-dot-size": "12px" } as React.CSSProperties}
       >
         {sortedConversations.length === 0 ? (
           <div className="flex flex-1 items-center justify-center pt-8">

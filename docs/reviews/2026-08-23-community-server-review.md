@@ -1971,6 +1971,17 @@ jwt-cpp / protobuf headers with a pqxx stand-in; native napi build + `cargo test
 tsc web 0 / node 0; dots, pills, menu and member grouping captured in six themes. Pending: Hetzner
 central rebuild + community release + live two-account test; idle/lock detection on KDE Wayland.
 
+**Client: status dot + reply name polish (2026-10-12) ✅** — Owner feedback on 0.8.9. (1) Reply-line
+names cut off at ~10 characters: the cap was `max-w-1/2` of a button that is only as wide as its
+content, so a short snippet made the cap tiny; now a fixed `max-w-56` (≈24 characters at the default
+size; still fits the 340px narrow-window layout). (2) The offline / invisible ring's hole sat at a
+different spot per user: it was a nested box at `inset: 26%` of a ~6px canvas, which Chromium snapped
+to whole pixels independently of the disc — a 1–2px blob, jagged and off-centre at 125% scaling. The
+glyphs (disc, moon, bar, ring) are now one SVG in a 20×20 viewBox, so the geometry stays centred
+wherever the dot lands; compared old vs new pixel-for-pixel at 1× and 1.25× with fractional row
+density. (3) Dots 2px larger everywhere (`.avatar-dot` 11→13px, DM list 10→12, DM header 10→12,
+profile popup 14→16, profile card 20→24, status menu 10→12). tsc web 0.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

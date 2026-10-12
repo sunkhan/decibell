@@ -33,7 +33,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
           <StatusDot
             status={status}
             ring="var(--color-bg-secondary)"
-            className="absolute -bottom-px -right-px h-[10px] w-[10px]"
+            className="absolute -bottom-px -right-px h-3 w-3"
           />
         )}
       </div>

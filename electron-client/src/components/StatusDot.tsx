@@ -29,31 +29,32 @@ interface StatusDotProps {
 }
 
 export function StatusDot({ status, ring, className = "", ringWidth = 2.5 }: StatusDotProps) {
+  const color = COLOR[status];
+  // The glyph is an SVG in a fixed 20×20 space, not nested boxes: a hole
+  // laid out as `inset: 26%` of a 6px box was a fractional-pixel box that
+  // Chromium snapped on its own, so the ring's centre sat up to a pixel
+  // off — differently for every avatar's position. Vector geometry stays
+  // centred wherever the dot lands. Cut-outs are painted in `ring`.
   return (
     <span
       role="img"
       aria-label={STATUS_LABEL[status]}
-      className={`block shrink-0 overflow-hidden rounded-full ${className}`}
-      style={{ background: COLOR[status], border: `${ringWidth}px solid ${ring}` }}
+      className={`block shrink-0 rounded-full ${className}`}
+      style={{ background: ring, border: `${ringWidth}px solid ${ring}` }}
     >
-      <span className="relative block h-full w-full">
+      <svg viewBox="0 0 20 20" className="block h-full w-full" aria-hidden="true">
+        <circle cx="10" cy="10" r="10" style={{ fill: color }} />
         {status === "away" && (
           // The bite out of the top-left that turns the disc into a moon.
-          <span
-            className="absolute rounded-full"
-            style={{ background: ring, width: "68%", height: "68%", top: "-14%", left: "-14%" }}
-          />
+          <circle cx="4" cy="4" r="7" style={{ fill: ring }} />
         )}
         {status === "dnd" && (
-          <span
-            className="absolute rounded-full"
-            style={{ background: ring, width: "64%", height: "26%", top: "37%", left: "18%" }}
-          />
+          <rect x="3.5" y="7.5" width="13" height="5" rx="2.5" style={{ fill: ring }} />
         )}
         {(status === "offline" || status === "invisible") && (
-          <span className="absolute rounded-full" style={{ background: ring, inset: "26%" }} />
+          <circle cx="10" cy="10" r="4.5" style={{ fill: ring }} />
         )}
-      </span>
+      </svg>
     </span>
   );
 }

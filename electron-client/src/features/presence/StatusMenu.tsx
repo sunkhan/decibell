@@ -81,7 +81,7 @@ export default function StatusMenu({ anchor, onClose }: { anchor: MenuAnchor; on
               status={status}
               ring="var(--color-bg-secondary)"
               ringWidth={0}
-              className="mt-1 h-2.5 w-2.5"
+              className="mt-1 h-3 w-3"
             />
             <span className="min-w-0 flex-1">
               <span className="block text-[13px] font-medium text-text-primary">{STATUS_LABEL[status]}</span>

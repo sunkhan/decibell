@@ -289,7 +289,7 @@ export default function UserProfilePopup() {
               status={presence}
               ring="var(--color-bg-light)"
               ringWidth={3}
-              className="absolute -bottom-px -right-px h-[14px] w-[14px]"
+              className="absolute -bottom-px -right-px h-4 w-4"
             />
           </button>
         </div>

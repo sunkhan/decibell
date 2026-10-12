@@ -174,7 +174,10 @@ export const ReplyHeader = memo(function ReplyHeader({
         >
           <UserAvatar username={sender} size={MINI_AVATAR_PX} />
           <span
-            className="max-w-1/2 shrink-0 truncate font-channel font-emphasis hover:underline"
+            // A fixed cap, not a share of the line: this button is only as
+            // wide as its content, so a percentage shrank with a short
+            // snippet and clipped even 10-letter names.
+            className="max-w-56 shrink-0 truncate font-channel font-emphasis hover:underline"
             style={{ color: stringToColor(sender) }}
             onClick={(e) => {
               // The name opens the profile like everywhere else; the rest

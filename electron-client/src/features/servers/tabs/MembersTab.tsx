@@ -200,7 +200,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                       username={m.username}
                       communityOnline={m.isOnline}
                       ring="var(--color-bg-dark)"
-                      className="absolute -bottom-px -right-px h-[11px] w-[11px]"
+                      className="avatar-dot absolute -bottom-px -right-px"
                     />
                   </div>
 

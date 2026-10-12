@@ -803,7 +803,7 @@ export default function DmChatPanel() {
             status={peerPresence}
             ring="var(--color-bg-tertiary)"
             ringWidth={2}
-            className="absolute -bottom-px -right-px h-2.5 w-2.5"
+            className="absolute -bottom-px -right-px h-3 w-3"
           />
         </div>
         <span className="font-display text-title font-emphasis tracking-title text-text-bright">
