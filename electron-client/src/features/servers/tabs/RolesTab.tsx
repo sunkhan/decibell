@@ -18,6 +18,7 @@ import {
   useHierarchy,
   PERM,
 } from "../permissions";
+import { CustomColorSwatch, onSwatch } from "./ColorPicker";
 import { ROLE_COLOR_PRESETS, roleColor } from "./helpers";
 import { Icon, Popover, RoleChip, SearchField, SectionLabel, anchorBelow } from "./settingsUi";
 import { EmptyState } from "./AuditLogTab";
@@ -535,14 +536,6 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-/// Readable check on a swatch: dark on light presets, white on the rest.
-function onSwatch(c: number): string {
-  const r = (c >> 16) & 255;
-  const g = (c >> 8) & 255;
-  const b = c & 255;
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 160 ? "rgb(0 0 0 / 0.75)" : "#fff";
-}
-
 function DisplaySection({
   serverId,
   fields,
@@ -573,7 +566,7 @@ function DisplaySection({
         />
       </Field>
       <Field label="Color">
-        <div className={`flex flex-wrap gap-2.5 ${editable ? "" : "opacity-60"}`}>
+        <div className={`flex flex-wrap items-center gap-2.5 ${editable ? "" : "opacity-60"}`}>
           {ROLE_COLOR_PRESETS.map((c) => {
             const on = fields.color === c;
             const hex = `#${c.toString(16).padStart(6, "0")}`;
@@ -586,7 +579,7 @@ function DisplaySection({
                 aria-pressed={on}
                 aria-label={c === 0 ? "No color" : hex}
                 title={c === 0 ? "No color" : hex}
-                className={`relative flex h-8 w-8 items-center justify-center rounded-md disabled:cursor-not-allowed ${
+                className={`relative flex h-8 w-8 items-center justify-center rounded-md transition-transform disabled:cursor-not-allowed ${
                   on ? "ring-2 ring-text-primary ring-offset-2 ring-offset-bg-dark" : "hover:scale-110"
                 } ${c === 0 ? "border border-border bg-bg-lighter" : ""}`}
                 style={c === 0 ? undefined : { backgroundColor: hex }}
@@ -604,6 +597,13 @@ function DisplaySection({
               </button>
             );
           })}
+          <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-border-divider" />
+          <CustomColorSwatch
+            color={fields.color}
+            active={fields.color !== 0 && !ROLE_COLOR_PRESETS.includes(fields.color)}
+            disabled={!editable}
+            onChange={(color) => change({ color })}
+          />
         </div>
       </Field>
       <Field label="Preview" hint="How a member whose highest role this is shows up in chat.">

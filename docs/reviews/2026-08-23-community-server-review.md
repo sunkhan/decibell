@@ -2073,6 +2073,20 @@ Verified:
 Pending: the community server must be rebuilt with (or before) the 0.8.10 client, since the tabs need
 the new search; then a live test, including drag-reorder with a real mouse.
 
+**Client: custom role colors (2026-10-13) ✅** — Owner: an RGB picker with hex entry as the rightmost
+role color option. The role Color row ends in a custom tile: a color wheel with a +, or the custom color itself (checked)
+once the role has one that isn't a preset. It opens `tabs/ColorPicker.tsx`, a popover with a
+saturation / brightness field, a hue strip, a hex field (focused and selected on open, so a pasted code
+replaces it) and R / G / B fields. Every change applies live to the draft, so the list dot, the
+preview and the save bar follow while you drag. Six-digit hex applies as typed, three digits on Enter
+or blur (so typing `33aaff` never flashes `#3333AA`); the sliders and R / G / B take arrow keys (Shift
+= 10). Pure black is stored as `#010101`, because 0 means "no color" on the wire. Client-only: the
+server already accepted any 24-bit color.
+
+Verified: tsc web 0; in the offscreen harness with real mouse and key input (drag in both sliders,
+6-digit, 3-digit + Enter, arrows, black, Escape closes only the popover, outside click closes it,
+read-only roles disable the tile), all seven themes, DPR 1.25.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.
