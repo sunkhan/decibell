@@ -15,7 +15,8 @@ import { useUiStore } from "../../stores/uiStore";
 import { useDmStore } from "../../stores/dmStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot } from "../../components/StatusDot";
-import { STATUS_LABEL as PRESENCE_LABEL, usePresence } from "../../stores/presenceStore";
+import { STATUS_LABEL as PRESENCE_LABEL, usePresence, useStatusMessage } from "../../stores/presenceStore";
+import { StatusMessageText } from "../../components/StatusMessageText";
 import type { FriendInfo } from "../../types";
 
 // Mirrors FriendActionType in proto/messages.proto.
@@ -148,6 +149,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
   const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
   const { username, status } = friend;
   const presence = usePresence(username);
+  const message = useStatusMessage(username);
 
   const act = (action: number) => {
     invoke("send_friend_action", { action, targetUsername: username }).catch(
@@ -235,9 +237,15 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
         <div className="truncate font-channel text-body font-medium text-text-primary">
           {username}
         </div>
-        <div className="font-meta text-micro text-text-muted">
-          {status === "online" || status === "offline" ? PRESENCE_LABEL[presence] : STATUS_LABEL[status]}
-        </div>
+        {/* A friend's custom status stands in for "Online" / "Away", the
+            way Discord's friends page reads. */}
+        {message && (status === "online" || status === "offline") ? (
+          <StatusMessageText message={message} emojiSize={13} className="font-meta text-micro text-text-muted" />
+        ) : (
+          <div className="font-meta text-micro text-text-muted">
+            {status === "online" || status === "offline" ? PRESENCE_LABEL[presence] : STATUS_LABEL[status]}
+          </div>
+        )}
       </div>
       <div
         className={`flex shrink-0 items-center gap-1.5 transition-opacity ${

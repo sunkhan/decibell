@@ -96,9 +96,22 @@ interface EmojiPickerProps {
   /// Enables the GIFs tab. Clicking a GIF sends it as a message on its
   /// own (the caller does the send); the picker closes itself.
   onSendGif?: (gif: GifResult) => void;
+  /// Viewport coordinates to open at (`position: fixed` — portal it out of
+  /// any transformed ancestor). Default: above its positioned parent, right
+  /// edges aligned (the composers).
+  at?: { top: number; left: number };
 }
 
-export default function EmojiPicker({ onSelect, onClose, triggerRef, onSendGif }: EmojiPickerProps) {
+/// The picker's fixed size, for callers placing it with `at`.
+export const EMOJI_PICKER_SIZE = { width: 352, height: 420 };
+
+export default function EmojiPicker({
+  onSelect,
+  onClose,
+  triggerRef,
+  onSendGif,
+  at,
+}: EmojiPickerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -223,7 +236,8 @@ export default function EmojiPicker({ onSelect, onClose, triggerRef, onSendGif }
   return (
     <div
       ref={containerRef}
-      className="absolute bottom-full right-0 z-50 mb-2 flex h-[420px] w-[352px] animate-[pickerIn_0.2s_ease] flex-col overflow-hidden rounded-lg border border-border bg-bg-light shadow-modal"
+      style={at}
+      className={`${at ? "fixed" : "absolute bottom-full right-0 mb-2"} z-50 flex h-[420px] w-[352px] animate-[pickerIn_0.2s_ease] flex-col overflow-hidden rounded-lg border border-border bg-bg-light shadow-modal`}
     >
       {/* Tabs — only when the host can send GIFs */}
       {onSendGif && (

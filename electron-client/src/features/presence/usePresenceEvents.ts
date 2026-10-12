@@ -46,9 +46,11 @@ export function usePresenceEvents() {
       online: boolean;
       status: string;
       avatarVersion: string;
+      statusText: string;
+      statusEmoji: string;
     }>("presence_delta", (event) => {
-      const { username, online, status, avatarVersion } = event.payload;
-      usePresenceStore.getState().applyDelta(username, online, status);
+      const { username, online, status, avatarVersion, statusText, statusEmoji } = event.payload;
+      usePresenceStore.getState().applyDelta(username, online, status, statusText, statusEmoji);
       if (online) useAvatarStore.getState().setVersion(username, avatarVersion);
       reconcileFriends((u) => (u === username ? online : !!usePresenceStore.getState().statuses[u]));
     });
@@ -56,8 +58,22 @@ export function usePresenceEvents() {
     // Our own saved status, just before login_succeeded. Also re-push the
     // friends-only DM setting: central keeps it on the account now, and
     // this client's local copy is what the user last chose.
-    const unlistenOwn = listen<{ supported: boolean; status: string }>("own_presence", (event) => {
-      usePresenceStore.getState().setOwnFromLogin(event.payload.supported, event.payload.status);
+    const unlistenOwn = listen<{
+      supported: boolean;
+      status: string;
+      statusText: string;
+      statusEmoji: string;
+      statusClearIn: number;
+    }>("own_presence", (event) => {
+      const { supported, status, statusText, statusEmoji, statusClearIn } = event.payload;
+      usePresenceStore
+        .getState()
+        .setOwnFromLogin(
+          supported,
+          status,
+          statusText || statusEmoji ? { text: statusText, emoji: statusEmoji } : null,
+          Number(statusClearIn) || 0,
+        );
       invoke("set_dm_privacy", { friendsOnly: useDmStore.getState().friendsOnlyDms }).catch(
         console.error,
       );

@@ -15,7 +15,13 @@ import { formatJoined } from "../servers/tabs/helpers";
 import { stringToGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot, StatusPill } from "../../components/StatusDot";
-import { STATUS_LABEL, usePresence, type DisplayStatus } from "../../stores/presenceStore";
+import {
+  STATUS_LABEL,
+  usePresence,
+  useStatusMessage,
+  type DisplayStatus,
+} from "../../stores/presenceStore";
+import { StatusMessageText } from "../../components/StatusMessageText";
 import { LockGlyph } from "../chat/MessageBubble";
 import { RoleChips } from "./RoleChips";
 import type { FriendInfo, ServerMember, ServerRole } from "../../types";
@@ -81,6 +87,7 @@ function ProfileScreen({
     serverId ? s.membersByServer[serverId]?.find((m) => m.username === username) : undefined,
   );
   const presence = usePresence(username, memberEntry?.isOnline);
+  const statusMessage = useStatusMessage(username);
   const serverRoles = useChatStore((s) => (serverId ? s.rolesByServer[serverId] : undefined));
   const serverName = useChatStore((s) =>
     serverId ? s.servers.find((sv) => sv.id === serverId)?.name : undefined,
@@ -154,6 +161,14 @@ function ProfileScreen({
           <div className="mt-2">
             <StatusPill status={presence} />
           </div>
+          {statusMessage && (
+            <StatusMessageText
+              message={statusMessage}
+              emojiSize={18}
+              wrap
+              className="mt-2.5 text-[14px] leading-snug text-text-secondary"
+            />
+          )}
         </div>
       </div>
 

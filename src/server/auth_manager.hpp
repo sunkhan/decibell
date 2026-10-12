@@ -106,10 +106,17 @@ public:
         std::string avatar_version;
         chatproj::PresenceStatus status = chatproj::PRESENCE_ONLINE;
         bool dm_friends_only = false;
+        /// Custom status message; an expired one is cleared by the read.
+        std::string status_text;
+        std::string status_emoji;
+        int64_t status_expires_at = 0;  // unix seconds, 0 = never
     };
     PresenceProfile getPresenceProfile(const std::string& username);
     /// `status` is a PresenceStatus value (the caller validated it).
     void setPresenceStatus(const std::string& username, int status);
+    /// The caller normalised text / emoji; expires_at is unix seconds (0 = never).
+    void setStatusMessage(const std::string& username, const std::string& text,
+                          const std::string& emoji, int64_t expires_at);
     void setDmFriendsOnly(const std::string& username, bool friends_only);
     /// For DMs to an offline (or invisible) recipient — an online one's
     /// session caches the same value.

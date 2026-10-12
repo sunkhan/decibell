@@ -93,6 +93,10 @@ public:
 
     void sweep_stale(std::chrono::seconds timeout);
 
+    /// Custom status messages whose clear-after ran out: cleared, saved,
+    /// and announced. Runs on the 30 s sweep timer.
+    void expire_status_messages();
+
 private:
     // Callers hold mutex_.
     bool user_visible_locked(const std::string& username) const;

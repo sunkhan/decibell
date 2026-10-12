@@ -8,6 +8,7 @@ import { useUpdateStore } from "../../stores/updateStore";
 import { useAudioDevicesStore } from "../../stores/audioDevicesStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot } from "../../components/StatusDot";
+import { StatusMessageText } from "../../components/StatusMessageText";
 import {
   STATUS_LABEL,
   useOwnDisplayStatus,
@@ -338,6 +339,7 @@ function PanelButton({
 function SelfIdentity({ username }: { username: string | null }) {
   const supported = usePresenceStore((s) => s.supported);
   const status = useOwnDisplayStatus();
+  const ownMessage = usePresenceStore((s) => s.ownMessage);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const body = (
     <>
@@ -346,9 +348,12 @@ function SelfIdentity({ username }: { username: string | null }) {
         <div className="truncate font-channel text-member font-emphasis text-text-bright">
           {username}
         </div>
-        {supported && (
-          <div className="truncate font-meta text-micro text-text-muted">{STATUS_LABEL[status]}</div>
-        )}
+        {supported &&
+          (ownMessage ? (
+            <StatusMessageText message={ownMessage} emojiSize={13} className="font-meta text-micro text-text-muted" />
+          ) : (
+            <div className="truncate font-meta text-micro text-text-muted">{STATUS_LABEL[status]}</div>
+          ))}
       </div>
     </>
   );

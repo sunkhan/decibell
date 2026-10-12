@@ -46,6 +46,21 @@ void AuthManager::initializeDatabase() {
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
             "dm_friends_only BOOLEAN NOT NULL DEFAULT FALSE"
         );
+        // Custom status messages (2026-10-12, docs/superpowers/specs/
+        // 2026-10-12-status-messages-design.md): text, emoji, and when
+        // central clears them (unix seconds, 0 = never).
+        txn.exec(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+            "status_text TEXT NOT NULL DEFAULT ''"
+        );
+        txn.exec(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+            "status_emoji TEXT NOT NULL DEFAULT ''"
+        );
+        txn.exec(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+            "status_expires_at BIGINT NOT NULL DEFAULT 0"
+        );
         // The (user1, user2) pair is stored in *byte* order — C++
         // std::min/std::max in handleFriendAction/isBlocked. The CHECK
         // must use the same ordering: an unqualified `user1 < user2`
@@ -760,17 +775,35 @@ AuthManager::PresenceProfile AuthManager::getPresenceProfile(const std::string& 
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
-            "SELECT avatar_version, presence_status, dm_friends_only "
+            "SELECT avatar_version, presence_status, dm_friends_only, "
+            "status_text, status_emoji, status_expires_at "
             "FROM users WHERE username = $1",
             username);
-        txn.commit();
-        if (rs.empty()) return profile;
+        if (rs.empty()) {
+            txn.commit();
+            return profile;
+        }
         profile.avatar_version = rs[0][0].as<std::string>("");
         const int status = rs[0][1].as<int>(0);
         if (chatproj::PresenceStatus_IsValid(status)) {
             profile.status = static_cast<chatproj::PresenceStatus>(status);
         }
         profile.dm_friends_only = rs[0][2].as<bool>(false);
+        const int64_t expires_at = rs[0][5].as<int64_t>(0);
+        const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        if (expires_at > 0 && expires_at <= now) {
+            // Ran out while the user was offline: clear it for good.
+            txn.exec_params(
+                "UPDATE users SET status_text = '', status_emoji = '', "
+                "status_expires_at = 0 WHERE username = $1",
+                username);
+        } else {
+            profile.status_text = rs[0][3].as<std::string>("");
+            profile.status_emoji = rs[0][4].as<std::string>("");
+            profile.status_expires_at = expires_at;
+        }
+        txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] getPresenceProfile: " << e.what() << "\n";
     }
@@ -787,6 +820,21 @@ void AuthManager::setPresenceStatus(const std::string& username, int status) {
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] setPresenceStatus: " << e.what() << "\n";
+    }
+}
+
+void AuthManager::setStatusMessage(const std::string& username, const std::string& text,
+                                   const std::string& emoji, int64_t expires_at) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        txn.exec_params(
+            "UPDATE users SET status_text = $1, status_emoji = $2, "
+            "status_expires_at = $3 WHERE username = $4",
+            text, emoji, expires_at, username);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] setStatusMessage: " << e.what() << "\n";
     }
 }
 

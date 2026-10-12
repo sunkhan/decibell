@@ -1994,6 +1994,37 @@ ScreenSaver GetActive. The renderer asks native first and falls back to powerMon
 input (powerMonitor: 0 s throughout), threshold changes swap the watcher and leave one thread; cargo test
 223, tsc web 0. GNOME path untested.
 
+**Central + client: custom status messages (2026-10-12) ✅** — Owner: a custom status message under
+the user's name in lists, in their profile popup and on their profile page, "like Discord". Design:
+`docs/superpowers/specs/2026-10-12-status-messages-design.md`. An emoji and up to 128 characters, set
+from a new first row in the status menu (edit by clicking it, × clears it). The dialog uses the app's
+emoji picker and offers Clear after Today / 4 h / 1 h / 30 min / Don't clear.
+
+- **Where it shows:** server member list, friends rail, friends page (in place of "Online"), user panel,
+  DM header, profile popup and profile page.
+- **DM list:** rows keep their last-message preview.
+- **Visibility:** the message rides presence (`UserPresence.status_text/_emoji`), so others see it only
+  while the user is visible, and Invisible stays airtight with no new path.
+- **Central:**
+  - `SET_STATUS_MESSAGE_REQ` (153) is normalised: one line, bidi controls and malformed UTF-8 dropped,
+    trimmed, 128 code points, emoji ≤ 32 bytes. The client mirrors this rule for its own copy, and the
+    two agree on 15 tricky cases.
+  - Three `users` columns. An expired message is cleared at the login read or by the 30 s sweep, which
+    then sends a delta.
+  - `LoginResponse` echoes the message and the seconds left.
+- **Row heights:** pinned so a message appearing never changes them; members stay 48px and the friends
+  rail 44px, measured.
+
+Verified:
+- community e2e 404/0 with the new proto;
+- central syntax-checked (pqxx stand-in) with only the known warnings;
+- native napi build + `cargo test --lib` 223 (proto round-trips extended);
+- tsc web 0 / node 0;
+- every surface captured in nocturne and matinee, and the dialog's save path driven end to end in the
+  harness.
+
+Pending: Hetzner central rebuild, then a live two-account test.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

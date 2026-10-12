@@ -12,7 +12,8 @@ import { canWatchStream } from "../../utils/canWatchStream";
 import { stringToGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot, StatusPill } from "../../components/StatusDot";
-import { usePresence } from "../../stores/presenceStore";
+import { usePresence, useStatusMessage } from "../../stores/presenceStore";
+import { StatusMessageText } from "../../components/StatusMessageText";
 import { CodecBadge } from "../voice/CodecBadge";
 import { THUMBNAIL_INTERVAL_MS } from "../voice/thumbnailConfig";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
@@ -52,6 +53,7 @@ export default function UserProfilePopup() {
       : undefined,
   );
   const presence = usePresence(username ?? "", memberEntry?.isOnline);
+  const statusMessage = useStatusMessage(username ?? "");
 
   // Live-stream popup integration: read the stream's location (if
   // any), pull the decode caps for the codec gate, and look up the
@@ -304,6 +306,14 @@ export default function UserProfilePopup() {
           <div className="mt-1.5">
             <StatusPill status={presence} />
           </div>
+          {statusMessage && (
+            <StatusMessageText
+              message={statusMessage}
+              emojiSize={16}
+              wrap
+              className="mt-2 text-[13px] leading-snug text-text-secondary"
+            />
+          )}
         </div>
 
         {/* Live-stream section — only when this user is currently

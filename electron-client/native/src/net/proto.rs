@@ -55,6 +55,9 @@ mod tests {
             e2ee_keys: false,
             presence_statuses: true,
             status: PresenceStatus::PresenceInvisible as i32,
+            status_text: "back at 5".into(),
+            status_emoji: "🍕".into(),
+            status_clear_in: 3600,
         };
         let bytes = resp.encode_to_vec();
         let decoded = LoginResponse::decode(&bytes[..]).unwrap();
@@ -62,6 +65,9 @@ mod tests {
         assert_eq!(decoded.jwt_token, "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.test");
         assert!(decoded.presence_statuses);
         assert_eq!(decoded.status, PresenceStatus::PresenceInvisible as i32);
+        assert_eq!(decoded.status_text, "back at 5");
+        assert_eq!(decoded.status_emoji, "🍕");
+        assert_eq!(decoded.status_clear_in, 3600);
     }
 
     #[test]
@@ -75,6 +81,8 @@ mod tests {
                     username: "ivy".into(),
                     avatar_version: "v1".into(),
                     status: PresenceStatus::PresenceDnd as i32,
+                    status_text: "deep work".into(),
+                    status_emoji: String::new(),
                 }),
                 online: true,
             })),
@@ -86,6 +94,7 @@ mod tests {
                 let u = d.user.unwrap();
                 assert_eq!(u.username, "ivy");
                 assert_eq!(crate::presence::status_name(u.status), "dnd");
+                assert_eq!(u.status_text, "deep work");
             }
             other => panic!("Expected PresenceDelta payload, got {:?}", other),
         }

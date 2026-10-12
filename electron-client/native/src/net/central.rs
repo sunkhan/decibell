@@ -315,10 +315,13 @@ impl CentralClient {
                                 let _ = tx.send(pkt).await;
                             });
                         }
-                        events::emit_own_presence(
-                            resp.presence_statuses,
-                            crate::presence::status_name(resp.status).to_string(),
-                        );
+                        events::emit_own_presence(events::OwnPresencePayload {
+                            supported: resp.presence_statuses,
+                            status: crate::presence::status_name(resp.status).to_string(),
+                            status_text: resp.status_text.clone(),
+                            status_emoji: resp.status_emoji.clone(),
+                            status_clear_in: resp.status_clear_in.max(0) as f64,
+                        });
                         events::emit_login_succeeded(username);
                         tokio::spawn(crate::e2ee::session::bootstrap(state.clone()));
 
@@ -406,6 +409,8 @@ impl CentralClient {
                             username: u.username,
                             avatar_version: u.avatar_version,
                             status: crate::presence::status_name(u.status).to_string(),
+                            status_text: u.status_text,
+                            status_emoji: u.status_emoji,
                         })
                         .collect();
                     events::emit_user_list_updated(users);
@@ -417,6 +422,8 @@ impl CentralClient {
                         online: delta.online,
                         status: crate::presence::status_name(user.status).to_string(),
                         avatar_version: user.avatar_version,
+                        status_text: user.status_text,
+                        status_emoji: user.status_emoji,
                     });
                 }
                 Some(packet::Payload::FriendListRes(resp)) => {

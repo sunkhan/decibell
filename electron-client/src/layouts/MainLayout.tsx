@@ -25,6 +25,7 @@ import CrashReportingBanner from "../components/CrashReportingBanner";
 import DmChatPanel from "../features/dm/DmChatPanel";
 import UserProfilePopup from "../features/dm/UserProfilePopup";
 import UserProfileModal from "../features/profile/UserProfileModal";
+import CustomStatusModal from "../features/presence/CustomStatusModal";
 import { useDmEvents } from "../features/dm/useDmEvents";
 import { useCallEvents } from "../features/call/useCallEvents";
 import { useAutoAway } from "../features/presence/useAutoAway";
@@ -166,6 +167,7 @@ export default function MainLayout() {
       <UserContextMenu />
       <UserProfilePopup />
       <UserProfileModal />
+      <CustomStatusModal />
       <ImageViewer />
       <SettingsModal />
       <ImageContextMenu />

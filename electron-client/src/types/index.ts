@@ -48,6 +48,9 @@ export interface UserPresence {
   avatarVersion: string;
   /// "online" | "away" | "dnd" — see stores/presenceStore.ts.
   status: string;
+  /// Custom status message; '' when none.
+  statusText: string;
+  statusEmoji: string;
 }
 
 export interface DmMessage {

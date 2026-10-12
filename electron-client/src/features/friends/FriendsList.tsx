@@ -6,12 +6,14 @@ import FriendActionButton from "./FriendActionButton";
 import type { FriendInfo } from "../../types";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot } from "../../components/StatusDot";
-import { usePresence } from "../../stores/presenceStore";
+import { usePresence, useStatusMessage } from "../../stores/presenceStore";
+import { StatusMessageText } from "../../components/StatusMessageText";
 
 function FriendRow({ friend }: { friend: FriendInfo }) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
   const status = usePresence(friend.username);
+  const message = useStatusMessage(friend.username);
   const isPendingIn = friend.status === "pending_incoming";
   const isPendingOut = friend.status === "pending_outgoing";
 
@@ -37,9 +39,14 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
           />
         )}
       </div>
-      <span className="min-w-0 flex-1 truncate font-channel text-[14px] font-normal text-text-secondary transition-colors group-hover:text-text-primary">
-        {friend.username}
-      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-channel text-[14px] font-normal leading-4.5 text-text-secondary transition-colors group-hover:text-text-primary">
+          {friend.username}
+        </div>
+        {message && (friend.status === "online" || friend.status === "offline") && (
+          <StatusMessageText message={message} emojiSize={13} className="font-meta text-micro leading-3.5 text-text-muted" />
+        )}
+      </div>
       {isPendingIn && (
         <div className="flex gap-1">
           <FriendActionButton action="ACCEPT" targetUsername={friend.username} label="Accept" variant="success" />

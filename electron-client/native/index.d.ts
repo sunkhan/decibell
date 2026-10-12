@@ -669,6 +669,18 @@ export interface SetStatusArgs {
   status: string
 }
 export declare function setStatus(args: SetStatusArgs): Promise<void>
+export interface SetStatusMessageArgs {
+  text: string
+  emoji: string
+  /** Seconds until central clears it; 0 = keep until changed. */
+  clearAfter: number
+}
+/**
+ * The custom status message (docs/superpowers/specs/2026-10-12-status-
+ * messages-design.md). Central normalises and saves it, and everyone sees
+ * it with our presence. Empty text and emoji clears it.
+ */
+export declare function setStatusMessage(args: SetStatusMessageArgs): Promise<void>
 export interface SystemIdleArgs {
   thresholdSeconds: number
 }

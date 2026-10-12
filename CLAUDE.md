@@ -164,7 +164,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   community `presence_hidden` / `PRESENCE_VISIBILITY` so rosters list them offline. Auto-away is a
   session idle flag (user threshold, default 10 min, + lock/sleep); DND only silences the call ring /
   flash. Member lists show central's status, the community's `is_online` only before the first snapshot.
-  Design: `docs/superpowers/specs/2026-10-11-user-status-design.md`.
+  Design: `docs/superpowers/specs/2026-10-11-user-status-design.md`. Custom status messages (emoji + 128
+  chars, clear-after) ride the same presence entries, so others see them only while the user is visible;
+  DM list rows keep the last-message preview instead (`2026-10-12-status-messages-design.md`).
 - **Attachments in encrypted channels are sealed client-side** (random key per file, 64 KiB
   AES-256-GCM chunks, sealed thumbnails; `features/chat/attachmentCrypto.ts` encrypts,
   `electron/main/attachmentCrypto.ts` + `attachmentFetch.ts` decrypt in the protocol / media

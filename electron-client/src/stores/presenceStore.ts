@@ -27,6 +27,50 @@ export const STATUS_LABEL: Record<DisplayStatus, string> = {
 const isPresenceStatus = (s: string): s is PresenceStatus =>
   s === "online" || s === "away" || s === "dnd";
 
+/// A custom status message (docs/superpowers/specs/2026-10-12-status-
+/// messages-design.md): one line of text and/or one emoji.
+export interface StatusMessage {
+  text: string;
+  emoji: string;
+}
+
+export const STATUS_TEXT_MAX = 128;
+
+/// Central's normalisation (main.cpp normalize_status_line), so our own
+/// copy reads exactly like everyone else's: control characters and line
+/// separators become spaces, bidi controls are dropped, the ends are
+/// trimmed, at most `max` code points.
+export function normalizeStatusText(raw: string, max = STATUS_TEXT_MAX): string {
+  let out = "";
+  let n = 0;
+  for (const ch of raw) {
+    if (n >= max) break;
+    const cp = ch.codePointAt(0)!;
+    if (cp <= 0x20 || cp === 0x7f || (cp >= 0x80 && cp < 0xa0) || cp === 0x2028 || cp === 0x2029) {
+      if (out) {
+        out += " ";
+        n++;
+      }
+    } else if (!((cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069))) {
+      out += ch;
+      n++;
+    }
+  }
+  return out.replace(/ +$/, "");
+}
+
+/// null for "no message".
+function toMessage(text: string | undefined, emoji: string | undefined): StatusMessage | null {
+  return text || emoji ? { text: text ?? "", emoji: emoji ?? "" } : null;
+}
+
+const sameMessage = (a: StatusMessage | null, b: StatusMessage | null) =>
+  a === b || (!!a && !!b && a.text === b.text && a.emoji === b.emoji);
+
+// Our own message's clear-after; central clears it for everyone else on
+// its own clock, this only stops showing it to us at the same moment.
+let ownClearTimer: ReturnType<typeof setTimeout> | null = null;
+
 interface PresenceState {
   /// Visible online users → their effective status.
   statuses: Record<string, PresenceStatus>;
@@ -39,10 +83,31 @@ interface PresenceState {
   ownStatus: OwnStatus;
   /// Auto-away is reporting no input — central shows an Online user Away.
   idle: boolean;
-  applySnapshot: (users: { username: string; status: string }[]) => void;
-  applyDelta: (username: string, online: boolean, status: string) => void;
-  setOwnFromLogin: (supported: boolean, status: string) => void;
+  /// Visible online users' custom status messages (absent = none). Kept
+  /// apart from `statuses` so a message edit doesn't regroup member lists.
+  messages: Record<string, StatusMessage>;
+  /// The local user's own message (saved on central).
+  ownMessage: StatusMessage | null;
+  /// When central clears it (local ms epoch); null = never.
+  ownMessageClearsAt: number | null;
+  applySnapshot: (
+    users: { username: string; status: string; statusText?: string; statusEmoji?: string }[],
+  ) => void;
+  applyDelta: (
+    username: string,
+    online: boolean,
+    status: string,
+    statusText?: string,
+    statusEmoji?: string,
+  ) => void;
+  setOwnFromLogin: (
+    supported: boolean,
+    status: string,
+    message: StatusMessage | null,
+    clearsInSeconds: number,
+  ) => void;
   setOwnStatus: (status: OwnStatus) => void;
+  setOwnMessage: (message: StatusMessage | null, clearsAt: number | null) => void;
   setIdle: (idle: boolean) => void;
   /// Central connection lost: what we had is stale. Lists fall back to
   /// the communities' own online flags until the next snapshot.
@@ -51,19 +116,27 @@ interface PresenceState {
   reset: () => void;
 }
 
-export const usePresenceStore = create<PresenceState>((set) => ({
+export const usePresenceStore = create<PresenceState>((set, get) => ({
   statuses: {},
   loaded: false,
   supported: false,
   ownStatus: "online",
   idle: false,
+  messages: {},
+  ownMessage: null,
+  ownMessageClearsAt: null,
   applySnapshot: (users) =>
     set(() => {
       const statuses: Record<string, PresenceStatus> = {};
-      for (const u of users) statuses[u.username] = isPresenceStatus(u.status) ? u.status : "online";
-      return { statuses, loaded: true };
+      const messages: Record<string, StatusMessage> = {};
+      for (const u of users) {
+        statuses[u.username] = isPresenceStatus(u.status) ? u.status : "online";
+        const message = toMessage(u.statusText, u.statusEmoji);
+        if (message) messages[u.username] = message;
+      }
+      return { statuses, messages, loaded: true };
     }),
-  applyDelta: (username, online, status) =>
+  applyDelta: (username, online, status, statusText, statusEmoji) =>
     set((state) => {
       const cur = state.statuses[username];
       const next: PresenceStatus | undefined = online
@@ -71,23 +144,66 @@ export const usePresenceStore = create<PresenceState>((set) => ({
           ? status
           : "online"
         : undefined;
+      const curMessage = state.messages[username] ?? null;
+      const nextMessage = online ? toMessage(statusText, statusEmoji) : null;
+      const statusSame = cur === next;
+      const messageSame = sameMessage(curMessage, nextMessage);
       // `return state` is the only no-op updater — `{}` still notifies.
-      if (cur === next) return state;
-      const statuses = { ...state.statuses };
-      if (next) statuses[username] = next;
-      else delete statuses[username];
-      return { statuses };
+      if (statusSame && messageSame) return state;
+      const patch: Partial<PresenceState> = {};
+      if (!statusSame) {
+        const statuses = { ...state.statuses };
+        if (next) statuses[username] = next;
+        else delete statuses[username];
+        patch.statuses = statuses;
+      }
+      if (!messageSame) {
+        const messages = { ...state.messages };
+        if (nextMessage) messages[username] = nextMessage;
+        else delete messages[username];
+        patch.messages = messages;
+      }
+      return patch;
     }),
-  setOwnFromLogin: (supported, status) =>
+  setOwnFromLogin: (supported, status, message, clearsInSeconds) => {
     set({
       supported,
       ownStatus: isPresenceStatus(status) || status === "invisible" ? status : "online",
-    }),
+    });
+    get().setOwnMessage(message, message && clearsInSeconds > 0 ? Date.now() + clearsInSeconds * 1000 : null);
+  },
   setOwnStatus: (ownStatus) => set({ ownStatus }),
+  setOwnMessage: (ownMessage, clearsAt) => {
+    if (ownClearTimer) clearTimeout(ownClearTimer);
+    ownClearTimer = null;
+    const ownMessageClearsAt = ownMessage ? clearsAt : null;
+    if (ownMessageClearsAt !== null) {
+      ownClearTimer = setTimeout(
+        () => {
+          ownClearTimer = null;
+          set({ ownMessage: null, ownMessageClearsAt: null });
+        },
+        Math.max(0, ownMessageClearsAt - Date.now()),
+      );
+    }
+    set({ ownMessage, ownMessageClearsAt });
+  },
   setIdle: (idle) => set((state) => (state.idle === idle ? state : { idle })),
-  markDisconnected: () => set({ statuses: {}, loaded: false }),
-  reset: () =>
-    set({ statuses: {}, loaded: false, supported: false, ownStatus: "online", idle: false }),
+  markDisconnected: () => set({ statuses: {}, messages: {}, loaded: false }),
+  reset: () => {
+    if (ownClearTimer) clearTimeout(ownClearTimer);
+    ownClearTimer = null;
+    set({
+      statuses: {},
+      messages: {},
+      loaded: false,
+      supported: false,
+      ownStatus: "online",
+      idle: false,
+      ownMessage: null,
+      ownMessageClearsAt: null,
+    });
+  },
 }));
 
 /// The local user as others see them (Away while idle on Online), except
@@ -108,6 +224,15 @@ export function usePresence(username: string, communityOnline?: boolean): Displa
     if (st) return st;
     return !s.loaded && communityOnline ? "online" : "offline";
   });
+  return username === me ? own : other;
+}
+
+/// One user's custom status message, or null. Others' ride their presence,
+/// so only a visible user has one; our own shows to us even while invisible.
+export function useStatusMessage(username: string): StatusMessage | null {
+  const me = useAuthStore((s) => s.username);
+  const own = usePresenceStore((s) => s.ownMessage);
+  const other = usePresenceStore((s) => s.messages[username] ?? null);
   return username === me ? own : other;
 }
 

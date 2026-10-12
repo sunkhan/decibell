@@ -15,6 +15,9 @@
 #include <utility>
 #include <functional>
 #include <optional>
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
 #ifdef __linux__
 #include <netinet/tcp.h>
 #endif
@@ -68,6 +71,53 @@ struct RateBucket {
         return true;
     }
 };
+
+// --- Custom status messages (docs/superpowers/specs/2026-10-12-status-messages-design.md) ---
+constexpr size_t STATUS_TEXT_MAX_CHARS = 128;
+constexpr size_t STATUS_EMOJI_MAX_BYTES = 32;
+constexpr int64_t STATUS_CLEAR_AFTER_MAX = 7 * 24 * 3600;
+
+static int64_t unix_now() {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+/// One line of display text: control characters and line / paragraph
+/// separators become spaces, bidi embeddings / overrides / isolates and
+/// malformed UTF-8 are dropped, the ends are trimmed, and at most
+/// `max_chars` code points are kept. The client applies the same rules to
+/// its own copy (presenceStore normalizeStatusText).
+static std::string normalize_status_line(const std::string& in, size_t max_chars) {
+    std::string out;
+    out.reserve(std::min<size_t>(in.size(), max_chars * 4));
+    size_t chars = 0;
+    size_t i = 0;
+    while (i < in.size() && chars < max_chars) {
+        const unsigned char c = static_cast<unsigned char>(in[i]);
+        size_t len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+        if (len == 0 || i + len > in.size()) { ++i; continue; }
+        uint32_t cp = len == 1 ? c : (c & (0xFF >> (len + 1)));
+        bool ok = true;
+        for (size_t k = 1; k < len; ++k) {
+            const unsigned char cc = static_cast<unsigned char>(in[i + k]);
+            if ((cc & 0xC0) != 0x80) { ok = false; break; }
+            cp = (cp << 6) | (cc & 0x3F);
+        }
+        if (!ok) { ++i; continue; }
+        const bool space = cp <= 0x20 || cp == 0x7F || (cp >= 0x80 && cp < 0xA0) ||
+                           cp == 0x2028 || cp == 0x2029;
+        const bool drop = (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2066 && cp <= 0x2069);
+        if (space) {
+            if (!out.empty()) { out += ' '; ++chars; }
+        } else if (!drop) {
+            out.append(in, i, len);
+            ++chars;
+        }
+        i += len;
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    return out;
+}
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
@@ -155,6 +205,21 @@ public:
     }
     /// The client applies PresenceDelta (LoginRequest.presence_deltas).
     bool presence_deltas() const { return presence_deltas_; }
+    /// Custom status message (empty = none); seen with the presence.
+    const std::string& status_text() const { return status_text_; }
+    const std::string& status_emoji() const { return status_emoji_; }
+    /// Unix seconds when the message runs out; 0 = never (or none).
+    int64_t status_expires_at() const { return status_expires_at_; }
+    /// The clear-after ran out (SessionManager::expire_status_messages).
+    /// Returns whether others could see the change.
+    bool clear_expired_status_message() {
+        const PresenceView before = presence_view();
+        status_text_.clear();
+        status_emoji_.clear();
+        status_expires_at_ = 0;
+        auth_manager_.setStatusMessage(username_, "", "", 0);
+        return presence_view() != before;
+    }
 
     SessionManager& manager_;
 
@@ -291,6 +356,9 @@ private:
                 avatar_version_ = profile.avatar_version;
                 presence_status_ = profile.status;
                 dm_friends_only_ = profile.dm_friends_only;
+                status_text_ = profile.status_text;
+                status_emoji_ = profile.status_emoji;
+                status_expires_at_ = profile.status_expires_at;
                 idle_ = false;
                 // Only now that the password is verified, force-kick any
                 // stale session for this user (previous connection died
@@ -1054,6 +1122,33 @@ private:
             if (presence_view() != before) manager_.broadcast_presence_change(username_);
         }
 
+        // --- CUSTOM STATUS MESSAGE ---
+        // Text + emoji shown under the user's name, saved on the account
+        // and cleared by the sweep after the chosen time. Others see it
+        // with the presence, i.e. only while the user is visible.
+        else if (packet.type() == chatproj::Packet::SET_STATUS_MESSAGE_REQ) {
+            if (!authenticated_ || !packet.has_set_status_message_req()) return;
+            if (!status_bucket_.take()) {
+                std::cout << "[Status] Rate limit hit for " << username_ << "\n";
+                return;
+            }
+            const auto& req = packet.set_status_message_req();
+            std::string text = normalize_status_line(req.text(), STATUS_TEXT_MAX_CHARS);
+            std::string emoji = normalize_status_line(req.emoji(), STATUS_EMOJI_MAX_BYTES);
+            if (emoji.size() > STATUS_EMOJI_MAX_BYTES) emoji.clear();
+            const int64_t clear_after =
+                std::clamp<int64_t>(req.clear_after(), 0, STATUS_CLEAR_AFTER_MAX);
+            const bool empty = text.empty() && emoji.empty();
+            const int64_t expires_at = empty || clear_after == 0 ? 0 : unix_now() + clear_after;
+            if (text == status_text_ && emoji == status_emoji_ && expires_at == status_expires_at_) return;
+            const PresenceView before = presence_view();
+            status_text_ = std::move(text);
+            status_emoji_ = std::move(emoji);
+            status_expires_at_ = expires_at;
+            auth_manager_.setStatusMessage(username_, status_text_, status_emoji_, status_expires_at_);
+            if (presence_view() != before) manager_.broadcast_presence_change(username_);
+        }
+
         // --- COMMUNITY SERVER HEARTBEAT ---
         else if (packet.type() == chatproj::Packet::SERVER_HEARTBEAT) {
             if (!auth_manager_.verifySharedSecret(packet.auth_token())) {
@@ -1293,6 +1388,13 @@ private:
                 // SET_IDLE_REQ; echo the saved choice.
                 resp->set_presence_statuses(true);
                 resp->set_status(presence_status_);
+                // Custom status message, with the time left rather than
+                // the deadline so the client's timer ignores clock skew.
+                resp->set_status_text(status_text_);
+                resp->set_status_emoji(status_emoji_);
+                if (status_expires_at_ > 0) {
+                    resp->set_status_clear_in(std::max<int64_t>(1, status_expires_at_ - unix_now()));
+                }
             }
         }
 
@@ -1319,16 +1421,25 @@ private:
     /// Auto-away: the client reported no input (SET_IDLE_REQ). Session only.
     bool idle_ = false;
     bool presence_deltas_ = false;
+    /// Custom status message (users.status_*), loaded at login.
+    std::string status_text_;
+    std::string status_emoji_;
+    int64_t status_expires_at_ = 0;
     /// What others can see of this session's presence; a change is what
-    /// warrants a PresenceDelta. Status is only meaningful while visible.
+    /// warrants a PresenceDelta. Status and message only count while visible.
     struct PresenceView {
         bool visible;
         chatproj::PresenceStatus status;
+        std::string text;
+        std::string emoji;
         bool operator!=(const PresenceView& o) const {
-            return visible != o.visible || (visible && status != o.status);
+            return visible != o.visible ||
+                   (visible && (status != o.status || text != o.text || emoji != o.emoji));
         }
     };
-    PresenceView presence_view() const { return {presence_visible(), effective_status()}; }
+    PresenceView presence_view() const {
+        return {presence_visible(), effective_status(), status_text_, status_emoji_};
+    }
     RateBucket call_bucket_{20.0, 5.0};
     /// Same shape for the E2EE key endpoints (publish / fetch / backup):
     /// each is a synchronous DB round-trip on the io thread.
@@ -1402,6 +1513,8 @@ void SessionManager::fill_presence_snapshot_locked(chatproj::PresenceUpdate* pre
         entry->set_username(session->username());
         entry->set_avatar_version(session->avatar_version());
         entry->set_status(session->effective_status());
+        entry->set_status_text(session->status_text());
+        entry->set_status_emoji(session->status_emoji());
     }
 }
 
@@ -1435,6 +1548,8 @@ void SessionManager::broadcast_presence_change(const std::string& username) {
             d->set_online(true);
             d->mutable_user()->set_avatar_version(session->avatar_version());
             d->mutable_user()->set_status(session->effective_status());
+            d->mutable_user()->set_status_text(session->status_text());
+            d->mutable_user()->set_status_emoji(session->status_emoji());
             break;
         }
     }
@@ -1499,6 +1614,24 @@ void SessionManager::sweep_stale(std::chrono::seconds timeout) {
     for (auto& s : stale) {
         std::cout << "[Manager] Sweeping stale session: " << s->username() << "\n";
         leave(s);
+    }
+}
+
+void SessionManager::expire_status_messages() {
+    const int64_t now = unix_now();
+    std::vector<std::shared_ptr<Session>> expired;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& session : sessions_) {
+            const int64_t at = session->status_expires_at();
+            if (at > 0 && at <= now) expired.push_back(session);
+        }
+    }
+    // Outside the lock: broadcast_presence_change takes it.
+    for (auto& session : expired) {
+        if (session->clear_expired_status_message()) {
+            broadcast_presence_change(session->username());
+        }
     }
 }
 
@@ -1693,6 +1826,7 @@ int main() {
         sweep_fn = [&](const boost::system::error_code& ec) {
             if (ec) return;
             manager.sweep_stale(std::chrono::seconds(60));
+            manager.expire_status_messages();
             sweep_timer.expires_after(std::chrono::seconds(30));
             sweep_timer.async_wait(sweep_fn);
         };

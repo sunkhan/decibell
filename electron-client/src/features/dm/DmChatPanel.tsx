@@ -13,7 +13,8 @@ import { toast } from "../../stores/toastStore";
 import { stringToColor } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot, StatusPill } from "../../components/StatusDot";
-import { isOnlineStatus, usePresence } from "../../stores/presenceStore";
+import { isOnlineStatus, usePresence, useStatusMessage } from "../../stores/presenceStore";
+import { StatusMessageText } from "../../components/StatusMessageText";
 import MessageBubble, { DayDivider, shouldGroup, startsNewDay } from "../chat/MessageBubble";
 import { ReplyComposerBar } from "../chat/ReplyPreview";
 import { useTypeToFocusComposer } from "../chat/useTypeToFocusComposer";
@@ -98,6 +99,7 @@ export default function DmChatPanel() {
   // The peer's status alone (a string), so a presence change about
   // someone else doesn't re-render the panel.
   const peerPresence = usePresence(activeDmUser ?? "");
+  const peerMessage = useStatusMessage(activeDmUser ?? "");
 
   const localUsername = useAuthStore((s) => s.username);
   const dmFriendsPanelVisible = useUiStore((s) => s.dmFriendsPanelVisible);
@@ -809,7 +811,14 @@ export default function DmChatPanel() {
         <span className="font-display text-title font-emphasis tracking-title text-text-bright">
           {activeDmUser}
         </span>
-        <StatusPill status={peerPresence} className="font-channel" />
+        <StatusPill status={peerPresence} className="shrink-0 font-channel" />
+        {peerMessage && (
+          <StatusMessageText
+            message={peerMessage}
+            emojiSize={16}
+            className="min-w-0 max-w-96 font-channel text-[13px] text-text-muted"
+          />
+        )}
         <EncryptionBadge peer={activeDmUser} />
         <div className="flex-1" />
         <div className="flex gap-1">

@@ -886,6 +886,9 @@ pub struct UserPresencePayload {
     pub avatar_version: String,
     /// "online" | "away" | "dnd" (others are never "invisible" — absent).
     pub status: String,
+    /// Custom status message; '' when none.
+    pub status_text: String,
+    pub status_emoji: String,
 }
 
 /// One user's presence changed (central PresenceDelta): the full current
@@ -897,6 +900,8 @@ pub struct PresenceDeltaPayload {
     pub online: bool,
     pub status: String,
     pub avatar_version: String,
+    pub status_text: String,
+    pub status_emoji: String,
 }
 
 /// The local user's saved status from LoginResponse, and whether this
@@ -908,6 +913,11 @@ pub struct OwnPresencePayload {
     pub supported: bool,
     /// "online" | "away" | "dnd" | "invisible"
     pub status: String,
+    /// The saved custom status message ('' / '' = none) and the seconds
+    /// left until central clears it (0 = never).
+    pub status_text: String,
+    pub status_emoji: String,
+    pub status_clear_in: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -939,8 +949,8 @@ pub fn emit_presence_delta(payload: PresenceDeltaPayload) {
     send(PRESENCE_DELTA, payload);
 }
 
-pub fn emit_own_presence(supported: bool, status: String) {
-    send(OWN_PRESENCE, OwnPresencePayload { supported, status });
+pub fn emit_own_presence(payload: OwnPresencePayload) {
+    send(OWN_PRESENCE, payload);
 }
 
 pub fn emit_friend_list_received(friends: Vec<FriendInfoPayload>) {

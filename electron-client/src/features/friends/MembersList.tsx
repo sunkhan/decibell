@@ -7,10 +7,12 @@ import {
   isOnlineStatus,
   resolvePresence,
   usePresenceStore,
+  useStatusMessage,
   type DisplayStatus,
 } from "../../stores/presenceStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot } from "../../components/StatusDot";
+import { StatusMessageText } from "../../components/StatusMessageText";
 import { EMPTY_LIST } from "../../lib/empty";
 import type { ServerMember } from "../../types";
 
@@ -150,6 +152,7 @@ const MemberRow = memo(function MemberRow({
   serverId: string | null;
 }) {
   const isOnline = isOnlineStatus(status);
+  const message = useStatusMessage(m.username);
   return (
     <div
       className="list-row group flex cursor-pointer items-center rounded-sm transition-colors hover:bg-surface-hover"
@@ -174,15 +177,20 @@ const MemberRow = memo(function MemberRow({
           className="avatar-dot absolute -bottom-px -right-px"
         />
       </div>
-      <span
-        className={`truncate font-channel text-member transition-colors ${
-          isOnline
-            ? "font-medium text-text-secondary group-hover:text-text-primary"
-            : "font-normal text-text-muted group-hover:text-text-primary"
-        }`}
-      >
-        {m.nickname || m.username}
-      </span>
+      <div className="min-w-0 flex-1">
+        <div
+          className={`truncate font-channel text-member leading-4.5 transition-colors ${
+            isOnline
+              ? "font-medium text-text-secondary group-hover:text-text-primary"
+              : "font-normal text-text-muted group-hover:text-text-primary"
+          }`}
+        >
+          {m.nickname || m.username}
+        </div>
+        {message && (
+          <StatusMessageText message={message} emojiSize={13} className="font-meta text-micro leading-4 text-text-muted" />
+        )}
+      </div>
     </div>
   );
 });

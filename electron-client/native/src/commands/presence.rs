@@ -6,7 +6,9 @@
 use napi_derive::napi;
 
 use crate::net::connection::build_packet;
-use crate::net::proto::{packet, PresenceVisibility, SetIdleRequest, SetStatusRequest};
+use crate::net::proto::{
+    packet, PresenceVisibility, SetIdleRequest, SetStatusMessageRequest, SetStatusRequest,
+};
 use crate::state;
 
 /// Queue one packet on the central connection (no-op when disconnected —
@@ -66,6 +68,31 @@ pub async fn set_status(args: SetStatusArgs) -> napi::Result<()> {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), tx.send(data)).await;
         }
     }
+    Ok(())
+}
+
+#[napi(object)]
+pub struct SetStatusMessageArgs {
+    pub text: String,
+    pub emoji: String,
+    /// Seconds until central clears it; 0 = keep until changed.
+    pub clear_after: u32,
+}
+
+/// The custom status message (docs/superpowers/specs/2026-10-12-status-
+/// messages-design.md). Central normalises and saves it, and everyone sees
+/// it with our presence. Empty text and emoji clears it.
+#[napi]
+pub async fn set_status_message(args: SetStatusMessageArgs) -> napi::Result<()> {
+    send_to_central(
+        packet::Type::SetStatusMessageReq,
+        packet::Payload::SetStatusMessageReq(SetStatusMessageRequest {
+            text: args.text,
+            emoji: args.emoji,
+            clear_after: i64::from(args.clear_after),
+        }),
+    )
+    .await;
     Ok(())
 }
 
