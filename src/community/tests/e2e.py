@@ -1082,6 +1082,111 @@ def test_server_update_and_transfer():
     yul.close(); owner.close()
 
 
+def test_member_search_and_role_counts():
+    print("[search] MEMBER_SEARCH by name / role across the whole membership; role member_count")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.flush(0.5)
+    now = int(time.time())
+    for i in range(150):
+        sql("insert or ignore into members(username, joined_at, nickname) values(?, ?, '')", f"zq{i:03d}", now)
+    sql("insert or ignore into members(username, joined_at, nickname) values('quill', ?, 'Zqueen')", now)
+    owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="Searchers", color=0, permissions=0))
+    role = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
+    for u in ("zq001", "zq002", "quill"):
+        sql("insert into member_roles(username, role_id) values(?, ?)", u, role.id)
+
+    def search(**kw):
+        owner.send(pb.Packet.MEMBER_SEARCH_REQ, member_search_req=pb.MemberSearchRequest(**kw))
+        r = owner.wait(pb.Packet.MEMBER_SEARCH_RES, pred=lambda p: p.member_search_res.seq == kw.get("seq", 0))
+        return r.member_search_res if r else None
+
+    r = search(query="ZQ", limit=100, seq=7)
+    names = [m.username for m in r.members] if r else []
+    check("search: case-insensitive on username + nickname, 151 matches", r is not None and r.success and r.total_matches == 151, str(r.total_matches if r else None))
+    check("search: first page = 100 by username, has_more, seq echoed", len(names) == 100 and names == sorted(names) and r.has_more and r.seq == 7 and r.first_page)
+    check("search: offline members included", r is not None and all(not m.is_online for m in r.members))
+    r2 = search(query="zq", after=r.next_after, limit=100, seq=8)
+    names2 = [m.username for m in r2.members] if r2 else []
+    check("search: page 2 has the rest, no overlap", len(names2) == 51 and not set(names) & set(names2) and not r2.has_more and not r2.first_page, f"{len(names2)}")
+    check("search: nickname match ('quill' / Zqueen)", "quill" in names + names2)
+    r = search(role_id=role.id, seq=9)
+    check("search: role filter", r is not None and sorted(m.username for m in r.members) == ["quill", "zq001", "zq002"], str([m.username for m in r.members] if r else None))
+    check("search: role filter carries role_ids", r is not None and all(role.id in m.role_ids for m in r.members))
+    r = search(query="zq00", role_id=-1, seq=10)
+    check("search: role_id -1 = no roles", r is not None and sorted(m.username for m in r.members) == [f"zq00{i}" for i in (0, 3, 4, 5, 6, 7, 8, 9)], str([m.username for m in r.members] if r else None))
+    r = search(query="100%", seq=11)
+    check("search: no match", r is not None and r.success and r.total_matches == 0 and not r.members)
+
+    owner.flush(0.3)
+    owner.send(pb.Packet.ROLE_LIST_REQ, role_list_req=pb.RoleListRequest())
+    rl = owner.wait(pb.Packet.ROLE_LIST_RES)
+    counts = {x.name: x.member_count for x in rl.role_list_res.roles} if rl else {}
+    everyone = next((x.member_count for x in rl.role_list_res.roles if x.is_default), None) if rl else None
+    total = sql("select count(*) from members")[0][0]
+    check("role list: member_count per role", counts.get("Searchers") == 3, str(counts))
+    check("role list: everyone counts every member", everyone == total, f"{everyone} vs {total}")
+    owner.flush(0.3)
+    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="zq010", role_ids=[role.id]))
+    pushed = owner.wait(pb.Packet.ROLE_LIST_RES, timeout=2,
+                        pred=lambda p: any(x.name == "Searchers" and x.member_count == 4 for x in p.role_list_res.roles))
+    check("assigning a role pushes the new count", pushed is not None)
+    owner.send(pb.Packet.ROLE_DELETE_REQ, role_delete_req=pb.RoleDeleteRequest(role_id=role.id))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "delete")
+    sql("delete from members where username like 'zq%' or username = 'quill'")
+    sql("delete from member_roles where username like 'zq%' or username = 'quill'")
+    owner.close()
+
+
+def test_audit_search():
+    print("[audit search] text query over names / nicknames / channels / roles + action filter")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.flush(0.5)
+    now = int(time.time())
+    owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="Lanterns", color=0, permissions=0))
+    lantern = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
+    ch = sql("select id, name from channels where type = 0 order by position limit 1")[0]
+    sql("insert or ignore into members(username, joined_at, nickname) values('owl', ?, 'Night Owl')", now)
+    rows = [
+        ("auditor1", "kick", "victim1", "", "reason: 100%_off spam"),
+        ("auditor1", "overwrite_set", f"role:{lantern.id}", ch[0], "allow 8192 deny 0"),
+        ("owl", "ban", "victim2", "", ""),
+        ("auditor1", "channel_update", "", ch[0], "slowmode 5s"),
+    ]
+    for actor, action, target, cid, details in rows:
+        sql("insert into audit_log(ts, actor, action, target, channel_id, details) values(?, ?, ?, ?, ?, ?)", now, actor, action, target, cid, details)
+
+    def search(seq, **kw):
+        owner.send(pb.Packet.AUDIT_LOG_REQ, audit_log_req=pb.AuditLogRequest(limit=100, seq=seq, **kw))
+        r = owner.wait(pb.Packet.AUDIT_LOG_RES, pred=lambda p: p.audit_log_res.seq == seq)
+        return r.audit_log_res if r else None
+
+    r = search(21, query="100%_")
+    check("audit search: % and _ match literally", r is not None and [e.target for e in r.entries] == ["victim1"], str([e.target for e in r.entries] if r else None))
+    r = search(22, query="NIGHT OWL")
+    check("audit search: actor nickname, case-insensitive", r is not None and [e.target for e in r.entries] == ["victim2"])
+    r = search(23, query="lanterns")
+    tgts = [e.action for e in r.entries] if r else []
+    check("audit search: role name behind role:<id> + role_create", r is not None and "overwrite_set" in tgts and "role_create" in tgts, str(tgts))
+    r = search(24, query=ch[1], actions=["channel_update"])
+    check("audit search: channel name + action filter", r is not None and len(r.entries) >= 1 and all(e.action == "channel_update" for e in r.entries), str([e.action for e in r.entries] if r else None))
+    r = search(25, query="victim", actions=["ban", "unban"])
+    check("audit search: action filter narrows a query", r is not None and [e.target for e in r.entries] == ["victim2"])
+    r = search(26, actions=["kick"])
+    check("audit search: actions alone", r is not None and len(r.entries) >= 1 and all(e.action == "kick" for e in r.entries))
+    owner.send(pb.Packet.AUDIT_LOG_REQ, audit_log_req=pb.AuditLogRequest(limit=1, seq=28, query="auditor1"))
+    p1 = owner.wait(pb.Packet.AUDIT_LOG_RES, pred=lambda p: p.audit_log_res.seq == 28)
+    e1 = p1.audit_log_res.entries[0] if p1 and p1.audit_log_res.entries else None
+    owner.send(pb.Packet.AUDIT_LOG_REQ, audit_log_req=pb.AuditLogRequest(limit=10, seq=29, query="auditor1", before_id=e1.id if e1 else 0))
+    p2 = owner.wait(pb.Packet.AUDIT_LOG_RES, pred=lambda p: p.audit_log_res.seq == 29)
+    check("audit search: paging keeps the filter", p1 is not None and p1.audit_log_res.has_more and p2 is not None
+          and len(p2.audit_log_res.entries) == 2 and all(e.actor == "auditor1" and e.id < e1.id for e in p2.audit_log_res.entries))
+    owner.send(pb.Packet.ROLE_DELETE_REQ, role_delete_req=pb.RoleDeleteRequest(role_id=lantern.id))
+    owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "delete")
+    sql("delete from audit_log where actor in ('auditor1', 'owl')")
+    sql("delete from members where username = 'owl'")
+    owner.close()
+
+
 def test_audit_log():
     print("[audit] audit log records mod actions, gated on VIEW_AUDIT_LOG")
     owner = Client("alice"); assert auth_ok(owner)[0]
@@ -2623,6 +2728,8 @@ if __name__ == "__main__":
         test_v2_private_channel()
         test_v2_overwrite_guards()
         test_roster_deltas()
+        test_member_search_and_role_counts()
+        test_audit_search()
         test_presence_hidden()
         test_public_join()
         test_server_update_and_transfer()

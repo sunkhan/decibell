@@ -101,6 +101,8 @@ chatproj::Packet build_role_list_packet(chatproj::CommunityDb* db) {
     auto* res = p.mutable_role_list_res();
     res->set_success(db != nullptr);
     if (db) {
+        const auto counts = db->role_member_counts();
+        const int64_t everyone = db->count_members();
         for (const auto& r : db->list_roles()) {
             auto* info = res->add_roles();
             info->set_id(r.id);
@@ -110,6 +112,8 @@ chatproj::Packet build_role_list_packet(chatproj::CommunityDb* db) {
             info->set_permissions(r.permissions);
             info->set_is_default(r.is_default);
             info->set_manage_each_other(r.manage_each_other);
+            if (r.is_default) info->set_member_count(everyone);
+            else if (auto it = counts.find(r.id); it != counts.end()) info->set_member_count(it->second);
         }
     }
     return p;
@@ -303,6 +307,10 @@ public:
     // later pages = offline only.
     void fill_member_page(const std::string& after, int32_t limit,
                           chatproj::MemberListResponse* res);
+    // MEMBER_SEARCH_REQ: members matching a name and/or role, online or
+    // not, ordered by username and paged by `after`.
+    void fill_member_search(const chatproj::MemberSearchRequest& req,
+                            chatproj::MemberSearchResponse* res);
     // Push the full role list to every authenticated session. Fired on
     // any role create/update/delete so hierarchy + colors stay live.
     void broadcast_roles();
@@ -2404,6 +2412,14 @@ private:
             send_packet(p);
         }
 
+        // --- MEMBER SEARCH (server settings) ---
+        else if (packet.type() == chatproj::Packet::MEMBER_SEARCH_REQ) {
+            chatproj::Packet p;
+            p.set_type(chatproj::Packet::MEMBER_SEARCH_RES);
+            manager_.fill_member_search(packet.member_search_req(), p.mutable_member_search_res());
+            send_packet(p);
+        }
+
         // --- BAN LIST ---
         else if (packet.type() == chatproj::Packet::BAN_LIST_REQ) {
             auto* db = manager_.db();
@@ -2817,6 +2833,8 @@ private:
             // The delta (with role_ids) is the authoritative confirmation
             // for every client, requester included.
             manager_.emit_member_upsert(req.username());
+            // Role member counts moved.
+            manager_.broadcast_roles();
             // The target's channel visibility / my_permissions changed.
             manager_.send_channels_to_user(req.username());
         }
@@ -3282,12 +3300,15 @@ private:
             chatproj::Packet p;
             p.set_type(chatproj::Packet::AUDIT_LOG_RES);
             auto* res = p.mutable_audit_log_res();
+            res->set_seq(req.seq());
             if (!db) { res->set_success(false); res->set_message("Server misconfigured."); send_packet(p); return; }
             if (auto a = manager_.authz().check(chatproj::Action::ViewAuditLog, {username_, "", ""}); !a) {
                 res->set_success(false); res->set_message(a.reason); send_packet(p); return;
             }
             bool has_more = false;
-            for (const auto& e : db->list_audit(req.before_id(), req.limit(), &has_more)) {
+            const std::vector<std::string> actions(req.actions().begin(), req.actions().end());
+            for (const auto& e : db->list_audit(req.before_id(), req.limit(), &has_more,
+                                                req.query(), actions)) {
                 auto* out = res->add_entries();
                 out->set_id(e.id);
                 out->set_timestamp(e.timestamp);
@@ -3636,6 +3657,7 @@ private:
                 return mls_bucket_.try_take();
             case T::CHANNEL_HISTORY_REQ:
             case T::MEMBER_LIST_REQ:
+            case T::MEMBER_SEARCH_REQ:
             case T::BAN_LIST_REQ:
             case T::AUDIT_LOG_REQ:
             case T::ROLE_LIST_REQ:
@@ -4214,6 +4236,8 @@ void SessionManager::emit_member_remove(const std::string& username) {
     rm->set_username(username);
     rm->set_revision(++roster_revision_);
     broadcast_to_members(p);
+    // Their roles went with them: every count they held moved.
+    broadcast_roles();
 }
 
 void SessionManager::fill_member_page(const std::string& after, int32_t limit,
@@ -4270,6 +4294,64 @@ void SessionManager::fill_member_page(const std::string& after, int32_t limit,
     res->set_has_more(has_more);
     res->set_next_after(has_more ? next_after : "");
     res->set_first_page(first_page);
+}
+
+namespace {
+std::string ascii_lower(std::string s) {
+    for (auto& c : s) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return s;
+}
+}  // namespace
+
+void SessionManager::fill_member_search(const chatproj::MemberSearchRequest& req,
+                                        chatproj::MemberSearchResponse* res) {
+    res->set_seq(req.seq());
+    res->set_first_page(req.after().empty());
+    if (!db_) { res->set_success(false); res->set_message("Server misconfigured."); return; }
+    int32_t limit = req.limit();
+    if (limit <= 0) limit = 100;
+    if (limit > 200) limit = 200;
+    const std::string needle = ascii_lower(chatproj::clamp_utf8(req.query(), 128));
+    const int64_t role_id = req.role_id();
+    const std::string owner_name = db_->owner();
+    auto online = get_visible_usernames();
+    std::unordered_map<std::string, std::vector<int64_t>> roles_by_user;
+    for (const auto& [user, rid] : db_->list_all_member_roles()) roles_by_user[user].push_back(rid);
+    auto members = db_->list_members();
+    std::sort(members.begin(), members.end(),
+              [](const chatproj::DbMember& a, const chatproj::DbMember& b) {
+                  return a.username < b.username;
+              });
+    int64_t total = 0;
+    int32_t sent = 0;
+    bool has_more = false;
+    std::string next_after;
+    for (const auto& m : members) {
+        auto rit = roles_by_user.find(m.username);
+        const bool any_role = rit != roles_by_user.end() && !rit->second.empty();
+        if (role_id == -1 && any_role) continue;
+        if (role_id > 0 && (!any_role || std::find(rit->second.begin(), rit->second.end(), role_id) == rit->second.end())) continue;
+        if (!needle.empty() &&
+            ascii_lower(m.username).find(needle) == std::string::npos &&
+            ascii_lower(m.nickname).find(needle) == std::string::npos) continue;
+        ++total;
+        if (!req.after().empty() && m.username <= req.after()) continue;
+        if (sent >= limit) { has_more = true; continue; }
+        auto* info = res->add_members();
+        info->set_username(m.username);
+        info->set_joined_at(m.joined_at);
+        info->set_nickname(m.nickname);
+        info->set_is_owner(m.username == owner_name);
+        info->set_is_online(online.count(m.username) > 0);
+        info->set_timed_out_until(m.timed_out_until);
+        if (any_role) for (int64_t rid : rit->second) info->add_role_ids(rid);
+        ++sent;
+        next_after = m.username;
+    }
+    res->set_success(true);
+    res->set_total_matches(total);
+    res->set_has_more(has_more);
+    res->set_next_after(has_more ? next_after : "");
 }
 
 void SessionManager::broadcast_bans() {

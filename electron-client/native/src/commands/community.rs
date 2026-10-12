@@ -61,6 +61,40 @@ pub async fn list_members(args: ListMembersArgs) -> napi::Result<()> {
 }
 
 #[napi(object)]
+pub struct SearchMembersArgs {
+    pub server_id: String,
+    /// Matches usernames and nicknames; "" matches everyone.
+    pub query: Option<String>,
+    /// 0 = any role, > 0 = holds that role, -1 = holds no role.
+    pub role_id: Option<i64>,
+    /// Username cursor: omit/"" for the first page, else `nextAfter`.
+    pub after: Option<String>,
+    /// Server clamps to [1, 200]; default 100.
+    pub limit: Option<i32>,
+    /// Echoed on member_search_received.
+    pub seq: Option<u32>,
+}
+
+/// Server-settings member search across the whole membership (online or
+/// not). The page arrives as member_search_received; it never touches the
+/// roster.
+#[napi]
+pub async fn search_members(args: SearchMembersArgs) -> napi::Result<()> {
+    send_for_server(
+        &args.server_id,
+        packet::Type::MemberSearchReq,
+        packet::Payload::MemberSearchReq(MemberSearchRequest {
+            query: args.query.unwrap_or_default(),
+            role_id: args.role_id.unwrap_or(0),
+            after: args.after.unwrap_or_default(),
+            limit: args.limit.unwrap_or(0),
+            seq: args.seq.unwrap_or(0),
+        }),
+    )
+    .await
+}
+
+#[napi(object)]
 pub struct UpdateServerArgs {
     pub server_id: String,
     pub name: String,
@@ -93,6 +127,12 @@ pub struct ListAuditLogArgs {
     /// 0 = newest.
     pub before_id: Option<i64>,
     pub limit: Option<i32>,
+    /// Text search over names, nicknames, channels, roles and details.
+    pub query: Option<String>,
+    /// Only these action verbs; omit/empty = all.
+    pub actions: Option<Vec<String>>,
+    /// Echoed on audit_log_received.
+    pub seq: Option<u32>,
 }
 
 #[napi]
@@ -103,6 +143,9 @@ pub async fn list_audit_log(args: ListAuditLogArgs) -> napi::Result<()> {
         packet::Payload::AuditLogReq(AuditLogRequest {
             before_id: args.before_id.unwrap_or(0),
             limit: args.limit.unwrap_or(50),
+            query: args.query.unwrap_or_default(),
+            actions: args.actions.unwrap_or_default(),
+            seq: args.seq.unwrap_or(0),
         }),
     )
     .await

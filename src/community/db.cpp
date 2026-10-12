@@ -1550,6 +1550,15 @@ std::vector<std::pair<std::string, int64_t>> CommunityDb::list_all_member_roles(
     return out;
 }
 
+std::unordered_map<int64_t, int64_t> CommunityDb::role_member_counts() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_map<int64_t, int64_t> out;
+    Stmt q(db_, "SELECT role_id, COUNT(*) FROM member_roles GROUP BY role_id;");
+    if (!q.s) return out;
+    while (q.step() == SQLITE_ROW) out[q.col_int64(0)] = q.col_int64(1);
+    return out;
+}
+
 bool CommunityDb::set_member_roles(const std::string& username,
                                    const std::vector<int64_t>& role_ids) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -3680,22 +3689,51 @@ void CommunityDb::add_audit(const std::string& actor, const std::string& action,
 }
 
 std::vector<DbAuditEntry> CommunityDb::list_audit(int64_t before_id, int32_t limit,
-                                                  bool* has_more) const {
+                                                  bool* has_more,
+                                                  const std::string& query,
+                                                  const std::vector<std::string>& actions) const {
     if (has_more) *has_more = false;
     if (limit <= 0) limit = 50;
     if (limit > 100) limit = 100;
+    // LIKE pattern with the user's text taken literally.
+    std::string like;
+    if (!query.empty()) {
+        like.reserve(query.size() + 2);
+        like.push_back('%');
+        for (char c : clamp_utf8(query, 128)) {
+            if (c == '%' || c == '_' || c == '\\') like.push_back('\\');
+            like.push_back(c);
+        }
+        like.push_back('%');
+    }
+    // ",kick,ban," — matched with instr so the statement text never
+    // varies (statements are cached by SQL). Verbs never contain commas.
+    std::string verbs;
+    for (size_t i = 0; i < actions.size() && i < 32; ++i) {
+        if (actions[i].empty() || actions[i].find(',') != std::string::npos) continue;
+        verbs += "," + actions[i];
+    }
+    if (!verbs.empty()) verbs += ",";
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<DbAuditEntry> out;
     Stmt q(db_,
-        before_id > 0
-            ? "SELECT id, ts, actor, action, target, channel_id, details FROM audit_log "
-              "WHERE id<? ORDER BY id DESC LIMIT ?;"
-            : "SELECT id, ts, actor, action, target, channel_id, details FROM audit_log "
-              "ORDER BY id DESC LIMIT ?;");
+        "SELECT id, ts, actor, action, target, channel_id, details FROM audit_log "
+        "WHERE (?1 <= 0 OR id < ?1) "
+        "AND (?2 = '' OR instr(?2, ',' || action || ',') > 0) "
+        "AND (?3 = '' "
+        "  OR actor LIKE ?3 ESCAPE '\\' OR target LIKE ?3 ESCAPE '\\' "
+        "  OR details LIKE ?3 ESCAPE '\\' OR replace(action, '_', ' ') LIKE ?3 ESCAPE '\\' "
+        "  OR (channel_id <> '' AND channel_id IN (SELECT id FROM channels WHERE name LIKE ?3 ESCAPE '\\')) "
+        "  OR actor IN (SELECT username FROM members WHERE nickname LIKE ?3 ESCAPE '\\') "
+        "  OR target IN (SELECT username FROM members WHERE nickname LIKE ?3 ESCAPE '\\') "
+        "  OR target IN (SELECT 'member:' || username FROM members WHERE nickname LIKE ?3 ESCAPE '\\') "
+        "  OR target IN (SELECT 'role:' || id FROM roles WHERE name LIKE ?3 ESCAPE '\\')) "
+        "ORDER BY id DESC LIMIT ?4;");
     if (!q.s) return out;
-    int idx = 1;
-    if (before_id > 0) q.bind_int64(idx++, before_id);
-    q.bind_int(idx, limit + 1);
+    q.bind_int64(1, before_id);
+    q.bind_text(2, verbs);
+    q.bind_text(3, like);
+    q.bind_int(4, limit + 1);
     while (q.step() == SQLITE_ROW) {
         DbAuditEntry e;
         e.id = q.col_int64(0);

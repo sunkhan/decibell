@@ -465,6 +465,8 @@ public:
     std::vector<int64_t> get_member_role_ids(const std::string& username) const;
     // username -> assigned role ids, for building member lists in one query.
     std::vector<std::pair<std::string, int64_t>> list_all_member_roles() const;
+    // role id -> how many members hold it (roles nobody holds are absent).
+    std::unordered_map<int64_t, int64_t> role_member_counts() const;
     // Replaces the member's role set. Caller validates hierarchy; this
     // only checks that every id references an existing non-default role.
     bool set_member_roles(const std::string& username,
@@ -797,8 +799,14 @@ public:
                    const std::string& target, const std::string& channel_id,
                    const std::string& details);
     // Newest first; `before_id` 0 = newest. Limit clamped to [1, 100].
+    // `query` (empty = any) matches actor, target, action, details, the
+    // channel's name, and the nickname or role name behind actor/target,
+    // case-insensitively for ASCII. `actions` (empty = any) keeps only
+    // those verbs.
     std::vector<DbAuditEntry> list_audit(int64_t before_id, int32_t limit,
-                                         bool* has_more) const;
+                                         bool* has_more,
+                                         const std::string& query = "",
+                                         const std::vector<std::string>& actions = {}) const;
     // Drops entries older than `cutoff_ts`.
     void prune_audit(int64_t cutoff_ts);
 

@@ -684,6 +684,19 @@ impl CommunityClient {
                         first_page: resp.first_page,
                     });
                 }
+                Some(packet::Payload::MemberSearchRes(resp)) => {
+                    events::emit_member_search_received(events::MemberSearchReceivedPayload {
+                        server_id: server_id.clone(),
+                        success: resp.success,
+                        message: resp.message,
+                        members: resp.members.into_iter().map(member_info_payload).collect(),
+                        total_matches: resp.total_matches,
+                        has_more: resp.has_more,
+                        next_after: resp.next_after,
+                        seq: resp.seq,
+                        first_page: resp.first_page,
+                    });
+                }
                 Some(packet::Payload::MemberUpsert(up)) => {
                     if let Some(m) = up.member {
                         events::emit_member_upsert(events::MemberUpsertPayload {
@@ -756,6 +769,7 @@ impl CommunityClient {
                         message: resp.message,
                         entries,
                         has_more: resp.has_more,
+                        seq: resp.seq,
                     });
                 }
                 Some(packet::Payload::StorageInfoRes(resp)) => {
@@ -892,6 +906,7 @@ impl CommunityClient {
                             permissions: r.permissions,
                             is_default: r.is_default,
                             manage_each_other: r.manage_each_other,
+                            member_count: r.member_count,
                         })
                         .collect();
                     events::emit_role_list_received(events::RoleListReceivedPayload {
@@ -910,6 +925,7 @@ impl CommunityClient {
                         permissions: r.permissions,
                         is_default: r.is_default,
                         manage_each_other: r.manage_each_other,
+                        member_count: r.member_count,
                     });
                     events::emit_role_action_responded(events::RoleActionRespondedPayload {
                         server_id: server_id.clone(),

@@ -405,6 +405,7 @@ pub const BAN_LIST_RECEIVED: &str = "ban_list_received";
 pub const SERVER_META_UPDATED: &str = "server_meta_updated";
 pub const SERVER_UPDATE_RESPONDED: &str = "server_update_responded";
 pub const AUDIT_LOG_RECEIVED: &str = "audit_log_received";
+pub const MEMBER_SEARCH_RECEIVED: &str = "member_search_received";
 pub const STORAGE_INFO_RECEIVED: &str = "storage_info_received";
 pub const VOICE_FORCE_NOTIFY: &str = "voice_force_notify";
 pub const CHANNEL_OVERWRITES_RECEIVED: &str = "channel_overwrites_received";
@@ -1096,6 +1097,23 @@ pub struct AuditLogReceivedPayload {
     pub message: String,
     pub entries: Vec<AuditEntryPayload>,
     pub has_more: bool,
+    /// The request's seq, so the renderer can drop superseded searches.
+    pub seq: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberSearchReceivedPayload {
+    pub server_id: String,
+    pub success: bool,
+    pub message: String,
+    /// One page of matches, ordered by username, online or not.
+    pub members: Vec<MemberInfoPayload>,
+    pub total_matches: i64,
+    pub has_more: bool,
+    pub next_after: String,
+    pub seq: u32,
+    pub first_page: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1180,6 +1198,8 @@ pub struct RoleInfoPayload {
     /// Members whose highest role is this one may manage each other
     /// (nicknames, voice moderation) — permissions v3.
     pub manage_each_other: bool,
+    /// Members holding the role (every member for `everyone`).
+    pub member_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1229,6 +1249,10 @@ pub fn emit_server_update_responded(payload: ServerUpdateRespondedPayload) {
 
 pub fn emit_audit_log_received(payload: AuditLogReceivedPayload) {
     send(AUDIT_LOG_RECEIVED, payload);
+}
+
+pub fn emit_member_search_received(payload: MemberSearchReceivedPayload) {
+    send(MEMBER_SEARCH_RECEIVED, payload);
 }
 
 pub fn emit_storage_info_received(payload: StorageInfoReceivedPayload) {

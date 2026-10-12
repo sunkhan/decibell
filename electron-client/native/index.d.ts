@@ -338,6 +338,25 @@ export interface ListMembersArgs {
  * member_remove; this is only for the initial load and scroll paging.
  */
 export declare function listMembers(args: ListMembersArgs): Promise<void>
+export interface SearchMembersArgs {
+  serverId: string
+  /** Matches usernames and nicknames; "" matches everyone. */
+  query?: string
+  /** 0 = any role, > 0 = holds that role, -1 = holds no role. */
+  roleId?: number
+  /** Username cursor: omit/"" for the first page, else `nextAfter`. */
+  after?: string
+  /** Server clamps to [1, 200]; default 100. */
+  limit?: number
+  /** Echoed on member_search_received. */
+  seq?: number
+}
+/**
+ * Server-settings member search across the whole membership (online or
+ * not). The page arrives as member_search_received; it never touches the
+ * roster.
+ */
+export declare function searchMembers(args: SearchMembersArgs): Promise<void>
 export interface UpdateServerArgs {
   serverId: string
   name: string
@@ -359,6 +378,12 @@ export interface ListAuditLogArgs {
   /** 0 = newest. */
   beforeId?: number
   limit?: number
+  /** Text search over names, nicknames, channels, roles and details. */
+  query?: string
+  /** Only these action verbs; omit/empty = all. */
+  actions?: Array<string>
+  /** Echoed on audit_log_received. */
+  seq?: number
 }
 export declare function listAuditLog(args: ListAuditLogArgs): Promise<void>
 export interface StorageInfoArgs {
