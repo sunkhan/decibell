@@ -598,6 +598,10 @@ pub struct AttachmentPayload {
     /// attachment predates the field or isn't an image/video. Opaque
     /// here — only the renderer decodes it.
     pub placeholder: String,
+    /// Encrypted-channel upload: the row is a stand-in and the real
+    /// metadata + key come from the message envelope (the renderer merges
+    /// `encrypted_attachments` into it only when this is set).
+    pub encrypted: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

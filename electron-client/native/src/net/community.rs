@@ -84,6 +84,7 @@ pub(crate) fn map_attachment(a: Attachment) -> events::AttachmentPayload {
         thumbnail_sizes_mask: a.thumbnail_sizes_mask,
         duration_ms: a.duration_ms,
         placeholder: a.placeholder,
+        encrypted: a.encrypted,
     }
 }
 
