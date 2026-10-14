@@ -2279,3 +2279,31 @@ settings windows:
 Renderer only. Verified: tsc web 0. Harness at 1920×1080, 1280×800, 1100×700 and 1100×640: making a
 change in channel Overview, server Overview, Roles and Storage leaves the scroll height and content
 width unchanged, and the content width is the same on every tab. Screenshots in nocturne and matinee.
+
+**Client: settings windows fit the smallest app window (2026-10-14) ✅** — Owner: channel Permissions
+"looks terrible" at the smallest window; should the minimum change? Proposal (artifact
+XmC9pGcsshn4ujHYxrYt1A), approved with three decisions: keep the 800×600 minimum, switch at 1024 px,
+labels per icon.
+- **Why not a bigger minimum:** with the old frame, the two-column tabs need about 1080 px. That's
+  wider than half of a 1920 monitor (960) and Discord's own minimum (940). At 800×600 the frame used
+  352 of the 800 px on margins and the sidebar, and the Roles / Permissions editor got 116 px and
+  scrolled sideways. Members cut names to one letter.
+- **Shared frame:** `components/SettingsWindow.tsx` (backdrop, window, sidebar, tab item, foot
+  action, pane header, body). Settings, Server Settings and Channel Settings were three hand-copied
+  versions of it. Settings now also holds the scrollbar gutter, like the other two.
+- **Below 1024 px (`max-lg:`):** a 16 px margin instead of 56 / 48. The sidebar becomes a 64 px rail
+  of the same icons; a label shows beside an icon on hover or keyboard focus, over the pane. The
+  server or channel name moves beside the tab's title. The unsaved-changes dot sits on the icon's
+  corner. Leave Server / Delete Channel stay at the foot as icons. The list in Roles and channel
+  Permissions narrows from 224 to 192 px.
+- **Result:** editor column 116 → 420 px at 800×600 and 316 → 620 px at 1000×640. No sideways scroll
+  at 800, 1000, 1023, 1024, 1080 or 1280 px. At 1024 px and wider nothing changes: the 1280×800
+  captures before and after are pixel-identical.
+
+Renderer only. Verified: tsc web 0. The proposal captured four screens at two sizes in all 7 themes.
+After porting, the harness reran on the tree: leave guard (Esc / ✕ / backdrop / tab switch, confirms,
+Leave Server), save-on-echo (roles, create, overview, public listing, members, channel saves) and the
+width measurements. The label on keyboard focus is in the build but untested: the offscreen window
+never has focus.
+
+Pending: a run in the real app, resizing across 1024 px with a settings window open.

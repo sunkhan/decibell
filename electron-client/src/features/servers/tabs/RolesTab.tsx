@@ -279,7 +279,7 @@ export default function RolesTab({ serverId }: { serverId: string }) {
   return (
     <div className="flex items-start gap-8">
       {/* ── Hierarchy ── */}
-      <aside className="sticky top-0 w-56 shrink-0">
+      <aside className="sticky top-0 w-56 shrink-0 max-lg:w-48">
         <div className="mb-2 flex h-7 items-center justify-between pl-2">
           <SectionLabel>
             Roles <span className="ml-1 tabular-nums">{ranked.length}</span>

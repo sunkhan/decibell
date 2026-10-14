@@ -14,6 +14,16 @@ import OverviewTab from "./channelSettings/OverviewTab";
 import RetentionTab from "./channelSettings/RetentionTab";
 import PermissionsTab, { usePermissionDraft } from "./channelSettings/PermissionsTab";
 import { useEchoSave } from "./saveEcho";
+import {
+  SETTINGS_BACKDROP,
+  SETTINGS_BODY,
+  SETTINGS_FRAME,
+  SETTINGS_PANE,
+  SettingsNav,
+  SettingsNavFoot,
+  SettingsNavItem,
+  SettingsPaneHeader,
+} from "../../components/SettingsWindow";
 
 type Tab = "overview" | "retention" | "permissions";
 
@@ -30,8 +40,9 @@ const TYPE_LABEL: Record<ChannelInfo["type"], string> = {
   unknown: "Channel",
 };
 
-/// Channel and category settings: the server-settings window's chrome
-/// (sidebar of tabs, 300ms fade + scale, portal to body). Overview,
+/// Channel and category settings, in the shared settings window
+/// (components/SettingsWindow.tsx: sidebar of tabs, an icon rail below
+/// 1024 px, 300ms fade + scale, portal to body). Overview,
 /// Retention and Permissions edits are one draft; the save bar commits
 /// all of it, and leaving with unsaved changes shakes the bar instead of
 /// dropping them. Delete sits at the sidebar's foot, like Leave Server.
@@ -254,7 +265,7 @@ export default function ChannelSettingsModal() {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center px-[max(calc(var(--spacing)*14),5vw)] py-[max(calc(var(--spacing)*12),6vh)] transition-colors duration-300"
+      className={SETTINGS_BACKDROP}
       style={{ backgroundColor: visible ? "rgba(0,0,0,0.65)" : "rgba(0,0,0,0)" }}
       onClick={(e) => {
         // Only a real backdrop click, not one bubbling from a nested
@@ -266,17 +277,16 @@ export default function ChannelSettingsModal() {
       }}
     >
       <div
-        className="flex h-full max-h-280 w-full max-w-400 overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-[opacity,transform] duration-300"
+        className={SETTINGS_FRAME}
         style={{ opacity: visible ? 1 : 0, transform: visible ? "scale(1)" : "scale(0.95)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Sidebar */}
-        <div className="flex w-60 shrink-0 flex-col gap-0.5 border-r border-border-divider bg-bg-darkest px-3 py-6">
-          <div className="mb-3 flex items-center gap-2.5 px-3" title={channel.name}>
+        <SettingsNav>
+          <div className="mb-3 flex items-center gap-2.5 px-3 max-lg:justify-center max-lg:px-0" title={channel.name}>
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-bg-light text-text-secondary shadow-raised">
               <Icon name={channelIcon(channel.type)} size={15} />
             </span>
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 max-lg:hidden">
               <div className="flex items-center gap-1.5">
                 <span className="truncate text-[14px] font-semibold text-text-primary">{channel.name}</span>
                 {channel.encrypted && <Icon name="lock" size={12} className="text-success" />}
@@ -288,53 +298,31 @@ export default function ChannelSettingsModal() {
             </div>
           </div>
           {tabs.map((id) => (
-            <button
+            <SettingsNavItem
               key={id}
+              icon={<Icon name={TABS[id].icon} size={16} />}
+              label={TABS[id].label}
+              active={active === id}
+              dot={tabDirty[id]}
               onClick={() => setTab(id)}
-              className={`flex items-center gap-2.5 rounded-md px-3 py-[9px] text-[14px] transition-colors ${
-                active === id
-                  ? "bg-accent-soft font-medium text-text-primary"
-                  : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
-              }`}
-            >
-              <span className={active === id ? "text-accent-bright" : "text-text-muted"}>
-                <Icon name={TABS[id].icon} size={16} />
-              </span>
-              {TABS[id].label}
-              {tabDirty[id] && (
-                <span className="ml-auto h-1.5 w-1.5 rounded-full bg-accent" title="Unsaved changes" />
-              )}
-            </button>
+            />
           ))}
 
           {canManage && !isLastTextChannel && (
-            <>
-              <div className="flex-1" />
-              <div className="mx-1.5 mb-1 h-px bg-border-divider" />
-              <button
+            <SettingsNavFoot>
+              <SettingsNavItem
+                danger
+                icon={<Icon name="trash" size={16} />}
+                label={channel.type === "category" ? "Delete Category" : "Delete Channel"}
                 onClick={() => setConfirm("delete")}
-                className="flex items-center gap-2.5 rounded-md px-3 py-[9px] text-[14px] font-normal text-text-muted transition-colors hover:bg-error/10 hover:text-error"
-              >
-                <Icon name="trash" size={16} />
-                {channel.type === "category" ? "Delete Category" : "Delete Channel"}
-              </button>
-            </>
+              />
+            </SettingsNavFoot>
           )}
-        </div>
+        </SettingsNav>
 
-        {/* Content */}
-        <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin [scrollbar-gutter:stable]">
-          <div className="flex items-center justify-between px-8 pt-7 pb-5">
-            <h2 className="font-display text-[18px] font-semibold text-text-primary">{TABS[active].label}</h2>
-            <button
-              onClick={requestClose}
-              aria-label="Close"
-              className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
-            >
-              <Icon name="x" size={14} strokeWidth={2.5} />
-            </button>
-          </div>
-          <div className="flex-1 px-8 pb-7">
+        <div className={SETTINGS_PANE}>
+          <SettingsPaneHeader title={TABS[active].label} context={`${prefix}${channel.name}`} onClose={requestClose} />
+          <div className={SETTINGS_BODY}>
             {error && (
               <div className="mb-6 flex items-center gap-2 rounded-md border border-error/30 bg-error/10 px-3 py-2.5 text-[13px] text-error">
                 <Icon name="alert" size={15} />

@@ -190,6 +190,11 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   stop the echo from matching. Unsaved edits hold the window (owner, 2026-10-14): in Server Settings,
   Esc / ✕ / a backdrop click / a tab switch shake the open tab's `SaveBar` (`leaveGuard.ts`), as
   channel settings does on close.
+- **Settings windows share one frame** (`components/SettingsWindow.tsx`: Settings, Server Settings,
+  Channel Settings). Below 1024 px (`max-lg:`) the window goes nearly edge to edge and the sidebar
+  folds into a 64 px icon rail; each icon shows its name on hover / focus. Owner decisions
+  (2026-10-14): keep the app's 800×600 minimum window, switch at 1024 px, per-icon labels (no rail
+  that slides open). Build new settings windows on this frame, not on a copy of it.
 - **Attachments in encrypted channels are sealed client-side** (random key per file, 64 KiB
   AES-256-GCM chunks, sealed thumbnails; `features/chat/attachmentCrypto.ts` encrypts,
   `electron/main/attachmentCrypto.ts` + `attachmentFetch.ts` decrypt in the protocol / media

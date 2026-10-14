@@ -12,14 +12,26 @@ import BansTab from "./tabs/BansTab";
 import AuditLogTab from "./tabs/AuditLogTab";
 import StorageTab from "./tabs/StorageTab";
 import { LeaveGuardContext } from "./leaveGuard";
+import {
+  SETTINGS_BACKDROP,
+  SETTINGS_BODY,
+  SETTINGS_FRAME,
+  SETTINGS_PANE,
+  SettingsNav,
+  SettingsNavFoot,
+  SettingsNavItem,
+  SettingsNavLabel,
+  SettingsPaneHeader,
+} from "../../components/SettingsWindow";
 
 interface Props {
   serverId: string;
 }
 
-/// Unified server-settings screen (Discord-style): mirrors
-/// SettingsModal chrome 1:1 (820×560, tabbed sidebar, fade-in
-/// scale-95→1, Esc closes, backdrop click closes, portal to body).
+/// Unified server-settings screen (Discord-style), in the shared settings
+/// window (components/SettingsWindow.tsx: tabbed sidebar, an icon rail
+/// below 1024 px, fade-in scale-95→1, Esc closes, backdrop click closes,
+/// portal to body).
 /// A tab with unsaved changes holds the window: closing it or changing
 /// tab shakes that tab's save bar instead (leaveGuard.ts).
 ///
@@ -211,7 +223,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center px-[max(calc(var(--spacing)*14),5vw)] py-[max(calc(var(--spacing)*12),6vh)] transition-colors duration-300"
+      className={SETTINGS_BACKDROP}
       style={{
         backgroundColor: visible ? "rgba(0,0,0,0.65)" : "rgba(0,0,0,0)",
       }}
@@ -223,80 +235,48 @@ export default function ServerSettingsModal({ serverId }: Props) {
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="flex h-full max-h-280 w-full max-w-400 overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-[opacity,transform] duration-300"
+        className={SETTINGS_FRAME}
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Sidebar */}
-        <div className="flex w-60 shrink-0 flex-col gap-0.5 border-r border-border-divider bg-bg-darkest px-3 py-6">
-          <div
-            className="mb-2 truncate px-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted"
-            title={serverName}
-          >
-            {serverName}
-          </div>
+        <SettingsNav>
+          <SettingsNavLabel title={serverName}>{serverName}</SettingsNavLabel>
           {tabs.map((tab) => (
-            <button
+            <SettingsNavItem
               key={tab.id}
+              icon={tab.icon}
+              label={tab.label}
+              active={effectiveTab === tab.id}
               onClick={() => tab.id !== effectiveTab && leaveTab(() => setActiveTab(tab.id))}
-              className={`flex items-center gap-2.5 rounded-md px-3 py-[9px] text-[14px] transition-colors ${
-                effectiveTab === tab.id
-                  ? "bg-accent-soft font-medium text-text-primary"
-                  : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
-              }`}
-            >
-              <span
-                className={
-                  effectiveTab === tab.id ? "text-accent-bright" : "text-text-muted"
-                }
-              >
-                {tab.icon}
-              </span>
-              {tab.label}
-            </button>
+            />
           ))}
 
           {/* Leave server — pinned at the bottom, non-owners only (the
               owner can't leave their own server). */}
           {!isOwner && (
-            <>
-              <div className="flex-1" />
-              <div className="mx-1.5 mb-1 h-px bg-border-divider" />
-              <button
+            <SettingsNavFoot>
+              <SettingsNavItem
+                danger
+                label="Leave Server"
                 onClick={() => setLeaveConfirm(true)}
-                className="flex items-center gap-2.5 rounded-md px-3 py-[9px] text-[14px] font-normal text-text-muted transition-colors hover:bg-error/10 hover:text-error"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                  <polyline points="16 17 21 12 16 7" />
-                  <line x1="21" y1="12" x2="9" y2="12" />
-                </svg>
-                Leave Server
-              </button>
-            </>
+                icon={
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                    <polyline points="16 17 21 12 16 7" />
+                    <line x1="21" y1="12" x2="9" y2="12" />
+                  </svg>
+                }
+              />
+            </SettingsNavFoot>
           )}
-        </div>
+        </SettingsNav>
 
-        {/* Content */}
-        <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin [scrollbar-gutter:stable]">
-          <div className="flex items-center justify-between px-8 pt-7 pb-5">
-            <h2 className="font-display text-[18px] font-semibold text-text-primary">
-              {activeTabDef.label}
-            </h2>
-            <button
-              onClick={() => leaveTab(closeModal)}
-              className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-          <div className="flex-1 px-8 pb-7">
+        <div className={SETTINGS_PANE}>
+          <SettingsPaneHeader title={activeTabDef.label} context={serverName} onClose={() => leaveTab(closeModal)} />
+          <div className={SETTINGS_BODY}>
             <LeaveGuardContext.Provider value={guard}>
               {effectiveTab === "overview" && <OverviewTab serverId={serverId} />}
               {effectiveTab === "members" && <MembersTab serverId={serverId} />}

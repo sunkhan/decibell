@@ -9,6 +9,16 @@ import NetworkTab from "./tabs/NetworkTab";
 import CodecsTab from "./tabs/CodecsTab";
 import AboutTab from "./tabs/AboutTab";
 import { useEffect, useState, useCallback } from "react";
+import {
+  SETTINGS_BACKDROP,
+  SETTINGS_BODY,
+  SETTINGS_FRAME,
+  SETTINGS_PANE,
+  SettingsNav,
+  SettingsNavItem,
+  SettingsNavLabel,
+  SettingsPaneHeader,
+} from "../../components/SettingsWindow";
 
 const TABS = [
   {
@@ -147,59 +157,35 @@ export default function SettingsModal() {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center px-[max(calc(var(--spacing)*14),5vw)] py-[max(calc(var(--spacing)*12),6vh)] transition-colors duration-300"
+      className={SETTINGS_BACKDROP}
       style={{ backgroundColor: visible ? "rgba(0,0,0,0.65)" : "rgba(0,0,0,0)" }}
       onClick={closeModal}
       onTransitionEnd={handleTransitionEnd}
     >
       <div
-        className="flex h-full max-h-280 w-full max-w-400 overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-[opacity,transform] duration-300"
+        className={SETTINGS_FRAME}
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Left sidebar */}
-        <div className="flex w-60 shrink-0 flex-col gap-0.5 border-r border-border-divider bg-bg-darkest px-3 py-6">
-          <div className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-            Settings
-          </div>
+        <SettingsNav>
+          <SettingsNavLabel>Settings</SettingsNavLabel>
           {TABS.map((tab) => (
-            <button
+            <SettingsNavItem
               key={tab.id}
+              icon={tab.icon}
+              label={tab.label}
+              active={settingsTab === tab.id}
               onClick={() => setSettingsTab(tab.id)}
-              className={`flex items-center gap-2.5 rounded-md px-3 py-[9px] text-[14px] transition-colors ${
-                settingsTab === tab.id
-                  ? "bg-accent-soft font-medium text-text-primary"
-                  : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
-              }`}
-            >
-              <span className={settingsTab === tab.id ? "text-accent-bright" : "text-text-muted"}>
-                {tab.icon}
-              </span>
-              {tab.label}
-            </button>
+            />
           ))}
-        </div>
+        </SettingsNav>
 
-        {/* Right content */}
-        <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
-          <div className="flex items-center justify-between px-8 pt-7 pb-5">
-            <h2 className="font-display text-[18px] font-semibold text-text-primary">
-              {activeTab.label}
-            </h2>
-            <button
-              onClick={closeModal}
-              className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-          <div className="flex-1 px-8 pb-7">
+        <div className={SETTINGS_PANE}>
+          <SettingsPaneHeader title={activeTab.label} onClose={closeModal} />
+          <div className={SETTINGS_BODY}>
             <TabComponent />
           </div>
         </div>
