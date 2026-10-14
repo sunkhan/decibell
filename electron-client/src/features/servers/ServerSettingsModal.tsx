@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -11,6 +11,7 @@ import RolesTab from "./tabs/RolesTab";
 import BansTab from "./tabs/BansTab";
 import AuditLogTab from "./tabs/AuditLogTab";
 import StorageTab from "./tabs/StorageTab";
+import { LeaveGuardContext } from "./leaveGuard";
 
 interface Props {
   serverId: string;
@@ -19,6 +20,8 @@ interface Props {
 /// Unified server-settings screen (Discord-style): mirrors
 /// SettingsModal chrome 1:1 (820×560, tabbed sidebar, fade-in
 /// scale-95→1, Esc closes, backdrop click closes, portal to body).
+/// A tab with unsaved changes holds the window: closing it or changing
+/// tab shakes that tab's save bar instead (leaveGuard.ts).
 ///
 /// Tabs are permission-gated to match the server: Overview and Members
 /// are for everyone (editing inside them is gated per-control), Roles
@@ -33,6 +36,8 @@ export default function ServerSettingsModal({ serverId }: Props) {
   const [visible, setVisible] = useState(false);
   const [activeTab, setActiveTab] = useState<string>("overview");
   const [leaveConfirm, setLeaveConfirm] = useState(false);
+  const [tabDirty, setTabDirty] = useState(false);
+  const [nudge, setNudge] = useState(0);
 
   const server = useChatStore((s) => s.servers.find((x) => x.id === serverId));
   const serverName = useChatStore(
@@ -155,14 +160,33 @@ export default function ServerSettingsModal({ serverId }: Props) {
     if (!visible) setMounted(false);
   }, [visible]);
 
+  // A nudge belongs to the changes it guarded; the next ones start calm.
+  useEffect(() => {
+    if (!tabDirty) setNudge(0);
+  }, [tabDirty]);
+  const guard = useMemo(() => ({ nudge, setDirty: setTabDirty }), [nudge]);
+
+  /// Leave the open tab (close, or switch tabs), unless it has unsaved
+  /// changes: then shake its save bar.
+  const leaveTab = useCallback(
+    (go: () => void) => {
+      if (tabDirty) setNudge((n) => n + 1);
+      else go();
+    },
+    [tabDirty],
+  );
+
   useEffect(() => {
     if (!mounted) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeModal();
+      // A dialog inside the window (ConfirmModal) took this Esc.
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (leaveConfirm) setLeaveConfirm(false);
+      else leaveTab(closeModal);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mounted, closeModal]);
+  }, [mounted, leaveConfirm, leaveTab, closeModal]);
 
   // A live permission change can hide the tab we're on — fall back.
   const effectiveTab = tabs.some((t) => t.id === activeTab)
@@ -194,7 +218,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
       onClick={(e) => {
         // Guard: only close on a real backdrop click, not on clicks
         // bubbling up from nested overlays (cropper, confirm dialogs).
-        if (e.target === e.currentTarget) closeModal();
+        if (e.target === e.currentTarget) leaveTab(closeModal);
       }}
       onTransitionEnd={handleTransitionEnd}
     >
@@ -217,7 +241,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
           {tabs.map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => tab.id !== effectiveTab && leaveTab(() => setActiveTab(tab.id))}
               className={`flex items-center gap-2.5 rounded-md px-3 py-[9px] text-[14px] transition-colors ${
                 effectiveTab === tab.id
                   ? "bg-accent-soft font-medium text-text-primary"
@@ -263,7 +287,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
               {activeTabDef.label}
             </h2>
             <button
-              onClick={closeModal}
+              onClick={() => leaveTab(closeModal)}
               className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -273,12 +297,14 @@ export default function ServerSettingsModal({ serverId }: Props) {
             </button>
           </div>
           <div className="flex-1 px-8 pb-7">
-            {effectiveTab === "overview" && <OverviewTab serverId={serverId} />}
-            {effectiveTab === "members" && <MembersTab serverId={serverId} />}
-            {effectiveTab === "roles" && <RolesTab serverId={serverId} />}
-            {effectiveTab === "bans" && <BansTab serverId={serverId} />}
-            {effectiveTab === "audit" && <AuditLogTab serverId={serverId} />}
-            {effectiveTab === "storage" && <StorageTab serverId={serverId} />}
+            <LeaveGuardContext.Provider value={guard}>
+              {effectiveTab === "overview" && <OverviewTab serverId={serverId} />}
+              {effectiveTab === "members" && <MembersTab serverId={serverId} />}
+              {effectiveTab === "roles" && <RolesTab serverId={serverId} />}
+              {effectiveTab === "bans" && <BansTab serverId={serverId} />}
+              {effectiveTab === "audit" && <AuditLogTab serverId={serverId} />}
+              {effectiveTab === "storage" && <StorageTab serverId={serverId} />}
+            </LeaveGuardContext.Provider>
           </div>
         </div>
       </div>

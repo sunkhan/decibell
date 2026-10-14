@@ -4,9 +4,9 @@ import { useMenuPosition, type MenuAnchor } from "../../../hooks/useMenuPosition
 import type { ServerRole } from "../../../types";
 import { roleColor } from "./helpers";
 
-/// Building blocks shared by the Members, Roles and Audit Log tabs: one
-/// stroke icon set, the toolbar search field, an anchored popover, menu
-/// rows and the role chip.
+/// Building blocks shared by the settings tabs: one stroke icon set, the
+/// toolbar search field, an anchored popover, menu rows, the role chip
+/// and the save bar.
 
 const PATHS = {
   search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>,
@@ -299,6 +299,62 @@ export function SectionLabel({ children, className = "" }: { children: ReactNode
   return (
     <div className={`font-section text-section font-medium uppercase leading-none tracking-section text-text-muted ${className}`}>
       {children}
+    </div>
+  );
+}
+
+/// The floating save bar under a settings draft, shown while it has
+/// unsaved changes. `nudge` counts refused leaves (a role switch, closing
+/// the window): each one shakes the bar and swaps in `nudgeMessage`.
+export function SaveBar({
+  nudge,
+  saving,
+  onReset,
+  onSave,
+  message = "You have unsaved changes.",
+  nudgeMessage = "Save or reset your changes first.",
+  resetLabel = "Reset",
+  saveLabel = "Save changes",
+  saveDisabled = false,
+}: {
+  nudge: number;
+  saving: boolean;
+  onReset: () => void;
+  onSave: () => void;
+  message?: string;
+  nudgeMessage?: string;
+  resetLabel?: string;
+  saveLabel?: string;
+  saveDisabled?: boolean;
+}) {
+  return (
+    <div className="pointer-events-none sticky bottom-4 z-20 mt-8 flex justify-center">
+      <div
+        key={nudge}
+        className={`pointer-events-auto flex w-full items-center gap-2 rounded-lg border border-border bg-bg-darkest py-2.5 pl-4 pr-2.5 shadow-float ${
+          nudge ? "animate-[barNudge_0.36s_ease]" : "animate-[fadeUp_0.2s_ease]"
+        }`}
+      >
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
+          {nudge ? nudgeMessage : message}
+        </span>
+        <button
+          type="button"
+          onClick={onReset}
+          disabled={saving}
+          className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
+        >
+          {resetLabel}
+        </button>
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={saving || saveDisabled}
+          className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
+        >
+          {saving ? "Saving…" : saveLabel}
+        </button>
+      </div>
     </div>
   );
 }

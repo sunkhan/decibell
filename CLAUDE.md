@@ -187,7 +187,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   2026-10-14): after Save the draft stays ("Saving…") until the store shows what was sent. A refusal
   or 5 s ends the wait and keeps the draft. Never clear a draft when the request goes out. Text
   fields clamp to the server's byte caps as typed (`lib/utf8.ts`), so a server-side clamp can't
-  stop the echo from matching.
+  stop the echo from matching. Unsaved edits hold the window (owner, 2026-10-14): in Server Settings,
+  Esc / ✕ / a backdrop click / a tab switch shake the open tab's `SaveBar` (`leaveGuard.ts`), as
+  channel settings does on close.
 - **Attachments in encrypted channels are sealed client-side** (random key per file, 64 KiB
   AES-256-GCM chunks, sealed thumbnails; `features/chat/attachmentCrypto.ts` encrypts,
   `electron/main/attachmentCrypto.ts` + `attachmentFetch.ts` decrypt in the protocol / media

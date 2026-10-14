@@ -7,7 +7,7 @@ import { toast } from "../../stores/toastStore";
 import ConfirmModal from "../../components/ConfirmModal";
 import { PERM, useChannelPermission } from "./permissions";
 import type { ChannelInfo } from "../../types";
-import { Icon, type IconName } from "./tabs/settingsUi";
+import { Icon, SaveBar, type IconName } from "./tabs/settingsUi";
 import { channelIcon } from "./channelSettings/ui";
 import { changesOf, draftOf, type ChannelDraft } from "./channelSettings/draft";
 import OverviewTab from "./channelSettings/OverviewTab";
@@ -161,6 +161,11 @@ export default function ChannelSettingsModal() {
       unUpdated.then((fn) => fn());
     };
   }, [isOpen, activeServerId, stopSave]);
+
+  // A nudge belongs to the changes it guarded; the next ones start calm.
+  useEffect(() => {
+    if (!dirty) setNudge(0);
+  }, [dirty]);
 
   /// Close, unless there are unsaved changes: then shake the save bar.
   const requestClose = useCallback(() => {
@@ -353,34 +358,13 @@ export default function ChannelSettingsModal() {
             )}
 
             {dirty && (
-              <div className="pointer-events-none sticky bottom-4 z-20 mt-8 flex justify-center">
-                <div
-                  key={nudge}
-                  className={`pointer-events-auto flex w-full items-center gap-2 rounded-lg border border-border bg-bg-darkest py-2.5 pl-4 pr-2.5 shadow-float ${
-                    nudge ? "animate-[barNudge_0.36s_ease]" : "animate-[fadeUp_0.2s_ease]"
-                  }`}
-                >
-                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
-                    {nudge ? "Save or reset your changes before closing." : "You have unsaved changes."}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={reset}
-                    disabled={saving}
-                    className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
-                  >
-                    Reset
-                  </button>
-                  <button
-                    type="button"
-                    onClick={save}
-                    disabled={saving}
-                    className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
-                  >
-                    {saving ? "Saving…" : "Save changes"}
-                  </button>
-                </div>
-              </div>
+              <SaveBar
+                nudge={nudge}
+                saving={saving}
+                onReset={reset}
+                onSave={save}
+                nudgeMessage="Save or reset your changes before closing."
+              />
             )}
           </div>
         </div>

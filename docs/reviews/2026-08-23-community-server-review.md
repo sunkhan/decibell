@@ -2235,3 +2235,29 @@ real components:
 - Channel settings: save → echo, timeout and refusal.
 
 Pending: a live run against a community.
+
+**Client: unsaved server settings hold the window (2026-10-14) ✅** — Owner asked for the channel
+settings close behaviour in Server Settings too. Esc, ✕ and a backdrop click closed the window, and a
+tab switch unmounted the tab, dropping an unsaved role, server name / description or headroom edit
+without a word.
+- **Guard:** `features/servers/leaveGuard.ts`. The open tab reports its unsaved changes
+  (`useLeaveGuard(dirty)`); a close or tab switch while they exist shakes that tab's save bar and
+  swaps in "Save or reset your changes first." A role switch in Roles still shakes the same bar.
+- **One save bar:** `SaveBar` in `tabs/settingsUi.tsx`, used by Roles, Overview, Storage and channel
+  settings. Overview's inline Save and Storage's inline Save moved into it, with a Reset. A shake
+  belongs to the changes it guarded; the next edit's bar starts calm.
+- **Storage:** any headroom text other than the stored value counts as a change, a half-typed or
+  blank number included, so Save explains what's wrong instead of the edit vanishing.
+- **Esc in a dialog** inside the window (role delete, Leave Server) now closes only the dialog. It
+  used to close the whole window as well.
+- Not guarded: the Members nickname field (Esc there closes the field, as before) and the ownership
+  transfer form (a confirmation, not a draft).
+
+Renderer only. Verified: tsc web 0. In the offscreen harness against the real components: Overview
+Esc / ✕ / backdrop / tab switch shake, Reset then Esc closes; tab switch held while saving, goes
+through after the echo; Roles Esc, role switch and tab switch shake, the next edit starts calm; Esc
+in the role-delete and Leave Server confirms closes only the confirm; Storage edit → shake → save → echo, blank value
+→ "Invalid value"; Esc in the nickname field closes only the field; channel settings shake on Esc.
+Screenshots in nocturne and matinee.
+
+Pending: a live run against a community.

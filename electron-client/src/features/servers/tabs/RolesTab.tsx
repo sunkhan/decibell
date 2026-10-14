@@ -21,10 +21,11 @@ import {
 } from "../permissions";
 import { CustomColorSwatch, onSwatch } from "./ColorPicker";
 import { ROLE_COLOR_PRESETS, roleColor } from "./helpers";
-import { Icon, Popover, RoleChip, SearchField, SectionLabel, anchorBelow } from "./settingsUi";
+import { Icon, Popover, RoleChip, SaveBar, SearchField, SectionLabel, anchorBelow } from "./settingsUi";
 import { EmptyState } from "./AuditLogTab";
 import { useMemberSearch } from "./useMemberSearch";
 import { useEchoSave } from "../saveEcho";
+import { useLeaveGuard } from "../leaveGuard";
 import { ROLE_NAME_MAX_BYTES } from "../limits";
 
 /// The editable fields of a role. A new role is a draft with id null.
@@ -145,6 +146,13 @@ export default function RolesTab({ serverId }: { serverId: string }) {
   const editable = isNew || (!!role && canEditRole(role));
   const sections: Section[] = role?.isDefault ? ["permissions"] : isNew ? ["display", "permissions"] : ["display", "permissions", "members"];
   const activeSection = sections.includes(section) ? section : sections[0];
+
+  // Closing the window or changing tab shakes the bar too (leaveGuard.ts).
+  // A nudge belongs to the changes it guarded; the next ones start calm.
+  const leaveNudge = useLeaveGuard(dirty);
+  useEffect(() => {
+    if (!dirty) setNudge(0);
+  }, [dirty]);
 
   // Counts come from the server (role-list pushes), so they include
   // offline members the sidebar never loaded.
@@ -452,34 +460,17 @@ export default function RolesTab({ serverId }: { serverId: string }) {
         </div>
 
         {dirty && (
-          <div className="pointer-events-none sticky bottom-4 z-20 mt-8 flex justify-center">
-            <div
-              key={nudge}
-              className={`pointer-events-auto flex w-full items-center gap-2 rounded-lg border border-border bg-bg-darkest py-2.5 pl-4 pr-2.5 shadow-float ${
-                nudge ? "animate-[barNudge_0.36s_ease]" : "animate-[fadeUp_0.2s_ease]"
-              }`}
-            >
-              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
-                {isNew ? "This role doesn't exist until you create it." : "You have unsaved changes."}
-              </span>
-              <button
-                type="button"
-                onClick={reset}
-                disabled={saving}
-                className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
-              >
-                {isNew ? "Cancel" : "Reset"}
-              </button>
-              <button
-                type="button"
-                onClick={save}
-                disabled={saving || (!role?.isDefault && !fields.name.trim())}
-                className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
-              >
-                {saving ? "Saving…" : isNew ? "Create role" : "Save changes"}
-              </button>
-            </div>
-          </div>
+          <SaveBar
+            nudge={nudge + leaveNudge}
+            saving={saving}
+            onReset={reset}
+            onSave={save}
+            message={isNew ? "This role doesn't exist until you create it." : undefined}
+            nudgeMessage={isNew ? "Create the role or cancel it first." : undefined}
+            resetLabel={isNew ? "Cancel" : "Reset"}
+            saveLabel={isNew ? "Create role" : "Save changes"}
+            saveDisabled={!role?.isDefault && !fields.name.trim()}
+          />
         )}
       </section>
 

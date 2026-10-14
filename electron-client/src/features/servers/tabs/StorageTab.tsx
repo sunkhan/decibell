@@ -6,6 +6,8 @@ import { formatFileSize } from "../../chat/attachmentHelpers";
 import { toast } from "../../../stores/toastStore";
 import type { StorageInfoReceivedPayload } from "../../../types";
 import { useEchoSave } from "../saveEcho";
+import { useLeaveGuard } from "../leaveGuard";
+import { SaveBar } from "./settingsUi";
 
 const KIND_LABELS: Record<number, string> = {
   0: "Images",
@@ -124,12 +126,16 @@ export default function StorageTab({ serverId }: { serverId: string }) {
     });
   };
 
+  // Anything but the stored value is a change, a half-typed number too:
+  // Save says what's wrong with it rather than the edit vanishing.
   const dirtyMinFree = useMemo(() => {
     if (!info) return false;
     const gb = parseFloat(minFreeGb);
-    if (!isFinite(gb) || gb < 0) return false;
+    if (!isFinite(gb) || gb < 0) return true;
     return Math.round(gb * GIB) !== info.minFreeBytes;
   }, [minFreeGb, info]);
+  // Closing the window or changing tab shakes the save bar (leaveGuard.ts).
+  const leaveNudge = useLeaveGuard(dirtyMinFree);
 
   if (loading && !info) {
     return <p className="py-8 text-center text-[13px] text-text-muted">Loading storage…</p>;
@@ -140,128 +146,130 @@ export default function StorageTab({ serverId }: { serverId: string }) {
   if (!info) return null;
 
   return (
-    <div className="flex flex-col gap-5">
-      {error && <p className="text-[12px] text-error">{error}</p>}
+    <div>
+      <div className="flex flex-col gap-5">
+        {error && <p className="text-[12px] text-error">{error}</p>}
 
-      {/* Host volume */}
-      <section>
-        <h3 className="mb-2 text-[13px] font-semibold text-text-primary">Host disk</h3>
-        <div className="rounded-md border border-border p-3">
-          <div className="mb-2 flex items-baseline justify-between text-[12px]">
-            <span className="text-text-secondary">
-              {formatFileSize(used)} / {formatFileSize(info.volumeTotalBytes)} used
-            </span>
-            <span className={lowSpace ? "text-error" : "text-text-muted"}>
-              {formatFileSize(info.volumeAvailableBytes)} available
-            </span>
-          </div>
-          <div className="h-2.5 w-full overflow-hidden rounded-full bg-bg-light">
-            <div
-              className={`h-full rounded-full ${lowSpace ? "bg-error" : "bg-accent"}`}
-              style={{ width: `${usedPct}%` }}
-            />
-          </div>
-          {lowSpace && (
-            <p className="mt-2 text-[11px] text-error">
-              Available space is at or below the upload headroom — new uploads are being
-              refused until space is freed or the headroom is lowered.
-            </p>
-          )}
-        </div>
-      </section>
-
-      {/* Upload headroom (editable) */}
-      <section>
-        <h3 className="mb-2 text-[13px] font-semibold text-text-primary">Upload headroom</h3>
-        <p className="mb-2 text-[12px] text-text-muted">
-          Refuse uploads that would leave the disk with less than this much free space.
-        </p>
-        <div className="flex items-center gap-2">
-          <input
-            type="number"
-            min={0}
-            step="0.5"
-            value={minFreeGb}
-            onChange={(e) => setMinFreeGb(e.target.value)}
-            className="w-28 rounded-md border border-border bg-bg-light px-2.5 py-1.5 text-[13px] text-text-primary outline-none focus:border-accent"
-          />
-          <span className="text-[13px] text-text-secondary">GB</span>
-          <button
-            type="button"
-            onClick={saveMinFree}
-            disabled={!dirtyMinFree || savingMin}
-            className="ml-1 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {savingMin ? "Saving…" : "Save"}
-          </button>
-        </div>
-      </section>
-
-      {/* This server's footprint */}
-      <section>
-        <h3 className="mb-2 text-[13px] font-semibold text-text-primary">
-          This server is using {formatFileSize(serverFootprint)}
-        </h3>
-        <div className="grid grid-cols-3 gap-2">
-          <Stat label="Attachments" value={formatFileSize(info.attachmentsBytes)}
-                sub={`${info.attachmentCount.toLocaleString()} files`} />
-          <Stat label="Thumbnails" value={formatFileSize(info.thumbnailsBytes)} />
-          <Stat label="Database" value={formatFileSize(info.databaseBytes)} />
-        </div>
-      </section>
-
-      {/* By type */}
-      {info.byKind.length > 0 && (
+        {/* Host volume */}
         <section>
-          <h3 className="mb-2 text-[13px] font-semibold text-text-primary">By type</h3>
-          <div className="flex flex-col divide-y divide-border-divider rounded-md border border-border">
-            {[...info.byKind]
-              .sort((a, b) => b.bytes - a.bytes)
-              .map((k) => (
+          <h3 className="mb-2 text-[13px] font-semibold text-text-primary">Host disk</h3>
+          <div className="rounded-md border border-border p-3">
+            <div className="mb-2 flex items-baseline justify-between text-[12px]">
+              <span className="text-text-secondary">
+                {formatFileSize(used)} / {formatFileSize(info.volumeTotalBytes)} used
+              </span>
+              <span className={lowSpace ? "text-error" : "text-text-muted"}>
+                {formatFileSize(info.volumeAvailableBytes)} available
+              </span>
+            </div>
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-bg-light">
+              <div
+                className={`h-full rounded-full ${lowSpace ? "bg-error" : "bg-accent"}`}
+                style={{ width: `${usedPct}%` }}
+              />
+            </div>
+            {lowSpace && (
+              <p className="mt-2 text-[11px] text-error">
+                Available space is at or below the upload headroom — new uploads are being
+                refused until space is freed or the headroom is lowered.
+              </p>
+            )}
+          </div>
+        </section>
+
+        {/* Upload headroom (editable) */}
+        <section>
+          <h3 className="mb-2 text-[13px] font-semibold text-text-primary">Upload headroom</h3>
+          <p className="mb-2 text-[12px] text-text-muted">
+            Refuse uploads that would leave the disk with less than this much free space.
+          </p>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={0}
+              step="0.5"
+              value={minFreeGb}
+              onChange={(e) => setMinFreeGb(e.target.value)}
+              className="w-28 rounded-md border border-border bg-bg-light px-2.5 py-1.5 text-[13px] text-text-primary outline-none focus:border-accent"
+            />
+            <span className="text-[13px] text-text-secondary">GB</span>
+          </div>
+        </section>
+
+        {/* This server's footprint */}
+        <section>
+          <h3 className="mb-2 text-[13px] font-semibold text-text-primary">
+            This server is using {formatFileSize(serverFootprint)}
+          </h3>
+          <div className="grid grid-cols-3 gap-2">
+            <Stat label="Attachments" value={formatFileSize(info.attachmentsBytes)}
+                  sub={`${info.attachmentCount.toLocaleString()} files`} />
+            <Stat label="Thumbnails" value={formatFileSize(info.thumbnailsBytes)} />
+            <Stat label="Database" value={formatFileSize(info.databaseBytes)} />
+          </div>
+        </section>
+
+        {/* By type */}
+        {info.byKind.length > 0 && (
+          <section>
+            <h3 className="mb-2 text-[13px] font-semibold text-text-primary">By type</h3>
+            <div className="flex flex-col divide-y divide-border-divider rounded-md border border-border">
+              {[...info.byKind]
+                .sort((a, b) => b.bytes - a.bytes)
+                .map((k) => (
+                  <Row
+                    key={k.kind}
+                    left={KIND_LABELS[k.kind] ?? `Kind ${k.kind}`}
+                    right={formatFileSize(k.bytes)}
+                    sub={`${k.count.toLocaleString()} files`}
+                  />
+                ))}
+            </div>
+          </section>
+        )}
+
+        {/* By channel */}
+        {info.byChannel.length > 0 && (
+          <section>
+            <h3 className="mb-2 text-[13px] font-semibold text-text-primary">By channel</h3>
+            <div className="flex flex-col divide-y divide-border-divider rounded-md border border-border">
+              {info.byChannel.map((c) => (
                 <Row
-                  key={k.kind}
-                  left={KIND_LABELS[k.kind] ?? `Kind ${k.kind}`}
-                  right={formatFileSize(k.bytes)}
-                  sub={`${k.count.toLocaleString()} files`}
+                  key={c.channelId}
+                  left={`#${channelName(c.channelId)}`}
+                  right={formatFileSize(c.bytes)}
+                  sub={`${c.count.toLocaleString()} files`}
                 />
               ))}
-          </div>
-        </section>
-      )}
+            </div>
+          </section>
+        )}
 
-      {/* By channel */}
-      {info.byChannel.length > 0 && (
-        <section>
-          <h3 className="mb-2 text-[13px] font-semibold text-text-primary">By channel</h3>
-          <div className="flex flex-col divide-y divide-border-divider rounded-md border border-border">
-            {info.byChannel.map((c) => (
-              <Row
-                key={c.channelId}
-                left={`#${channelName(c.channelId)}`}
-                right={formatFileSize(c.bytes)}
-                sub={`${c.count.toLocaleString()} files`}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Largest files */}
-      {info.largest.length > 0 && (
-        <section>
-          <h3 className="mb-2 text-[13px] font-semibold text-text-primary">Largest files</h3>
-          <div className="flex flex-col divide-y divide-border-divider rounded-md border border-border">
-            {info.largest.map((l) => (
-              <Row
-                key={l.attachmentId}
-                left={l.filename || `#${l.attachmentId}`}
-                right={formatFileSize(l.sizeBytes)}
-                sub={`#${channelName(l.channelId)}`}
-                truncateLeft
-              />
-            ))}
-          </div>
-        </section>
+        {/* Largest files */}
+        {info.largest.length > 0 && (
+          <section>
+            <h3 className="mb-2 text-[13px] font-semibold text-text-primary">Largest files</h3>
+            <div className="flex flex-col divide-y divide-border-divider rounded-md border border-border">
+              {info.largest.map((l) => (
+                <Row
+                  key={l.attachmentId}
+                  left={l.filename || `#${l.attachmentId}`}
+                  right={formatFileSize(l.sizeBytes)}
+                  sub={`#${channelName(l.channelId)}`}
+                  truncateLeft
+                />
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
+      {dirtyMinFree && (
+        <SaveBar
+          nudge={leaveNudge}
+          saving={savingMin}
+          onReset={() => setMinFreeGb((info.minFreeBytes / GIB).toFixed(1))}
+          onSave={saveMinFree}
+        />
       )}
     </div>
   );

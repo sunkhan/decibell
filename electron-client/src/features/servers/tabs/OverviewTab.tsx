@@ -12,6 +12,8 @@ import Switch from "../../../components/Switch";
 import Select from "../../../components/Select";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { useEchoSave } from "../saveEcho";
+import { useLeaveGuard } from "../leaveGuard";
+import { SaveBar } from "./settingsUi";
 import { SERVER_DESCRIPTION_MAX_BYTES, SERVER_NAME_MAX_BYTES } from "../limits";
 
 const MAX_BYTES = 1024 * 1024;
@@ -56,7 +58,9 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
     (sent) => setDraft((d) => (d && (d.name.trim() !== sent.name || d.description.trim() !== sent.description) ? d : null)),
   );
   const metaDirty =
-    nameDraft.trim() !== serverName || descDraft.trim() !== serverDescription;
+    canManageServer && (nameDraft.trim() !== serverName || descDraft.trim() !== serverDescription);
+  // Closing the window or changing tab shakes the save bar (leaveGuard.ts).
+  const leaveNudge = useLeaveGuard(metaDirty);
   const saveMeta = async () => {
     if (!canManageServer || !metaDirty || !nameDraft.trim() || savingMeta) return;
     const sent = { name: nameDraft.trim(), description: descDraft.trim() };
@@ -174,207 +178,209 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
   };
 
   return (
-    <div className="flex flex-col gap-6">
-      {/* Identity */}
-      <div className="flex flex-col gap-2">
-        <h3 className="text-[14px] font-semibold text-text-primary">
-          Server identity
-        </h3>
-        <div className="flex flex-col gap-2 rounded-md border border-border-divider bg-bg-light p-3.5">
-          {canManageServer ? (
-            <>
-              <div>
-                <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                  Name
-                </div>
-                <input
-                  value={nameDraft}
-                  maxLength={64}
-                  onChange={(e) => editMeta({ name: clampLine(e.target.value, SERVER_NAME_MAX_BYTES) })}
-                  className="w-full rounded-md border border-border bg-bg-lighter px-3 py-2 text-[14px] font-medium text-text-primary outline-none transition-all focus:border-accent focus:shadow-ring"
-                />
-              </div>
-              <div>
-                <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                  Description
-                </div>
-                <textarea
-                  value={descDraft}
-                  maxLength={512}
-                  rows={2}
-                  onChange={(e) => editMeta({ description: clampLine(e.target.value, SERVER_DESCRIPTION_MAX_BYTES) })}
-                  className="w-full resize-none rounded-md border border-border bg-bg-lighter px-3 py-2 text-[13px] leading-[1.5] text-text-secondary outline-none transition-all focus:border-accent focus:shadow-ring"
-                />
-              </div>
-              <div className="flex justify-end">
-                <button
-                  onClick={saveMeta}
-                  disabled={!metaDirty || savingMeta || !nameDraft.trim()}
-                  className="rounded-md bg-accent px-4 py-2 text-[13px] font-medium text-on-accent transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {savingMeta ? "Saving…" : "Save"}
-                </button>
-              </div>
-              <div className="mt-1 flex items-start justify-between gap-3 border-t border-border-divider pt-3">
-                <div className="min-w-0">
-                  <div className="text-[13px] font-medium text-text-primary">Public listing</div>
-                  <div className="mt-0.5 text-[12px] leading-[1.45] text-text-muted">
-                    List this server in Discover so anyone can find and join it without an
-                    invite. Off keeps it hidden and invite-only.
-                  </div>
-                </div>
-                <Switch
-                  checked={sentPublic ?? publicListing}
-                  onToggle={togglePublic}
-                  disabled={savingPublic}
-                  label="Public listing"
-                />
-              </div>
-            </>
-          ) : (
-            <>
-              <div>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                  Name
-                </div>
-                <div className="mt-0.5 text-[14px] font-medium text-text-primary">
-                  {serverName}
-                </div>
-              </div>
-              {serverDescription && (
+    <div>
+      <div className="flex flex-col gap-6">
+        {/* Identity */}
+        <div className="flex flex-col gap-2">
+          <h3 className="text-[14px] font-semibold text-text-primary">
+            Server identity
+          </h3>
+          <div className="flex flex-col gap-2 rounded-md border border-border-divider bg-bg-light p-3.5">
+            {canManageServer ? (
+              <>
                 <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                    Name
+                  </div>
+                  <input
+                    value={nameDraft}
+                    maxLength={64}
+                    onChange={(e) => editMeta({ name: clampLine(e.target.value, SERVER_NAME_MAX_BYTES) })}
+                    className="w-full rounded-md border border-border bg-bg-lighter px-3 py-2 text-[14px] font-medium text-text-primary outline-none transition-all focus:border-accent focus:shadow-ring"
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                     Description
                   </div>
-                  <div className="mt-0.5 text-[13px] leading-[1.5] text-text-secondary">
-                    {serverDescription}
+                  <textarea
+                    value={descDraft}
+                    maxLength={512}
+                    rows={2}
+                    onChange={(e) => editMeta({ description: clampLine(e.target.value, SERVER_DESCRIPTION_MAX_BYTES) })}
+                    className="w-full resize-none rounded-md border border-border bg-bg-lighter px-3 py-2 text-[13px] leading-[1.5] text-text-secondary outline-none transition-all focus:border-accent focus:shadow-ring"
+                  />
+                </div>
+                <div className="mt-1 flex items-start justify-between gap-3 border-t border-border-divider pt-3">
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-medium text-text-primary">Public listing</div>
+                    <div className="mt-0.5 text-[12px] leading-[1.45] text-text-muted">
+                      List this server in Discover so anyone can find and join it without an
+                      invite. Off keeps it hidden and invite-only.
+                    </div>
+                  </div>
+                  <Switch
+                    checked={sentPublic ?? publicListing}
+                    onToggle={togglePublic}
+                    disabled={savingPublic}
+                    label="Public listing"
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                    Name
+                  </div>
+                  <div className="mt-0.5 text-[14px] font-medium text-text-primary">
+                    {serverName}
                   </div>
                 </div>
-              )}
-            </>
-          )}
-          {owner && (
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                Owner
+                {serverDescription && (
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                      Description
+                    </div>
+                    <div className="mt-0.5 text-[13px] leading-[1.5] text-text-secondary">
+                      {serverDescription}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+            {owner && (
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                  Owner
+                </div>
+                <div className="mt-0.5 text-[13px] text-text-secondary">{owner}</div>
               </div>
-              <div className="mt-0.5 text-[13px] text-text-secondary">{owner}</div>
-            </div>
+            )}
+          </div>
+          {!canManageServer && (
+            <p className="text-[12px] leading-[1.5] text-text-muted">
+              Members with Manage Server can change the name and description.
+            </p>
           )}
         </div>
-        {!canManageServer && (
-          <p className="text-[12px] leading-[1.5] text-text-muted">
-            Members with Manage Server can change the name and description.
-          </p>
-        )}
-      </div>
 
-      {isOwner && (
+        {isOwner && (
+          <div className="flex flex-col gap-3">
+            <h3 className="text-[14px] font-semibold text-error">Transfer ownership</h3>
+            <div className="rounded-md border border-error/25 bg-error/5 p-3.5">
+              <p className="text-[12px] leading-[1.55] text-text-muted">
+                The new owner gets every permission and outranks every role; you
+                keep only the roles you hold. This can't be undone by you.
+              </p>
+              <Select
+                className="mt-3"
+                aria-label="New owner"
+                placeholder="Choose a member…"
+                value={transferTarget || null}
+                onChange={(v) => {
+                  setTransferTarget(v);
+                  setTransferConfirm("");
+                }}
+                options={transferCandidates.map((m) => ({
+                  value: m.username,
+                  label: m.nickname ? `${m.nickname} (${m.username})` : m.username,
+                  icon: <UserAvatar username={m.username} size={18} />,
+                }))}
+              />
+              {transferTarget && (
+                <>
+                  <input
+                    value={transferConfirm}
+                    onChange={(e) => setTransferConfirm(e.target.value)}
+                    placeholder={`Type ${transferTarget} to confirm`}
+                    className="mt-2 w-full rounded-md border border-border bg-bg-lighter px-3 py-2 text-[13px] text-text-primary outline-none transition-all focus:border-error"
+                  />
+                  <button
+                    onClick={runTransfer}
+                    disabled={transferConfirm !== transferTarget || transferring}
+                    className="mt-2 w-full rounded-md bg-error px-4 py-2 text-[13px] font-medium text-on-accent transition-colors hover:bg-error/90 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {transferring ? "Transferring…" : `Transfer ownership to ${transferTarget}`}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Picture */}
         <div className="flex flex-col gap-3">
-          <h3 className="text-[14px] font-semibold text-error">Transfer ownership</h3>
-          <div className="rounded-md border border-error/25 bg-error/5 p-3.5">
-            <p className="text-[12px] leading-[1.55] text-text-muted">
-              The new owner gets every permission and outranks every role; you
-              keep only the roles you hold. This can't be undone by you.
-            </p>
-            <Select
-              className="mt-3"
-              aria-label="New owner"
-              placeholder="Choose a member…"
-              value={transferTarget || null}
-              onChange={(v) => {
-                setTransferTarget(v);
-                setTransferConfirm("");
-              }}
-              options={transferCandidates.map((m) => ({
-                value: m.username,
-                label: m.nickname ? `${m.nickname} (${m.username})` : m.username,
-                icon: <UserAvatar username={m.username} size={18} />,
-              }))}
-            />
-            {transferTarget && (
-              <>
-                <input
-                  value={transferConfirm}
-                  onChange={(e) => setTransferConfirm(e.target.value)}
-                  placeholder={`Type ${transferTarget} to confirm`}
-                  className="mt-2 w-full rounded-md border border-border bg-bg-lighter px-3 py-2 text-[13px] text-text-primary outline-none transition-all focus:border-error"
-                />
+          <h3 className="text-[14px] font-semibold text-text-primary">
+            Server picture
+          </h3>
+          <p className="text-[13px] text-text-secondary">
+            Shown in the server bar in place of the default gradient and letter.
+            Square images work best; JPEG or PNG, max 1 MB.
+          </p>
+          <div className="flex items-center gap-6">
+            {hasPicture && pictureDataUrl ? (
+              <img
+                src={pictureDataUrl}
+                alt={serverName}
+                className="h-[120px] w-[120px] rounded-lg object-cover"
+              />
+            ) : (
+              <div
+                className="flex h-[120px] w-[120px] items-center justify-center rounded-lg text-[44px] font-semibold text-white"
+                style={{ background: stringToGradient(serverName) }}
+              >
+                {serverName.charAt(0).toUpperCase()}
+              </div>
+            )}
+            {canManageServer ? (
+              <div className="flex flex-col gap-2">
                 <button
-                  onClick={runTransfer}
-                  disabled={transferConfirm !== transferTarget || transferring}
-                  className="mt-2 w-full rounded-md bg-error px-4 py-2 text-[13px] font-medium text-on-accent transition-colors hover:bg-error/90 disabled:cursor-not-allowed disabled:opacity-40"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-md bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-hover"
                 >
-                  {transferring ? "Transferring…" : `Transfer ownership to ${transferTarget}`}
+                  Upload picture
                 </button>
-              </>
+                {hasPicture && (
+                  <button
+                    onClick={onRemove}
+                    className="rounded-md border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
+                  >
+                    Remove picture
+                  </button>
+                )}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png"
+                  className="hidden"
+                  onChange={onFileSelected}
+                />
+              </div>
+            ) : (
+              <p className="max-w-[280px] text-[12px] leading-[1.5] text-text-muted">
+                You need the Manage Server permission to change the picture.
+              </p>
             )}
           </div>
         </div>
-      )}
 
-      {/* Picture */}
-      <div className="flex flex-col gap-3">
-        <h3 className="text-[14px] font-semibold text-text-primary">
-          Server picture
-        </h3>
-        <p className="text-[13px] text-text-secondary">
-          Shown in the server bar in place of the default gradient and letter.
-          Square images work best; JPEG or PNG, max 1 MB.
-        </p>
-        <div className="flex items-center gap-6">
-          {hasPicture && pictureDataUrl ? (
-            <img
-              src={pictureDataUrl}
-              alt={serverName}
-              className="h-[120px] w-[120px] rounded-lg object-cover"
-            />
-          ) : (
-            <div
-              className="flex h-[120px] w-[120px] items-center justify-center rounded-lg text-[44px] font-semibold text-white"
-              style={{ background: stringToGradient(serverName) }}
-            >
-              {serverName.charAt(0).toUpperCase()}
-            </div>
-          )}
-          {canManageServer ? (
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="rounded-md bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-hover"
-              >
-                Upload picture
-              </button>
-              {hasPicture && (
-                <button
-                  onClick={onRemove}
-                  className="rounded-md border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
-                >
-                  Remove picture
-                </button>
-              )}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/jpeg,image/png"
-                className="hidden"
-                onChange={onFileSelected}
-              />
-            </div>
-          ) : (
-            <p className="max-w-[280px] text-[12px] leading-[1.5] text-text-muted">
-              You need the Manage Server permission to change the picture.
-            </p>
-          )}
-        </div>
+        {cropperFile && (
+          <ServerPictureCropperModal
+            serverId={serverId}
+            file={cropperFile}
+            onSave={() => setCropperFile(null)}
+            onCancel={() => setCropperFile(null)}
+          />
+        )}
       </div>
-
-      {cropperFile && (
-        <ServerPictureCropperModal
-          serverId={serverId}
-          file={cropperFile}
-          onSave={() => setCropperFile(null)}
-          onCancel={() => setCropperFile(null)}
+      {metaDirty && (
+        <SaveBar
+          nudge={leaveNudge}
+          saving={savingMeta}
+          onReset={() => setDraft(null)}
+          onSave={saveMeta}
+          saveDisabled={!nameDraft.trim()}
         />
       )}
     </div>
