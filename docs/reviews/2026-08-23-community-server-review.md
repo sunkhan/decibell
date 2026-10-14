@@ -2087,6 +2087,21 @@ Verified: tsc web 0; in the offscreen harness with real mouse and key input (dra
 6-digit, 3-digit + Enter, arrows, black, Escape closes only the popover, outside click closes it,
 read-only roles disable the tile), all seven themes, DPR 1.25.
 
+**Client: auto-away comes back faster (2026-10-14) ✅** — Owner: on KDE, going Away worked, but coming
+back Online took a while after input. `useAutoAway` polled every 15 s in both directions; the OS has
+no "input resumed" event for powerMonitor, and the Wayland watcher's `resumed` only lands in an atomic
+that the poll reads. It now polls every 15 s while active and every 1 s while away. Return takes
+about a second on every platform; going Away still lags the threshold by up to 15 s. Overlapping polls
+(an unlock polls at once) keep one timer chain. A poll is cheap: one IPC plus GetLastInputInfo, or one
+atomic read plus the lock-flag D-Bus call. Central only hears changes, well inside its 1 per 2 s status
+bucket.
+
+Open: Windows didn't go Away at 1 minute after ~3 idle minutes. Windows uses the unchanged powerMonitor
+path (GetLastInputInfo), and nothing in Decibell injects input, so it needs a check on that machine for
+what keeps resetting Windows' last-input time.
+
+Verified: tsc web 0.
+
 ## 5. Suggested order of work
 
 1. **Stop-the-bleeding (crash + stall + identity):** A1 (attachment NULL fp), C2 (username-reuse role inheritance), A2 (ban-purge fan-out), I1/I2 (reconnect stream/relay ownership), R1 (UDP handler try/catch). Small, high-value, verifiable against the standalone build + e2e harness.

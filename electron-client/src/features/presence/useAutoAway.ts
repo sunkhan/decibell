@@ -11,9 +11,11 @@ import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
 import { usePresenceStore } from "../../stores/presenceStore";
 
-/// How stale "back at the keyboard" may get: the OS has no "input resumed"
-/// event, so the idle state is polled.
-const POLL_MS = 15_000;
+/// The OS has no "input resumed" event, so the idle state is polled: slowly
+/// while active (going Away may lag the threshold by this much), fast while
+/// away so coming back shows within a second.
+const ACTIVE_POLL_MS = 15_000;
+const AWAY_POLL_MS = 1_000;
 
 function report(idle: boolean) {
   if (usePresenceStore.getState().idle === idle) return;
@@ -32,6 +34,7 @@ export function useAutoAway() {
     }
     let locked = false;
     let cancelled = false;
+    let timer = 0;
     const poll = async () => {
       const threshold = minutes * 60;
       try {
@@ -47,17 +50,20 @@ export function useAutoAway() {
       } catch (e) {
         console.error("[auto-away] idle state:", e);
       }
+      if (cancelled) return;
+      // Polls can overlap (an unlock polls at once): keep one timer chain.
+      window.clearTimeout(timer);
+      timer = window.setTimeout(poll, usePresenceStore.getState().idle ? AWAY_POLL_MS : ACTIVE_POLL_MS);
     };
     void poll();
-    const timer = window.setInterval(poll, POLL_MS);
     const off = window.decibell.idle.onAwayEvent((away) => {
       locked = away;
       if (away) report(true);
-      else void poll();
+      void poll();
     });
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
       off();
     };
   }, [minutes, supported]);
