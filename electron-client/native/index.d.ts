@@ -147,6 +147,11 @@ export interface SearchMessagesArgs {
   /** Relevance paging: the previous page's nextOffset. */
   offset?: number
   limit?: number
+  /**
+   * Match words anywhere inside words ("abc" finds "xabcy"): a scan on
+   * the server, sorted newest first.
+   */
+  matchWithinWords?: boolean
 }
 export declare function searchMessages(args: SearchMessagesArgs): Promise<void>
 export interface WipeChannelHistoryArgs {

@@ -11,9 +11,9 @@ import { LockGlyph } from "../chat/MessageBubble";
 import { buildAttachmentUrl, formatFileSize, pickThumbnailSize } from "../chat/attachmentHelpers";
 import { goToMessage } from "../chat/goToMessage";
 import { Icon } from "../servers/tabs/settingsUi";
-import { makeHighlighter, type Highlighter } from "./highlight";
+import { makeFragmentHighlighter, makeHighlighter, type Highlighter } from "./highlight";
 import { useSearchStore } from "./searchStore";
-import { searchWords, type SearchSort } from "./searchQuery";
+import { matchesInside, searchFragments, searchWords, type SearchSort } from "./searchQuery";
 
 /// Message search results (spec 2026-10-14): the right-hand panel, in place
 /// of the member list while open. Grouped by channel in result order, the
@@ -58,8 +58,12 @@ export default function SearchResultsPanel() {
   const { setSort, loadMore, retry, close, setJumped } = useSearchStore.getState();
   const channels = useChatStore((s) => (serverId ? s.channelsByServer[serverId] : undefined)) ?? EMPTY_LIST;
 
+  const inside = matchesInside(query);
   const words = useMemo(() => searchWords(query.text), [query.text]);
-  const highlight = useMemo(() => makeHighlighter(words), [words]);
+  const highlight = useMemo(
+    () => (inside ? makeFragmentHighlighter(searchFragments(query.text)) : makeHighlighter(words)),
+    [inside, query.text, words],
+  );
 
   // Esc closes the panel unless something above it (a menu, a modal)
   // takes the key first.
@@ -124,9 +128,13 @@ export default function SearchResultsPanel() {
         <div className="w-[196px] shrink-0">
           <SegmentedControl
             options={SORTS.map((s) =>
-              s.value === "relevance" && words.length === 0
-                ? { ...s, disabled: true, title: "Add words to sort by relevance" }
-                : s,
+              s.value !== "relevance"
+                ? s
+                : inside
+                  ? { ...s, disabled: true, title: "Not available when matching inside words" }
+                  : words.length === 0
+                    ? { ...s, disabled: true, title: "Add words to sort by relevance" }
+                    : s,
             )}
             value={sort}
             onChange={setSort}
@@ -143,9 +151,11 @@ export default function SearchResultsPanel() {
         </button>
       </div>
 
-      {words.length > 0 && skippedNames.length > 0 ? (
+      {/* The server names them only when text was searched (words, inside
+          words, or has: link). */}
+      {skippedNames.length > 0 ? (
         <Notice icon={<LockGlyph size={13} />}>
-          Words aren't searched in encrypted {skippedNames.length === 1 ? "channel" : "channels"}{" "}
+          Text isn't searched in encrypted {skippedNames.length === 1 ? "channel" : "channels"}{" "}
           {skippedNames.map((n, i) => (
             <span key={n}>
               {i > 0 ? ", " : ""}

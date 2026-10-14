@@ -25,12 +25,15 @@ export const HAS_LABEL: Record<HasKind, string> = {
 export type DateOp = "before" | "during" | "after";
 export const DATE_OPS: DateOp[] = ["before", "during", "after"];
 
-/// One chip. Dates are local calendar days, "YYYY-MM-DD".
+/// One chip. Dates are local calendar days, "YYYY-MM-DD". "inside" isn't
+/// a filter but an option shown the same way: match the words anywhere
+/// inside words (MessageSearchRequest.match_within_words).
 export type SearchFilter =
   | { kind: "from"; username: string }
   | { kind: "in"; channelId: string }
   | { kind: "has"; has: HasKind }
-  | { kind: DateOp; date: string };
+  | { kind: DateOp; date: string }
+  | { kind: "inside" };
 
 export type FilterKind = SearchFilter["kind"];
 
@@ -53,7 +56,8 @@ export function sameFilter(a: SearchFilter, b: SearchFilter): boolean {
     case "has":
       return a.has === (b as typeof a).has;
     default:
-      // One date per operator: a second "before:" replaces the first.
+      // One date per operator (a second "before:" replaces the first), and
+      // "inside" is on or off.
       return true;
   }
 }
@@ -63,9 +67,15 @@ export function withFilter(filters: SearchFilter[], f: SearchFilter): SearchFilt
   return [...filters.filter((x) => !sameFilter(x, f)), f];
 }
 
-/// Something to search for: words, or at least one filter.
+export function matchesInside(q: SearchQuery): boolean {
+  return q.filters.some((f) => f.kind === "inside");
+}
+
+/// Something to search for: words, or at least one filter (the inside
+/// option alone isn't one).
 export function isSearchable(q: SearchQuery): boolean {
-  return q.filters.length > 0 || searchWords(q.text).length > 0;
+  if (q.filters.some((f) => f.kind !== "inside")) return true;
+  return matchesInside(q) ? searchFragments(q.text).length > 0 : searchWords(q.text).length > 0;
 }
 
 // ── Dates ─────────────────────────────────────────────────────────
@@ -140,6 +150,7 @@ export interface SearchMessagesArgs {
   cursor: number;
   offset: number;
   limit: number;
+  matchWithinWords: boolean;
 }
 
 export function toSearchArgs(
@@ -171,6 +182,7 @@ export function toSearchArgs(
     cursor: page.cursor ?? 0,
     offset: page.offset ?? 0,
     limit: PAGE_SIZE,
+    matchWithinWords: matchesInside(q),
   };
 }
 
@@ -183,10 +195,11 @@ export interface SearchWord {
   prefix: boolean;
 }
 
-/// Lower-case and strip accents, the way the index folds text
-/// (unicode61 remove_diacritics).
+/// Lower-case and strip accents, the way the server folds text (unicode61
+/// remove_diacritics for words, search_fold inside words), with the Turkish
+/// dotless ı as i so ı and i match each other.
 export function fold(s: string): string {
-  return s.normalize("NFD").replace(/\p{M}+/gu, "").toLowerCase();
+  return s.normalize("NFD").replace(/\p{M}+/gu, "").toLowerCase().replace(/ı/g, "i");
 }
 
 const WORD_RE = /[\p{L}\p{N}]+/gu;
@@ -195,6 +208,21 @@ const WORD_RE = /[\p{L}\p{N}]+/gu;
 /// build_fts_query: whitespace-separated words and "quoted phrases", a
 /// leading `-` excludes (excluded words aren't returned), a word of 3+
 /// letters also matches as a prefix. Punctuation splits words.
+/// The words and "phrases" of a query as inside-word fragments (folded,
+/// punctuation kept, excluded ones left out), mirroring the server's
+/// split_fragments.
+export function searchFragments(text: string): string[] {
+  const out: string[] = [];
+  const re = /(-?)(?:"([^"]*)"?|(\S+))/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m[1] === "-") continue;
+    const f = fold(m[2] !== undefined ? m[2] : m[3]);
+    if (f) out.push(f);
+  }
+  return out;
+}
+
 export function searchWords(text: string): SearchWord[] {
   const out: SearchWord[] = [];
   const re = /(-?)(?:"([^"]*)"?|(\S+))/g;

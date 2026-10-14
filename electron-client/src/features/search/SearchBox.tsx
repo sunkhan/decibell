@@ -8,6 +8,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import { resolveDisplayName, useDisplayName } from "../../hooks/useDisplayName";
 import { Icon, type IconName } from "../servers/tabs/settingsUi";
 import { useMemberSearch } from "../servers/tabs/useMemberSearch";
+import Switch from "../../components/Switch";
 import DatePicker from "./DatePicker";
 import { useSearchStore } from "./searchStore";
 import {
@@ -18,6 +19,7 @@ import {
   dayKey,
   dayStart,
   isSearchable,
+  matchesInside,
   parseDay,
   withFilter,
   type DateOp,
@@ -48,7 +50,9 @@ export function formatDay(day: string): string {
   return d ? DAY_FMT.format(d) : day;
 }
 
-const OP_INFO: Record<FilterKind, { icon: IconName; hint: string }> = {
+type FilterOp = Exclude<FilterKind, "inside">;
+
+const OP_INFO: Record<FilterOp, { icon: IconName; hint: string }> = {
   from: { icon: "user", hint: "a member" },
   in: { icon: "hash", hint: "a channel" },
   has: { icon: "paperclip", hint: "link, file, image, video, audio or document" },
@@ -68,7 +72,8 @@ const HAS_ICON: Record<HasKind, IconName> = {
 
 type Row =
   | { kind: "run"; text: string }
-  | { kind: "op"; op: FilterKind }
+  | { kind: "op"; op: FilterOp }
+  | { kind: "inside" }
   | { kind: "member"; member: ServerMember }
   | { kind: "channel"; channel: ChannelInfo }
   | { kind: "has"; has: HasKind }
@@ -171,7 +176,8 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
     const out: Row[] = [];
     const text = draft.text.trim();
     if (text || draft.filters.length > 0) out.push({ kind: "run", text });
-    for (const op of ["from", "in", "has", "before", "during", "after"] as FilterKind[]) out.push({ kind: "op", op });
+    for (const op of ["from", "in", "has", "before", "during", "after"] as FilterOp[]) out.push({ kind: "op", op });
+    out.push({ kind: "inside" });
     return out;
   }, [token, members, channels, channelId, draft.text, draft.filters.length]);
 
@@ -194,7 +200,7 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
     [draft, token, setDraft],
   );
 
-  const startOp = (op: FilterKind) => {
+  const startOp = (op: FilterOp) => {
     const base = draft.text.replace(/\s+$/, "");
     setDraft({ ...draft, text: `${base ? `${base} ` : ""}${op}:` });
     setMenu(true);
@@ -216,6 +222,14 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
         return doRun();
       case "op":
         return startOp(row.op);
+      case "inside":
+        setDraft({
+          ...draft,
+          filters: matchesInside(draft)
+            ? draft.filters.filter((f) => f.kind !== "inside")
+            : withFilter(draft.filters, { kind: "inside" }),
+        });
+        return focusInput();
       case "member":
         return addChip({ kind: "from", username: row.member.username });
       case "channel":
@@ -378,6 +392,7 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
             onActive={setActive}
             onPick={pick}
             token={token?.op ?? null}
+            inside={matchesInside(draft)}
             serverId={serverId}
             channelId={channelId}
             allChannels={allChannels}
@@ -452,6 +467,7 @@ function MenuBody({
   onActive,
   onPick,
   token,
+  inside,
   serverId,
   channelId,
   allChannels,
@@ -462,6 +478,7 @@ function MenuBody({
   onActive: (i: number) => void;
   onPick: (r: Row) => void;
   token: FilterKind | null;
+  inside: boolean;
   serverId: string;
   channelId: string;
   allChannels: ChannelInfo[];
@@ -550,6 +567,7 @@ function MenuBody({
   let i = -1;
   const runRow = rows[0]?.kind === "run" ? rows[0] : null;
   const ops = rows.filter((r) => r.kind === "op");
+  const insideRow = rows.find((r) => r.kind === "inside");
   return (
     <>
       {runRow && runRow.kind === "run"
@@ -581,6 +599,21 @@ function MenuBody({
             ))
           : null,
       )}
+      {insideRow ? (
+        <>
+          {label("Match")}
+          {row(insideRow, ++i, (
+            <>
+              <span className="min-w-0 flex-1 truncate">
+                <span className="font-medium text-text-primary">Inside words</span>
+                <span className="ml-2 text-text-muted">abc also finds xabcy</span>
+              </span>
+              {/* The row toggles it; the switch only shows the state. */}
+              <Switch checked={inside} onToggle={() => {}} label="Match inside words" />
+            </>
+          ))}
+        </>
+      ) : null}
       <MenuHint keys={[["↑↓", "choose"], ["Enter", "search"], ["Ctrl F", "from anywhere"]]} />
     </>
   );
@@ -631,6 +664,8 @@ function chipText(f: SearchFilter, serverId: string, channels: ChannelInfo[]): [
       return ["in", `#${channels.find((c) => c.id === f.channelId)?.name ?? "deleted-channel"}`];
     case "has":
       return ["has", HAS_LABEL[f.has].toLowerCase()];
+    case "inside":
+      return ["match", "inside words"];
     default:
       return [f.kind === "during" ? "on" : f.kind, formatDay(f.date)];
   }

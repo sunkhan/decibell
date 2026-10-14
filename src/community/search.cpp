@@ -72,44 +72,175 @@ constexpr KindBit kKindBits[] = {
     { search_has::kAudio, 3 },
 };
 
-} // namespace
+// Folded code point of U+00C0..U+017F (Latin-1 Supplement + Latin
+// Extended-A): lower case, accents removed (NFD base letter), and the
+// Turkish dotless ı (U+0131) as i. Generated from Unicode data; letters
+// without a decomposition (æ, ø, ß, ł, …) only lower-case.
+constexpr uint16_t kLatinFold[0x180 - 0xC0] = {
+    0x0061, 0x0061, 0x0061, 0x0061, 0x0061, 0x0061, 0x00E6, 0x0063,  // U+00C0
+    0x0065, 0x0065, 0x0065, 0x0065, 0x0069, 0x0069, 0x0069, 0x0069,  // U+00C8
+    0x00F0, 0x006E, 0x006F, 0x006F, 0x006F, 0x006F, 0x006F, 0x00D7,  // U+00D0
+    0x00F8, 0x0075, 0x0075, 0x0075, 0x0075, 0x0079, 0x00FE, 0x00DF,  // U+00D8
+    0x0061, 0x0061, 0x0061, 0x0061, 0x0061, 0x0061, 0x00E6, 0x0063,  // U+00E0
+    0x0065, 0x0065, 0x0065, 0x0065, 0x0069, 0x0069, 0x0069, 0x0069,  // U+00E8
+    0x00F0, 0x006E, 0x006F, 0x006F, 0x006F, 0x006F, 0x006F, 0x00F7,  // U+00F0
+    0x00F8, 0x0075, 0x0075, 0x0075, 0x0075, 0x0079, 0x00FE, 0x0079,  // U+00F8
+    0x0061, 0x0061, 0x0061, 0x0061, 0x0061, 0x0061, 0x0063, 0x0063,  // U+0100
+    0x0063, 0x0063, 0x0063, 0x0063, 0x0063, 0x0063, 0x0064, 0x0064,  // U+0108
+    0x0111, 0x0111, 0x0065, 0x0065, 0x0065, 0x0065, 0x0065, 0x0065,  // U+0110
+    0x0065, 0x0065, 0x0065, 0x0065, 0x0067, 0x0067, 0x0067, 0x0067,  // U+0118
+    0x0067, 0x0067, 0x0067, 0x0067, 0x0068, 0x0068, 0x0127, 0x0127,  // U+0120
+    0x0069, 0x0069, 0x0069, 0x0069, 0x0069, 0x0069, 0x0069, 0x0069,  // U+0128
+    0x0069, 0x0069, 0x0133, 0x0133, 0x006A, 0x006A, 0x006B, 0x006B,  // U+0130
+    0x0138, 0x006C, 0x006C, 0x006C, 0x006C, 0x006C, 0x006C, 0x0140,  // U+0138
+    0x0140, 0x0142, 0x0142, 0x006E, 0x006E, 0x006E, 0x006E, 0x006E,  // U+0140
+    0x006E, 0x0149, 0x014B, 0x014B, 0x006F, 0x006F, 0x006F, 0x006F,  // U+0148
+    0x006F, 0x006F, 0x0153, 0x0153, 0x0072, 0x0072, 0x0072, 0x0072,  // U+0150
+    0x0072, 0x0072, 0x0073, 0x0073, 0x0073, 0x0073, 0x0073, 0x0073,  // U+0158
+    0x0073, 0x0073, 0x0074, 0x0074, 0x0074, 0x0074, 0x0167, 0x0167,  // U+0160
+    0x0075, 0x0075, 0x0075, 0x0075, 0x0075, 0x0075, 0x0075, 0x0075,  // U+0168
+    0x0075, 0x0075, 0x0075, 0x0075, 0x0077, 0x0077, 0x0079, 0x0079,  // U+0170
+    0x0079, 0x007A, 0x007A, 0x007A, 0x007A, 0x007A, 0x007A, 0x017F,  // U+0178
+};
 
-std::string build_fts_query(const std::string& text, bool* only_excluded) {
-    if (only_excluded) *only_excluded = false;
-    constexpr size_t kMaxTerms = 16;
-    std::vector<std::string> include, exclude;
+uint32_t fold_code_point(uint32_t c) {
+    if (c < 0x80) return (c >= 'A' && c <= 'Z') ? c + 32 : c;
+    if (c >= 0xC0 && c < 0x180) return kLatinFold[c - 0xC0];
+    if (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) return c + 0x20;   // Greek capitals
+    if (c >= 0x410 && c <= 0x42F) return c + 0x20;                  // Cyrillic А..Я
+    if (c >= 0x400 && c <= 0x40F) return c + 0x50;                  // Cyrillic Ѐ..Џ
+    return c;
+}
+
+void append_utf8(std::string& out, uint32_t c) {
+    if (c < 0x80) {
+        out.push_back(static_cast<char>(c));
+    } else if (c < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (c >> 6)));
+        out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+    } else if (c < 0x10000) {
+        out.push_back(static_cast<char>(0xE0 | (c >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (c >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((c >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+    }
+}
+
+std::string fold_bytes(const unsigned char* s, size_t n) {
+    std::string out;
+    out.reserve(n);
+    size_t i = 0;
+    while (i < n) {
+        const unsigned char b = s[i];
+        if (b < 0x80) {   // the common case
+            out.push_back(static_cast<char>(b >= 'A' && b <= 'Z' ? b + 32 : b));
+            ++i;
+            continue;
+        }
+        uint32_t c;
+        size_t len;
+        if ((b & 0xE0) == 0xC0) { c = b & 0x1F; len = 2; }
+        else if ((b & 0xF0) == 0xE0) { c = b & 0x0F; len = 3; }
+        else if ((b & 0xF8) == 0xF0) { c = b & 0x07; len = 4; }
+        else { out.push_back(static_cast<char>(b)); ++i; continue; }   // stray byte: keep
+        if (i + len > n) { out.append(reinterpret_cast<const char*>(s + i), n - i); break; }
+        for (size_t k = 1; k < len; ++k) c = (c << 6) | (s[i + k] & 0x3F);
+        i += len;
+        if (c >= 0x300 && c <= 0x36F) continue;   // combining marks: a decomposed accent
+        append_utf8(out, fold_code_point(c));
+    }
+    return out;
+}
+
+// decibell_fold(text): search_fold as an SQL function, for inside-word
+// matching on the worker's connection.
+void fold_sql(sqlite3_context* ctx, int, sqlite3_value** argv) {
+    const unsigned char* t = sqlite3_value_text(argv[0]);
+    if (!t) {
+        sqlite3_result_null(ctx);
+        return;
+    }
+    const std::string out = fold_bytes(t, static_cast<size_t>(sqlite3_value_bytes(argv[0])));
+    sqlite3_result_text(ctx, out.data(), static_cast<int>(out.size()), SQLITE_TRANSIENT);
+}
+
+// The words and "phrases" of a query, in order; -word / -"phrase" negated.
+struct QueryTerm {
+    std::string text;
+    bool phrase = false;
+    bool negate = false;
+};
+
+std::vector<QueryTerm> split_query(const std::string& text, size_t max_terms) {
+    std::vector<QueryTerm> out;
     size_t i = 0;
     const size_t n = text.size();
-    while (i < n && include.size() + exclude.size() < kMaxTerms) {
+    while (i < n && out.size() < max_terms) {
         while (i < n && is_space(text[i])) ++i;
         if (i >= n) break;
-        bool negate = false;
+        QueryTerm t;
         if (text[i] == '-' && i + 1 < n && !is_space(text[i + 1])) {
-            negate = true;
+            t.negate = true;
             ++i;
         }
-        std::string token;
-        bool phrase = false;
         if (text[i] == '"') {
             const size_t close = text.find('"', i + 1);
             const size_t end = close == std::string::npos ? n : close;
-            token = text.substr(i + 1, end - i - 1);
+            t.text = text.substr(i + 1, end - i - 1);
             i = close == std::string::npos ? n : close + 1;
-            phrase = true;
+            t.phrase = true;
         } else {
             size_t j = i;
             while (j < n && !is_space(text[j])) ++j;
-            token = text.substr(i, j - i);
+            t.text = text.substr(i, j - i);
             i = j;
         }
+        out.push_back(std::move(t));
+    }
+    return out;
+}
+
+// The index stores ı as i (dotless and dotted i match each other, for
+// Turkish); queries get the same.
+std::string dotless_i_as_i(std::string s) {
+    for (size_t at = s.find("\xC4\xB1"); at != std::string::npos; at = s.find("\xC4\xB1", at)) {
+        s.replace(at, 2, "i");
+    }
+    return s;
+}
+
+} // namespace
+
+std::string search_fold(const std::string& text) {
+    return fold_bytes(reinterpret_cast<const unsigned char*>(text.data()), text.size());
+}
+
+void split_fragments(const std::string& text, std::vector<std::string>* include,
+                     std::vector<std::string>* exclude) {
+    for (auto& t : split_query(text, 16)) {
+        std::string f = search_fold(t.text);
+        if (f.empty()) continue;
+        (t.negate ? exclude : include)->push_back(std::move(f));
+    }
+}
+
+std::string build_fts_query(const std::string& text, bool* only_excluded) {
+    if (only_excluded) *only_excluded = false;
+    std::vector<std::string> include, exclude;
+    for (auto& t : split_query(text, 16)) {
+        const std::string token = dotless_i_as_i(std::move(t.text));
         const size_t letters = word_chars(token);
         if (letters == 0) continue;   // punctuation only: tokenises to nothing
         // A word of 3+ letters matches as a prefix ("deploy" → "deployment",
         // and Turkish suffixes); shorter ones exactly, so "a" never expands
         // into half the index.
         std::string term = quote_fts(token);
-        if (!phrase && letters >= 3) term += "*";
-        (negate ? exclude : include).push_back(std::move(term));
+        if (!t.phrase && letters >= 3) term += "*";
+        (t.negate ? exclude : include).push_back(std::move(term));
     }
     if (include.empty()) {
         if (only_excluded) *only_excluded = !exclude.empty();
@@ -146,6 +277,8 @@ bool SearchWorker::start() {
     // Every ~1000 VM steps: give up once the job's budget is spent or a
     // newer search from the same session cancelled it.
     sqlite3_progress_handler(db_, 1000, &SearchWorker::progress_, this);
+    sqlite3_create_function_v2(db_, "decibell_fold", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC,
+                               nullptr, &fold_sql, nullptr, nullptr, nullptr);
     stop_ = false;
     thread_ = std::thread([this] { run_(); });
     return true;
@@ -383,6 +516,20 @@ SearchOutcome SearchWorker::execute_(const SearchSpec& spec) {
         if (!(spec.has & kb.bit) || kb.kind == driver_kind) continue;
         sql += " AND EXISTS (SELECT 1 FROM attachments x WHERE x.message_id = m.id AND x.kind = " +
                std::to_string(kb.kind) + ")";
+    }
+    // Inside-word matching: a scan of the folded text (and file names),
+    // never an index — the trade-off in the spec. Plaintext rows only.
+    if (!spec.contains.empty() || !spec.excludes.empty()) {
+        sql += " AND m.envelope IS NULL";
+        auto fragment = [&](const std::string& f, bool negate) {
+            sql += negate ? " AND NOT (" : " AND (";
+            sql += "instr(decibell_fold(m.content), ?) > 0 OR EXISTS (SELECT 1 FROM attachments x "
+                   "WHERE x.message_id = m.id AND x.encrypted = 0 AND instr(decibell_fold(x.filename), ?) > 0))";
+            binds.emplace_back(f);
+            binds.emplace_back(f);
+        };
+        for (const auto& f : spec.contains) fragment(f, false);
+        for (const auto& f : spec.excludes) fragment(f, true);
     }
     if (spec.has & search_has::kLink) {
         // The FTS side already narrowed to rows with an http/https token.

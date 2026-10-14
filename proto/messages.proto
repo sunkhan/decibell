@@ -1453,6 +1453,11 @@ message MessageSearchRequest {
   int32 offset = 10;
   // Server clamps to [1, 50], default 25.
   int32 limit = 11;
+  // Match the query's words and "phrases" anywhere inside words ("abc"
+  // finds "xabcy"), case- and accent-insensitive, punctuation kept. A scan
+  // of the text rather than an index lookup, so it's slower on a big
+  // server; RELEVANCE then sorts as NEWEST.
+  bool match_within_words = 12;
 }
 
 message MessageSearchResponse {

@@ -1487,6 +1487,79 @@ def test_message_search():
     for c in (owner, bob, carol): c.close()
 
 
+def test_message_search_turkish_and_within():
+    """Dotless ı matches i (word search, via the index), and inside-word
+    matching (MessageSearchRequest.match_within_words): fragments anywhere
+    in words, folded like the index, punctuation kept, file names,
+    exclusions, encrypted channels skipped, filters, newest-first order."""
+    print("[search] ı ↔ i, and matching inside words")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    tess = join("tess", owner)
+    for c in (owner, tess): c.flush(0.4)
+    def create(name, encrypted=False):
+        owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(
+            name=name, type=pb.ChannelInfo.TEXT, encrypted=encrypted))
+        r = owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "create")
+        return r.channel_action_res.channel.id
+    ch, sealed = create("within-a"), create("within-sealed", True)
+    for c in (owner, tess): c.flush(0.4)
+    t0 = max(int(time.time()), sql("select coalesce(max(timestamp), 0) from messages")[0][0]) + 10
+    def put(sender, content, k, envelope=None, channel=None):
+        return sql("insert into messages(channel_id, sender, content, timestamp, envelope, sender_uid) values(?,?,?,?,?,?) returning id",
+                   channel or ch, sender, content, t0 + k * 60, envelope, uid_for(sender))[0][0]
+    k1 = put("tess", "kısa yol tarifi", 0)
+    k2 = put("alice", "kisa cevap ver", 1)
+    k3 = put("tess", "Çağrı merkezini aradım", 2)
+    x1 = put("tess", "the xabcy token", 3)
+    x2 = put("alice", "redeployment went fine", 4)
+    x3 = put("tess", "Déploiement terminé", 5)
+    x4 = put("alice", "please deploy again soon", 6)
+    x5 = put("tess", "I write c++ daily", 7)
+    x6 = put("alice", "notes attached", 8)
+    aid = sql("insert into attachments(message_id, kind, filename, mime, size_bytes, position, created_at, upload_status, uploader, channel_id) "
+              "values(0,2,'Quarterly-ROADMAP.pdf','application/pdf',10,0,?,'ready','alice',?) returning id", t0, ch)[0][0]
+    sql("update attachments set message_id=? where id=?", x6, aid)
+    s1 = put("tess", "PLACEHOLDER xabcy", 9, envelope=b"\x02S", channel=sealed)
+    seq = iter(range(5000, 9000))
+    ids = lambda r: [m.id for m in r.messages] if r else None
+    W = dict(channel_ids=[ch])
+
+    r = search_req(owner, next(seq), query="kisa", **W)
+    check("ı ↔ i: 'kisa' finds kısa and kisa", r is not None and sorted(ids(r)) == sorted([k1, k2]), str(ids(r)))
+    r = search_req(owner, next(seq), query="kısa", **W)
+    check("ı ↔ i: 'kısa' finds both too", r is not None and sorted(ids(r)) == sorted([k1, k2]), str(ids(r)))
+    r = search_req(owner, next(seq), query="CAGRI", **W)
+    check("ı ↔ i: 'CAGRI' finds Çağrı", r is not None and ids(r) == [k3], str(ids(r)))
+
+    r = search_req(owner, next(seq), query="abc", **W)
+    check("words: 'abc' doesn't find xabcy", r is not None and r.success and ids(r) == [], str(ids(r)))
+    r = search_req(owner, next(seq), query="abc", match_within_words=True)
+    check("inside words: 'abc' finds xabcy", r is not None and ids(r) == [x1], str(ids(r)))
+    check("inside words: the encrypted channel is skipped and named", r is not None and sealed in r.text_skipped_channel_ids and s1 not in ids(r))
+    r = search_req(owner, next(seq), query="DÉPLO", match_within_words=True, **W)
+    check("inside words: case + accents fold (redeployment, Déploiement, deploy)", r is not None and ids(r) == [x4, x3, x2], str(ids(r)))
+    r = search_req(owner, next(seq), query="kisa", match_within_words=True, **W)
+    check("inside words: ı ↔ i", r is not None and ids(r) == [k2, k1], str(ids(r)))
+    r = search_req(owner, next(seq), query='"oy ag"', match_within_words=True, **W)
+    check("inside words: a phrase across a word boundary", r is not None and ids(r) == [x4], str(ids(r)))
+    r = search_req(owner, next(seq), query="c++", match_within_words=True, **W)
+    check("inside words: punctuation kept ('c++')", r is not None and ids(r) == [x5], str(ids(r)))
+    r = search_req(owner, next(seq), query="deplo -again", match_within_words=True, **W)
+    check("inside words: exclusions", r is not None and ids(r) == [x3, x2], str(ids(r)))
+    r = search_req(owner, next(seq), query="roadm", match_within_words=True, **W)
+    check("inside words: file names", r is not None and ids(r) == [x6], str(ids(r)))
+    r = search_req(owner, next(seq), query="eploy", match_within_words=True, authors=["alice"], **W)
+    check("inside words + a sender", r is not None and ids(r) == [x4, x2], str(ids(r)))
+    r = search_req(owner, next(seq), query="eploy", match_within_words=True, sort=pb.MessageSearchRequest.RELEVANCE, **W)
+    check("inside words: relevance sorts newest first", r is not None and ids(r) == [x4, x2], str(ids(r)))
+    r = search_req(owner, next(seq), query="-abc", match_within_words=True, **W)
+    check("inside words: exclusions alone are refused", r is not None and not r.success)
+    r = search_req(owner, next(seq), query="eploy", match_within_words=True, limit=1, **W)
+    r2 = search_req(owner, next(seq), query="eploy", match_within_words=True, limit=1, cursor=r.next_cursor if r else 0, **W)
+    check("inside words: counted and paged", r is not None and r.total == 2 and ids(r) == [x4] and r.has_more and r2 is not None and ids(r2) == [x2], f"{r.total if r else None} {ids(r2)}")
+    for c in (owner, tess): c.close()
+
+
 def test_v14_search_migration():
     print("[v14] search index + sender uids on an upgraded DB")
     proc = start_server(); stop_server(proc)
@@ -1496,7 +1569,7 @@ def test_v14_search_migration():
     sql("drop table if exists messages_fts")
     sql("drop index if exists idx_messages_sender_uid")
     sql("alter table messages drop column sender_uid")
-    sql("delete from server_meta where key in ('search_fts_v14', 'sender_uid_v14')")
+    sql("delete from server_meta where key in ('search_index_version', 'search_fts_v14', 'sender_uid_v14')")
     sql("update members set uid=4242 where username='alice'")
     now = int(time.time())
     plain = sql("insert into messages(channel_id, sender, content, timestamp) values('general','alice','zebra crossing',?) returning id", now)[0][0]
@@ -1513,6 +1586,21 @@ def test_v14_search_migration():
     check("sender_uid back-filled from members by name", sql("select sender_uid from messages where id=?", plain) == [(4242,)])
     check("a name no member holds stays 0", sql("select sender_uid from messages where id=?", stranger) == [(0,)])
     check("schema stamped 14", sql("select value from server_meta where key='schema_version'") == [("14",)])
+    check("index at version 2", sql("select value from server_meta where key='search_index_version'") == [("2",)])
+    # Version 1 (ı kept as ı) is rebuilt once: a row added while the
+    # triggers are gone shows up folded afterwards.
+    stop_server(start_server())
+    for t in ("messages_fts_insert", "messages_fts_delete", "messages_fts_edit", "attachments_fts_bind"):
+        sql(f"drop trigger if exists {t}")
+    turkish = sql("insert into messages(channel_id, sender, content, timestamp) values('general','alice','kısa yol',?) returning id", now)[0][0]
+    sql("update server_meta set value='1' where key='search_index_version'")
+    sql("insert or replace into server_meta(key, value) values('search_fts_v14', '1')")
+    proc = start_server(); stop_server(proc)
+    check("version 1 index rebuilt as 2, ı stored as i", sql("select rowid from messages_fts where messages_fts match '\"kisa\"'") == [(turkish,)]
+          and sql("select value from server_meta where key='search_index_version'") == [("2",)]
+          and sql("select count(*) from server_meta where key='search_fts_v14'") == [(0,)])
+    check("triggers back after the rebuild", sql("select count(*) from sqlite_master where type='trigger' and name like '%fts%'") == [(4,)])
+    sql("delete from messages where id=?", turkish)
     sql("delete from attachments where id=?", att)
     sql("delete from messages where id in (?, ?, ?, ?)", plain, sealed, stranger, legacy)
     sql("delete from channels where id='v14-sealed'")
@@ -3108,6 +3196,7 @@ if __name__ == "__main__":
         test_member_search_and_role_counts()
         test_audit_search()
         test_message_search()
+        test_message_search_turkish_and_within()
         test_presence_hidden()
         test_public_join()
         test_server_update_and_transfer()

@@ -71,6 +71,8 @@ export function resolveToken(op: FilterKind, value: string, ctx: TokenContext): 
       const k = hasKindFor(v);
       return k ? { kind: "has", has: k } : null;
     }
+    case "inside":
+      return null;   // an option, not a typed filter
     default: {
       const day = parseDay(v);
       return day ? { kind: op, date: day } : null;

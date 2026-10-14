@@ -4,6 +4,7 @@ import type { Message } from "../../types";
 import {
   EMPTY_QUERY,
   isSearchable,
+  matchesInside,
   searchWords,
   toSearchArgs,
   type SearchQuery,
@@ -122,8 +123,9 @@ export const useSearchStore = create<SearchState>((set, get) => {
   const start = (serverId: string, query: SearchQuery, sort: SearchSort) => {
     clearTimers();
     retries = 0;
-    // Relevance needs words to rank by.
-    const effective = sort === "relevance" && searchWords(query.text).length === 0 ? "newest" : sort;
+    // Relevance needs words to rank by, and the index (not the inside-words scan).
+    const effective =
+      sort === "relevance" && (searchWords(query.text).length === 0 || matchesInside(query)) ? "newest" : sort;
     set({
       serverId,
       open: true,

@@ -47,6 +47,10 @@ struct SearchSpec {
     // `match` is set (the index holds plaintext rows only).
     std::vector<std::string> channels;
     std::string match;                      // FTS5 expression; "" = no words / link filter
+    // Inside-word matching: folded fragments (search_fold) each message must
+    // contain / must not contain, in its text or an unencrypted file name.
+    std::vector<std::string> contains;
+    std::vector<std::string> excludes;
     std::vector<int64_t> author_uids;       // members: every row their account sent
     std::vector<std::string> author_names;  // non-members: rows sent under this name
     int64_t after = 0;                      // unix seconds, inclusive; 0 = unbounded
@@ -75,6 +79,18 @@ struct SearchOutcome {
 // Returns "" when no searchable word is left; `only_excluded` is then set
 // if the text had excluded words only.
 std::string build_fts_query(const std::string& text, bool* only_excluded = nullptr);
+
+/// Lower-cases and strips accents the way inside-word matching compares
+/// text (the message and the fragment both go through it): ASCII, Latin-1
+/// and Latin Extended-A to base letters (ı and İ → i), Greek and Cyrillic
+/// capitals to lower case, combining marks dropped. Anything else is kept.
+std::string search_fold(const std::string& text);
+
+/// The query's words and "phrases" as folded fragments for inside-word
+/// matching (-negated ones into `exclude`). Punctuation is kept: "c++"
+/// finds "c++".
+void split_fragments(const std::string& text, std::vector<std::string>* include,
+                     std::vector<std::string>* exclude);
 
 class SearchWorker {
 public:

@@ -294,7 +294,20 @@ bool CommunityDb::create_search_index_() {
     // text, and a delete is a tombstone by rowid rather than a
     // re-tokenisation of the old text (that cost is why the previous
     // triggers were dropped — wipes, prunes and ban purges tokenised every
-    // deleted row). Needs SQLite >= 3.43.
+    // deleted row). Needs SQLite >= 3.43 (built in: cmake/DecibellSQLite.cmake).
+    //
+    // What the index holds, by version (a different stored version
+    // rebuilds it once at startup):
+    //   1  the text and file names
+    //   2  the same with the Turkish dotless ı stored as i, so ı and i
+    //      match each other (unicode61 treats ı as a letter of its own)
+    constexpr const char* kIndexVersion = "2";
+    static const char* const kTriggers[] = {
+        "messages_fts_insert", "messages_fts_delete", "messages_fts_edit", "attachments_fts_bind" };
+    auto drop_triggers = [&] {
+        for (const char* t : kTriggers)
+            exec_sql(db_, (std::string("DROP TRIGGER IF EXISTS ") + t + ";").c_str());
+    };
     bool fts5 = false;
     if (sqlite3_libversion_number() >= 3043000) {
         Stmt q(db_, "SELECT fts5_source_id();");
@@ -307,71 +320,80 @@ bool CommunityDb::create_search_index_() {
         // would make every message write fail on a table this library
         // can't open. Drop them and forget the index, so a later upgrade
         // rebuilds it from scratch rather than trusting a stale one.
-        for (const char* t : { "messages_fts_insert", "messages_fts_delete",
-                               "messages_fts_edit", "attachments_fts_bind" }) {
-            exec_sql(db_, (std::string("DROP TRIGGER IF EXISTS ") + t + ";").c_str());
-        }
-        if (!get_meta_("search_fts_v14").empty()) set_meta_("search_fts_v14", "");
+        drop_triggers();
+        set_meta_("search_index_version", "");
         return false;
     }
-    const bool fresh = get_meta_("search_fts_v14").empty();
-    if (!fresh) {
+    if (get_meta_("search_index_version") == kIndexVersion) {
         Stmt q(db_, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts';");
         if (q.s && q.step() == SQLITE_ROW) return true;
-        // Flag set but the table is gone (dropped by hand): rebuild below.
+        // Version set but the table is gone (dropped by hand): rebuild below.
     }
+    // What gets indexed for a message: its text and its unencrypted file
+    // names, ı as i.
+    const std::string text_of_new = "replace(new.content, 'ı', 'i')";
+    auto files_of = [](const char* id) {
+        return std::string("replace(COALESCE((SELECT group_concat(filename, ' ') FROM attachments "
+                           "WHERE message_id = ") + id + " AND encrypted = 0), ''), 'ı', 'i')";
+    };
+    // Only plaintext rows of plaintext channels: a sealed row's `content` is
+    // a placeholder for old clients and must never match, and an encrypted
+    // channel's text isn't searched (owner decision), not even the
+    // plaintext left from before its encryption was switched on (when that
+    // was still possible).
+    const std::string insert_trigger =
+        "CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages "
+        "WHEN new.envelope IS NULL "
+        "  AND NOT EXISTS (SELECT 1 FROM channels WHERE id = new.channel_id AND encrypted = 1) BEGIN "
+        "  INSERT INTO messages_fts(rowid, content, files) VALUES (new.id, " + text_of_new + ", ''); "
+        "END;";
+    // An edit re-indexes the text with the current file names (or drops the
+    // row if it became sealed).
+    const std::string edit_trigger =
+        "CREATE TRIGGER messages_fts_edit AFTER UPDATE OF content, envelope ON messages BEGIN "
+        "  DELETE FROM messages_fts WHERE rowid = old.id; "
+        "  INSERT INTO messages_fts(rowid, content, files) "
+        "    SELECT new.id, " + text_of_new + ", " + files_of("new.id") + " "
+        "    WHERE new.envelope IS NULL "
+        "      AND NOT EXISTS (SELECT 1 FROM channels WHERE id = new.channel_id AND encrypted = 1); "
+        "END;";
+    // Attachments bind after their message is inserted (CHANNEL_MSG →
+    // bind_attachments): fold the file names in then. Encrypted uploads
+    // carry stand-in names and are never indexed.
+    const std::string bind_trigger =
+        "CREATE TRIGGER attachments_fts_bind AFTER UPDATE OF message_id ON attachments "
+        "WHEN old.message_id = 0 AND new.message_id > 0 AND new.encrypted = 0 BEGIN "
+        "  INSERT OR REPLACE INTO messages_fts(rowid, content, files) "
+        "    SELECT m.id, replace(m.content, 'ı', 'i'), " + files_of("m.id") + " "
+        "    FROM messages m WHERE m.id = new.message_id AND m.envelope IS NULL "
+        "      AND NOT EXISTS (SELECT 1 FROM channels WHERE id = m.channel_id AND encrypted = 1); "
+        "END;";
+    const std::string backfill =
+        "INSERT INTO messages_fts(rowid, content, files) "
+        "  SELECT m.id, replace(m.content, 'ı', 'i'), " + files_of("m.id") + " "
+        "  FROM messages m WHERE m.envelope IS NULL "
+        "    AND m.channel_id NOT IN (SELECT id FROM channels WHERE encrypted = 1);";
+
     if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
+    drop_triggers();
     bool ok =
         exec_sql(db_, "DROP TABLE IF EXISTS messages_fts;") &&
         exec_sql(db_,
             "CREATE VIRTUAL TABLE messages_fts USING fts5("
             "  content, files, content='', contentless_delete=1,"
             "  tokenize='unicode61 remove_diacritics 2');") &&
-        // Only plaintext rows of plaintext channels: a sealed row's `content`
-        // is a placeholder for old clients and must never match, and an
-        // encrypted channel's text isn't searched (owner decision), not
-        // even the plaintext left from before its encryption was switched
-        // on (when that was still possible).
+        exec_sql(db_, insert_trigger.c_str()) &&
         exec_sql(db_,
-            "CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages "
-            "WHEN new.envelope IS NULL "
-            "  AND NOT EXISTS (SELECT 1 FROM channels WHERE id = new.channel_id AND encrypted = 1) BEGIN "
-            "  INSERT INTO messages_fts(rowid, content, files) VALUES (new.id, new.content, ''); "
-            "END;") &&
-        exec_sql(db_,
-            "CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN "
+            "CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN "
             "  DELETE FROM messages_fts WHERE rowid = old.id; "
             "END;") &&
-        // An edit re-indexes the text with the current file names (or drops
-        // the row if it became sealed).
-        exec_sql(db_,
-            "CREATE TRIGGER IF NOT EXISTS messages_fts_edit AFTER UPDATE OF content, envelope ON messages BEGIN "
-            "  DELETE FROM messages_fts WHERE rowid = old.id; "
-            "  INSERT INTO messages_fts(rowid, content, files) "
-            "    SELECT new.id, new.content, COALESCE((SELECT group_concat(filename, ' ') FROM attachments "
-            "      WHERE message_id = new.id AND encrypted = 0), '') "
-            "    WHERE new.envelope IS NULL "
-            "      AND NOT EXISTS (SELECT 1 FROM channels WHERE id = new.channel_id AND encrypted = 1); "
-            "END;") &&
-        // Attachments bind after their message is inserted (CHANNEL_MSG →
-        // bind_attachments): fold the file names in then. Encrypted
-        // uploads carry stand-in names and are never indexed.
-        exec_sql(db_,
-            "CREATE TRIGGER IF NOT EXISTS attachments_fts_bind AFTER UPDATE OF message_id ON attachments "
-            "WHEN old.message_id = 0 AND new.message_id > 0 AND new.encrypted = 0 BEGIN "
-            "  INSERT OR REPLACE INTO messages_fts(rowid, content, files) "
-            "    SELECT m.id, m.content, COALESCE((SELECT group_concat(filename, ' ') FROM attachments "
-            "      WHERE message_id = m.id AND encrypted = 0), '') "
-            "    FROM messages m WHERE m.id = new.message_id AND m.envelope IS NULL "
-            "      AND NOT EXISTS (SELECT 1 FROM channels WHERE id = m.channel_id AND encrypted = 1); "
-            "END;") &&
-        exec_sql(db_,
-            "INSERT INTO messages_fts(rowid, content, files) "
-            "  SELECT m.id, m.content, COALESCE((SELECT group_concat(a.filename, ' ') FROM attachments a "
-            "    WHERE a.message_id = m.id AND a.encrypted = 0), '') "
-            "  FROM messages m WHERE m.envelope IS NULL "
-            "    AND m.channel_id NOT IN (SELECT id FROM channels WHERE encrypted = 1);");
-    if (ok) set_meta_("search_fts_v14", "1");
+        exec_sql(db_, edit_trigger.c_str()) &&
+        exec_sql(db_, bind_trigger.c_str()) &&
+        exec_sql(db_, backfill.c_str());
+    if (ok) {
+        set_meta_("search_index_version", kIndexVersion);
+        exec_sql(db_, "DELETE FROM server_meta WHERE key = 'search_fts_v14';");   // version 1's flag
+    }
     exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
     if (!ok) {
         std::cerr << "[DB] message search disabled: could not create the FTS5 index "

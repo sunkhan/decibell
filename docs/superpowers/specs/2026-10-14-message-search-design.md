@@ -25,7 +25,8 @@ One request searches one community. Every filter narrows the results:
 
 | Filter | Wire | Meaning |
 |---|---|---|
-| Words | `query` | Free text. Words, `"exact phrases"`, `-excluded` words. Words of 3+ characters match as prefixes (`deploy` finds `deployment`; suits Turkish suffixes too). Accents fold (`cafe` = `café`), case is ignored. Also matches attachment file names. |
+| Words | `query` | Free text. Words, `"exact phrases"`, `-excluded` words. Words of 3+ characters match as prefixes (`deploy` finds `deployment`; suits Turkish suffixes too). Accents fold (`cafe` = `café`), case is ignored, and the Turkish dotless ı matches i (`kisa` = `kısa`; owner request, 2026-10-14). Also matches attachment file names. |
+| Inside words | `match_within_words` | Optional (owner request, 2026-10-14): the words and phrases match anywhere inside words (`abc` finds `xabcy`), folded the same way, punctuation kept (`c++`). A scan of the text, not an index lookup (see below); sorts newest first. |
 | From | `authors` | Usernames. The server resolves each member to their uid and matches every message that account sent, under any earlier name. A non-member is matched by the name on their messages. |
 | In | `channel_ids` | Text channels. Empty = every text channel the requester can read. |
 | Date | `after` / `before` | Unix seconds, `after` inclusive, `before` exclusive. The client turns `before:`, `after:` and `during:` days into local-midnight bounds. |
@@ -69,7 +70,11 @@ resolved on the io thread at request time and checked again when the page is ass
   Sealed rows, encrypted attachments and every row of an encrypted channel are never indexed: the
   placeholder text of a sealed row can never match, and neither can plaintext left in a channel from
   before its encryption was switched on (back when that was possible).
-- Backfill once, in the migration, inside one transaction.
+- Backfill once, in the migration, inside one transaction. The index has a version
+  (`server_meta.search_index_version`); a different stored version rebuilds it once at startup.
+  Version 2 stores ı as i, since unicode61 treats the dotless ı as a letter of its own rather than
+  an accented i. The cost is a `replace()` in each trigger: 44–47 µs per insert either way,
+  within noise.
 - `messages.sender_uid` (backfilled from `members.uid` by name, then set from the session's JWT uid on
   every send; a pre-Theme-A member's rows are back-filled when they first authenticate with a uid),
   indexed `(sender_uid, id)`. Rows whose sender no longer matches any member keep uid 0. They can only
@@ -111,6 +116,28 @@ sealed message in an encrypted channel, whose envelope binds the name it was sen
 - **Client side.** Searches run on Enter, never per keystroke. The filter suggestions come from the
   loaded roster and channel list, with the existing debounced `MEMBER_SEARCH_REQ` for big servers.
   Results already shown are kept while the next page loads.
+
+## Inside words: a scan, not an index
+
+The word index only knows where words start, so `xabcy` can't be found from `abc` with it. Three
+options were measured on the 1M-message database:
+
+| | Extra disk | Each sent message | Inside-word search |
+|---|---|---|---|
+| Trigram index, with positions | +104% (~310 MB) | 15 → 390 µs | < 1 ms |
+| Trigram index, no positions | +36% (~108 MB) | 14 → 490 µs | < 15 ms, but substrings longer than 3 characters need re-checking against the text with Unicode folding |
+| **Scan, no index (chosen)** | **none** | **unchanged** | **4–635 ms** |
+
+For an optional mode, an index would make every message slower and the database much bigger
+forever. The scan costs nothing until it's used, and then it's bounded like every search (worker
+thread, 3 s budget, one at a time, newest first, stopping at the page plus the capped count).
+The worker registers `decibell_fold` (lower case, Latin-1 and Latin Extended-A accents stripped,
+ı/İ → i, Greek and Cyrillic capitals lowered, combining marks dropped) and checks
+`instr(decibell_fold(content), fragment)` plus unencrypted file names. The fragment is folded by
+the same function, so the two sides always agree. Measured through the server: a fragment of a
+common word 7 ms; a rare fragment in one channel 29 ms, from one sender 4 ms, across the whole
+server 434 ms; a fragment that matches nothing, whole server, 635 ms (the full scan, about
+0.6 µs per message).
 
 ## Measured (1M messages, 30 channels, 300 senders, 62k attachments)
 
@@ -174,6 +201,9 @@ search results take the same path.
   closing keeps the results, and running the same search again just reopens them.
 - **Below 1024 px** the panel floats over the chat under its header (owner decision) and Jump closes
   it so the message is in view.
+- **Inside words** is a switch row under "Match" in the box's menu, and shows as a
+  `match: inside words` chip (it travels with the query like the filters; Backspace or ✕ removes
+  it). Results mark the fragments inside words; Relevant is off in this mode.
 - **State** (`searchStore.ts`): one search at a time, answers matched by `seq`, an 8 s no-answer
   timer (the server predates search), automatic retries on `retry_after_ms` (up to 3), "load more"
   reusing the seq. Nothing persists: no recent searches (owner decision).

@@ -192,6 +192,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   about a search is stored on the device. The community server links its own pinned SQLite
   (`cmake/DecibellSQLite.cmake`, 3.53.4 amalgamation with FTS5, fetched by CMake): the index needs
   ≥ 3.43 and the Hetzner box's Debian 12 ships 3.40. Don't switch it back to the system library.
+  The index stores the dotless ı as i (ı and i match each other, for Turkish; `search_index_version`
+  2). "Inside words" (`match_within_words`, a chip/switch) is a bounded **scan** with the worker's
+  `decibell_fold`, by measured choice: a trigram index cost +36–104% disk and ~25× per send.
 - **Server-settings search runs on the community server** (owner decision): `MEMBER_SEARCH_REQ` for
   the Members tab / a role's holders / the add-members picker, `AuditLogRequest.query/actions` for the
   audit log, `RoleInfo.member_count` for role counts. Never filter only the loaded pages, and keep

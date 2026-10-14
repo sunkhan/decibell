@@ -2415,3 +2415,25 @@ against that exact static library with e2e 507 passed. The full CMake configure 
 box's libpqxx and jwt-cpp, so it runs there for the first time. Operators: a sqlite3 CLI older than
 3.43 can read the database but can't write to `messages`, because the index triggers fail.
 
+**Search: ı matches i, and an "inside words" option (2026-10-14) ✅** — Owner asked for both, the
+second only if it isn't hard on the server.
+- **ı ↔ i:** unicode61 treats the dotless ı as its own letter, so "kisa" missed "kısa" and "cagri"
+  missed "Çağrı". The index now stores ı as i (search_index_version 2, rebuilt once at startup;
+  version 1's `search_fts_v14` flag is retired), and queries fold the same way, on the server and in
+  the client highlighter. Send cost: 44–47 µs per insert with or without it, within noise.
+- **Inside words** (`MessageSearchRequest.match_within_words`): "abc" finds "xabcy". Options measured
+  on 1M messages: a trigram index with positions (+104% disk, sends 15 → 390 µs), one without
+  positions (+36%, 14 → 490 µs, and longer substrings need Unicode re-checks), or a scan. Chose the
+  scan: free until used, then bounded like every search (worker thread, 3 s budget, one at a time).
+  The worker registers `decibell_fold` (case, Latin accents, ı/İ, Greek and Cyrillic capitals) and
+  folds both sides, so they always agree. Punctuation is kept (`c++`), file names count, exclusions
+  work, encrypted channels are skipped and named, and results sort newest first. Measured through
+  the server: 4–29 ms with a sender or channel filter, 7 ms for a common fragment, 434 ms for a rare
+  one across the whole server, 635 ms worst (no match, full scan).
+- **UI:** a "Match → Inside words" switch row in the box's menu, shown as a `match: inside words`
+  chip; fragments are marked inside words in the results; Relevant is off in this mode.
+
+Verified: community build + e2e 526 passed (16 new checks for ı and inside words, 3 for the index
+rebuild), napi build, cargo test --lib 223 passed, tsc web 0. In the harness: the switch row, the
+chip, `matchWithinWords` sent, fragment marks, and "kisa" marking "kısa".
+

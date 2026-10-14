@@ -3761,8 +3761,17 @@ private:
         chatproj::SearchSpec spec;
         spec.owner = search_owner_;
         spec.has = req.has() & has::kKnown;
+        // Words: the index (whole words, prefixes). Inside words: folded
+        // fragments the worker scans the text for.
+        const bool within = req.match_within_words();
         bool only_excluded = false;
-        const std::string words = chatproj::build_fts_query(req.query(), &only_excluded);
+        std::string words;
+        if (within) {
+            chatproj::split_fragments(req.query(), &spec.contains, &spec.excludes);
+            only_excluded = spec.contains.empty() && !spec.excludes.empty();
+        } else {
+            words = chatproj::build_fts_query(req.query(), &only_excluded);
+        }
         if (only_excluded) {
             fail("Add a word to search for, not only words to leave out.");
             return;
@@ -3772,8 +3781,8 @@ private:
         static const std::string kLinkMatch = "content : (\"http\" OR \"https\")";
         if (spec.has & has::kLink) spec.match = words.empty() ? kLinkMatch : "(" + words + ") AND " + kLinkMatch;
         else spec.match = words;
-        if (words.empty() && req.authors_size() == 0 && spec.has == 0 && req.after() == 0 &&
-            req.before() == 0 && req.channel_ids_size() == 0) {
+        if (words.empty() && spec.contains.empty() && req.authors_size() == 0 && spec.has == 0 &&
+            req.after() == 0 && req.before() == 0 && req.channel_ids_size() == 0) {
             fail("Type a word to search for, or pick a filter.");
             return;
         }
@@ -3787,7 +3796,7 @@ private:
             if (ch.type != 0) continue;
             if (!wanted.empty() && !wanted.count(ch.id)) continue;
             if ((manager_.authz().channel_permissions(username_, ch.id) & kRead) != kRead) continue;
-            if (!spec.match.empty() && ch.encrypted) {
+            if ((!spec.match.empty() || !spec.contains.empty()) && ch.encrypted) {
                 reply.text_skipped.push_back(ch.id);
                 continue;
             }
@@ -3807,7 +3816,10 @@ private:
         spec.before = req.before();
         switch (req.sort()) {
             case chatproj::MessageSearchRequest::OLDEST: spec.sort = chatproj::SearchSort::Oldest; break;
-            case chatproj::MessageSearchRequest::RELEVANCE: spec.sort = chatproj::SearchSort::Relevance; break;
+            // No ranking without the index: inside-word results sort newest first.
+            case chatproj::MessageSearchRequest::RELEVANCE:
+                spec.sort = within ? chatproj::SearchSort::Newest : chatproj::SearchSort::Relevance;
+                break;
             default: spec.sort = chatproj::SearchSort::Newest; break;
         }
         reply.relevance = spec.sort == chatproj::SearchSort::Relevance && !spec.match.empty();

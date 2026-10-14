@@ -99,6 +99,9 @@ pub struct SearchMessagesArgs {
     /// Relevance paging: the previous page's nextOffset.
     pub offset: Option<i32>,
     pub limit: Option<i32>,
+    /// Match words anywhere inside words ("abc" finds "xabcy"): a scan on
+    /// the server, sorted newest first.
+    pub match_within_words: Option<bool>,
 }
 
 #[napi]
@@ -123,6 +126,7 @@ pub async fn search_messages(args: SearchMessagesArgs) -> napi::Result<()> {
             cursor: args.cursor.unwrap_or(0),
             offset: args.offset.unwrap_or(0),
             limit: args.limit.unwrap_or(0),
+            match_within_words: args.match_within_words.unwrap_or(false),
         }),
     )
     .await
