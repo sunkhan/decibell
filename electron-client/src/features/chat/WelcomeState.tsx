@@ -1,19 +1,17 @@
 import React from "react";
-import { UserPlus, Pencil, Settings } from "lucide-react";
+import { UserPlus, Settings } from "lucide-react";
 
 /// Each action renders only when its handler is passed — the caller leaves
 /// out the ones the user lacks the permission for.
 interface WelcomeStateProps {
   channelName?: string;
   onInvite?: () => void;
-  onEditTopic?: () => void;
   onManageChannel?: () => void;
 }
 
 const WelcomeState: React.FC<WelcomeStateProps> = ({
   channelName = "general",
   onInvite,
-  onEditTopic,
   onManageChannel,
 }) => {
   return (
@@ -142,18 +140,12 @@ const WelcomeState: React.FC<WelcomeStateProps> = ({
           This is the start of the #{channelName} channel. Invite your squad and
           get the conversation going.
         </p>
-        {(onInvite || onEditTopic || onManageChannel) && (
+        {(onInvite || onManageChannel) && (
           <div className="welcome-actions">
             {onInvite && (
               <button className="welcome-btn primary" onClick={onInvite}>
                 <UserPlus size={15} />
                 Invite friends
-              </button>
-            )}
-            {onEditTopic && (
-              <button className="welcome-btn secondary" onClick={onEditTopic}>
-                <Pencil size={15} />
-                Edit topic
               </button>
             )}
             {onManageChannel && (

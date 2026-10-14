@@ -47,20 +47,20 @@ Gate: CREATE_INVITE or MANAGE_INVITES, mirroring the server and the sidebar.
   characters (`clamp_utf8`) and trims blanks. The client turns line breaks into spaces and cuts at the
   byte cap itself, so the server never truncates what the user saw.
 - The header shows it after the name, behind a divider, on one truncated line with the full text in a
-  tooltip. It is edited from the banner's Edit topic dialog or the Channel topic field in channel
-  settings. The `channel_updated` broadcast keeps everyone current, and audit details say `topic`.
-- `CHANNEL_UPDATE_REQ` still carries the full retention snapshot, so the Edit topic dialog sends the
-  channel's own retention values.
+  tooltip. It is edited in the Channel topic field in channel settings. The banner had an Edit
+  topic button with its own dialog at first; the owner dropped it on 2026-10-14, since the banner's
+  Manage channel opens settings anyway. The `channel_updated` broadcast keeps everyone current, and
+  audit details say `topic`.
 - Topics are **not encrypted**, even in encrypted channels: the server stores and sends them in the
   clear, as it does channel names. Owner decision: they label the channel, not the conversation.
-  Both topic editors warn about this on encrypted channels ("Topics aren't encrypted. The server host
+  The topic field warns about this on encrypted channels ("Topics aren't encrypted. The server host
   can read them."). See the encrypted-channels spec's accepted metadata.
 
 ## Manage channel
 
 Renamed from "Set rules". It opens the existing channel settings for the channel and shows for
-MANAGE_CHANNELS or MANAGE_ROLES, like the sidebar gear. Edit topic needs MANAGE_CHANNELS. The banner
-leaves out any action the user can't take.
+MANAGE_CHANNELS or MANAGE_ROLES, like the sidebar gear. The banner leaves out any action the user
+can't take, so it now has two at most: Invite friends and Manage channel.
 
 ## Rollout
 

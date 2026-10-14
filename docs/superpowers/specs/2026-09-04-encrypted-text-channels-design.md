@@ -148,8 +148,8 @@ Accepted metadata: the channel name and, since 2026-10-14, its topic stay
 in the clear on the server. This is an owner decision: they label the channel, not
 the conversation. Sealing the topic would leave keyless members and an
 encryption switch-on with a mixed state, and the name beside it would still be
-readable. The Edit topic dialog and the channel-settings topic field say "Topics
-aren't encrypted. The server host can read them." on encrypted channels.
+readable. The channel-settings topic field says "Topics aren't encrypted. The
+server host can read them." on encrypted channels.
 
 ## Verification
 

@@ -203,11 +203,9 @@ interface UiState {
   activeModal: string | null;
   /// Which channel the channel-settings modal targets. Set by the
   /// per-row gear icon via openChannelSettings — the modal no longer
-  /// requires the channel to be the active one. The Edit topic dialog
-  /// (`activeModal === "edit-topic"`) targets a channel the same way.
+  /// requires the channel to be the active one.
   channelSettingsChannelId: string | null;
   openChannelSettings: (channelId: string) => void;
-  openEditTopic: (channelId: string) => void;
   /// The full profile screen (features/profile/UserProfileModal): who it
   /// shows and the server it was opened from (nickname + roles). Rides
   /// `activeModal === "user-profile"`; opened from the popup's avatar.
@@ -474,8 +472,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   closeModal: () => set({ activeModal: null }),
   openChannelSettings: (channelId) =>
     set({ activeModal: "channel-settings", channelSettingsChannelId: channelId }),
-  openEditTopic: (channelId) =>
-    set({ activeModal: "edit-topic", channelSettingsChannelId: channelId }),
   openUserProfile: (username, serverId = null) =>
     set({
       activeModal: "user-profile",

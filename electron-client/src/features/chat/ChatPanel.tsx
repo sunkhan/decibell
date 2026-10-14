@@ -115,8 +115,8 @@ export default function ChatPanel() {
   const canAttach = useChannelPermission(activeServerId, activeChannelId, PERM.ATTACH_FILES);
   const canBypassSlowmode = useChannelPermission(activeServerId, activeChannelId, PERM.MANAGE_MESSAGES);
   // Welcome banner actions, gated like the sidebar's: invites need CREATE_
-  // or MANAGE_INVITES; the topic is MANAGE_CHANNELS; channel settings open
-  // for MANAGE_CHANNELS or MANAGE_ROLES (its permissions section).
+  // or MANAGE_INVITES; channel settings open for MANAGE_CHANNELS or
+  // MANAGE_ROLES (its permissions section).
   const canCreateInvite = usePermission(activeServerId, PERM.CREATE_INVITE);
   const canManageInvites = usePermission(activeServerId, PERM.MANAGE_INVITES);
   const canManageChannel = useChannelPermission(activeServerId, activeChannelId, PERM.MANAGE_CHANNELS);
@@ -1046,9 +1046,6 @@ export default function ChatPanel() {
             <WelcomeState
               channelName={channelName ?? "channel"}
               onInvite={canCreateInvite || canManageInvites ? () => openModal("invite-friends") : undefined}
-              onEditTopic={
-                canManageChannel ? () => useUiStore.getState().openEditTopic(activeChannelId) : undefined
-              }
               onManageChannel={
                 canManageChannel || canManageChannelRoles
                   ? () => useUiStore.getState().openChannelSettings(activeChannelId)

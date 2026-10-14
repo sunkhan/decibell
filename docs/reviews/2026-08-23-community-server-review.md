@@ -2168,3 +2168,9 @@ Owner decision: encryption is chosen when a channel is created and is fixed for 
 Verified: community e2e 449/0 (the encrypted-channels test now runs on a channel created encrypted, plus
 checks for voice-ignores-the-flag, settings updates keeping it on, and the legacy edit guard); native
 napi build + `cargo test --lib` 223; tsc web 0.
+
+**Client: topic edited in channel settings only (2026-10-14) ✅** — Owner: drop the welcome banner's
+Edit topic button and keep the topic in channel settings. The banner now offers Invite friends and
+Manage channel. Manage channel opens settings, which has had the Channel topic field (with the
+encrypted-channel warning) since topics shipped. `EditTopicModal` and `uiStore.openEditTopic` are
+gone. Verified: tsc web 0.

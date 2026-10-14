@@ -161,7 +161,7 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   here (offline members, readable history, multi-device). The server enforces the wire format
   both ways. Channel names and topics stay in
   the clear, by owner decision (2026-10-14): they label the channel, not the conversation. The
-  topic editors say so for encrypted channels. Design:
+  channel-settings topic field says so for encrypted channels. Design:
   `2026-09-04-encrypted-text-channels-design.md`.
 - **User statuses are central's** (online / away / dnd / invisible; `users.presence_status`), shown
   to every signed-in user. Others see only `PRESENCE_DELTA` / snapshot entries; an invisible user is
