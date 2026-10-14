@@ -334,15 +334,12 @@ export default function UserContextMenu() {
                   )}
                 </>
               )}
-              {/* Ends their voice connection (VoiceModRequest.DISCONNECT): MOVE_MEMBERS
-                  in their channel, as on the server. Named by the owner. */}
               {canMove && (
                 <button
                   onClick={() => runVoiceMod("disconnect")}
-                  title="Disconnect them from the voice channel"
                   className="mt-1 flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-error transition-colors hover:bg-error/10"
                 >
-                  End connection
+                  Disconnect from voice
                 </button>
               )}
             </div>
