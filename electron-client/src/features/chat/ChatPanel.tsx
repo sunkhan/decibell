@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import SearchBox from "../search/SearchBox";
 import RealMessageList, {
   type JumpTarget,
   type RealMessageListHandle,
@@ -26,7 +25,6 @@ import RichInput, { type RichInputHandle } from "../../components/editor/RichInp
 import { pickFiles } from "./filePicker";
 import { queueUpload, startQueuedUpload, takeEncryptedUploadMeta } from "./uploadAttachment";
 import { encryptedAttachmentArgs } from "./attachmentCrypto";
-import ChannelEncryptionBadge from "../e2ee/ChannelEncryptionBadge";
 import { paceSend, watchEcho } from "./sendPacing";
 import { chunkSourceFromPath } from "./chunkSource";
 import WelcomeState from "./WelcomeState";
@@ -60,12 +58,12 @@ function attachmentKindsOf(m: Message): AttachmentKind[] {
 }
 
 // Height of the composer card at rest (py-2 around a 54px card). The panel
-// sizes media against "panel minus header minus a resting composer" rather
-// than measuring the list area itself: the list shrinks with every composer
+// sizes media against "panel minus a resting composer" rather than
+// measuring the list area itself: the list shrinks with every composer
 // line, reply bar and preview, and on short windows that re-sized every
-// image/video/GIF box in the channel per keystroke.
+// image/video/GIF box in the channel per keystroke. (The header is
+// ChannelHeader, above the panel since it spans the members list too.)
 const COMPOSER_REST_PX = 70;
-const HEADER_PX = 48;
 
 // How many rows below the viewport's bottom edge before the "jump to
 // present" pill appears for a plain scroll-up (no jump window involved).
@@ -197,8 +195,8 @@ export default function ChatPanel() {
   // the available space (sqrt-based, see attachmentSizing.ts). On
   // unmount we clear the size so the helpers fall back to fixed
   // defaults instead of using a stale dimension. Measured on the panel
-  // root, less the header and a resting composer (see COMPOSER_REST_PX),
-  // so composer growth doesn't resize the channel's media.
+  // root (below the header), less a resting composer (see
+  // COMPOSER_REST_PX), so composer growth doesn't resize the channel's media.
   useLayoutEffect(() => {
     const el = panelRef.current;
     if (!el) return;
@@ -209,7 +207,7 @@ export default function ChatPanel() {
     const publish = (w: number, h: number) =>
       setSize({
         width: Math.round(w),
-        height: Math.max(0, Math.round(h) - HEADER_PX - COMPOSER_REST_PX),
+        height: Math.max(0, Math.round(h) - COMPOSER_REST_PX),
       });
     const observer = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
@@ -1033,31 +1031,6 @@ export default function ChatPanel() {
 
   return (
     <div ref={panelRef} className="flex min-w-0 flex-1 flex-col bg-bg-mid">
-      <div className="flex h-12 items-center border-b border-border-divider px-4 font-display text-title font-emphasis tracking-title text-text-bright">
-        <span className="mr-1.5 text-text-muted">#</span>
-        <span className="min-w-0 truncate">{channelName}</span>
-        {channel?.encrypted ? (
-          <span className="ml-2.5 flex items-center">
-            <ChannelEncryptionBadge />
-          </span>
-        ) : null}
-        {channel?.topic ? (
-          <>
-            <span aria-hidden className="mx-3 h-5 w-px shrink-0 bg-border-divider" />
-            {/* basis-0: the topic takes only what the name leaves; contained
-                so a long one never widens the panel's intrinsic size. */}
-            <span
-              title={channel.topic}
-              className="mr-3 min-w-0 flex-1 basis-0 truncate [contain:inline-size] font-channel text-[13px] font-normal tracking-normal text-text-muted"
-            >
-              {channel.topic}
-            </span>
-          </>
-        ) : null}
-        {activeServerId ? <SearchBox serverId={activeServerId} channelId={activeChannelId} /> : null}
-        <MembersPanelToggle />
-      </div>
-
       <div className="relative flex flex-1 flex-col overflow-hidden">
         {loading && messages.length === 0 ? (
           <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
@@ -1322,30 +1295,6 @@ function SendButton({
     >
       <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
         <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-      </svg>
-    </button>
-  );
-}
-
-/// Header button that shows / hides the members list beside a text
-/// channel — the twin of the friends toggle in a DM header (same icon,
-/// same states). Its own component so the toggle re-renders this button,
-/// not the chat panel. Visibility is remembered per install by uiStore.
-function MembersPanelToggle() {
-  const visible = useUiStore((s) => s.membersPanelVisible);
-  const toggle = useUiStore((s) => s.toggleMembersPanel);
-  return (
-    <button
-      onClick={toggle}
-      className={`ml-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-sm transition-colors ${
-        visible
-          ? "text-text-secondary bg-surface-hover"
-          : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
-      }`}
-      title={visible ? "Hide members" : "Show members"}
-    >
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-        <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" />
       </svg>
     </button>
   );

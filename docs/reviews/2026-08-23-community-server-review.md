@@ -2437,3 +2437,12 @@ Verified: community build + e2e 526 passed (16 new checks for ı and inside word
 rebuild), napi build, cargo test --lib 223 passed, tsc web 0. In the harness: the switch row, the
 chip, `matchWithinWords` sent, fragment marks, and "kisa" marking "kısa".
 
+**Channel header spans the members list (2026-10-14) ✅** — Owner asked for the header with the search
+box to run across the whole client, with the members list starting under it, as in Discord. The header
+moved out of `ChatPanel` into `features/chat/ChannelHeader.tsx` (with the members toggle). `MainLayout`
+now stacks it above a row of chat plus members or search results. Below 1024 px the floating search panel
+starts right under it (`top-0` of that row). The chat's media sizing no longer subtracts a header it
+doesn't contain: `chatViewSize` reads 780 × 682 at 1280 × 800, as before. The DM view is unchanged.
+Verified: tsc web 0. Harness captures in Nocturne, Matinee, Graphite and Console Split with members,
+with search results, and at 1000 px.
+

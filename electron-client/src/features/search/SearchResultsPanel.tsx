@@ -121,7 +121,7 @@ export default function SearchResultsPanel() {
   return (
     <aside
       aria-label="Search results"
-      className="flex w-[400px] shrink-0 flex-col border-l border-border bg-bg-dark font-sans max-lg:absolute max-lg:bottom-0 max-lg:right-0 max-lg:top-12 max-lg:z-30 max-lg:w-[360px] max-lg:max-w-[calc(100%-16px)] max-lg:rounded-tl-lg max-lg:border-t max-lg:shadow-float"
+      className="flex w-[400px] shrink-0 flex-col border-l border-border bg-bg-dark font-sans max-lg:absolute max-lg:bottom-0 max-lg:right-0 max-lg:top-0 max-lg:z-30 max-lg:w-[360px] max-lg:max-w-[calc(100%-16px)] max-lg:shadow-float"
     >
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border-divider pl-4 pr-2">
         <span className="min-w-0 flex-1 truncate text-[14px] font-semibold tabular-nums text-text-bright">{title}</span>

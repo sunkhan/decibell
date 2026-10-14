@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
+import ChannelHeader from "../features/chat/ChannelHeader";
 import { useChatStore } from "../stores/chatStore";
 import SearchResultsPanel from "../features/search/SearchResultsPanel";
 import { useSearchStore } from "../features/search/searchStore";
@@ -154,10 +155,13 @@ export default function MainLayout() {
                 // where it sits beside an open conversation.
                 <FriendsPage />
               ) : (
-                <>
+                // The channel header spans the chat and the panel beside it
+                // (members or search results), which start under it.
+                <div className="flex min-w-0 flex-1 flex-col bg-bg-mid">
+                  <ChannelHeader />
                   {/* relative: below 1024 px the search panel floats over
                       the chat from this box. */}
-                  <div className="relative flex min-w-0 flex-1">
+                  <div className="relative flex min-h-0 flex-1">
                     <ChatPanel />
                     {searchOpen ? (
                       <SearchResultsPanel />
@@ -165,7 +169,7 @@ export default function MainLayout() {
                       membersPanelVisible && <MembersList />
                     )}
                   </div>
-                </>
+                </div>
               )}
             </>
           )}
