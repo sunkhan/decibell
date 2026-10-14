@@ -32,6 +32,8 @@ import WelcomeState from "./WelcomeState";
 import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
 import { useCanDeleteOthers } from "../servers/useCanDeleteOthers";
 import { PERM, useChannelPermission, usePermission } from "../servers/permissions";
+import SlowmodeIndicator from "./SlowmodeIndicator";
+import { nudgeSlowmode, slowmodeHolds, useSlowmode } from "./slowmode";
 
 function formatRemaining(totalSec: number): string {
   const s = Math.max(0, Math.floor(totalSec));
@@ -113,7 +115,6 @@ export default function ChatPanel() {
   // bits (read-only channels, muted members). Server stays authoritative.
   const canSend = useChannelPermission(activeServerId, activeChannelId, PERM.SEND_MESSAGES);
   const canAttach = useChannelPermission(activeServerId, activeChannelId, PERM.ATTACH_FILES);
-  const canBypassSlowmode = useChannelPermission(activeServerId, activeChannelId, PERM.MANAGE_MESSAGES);
   // Welcome banner actions, gated like the sidebar's: invites need CREATE_
   // or MANAGE_INVITES; channel settings open for MANAGE_CHANNELS or
   // MANAGE_ROLES (its permissions section).
@@ -303,6 +304,15 @@ export default function ChatPanel() {
     editorRef.current?.setValue(stored);
   }, [activeServerId, activeChannelId]);
 
+  // A refused send put its text back in the drafts store (useChatEvents);
+  // show it if that channel is the one open.
+  const restoredDraft = useDraftsStore((s) => s.restored);
+  useEffect(() => {
+    if (!restoredDraft || !activeServerId || !activeChannelId) return;
+    if (restoredDraft.key !== channelKey(activeServerId, activeChannelId)) return;
+    editorRef.current?.setValue(useDraftsStore.getState().getChannelDraft(activeServerId, activeChannelId));
+  }, [restoredDraft, activeServerId, activeChannelId]);
+
   // Scroll-up paginator, driven by RealMessageList's onNearTop — fired while
   // the top edge is within NEAR_PX, on scroll and after every commit, so a
   // page that doesn't fill the zone pulls the next one and a lost response
@@ -467,6 +477,12 @@ export default function ChatPanel() {
     );
     const pendingIds = livePendings.map((p) => p.pendingId);
     if (!content && pendingIds.length === 0) return;
+    // Slowmode: the server would refuse it. Keep the text and attachments
+    // where they are and shake the timer instead.
+    if (slowmodeHolds(activeServerId, activeChannelId)) {
+      nudgeSlowmode(activeServerId, activeChannelId);
+      return;
+    }
     for (const id of pendingIds) claimedPendingsRef.current.add(id);
     const releaseClaims = () => {
       for (const id of pendingIds) claimedPendingsRef.current.delete(id);
@@ -614,6 +630,10 @@ export default function ChatPanel() {
     if (!activeServerId || !activeChannelId || !username) return;
     if (activeKey && useChatStore.getState().hasMoreAfter[activeKey]) {
       jumpToPresent();
+      return;
+    }
+    if (slowmodeHolds(activeServerId, activeChannelId)) {
+      nudgeSlowmode(activeServerId, activeChannelId);
       return;
     }
     const serverId = activeServerId;
@@ -1192,15 +1212,12 @@ export default function ChatPanel() {
               onEnter={handleSend}
               onArrowUpEmpty={editLatestOwn}
               onEscape={escapeReply}
-              placeholder={
-                channel?.slowmodeSeconds && !canBypassSlowmode
-                  ? `Message #${channelName ?? "channel"} · slowmode ${formatRemaining(channel.slowmodeSeconds)}`
-                  : `Message #${channelName ?? "channel"}`
-              }
+              placeholder={`Message #${channelName ?? "channel"}`}
               maxHeight={160}
               className="flex-1 bg-transparent text-sm leading-snug text-text-primary"
             />
             <div className="flex shrink-0 self-end gap-1">
+              <SlowmodeIndicator serverId={activeServerId} channelId={activeChannelId} />
               <RichComposer onInsert={insertSnippet} />
               <div className="relative">
                 <button
@@ -1286,12 +1303,20 @@ function SendButton({
     }
     return false;
   });
+  // In a slowmode wait the button looks off but still takes the click,
+  // which shakes the timer (handleSend holds the send).
+  const held = useSlowmode(serverId, channelId).remaining > 0;
   return (
     <button
       onClick={onSend}
       disabled={!hasDraft && !hasLivePendings}
-      className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-accent text-on-accent transition-all enabled:hover:bg-accent-hover enabled:active:scale-95 disabled:cursor-not-allowed disabled:bg-surface-active disabled:text-text-muted"
-      title="Send"
+      aria-disabled={held || undefined}
+      className={`flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md transition-all disabled:cursor-not-allowed disabled:bg-surface-active disabled:text-text-muted ${
+        held
+          ? "cursor-not-allowed bg-surface-active text-text-muted"
+          : "bg-accent text-on-accent enabled:hover:bg-accent-hover enabled:active:scale-95"
+      }`}
+      title={held ? "Slowmode is on" : "Send"}
     >
       <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
         <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />

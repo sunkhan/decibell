@@ -122,6 +122,10 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   refused message with `CHANNEL_MSG_REJECTED {nonce}` so exactly that optimistic bubble is
   withdrawn; a 30 s echo watchdog is the backstop. Keep the client and server numbers in step.
   Optimistic bubbles render faded (`pending`) until the echo; DMs carry `DirectMessage.nonce`.
+  Slowmode is mirrored the same way (`features/chat/slowmode.ts`): our echo starts the window, a
+  refusal's `retry_after_seconds` corrects it, and the composer holds a send (text kept) and counts
+  down instead of letting the server refuse it. Owner and Manage Messages in the channel bypass, as
+  on the server. A refused send's text goes back in the message box.
 - **DM calls are P2P over the native UDP engine**, wrapped in `MediaSocket` (`Plain` for the
   community relay — byte-identical; `Sealed` = AES-256-GCM + replay window, inner datagram
   unchanged). Central only relays `CALL_SIGNAL` (never persisted, INVITE gated by

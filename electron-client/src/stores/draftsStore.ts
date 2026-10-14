@@ -9,8 +9,14 @@ import { channelKey, type ChannelKey } from "../lib/channelKey";
 interface DraftsState {
   channelDrafts: Record<ChannelKey, string>;
   dmDrafts: Record<string, string>;
+  /// The last draft put back from outside the composer (a refused send),
+  /// so the open composer can show it. `n` changes on every restore.
+  restored: { key: ChannelKey; n: number } | null;
   getChannelDraft: (serverId: string, channelId: string) => string;
   setChannelDraft: (serverId: string, channelId: string, value: string) => void;
+  /// Put the text of a refused message back, unless something new has
+  /// been typed since. True when it was put back.
+  restoreChannelDraft: (serverId: string, channelId: string, value: string) => boolean;
   setDmDraft: (username: string, value: string) => void;
   clearChannelDraft: (serverId: string, channelId: string) => void;
   clearDmDraft: (username: string) => void;
@@ -19,6 +25,7 @@ interface DraftsState {
 export const useDraftsStore = create<DraftsState>((set, get) => ({
   channelDrafts: {},
   dmDrafts: {},
+  restored: null,
   getChannelDraft: (serverId, channelId) =>
     get().channelDrafts[channelKey(serverId, channelId)] ?? "",
   setChannelDraft: (serverId, channelId, value) =>
@@ -29,6 +36,15 @@ export const useDraftsStore = create<DraftsState>((set, get) => ({
       else delete next[key];
       return { channelDrafts: next };
     }),
+  restoreChannelDraft: (serverId, channelId, value) => {
+    const key = channelKey(serverId, channelId);
+    if (!value || get().channelDrafts[key]) return false;
+    set((s) => ({
+      channelDrafts: { ...s.channelDrafts, [key]: value },
+      restored: { key, n: (s.restored?.n ?? 0) + 1 },
+    }));
+    return true;
+  },
   setDmDraft: (username, value) =>
     set((s) => {
       const next = { ...s.dmDrafts };

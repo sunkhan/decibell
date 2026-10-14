@@ -2307,3 +2307,30 @@ width measurements. The label on keyboard focus is in the build but untested: th
 never has focus.
 
 Pending: a run in the real app, resizing across 1024 px with a settings window open.
+
+**Slowmode in the composer (2026-10-14) ✅** — Owner asked for an indicator and a countdown by the
+message box in slowmode channels, only for members it applies to. Before, the only sign was a
+"· slowmode 30s" suffix on the placeholder. A send inside the window went out, the server refused it,
+the bubble vanished, and the typed text was lost with a toast.
+- **Indicator:** an hourglass pill beside the composer's buttons (`features/chat/SlowmodeIndicator.tsx`).
+  While you may post, it shows the interval ("30s"). After a message, it counts down ("0:24") in the
+  accent, and the send button dims. Hidden for the owner and anyone with Manage Messages in the
+  channel, which mirrors the server's bypass. The tooltip and `aria-label` spell it out.
+- **Tracking:** `features/chat/slowmode.ts`. The echo of any message of ours, from this device or
+  another, starts a full window. It runs a little after the server's, which stamps it at persist.
+- **Sends held:** inside a window, or while a message of ours is still unconfirmed, Enter, Send and the
+  GIF picker keep the text and attachments and shake the pill.
+- **Wire:** `ChannelMessageRejected.retry_after_seconds` (new field 4, community→client). The server
+  fills it on a slowmode refusal, and the client sets the countdown from it. That covers a window the
+  client didn't see, such as after an app restart. Every other refusal sends 0.
+- **Refused text comes back:** on any `CHANNEL_MSG_REJECTED`, the bubble's text goes back into the
+  message box if nothing new was typed there (`draftsStore.restoreChannelDraft`). The toast says so.
+
+Verified: tsc web 0, napi build, cargo test --lib (223 passed), community build + e2e (451 passed).
+The two new e2e checks: a slowmode refusal carries 1..3 s for a 3 s window, and a rate-limit refusal
+carries 0. In the harness, as a plain member: idle pill, a send before the echo held, the echo starting
+0:30, a send during the countdown held with the text kept, ticking, a refusal restoring the text with
+0:24, sending again after expiry. No pill for the owner, a moderator, or a channel without slowmode.
+
+Needs the community server rebuilt for the countdown after a refusal. Until then the field arrives
+as 0, so the text still comes back but no countdown starts. Live test pending.

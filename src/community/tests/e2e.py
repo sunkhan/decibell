@@ -539,6 +539,8 @@ def test_b11_rate_limit():
           f"rejected_nonces={sorted(r.nonce for r in rejections)[:5]}... expected={expected_dropped[:5]}...")
     check("rejection carries channel + reason",
           all(r.channel_id == "general" and "too fast" in r.reason for r in rejections))
+    check("a rate-limit refusal carries no slowmode wait",
+          bool(rejections) and all(r.retry_after_seconds == 0 for r in rejections))
     lou.close(); owner.close()
 
 
@@ -1276,6 +1278,9 @@ def test_slowmode():
     cal.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="two"))
     r = cal.wait(pb.Packet.MOD_ACTION_RES, timeout=2, pred=lambda p: p.mod_action_res.action == "message")
     check("second message within window rejected", r is not None and "Slowmode" in r.mod_action_res.message)
+    rj = cal.wait(pb.Packet.CHANNEL_MSG_REJECTED, timeout=2, pred=lambda p: "Slowmode" in p.channel_msg_rejected.reason)
+    check("slowmode refusal says how long is left (retry_after_seconds 1..3)",
+          rj is not None and 1 <= rj.channel_msg_rejected.retry_after_seconds <= 3)
     owner.flush(0.5)
     owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="a"))
     owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="b"))

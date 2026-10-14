@@ -1,8 +1,12 @@
 import { useEffect } from "react";
 import { listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
+import { useAuthStore } from "../../stores/authStore";
+import { useDraftsStore } from "../../stores/draftsStore";
 import { toast } from "../../stores/toastStore";
+import { channelKey } from "../../lib/channelKey";
 import { noteTypedRejection } from "./sendPacing";
+import { noteOwnMessage, noteSlowmodeRefusal } from "./slowmode";
 import type {
   Attachment,
   AttachmentKind,
@@ -131,6 +135,8 @@ export function useChatEvents() {
         decryptError: p.decryptError || undefined,
         suppressEmbeds: p.suppressEmbeds || undefined,
       });
+      // One of ours, from this device or another: a slowmode window starts.
+      if (p.sender === useAuthStore.getState().username) noteOwnMessage(p.serverId, p.context);
     });
 
     const unlistenHistory = listen<ChannelHistoryReceivedPayload>(
@@ -188,16 +194,29 @@ export function useChatEvents() {
     // The community refused a message of ours (rate limit, slowmode,
     // permission, …). Withdraw exactly that optimistic bubble — left in
     // place it would anchor at the tail forever, with every later
-    // message inserting above it — and say why.
+    // message inserting above it — put its text back in the message box
+    // and say why. A slowmode refusal also says how long is left, which
+    // starts the composer's countdown.
     const unlistenRejected = listen<ChannelMessageRejectedPayload>(
       "channel_message_rejected",
       (event) => {
         const p = event.payload;
         noteTypedRejection();
+        let restored = false;
         if (p.nonce) {
-          useChatStore.getState().removeMessageByNonce(p.serverId, p.channelId, p.nonce);
+          const chat = useChatStore.getState();
+          const bubble = chat.messagesByChannel[channelKey(p.serverId, p.channelId)]?.find(
+            (m) => m.nonce === p.nonce,
+          );
+          chat.removeMessageByNonce(p.serverId, p.channelId, p.nonce);
+          if (bubble?.content) {
+            restored = useDraftsStore.getState().restoreChannelDraft(p.serverId, p.channelId, bubble.content);
+          }
         }
-        toast.error("Message not sent", p.reason || "The server rejected it.");
+        const wait = Number(p.retryAfterSeconds ?? 0);
+        if (wait > 0) noteSlowmodeRefusal(p.serverId, p.channelId, wait);
+        const reason = p.reason || "The server rejected it.";
+        toast.error("Message not sent", restored ? `${reason} Your text is back in the message box.` : reason);
       },
     );
 

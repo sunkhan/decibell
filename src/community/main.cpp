@@ -1668,7 +1668,7 @@ private:
                     const int64_t wait = manager_.slowmode_remaining(
                         username_, msg->channel_id(), sm->slowmode_seconds);
                     if (wait > 0) {
-                        reject_channel_msg(*msg, "Slowmode is on — wait " + std::to_string(wait) + "s.");
+                        reject_channel_msg(*msg, "Slowmode is on — wait " + std::to_string(wait) + "s.", wait);
                         return;
                     }
                     record_slowmode = true;
@@ -3669,13 +3669,16 @@ private:
     // withdraws exactly that optimistic bubble instead of leaving a
     // ghost row anchored at its tail — followed by the legacy
     // MOD_ACTION_RES(action="message") for clients that predate it.
-    void reject_channel_msg(const chatproj::ChannelMessage& msg, const std::string& reason) {
+    // `retry_after` is the slowmode wait left, in seconds (0 otherwise).
+    void reject_channel_msg(const chatproj::ChannelMessage& msg, const std::string& reason,
+                            int64_t retry_after = 0) {
         chatproj::Packet p;
         p.set_type(chatproj::Packet::CHANNEL_MSG_REJECTED);
         auto* r = p.mutable_channel_msg_rejected();
         r->set_channel_id(msg.channel_id());
         r->set_nonce(msg.nonce());
         r->set_reason(reason);
+        r->set_retry_after_seconds(static_cast<int32_t>(retry_after));
         send_packet(p);
         send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, reason, username_, "message");
     }

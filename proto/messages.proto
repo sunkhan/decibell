@@ -2041,6 +2041,10 @@ message ChannelMessageRejected {
   // sent none).
   string nonce = 2;
   string reason = 3;
+  // Slowmode: whole seconds until this user may post in the channel
+  // again (rounded up), so the client can count down. 0 for any other
+  // refusal.
+  int32 retry_after_seconds = 4;
 }
 
 // --- Custom server pictures ---

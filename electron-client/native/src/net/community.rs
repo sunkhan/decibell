@@ -861,6 +861,7 @@ impl CommunityClient {
                         channel_id: r.channel_id,
                         nonce: r.nonce,
                         reason: r.reason,
+                        retry_after_seconds: r.retry_after_seconds,
                     });
                 }
                 Some(packet::Payload::ModActionRes(resp)) => {

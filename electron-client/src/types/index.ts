@@ -139,6 +139,9 @@ export interface ChannelMessageRejectedPayload {
   channelId: string;
   nonce: string;
   reason: string;
+  /// Slowmode: whole seconds until this user may post in the channel
+  /// again; 0 when refused for any other reason.
+  retryAfterSeconds?: number;
 }
 
 /// A `decibell://invite/<code>` URL parsed from a command-line

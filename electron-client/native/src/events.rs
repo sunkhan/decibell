@@ -1048,6 +1048,9 @@ pub struct ChannelMessageRejectedPayload {
     pub channel_id: String,
     pub nonce: String,
     pub reason: String,
+    /// Slowmode: whole seconds until the user may post here again (0 for
+    /// any other refusal).
+    pub retry_after_seconds: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
