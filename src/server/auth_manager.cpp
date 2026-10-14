@@ -9,92 +9,206 @@ void AuthManager::initializeDatabase() {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
+        // Schema version (2026-10-15). Everything below `version < 1` is the
+        // schema as it stood before users were keyed by uid: it brings an
+        // older database (or a fresh one) up to that point, then migration
+        // 1 converts it, in this same transaction. Later migrations go after
+        // it as `version < 2`, and so on.
         txn.exec(
-            "CREATE TABLE IF NOT EXISTS users ("
-            "  username VARCHAR(32) PRIMARY KEY,"
-            "  email VARCHAR(128) UNIQUE NOT NULL,"
-            "  password_hash VARCHAR(128) NOT NULL"
+            "CREATE TABLE IF NOT EXISTS central_schema ("
+            "  id SMALLINT PRIMARY KEY CHECK (id = 1),"
+            "  version INTEGER NOT NULL"
             ")"
         );
-        // Stable user id (Theme A, 2026-08-22): carried as the `uid` JWT
-        // claim so community servers can key bans / audit rows on
-        // something a username change or reuse can't defeat. BIGSERIAL in
-        // ADD COLUMN creates the sequence and back-fills existing rows.
-        txn.exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS uid BIGSERIAL");
-        txn.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_uid_idx ON users (uid)");
-        // Avatar columns added 2026-05-12 (see docs/superpowers/specs/
-        // 2026-05-12-custom-profile-pictures-design.md §5). ADD COLUMN
-        // IF NOT EXISTS makes this idempotent on already-deployed servers.
-        txn.exec(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar BYTEA"
-        );
-        txn.exec(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-            "avatar_version VARCHAR(64) NOT NULL DEFAULT ''"
-        );
-        // User statuses (2026-10-11, docs/superpowers/specs/
-        // 2026-10-11-user-status-design.md): the chosen status as the
-        // PresenceStatus enum value (0 online, 1 away, 2 dnd, 3 invisible),
-        // and the friends-only DM setting, which used to live only in the
-        // session (reset on every reconnect, and its online/offline
-        // difference could see through Invisible).
-        txn.exec(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-            "presence_status SMALLINT NOT NULL DEFAULT 0"
-        );
-        txn.exec(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-            "dm_friends_only BOOLEAN NOT NULL DEFAULT FALSE"
-        );
-        // Custom status messages (2026-10-12, docs/superpowers/specs/
-        // 2026-10-12-status-messages-design.md): text, emoji, and when
-        // central clears them (unix seconds, 0 = never).
-        txn.exec(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-            "status_text TEXT NOT NULL DEFAULT ''"
-        );
-        txn.exec(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-            "status_emoji TEXT NOT NULL DEFAULT ''"
-        );
-        txn.exec(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-            "status_expires_at BIGINT NOT NULL DEFAULT 0"
-        );
-        // The (user1, user2) pair is stored in *byte* order — C++
-        // std::min/std::max in handleFriendAction/isBlocked. The CHECK
-        // must use the same ordering: an unqualified `user1 < user2`
-        // compares with the database collation (en_US.UTF-8 on the
-        // deployed box), which disagrees with byte order for case-mixed
-        // or punctuated names ("Zeki"/"adam", "a_b"/"aab") — every such
-        // ADD died with a check violation, surfaced as "Database
-        // error." COLLATE "C" pins the CHECK to byte order.
-        txn.exec(
-            "CREATE TABLE IF NOT EXISTS friends ("
-            "  user1 VARCHAR(32) NOT NULL,"
-            "  user2 VARCHAR(32) NOT NULL,"
-            "  status VARCHAR(16) NOT NULL,"
-            "  action_user VARCHAR(32) NOT NULL,"
-            "  PRIMARY KEY (user1, user2),"
-            "  CONSTRAINT friends_pair_byteorder CHECK (user1 < user2 COLLATE \"C\")"
-            ")"
-        );
-        // Existing deployments carry the old collation-order CHECK
-        // under its auto-generated name "friends_check"; swap it once.
-        // Every existing row satisfies the new check — rows were only
-        // ever inserted with byte-ordered pairs (inserts where the two
-        // orderings disagreed are exactly the ones that failed).
-        txn.exec(
-            "DO $mig$ BEGIN "
-            "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
-            "    WHERE conrelid = 'friends'::regclass "
-            "      AND conname = 'friends_pair_byteorder') THEN "
-            "  ALTER TABLE friends DROP CONSTRAINT IF EXISTS friends_check; "
-            "  ALTER TABLE friends ADD CONSTRAINT friends_pair_byteorder "
-            "    CHECK (user1 < user2 COLLATE \"C\"); "
-            "END IF; "
-            "END $mig$"
-        );
+        txn.exec("INSERT INTO central_schema (id, version) VALUES (1, 0) ON CONFLICT (id) DO NOTHING");
+        const int version =
+            txn.exec("SELECT version FROM central_schema WHERE id = 1 FOR UPDATE")[0][0].as<int>();
+        if (version < 1) {
+            txn.exec(
+                "CREATE TABLE IF NOT EXISTS users ("
+                "  username VARCHAR(32) PRIMARY KEY,"
+                "  email VARCHAR(128) UNIQUE NOT NULL,"
+                "  password_hash VARCHAR(128) NOT NULL"
+                ")"
+            );
+            // Stable user id (Theme A, 2026-08-22): carried as the `uid` JWT
+            // claim so community servers can key bans / audit rows on
+            // something a username change or reuse can't defeat. BIGSERIAL in
+            // ADD COLUMN creates the sequence and back-fills existing rows.
+            txn.exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS uid BIGSERIAL");
+            txn.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_uid_idx ON users (uid)");
+            // Avatar columns added 2026-05-12 (see docs/superpowers/specs/
+            // 2026-05-12-custom-profile-pictures-design.md §5). ADD COLUMN
+            // IF NOT EXISTS makes this idempotent on already-deployed servers.
+            txn.exec(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar BYTEA"
+            );
+            txn.exec(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                "avatar_version VARCHAR(64) NOT NULL DEFAULT ''"
+            );
+            // User statuses (2026-10-11, docs/superpowers/specs/
+            // 2026-10-11-user-status-design.md): the chosen status as the
+            // PresenceStatus enum value (0 online, 1 away, 2 dnd, 3 invisible),
+            // and the friends-only DM setting, which used to live only in the
+            // session (reset on every reconnect, and its online/offline
+            // difference could see through Invisible).
+            txn.exec(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                "presence_status SMALLINT NOT NULL DEFAULT 0"
+            );
+            txn.exec(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                "dm_friends_only BOOLEAN NOT NULL DEFAULT FALSE"
+            );
+            // Custom status messages (2026-10-12, docs/superpowers/specs/
+            // 2026-10-12-status-messages-design.md): text, emoji, and when
+            // central clears them (unix seconds, 0 = never).
+            txn.exec(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                "status_text TEXT NOT NULL DEFAULT ''"
+            );
+            txn.exec(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                "status_emoji TEXT NOT NULL DEFAULT ''"
+            );
+            txn.exec(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                "status_expires_at BIGINT NOT NULL DEFAULT 0"
+            );
+            // The (user1, user2) pair is stored in *byte* order — C++
+            // std::min/std::max in handleFriendAction/isBlocked. The CHECK
+            // must use the same ordering: an unqualified `user1 < user2`
+            // compares with the database collation (en_US.UTF-8 on the
+            // deployed box), which disagrees with byte order for case-mixed
+            // or punctuated names ("Zeki"/"adam", "a_b"/"aab") — every such
+            // ADD died with a check violation, surfaced as "Database
+            // error." COLLATE "C" pins the CHECK to byte order.
+            txn.exec(
+                "CREATE TABLE IF NOT EXISTS friends ("
+                "  user1 VARCHAR(32) NOT NULL,"
+                "  user2 VARCHAR(32) NOT NULL,"
+                "  status VARCHAR(16) NOT NULL,"
+                "  action_user VARCHAR(32) NOT NULL,"
+                "  PRIMARY KEY (user1, user2),"
+                "  CONSTRAINT friends_pair_byteorder CHECK (user1 < user2 COLLATE \"C\")"
+                ")"
+            );
+            // Existing deployments carry the old collation-order CHECK
+            // under its auto-generated name "friends_check"; swap it once.
+            // Every existing row satisfies the new check — rows were only
+            // ever inserted with byte-ordered pairs (inserts where the two
+            // orderings disagreed are exactly the ones that failed).
+            txn.exec(
+                "DO $mig$ BEGIN "
+                "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+                "    WHERE conrelid = 'friends'::regclass "
+                "      AND conname = 'friends_pair_byteorder') THEN "
+                "  ALTER TABLE friends DROP CONSTRAINT IF EXISTS friends_check; "
+                "  ALTER TABLE friends ADD CONSTRAINT friends_pair_byteorder "
+                "    CHECK (user1 < user2 COLLATE \"C\"); "
+                "END IF; "
+                "END $mig$"
+            );
+            // --- Persistent DMs (see docs/superpowers/specs/
+            //     2026-05-14-persistent-dms-design.md §1) ---
+            txn.exec(
+                "CREATE TABLE IF NOT EXISTS dm_messages ("
+                "  id BIGSERIAL PRIMARY KEY,"
+                "  sender VARCHAR(32) NOT NULL,"
+                "  recipient VARCHAR(32) NOT NULL,"
+                "  content TEXT NOT NULL,"
+                "  sent_at BIGINT NOT NULL,"
+                "  edited_at BIGINT NOT NULL DEFAULT 0,"
+                "  reply_to BIGINT NOT NULL DEFAULT 0"
+                ")"
+            );
+            // edited_at / reply_to added later — backfill on existing deployments.
+            txn.exec(
+                "ALTER TABLE dm_messages "
+                "ADD COLUMN IF NOT EXISTS edited_at BIGINT NOT NULL DEFAULT 0"
+            );
+            txn.exec(
+                "ALTER TABLE dm_messages "
+                "ADD COLUMN IF NOT EXISTS reply_to BIGINT NOT NULL DEFAULT 0"
+            );
+            // Two-direction lookup ("messages between A and B" hits the
+            // same B-tree regardless of who sent which). The LEAST /
+            // GREATEST normalisation is what makes a single index serve
+            // both query directions.
+            txn.exec(
+                "CREATE INDEX IF NOT EXISTS dm_messages_pair_idx "
+                "ON dm_messages "
+                "(LEAST(sender, recipient), GREATEST(sender, recipient), id DESC)"
+            );
+            // Per-recipient unread queries —
+            // `WHERE recipient = me AND id > last_read_id`.
+            txn.exec(
+                "CREATE INDEX IF NOT EXISTS dm_messages_recipient_idx "
+                "ON dm_messages (recipient, id DESC)"
+            );
+            // E2EE (2026-09-03): the sealed body of an encrypted DM. NULL =
+            // a plaintext row (everything written before the feature, and
+            // messages between users who haven't set up encryption).
+            txn.exec(
+                "ALTER TABLE dm_messages "
+                "ADD COLUMN IF NOT EXISTS envelope BYTEA"
+            );
+            txn.exec(
+                "CREATE TABLE IF NOT EXISTS dm_read_state ("
+                "  reader VARCHAR(32) NOT NULL,"
+                "  peer VARCHAR(32) NOT NULL,"
+                "  last_read_id BIGINT NOT NULL DEFAULT 0,"
+                "  PRIMARY KEY (reader, peer)"
+                ")"
+            );
+
+            // --- End-to-end encrypted DMs (see docs/superpowers/specs/
+            //     2026-09-03-e2ee-dms-design.md) ---
+            // Every bundle a user ever published, by monotonic key_id: old
+            // envelopes name the key_id they were sealed under, so a peer
+            // must be able to look up historical public keys forever.
+            txn.exec(
+                "CREATE TABLE IF NOT EXISTS user_e2ee_keys ("
+                "  username VARCHAR(32) NOT NULL,"
+                "  key_id INTEGER NOT NULL,"
+                "  dh_pub BYTEA NOT NULL,"
+                "  sign_pub BYTEA NOT NULL,"
+                "  signature BYTEA NOT NULL,"
+                "  created_at BIGINT NOT NULL,"
+                "  PRIMARY KEY (username, key_id)"
+                ")"
+            );
+            // The passphrase-wrapped private keys (opaque to central). One
+            // blob per user, replaced on every publish / passphrase change.
+            txn.exec(
+                "CREATE TABLE IF NOT EXISTS user_e2ee_backup ("
+                "  username VARCHAR(32) PRIMARY KEY,"
+                "  key_id INTEGER NOT NULL,"
+                "  blob BYTEA NOT NULL,"
+                "  updated_at BIGINT NOT NULL"
+                ")"
+            );
+
+            // --- Auto-rejoin community memberships (see docs/superpowers/
+            //     specs/2026-05-14-auto-rejoin-communities-design.md §1) ---
+            txn.exec(
+                "CREATE TABLE IF NOT EXISTS user_communities ("
+                "  username VARCHAR(32) NOT NULL,"
+                "  server_id BIGINT NOT NULL,"
+                "  joined_at BIGINT NOT NULL,"
+                "  PRIMARY KEY (username, server_id)"
+                ")"
+            );
+            txn.exec(
+                "CREATE INDEX IF NOT EXISTS user_communities_user_idx "
+                "ON user_communities (username)"
+            );
+
+            migrateToUidKeys(txn);
+            txn.exec("UPDATE central_schema SET version = 1 WHERE id = 1");
+        }
+
         txn.exec(
             "CREATE TABLE IF NOT EXISTS community_invites ("
             "  code VARCHAR(32) PRIMARY KEY,"
@@ -103,101 +217,6 @@ void AuthManager::initializeDatabase() {
             "  expires_at BIGINT NOT NULL,"  // 0 = never
             "  registered_at BIGINT NOT NULL"
             ")"
-        );
-
-        // --- Persistent DMs (see docs/superpowers/specs/
-        //     2026-05-14-persistent-dms-design.md §1) ---
-        txn.exec(
-            "CREATE TABLE IF NOT EXISTS dm_messages ("
-            "  id BIGSERIAL PRIMARY KEY,"
-            "  sender VARCHAR(32) NOT NULL,"
-            "  recipient VARCHAR(32) NOT NULL,"
-            "  content TEXT NOT NULL,"
-            "  sent_at BIGINT NOT NULL,"
-            "  edited_at BIGINT NOT NULL DEFAULT 0,"
-            "  reply_to BIGINT NOT NULL DEFAULT 0"
-            ")"
-        );
-        // edited_at / reply_to added later — backfill on existing deployments.
-        txn.exec(
-            "ALTER TABLE dm_messages "
-            "ADD COLUMN IF NOT EXISTS edited_at BIGINT NOT NULL DEFAULT 0"
-        );
-        txn.exec(
-            "ALTER TABLE dm_messages "
-            "ADD COLUMN IF NOT EXISTS reply_to BIGINT NOT NULL DEFAULT 0"
-        );
-        // Two-direction lookup ("messages between A and B" hits the
-        // same B-tree regardless of who sent which). The LEAST /
-        // GREATEST normalisation is what makes a single index serve
-        // both query directions.
-        txn.exec(
-            "CREATE INDEX IF NOT EXISTS dm_messages_pair_idx "
-            "ON dm_messages "
-            "(LEAST(sender, recipient), GREATEST(sender, recipient), id DESC)"
-        );
-        // Per-recipient unread queries —
-        // `WHERE recipient = me AND id > last_read_id`.
-        txn.exec(
-            "CREATE INDEX IF NOT EXISTS dm_messages_recipient_idx "
-            "ON dm_messages (recipient, id DESC)"
-        );
-        // E2EE (2026-09-03): the sealed body of an encrypted DM. NULL =
-        // a plaintext row (everything written before the feature, and
-        // messages between users who haven't set up encryption).
-        txn.exec(
-            "ALTER TABLE dm_messages "
-            "ADD COLUMN IF NOT EXISTS envelope BYTEA"
-        );
-        txn.exec(
-            "CREATE TABLE IF NOT EXISTS dm_read_state ("
-            "  reader VARCHAR(32) NOT NULL,"
-            "  peer VARCHAR(32) NOT NULL,"
-            "  last_read_id BIGINT NOT NULL DEFAULT 0,"
-            "  PRIMARY KEY (reader, peer)"
-            ")"
-        );
-
-        // --- End-to-end encrypted DMs (see docs/superpowers/specs/
-        //     2026-09-03-e2ee-dms-design.md) ---
-        // Every bundle a user ever published, by monotonic key_id: old
-        // envelopes name the key_id they were sealed under, so a peer
-        // must be able to look up historical public keys forever.
-        txn.exec(
-            "CREATE TABLE IF NOT EXISTS user_e2ee_keys ("
-            "  username VARCHAR(32) NOT NULL,"
-            "  key_id INTEGER NOT NULL,"
-            "  dh_pub BYTEA NOT NULL,"
-            "  sign_pub BYTEA NOT NULL,"
-            "  signature BYTEA NOT NULL,"
-            "  created_at BIGINT NOT NULL,"
-            "  PRIMARY KEY (username, key_id)"
-            ")"
-        );
-        // The passphrase-wrapped private keys (opaque to central). One
-        // blob per user, replaced on every publish / passphrase change.
-        txn.exec(
-            "CREATE TABLE IF NOT EXISTS user_e2ee_backup ("
-            "  username VARCHAR(32) PRIMARY KEY,"
-            "  key_id INTEGER NOT NULL,"
-            "  blob BYTEA NOT NULL,"
-            "  updated_at BIGINT NOT NULL"
-            ")"
-        );
-
-        // --- Auto-rejoin community memberships (see docs/superpowers/
-        //     specs/2026-05-14-auto-rejoin-communities-design.md §1) ---
-        txn.exec(
-            "CREATE TABLE IF NOT EXISTS user_communities ("
-            "  username VARCHAR(32) NOT NULL,"
-            "  server_id BIGINT NOT NULL,"
-            "  joined_at BIGINT NOT NULL,"
-            "  PRIMARY KEY (username, server_id)"
-            ")"
-        );
-        txn.exec(
-            "CREATE INDEX IF NOT EXISTS user_communities_user_idx "
-            "ON user_communities (username)"
         );
 
         // --- Community server directory. Created here (once at startup)
@@ -243,7 +262,168 @@ void AuthManager::initializeDatabase() {
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] initializeDatabase: " << e.what() << "\n";
+        throw;
     }
+}
+
+static int64_t countRows(pqxx::work& txn, const char* table) {
+    return txn.exec(std::string("SELECT COUNT(*) FROM ") + table)[0][0].as<int64_t>();
+}
+
+void AuthManager::migrateToUidKeys(pqxx::work& txn) {
+    // Users by uid (docs/superpowers/specs/2026-10-15-uid-identity-design.md).
+    // Every table that named a user by username is rebuilt keyed by uid, so a
+    // rename can't orphan a row and a later holder of a name can't inherit
+    // one. The old tables are renamed legacy_* (not dropped) until the
+    // deploy is verified. Runs inside initializeDatabase's transaction: any
+    // failure rolls all of it back.
+
+    // users: uid becomes the primary key (reusing its unique index, which
+    // the ADD renames to users_pkey); the name stays unique and required.
+    txn.exec("ALTER TABLE users DROP CONSTRAINT users_pkey");
+    txn.exec("ALTER TABLE users ADD CONSTRAINT users_pkey PRIMARY KEY USING INDEX users_uid_idx");
+    txn.exec("ALTER TABLE users ALTER COLUMN username SET NOT NULL");
+    txn.exec("ALTER TABLE users ADD CONSTRAINT users_username_key UNIQUE (username)");
+
+    // friends → friendships: the pair in uid order.
+    txn.exec(
+        "CREATE TABLE friendships ("
+        "  uid1 BIGINT NOT NULL REFERENCES users (uid),"
+        "  uid2 BIGINT NOT NULL REFERENCES users (uid),"
+        "  status VARCHAR(16) NOT NULL,"
+        "  action_uid BIGINT NOT NULL REFERENCES users (uid),"
+        "  PRIMARY KEY (uid1, uid2),"
+        "  CONSTRAINT friendships_pair_order CHECK (uid1 < uid2)"
+        ")"
+    );
+    txn.exec("CREATE INDEX friendships_uid2_idx ON friendships (uid2)");
+    txn.exec(
+        "INSERT INTO friendships (uid1, uid2, status, action_uid) "
+        "SELECT LEAST(a.uid, b.uid), GREATEST(a.uid, b.uid), f.status, x.uid "
+        "FROM friends f "
+        "JOIN users a ON a.username = f.user1 "
+        "JOIN users b ON b.username = f.user2 "
+        "JOIN users x ON x.username = f.action_user"
+    );
+    const int64_t friends_before = countRows(txn, "friends");
+    const int64_t friends_after = countRows(txn, "friendships");
+    txn.exec("ALTER TABLE friends RENAME TO legacy_friends");
+
+    // dm_messages: uid columns next to the names each row was sent under
+    // (kept: a v1 envelope binds them). Rows whose names match no account
+    // were left for names nobody held (fixed in 2081fb0); they go.
+    const int64_t dms_before = countRows(txn, "dm_messages");
+    txn.exec("ALTER TABLE dm_messages ADD COLUMN sender_uid BIGINT, ADD COLUMN recipient_uid BIGINT");
+    txn.exec("UPDATE dm_messages m SET sender_uid = u.uid FROM users u WHERE u.username = m.sender");
+    txn.exec("UPDATE dm_messages m SET recipient_uid = u.uid FROM users u WHERE u.username = m.recipient");
+    txn.exec("DELETE FROM dm_messages WHERE sender_uid IS NULL OR recipient_uid IS NULL");
+    const int64_t dms_after = countRows(txn, "dm_messages");
+    txn.exec(
+        "ALTER TABLE dm_messages "
+        "ALTER COLUMN sender_uid SET NOT NULL, "
+        "ALTER COLUMN recipient_uid SET NOT NULL, "
+        "ADD CONSTRAINT dm_messages_sender_uid_fkey FOREIGN KEY (sender_uid) REFERENCES users (uid), "
+        "ADD CONSTRAINT dm_messages_recipient_uid_fkey FOREIGN KEY (recipient_uid) REFERENCES users (uid)"
+    );
+    txn.exec("DROP INDEX IF EXISTS dm_messages_pair_idx");
+    txn.exec("DROP INDEX IF EXISTS dm_messages_recipient_idx");
+    // Same shapes as before, on the uid columns: LEAST / GREATEST let one
+    // index serve both directions of a conversation.
+    txn.exec(
+        "CREATE INDEX dm_messages_pair_uid_idx ON dm_messages "
+        "(LEAST(sender_uid, recipient_uid), GREATEST(sender_uid, recipient_uid), id DESC)"
+    );
+    txn.exec("CREATE INDEX dm_messages_recipient_uid_idx ON dm_messages (recipient_uid, id DESC)");
+
+    // dm_read_state → dm_read_cursors.
+    txn.exec(
+        "CREATE TABLE dm_read_cursors ("
+        "  reader_uid BIGINT NOT NULL REFERENCES users (uid),"
+        "  peer_uid BIGINT NOT NULL REFERENCES users (uid),"
+        "  last_read_id BIGINT NOT NULL DEFAULT 0,"
+        "  PRIMARY KEY (reader_uid, peer_uid)"
+        ")"
+    );
+    txn.exec(
+        "INSERT INTO dm_read_cursors (reader_uid, peer_uid, last_read_id) "
+        "SELECT r.uid, p.uid, s.last_read_id FROM dm_read_state s "
+        "JOIN users r ON r.username = s.reader "
+        "JOIN users p ON p.username = s.peer"
+    );
+    const int64_t cursors_before = countRows(txn, "dm_read_state");
+    const int64_t cursors_after = countRows(txn, "dm_read_cursors");
+    txn.exec("ALTER TABLE dm_read_state RENAME TO legacy_dm_read_state");
+
+    // user_e2ee_keys → e2ee_keys. `signed_name` keeps the name each v1
+    // bundle's signature covers: the publisher's name at the time.
+    txn.exec(
+        "CREATE TABLE e2ee_keys ("
+        "  uid BIGINT NOT NULL REFERENCES users (uid),"
+        "  key_id INTEGER NOT NULL,"
+        "  signed_name VARCHAR(32) NOT NULL,"
+        "  dh_pub BYTEA NOT NULL,"
+        "  sign_pub BYTEA NOT NULL,"
+        "  signature BYTEA NOT NULL,"
+        "  created_at BIGINT NOT NULL,"
+        "  PRIMARY KEY (uid, key_id)"
+        ")"
+    );
+    txn.exec(
+        "INSERT INTO e2ee_keys (uid, key_id, signed_name, dh_pub, sign_pub, signature, created_at) "
+        "SELECT u.uid, k.key_id, k.username, k.dh_pub, k.sign_pub, k.signature, k.created_at "
+        "FROM user_e2ee_keys k JOIN users u ON u.username = k.username"
+    );
+    const int64_t keys_before = countRows(txn, "user_e2ee_keys");
+    const int64_t keys_after = countRows(txn, "e2ee_keys");
+    txn.exec("ALTER TABLE user_e2ee_keys RENAME TO legacy_user_e2ee_keys");
+
+    // user_e2ee_backup → e2ee_backups.
+    txn.exec(
+        "CREATE TABLE e2ee_backups ("
+        "  uid BIGINT PRIMARY KEY REFERENCES users (uid),"
+        "  key_id INTEGER NOT NULL,"
+        "  blob BYTEA NOT NULL,"
+        "  updated_at BIGINT NOT NULL"
+        ")"
+    );
+    txn.exec(
+        "INSERT INTO e2ee_backups (uid, key_id, blob, updated_at) "
+        "SELECT u.uid, b.key_id, b.blob, b.updated_at "
+        "FROM user_e2ee_backup b JOIN users u ON u.username = b.username"
+    );
+    const int64_t backups_before = countRows(txn, "user_e2ee_backup");
+    const int64_t backups_after = countRows(txn, "e2ee_backups");
+    txn.exec("ALTER TABLE user_e2ee_backup RENAME TO legacy_user_e2ee_backup");
+
+    // user_communities → community_memberships (+ the server_id index the
+    // picture fan-out needs).
+    txn.exec(
+        "CREATE TABLE community_memberships ("
+        "  uid BIGINT NOT NULL REFERENCES users (uid),"
+        "  server_id BIGINT NOT NULL,"
+        "  joined_at BIGINT NOT NULL,"
+        "  PRIMARY KEY (uid, server_id)"
+        ")"
+    );
+    txn.exec("CREATE INDEX community_memberships_server_idx ON community_memberships (server_id)");
+    txn.exec(
+        "INSERT INTO community_memberships (uid, server_id, joined_at) "
+        "SELECT u.uid, c.server_id, c.joined_at "
+        "FROM user_communities c JOIN users u ON u.username = c.username"
+    );
+    const int64_t members_before = countRows(txn, "user_communities");
+    const int64_t members_after = countRows(txn, "community_memberships");
+    txn.exec("ALTER TABLE user_communities RENAME TO legacy_user_communities");
+
+    std::cout << "[DB] Migration 1 (users by uid): "
+              << "friendships " << friends_after << "/" << friends_before
+              << ", dm_messages " << dms_after << "/" << dms_before
+              << " (" << (dms_before - dms_after) << " for unknown names removed)"
+              << ", read cursors " << cursors_after << "/" << cursors_before
+              << ", e2ee keys " << keys_after << "/" << keys_before
+              << ", e2ee backups " << backups_after << "/" << backups_before
+              << ", memberships " << members_after << "/" << members_before
+              << ". Old tables kept as legacy_*.\n";
 }
 
 std::string AuthManager::registerUser(const std::string& username, const std::string& email, const std::string& password) {
@@ -280,7 +460,7 @@ std::string AuthManager::registerUser(const std::string& username, const std::st
     return "";
 }
 
-std::optional<std::string> AuthManager::authenticateUser(const std::string& username, const std::string& password) {
+std::optional<AuthManager::LoginResult> AuthManager::authenticateUser(const std::string& username, const std::string& password) {
     // The hash and the uid come from one row read, so a token is never
     // signed with a uid fetched separately (a second query that failed
     // used to mint uid 0, which sends communities down the name-only path).
@@ -312,12 +492,12 @@ std::optional<std::string> AuthManager::authenticateUser(const std::string& user
         auto token = jwt::create()
             .set_issuer("decibell_central_auth")
             .set_type("JWS")
-            .set_subject(username)
+            .set_subject(stored->username)
             .set_payload_claim("uid", jwt::claim(nlohmann::json(stored->uid)))
             .set_issued_at(now)
             .set_expires_at(now + std::chrono::hours(24))
             .sign(jwt::algorithm::ed25519{jwt_public_pem_, jwt_private_pem_});
-        return token;
+        return LoginResult{token, stored->uid, stored->username};
     } catch (const std::exception& e) {
         std::cerr << "[Auth] JWT signing failed: " << e.what() << "\n";
         return std::nullopt;
@@ -338,16 +518,23 @@ bool AuthManager::validateToken(const std::string& token) {
     }
 }
 
-int64_t AuthManager::resolveUid(const std::string& username) {
+AuthManager::UserRef AuthManager::resolveUser(int64_t uid, const std::string& username) {
+    UserRef out;
+    if (uid <= 0 && username.empty()) return out;
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
-        pqxx::result res = txn.exec_params("SELECT uid FROM users WHERE username = $1", username);
-        if (res.empty() || res[0][0].is_null()) return 0;
-        return res[0][0].as<int64_t>();
+        pqxx::result res = uid > 0
+            ? txn.exec_params("SELECT uid, username FROM users WHERE uid = $1", uid)
+            : txn.exec_params("SELECT uid, username FROM users WHERE username = $1", username);
+        if (res.empty()) return out;
+        out.uid = res[0][0].as<int64_t>();
+        out.username = res[0][1].as<std::string>();
+        return out;
     } catch (const std::exception& e) {
-        std::cerr << "[DB Error] resolveUid: " << e.what() << "\n";
-        return -1;
+        std::cerr << "[DB Error] resolveUser: " << e.what() << "\n";
+        out.uid = -1;
+        return out;
     }
 }
 
@@ -390,14 +577,15 @@ std::optional<AuthManager::StoredCredentials> AuthManager::getCredentials(const 
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result res = txn.exec_params(
-            "SELECT uid, password_hash FROM users WHERE username = $1", username);
+            "SELECT uid, username, password_hash FROM users WHERE username = $1", username);
 
         if (res.empty()) {
             return std::nullopt;
         }
         StoredCredentials creds;
         creds.uid = res[0][0].is_null() ? 0 : res[0][0].as<int64_t>();
-        creds.password_hash = res[0][1].as<std::string>();
+        creds.username = res[0][1].as<std::string>();
+        creds.password_hash = res[0][2].as<std::string>();
         return creds;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] getCredentials: " << e.what() << "\n";
@@ -598,22 +786,19 @@ std::optional<AuthManager::ResolvedInvite> AuthManager::resolveCommunityInvite(c
 }
 
 // --- Friend System ---
+// friendships stores each pair once, in uid order (uid1 < uid2).
 
-std::string AuthManager::handleFriendAction(const std::string& requester, chatproj::FriendActionType action, const std::string& target) {
+std::string AuthManager::handleFriendAction(int64_t requester, chatproj::FriendActionType action, int64_t target) {
     if (requester == target) return "Cannot perform action on yourself.";
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
 
-        // Check if target exists
-        pqxx::result res = txn.exec_params("SELECT 1 FROM users WHERE username = $1", target);
-        if (res.empty()) return "User not found.";
-
-        std::string u1 = (std::min)(requester, target);
-        std::string u2 = (std::max)(requester, target);
+        const int64_t u1 = (std::min)(requester, target);
+        const int64_t u2 = (std::max)(requester, target);
 
         if (action == chatproj::FriendActionType::ADD) {
-            pqxx::result rel = txn.exec_params("SELECT status FROM friends WHERE user1 = $1 AND user2 = $2", u1, u2);
+            pqxx::result rel = txn.exec_params("SELECT status FROM friendships WHERE uid1 = $1 AND uid2 = $2", u1, u2);
             if (!rel.empty()) {
                 std::string status = rel[0][0].as<std::string>();
                 if (status == "BLOCKED") return "Cannot add user.";
@@ -621,21 +806,21 @@ std::string AuthManager::handleFriendAction(const std::string& requester, chatpr
                 return "Friend request already exists.";
             }
             txn.exec_params(
-                "INSERT INTO friends (user1, user2, status, action_user) VALUES ($1, $2, 'PENDING', $3)",
+                "INSERT INTO friendships (uid1, uid2, status, action_uid) VALUES ($1, $2, 'PENDING', $3)",
                 u1, u2, requester
             );
         } else if (action == chatproj::FriendActionType::ACCEPT) {
-            pqxx::result rel = txn.exec_params("SELECT status, action_user FROM friends WHERE user1 = $1 AND user2 = $2", u1, u2);
-            if (rel.empty() || rel[0][0].as<std::string>() != "PENDING" || rel[0][1].as<std::string>() == requester) {
+            pqxx::result rel = txn.exec_params("SELECT status, action_uid FROM friendships WHERE uid1 = $1 AND uid2 = $2", u1, u2);
+            if (rel.empty() || rel[0][0].as<std::string>() != "PENDING" || rel[0][1].as<int64_t>() == requester) {
                 return "No pending friend request to accept.";
             }
-            txn.exec_params("UPDATE friends SET status = 'ACCEPTED' WHERE user1 = $1 AND user2 = $2", u1, u2);
+            txn.exec_params("UPDATE friendships SET status = 'ACCEPTED' WHERE uid1 = $1 AND uid2 = $2", u1, u2);
         } else if (action == chatproj::FriendActionType::REJECT || action == chatproj::FriendActionType::REMOVE) {
-            txn.exec_params("DELETE FROM friends WHERE user1 = $1 AND user2 = $2", u1, u2);
+            txn.exec_params("DELETE FROM friendships WHERE uid1 = $1 AND uid2 = $2", u1, u2);
         } else if (action == chatproj::FriendActionType::BLOCK) {
             txn.exec_params(
-                "INSERT INTO friends (user1, user2, status, action_user) VALUES ($1, $2, 'BLOCKED', $3) "
-                "ON CONFLICT (user1, user2) DO UPDATE SET status = 'BLOCKED', action_user = $3",
+                "INSERT INTO friendships (uid1, uid2, status, action_uid) VALUES ($1, $2, 'BLOCKED', $3) "
+                "ON CONFLICT (uid1, uid2) DO UPDATE SET status = 'BLOCKED', action_uid = EXCLUDED.action_uid",
                 u1, u2, requester
             );
         }
@@ -648,15 +833,13 @@ std::string AuthManager::handleFriendAction(const std::string& requester, chatpr
     }
 }
 
-bool AuthManager::isBlocked(const std::string& a, const std::string& b) {
+bool AuthManager::isBlocked(int64_t a, int64_t b) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
-        const std::string u1 = (std::min)(a, b);
-        const std::string u2 = (std::max)(a, b);
         pqxx::result res = txn.exec_params(
-            "SELECT 1 FROM friends WHERE user1 = $1 AND user2 = $2 AND status = 'BLOCKED'",
-            u1, u2
+            "SELECT 1 FROM friendships WHERE uid1 = $1 AND uid2 = $2 AND status = 'BLOCKED'",
+            (std::min)(a, b), (std::max)(a, b)
         );
         return !res.empty();
     } catch (const std::exception& e) {
@@ -668,48 +851,60 @@ bool AuthManager::isBlocked(const std::string& a, const std::string& b) {
     }
 }
 
-std::vector<chatproj::FriendInfo> AuthManager::getFriends(const std::string& username) {
+bool AuthManager::areFriends(int64_t a, int64_t b) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result res = txn.exec_params(
+            "SELECT 1 FROM friendships WHERE uid1 = $1 AND uid2 = $2 AND status = 'ACCEPTED'",
+            (std::min)(a, b), (std::max)(a, b)
+        );
+        return !res.empty();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] areFriends: " << e.what() << "\n";
+        return false;
+    }
+}
+
+std::vector<chatproj::FriendInfo> AuthManager::getFriends(int64_t uid) {
     std::vector<chatproj::FriendInfo> friends;
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
-        
-        // JOIN users on the friend (the row's other-side username) so
-        // each FriendInfo carries that user's avatar_version. Clients
-        // use it to invalidate their per-user avatar cache without
-        // an extra fetch per friend.
+
+        // JOIN users on the other side of each pair for its current name
+        // and avatar_version. Clients use the version to invalidate their
+        // per-user avatar cache without an extra fetch per friend.
         pqxx::result res = txn.exec_params(
-            "SELECT f.user1, f.user2, f.status, f.action_user, u.avatar_version "
-            "FROM friends f "
-            "JOIN users u ON u.username = "
-            "  CASE WHEN f.user1 = $1 THEN f.user2 ELSE f.user1 END "
-            "WHERE f.user1 = $1 OR f.user2 = $1",
-            username
+            "SELECT u.uid, u.username, f.status, f.action_uid, u.avatar_version "
+            "FROM friendships f "
+            "JOIN users u ON u.uid = CASE WHEN f.uid1 = $1 THEN f.uid2 ELSE f.uid1 END "
+            "WHERE f.uid1 = $1 OR f.uid2 = $1",
+            uid
         );
 
-        for (auto row : res) {
-            std::string u1 = row[0].as<std::string>();
-            std::string u2 = row[1].as<std::string>();
+        for (const auto& row : res) {
+            const int64_t friend_uid = row[0].as<int64_t>();
+            std::string friend_name = row[1].as<std::string>();
             std::string status = row[2].as<std::string>();
-            std::string action_user = row[3].as<std::string>();
+            const int64_t action_uid = row[3].as<int64_t>();
             std::string avatar_version = row[4].as<std::string>("");
 
-            std::string friend_name = (u1 == username) ? u2 : u1;
-
             chatproj::FriendInfo info;
+            info.set_uid(friend_uid);
             info.set_username(friend_name);
             info.set_avatar_version(avatar_version);
 
             if (status == "ACCEPTED") {
                 info.set_status(chatproj::FriendInfo::OFFLINE); // Default
             } else if (status == "PENDING") {
-                if (action_user == username) {
+                if (action_uid == uid) {
                     info.set_status(chatproj::FriendInfo::PENDING_OUTGOING);
                 } else {
                     info.set_status(chatproj::FriendInfo::PENDING_INCOMING);
                 }
             } else if (status == "BLOCKED") {
-                if (action_user == username) {
+                if (action_uid == uid) {
                     info.set_status(chatproj::FriendInfo::BLOCKED);
                 } else {
                     continue; // Do not show to the blocked user
@@ -725,16 +920,15 @@ std::vector<chatproj::FriendInfo> AuthManager::getFriends(const std::string& use
 
 // ─── Avatar storage ──────────────────────────────────────────────────────
 
-std::string AuthManager::setAvatar(const std::string& username,
-                                    const std::string& data) {
+std::string AuthManager::setAvatar(int64_t uid, const std::string& data) {
     pqxx::connection conn(db_conn_str_);
     pqxx::work txn(conn);
     if (data.empty()) {
         // Remove: NULL the bytes, clear the version.
         txn.exec_params(
             "UPDATE users SET avatar = NULL, avatar_version = '' "
-            "WHERE username = $1",
-            username);
+            "WHERE uid = $1",
+            uid);
         txn.commit();
         return std::string();
     }
@@ -743,23 +937,22 @@ std::string AuthManager::setAvatar(const std::string& username,
     // std::string::data() is `const char*`. The cast is byte-identical.
     txn.exec_params(
         "UPDATE users SET avatar = $1, avatar_version = $2 "
-        "WHERE username = $3",
+        "WHERE uid = $3",
         pqxx::binarystring(
             reinterpret_cast<const unsigned char*>(data.data()),
             data.size()),
-        version, username);
+        version, uid);
     txn.commit();
     return version;
 }
 
-std::pair<std::string, std::string> AuthManager::getAvatar(
-    const std::string& username) {
+std::pair<std::string, std::string> AuthManager::getAvatar(int64_t uid) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
-            "SELECT avatar, avatar_version FROM users WHERE username = $1",
-            username);
+            "SELECT avatar, avatar_version FROM users WHERE uid = $1",
+            uid);
         txn.commit();
         if (rs.empty()) return {std::string(), std::string()};
         std::string version = rs[0]["avatar_version"].as<std::string>("");
@@ -780,7 +973,7 @@ std::pair<std::string, std::string> AuthManager::getAvatar(
     }
 }
 
-AuthManager::PresenceProfile AuthManager::getPresenceProfile(const std::string& username) {
+AuthManager::PresenceProfile AuthManager::getPresenceProfile(int64_t uid) {
     PresenceProfile profile;
     try {
         pqxx::connection conn(db_conn_str_);
@@ -788,8 +981,8 @@ AuthManager::PresenceProfile AuthManager::getPresenceProfile(const std::string& 
         pqxx::result rs = txn.exec_params(
             "SELECT avatar_version, presence_status, dm_friends_only, "
             "status_text, status_emoji, status_expires_at "
-            "FROM users WHERE username = $1",
-            username);
+            "FROM users WHERE uid = $1",
+            uid);
         if (rs.empty()) {
             txn.commit();
             return profile;
@@ -807,8 +1000,8 @@ AuthManager::PresenceProfile AuthManager::getPresenceProfile(const std::string& 
             // Ran out while the user was offline: clear it for good.
             txn.exec_params(
                 "UPDATE users SET status_text = '', status_emoji = '', "
-                "status_expires_at = 0 WHERE username = $1",
-                username);
+                "status_expires_at = 0 WHERE uid = $1",
+                uid);
         } else {
             profile.status_text = rs[0][3].as<std::string>("");
             profile.status_emoji = rs[0][4].as<std::string>("");
@@ -821,54 +1014,54 @@ AuthManager::PresenceProfile AuthManager::getPresenceProfile(const std::string& 
     return profile;
 }
 
-void AuthManager::setPresenceStatus(const std::string& username, int status) {
+void AuthManager::setPresenceStatus(int64_t uid, int status) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         txn.exec_params(
-            "UPDATE users SET presence_status = $1 WHERE username = $2",
-            status, username);
+            "UPDATE users SET presence_status = $1 WHERE uid = $2",
+            status, uid);
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] setPresenceStatus: " << e.what() << "\n";
     }
 }
 
-void AuthManager::setStatusMessage(const std::string& username, const std::string& text,
+void AuthManager::setStatusMessage(int64_t uid, const std::string& text,
                                    const std::string& emoji, int64_t expires_at) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         txn.exec_params(
             "UPDATE users SET status_text = $1, status_emoji = $2, "
-            "status_expires_at = $3 WHERE username = $4",
-            text, emoji, expires_at, username);
+            "status_expires_at = $3 WHERE uid = $4",
+            text, emoji, expires_at, uid);
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] setStatusMessage: " << e.what() << "\n";
     }
 }
 
-void AuthManager::setDmFriendsOnly(const std::string& username, bool friends_only) {
+void AuthManager::setDmFriendsOnly(int64_t uid, bool friends_only) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         txn.exec_params(
-            "UPDATE users SET dm_friends_only = $1 WHERE username = $2",
-            friends_only, username);
+            "UPDATE users SET dm_friends_only = $1 WHERE uid = $2",
+            friends_only, uid);
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] setDmFriendsOnly: " << e.what() << "\n";
     }
 }
 
-bool AuthManager::getDmFriendsOnly(const std::string& username) {
+bool AuthManager::getDmFriendsOnly(int64_t uid) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
-            "SELECT dm_friends_only FROM users WHERE username = $1",
-            username);
+            "SELECT dm_friends_only FROM users WHERE uid = $1",
+            uid);
         txn.commit();
         if (rs.empty()) return false;
         return rs[0][0].as<bool>(false);
@@ -895,8 +1088,8 @@ static pqxx::binarystring toBytea(const std::string& bytes) {
         reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size());
 }
 
-int64_t AuthManager::insertDm(const std::string& sender,
-                               const std::string& recipient,
+int64_t AuthManager::insertDm(int64_t sender_uid, const std::string& sender,
+                               int64_t recipient_uid, const std::string& recipient,
                                const std::string& content,
                                int64_t sent_at,
                                int64_t reply_to,
@@ -910,14 +1103,17 @@ int64_t AuthManager::insertDm(const std::string& sender,
         // we can verify against the deployed pqxx from here.
         pqxx::result rs = envelope.empty()
             ? txn.exec_params(
-                  "INSERT INTO dm_messages (sender, recipient, content, sent_at, reply_to) "
-                  "VALUES ($1, $2, $3, $4, $5) RETURNING id",
-                  sender, recipient, content, sent_at, reply_to < 0 ? 0 : reply_to)
+                  "INSERT INTO dm_messages (sender_uid, sender, recipient_uid, recipient, "
+                  "content, sent_at, reply_to) "
+                  "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                  sender_uid, sender, recipient_uid, recipient, content, sent_at,
+                  reply_to < 0 ? 0 : reply_to)
             : txn.exec_params(
-                  "INSERT INTO dm_messages (sender, recipient, content, sent_at, reply_to, envelope) "
-                  "VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-                  sender, recipient, content, sent_at, reply_to < 0 ? 0 : reply_to,
-                  toBytea(envelope));
+                  "INSERT INTO dm_messages (sender_uid, sender, recipient_uid, recipient, "
+                  "content, sent_at, reply_to, envelope) "
+                  "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+                  sender_uid, sender, recipient_uid, recipient, content, sent_at,
+                  reply_to < 0 ? 0 : reply_to, toBytea(envelope));
         txn.commit();
         if (rs.empty()) return 0;
         return rs[0][0].as<int64_t>();
@@ -927,8 +1123,48 @@ int64_t AuthManager::insertDm(const std::string& sender,
     }
 }
 
+// What every DM history read selects (dmRowFrom parses it): the row with
+// its sender's current name and the names it was sent under, and the reply
+// parent the same way — joined only within the same conversation, so a
+// forged reply_to can't pull in another conversation's content. $1 / $2
+// are the two users' uids.
+static const std::string DM_ROW_SELECT =
+    "SELECT m.id, m.sender_uid, su.username, m.sender, m.recipient, m.content, "
+    "m.sent_at, m.edited_at, m.reply_to, "
+    "COALESCE(p.sender_uid, 0), COALESCE(pu.username, ''), COALESCE(p.sender, ''), "
+    "COALESCE(p.recipient, ''), COALESCE(p.content, ''), m.envelope, p.envelope "
+    "FROM dm_messages m "
+    "JOIN users su ON su.uid = m.sender_uid "
+    "LEFT JOIN dm_messages p ON p.id = m.reply_to "
+    "  AND LEAST(p.sender_uid, p.recipient_uid) = LEAST($1::bigint, $2::bigint) "
+    "  AND GREATEST(p.sender_uid, p.recipient_uid) = GREATEST($1::bigint, $2::bigint) "
+    "LEFT JOIN users pu ON pu.uid = p.sender_uid "
+    "WHERE LEAST(m.sender_uid, m.recipient_uid) = LEAST($1::bigint, $2::bigint) "
+    "  AND GREATEST(m.sender_uid, m.recipient_uid) = GREATEST($1::bigint, $2::bigint) ";
+
+static AuthManager::DmHistoryRow dmRowFrom(const pqxx::row& row) {
+    AuthManager::DmHistoryRow r;
+    r.id = row[0].as<int64_t>();
+    r.sender_uid = row[1].as<int64_t>();
+    r.sender = row[2].as<std::string>();
+    r.sent_sender = row[3].as<std::string>();
+    r.sent_recipient = row[4].as<std::string>();
+    r.content = row[5].as<std::string>();
+    r.timestamp = row[6].as<int64_t>();
+    r.edited_at = row[7].as<int64_t>();
+    r.reply_to = row[8].as<int64_t>();
+    r.reply_to_sender_uid = row[9].as<int64_t>();
+    r.reply_to_sender = row[10].as<std::string>();
+    r.reply_to_sent_sender = row[11].as<std::string>();
+    r.reply_to_sent_recipient = row[12].as<std::string>();
+    r.reply_to_content = row[13].as<std::string>();
+    r.envelope = byteaOrEmpty(row[14]);
+    r.reply_to_envelope = byteaOrEmpty(row[15]);
+    return r;
+}
+
 std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
-    const std::string& user_a, const std::string& user_b,
+    int64_t user_a, int64_t user_b,
     int64_t before_id, int32_t limit, bool& has_more) {
     has_more = false;
     std::vector<DmHistoryRow> out;
@@ -939,35 +1175,15 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
         const int32_t clamped = std::max(1, std::min(limit, 200));
         const int32_t fetch_n = clamped + 1;
         // before_id=0 means "latest". For real cursoring we filter on
-        // id < before_id. Either way the pair_idx covers the predicate.
-        const char* sql =
-            "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
-            "COALESCE(p.sender, ''), COALESCE(p.content, ''), m.envelope, p.envelope "
-            "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
-            "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
-            "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
-            "WHERE LEAST(m.sender, m.recipient) = LEAST($1, $2) "
-            "  AND GREATEST(m.sender, m.recipient) = GREATEST($1, $2) "
-            "  AND ($3 = 0 OR m.id < $3) "
-            "ORDER BY m.id DESC LIMIT $4";
-        pqxx::result rs = txn.exec_params(sql, user_a, user_b, before_id, fetch_n);
+        // id < before_id. Either way the pair index covers the predicate.
+        pqxx::result rs = txn.exec_params(
+            DM_ROW_SELECT + "AND ($3::bigint = 0 OR m.id < $3::bigint) ORDER BY m.id DESC LIMIT $4",
+            user_a, user_b, before_id, fetch_n);
         txn.commit();
 
         out.reserve(rs.size());
         for (const auto& row : rs) {
-            DmHistoryRow r{
-                row[0].as<int64_t>(),
-                row[1].as<std::string>(),
-                row[2].as<std::string>(),
-                row[3].as<int64_t>(),
-                row[4].as<int64_t>(),
-                row[5].as<int64_t>(),
-                row[6].as<std::string>(),
-                row[7].as<std::string>(),
-                byteaOrEmpty(row[8]),
-                byteaOrEmpty(row[9]),
-            };
-            out.push_back(std::move(r));
+            out.push_back(dmRowFrom(row));
         }
         if (static_cast<int32_t>(out.size()) > clamped) {
             out.pop_back();
@@ -981,7 +1197,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
 }
 
 std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
-    const std::string& user_a, const std::string& user_b,
+    int64_t user_a, int64_t user_b,
     int64_t around_id, int32_t limit,
     bool& has_more_before, bool& has_more_after) {
     has_more_before = false;
@@ -993,41 +1209,19 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
         const int32_t clamped = limit > 0 ? std::min(limit, 100) : 25;
         const int32_t fetch_n = clamped + 1;
         // Older side incl. target (id <= around), newest-first.
-        const char* sql_older =
-            "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
-            "COALESCE(p.sender, ''), COALESCE(p.content, ''), m.envelope, p.envelope "
-            "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
-            "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
-            "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
-            "WHERE LEAST(m.sender, m.recipient) = LEAST($1, $2) "
-            "  AND GREATEST(m.sender, m.recipient) = GREATEST($1, $2) "
-            "  AND m.id <= $3 "
-            "ORDER BY m.id DESC LIMIT $4";
-        pqxx::result older = txn.exec_params(sql_older, user_a, user_b, around_id, fetch_n);
+        pqxx::result older = txn.exec_params(
+            DM_ROW_SELECT + "AND m.id <= $3::bigint ORDER BY m.id DESC LIMIT $4",
+            user_a, user_b, around_id, fetch_n);
         // Newer side (id > around), oldest-first.
-        const char* sql_newer =
-            "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
-            "COALESCE(p.sender, ''), COALESCE(p.content, ''), m.envelope, p.envelope "
-            "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
-            "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
-            "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
-            "WHERE LEAST(m.sender, m.recipient) = LEAST($1, $2) "
-            "  AND GREATEST(m.sender, m.recipient) = GREATEST($1, $2) "
-            "  AND m.id > $3 "
-            "ORDER BY m.id ASC LIMIT $4";
-        pqxx::result newer = txn.exec_params(sql_newer, user_a, user_b, around_id, fetch_n);
+        pqxx::result newer = txn.exec_params(
+            DM_ROW_SELECT + "AND m.id > $3::bigint ORDER BY m.id ASC LIMIT $4",
+            user_a, user_b, around_id, fetch_n);
         txn.commit();
 
         std::vector<DmHistoryRow> older_vec;
         older_vec.reserve(older.size());
         for (const auto& row : older) {
-            older_vec.push_back(DmHistoryRow{
-                row[0].as<int64_t>(), row[1].as<std::string>(),
-                row[2].as<std::string>(), row[3].as<int64_t>(),
-                row[4].as<int64_t>(), row[5].as<int64_t>(),
-                row[6].as<std::string>(), row[7].as<std::string>(),
-                byteaOrEmpty(row[8]), byteaOrEmpty(row[9]),
-            });
+            older_vec.push_back(dmRowFrom(row));
         }
         if (static_cast<int32_t>(older_vec.size()) > clamped) {
             older_vec.pop_back();
@@ -1039,13 +1233,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
         std::vector<DmHistoryRow> newer_vec;
         newer_vec.reserve(newer.size());
         for (const auto& row : newer) {
-            newer_vec.push_back(DmHistoryRow{
-                row[0].as<int64_t>(), row[1].as<std::string>(),
-                row[2].as<std::string>(), row[3].as<int64_t>(),
-                row[4].as<int64_t>(), row[5].as<int64_t>(),
-                row[6].as<std::string>(), row[7].as<std::string>(),
-                byteaOrEmpty(row[8]), byteaOrEmpty(row[9]),
-            });
+            newer_vec.push_back(dmRowFrom(row));
         }
         if (static_cast<int32_t>(newer_vec.size()) > clamped) {
             newer_vec.pop_back();
@@ -1060,7 +1248,7 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
 }
 
 std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
-    const std::string& user_a, const std::string& user_b,
+    int64_t user_a, int64_t user_b,
     int64_t after_id, int32_t limit, bool& has_more_after) {
     has_more_after = false;
     std::vector<DmHistoryRow> out;
@@ -1069,28 +1257,14 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
         pqxx::work txn(conn);
         const int32_t clamped = limit > 0 ? std::min(limit, 200) : 50;
         const int32_t fetch_n = clamped + 1;
-        const char* sql =
-            "SELECT m.id, m.sender, m.content, m.sent_at, m.edited_at, m.reply_to, "
-            "COALESCE(p.sender, ''), COALESCE(p.content, ''), m.envelope, p.envelope "
-            "FROM dm_messages m LEFT JOIN dm_messages p ON p.id = m.reply_to "
-            "  AND LEAST(p.sender, p.recipient) = LEAST($1, $2) "
-            "  AND GREATEST(p.sender, p.recipient) = GREATEST($1, $2) "
-            "WHERE LEAST(m.sender, m.recipient) = LEAST($1, $2) "
-            "  AND GREATEST(m.sender, m.recipient) = GREATEST($1, $2) "
-            "  AND m.id > $3 "
-            "ORDER BY m.id ASC LIMIT $4";
-        pqxx::result rs = txn.exec_params(sql, user_a, user_b, after_id, fetch_n);
+        pqxx::result rs = txn.exec_params(
+            DM_ROW_SELECT + "AND m.id > $3::bigint ORDER BY m.id ASC LIMIT $4",
+            user_a, user_b, after_id, fetch_n);
         txn.commit();
 
         out.reserve(rs.size());
         for (const auto& row : rs) {
-            out.push_back(DmHistoryRow{
-                row[0].as<int64_t>(), row[1].as<std::string>(),
-                row[2].as<std::string>(), row[3].as<int64_t>(),
-                row[4].as<int64_t>(), row[5].as<int64_t>(),
-                row[6].as<std::string>(), row[7].as<std::string>(),
-                byteaOrEmpty(row[8]), byteaOrEmpty(row[9]),
-            });
+            out.push_back(dmRowFrom(row));
         }
         if (static_cast<int32_t>(out.size()) > clamped) {
             out.pop_back();
@@ -1104,22 +1278,26 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
 }
 
 std::optional<AuthManager::DmPreviewRow> AuthManager::fetchDmPreview(
-    const std::string& user_a, const std::string& user_b, int64_t message_id) {
+    int64_t user_a, int64_t user_b, int64_t message_id) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
-            "SELECT sender, content, envelope FROM dm_messages "
-            "WHERE id = $3 "
-            "  AND LEAST(sender, recipient) = LEAST($1, $2) "
-            "  AND GREATEST(sender, recipient) = GREATEST($1, $2)",
+            "SELECT m.sender_uid, su.username, m.sender, m.recipient, m.content, m.envelope "
+            "FROM dm_messages m JOIN users su ON su.uid = m.sender_uid "
+            "WHERE m.id = $3 "
+            "  AND LEAST(m.sender_uid, m.recipient_uid) = LEAST($1::bigint, $2::bigint) "
+            "  AND GREATEST(m.sender_uid, m.recipient_uid) = GREATEST($1::bigint, $2::bigint)",
             user_a, user_b, message_id);
         txn.commit();
         if (rs.empty()) return std::nullopt;
         DmPreviewRow out;
-        out.sender = rs[0][0].as<std::string>();
-        out.content = rs[0][1].as<std::string>();
-        out.envelope = byteaOrEmpty(rs[0][2]);
+        out.sender_uid = rs[0][0].as<int64_t>();
+        out.sender = rs[0][1].as<std::string>();
+        out.sent_sender = rs[0][2].as<std::string>();
+        out.sent_recipient = rs[0][3].as<std::string>();
+        out.content = rs[0][4].as<std::string>();
+        out.envelope = byteaOrEmpty(rs[0][5]);
         return out;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] fetchDmPreview: " << e.what() << "\n";
@@ -1128,57 +1306,61 @@ std::optional<AuthManager::DmPreviewRow> AuthManager::fetchDmPreview(
 }
 
 std::vector<AuthManager::DmConversationPreviewRow>
-AuthManager::fetchDmConversations(const std::string& user) {
+AuthManager::fetchDmConversations(int64_t uid) {
     std::vector<DmConversationPreviewRow> out;
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         // Picks the latest message id per conversation (pair grouped
         // by LEAST/GREATEST), then joins back to dm_messages for the
-        // preview content, and to dm_read_state via a correlated
-        // subquery to derive unread count for messages from peer
-        // with id > last_read_id (i.e. messages the local user
-        // received, not their own outgoing).
+        // preview content and to users for the current names, and to
+        // dm_read_cursors via a correlated subquery to derive the unread
+        // count: messages from the peer with id > last_read_id (i.e.
+        // messages the local user received, not their own outgoing).
         const char* sql =
             "WITH latest AS ( "
-            "  SELECT LEAST(sender, recipient) AS a, "
-            "         GREATEST(sender, recipient) AS b, "
+            "  SELECT LEAST(sender_uid, recipient_uid) AS a, "
+            "         GREATEST(sender_uid, recipient_uid) AS b, "
             "         MAX(id) AS max_id "
             "  FROM dm_messages "
-            "  WHERE sender = $1 OR recipient = $1 "
+            "  WHERE sender_uid = $1 OR recipient_uid = $1 "
             "  GROUP BY 1, 2 "
             ") "
-            "SELECT "
-            "  CASE WHEN m.sender = $1 THEN m.recipient ELSE m.sender END AS peer, "
-            "  m.content, m.sender, m.id, m.sent_at, "
+            "SELECT pu.uid, pu.username, m.content, m.sender_uid, su.username, "
+            "  m.sender, m.recipient, m.id, m.sent_at, "
             "  COALESCE(( "
             "    SELECT COUNT(*) FROM dm_messages d "
-            "    WHERE d.recipient = $1 "
-            "      AND d.sender = CASE WHEN m.sender = $1 THEN m.recipient ELSE m.sender END "
+            "    WHERE d.recipient_uid = $1 "
+            "      AND d.sender_uid = pu.uid "
             "      AND d.id > COALESCE(( "
-            "        SELECT last_read_id FROM dm_read_state rs "
-            "        WHERE rs.reader = $1 AND rs.peer = "
-            "          CASE WHEN m.sender = $1 THEN m.recipient ELSE m.sender END "
+            "        SELECT last_read_id FROM dm_read_cursors rc "
+            "        WHERE rc.reader_uid = $1 AND rc.peer_uid = pu.uid "
             "      ), 0) "
             "  ), 0) AS unread, "
             "  m.envelope "
             "FROM latest l "
             "JOIN dm_messages m ON m.id = l.max_id "
+            "JOIN users pu ON pu.uid = "
+            "  CASE WHEN m.sender_uid = $1 THEN m.recipient_uid ELSE m.sender_uid END "
+            "JOIN users su ON su.uid = m.sender_uid "
             "ORDER BY m.id DESC";
-        pqxx::result rs = txn.exec_params(sql, user);
+        pqxx::result rs = txn.exec_params(sql, uid);
         txn.commit();
 
         out.reserve(rs.size());
         for (const auto& row : rs) {
-            DmConversationPreviewRow p{
-                row[0].as<std::string>(),       // peer
-                row[1].as<std::string>(),       // last_message_content
-                row[2].as<std::string>(),       // last_message_sender
-                row[3].as<int64_t>(),           // last_message_id
-                row[4].as<int64_t>(),           // last_timestamp
-                row[5].as<int64_t>(),           // unread_count
-                byteaOrEmpty(row[6]),           // last_message_envelope
-            };
+            DmConversationPreviewRow p;
+            p.peer_uid = row[0].as<int64_t>();
+            p.peer = row[1].as<std::string>();
+            p.last_message_content = row[2].as<std::string>();
+            p.last_message_sender_uid = row[3].as<int64_t>();
+            p.last_message_sender = row[4].as<std::string>();
+            p.last_sent_sender = row[5].as<std::string>();
+            p.last_sent_recipient = row[6].as<std::string>();
+            p.last_message_id = row[7].as<int64_t>();
+            p.last_timestamp = row[8].as<int64_t>();
+            p.unread_count = row[9].as<int64_t>();
+            p.last_message_envelope = byteaOrEmpty(row[10]);
             out.push_back(std::move(p));
         }
         return out;
@@ -1188,24 +1370,22 @@ AuthManager::fetchDmConversations(const std::string& user) {
     }
 }
 
-void AuthManager::markDmRead(const std::string& reader,
-                              const std::string& peer,
-                              int64_t up_to_id) {
+void AuthManager::markDmRead(int64_t reader, int64_t peer, int64_t up_to_id) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
-        // Only for a peer that has an account: a cursor stored under an
-        // unregistered name would wait for whoever registers it.
-        if (txn.exec_params("SELECT 1 FROM users WHERE username = $1", peer).empty()) {
+        // The peer must be an account (the caller resolved it; this keeps
+        // a forged uid from tripping the foreign key into an error log).
+        if (txn.exec_params("SELECT 1 FROM users WHERE uid = $1", peer).empty()) {
             return;
         }
         // Upsert with GREATEST so out-of-order or duplicate mark-read
         // calls never regress the read cursor.
         txn.exec_params(
-            "INSERT INTO dm_read_state (reader, peer, last_read_id) "
+            "INSERT INTO dm_read_cursors (reader_uid, peer_uid, last_read_id) "
             "VALUES ($1, $2, $3) "
-            "ON CONFLICT (reader, peer) DO UPDATE "
-            "SET last_read_id = GREATEST(dm_read_state.last_read_id, EXCLUDED.last_read_id)",
+            "ON CONFLICT (reader_uid, peer_uid) DO UPDATE "
+            "SET last_read_id = GREATEST(dm_read_cursors.last_read_id, EXCLUDED.last_read_id)",
             reader, peer, up_to_id);
         txn.commit();
     } catch (const std::exception& e) {
@@ -1213,9 +1393,7 @@ void AuthManager::markDmRead(const std::string& reader,
     }
 }
 
-bool AuthManager::deleteDmMessage(const std::string& sender,
-                                    const std::string& peer,
-                                    int64_t message_id) {
+bool AuthManager::deleteDmMessage(int64_t sender, int64_t peer, int64_t message_id) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
@@ -1224,7 +1402,7 @@ bool AuthManager::deleteDmMessage(const std::string& sender,
         // conditions held.
         pqxx::result rs = txn.exec_params(
             "DELETE FROM dm_messages "
-            "WHERE id = $1 AND sender = $2 AND recipient = $3",
+            "WHERE id = $1 AND sender_uid = $2 AND recipient_uid = $3",
             message_id, sender, peer);
         txn.commit();
         return rs.affected_rows() == 1;
@@ -1234,8 +1412,7 @@ bool AuthManager::deleteDmMessage(const std::string& sender,
     }
 }
 
-bool AuthManager::editDmMessage(const std::string& sender,
-                                const std::string& peer,
+bool AuthManager::editDmMessage(int64_t sender, int64_t peer,
                                 int64_t message_id,
                                 const std::string& content,
                                 int64_t edited_at,
@@ -1250,11 +1427,11 @@ bool AuthManager::editDmMessage(const std::string& sender,
         pqxx::result rs = envelope.empty()
             ? txn.exec_params(
                   "UPDATE dm_messages SET content = $4, edited_at = $5, envelope = NULL "
-                  "WHERE id = $1 AND sender = $2 AND recipient = $3",
+                  "WHERE id = $1 AND sender_uid = $2 AND recipient_uid = $3",
                   message_id, sender, peer, content, edited_at)
             : txn.exec_params(
                   "UPDATE dm_messages SET content = $4, edited_at = $5, envelope = $6 "
-                  "WHERE id = $1 AND sender = $2 AND recipient = $3",
+                  "WHERE id = $1 AND sender_uid = $2 AND recipient_uid = $3",
                   message_id, sender, peer, content, edited_at, toBytea(envelope));
         txn.commit();
         return rs.affected_rows() == 1;
@@ -1267,7 +1444,7 @@ bool AuthManager::editDmMessage(const std::string& sender,
 // ─── End-to-end encrypted DMs ────────────────────────────────────────────
 // (see docs/superpowers/specs/2026-09-03-e2ee-dms-design.md)
 
-uint32_t AuthManager::publishE2eeKeys(const std::string& username,
+uint32_t AuthManager::publishE2eeKeys(int64_t uid, const std::string& signed_name,
                                       const std::string& dh_pub,
                                       const std::string& sign_pub,
                                       const std::string& signature,
@@ -1277,22 +1454,19 @@ uint32_t AuthManager::publishE2eeKeys(const std::string& username,
         pqxx::work txn(conn);
         // MAX+1 inside one transaction; central runs a single io thread
         // so two publishes from the same user can't interleave anyway.
-        // The username is passed TWICE on purpose. Postgres types an
-        // untyped parameter from its first use, and the two uses here
-        // disagree: as an inserted value it takes the column's varchar,
-        // while `username = $n` resolves through the text equality
-        // operator and takes text — one $1 in both places fails with
-        // "inconsistent types deduced for parameter $1: text versus
-        // character varying" (production, 2026-09-03, with both the
-        // INSERT … SELECT and the VALUES + subquery shapes).
+        // The uid is passed TWICE on purpose: Postgres types an untyped
+        // parameter from its first use, and one $n used both as an
+        // inserted value and in a comparison has failed before with
+        // "inconsistent types deduced for parameter" (production,
+        // 2026-09-03, with the username in this same statement).
         pqxx::result rs = txn.exec_params(
-            "INSERT INTO user_e2ee_keys (username, key_id, dh_pub, sign_pub, signature, created_at) "
+            "INSERT INTO e2ee_keys (uid, key_id, signed_name, dh_pub, sign_pub, signature, created_at) "
             "VALUES ($1, "
-            "  (SELECT COALESCE(MAX(key_id), 0) + 1 FROM user_e2ee_keys WHERE username = $6), "
-            "  $2, $3, $4, $5) "
+            "  (SELECT COALESCE(MAX(key_id), 0) + 1 FROM e2ee_keys WHERE uid = $7), "
+            "  $2, $3, $4, $5, $6) "
             "RETURNING key_id",
-            username, toBytea(dh_pub), toBytea(sign_pub), toBytea(signature), created_at,
-            username);
+            uid, signed_name, toBytea(dh_pub), toBytea(sign_pub), toBytea(signature), created_at,
+            uid);
         txn.commit();
         if (rs.empty()) return 0;
         return static_cast<uint32_t>(rs[0][0].as<int64_t>());
@@ -1302,29 +1476,29 @@ uint32_t AuthManager::publishE2eeKeys(const std::string& username,
     }
 }
 
-std::optional<AuthManager::E2eeKeyRow> AuthManager::getE2eeKeys(
-    const std::string& username, uint32_t key_id) {
+std::optional<AuthManager::E2eeKeyRow> AuthManager::getE2eeKeys(int64_t uid, uint32_t key_id) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result rs = key_id == 0
             ? txn.exec_params(
-                  "SELECT key_id, dh_pub, sign_pub, signature, created_at "
-                  "FROM user_e2ee_keys WHERE username = $1 "
+                  "SELECT key_id, signed_name, dh_pub, sign_pub, signature, created_at "
+                  "FROM e2ee_keys WHERE uid = $1 "
                   "ORDER BY key_id DESC LIMIT 1",
-                  username)
+                  uid)
             : txn.exec_params(
-                  "SELECT key_id, dh_pub, sign_pub, signature, created_at "
-                  "FROM user_e2ee_keys WHERE username = $1 AND key_id = $2",
-                  username, static_cast<int64_t>(key_id));
+                  "SELECT key_id, signed_name, dh_pub, sign_pub, signature, created_at "
+                  "FROM e2ee_keys WHERE uid = $1 AND key_id = $2",
+                  uid, static_cast<int64_t>(key_id));
         txn.commit();
         if (rs.empty()) return std::nullopt;
         E2eeKeyRow row;
         row.key_id = static_cast<uint32_t>(rs[0][0].as<int64_t>());
-        row.dh_pub = byteaOrEmpty(rs[0][1]);
-        row.sign_pub = byteaOrEmpty(rs[0][2]);
-        row.signature = byteaOrEmpty(rs[0][3]);
-        row.created_at = rs[0][4].as<int64_t>();
+        row.signed_name = rs[0][1].as<std::string>();
+        row.dh_pub = byteaOrEmpty(rs[0][2]);
+        row.sign_pub = byteaOrEmpty(rs[0][3]);
+        row.signature = byteaOrEmpty(rs[0][4]);
+        row.created_at = rs[0][5].as<int64_t>();
         return row;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] getE2eeKeys: " << e.what() << "\n";
@@ -1332,17 +1506,17 @@ std::optional<AuthManager::E2eeKeyRow> AuthManager::getE2eeKeys(
     }
 }
 
-bool AuthManager::setE2eeBackup(const std::string& username, uint32_t key_id,
+bool AuthManager::setE2eeBackup(int64_t uid, uint32_t key_id,
                                 const std::string& blob, int64_t updated_at) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         txn.exec_params(
-            "INSERT INTO user_e2ee_backup (username, key_id, blob, updated_at) "
+            "INSERT INTO e2ee_backups (uid, key_id, blob, updated_at) "
             "VALUES ($1, $2, $3, $4) "
-            "ON CONFLICT (username) DO UPDATE "
+            "ON CONFLICT (uid) DO UPDATE "
             "SET key_id = EXCLUDED.key_id, blob = EXCLUDED.blob, updated_at = EXCLUDED.updated_at",
-            username, static_cast<int64_t>(key_id), toBytea(blob), updated_at);
+            uid, static_cast<int64_t>(key_id), toBytea(blob), updated_at);
         txn.commit();
         return true;
     } catch (const std::exception& e) {
@@ -1351,14 +1525,13 @@ bool AuthManager::setE2eeBackup(const std::string& username, uint32_t key_id,
     }
 }
 
-std::optional<std::pair<uint32_t, std::string>> AuthManager::getE2eeBackup(
-    const std::string& username) {
+std::optional<std::pair<uint32_t, std::string>> AuthManager::getE2eeBackup(int64_t uid) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
-            "SELECT key_id, blob FROM user_e2ee_backup WHERE username = $1",
-            username);
+            "SELECT key_id, blob FROM e2ee_backups WHERE uid = $1",
+            uid);
         txn.commit();
         if (rs.empty()) return std::nullopt;
         return std::make_pair(static_cast<uint32_t>(rs[0][0].as<int64_t>()),
@@ -1372,38 +1545,36 @@ std::optional<std::pair<uint32_t, std::string>> AuthManager::getE2eeBackup(
 // --- Auto-rejoin community memberships ---
 // (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)
 
-void AuthManager::registerMembership(const std::string& username,
-                                       int64_t server_id) {
+void AuthManager::registerMembership(int64_t uid, int64_t server_id) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         auto now = std::chrono::system_clock::now();
         int64_t now_ts = std::chrono::system_clock::to_time_t(now);
-        // Only for an existing account, so a membership can't be stored
-        // ahead of whoever registers the name.
-        if (txn.exec_params("SELECT 1 FROM users WHERE username = $1", username).empty()) {
+        // Only for an existing account (a forged uid would trip the
+        // foreign key into an error log).
+        if (txn.exec_params("SELECT 1 FROM users WHERE uid = $1", uid).empty()) {
             return;
         }
         txn.exec_params(
-            "INSERT INTO user_communities (username, server_id, joined_at) "
+            "INSERT INTO community_memberships (uid, server_id, joined_at) "
             "VALUES ($1, $2, $3) "
-            "ON CONFLICT (username, server_id) DO NOTHING",
-            username, server_id, now_ts);
+            "ON CONFLICT (uid, server_id) DO NOTHING",
+            uid, server_id, now_ts);
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] registerMembership: " << e.what() << "\n";
     }
 }
 
-void AuthManager::revokeMembership(const std::string& username,
-                                     int64_t server_id) {
+void AuthManager::revokeMembership(int64_t uid, int64_t server_id) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         txn.exec_params(
-            "DELETE FROM user_communities "
-            "WHERE username = $1 AND server_id = $2",
-            username, server_id);
+            "DELETE FROM community_memberships "
+            "WHERE uid = $1 AND server_id = $2",
+            uid, server_id);
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] revokeMembership: " << e.what() << "\n";
@@ -1411,7 +1582,7 @@ void AuthManager::revokeMembership(const std::string& username,
 }
 
 std::vector<chatproj::CommunityServerInfo>
-AuthManager::getUserCommunities(const std::string& username) {
+AuthManager::getUserCommunities(int64_t uid) {
     std::vector<chatproj::CommunityServerInfo> out;
     try {
         pqxx::connection conn(db_conn_str_);
@@ -1420,11 +1591,11 @@ AuthManager::getUserCommunities(const std::string& username) {
             "SELECT cs.id, cs.name, cs.description, cs.host_ip, "
             "       cs.port, cs.member_count, "
             "       COALESCE(cs.picture_version, ''), COALESCE(cs.cert_fingerprint, '') "
-            "FROM user_communities uc "
-            "JOIN community_servers cs ON cs.id = uc.server_id "
-            "WHERE uc.username = $1 "
-            "ORDER BY uc.joined_at",
-            username);
+            "FROM community_memberships cm "
+            "JOIN community_servers cs ON cs.id = cm.server_id "
+            "WHERE cm.uid = $1 "
+            "ORDER BY cm.joined_at",
+            uid);
         txn.commit();
 
         out.reserve(rs.size());
@@ -1541,19 +1712,19 @@ AuthManager::getServerPicture(int server_id) {
     }
 }
 
-std::vector<std::string> AuthManager::getServerMembers(int server_id) {
-    std::vector<std::string> out;
+std::vector<int64_t> AuthManager::getServerMembers(int server_id) {
+    std::vector<int64_t> out;
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
-            "SELECT username FROM user_communities "
+            "SELECT uid FROM community_memberships "
             "WHERE server_id = $1",
             server_id);
         txn.commit();
         out.reserve(rs.size());
         for (const auto& row : rs) {
-            out.push_back(row[0].as<std::string>());
+            out.push_back(row[0].as<int64_t>());
         }
         return out;
     } catch (const std::exception& e) {

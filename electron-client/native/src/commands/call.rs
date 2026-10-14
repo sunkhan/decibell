@@ -174,6 +174,8 @@ pub async fn send_call_signal(args: SendCallSignalArgs) -> napi::Result<()> {
                 timestamp: 0,
                 pub_key_sig,
                 key_id,
+                from_uid: 0,
+                to_uid: 0,
             }),
             token.as_deref(),
         );

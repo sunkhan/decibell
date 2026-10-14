@@ -436,6 +436,7 @@ pub async fn request_drop_membership(args: DropMembershipArgs) -> napi::Result<(
             packet::Payload::MembershipRevokeReq(MembershipRevokeReq {
                 username: String::new(),
                 server_id,
+                uid: 0,
             }),
             token.as_deref(),
         );

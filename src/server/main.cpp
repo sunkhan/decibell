@@ -173,6 +173,8 @@ public:
     }
 
     std::string username() const { return username_; }
+    /// The account (users.uid); 0 until login. Sessions are matched on it.
+    int64_t uid() const { return uid_; }
     bool authenticated() const { return authenticated_; }
 
     /// Cancel in-flight I/O and close the socket. SessionManager::leave()
@@ -217,7 +219,7 @@ public:
         status_text_.clear();
         status_emoji_.clear();
         status_expires_at_ = 0;
-        auth_manager_.setStatusMessage(username_, "", "", 0);
+        auth_manager_.setStatusMessage(uid_, "", "", 0);
         return presence_view() != before;
     }
 
@@ -341,18 +343,19 @@ private:
         else if (packet.type() == chatproj::Packet::LOGIN_REQ) {
             const auto& req = packet.login_req();
 
-            auto token_opt = auth_manager_.authenticateUser(req.username(), req.password());
+            auto login = auth_manager_.authenticateUser(req.username(), req.password());
 
-            if (token_opt.has_value()) {
+            if (login.has_value()) {
                 authenticated_ = true;
-                username_ = req.username();
+                uid_ = login->uid;
+                username_ = login->username;
                 presence_deltas_ = req.presence_deltas();
                 // One users-row read for presence: avatar_version (each
                 // UserPresence entry carries it; UPDATE_AVATAR_REQ refreshes
                 // it inline), the saved status — applied before anyone hears
                 // about this login, so an invisible user never flashes
                 // online — and the friends-only DM setting.
-                const auto profile = auth_manager_.getPresenceProfile(username_);
+                const auto profile = auth_manager_.getPresenceProfile(uid_);
                 avatar_version_ = profile.avatar_version;
                 presence_status_ = profile.status;
                 dm_friends_only_ = profile.dm_friends_only;
@@ -365,15 +368,15 @@ private:
                 // without a clean TCP close, or another device). Kicking
                 // BEFORE the password check let any unauthenticated client
                 // evict any user by name (send LOGIN_REQ{victim} with a
-                // bogus password). After username_ is set, so the old
-                // session's leave() sees this one and a reconnect doesn't
-                // announce the user offline in between.
-                manager_.kick_user(username_, shared_from_this());
-                send_response(chatproj::Packet::LOGIN_RES, true, "Login successful!", token_opt.value());
+                // bogus password). After uid_ is set, so the old session's
+                // leave() sees this one and a reconnect doesn't announce the
+                // user offline in between.
+                manager_.kick_user(uid_, shared_from_this());
+                send_response(chatproj::Packet::LOGIN_RES, true, "Login successful!", login->token);
                 manager_.send_presence_snapshot(shared_from_this());
                 // Announce only a login others can see: an "offline" delta
                 // for an invisible login would itself give it away.
-                if (presence_visible()) manager_.broadcast_presence_change(username_);
+                if (presence_visible()) manager_.broadcast_presence_change(uid_, username_);
             } else {
                 send_response(chatproj::Packet::LOGIN_RES, false, "Invalid username or password.");
             }
@@ -396,14 +399,8 @@ private:
             chatproj::Packet routed_packet = packet;
             auto* dmsg = routed_packet.mutable_direct_msg();
             dmsg->set_sender(username_); // Enforce sender identity
+            dmsg->set_sender_uid(uid_);
             dmsg->set_timestamp(current_time);
-
-            // Self-DM guard. The DB schema allows self-rows, but the
-            // UX doesn't make sense; reject explicitly so persistence
-            // doesn't silently accumulate them.
-            if (dmsg->recipient() == username_) {
-                return;
-            }
 
             // E2EE: the sealed body rides `envelope`; central only caps
             // its size and stores/relays it opaquely. reply_to_envelope
@@ -412,45 +409,32 @@ private:
                 return;
             }
             dmsg->clear_reply_to_envelope();
+            dmsg->clear_reply_to_sender_uid();
+            dmsg->clear_reply_to_sealed_sender();
+            dmsg->clear_reply_to_sealed_recipient();
 
-            // The recipient must be an account. Otherwise a message would be
-            // stored for a name nobody holds yet, waiting for whoever
-            // registers it. Refused with the sender's nonce, like the
-            // friends-only refusal below.
-            const int64_t recipient_uid = auth_manager_.resolveUid(dmsg->recipient());
-            if (recipient_uid <= 0) {
-                chatproj::Packet error_packet;
-                error_packet.set_type(chatproj::Packet::DIRECT_MSG);
-                auto* err_msg = error_packet.mutable_direct_msg();
-                err_msg->set_sender(username_);
-                err_msg->set_recipient(dmsg->recipient());
-                err_msg->set_content(recipient_uid == 0
+            // The recipient must be an account: by recipient_uid, or by the
+            // typed name. Otherwise a message would be stored for a name
+            // nobody holds yet, waiting for whoever registers it. Refused
+            // with the sender's nonce, like the friends-only refusal below.
+            const auto recipient = auth_manager_.resolveUser(dmsg->recipient_uid(), dmsg->recipient());
+            if (!recipient.found()) {
+                send_dm_refusal(*dmsg, recipient.uid == 0
                     ? "This user doesn't exist."
                     : "The server couldn't deliver your message. Please try again.");
-                err_msg->set_timestamp(current_time);
-                err_msg->set_nonce(dmsg->nonce());
-
-                std::string serialized;
-                error_packet.SerializeToString(&serialized);
-                auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-                deliver(framed);
                 return;
             }
+            // Self-DM guard. The DB schema allows self-rows, but the
+            // UX doesn't make sense; reject explicitly so persistence
+            // doesn't silently accumulate them.
+            if (recipient.uid == uid_) {
+                return;
+            }
+            dmsg->set_recipient(recipient.username);
+            dmsg->set_recipient_uid(recipient.uid);
 
-            if (!manager_.check_dm_allowed(username_, dmsg->recipient(), auth_manager_)) {
-                chatproj::Packet error_packet;
-                error_packet.set_type(chatproj::Packet::DIRECT_MSG);
-                auto* err_msg = error_packet.mutable_direct_msg();
-                err_msg->set_sender(username_);
-                err_msg->set_recipient(dmsg->recipient());
-                err_msg->set_content("This user only accepts direct messages from users in their friends list.");
-                err_msg->set_timestamp(current_time);
-                err_msg->set_nonce(dmsg->nonce());
-
-                std::string serialized;
-                error_packet.SerializeToString(&serialized);
-                auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-                deliver(framed);
+            if (!manager_.check_dm_allowed(uid_, recipient.uid, auth_manager_)) {
+                send_dm_refusal(*dmsg, "This user only accepts direct messages from users in their friends list.");
                 return;
             }
 
@@ -460,15 +444,17 @@ private:
             // When valid, embed the parent's author + content so both sides
             // render the quoted preview without needing the parent loaded.
             if (dmsg->reply_to() > 0) {
-                auto parent = auth_manager_.fetchDmPreview(
-                    username_, dmsg->recipient(), dmsg->reply_to());
+                auto parent = auth_manager_.fetchDmPreview(uid_, recipient.uid, dmsg->reply_to());
                 if (!parent) {
                     dmsg->set_reply_to(0);
                 } else {
                     dmsg->set_reply_to_sender(parent->sender);
+                    dmsg->set_reply_to_sender_uid(parent->sender_uid);
                     dmsg->set_reply_to_content(parent->content);
                     if (!parent->envelope.empty()) {
                         dmsg->set_reply_to_envelope(parent->envelope);
+                        dmsg->set_reply_to_sealed_sender(parent->sent_sender);
+                        dmsg->set_reply_to_sealed_recipient(parent->sent_recipient);
                     }
                 }
             }
@@ -477,22 +463,10 @@ private:
             // sender as a generic "couldn't deliver" — the message
             // is genuinely lost in that branch (rare).
             int64_t new_id = auth_manager_.insertDm(
-                username_, dmsg->recipient(), dmsg->content(), current_time, dmsg->reply_to(),
-                dmsg->envelope());
+                uid_, username_, recipient.uid, recipient.username,
+                dmsg->content(), current_time, dmsg->reply_to(), dmsg->envelope());
             if (new_id == 0) {
-                chatproj::Packet error_packet;
-                error_packet.set_type(chatproj::Packet::DIRECT_MSG);
-                auto* err_msg = error_packet.mutable_direct_msg();
-                err_msg->set_sender(username_);
-                err_msg->set_recipient(dmsg->recipient());
-                err_msg->set_content("The server couldn't deliver your message. Please try again.");
-                err_msg->set_timestamp(current_time);
-                err_msg->set_nonce(dmsg->nonce());
-
-                std::string serialized;
-                error_packet.SerializeToString(&serialized);
-                auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-                deliver(framed);
+                send_dm_refusal(*dmsg, "The server couldn't deliver your message. Please try again.");
                 return;
             }
 
@@ -503,7 +477,7 @@ private:
             // Best-effort live delivery — return value is informational
             // only. Recipient gets it now if online, on next login
             // via DM_CONVERSATIONS_REQ / DM_HISTORY_REQ otherwise.
-            manager_.send_private(routed_packet, dmsg->recipient());
+            manager_.send_private(routed_packet, recipient.uid);
 
             // Always echo to sender so their UI shows the DM as
             // delivered, carrying the new id field.
@@ -516,7 +490,8 @@ private:
         // --- CALL SIGNAL (P2P DM calls) ---
         // Ephemeral relay for the DM-call handshake: INVITE / RINGING /
         // ACCEPT / REJECT / BUSY / CANCEL / HANGUP / STREAM_START /
-        // STREAM_STOP. Nothing is persisted and the only DB touch is
+        // STREAM_STOP. Nothing is persisted; the DB is touched only to
+        // resolve a peer named by name (older clients) and for
         // check_dm_allowed on INVITE (same policy as a DM: blocked → no,
         // friends-only recipient → friends only). Central stamps `from`
         // so the peer never trusts a client-supplied sender, and answers
@@ -530,32 +505,43 @@ private:
 
             chatproj::Packet routed = packet;
             auto* sig = routed.mutable_call_signal();
-            if (sig->to().empty() || sig->to() == username_) return;
+            if (sig->to_uid() <= 0 && sig->to().empty()) return;
             if (sig->to().size() > 64 || sig->call_id().size() > 64 ||
                 sig->pub_key().size() > 64 || sig->pub_key_sig().size() > 64 ||
                 sig->candidates_size() > 16) {
                 return;
             }
+            const auto peer = auth_manager_.resolveUser(sig->to_uid(), sig->to());
+            if (!peer.found()) {
+                // No such account: offline to the caller, as before.
+                send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(),
+                                sig->to(), sig->to_uid() > 0 ? sig->to_uid() : 0);
+                return;
+            }
+            if (peer.uid == uid_) return;
+            sig->set_to(peer.username);
+            sig->set_to_uid(peer.uid);
             sig->set_from(username_);
+            sig->set_from_uid(uid_);
             sig->set_timestamp(std::chrono::system_clock::to_time_t(
                 std::chrono::system_clock::now()));
 
             if (sig->kind() == chatproj::CallSignal::INVITE &&
-                !manager_.check_dm_allowed(username_, sig->to(), auth_manager_)) {
-                send_call_reply(chatproj::CallSignal::NOT_ALLOWED, sig->call_id(), sig->to());
+                !manager_.check_dm_allowed(uid_, peer.uid, auth_manager_)) {
+                send_call_reply(chatproj::CallSignal::NOT_ALLOWED, sig->call_id(), peer.username, peer.uid);
                 return;
             }
             // An invisible user looks offline to callers too (owner
             // decision). Only the INVITE: an invisible user can still place
             // calls, and the rest of that handshake must reach them.
             if (sig->kind() == chatproj::CallSignal::INVITE &&
-                !manager_.is_user_visible(sig->to())) {
-                send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(), sig->to());
+                !manager_.is_user_visible(peer.uid)) {
+                send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(), peer.username, peer.uid);
                 return;
             }
 
-            if (!manager_.send_private(routed, sig->to())) {
-                send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(), sig->to());
+            if (!manager_.send_private(routed, peer.uid)) {
+                send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(), peer.username, peer.uid);
             }
         }
 
@@ -566,7 +552,7 @@ private:
         else if (packet.type() == chatproj::Packet::DM_CONVERSATIONS_REQ) {
             if (!authenticated_) return;
 
-            auto convs = auth_manager_.fetchDmConversations(username_);
+            auto convs = auth_manager_.fetchDmConversations(uid_);
 
             chatproj::Packet response;
             response.set_type(chatproj::Packet::DM_CONVERSATIONS_RES);
@@ -574,13 +560,17 @@ private:
             for (const auto& c : convs) {
                 auto* preview = res->add_conversations();
                 preview->set_peer(c.peer);
+                preview->set_peer_uid(c.peer_uid);
                 preview->set_last_message_content(c.last_message_content);
                 preview->set_last_message_sender(c.last_message_sender);
+                preview->set_last_message_sender_uid(c.last_message_sender_uid);
                 preview->set_last_message_id(c.last_message_id);
                 preview->set_last_timestamp(c.last_timestamp);
                 preview->set_unread_count(c.unread_count);
                 if (!c.last_message_envelope.empty()) {
                     preview->set_last_message_envelope(c.last_message_envelope);
+                    preview->set_sealed_sender(c.last_sent_sender);
+                    preview->set_sealed_recipient(c.last_sent_recipient);
                 }
             }
 
@@ -591,14 +581,14 @@ private:
         }
 
         // --- DM HISTORY REQ ---
-        // Paginated fetch of messages between the local user and
-        // `peer`. before_id=0 returns the latest page; client
-        // paginates upward by passing the oldest seen id.
+        // Paginated fetch of messages between the local user and the peer
+        // (by peer_uid, or by name). before_id=0 returns the latest page;
+        // client paginates upward by passing the oldest seen id.
         else if (packet.type() == chatproj::Packet::DM_HISTORY_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.dm_history_req();
-            const std::string& peer = req.peer();
-            if (peer.empty()) return;
+            if (req.peer_uid() <= 0 && req.peer().empty()) return;
+            const auto peer = auth_manager_.resolveUser(req.peer_uid(), req.peer());
 
             int32_t limit = req.limit();
             if (limit <= 0) limit = 50;
@@ -607,26 +597,28 @@ private:
             // Route by request mode, mirroring the community channel-history
             // handler: around_id>0 → context window (replace on the client);
             // after_id>0 → newer page (append); else → older/most-recent page
-            // (prepend). The DB helpers clamp their own limits.
+            // (prepend). The DB helpers clamp their own limits. An unknown
+            // peer gets an empty page.
             bool has_more = false;
             bool has_more_after = false;
             std::vector<AuthManager::DmHistoryRow> rows;
-            if (req.around_id() > 0) {
+            if (peer.found() && req.around_id() > 0) {
                 rows = auth_manager_.fetchDmHistoryAround(
-                    username_, peer, req.around_id(), req.limit(),
+                    uid_, peer.uid, req.around_id(), req.limit(),
                     has_more, has_more_after);
-            } else if (req.after_id() > 0) {
+            } else if (peer.found() && req.after_id() > 0) {
                 rows = auth_manager_.fetchDmHistoryAfter(
-                    username_, peer, req.after_id(), req.limit(), has_more_after);
-            } else {
+                    uid_, peer.uid, req.after_id(), req.limit(), has_more_after);
+            } else if (peer.found()) {
                 rows = auth_manager_.fetchDmHistory(
-                    username_, peer, req.before_id(), limit, has_more);
+                    uid_, peer.uid, req.before_id(), limit, has_more);
             }
 
             chatproj::Packet response;
             response.set_type(chatproj::Packet::DM_HISTORY_RES);
             auto* res = response.mutable_dm_history_res();
-            res->set_peer(peer);
+            res->set_peer(peer.found() ? peer.username : req.peer());
+            res->set_peer_uid(peer.found() ? peer.uid : req.peer_uid());
             res->set_has_more(has_more);
             res->set_has_more_after(has_more_after);
             res->set_around_id(req.around_id());
@@ -635,14 +627,24 @@ private:
                 auto* msg = res->add_messages();
                 msg->set_id(r.id);
                 msg->set_sender(r.sender);
+                msg->set_sender_uid(r.sender_uid);
                 msg->set_content(r.content);
                 msg->set_timestamp(r.timestamp);
                 msg->set_edited_at(r.edited_at);
                 msg->set_reply_to(r.reply_to);
                 msg->set_reply_to_sender(r.reply_to_sender);
+                msg->set_reply_to_sender_uid(r.reply_to_sender_uid);
                 msg->set_reply_to_content(r.reply_to_content);
-                if (!r.envelope.empty()) msg->set_envelope(r.envelope);
-                if (!r.reply_to_envelope.empty()) msg->set_reply_to_envelope(r.reply_to_envelope);
+                if (!r.envelope.empty()) {
+                    msg->set_envelope(r.envelope);
+                    msg->set_sealed_sender(r.sent_sender);
+                    msg->set_sealed_recipient(r.sent_recipient);
+                }
+                if (!r.reply_to_envelope.empty()) {
+                    msg->set_reply_to_envelope(r.reply_to_envelope);
+                    msg->set_reply_to_sealed_sender(r.reply_to_sent_sender);
+                    msg->set_reply_to_sealed_recipient(r.reply_to_sent_recipient);
+                }
             }
 
             std::string s;
@@ -652,23 +654,28 @@ private:
         }
 
         // --- DM MARK READ REQ ---
-        // Fire-and-forget: update dm_read_state.last_read_id so the
-        // next DM_CONVERSATIONS_REQ surfaces the correct unread
-        // count. No response — TCP delivery is the implicit ack.
+        // Fire-and-forget: update the read cursor so the next
+        // DM_CONVERSATIONS_REQ surfaces the correct unread count. No
+        // response — TCP delivery is the implicit ack.
         else if (packet.type() == chatproj::Packet::DM_MARK_READ_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.dm_mark_read_req();
-            if (req.peer().empty()) return;
-            auth_manager_.markDmRead(username_, req.peer(), req.up_to_id());
+            if (req.peer_uid() <= 0 && req.peer().empty()) return;
+            const auto peer = auth_manager_.resolveUser(req.peer_uid(), req.peer());
+            if (!peer.found()) return;
+            auth_manager_.markDmRead(uid_, peer.uid, req.up_to_id());
         }
 
         // --- DM_DELETE_REQ ---
         // Sender-only delete. The auth check happens inside the SQL
-        // WHERE clause (sender = username_), so a forged packet with
+        // WHERE clause (sender_uid = uid_), so a forged packet with
         // someone else's message id is a no-op.
         else if (packet.type() == chatproj::Packet::DM_DELETE_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.dm_delete_req();
+            const auto peer = (req.peer_uid() > 0 || !req.peer().empty())
+                ? auth_manager_.resolveUser(req.peer_uid(), req.peer())
+                : AuthManager::UserRef{};
 
             // Build RES skeleton early so failure branches can reuse.
             auto build_res = [&](bool success, const std::string& msg) {
@@ -677,7 +684,8 @@ private:
                 auto* res = rsp.mutable_dm_delete_res();
                 res->set_success(success);
                 res->set_message(msg);
-                res->set_peer(req.peer());
+                res->set_peer(peer.found() ? peer.username : req.peer());
+                res->set_peer_uid(peer.found() ? peer.uid : req.peer_uid());
                 res->set_message_id(req.message_id());
                 std::string serialized;
                 rsp.SerializeToString(&serialized);
@@ -686,13 +694,12 @@ private:
                 deliver(framed);
             };
 
-            if (req.peer().empty() || req.message_id() == 0) {
+            if (!peer.found() || req.message_id() == 0) {
                 build_res(false, "Invalid request.");
                 return;
             }
 
-            bool ok = auth_manager_.deleteDmMessage(
-                username_, req.peer(), req.message_id());
+            bool ok = auth_manager_.deleteDmMessage(uid_, peer.uid, req.message_id());
 
             build_res(ok, ok ? "" : "Message not found or not deletable.");
 
@@ -708,7 +715,8 @@ private:
             chatproj::Packet sender_bcast;
             sender_bcast.set_type(chatproj::Packet::DM_MESSAGE_DELETED);
             auto* sb = sender_bcast.mutable_dm_message_deleted();
-            sb->set_peer(req.peer());     // from sender's POV, peer = recipient
+            sb->set_peer(peer.username);   // from sender's POV, peer = recipient
+            sb->set_peer_uid(peer.uid);
             sb->set_message_id(req.message_id());
             sb->set_deleted_at(now_ts);
             std::string sender_ser;
@@ -722,9 +730,10 @@ private:
             recv_bcast.set_type(chatproj::Packet::DM_MESSAGE_DELETED);
             auto* rb = recv_bcast.mutable_dm_message_deleted();
             rb->set_peer(username_);       // from recipient's POV, peer = sender
+            rb->set_peer_uid(uid_);
             rb->set_message_id(req.message_id());
             rb->set_deleted_at(now_ts);
-            manager_.send_private(recv_bcast, req.peer());
+            manager_.send_private(recv_bcast, peer.uid);
         }
 
         // --- DM_EDIT_REQ ---
@@ -732,6 +741,9 @@ private:
         else if (packet.type() == chatproj::Packet::DM_EDIT_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.dm_edit_req();
+            const auto peer = (req.peer_uid() > 0 || !req.peer().empty())
+                ? auth_manager_.resolveUser(req.peer_uid(), req.peer())
+                : AuthManager::UserRef{};
 
             auto build_res = [&](bool success, const std::string& msg) {
                 chatproj::Packet rsp;
@@ -739,7 +751,8 @@ private:
                 auto* res = rsp.mutable_dm_edit_res();
                 res->set_success(success);
                 res->set_message(msg);
-                res->set_peer(req.peer());
+                res->set_peer(peer.found() ? peer.username : req.peer());
+                res->set_peer_uid(peer.found() ? peer.uid : req.peer_uid());
                 res->set_message_id(req.message_id());
                 std::string serialized;
                 rsp.SerializeToString(&serialized);
@@ -747,7 +760,7 @@ private:
                     chatproj::create_framed_packet(serialized)));
             };
 
-            if (req.peer().empty() || req.message_id() == 0) {
+            if (!peer.found() || req.message_id() == 0) {
                 build_res(false, "Invalid request.");
                 return;
             }
@@ -762,7 +775,7 @@ private:
 
             const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
             bool ok = auth_manager_.editDmMessage(
-                username_, req.peer(), req.message_id(), content, now_ts, envelope);
+                uid_, peer.uid, req.message_id(), content, now_ts, envelope);
             build_res(ok, ok ? "" : "Message not found or not editable.");
             if (!ok) return;
 
@@ -771,11 +784,13 @@ private:
             chatproj::Packet sender_bcast;
             sender_bcast.set_type(chatproj::Packet::DM_MESSAGE_EDITED);
             auto* sb = sender_bcast.mutable_dm_message_edited();
-            sb->set_peer(req.peer());      // sender's POV: peer = recipient
+            sb->set_peer(peer.username);   // sender's POV: peer = recipient
+            sb->set_peer_uid(peer.uid);
             sb->set_message_id(req.message_id());
             sb->set_content(content);
             sb->set_edited_at(now_ts);
             sb->set_sender(username_);
+            sb->set_sender_uid(uid_);
             if (!envelope.empty()) sb->set_envelope(envelope);
             std::string sender_ser;
             sender_bcast.SerializeToString(&sender_ser);
@@ -786,12 +801,14 @@ private:
             recv_bcast.set_type(chatproj::Packet::DM_MESSAGE_EDITED);
             auto* rb = recv_bcast.mutable_dm_message_edited();
             rb->set_peer(username_);       // recipient's POV: peer = sender
+            rb->set_peer_uid(uid_);
             rb->set_message_id(req.message_id());
             rb->set_content(content);
             rb->set_edited_at(now_ts);
             rb->set_sender(username_);
+            rb->set_sender_uid(uid_);
             if (!envelope.empty()) rb->set_envelope(envelope);
-            manager_.send_private(recv_bcast, req.peer());
+            manager_.send_private(recv_bcast, peer.uid);
         }
 
         // --- E2EE: PUBLISH KEYS ---
@@ -832,23 +849,23 @@ private:
                     return;
                 }
                 key_id = auth_manager_.publishE2eeKeys(
-                    username_, b.dh_pub(), b.sign_pub(), b.signature(), now_ts);
+                    uid_, username_, b.dh_pub(), b.sign_pub(), b.signature(), now_ts);
                 if (key_id == 0) { reply(false, "Storage error.", 0); return; }
             } else {
                 // Backup-only update (passphrase change): it belongs to
                 // the current bundle.
-                auto cur = auth_manager_.getE2eeKeys(username_, 0);
+                auto cur = auth_manager_.getE2eeKeys(uid_, 0);
                 if (!cur) { reply(false, "No published keys to back up.", 0); return; }
                 key_id = cur->key_id;
             }
             if (!backup.empty() &&
-                !auth_manager_.setE2eeBackup(username_, key_id, backup, now_ts)) {
+                !auth_manager_.setE2eeBackup(uid_, key_id, backup, now_ts)) {
                 reply(false, "Storage error.", key_id);
                 return;
             }
             reply(true, "", key_id);
             if (has_bundle) {
-                manager_.broadcast_e2ee_keys_changed(username_, key_id);
+                manager_.broadcast_e2ee_keys_changed(uid_, username_, key_id);
             }
         }
 
@@ -860,18 +877,23 @@ private:
             if (!authenticated_) return;
             if (!key_bucket_.take()) return;
             const auto& req = packet.e2ee_fetch_keys_req();
-            if (req.username().empty() || req.username().size() > 64) return;
+            if (req.uid() <= 0 && (req.username().empty() || req.username().size() > 64)) return;
+            const auto user = auth_manager_.resolveUser(req.uid(), req.username());
 
             chatproj::Packet rsp;
             rsp.set_type(chatproj::Packet::E2EE_FETCH_KEYS_RES);
             auto* res = rsp.mutable_e2ee_fetch_keys_res();
-            res->set_username(req.username());
+            res->set_username(user.found() ? user.username : req.username());
+            res->set_uid(user.found() ? user.uid : req.uid());
             res->set_key_id(req.key_id());
-            auto row = auth_manager_.getE2eeKeys(req.username(), req.key_id());
+            std::optional<AuthManager::E2eeKeyRow> row;
+            if (user.found()) row = auth_manager_.getE2eeKeys(user.uid, req.key_id());
             res->set_found(row.has_value());
             if (row) {
                 auto* b = res->mutable_bundle();
-                b->set_username(req.username());
+                b->set_username(user.username);
+                b->set_uid(user.uid);
+                b->set_signed_name(row->signed_name);
                 b->set_key_id(row->key_id);
                 b->set_dh_pub(row->dh_pub);
                 b->set_sign_pub(row->sign_pub);
@@ -893,7 +915,7 @@ private:
             chatproj::Packet rsp;
             rsp.set_type(chatproj::Packet::E2EE_FETCH_BACKUP_RES);
             auto* res = rsp.mutable_e2ee_fetch_backup_res();
-            auto row = auth_manager_.getE2eeBackup(username_);
+            auto row = auth_manager_.getE2eeBackup(uid_);
             res->set_found(row.has_value());
             if (row) {
                 res->set_key_id(row->first);
@@ -934,8 +956,12 @@ private:
         else if (packet.type() == chatproj::Packet::FRIEND_ACTION_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.friend_action_req();
-            
-            std::string error_msg = auth_manager_.handleFriendAction(username_, req.action(), req.target_username());
+            // The target by uid, or by the typed name.
+            const auto target = auth_manager_.resolveUser(req.target_uid(), req.target_username());
+
+            std::string error_msg = target.found()
+                ? auth_manager_.handleFriendAction(uid_, req.action(), target.uid)
+                : target.uid == 0 ? "User not found." : "Database error.";
             bool success = error_msg.empty();
             
             chatproj::Packet res_packet;
@@ -952,12 +978,12 @@ private:
             // Push updated friend list to both users if the action was successful
             if (success) {
                 // Send updated list to the requester
-                auto my_friends = auth_manager_.getFriends(username_);
+                auto my_friends = auth_manager_.getFriends(uid_);
                 chatproj::Packet my_list_pkt;
                 my_list_pkt.set_type(chatproj::Packet::FRIEND_LIST_RES);
                 auto* my_list = my_list_pkt.mutable_friend_list_res();
                 for (auto& f : my_friends) {
-                    if (f.status() == chatproj::FriendInfo::OFFLINE && manager_.is_user_visible(f.username())) {
+                    if (f.status() == chatproj::FriendInfo::OFFLINE && manager_.is_user_visible(f.uid())) {
                         f.set_status(chatproj::FriendInfo::ONLINE);
                     }
                     *my_list->add_friends() = f;
@@ -968,23 +994,23 @@ private:
                 deliver(my_framed);
 
                 // Send updated list to the target user (if online)
-                auto target_friends = auth_manager_.getFriends(req.target_username());
+                auto target_friends = auth_manager_.getFriends(target.uid);
                 chatproj::Packet target_list_pkt;
                 target_list_pkt.set_type(chatproj::Packet::FRIEND_LIST_RES);
                 auto* target_list = target_list_pkt.mutable_friend_list_res();
                 for (auto& f : target_friends) {
-                    if (f.status() == chatproj::FriendInfo::OFFLINE && manager_.is_user_visible(f.username())) {
+                    if (f.status() == chatproj::FriendInfo::OFFLINE && manager_.is_user_visible(f.uid())) {
                         f.set_status(chatproj::FriendInfo::ONLINE);
                     }
                     *target_list->add_friends() = f;
                 }
-                manager_.send_private(target_list_pkt, req.target_username());
+                manager_.send_private(target_list_pkt, target.uid);
             }
         }
         else if (packet.type() == chatproj::Packet::FRIEND_LIST_REQ) {
             if (!authenticated_) return;
 
-            auto friends = auth_manager_.getFriends(username_);
+            auto friends = auth_manager_.getFriends(uid_);
 
             chatproj::Packet res_packet;
             res_packet.set_type(chatproj::Packet::FRIEND_LIST_RES);
@@ -993,7 +1019,7 @@ private:
             for (auto& f : friends) {
                 // Determine online presence if they are ACCEPTED
                 if (f.status() == chatproj::FriendInfo::OFFLINE) {
-                    if (manager_.is_user_visible(f.username())) {
+                    if (manager_.is_user_visible(f.uid())) {
                         f.set_status(chatproj::FriendInfo::ONLINE);
                     }
                 }
@@ -1045,7 +1071,7 @@ private:
 
             std::string version;
             try {
-                version = auth_manager_.setAvatar(username_, data);
+                version = auth_manager_.setAvatar(uid_, data);
             } catch (const std::exception& e) {
                 std::cerr << "[Server] setAvatar failed: " << e.what() << "\n";
                 res->set_success(false);
@@ -1069,7 +1095,7 @@ private:
             deliver(std::make_shared<std::vector<uint8_t>>(
                 chatproj::create_framed_packet(s)));
 
-            manager_.broadcast_avatar_changed(username_, version);
+            manager_.broadcast_avatar_changed(uid_, username_, version);
         }
 
         // --- AVATAR FETCH ---
@@ -1078,14 +1104,16 @@ private:
         else if (packet.type() == chatproj::Packet::FETCH_AVATAR_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.fetch_avatar_req();
-            const std::string& target = req.username();
+            const auto target = auth_manager_.resolveUser(req.uid(), req.username());
 
-            auto [version, data] = auth_manager_.getAvatar(target);
+            std::string version, data;
+            if (target.found()) std::tie(version, data) = auth_manager_.getAvatar(target.uid);
 
             chatproj::Packet response;
             response.set_type(chatproj::Packet::FETCH_AVATAR_RES);
             auto* res = response.mutable_fetch_avatar_res();
-            res->set_username(target);
+            res->set_username(target.found() ? target.username : req.username());
+            res->set_uid(target.found() ? target.uid : req.uid());
             res->set_version(version);
             if (!data.empty()) {
                 res->set_data(data);
@@ -1109,7 +1137,7 @@ private:
             const bool friends_only = packet.dm_privacy().friends_only();
             if (friends_only == dm_friends_only_) return;
             dm_friends_only_ = friends_only;
-            auth_manager_.setDmFriendsOnly(username_, friends_only);
+            auth_manager_.setDmFriendsOnly(uid_, friends_only);
             std::cout << "[Server] User " << username_ << " set dm_friends_only to " << dm_friends_only_ << "\n";
         }
 
@@ -1129,8 +1157,8 @@ private:
             if (status == presence_status_) return;
             const PresenceView before = presence_view();
             presence_status_ = status;
-            auth_manager_.setPresenceStatus(username_, raw);
-            if (presence_view() != before) manager_.broadcast_presence_change(username_);
+            auth_manager_.setPresenceStatus(uid_, raw);
+            if (presence_view() != before) manager_.broadcast_presence_change(uid_, username_);
         }
 
         // --- AUTO-AWAY ---
@@ -1143,7 +1171,7 @@ private:
             if (idle == idle_) return;
             const PresenceView before = presence_view();
             idle_ = idle;
-            if (presence_view() != before) manager_.broadcast_presence_change(username_);
+            if (presence_view() != before) manager_.broadcast_presence_change(uid_, username_);
         }
 
         // --- CUSTOM STATUS MESSAGE ---
@@ -1169,8 +1197,8 @@ private:
             status_text_ = std::move(text);
             status_emoji_ = std::move(emoji);
             status_expires_at_ = expires_at;
-            auth_manager_.setStatusMessage(username_, status_text_, status_emoji_, status_expires_at_);
-            if (presence_view() != before) manager_.broadcast_presence_change(username_);
+            auth_manager_.setStatusMessage(uid_, status_text_, status_emoji_, status_expires_at_);
+            if (presence_view() != before) manager_.broadcast_presence_change(uid_, username_);
         }
 
         // --- COMMUNITY SERVER HEARTBEAT ---
@@ -1233,8 +1261,12 @@ private:
                 return;
             }
             const auto& req = packet.membership_register_req();
-            if (req.username().empty() || req.server_id() == 0) return;
-            auth_manager_.registerMembership(req.username(), req.server_id());
+            if ((req.uid() <= 0 && req.username().empty()) || req.server_id() == 0) return;
+            // The member by uid; a community that doesn't send it yet names
+            // them by username.
+            const int64_t uid = req.uid() > 0 ? req.uid() : auth_manager_.resolveUser(0, req.username()).uid;
+            if (uid <= 0) return;
+            auth_manager_.registerMembership(uid, req.server_id());
         }
 
         // --- AUTO-REJOIN: REVOKE A MEMBERSHIP (dual-origin) ---
@@ -1246,17 +1278,17 @@ private:
             const auto& req = packet.membership_revoke_req();
             if (req.server_id() == 0) return;
 
-            std::string target_username;
+            int64_t target_uid = 0;
             if (auth_manager_.verifySharedSecret(packet.auth_token())) {
-                if (req.username().empty()) return;
-                target_username = req.username();
+                target_uid = req.uid() > 0 ? req.uid() : auth_manager_.resolveUser(0, req.username()).uid;
+                if (target_uid <= 0) return;
             } else if (authenticated_) {
-                target_username = username_;
+                target_uid = uid_;
             } else {
                 std::cout << "[Security] Dropped membership_revoke - no valid auth.\n";
                 return;
             }
-            auth_manager_.revokeMembership(target_username, req.server_id());
+            auth_manager_.revokeMembership(target_uid, req.server_id());
         }
 
         // --- SYNC_SERVER_PICTURE_REQ ---
@@ -1264,7 +1296,7 @@ private:
         // Owner verification happened on the community side; central
         // verifies the shared secret and writes to community_servers,
         // then broadcasts SERVER_PICTURE_CHANGED to every online
-        // session whose username is a member of this server.
+        // session of a member of this server.
         else if (packet.type() == chatproj::Packet::SYNC_SERVER_PICTURE_REQ) {
             if (!auth_manager_.verifySharedSecret(packet.auth_token())) {
                 std::cout << "[Security] Dropped sync_server_picture - invalid shared secret.\n";
@@ -1357,14 +1389,16 @@ private:
     /// convention DM_MESSAGE_DELETED uses, so the client's call state
     /// machine keys every signal on `from` regardless of origin.
     void send_call_reply(chatproj::CallSignal::Kind kind, const std::string& call_id,
-                         const std::string& peer) {
+                         const std::string& peer, int64_t peer_uid) {
         chatproj::Packet pkt;
         pkt.set_type(chatproj::Packet::CALL_SIGNAL);
         auto* sig = pkt.mutable_call_signal();
         sig->set_kind(kind);
         sig->set_call_id(call_id);
         sig->set_from(peer);
+        sig->set_from_uid(peer_uid);
         sig->set_to(username_);
+        sig->set_to_uid(uid_);
         sig->set_timestamp(std::chrono::system_clock::to_time_t(
             std::chrono::system_clock::now()));
         std::string serialized;
@@ -1372,6 +1406,27 @@ private:
         auto framed = std::make_shared<std::vector<uint8_t>>(
             chatproj::create_framed_packet(serialized));
         deliver(framed);
+    }
+
+    /// A DM central refused, back to its sender: a self-addressed
+    /// DIRECT_MSG with no id, `text` as the content and the request's
+    /// nonce, so the client withdraws exactly that pending bubble and
+    /// shows the text.
+    void send_dm_refusal(const chatproj::DirectMessage& req, const std::string& text) {
+        chatproj::Packet error_packet;
+        error_packet.set_type(chatproj::Packet::DIRECT_MSG);
+        auto* err_msg = error_packet.mutable_direct_msg();
+        err_msg->set_sender(username_);
+        err_msg->set_sender_uid(uid_);
+        err_msg->set_recipient(req.recipient());
+        err_msg->set_recipient_uid(req.recipient_uid());
+        err_msg->set_content(text);
+        err_msg->set_timestamp(unix_now());
+        err_msg->set_nonce(req.nonce());
+
+        std::string serialized;
+        error_packet.SerializeToString(&serialized);
+        deliver(std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized)));
     }
 
     void send_response(chatproj::Packet::Type type, bool success, const std::string& msg, const std::string& token = "") {
@@ -1392,9 +1447,11 @@ private:
             // Auto-rejoin: on a successful login, ship the user's
             // community memberships inline so the client can start
             // auto-connecting without an extra round-trip. By this
-            // point in the LOGIN_REQ handler, username_ has been set.
-            if (success && !username_.empty()) {
-                for (const auto& info : auth_manager_.getUserCommunities(username_)) {
+            // point in the LOGIN_REQ handler, uid_ has been set.
+            if (success && uid_ > 0) {
+                resp->set_uid(uid_);
+                resp->set_username(username_);
+                for (const auto& info : auth_manager_.getUserCommunities(uid_)) {
                     *resp->add_memberships() = info;
                 }
             }
@@ -1434,6 +1491,8 @@ private:
     std::vector<uint8_t> inbound_body_;
     
     bool authenticated_ = false;
+    int64_t uid_ = 0;
+    /// The name as stored, for labels and the names messages are sent under.
     std::string username_;
     /// Cached on login from users.avatar_version; updated inline on
     /// UPDATE_AVATAR_REQ. Read by broadcast_presence.
@@ -1495,7 +1554,8 @@ void SessionManager::broadcast(const chatproj::Packet& packet) {
 void SessionManager::leave(std::shared_ptr<Session> session) {
     bool removed = false;
     size_t total = 0;
-    std::string user = session->username();
+    const int64_t uid = session->uid();
+    const std::string user = session->username();
     const bool was_visible = session->presence_visible();
     bool still_visible = false;
 
@@ -1503,7 +1563,7 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
         std::lock_guard<std::mutex> lock(mutex_);
         removed = sessions_.erase(session) > 0;
         total = sessions_.size();
-        if (removed && was_visible) still_visible = user_visible_locked(user);
+        if (removed && was_visible) still_visible = user_visible_locked(uid);
     }
 
     if (removed) {
@@ -1515,14 +1575,14 @@ void SessionManager::leave(std::shared_ptr<Session> session) {
         // session going away. An invisible user's disconnect says nothing,
         // and neither does the kick of a reconnecting user's old session.
         if (was_visible && !still_visible) {
-            broadcast_presence_change(user);
+            broadcast_presence_change(uid, user);
         }
     }
 }
 
-bool SessionManager::user_visible_locked(const std::string& username) const {
+bool SessionManager::user_visible_locked(int64_t uid) const {
     for (const auto& session : sessions_) {
-        if (session->username() == username && session->presence_visible()) return true;
+        if (session->uid() == uid && session->presence_visible()) return true;
     }
     return false;
 }
@@ -1534,6 +1594,7 @@ void SessionManager::fill_presence_snapshot_locked(chatproj::PresenceUpdate* pre
     for (const auto& session : sessions_) {
         if (!session->presence_visible()) continue;
         auto* entry = presence->add_users();
+        entry->set_uid(session->uid());
         entry->set_username(session->username());
         entry->set_avatar_version(session->avatar_version());
         entry->set_status(session->effective_status());
@@ -1555,7 +1616,7 @@ void SessionManager::send_presence_snapshot(std::shared_ptr<Session> session) {
         chatproj::create_framed_packet(serialized)));
 }
 
-void SessionManager::broadcast_presence_change(const std::string& username) {
+void SessionManager::broadcast_presence_change(int64_t uid, const std::string& username) {
     // One PresenceDelta with the user's full current state: online with
     // their effective status if any visible session is theirs, else
     // offline. Older clients (no LoginRequest.presence_deltas) get the
@@ -1566,9 +1627,10 @@ void SessionManager::broadcast_presence_change(const std::string& username) {
     chatproj::Packet delta;
     delta.set_type(chatproj::Packet::PRESENCE_DELTA);
     auto* d = delta.mutable_presence_delta();
+    d->mutable_user()->set_uid(uid);
     d->mutable_user()->set_username(username);
     for (const auto& session : sessions_) {
-        if (session->username() == username && session->presence_visible()) {
+        if (session->uid() == uid && session->presence_visible()) {
             d->set_online(true);
             d->mutable_user()->set_avatar_version(session->avatar_version());
             d->mutable_user()->set_status(session->effective_status());
@@ -1602,24 +1664,24 @@ void SessionManager::broadcast_presence_change(const std::string& username) {
     }
 }
 
-bool SessionManager::is_user_visible(const std::string& username) {
+bool SessionManager::is_user_visible(int64_t uid) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return user_visible_locked(username);
+    return user_visible_locked(uid);
 }
 
-void SessionManager::kick_user(const std::string& username, std::shared_ptr<Session> except) {
+void SessionManager::kick_user(int64_t uid, std::shared_ptr<Session> except) {
     std::shared_ptr<Session> stale;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const auto& session : sessions_) {
-            if (session != except && session->username() == username) {
+            if (session != except && session->uid() == uid) {
                 stale = session;
                 break;
             }
         }
     }
     if (stale) {
-        std::cout << "[Manager] Kicking stale session for: " << username << "\n";
+        std::cout << "[Manager] Kicking stale session for: " << stale->username() << "\n";
         leave(stale);
     }
 }
@@ -1654,19 +1716,20 @@ void SessionManager::expire_status_messages() {
     // Outside the lock: broadcast_presence_change takes it.
     for (auto& session : expired) {
         if (session->clear_expired_status_message()) {
-            broadcast_presence_change(session->username());
+            broadcast_presence_change(session->uid(), session->username());
         }
     }
 }
 
-bool SessionManager::send_private(const chatproj::Packet& packet, const std::string& target_username) {
+bool SessionManager::send_private(const chatproj::Packet& packet, int64_t target_uid) {
+    if (target_uid <= 0) return false;
     std::string serialized;
     packet.SerializeToString(&serialized);
     auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
 
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& session : sessions_) {
-        if (session->username() == target_username) {
+        if (session->authenticated() && session->uid() == target_uid) {
             session->deliver(framed);
             return true;
         }
@@ -1675,23 +1738,23 @@ bool SessionManager::send_private(const chatproj::Packet& packet, const std::str
 }
 
 void SessionManager::broadcast_to_users(const chatproj::Packet& packet,
-                                          const std::vector<std::string>& usernames) {
-    if (usernames.empty()) return;
+                                          const std::vector<int64_t>& uids) {
+    if (uids.empty()) return;
     std::string serialized;
     packet.SerializeToString(&serialized);
     auto framed = std::make_shared<std::vector<uint8_t>>(
         chatproj::create_framed_packet(serialized));
 
-    std::set<std::string> targets(usernames.begin(), usernames.end());
+    std::set<int64_t> targets(uids.begin(), uids.end());
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& session : sessions_) {
-        if (!session) continue;
-        if (targets.count(session->username()) == 0) continue;
+        if (!session || !session->authenticated()) continue;
+        if (targets.count(session->uid()) == 0) continue;
         session->deliver(framed);
     }
 }
 
-bool SessionManager::check_dm_allowed(const std::string& sender, const std::string& recipient, AuthManager& auth_manager) {
+bool SessionManager::check_dm_allowed(int64_t sender, int64_t recipient, AuthManager& auth_manager) {
     // Blocking applies regardless of the recipient's online state or
     // friends-only setting — a blocked user must not DM the person who
     // blocked them, even into the offline queue. Checked before taking the
@@ -1708,7 +1771,7 @@ bool SessionManager::check_dm_allowed(const std::string& sender, const std::stri
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const auto& session : sessions_) {
-            if (session->authenticated() && session->username() == recipient) {
+            if (session->authenticated() && session->uid() == recipient) {
                 friends_only = session->dm_friends_only();
                 break;
             }
@@ -1719,17 +1782,9 @@ bool SessionManager::check_dm_allowed(const std::string& sender, const std::stri
         return true;
     }
 
-    // Recipient only allows DMs from friends — check friend list (outside
-    // the lock: getFriends is a DB round trip).
-    auto friends = auth_manager.getFriends(recipient);
-    for (const auto& f : friends) {
-        if (f.username() == sender &&
-            (f.status() == chatproj::FriendInfo::ONLINE || f.status() == chatproj::FriendInfo::OFFLINE)) {
-            return true;
-        }
-    }
-
-    return false;
+    // Recipient only allows DMs from friends (outside the lock: a DB
+    // round trip).
+    return auth_manager.areFriends(sender, recipient);
 }
 
 

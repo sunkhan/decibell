@@ -63,6 +63,7 @@ pub async fn send_friend_action(args: SendFriendActionArgs) -> napi::Result<()> 
             packet::Payload::FriendActionReq(FriendActionReq {
                 action: args.action,
                 target_username: args.target_username,
+                target_uid: 0,
             }),
             token.as_deref(),
         );

@@ -78,6 +78,7 @@ pub async fn request_dm_history(args: RequestDmHistoryArgs) -> napi::Result<()> 
                 limit: args.limit,
                 around_id: args.around_id.unwrap_or(0),
                 after_id: args.after_id.unwrap_or(0),
+                peer_uid: 0,
             }),
             token.as_deref(),
         );
@@ -116,6 +117,7 @@ pub async fn mark_dm_read(args: MarkDmReadArgs) -> napi::Result<()> {
             packet::Payload::DmMarkReadReq(DmMarkReadReq {
                 peer: args.peer,
                 up_to_id: args.up_to_id,
+                peer_uid: 0,
             }),
             token.as_deref(),
         );
@@ -153,6 +155,7 @@ pub async fn delete_dm_message(args: DeleteDmMessageArgs) -> napi::Result<()> {
             packet::Payload::DmDeleteReq(DmDeleteReq {
                 peer: args.peer,
                 message_id: args.message_id,
+                peer_uid: 0,
             }),
             token.as_deref(),
         );
@@ -204,6 +207,7 @@ pub async fn edit_dm_message(args: EditDmMessageArgs) -> napi::Result<()> {
                 message_id: args.message_id,
                 content,
                 envelope,
+                peer_uid: 0,
             }),
             token.as_deref(),
         );

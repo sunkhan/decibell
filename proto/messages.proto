@@ -546,6 +546,10 @@ message LoginResponse {
   string status_text = 10;
   string status_emoji = 11;
   int64 status_clear_in = 12;
+  // The account (users by uid, 2026-10-15): the uid every request and
+  // payload now carries, and the username as stored.
+  int64 uid = 13;
+  string username = 14;
 }
 
 message DirectMessage {
@@ -577,6 +581,15 @@ message DirectMessage {
   // The reply parent's envelope, embedded by central like
   // reply_to_content — empty when the parent is a plaintext row.
   bytes reply_to_envelope = 12;
+  // Users by uid (2026-10-15). sender_uid is central-stamped; a request
+  // names the recipient by recipient_uid, or by name when it is 0.
+  int64 sender_uid = 13;
+  int64 recipient_uid = 14;
+  int64 reply_to_sender_uid = 15;
+  // Set when the reply parent has an envelope: the names it was sealed
+  // under, which a v1 envelope binds (they can predate a rename).
+  string reply_to_sealed_sender = 16;
+  string reply_to_sealed_recipient = 17;
 }
 
 // A user's status. The chosen value is saved on central; AWAY is also
@@ -598,6 +611,7 @@ message UserPresence {
   // only while the user is visible (online, away or do not disturb).
   string status_text = 4;
   string status_emoji = 5;
+  int64 uid = 6;
 }
 
 // Wire-breaking change from `repeated string online_users = 1;` —
@@ -683,6 +697,7 @@ enum FriendActionType {
 message FriendActionReq {
   FriendActionType action = 1;
   string target_username = 2;
+  int64 target_uid = 3;  // preferred; target_username is the typed-name fallback
 }
 
 message FriendActionRes {
@@ -701,6 +716,7 @@ message FriendInfo {
   }
   Status status = 2;
   string avatar_version = 3;       // '' when no avatar set
+  int64 uid = 4;
 }
 
 message FriendListReq {
@@ -1922,17 +1938,20 @@ message UpdateAvatarRes {
 
 message FetchAvatarReq {
   string username = 1;
+  int64 uid = 2;  // preferred over username
 }
 
 message FetchAvatarRes {
   string username = 1;
   string version = 2;   // '' when user has no avatar
   bytes data = 3;       // empty when version == ''
+  int64 uid = 4;
 }
 
 message AvatarChanged {
   string username = 1;
   string version = 2;   // '' on removal
+  int64 uid = 3;
 }
 
 // On-demand fetch of the latest thumbnail for a currently-streaming user.
@@ -1963,6 +1982,12 @@ message DmConversationPreview {
   int64  unread_count = 6;
   // E2EE — the last message's envelope when it was sent encrypted.
   bytes  last_message_envelope = 7;
+  int64  peer_uid = 8;
+  int64  last_message_sender_uid = 9;
+  // Set when the last message has an envelope: the names it was sealed
+  // under (see DmHistoryMessage).
+  string sealed_sender = 10;
+  string sealed_recipient = 11;
 }
 message DmConversationsRes {
   repeated DmConversationPreview conversations = 1;
@@ -1974,6 +1999,7 @@ message DmHistoryReq {
   int32  limit = 3;       // server clamps to 200
   int64  around_id = 4;   // >0: context window centered on this DM id
   int64  after_id  = 5;   // >0: page newer than this DM id
+  int64  peer_uid = 6;   // preferred over peer
 }
 message DmHistoryMessage {
   int64  id = 1;
@@ -1989,6 +2015,14 @@ message DmHistoryMessage {
   // E2EE — see DirectMessage.envelope / reply_to_envelope.
   bytes  envelope = 9;
   bytes  reply_to_envelope = 10;
+  int64  sender_uid = 11;
+  int64  reply_to_sender_uid = 12;
+  // Set when the row has an envelope: the sender and recipient names it was
+  // sealed under, which a v1 envelope binds. `sender` is the current name.
+  string sealed_sender = 13;
+  string sealed_recipient = 14;
+  string reply_to_sealed_sender = 15;
+  string reply_to_sealed_recipient = 16;
 }
 message DmHistoryRes {
   string peer = 1;
@@ -1997,11 +2031,13 @@ message DmHistoryRes {
   bool   has_more_after = 4;   // newer messages exist below the returned slice
   int64  around_id = 5;        // echoes the request mode so the client routes the reply
   int64  after_id  = 6;
+  int64  peer_uid = 7;
 }
 
 message DmMarkReadReq {
   string peer = 1;
   int64  up_to_id = 2;
+  int64  peer_uid = 3;   // preferred over peer
 }
 
 // --- Auto-rejoin community memberships ---
@@ -2012,11 +2048,13 @@ message DmMarkReadReq {
 message MembershipRegisterReq {
   string username = 1;
   int64  server_id = 2;
+  int64  uid = 3;   // the member's account; central keys memberships by it
 }
 
 message MembershipRevokeReq {
   string username = 1;
   int64  server_id = 2;
+  int64  uid = 3;
 }
 
 // Sent by central in response to a SERVER_HEARTBEAT, over the same
@@ -2033,6 +2071,7 @@ message ServerHeartbeatRes {
 message DmDeleteReq {
   string peer = 1;
   int64  message_id = 2;
+  int64  peer_uid = 3;   // preferred over peer
 }
 
 message DmDeleteRes {
@@ -2040,6 +2079,7 @@ message DmDeleteRes {
   string message = 2;
   string peer = 3;
   int64  message_id = 4;
+  int64  peer_uid = 5;
 }
 
 // Peer field is rewritten by central per recipient — always "the
@@ -2048,6 +2088,7 @@ message DmMessageDeleted {
   string peer = 1;
   int64  message_id = 2;
   int64  deleted_at = 3;
+  int64  peer_uid = 4;
 }
 
 message DmEditReq {
@@ -2055,6 +2096,7 @@ message DmEditReq {
   int64  message_id = 2;
   string content = 3;   // new body; central enforces sender == editor
   bytes  envelope = 4;  // E2EE: the new body sealed; content is then the placeholder
+  int64  peer_uid = 5;   // preferred over peer
 }
 
 message DmEditRes {
@@ -2062,6 +2104,7 @@ message DmEditRes {
   string message = 2;
   string peer = 3;
   int64  message_id = 4;
+  int64  peer_uid = 5;
 }
 
 // Peer rewritten per recipient, like DmMessageDeleted.
@@ -2072,6 +2115,8 @@ message DmMessageEdited {
   int64  edited_at = 4;
   bytes  envelope = 5;  // E2EE — see DirectMessage.envelope
   string sender = 6;    // the message's author (= the editor), central-stamped; '' from older centrals
+  int64  peer_uid = 7;
+  int64  sender_uid = 8;
 }
 
 message MessageDeleteReq {
@@ -2225,6 +2270,8 @@ message CallSignal {
   // pub_key can't forge this. INVITE / ACCEPT only; central relays it.
   bytes pub_key_sig = 9;                  // 64 bytes
   uint32 key_id = 10;
+  int64 from_uid = 11;                    // central-stamped, like `from`
+  int64 to_uid = 12;                      // preferred over `to`
 }
 
 // --- End-to-end encrypted DMs ---
@@ -2242,6 +2289,10 @@ message E2eeKeyBundle {
   bytes  sign_pub = 4;     // 32-byte Ed25519 public key
   bytes  signature = 5;    // 64 bytes
   int64  created_at = 6;   // central-stamped unix seconds
+  int64  uid = 7;          // central-stamped
+  // The name a v1 bundle's signature covers: the publisher's name when it
+  // was published (central-stamped; can predate a rename).
+  string signed_name = 8;
 }
 
 // Publish a new bundle and/or replace the passphrase-wrapped private-key
@@ -2260,12 +2311,14 @@ message E2eePublishKeysRes {
 message E2eeFetchKeysReq {
   string username = 1;
   uint32 key_id = 2;       // 0 = the user's current bundle
+  int64  uid = 3;          // preferred over username
 }
 message E2eeFetchKeysRes {
   string username = 1;
   uint32 key_id = 2;       // echoes the request so the client routes the reply
   bool   found = 3;
   E2eeKeyBundle bundle = 4;
+  int64  uid = 5;
 }
 
 // The caller's own backup blob (never anyone else's).
@@ -2282,6 +2335,7 @@ message E2eeFetchBackupRes {
 message E2eeKeysChanged {
   string username = 1;
   uint32 key_id = 2;
+  int64  uid = 3;
 }
 
 // --- MLS-encrypted voice channels ---

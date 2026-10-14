@@ -22,8 +22,14 @@ public:
     // Processes registration. Returns error message if failed, empty string if successful.
     std::string registerUser(const std::string& username, const std::string& email, const std::string& password);
 
-    // Processes login. Returns the JWT if successful, or std::nullopt if failed.
-    std::optional<std::string> authenticateUser(const std::string& username, const std::string& password);
+    /// A successful login: the signed JWT and the account it names.
+    struct LoginResult {
+        std::string token;
+        int64_t uid = 0;
+        std::string username;   // as stored
+    };
+    // Processes login. Returns the token and account, or std::nullopt if failed.
+    std::optional<LoginResult> authenticateUser(const std::string& username, const std::string& password);
 
     // Verifies an incoming JWT from a client or community server
     bool validateToken(const std::string& token);
@@ -74,18 +80,30 @@ public:
     };
     std::optional<ResolvedInvite> resolveCommunityInvite(const std::string& code);
 
-    /// users.uid for a typed username: > 0 when the account exists, 0 when
-    /// no account has the name, -1 on a database error. Requests that name
-    /// another user resolve it here before writing anything under it.
-    int64_t resolveUid(const std::string& username);
+    /// An account as a request names it (users by uid,
+    /// docs/superpowers/specs/2026-10-15-uid-identity-design.md).
+    struct UserRef {
+        int64_t uid = 0;        // > 0 found; 0 no such account; -1 database error
+        std::string username;   // the current name ('' unless found)
+        bool found() const { return uid > 0; }
+    };
+    /// The account a request names: by `uid` when it is > 0, else by the
+    /// exact `username` (typed names and older clients). Every request that
+    /// names another user resolves it here before anything is written.
+    UserRef resolveUser(int64_t uid, const std::string& username);
 
-    // Friend System
-    std::string handleFriendAction(const std::string& requester, chatproj::FriendActionType action, const std::string& target);
-    std::vector<chatproj::FriendInfo> getFriends(const std::string& username);
+    // Friend System. Both sides are existing accounts (the caller resolved
+    // the target); returns '' on success or the message for the requester.
+    std::string handleFriendAction(int64_t requester, chatproj::FriendActionType action, int64_t target);
+    /// The user's friendships, each with the other side's uid, current name
+    /// and avatar_version.
+    std::vector<chatproj::FriendInfo> getFriends(int64_t uid);
     /// True if there is a BLOCKED relationship between the two users
     /// (canonical pair, either direction). Used to reject DMs to/from a
     /// blocked user regardless of online state or friends-only setting.
-    bool isBlocked(const std::string& a, const std::string& b);
+    bool isBlocked(int64_t a, int64_t b);
+    /// True if the two users are friends (an accepted request).
+    bool areFriends(int64_t a, int64_t b);
 
     // Avatar storage (see docs/superpowers/specs/
     // 2026-05-12-custom-profile-pictures-design.md §5).
@@ -93,13 +111,13 @@ public:
     // setAvatar: write/remove the user's avatar. `data` empty means
     // remove (clears avatar + version). Returns the new sha256-hex
     // version on success ('' on removal). Throws on DB error.
-    std::string setAvatar(const std::string& username, const std::string& data);
+    std::string setAvatar(int64_t uid, const std::string& data);
 
     // getAvatar: returns (version, bytes). Version is '' when the
     // user has no avatar; data is empty in that case. Returns
     // ('', '') for unknown users (callers can't distinguish — same
     // privacy model as letter avatars).
-    std::pair<std::string, std::string> getAvatar(const std::string& username);
+    std::pair<std::string, std::string> getAvatar(int64_t uid);
 
     // Lookup just the version (no bytes). Used by broadcast_presence
     // to populate UserPresence.avatar_version cheaply without
@@ -116,46 +134,61 @@ public:
         std::string status_emoji;
         int64_t status_expires_at = 0;  // unix seconds, 0 = never
     };
-    PresenceProfile getPresenceProfile(const std::string& username);
+    PresenceProfile getPresenceProfile(int64_t uid);
     /// `status` is a PresenceStatus value (the caller validated it).
-    void setPresenceStatus(const std::string& username, int status);
+    void setPresenceStatus(int64_t uid, int status);
     /// The caller normalised text / emoji; expires_at is unix seconds (0 = never).
-    void setStatusMessage(const std::string& username, const std::string& text,
+    void setStatusMessage(int64_t uid, const std::string& text,
                           const std::string& emoji, int64_t expires_at);
-    void setDmFriendsOnly(const std::string& username, bool friends_only);
+    void setDmFriendsOnly(int64_t uid, bool friends_only);
     /// For DMs to an offline (or invisible) recipient — an online one's
     /// session caches the same value.
-    bool getDmFriendsOnly(const std::string& username);
+    bool getDmFriendsOnly(int64_t uid);
 
     // --- Persistent DMs ---
     // (see docs/superpowers/specs/2026-05-14-persistent-dms-design.md)
+    /// Each row keeps the names it was sent under (`sent_*`, what a v1
+    /// envelope binds) next to the sender's uid and current name.
     struct DmHistoryRow {
-        int64_t id;
-        std::string sender;
+        int64_t id = 0;
+        int64_t sender_uid = 0;
+        std::string sender;          // current name
+        std::string sent_sender;     // name sent under
+        std::string sent_recipient;
         std::string content;
-        int64_t timestamp;
-        int64_t edited_at;
-        int64_t reply_to;
+        int64_t timestamp = 0;
+        int64_t edited_at = 0;
+        int64_t reply_to = 0;
         // Embedded parent preview, resolved by LEFT JOIN at fetch time.
-        // Empty sender with reply_to>0 = parent was deleted.
+        // reply_to_sender_uid 0 with reply_to>0 = parent was deleted.
+        int64_t reply_to_sender_uid = 0;
         std::string reply_to_sender;
+        std::string reply_to_sent_sender;
+        std::string reply_to_sent_recipient;
         std::string reply_to_content;
         // E2EE envelopes (opaque bytes); empty for plaintext rows.
         std::string envelope;
         std::string reply_to_envelope;
     };
     struct DmConversationPreviewRow {
-        std::string peer;
+        int64_t peer_uid = 0;
+        std::string peer;            // current name
         std::string last_message_content;
+        int64_t last_message_sender_uid = 0;
         std::string last_message_sender;
-        int64_t last_message_id;
-        int64_t last_timestamp;
-        int64_t unread_count;
+        std::string last_sent_sender;
+        std::string last_sent_recipient;
+        int64_t last_message_id = 0;
+        int64_t last_timestamp = 0;
+        int64_t unread_count = 0;
         std::string last_message_envelope;
     };
     /// One DM's author + body, for the reply-parent preview.
     struct DmPreviewRow {
-        std::string sender;
+        int64_t sender_uid = 0;
+        std::string sender;          // current name
+        std::string sent_sender;
+        std::string sent_recipient;
         std::string content;
         std::string envelope;
     };
@@ -165,8 +198,9 @@ public:
     /// the sender).
     /// `envelope` non-empty = an E2EE row: stored opaquely next to the
     /// placeholder `content`.
-    int64_t insertDm(const std::string& sender,
-                     const std::string& recipient,
+    /// The names are the ones the message is sent under (stored with it).
+    int64_t insertDm(int64_t sender_uid, const std::string& sender,
+                     int64_t recipient_uid, const std::string& recipient,
                      const std::string& content,
                      int64_t sent_at,
                      int64_t reply_to = 0,
@@ -176,8 +210,7 @@ public:
     /// newest first. before_id = 0 means "latest". limit is clamped
     /// to [1, 200] internally. Sets has_more to true if more
     /// messages exist older than the page.
-    std::vector<DmHistoryRow> fetchDmHistory(const std::string& user_a,
-                                              const std::string& user_b,
+    std::vector<DmHistoryRow> fetchDmHistory(int64_t user_a, int64_t user_b,
                                               int64_t before_id,
                                               int32_t limit,
                                               bool& has_more);
@@ -188,8 +221,7 @@ public:
     /// to 25 and clamps to [1, 100] per side. has_more_before/after report
     /// whether messages exist beyond each edge of the window. Used by the
     /// windowed jump-to-message flow.
-    std::vector<DmHistoryRow> fetchDmHistoryAround(const std::string& user_a,
-                                                   const std::string& user_b,
+    std::vector<DmHistoryRow> fetchDmHistoryAround(int64_t user_a, int64_t user_b,
                                                    int64_t around_id,
                                                    int32_t limit,
                                                    bool& has_more_before,
@@ -199,8 +231,7 @@ public:
     /// ordered oldest→newest. limit defaults to 50, clamps to [1, 200].
     /// Downward pagination for the windowed jump flow. has_more_after is
     /// set if still-newer messages exist.
-    std::vector<DmHistoryRow> fetchDmHistoryAfter(const std::string& user_a,
-                                                  const std::string& user_b,
+    std::vector<DmHistoryRow> fetchDmHistoryAfter(int64_t user_a, int64_t user_b,
                                                   int64_t after_id,
                                                   int32_t limit,
                                                   bool& has_more_after);
@@ -209,34 +240,27 @@ public:
     /// conversation — a forged reply_to must not leak another
     /// conversation's content. nullopt = not found / not this pair.
     /// Used to validate + embed the reply parent preview on send.
-    std::optional<DmPreviewRow> fetchDmPreview(
-        const std::string& user_a, const std::string& user_b, int64_t message_id);
+    std::optional<DmPreviewRow> fetchDmPreview(int64_t user_a, int64_t user_b, int64_t message_id);
 
     /// One row per conversation the user is part of, with the most
     /// recent message preview + unread count (messages from peer
     /// with id > dm_read_state.last_read_id).
-    std::vector<DmConversationPreviewRow> fetchDmConversations(
-        const std::string& user);
+    std::vector<DmConversationPreviewRow> fetchDmConversations(int64_t uid);
 
     /// Upsert dm_read_state, setting last_read_id =
     /// GREATEST(existing, up_to_id). Idempotent and race-safe.
-    void markDmRead(const std::string& reader,
-                    const std::string& peer,
-                    int64_t up_to_id);
+    void markDmRead(int64_t reader, int64_t peer, int64_t up_to_id);
 
     /// Sender-enforced atomic delete. The WHERE clause is the
     /// authorization check — only the row's sender can delete it,
     /// and the recipient must match the requested peer. Returns
     /// true iff exactly one row was deleted.
-    bool deleteDmMessage(const std::string& sender,
-                         const std::string& peer,
-                         int64_t message_id);
+    bool deleteDmMessage(int64_t sender, int64_t peer, int64_t message_id);
 
     /// Sender-enforced atomic edit. Like deleteDmMessage, the WHERE clause is
     /// the authorization check — only the row's sender may edit it. Stamps
     /// edited_at. Returns true iff exactly one row was updated.
-    bool editDmMessage(const std::string& sender,
-                       const std::string& peer,
+    bool editDmMessage(int64_t sender, int64_t peer,
                        int64_t message_id,
                        const std::string& content,
                        int64_t edited_at,
@@ -246,16 +270,18 @@ public:
     // (see docs/superpowers/specs/2026-09-03-e2ee-dms-design.md)
     struct E2eeKeyRow {
         uint32_t key_id;
+        std::string signed_name;   // the name a v1 bundle's signature covers
         std::string dh_pub;
         std::string sign_pub;
         std::string signature;
         int64_t created_at;
     };
 
-    /// Store a new identity bundle for `username`, assigning
-    /// key_id = MAX(key_id) + 1 for that user. Returns the assigned id,
-    /// 0 on DB failure. Sizes are validated by the caller.
-    uint32_t publishE2eeKeys(const std::string& username,
+    /// Store a new identity bundle for `uid`, assigning
+    /// key_id = MAX(key_id) + 1 for that user. `signed_name` is the
+    /// publisher's current name (what a v1 signature covers). Returns the
+    /// assigned id, 0 on DB failure. Sizes are validated by the caller.
+    uint32_t publishE2eeKeys(int64_t uid, const std::string& signed_name,
                              const std::string& dh_pub,
                              const std::string& sign_pub,
                              const std::string& signature,
@@ -263,15 +289,15 @@ public:
 
     /// A user's bundle: key_id 0 = the current (highest) one. nullopt when
     /// the user has never published or the id is unknown.
-    std::optional<E2eeKeyRow> getE2eeKeys(const std::string& username, uint32_t key_id);
+    std::optional<E2eeKeyRow> getE2eeKeys(int64_t uid, uint32_t key_id);
 
     /// Replace the user's passphrase-wrapped private-key backup. Returns
     /// false on DB failure.
-    bool setE2eeBackup(const std::string& username, uint32_t key_id,
+    bool setE2eeBackup(int64_t uid, uint32_t key_id,
                        const std::string& blob, int64_t updated_at);
 
     /// (key_id, blob) of the user's backup; nullopt when none.
-    std::optional<std::pair<uint32_t, std::string>> getE2eeBackup(const std::string& username);
+    std::optional<std::pair<uint32_t, std::string>> getE2eeBackup(int64_t uid);
 
     // --- Auto-rejoin community memberships ---
     // (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)
@@ -279,19 +305,18 @@ public:
     /// Idempotent insert. Called on every successful community auth
     /// (via MEMBERSHIP_REGISTER_REQ). ON CONFLICT DO NOTHING — safe to
     /// re-fire on every auth and serves as bootstrap for pre-feature
-    /// memberships.
-    void registerMembership(const std::string& username, int64_t server_id);
+    /// memberships. A uid with no account is ignored.
+    void registerMembership(int64_t uid, int64_t server_id);
 
     /// Idempotent delete. Called by the community-side kick/ban/leave
     /// path (shared secret) and by the client-side stale-membership
     /// cleanup (JWT auth).
-    void revokeMembership(const std::string& username, int64_t server_id);
+    void revokeMembership(int64_t uid, int64_t server_id);
 
     /// Returns every CommunityServerInfo the user is a member of.
     /// Orphan rows (server_id no longer in community_servers) filtered
     /// out via the JOIN, so the client never sees phantom tiles.
-    std::vector<chatproj::CommunityServerInfo> getUserCommunities(
-        const std::string& username);
+    std::vector<chatproj::CommunityServerInfo> getUserCommunities(int64_t uid);
 
     // --- Custom server pictures ---
     // (see docs/superpowers/specs/2026-05-15-custom-server-pictures-design.md)
@@ -314,9 +339,9 @@ public:
     /// picture set, or when the id is unknown.
     std::pair<std::string, std::string> getServerPicture(int server_id);
 
-    /// Every username in user_communities for this server_id.
+    /// Every member's uid for this server_id.
     /// Drives central's SERVER_PICTURE_CHANGED broadcast.
-    std::vector<std::string> getServerMembers(int server_id);
+    std::vector<int64_t> getServerMembers(int server_id);
 
 private:
     std::string secret_key_;
@@ -325,10 +350,16 @@ private:
     std::string jwt_public_pem_;
     struct StoredCredentials {
         int64_t uid = 0;
+        std::string username;
         std::string password_hash;
     };
 
+    /// Builds the schema and runs pending migrations (central_schema).
+    /// Throws when a migration fails: serving on a half-migrated schema
+    /// would fail every request.
     void initializeDatabase();
+    /// Migration 1: users by uid (2026-10-15-uid-identity-design.md).
+    void migrateToUidKeys(pqxx::work& txn);
 
     // Password hashing using bcrypt (cost factor 12)
     std::string hashPassword(const std::string& plain_password);
@@ -337,7 +368,7 @@ private:
     // Database interaction stubs (to be replaced with PostgreSQL pool)
     bool userExists(const std::string& username, const std::string& email);
     bool insertUser(const std::string& username, const std::string& email, const std::string& hash);
-    /// The uid and password hash from one read of the users row; nullopt
-    /// when no account has the name or the database errors.
+    /// The uid, stored name and password hash from one read of the users
+    /// row; nullopt when no account has the name or the database errors.
     std::optional<StoredCredentials> getCredentials(const std::string& username);
 };

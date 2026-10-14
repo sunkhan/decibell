@@ -2468,3 +2468,40 @@ fixed first, before the uid refactor.
 Verified by inspection and a g++ `-fsyntax-only` build of `auth_manager.cpp` and `main.cpp` against a
 declaration-only pqxx stand-in (jwt-cpp, nlohmann, boost and the generated pb from the community deps).
 Needs the Hetzner central rebuild.
+
+**Users by uid, stage 1: central (2026-10-15) ✅** — The owner's rule is that backends key users by uid,
+so a rename never breaks a feature. Design: `docs/superpowers/specs/2026-10-15-uid-identity-design.md`
+(stages, wire rules); the audit it follows is `2026-10-14-uid-identity-audit.md`.
+- **Schema (migration 1).** Central gained a `central_schema` version row; migration 1 runs once, in
+  one transaction, and logs its row counts.
+  - `users` is keyed by `uid` (username stays unique).
+  - friends, read state, E2EE keys and backups, and community memberships moved to new uid-keyed
+    tables, with foreign keys: `friendships`, `dm_read_cursors`, `e2ee_keys`, `e2ee_backups`,
+    `community_memberships`.
+  - `dm_messages` gained `sender_uid` / `recipient_uid`, and its indexes moved to them. The stored
+    names stay as the names each row was sent under, which a v1 envelope binds; `e2ee_keys.signed_name`
+    does the same for bundle signatures.
+  - The old tables are kept as `legacy_*` until the deploy is verified. DMs left for names nobody held
+    are deleted.
+  - A failed migration now stops central from starting, instead of serving on a half-built schema.
+- **Sessions** carry the uid from login, and every SessionManager lookup matches on it. The DM gate
+  asks `areFriends` instead of loading the recipient's friend list.
+- **Wire** (additive):
+  - Every central message that names a user gained a `*_uid` field.
+  - Requests prefer the uid. The name is the typed-name fallback, so today's clients and communities
+    keep working.
+  - Payloads carry current names. DM rows with an envelope also carry `sealed_sender` /
+    `sealed_recipient`.
+  - LoginResponse returns the account's uid.
+- **New central e2e harness** (`src/server/tests/`). Central had no automated tests, and every change
+  was verified by inspection. Now it builds against libpqxx 7.10.1 and the PostgreSQL 16 / libpq bundled
+  by `pgserver` (a uv venv), and runs black-box checks over TLS. With `DECIBELL_E2E_SERVER_OLD` it also
+  seeds a database with the pre-change binary and migrates it. Verified: 123 passed, including:
+  - uid-addressed requests and forged uids;
+  - a simulated rename: the renamed account keeps everything, and a newcomer under the old name gets
+    no friends, DMs, keys, backup or memberships, and can't edit old messages;
+  - the migration of seeded data;
+  - 2081fb0's fixes, now exercised at runtime.
+
+Needs the Hetzner central rebuild; take a `pg_dump` first. Communities and clients need no change for
+this stage.

@@ -215,6 +215,8 @@ pub async fn shutdown() -> napi::Result<()> {
                     timestamp: 0,
                     pub_key_sig: Vec::new(),
                     key_id: 0,
+                    from_uid: 0,
+                    to_uid: 0,
                 }),
                 s.token.as_deref(),
             );

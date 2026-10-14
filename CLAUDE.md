@@ -45,11 +45,16 @@ cd electron-client/native && cargo test --lib
 cd src/community/tests && D=/tmp/decibell-deps && ./setup_deps.sh "$D" ../../.. \
   && ./build.sh "$D" ../../.. "$D/community_server" \
   && DECIBELL_E2E_PB="$D/pb" DECIBELL_E2E_SERVER="$D/community_server" DECIBELL_E2E_RUN="$D/run" python3 e2e.py
+# Central server build + e2e against a bundled PostgreSQL — see src/server/tests/README.md
+cd src/server/tests && D=/tmp/decibell-central-deps && ./setup_deps.sh "$D" ../../.. \
+  && ./build.sh "$D" ../../.. "$D/central_server" \
+  && DECIBELL_E2E_PB="$D/pb" DECIBELL_E2E_SERVER="$D/central_server" DECIBELL_E2E_RUN="$D/run" "$D/pgvenv/bin/python" -I e2e.py
 ```
-The central server has no local libpqxx/boost/jwt-cpp: IDE diagnostics on `src/server/*`
-are header noise, and central changes are verified by inspection (+ a mocked-pqxx g++
-syntax check for anything template-shaped). GCC trap seen in production: a generic lambda
-(`const auto&`) calling `row[i].as<T>()` needs the `template` keyword — use plain
+The system has no libpqxx/boost/jwt-cpp, so IDE diagnostics on `src/server/*` are header
+noise; the central harness builds against its own copies (libpqxx 7 + pgserver's PostgreSQL
+16 / libpq). A central schema change bumps `central_schema` and gets a migration check: build
+the pre-change binary and pass it as `DECIBELL_E2E_SERVER_OLD`. GCC trap seen in production: a
+generic lambda (`const auto&`) calling `row[i].as<T>()` needs the `template` keyword — use plain
 range-for loops instead. New community e2e checks go in `e2e.py`; per-session message rate
 limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`.
 
@@ -88,7 +93,11 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
 - Backend identity is the **uid**, not the username, unless the username is the point. Owner rule
   (2026-10-14): every backend, central or community, keys stored rows, filters, ownership checks and
   purges on the account uid so a rename never breaks a feature; resolve names to uids at the request
-  edge (e.g. `messages.sender_uid`). Flag username-keyed spots instead of leaving them.
+  edge (e.g. `messages.sender_uid`). Flag username-keyed spots instead of leaving them. The migration
+  is staged in `docs/superpowers/specs/2026-10-15-uid-identity-design.md` (central done): every wire
+  user reference carries `*_uid` next to the name, requests prefer the uid (the name is the typed-name
+  fallback), payload names are current names, and rows with an envelope also carry `sealed_*` names
+  (what a v1 envelope binds). Never rewrite a stored sent-under name.
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):
   no arbitrary px/shadows; radii via `rounded-*` so themes (e.g. console) can flatten them.
   Buttons copy the settings idiom: `rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover`.

@@ -58,6 +58,8 @@ mod tests {
             status_text: "back at 5".into(),
             status_emoji: "🍕".into(),
             status_clear_in: 3600,
+            uid: 7,
+            username: "ivy".into(),
         };
         let bytes = resp.encode_to_vec();
         let decoded = LoginResponse::decode(&bytes[..]).unwrap();
@@ -68,6 +70,7 @@ mod tests {
         assert_eq!(decoded.status_text, "back at 5");
         assert_eq!(decoded.status_emoji, "🍕");
         assert_eq!(decoded.status_clear_in, 3600);
+        assert_eq!((decoded.uid, decoded.username.as_str()), (7, "ivy"));
     }
 
     #[test]
@@ -83,6 +86,7 @@ mod tests {
                     status: PresenceStatus::PresenceDnd as i32,
                     status_text: "deep work".into(),
                     status_emoji: String::new(),
+                    uid: 7,
                 }),
                 online: true,
             })),
@@ -93,6 +97,7 @@ mod tests {
                 assert!(d.online);
                 let u = d.user.unwrap();
                 assert_eq!(u.username, "ivy");
+                assert_eq!(u.uid, 7);
                 assert_eq!(crate::presence::status_name(u.status), "dnd");
                 assert_eq!(u.status_text, "deep work");
             }

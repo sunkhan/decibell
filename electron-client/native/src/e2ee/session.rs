@@ -187,6 +187,7 @@ pub async fn fetch_bundle(
         packet::Payload::E2eeFetchKeysReq(E2eeFetchKeysReq {
             username: username.to_string(),
             key_id,
+            uid: 0,
         }),
     )
     .await?;
@@ -564,6 +565,8 @@ async fn publish(
                 sign_pub: b.sign_pub,
                 signature: b.signature,
                 created_at: b.created_at,
+                uid: 0,
+                signed_name: String::new(),
             }),
             backup,
         }),

@@ -76,6 +76,11 @@ pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<
                 nonce: args.nonce.unwrap_or_default(),
                 envelope,
                 reply_to_envelope: Vec::new(),
+                sender_uid: 0,
+                recipient_uid: 0,
+                reply_to_sender_uid: 0,
+                reply_to_sealed_sender: String::new(),
+                reply_to_sealed_recipient: String::new(),
             }),
             token.as_deref(),
         );

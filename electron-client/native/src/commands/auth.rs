@@ -314,6 +314,7 @@ pub async fn fetch_avatar(args: FetchAvatarArgs) -> napi::Result<FetchAvatarResu
             packet::Type::FetchAvatarReq,
             packet::Payload::FetchAvatarReq(FetchAvatarReq {
                 username: username.clone(),
+                uid: 0,
             }),
             token.as_deref(),
         );
