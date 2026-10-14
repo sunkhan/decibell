@@ -183,6 +183,11 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   window with tabs, one draft and the RolesTab save bar. Owner decisions (2026-10-14): leaving with
   unsaved changes shakes the bar, never drops them; a channel's Permissions list only the overwrite
   bits for its type (categories keep all); delete and wipe use a plain `ConfirmModal`, no typed name.
+- **Settings saves settle on the server's echo** (`features/servers/saveEcho.ts`, owner request
+  2026-10-14): after Save the draft stays ("Saving…") until the store shows what was sent. A refusal
+  or 5 s ends the wait and keeps the draft. Never clear a draft when the request goes out. Text
+  fields clamp to the server's byte caps as typed (`lib/utf8.ts`), so a server-side clamp can't
+  stop the echo from matching.
 - **Attachments in encrypted channels are sealed client-side** (random key per file, 64 KiB
   AES-256-GCM chunks, sealed thumbnails; `features/chat/attachmentCrypto.ts` encrypts,
   `electron/main/attachmentCrypto.ts` + `attachmentFetch.ts` decrypt in the protocol / media

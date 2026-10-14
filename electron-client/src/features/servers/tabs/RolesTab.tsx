@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { invoke } from "../../../lib/ipc";
+import { invoke, listen } from "../../../lib/ipc";
+import { clampLine } from "../../../lib/utf8";
 import { useChatStore } from "../../../stores/chatStore";
 import { useAuthStore } from "../../../stores/authStore";
 import { EMPTY_LIST } from "../../../lib/empty";
@@ -23,6 +24,8 @@ import { ROLE_COLOR_PRESETS, roleColor } from "./helpers";
 import { Icon, Popover, RoleChip, SearchField, SectionLabel, anchorBelow } from "./settingsUi";
 import { EmptyState } from "./AuditLogTab";
 import { useMemberSearch } from "./useMemberSearch";
+import { useEchoSave } from "../saveEcho";
+import { ROLE_NAME_MAX_BYTES } from "../limits";
 
 /// The editable fields of a role. A new role is a draft with id null.
 interface RoleFields {
@@ -45,6 +48,15 @@ const fieldsOf = (r: ServerRole): RoleFields => ({
 
 const sameFields = (a: RoleFields, b: RoleFields) =>
   a.name === b.name && a.color === b.color && a.permissions === b.permissions && a.manageEachOther === b.manageEachOther;
+
+/// What a save sent: the role (null while creating one) and the fields as
+/// the server will store them.
+interface SentRole {
+  roleId: number | null;
+  fields: RoleFields;
+}
+
+const trimmed = (f: RoleFields): RoleFields => ({ ...f, name: f.name.trim() });
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -77,9 +89,8 @@ export default function RolesTab({ serverId }: { serverId: string }) {
   const [section, setSection] = useState<Section>("display");
   const [nudge, setNudge] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [createdId, setCreatedId] = useState<number | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ServerRole | null>(null);
-  const [pendingSelectName, setPendingSelectName] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ id: number; drop: number | null } | null>(null);
 
   // First visit: the most senior role you can edit, else the top one.
@@ -89,16 +100,42 @@ export default function RolesTab({ serverId }: { serverId: string }) {
     if (first) setSelected(first.id);
   }, [roles, ranked, everyone, selected, canEditRole]);
 
-  // A role we just created arrives in the next roles broadcast — select it.
+  // A save settles on the role list the server pushes after it: the
+  // draft stays until the list shows what was sent (saveEcho.ts). A new
+  // role's id comes back in the create reply, just before the list.
+  const { saving, start: startSave, stop: stopSave } = useEchoSave<SentRole>(
+    (sent) => {
+      if (sent.roleId === null) return createdId !== null && roles.some((r) => r.id === createdId);
+      const r = roles.find((x) => x.id === sent.roleId);
+      return !!r && sameFields(fieldsOf(r), sent.fields);
+    },
+    (sent) => {
+      // Edits made while the save was out stay as a fresh draft.
+      setEdits((e) => (e && !sameFields(trimmed(e), sent.fields) ? e : null));
+      if (sent.roleId === null && createdId !== null) {
+        setSelected(createdId);
+        setCreatedId(null);
+      }
+    },
+  );
+
+  // The reply to a save: a refusal ends the wait (useServerEvents toasts
+  // it), a create names the new role. Always listening, so a quick reply
+  // can't beat the listener.
   useEffect(() => {
-    if (!pendingSelectName) return;
-    const made = ranked.filter((r) => r.name === pendingSelectName).sort((a, b) => b.id - a.id)[0];
-    if (made) {
-      setSelected(made.id);
-      setEdits(null);
-      setPendingSelectName(null);
-    }
-  }, [ranked, pendingSelectName]);
+    const un = listen<{ serverId: string; success: boolean; action: string; role?: ServerRole }>(
+      "role_action_responded",
+      (event) => {
+        const p = event.payload;
+        if (p.serverId !== serverId || (p.action !== "update" && p.action !== "create")) return;
+        if (!p.success) stopSave();
+        else if (p.action === "create" && p.role) setCreatedId(Number(p.role.id));
+      },
+    );
+    return () => {
+      un.then((fn) => fn());
+    };
+  }, [serverId, stopSave]);
 
   const role = selected === NEW ? null : roles.find((r) => r.id === selected) ?? null;
   const isNew = selected === NEW;
@@ -147,34 +184,34 @@ export default function RolesTab({ serverId }: { serverId: string }) {
   };
 
   const save = async () => {
-    setSaving(true);
+    if (saving || (!isNew && !role)) return;
+    const sent = trimmed(fields);
     setError(null);
+    setCreatedId(null);
+    startSave({ roleId: isNew ? null : role!.id, fields: sent });
     try {
       if (isNew) {
         await invoke("create_role", {
           serverId,
-          name: fields.name.trim(),
-          color: fields.color,
-          permissions: fields.permissions,
-          manageEachOther: fields.manageEachOther,
+          name: sent.name,
+          color: sent.color,
+          permissions: sent.permissions,
+          manageEachOther: sent.manageEachOther,
         });
-        setPendingSelectName(fields.name.trim());
-      } else if (role) {
+      } else {
         await invoke("update_role", {
           serverId,
-          roleId: role.id,
-          name: fields.name.trim(),
-          color: fields.color,
-          permissions: fields.permissions,
-          position: role.position,
-          manageEachOther: fields.manageEachOther,
+          roleId: role!.id,
+          name: sent.name,
+          color: sent.color,
+          permissions: sent.permissions,
+          position: role!.position,
+          manageEachOther: sent.manageEachOther,
         });
-        setEdits(null);
       }
     } catch (err) {
       setError(String(err));
-    } finally {
-      setSaving(false);
+      stopSave();
     }
   };
 
@@ -428,7 +465,8 @@ export default function RolesTab({ serverId }: { serverId: string }) {
               <button
                 type="button"
                 onClick={reset}
-                className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                disabled={saving}
+                className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
               >
                 {isNew ? "Cancel" : "Reset"}
               </button>
@@ -559,8 +597,7 @@ function DisplaySection({
           value={fields.name}
           autoFocus={autoFocus}
           disabled={!editable}
-          onChange={(e) => change({ name: e.target.value })}
-          maxLength={64}
+          onChange={(e) => change({ name: clampLine(e.target.value, ROLE_NAME_MAX_BYTES) })}
           placeholder="e.g. Moderator"
           className="h-10 w-full max-w-sm rounded-md border border-border bg-bg-lighter px-3 text-[13px] text-text-primary outline-none transition-all placeholder:text-text-muted hover:border-accent/40 focus:border-accent focus:shadow-ring disabled:opacity-60"
         />

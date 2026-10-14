@@ -2,6 +2,8 @@ import Select from "../../../components/Select";
 import type { ChannelInfo } from "../../../types";
 import { Icon } from "../tabs/settingsUi";
 import { TOPIC_MAX_BYTES, normalizeTopicInput, topicBytes } from "../channelTopic";
+import { clampLine } from "../../../lib/utf8";
+import { CHANNEL_NAME_MAX_BYTES } from "../limits";
 import { FIELD, Field, Group, Notice, Pill, Row, channelIcon } from "./ui";
 import type { ChannelDraft } from "./draft";
 
@@ -59,7 +61,7 @@ export default function OverviewTab({
           <input
             value={draft.name}
             disabled={!editable}
-            onChange={(e) => change({ name: e.target.value })}
+            onChange={(e) => change({ name: clampLine(e.target.value, CHANNEL_NAME_MAX_BYTES) })}
             maxLength={64}
             spellCheck={false}
             className={`${FIELD} h-10 pl-9 pr-3`}

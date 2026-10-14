@@ -13,6 +13,7 @@ import { changesOf, draftOf, type ChannelDraft } from "./channelSettings/draft";
 import OverviewTab from "./channelSettings/OverviewTab";
 import RetentionTab from "./channelSettings/RetentionTab";
 import PermissionsTab, { usePermissionDraft } from "./channelSettings/PermissionsTab";
+import { useEchoSave } from "./saveEcho";
 
 type Tab = "overview" | "retention" | "permissions";
 
@@ -67,7 +68,6 @@ export default function ChannelSettingsModal() {
   const [draft, setDraft] = useState<ChannelDraft | null>(null);
   const perms = usePermissionDraft(activeServerId ?? "", channel);
   const [nudge, setNudge] = useState(0);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<"wipe" | "delete" | null>(null);
   const [working, setWorking] = useState(false);
@@ -91,7 +91,7 @@ export default function ChannelSettingsModal() {
     perms.reset();
     setTab(canManage || !canRoles ? "overview" : "permissions");
     setNudge(0);
-    setSaving(false);
+    stopSave();
     setError(null);
     setConfirm(null);
     setWorking(false);
@@ -132,20 +132,35 @@ export default function ChannelSettingsModal() {
   const dirty = settingsDirty || perms.dirty;
 
   // After Save the drafts stay until the server's update matches them, so
-  // the fields never flick back to the old values in between. A refusal
-  // (toasted by channel_action_responded) or a value the server changed
-  // leaves them in place once the wait runs out.
-  const echoed = !changes?.any && !perms.dirty;
+  // the fields never flick back to the old values in between (saveEcho.ts).
+  const { saving, start: startSave, stop: stopSave } = useEchoSave(
+    () => !changes?.any && !perms.dirty,
+    () => setDraft(null),
+  );
+
+  // A refusal ends the wait at once and leaves the draft. Renames and
+  // overwrites answer with channel_action_responded (toasted globally);
+  // the settings update answers with channel_updated, which nothing else
+  // surfaces. Listening for as long as the window is open, so a quick
+  // reply can't beat the listener.
   useEffect(() => {
-    if (!saving) return;
-    if (echoed) {
-      setDraft(null);
-      setSaving(false);
-      return;
-    }
-    const t = setTimeout(() => setSaving(false), 5000);
-    return () => clearTimeout(t);
-  }, [saving, echoed]);
+    if (!isOpen) return;
+    const unAction = listen<{ serverId: string; success: boolean; action: string }>(
+      "channel_action_responded",
+      (event) => {
+        if (event.payload.serverId === activeServerId && !event.payload.success) stopSave();
+      },
+    );
+    const unUpdated = listen<{ serverId: string; success: boolean; message: string }>("channel_updated", (event) => {
+      if (event.payload.serverId !== activeServerId || event.payload.success) return;
+      setError(event.payload.message || "Couldn't save the channel settings.");
+      stopSave();
+    });
+    return () => {
+      unAction.then((fn) => fn());
+      unUpdated.then((fn) => fn());
+    };
+  }, [isOpen, activeServerId, stopSave]);
 
   /// Close, unless there are unsaved changes: then shake the save bar.
   const requestClose = useCallback(() => {
@@ -185,7 +200,7 @@ export default function ChannelSettingsModal() {
 
   const save = async () => {
     if (!dirty || !changes || saving) return;
-    setSaving(true);
+    startSave(true);
     setError(null);
     try {
       if (settingsDirty && changes.name) {
@@ -205,7 +220,7 @@ export default function ChannelSettingsModal() {
       if (perms.dirty) await perms.commit();
     } catch (err) {
       setError(String(err));
-      setSaving(false);
+      stopSave();
     }
   };
 
@@ -351,7 +366,8 @@ export default function ChannelSettingsModal() {
                   <button
                     type="button"
                     onClick={reset}
-                    className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                    disabled={saving}
+                    className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
                   >
                     Reset
                   </button>

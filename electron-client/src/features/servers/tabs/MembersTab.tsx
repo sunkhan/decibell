@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from "react";
-import { invoke } from "../../../lib/ipc";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke, listen } from "../../../lib/ipc";
+import { clampLine } from "../../../lib/utf8";
 import { useChatStore } from "../../../stores/chatStore";
 import { EMPTY_LIST } from "../../../lib/empty";
 import { useAuthStore } from "../../../stores/authStore";
@@ -24,6 +25,8 @@ import {
   formatRemaining,
 } from "./settingsUi";
 import { EmptyState } from "./AuditLogTab";
+import { ECHO_WAIT_MS, useEchoSave } from "../saveEcho";
+import { NICKNAME_MAX_BYTES } from "../limits";
 
 /// Visible role chips per row before the rest fold into "+N".
 const MAX_CHIPS = 3;
@@ -31,6 +34,11 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const GRID = "grid grid-cols-[minmax(0,1.15fr)_minmax(0,1.35fr)_7rem_2.25rem] items-center gap-4";
 
 type ModKind = "kick" | "ban" | "timeout";
+/// A role toggle waiting for its echo: the set sent, the record it was
+/// built on, and when to stop waiting.
+type PendingRoles = { roleIds: number[]; base: number[]; until: number };
+
+const sameSet = (a: number[], b: number[]) => a.length === b.length && a.every((id) => b.includes(id));
 type Acts = { nick: boolean; roles: boolean; timeout: boolean; endTimeout: boolean; kick: boolean; ban: boolean };
 
 /// Members: a searchable, role-filterable roster. Each row shows who the
@@ -118,6 +126,63 @@ export default function MembersTab({ serverId }: { serverId: string }) {
     };
   };
 
+  // A nickname save keeps the field open until the member's record shows
+  // it (saveEcho.ts); a refusal or the wait running out leaves it open.
+  const { saving: nickSaving, start: startNick, stop: stopNick } = useEchoSave<{ username: string; nickname: string }>(
+    (sent) => visible.find((m) => m.username === sent.username)?.nickname === sent.nickname,
+    (sent) => setNickOpen((open) => (open === sent.username ? null : open)),
+  );
+
+  // Role toggles settle on the echo too. A toggle shows at once and holds
+  // until the member's record (patched by the roster delta) matches, and
+  // the next toggle builds on it rather than on the stale record, which
+  // used to drop the first of two quick toggles. A refusal or
+  // ECHO_WAIT_MS shows the record again.
+  const [assigning, setAssigning] = useState<ReadonlyMap<string, PendingRoles>>(new Map());
+  const roleIdsOf = (m: ServerMember) => assigning.get(m.username)?.roleIds ?? m.roleIds;
+  useEffect(() => {
+    if (assigning.size === 0) return;
+    const now = Date.now();
+    const left = new Map(assigning);
+    for (const [username, p] of assigning) {
+      const m = visible.find((x) => x.username === username);
+      // A fresh record (not the one the toggle was built on) that matches.
+      const echoed = !!m && m.roleIds !== p.base && sameSet(m.roleIds, p.roleIds);
+      if (echoed || p.until <= now) left.delete(username);
+    }
+    if (left.size !== assigning.size) {
+      setAssigning(left);
+      return;
+    }
+    const next = Math.min(...Array.from(assigning.values(), (p) => p.until));
+    const t = setTimeout(
+      () =>
+        setAssigning((cur) => {
+          const live = new Map(Array.from(cur).filter(([, p]) => p.until > Date.now()));
+          return live.size === cur.size ? cur : live;
+        }),
+      next - now,
+    );
+    return () => clearTimeout(t);
+  }, [assigning, visible]);
+
+  // Refusals (useServerEvents toasts them). Always listening, so a quick
+  // reply can't beat the listener.
+  useEffect(() => {
+    const unRole = listen<{ serverId: string; success: boolean; action: string }>("role_action_responded", (event) => {
+      const p = event.payload;
+      if (p.serverId === serverId && p.action === "assign" && !p.success) setAssigning(new Map());
+    });
+    const unMod = listen<{ serverId: string; success: boolean; action: string }>("mod_action_responded", (event) => {
+      const p = event.payload;
+      if (p.serverId === serverId && p.action === "nickname" && !p.success) stopNick();
+    });
+    return () => {
+      unRole.then((fn) => fn());
+      unMod.then((fn) => fn());
+    };
+  }, [serverId, stopNick]);
+
   const run = async (key: string, fn: () => Promise<unknown>) => {
     setPendingAction(key);
     setError(null);
@@ -153,18 +218,35 @@ export default function MembersTab({ serverId }: { serverId: string }) {
         reason: clear ? "" : reason.trim(),
       }),
     ).then(() => setConfirm(null));
-  const runSetNickname = (username: string) =>
-    run(`nick:${username}`, () => invoke("set_nickname", { serverId, username, nickname: nickDraft.trim() })).then(() =>
-      setNickOpen(null),
-    );
+  const runSetNickname = (username: string) => {
+    if (nickSaving) return;
+    const nickname = nickDraft.trim();
+    setError(null);
+    startNick({ username, nickname });
+    invoke("set_nickname", { serverId, username, nickname }).catch((err) => {
+      setError(String(err));
+      stopNick();
+    });
+  };
   const runToggleMemberRole = (username: string, roleId: number) => {
     const member = visible.find((m) => m.username === username);
     if (!member) return;
-    const current = new Set(member.roleIds);
-    if (current.has(roleId)) current.delete(roleId);
-    else current.add(roleId);
+    const ids = new Set(roleIdsOf(member));
+    if (ids.has(roleId)) ids.delete(roleId);
+    else ids.add(roleId);
+    const roleIds = Array.from(ids);
+    const drop = () =>
+      setAssigning((cur) => {
+        const left = new Map(cur);
+        left.delete(username);
+        return left;
+      });
+    setAssigning((cur) => new Map(cur).set(username, { roleIds, base: member.roleIds, until: Date.now() + ECHO_WAIT_MS }));
     run(`assign:${username}`, () =>
-      invoke("set_member_roles", { serverId, username, roleIds: Array.from(current) }),
+      invoke("set_member_roles", { serverId, username, roleIds }).catch((err) => {
+        drop();
+        throw err;
+      }),
     );
   };
 
@@ -266,7 +348,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
             const isSelf = m.username === currentUser;
             const acts = actionsFor(m);
             const anyAction = acts.nick || acts.roles || acts.timeout || acts.endTimeout || acts.kick || acts.ban;
-            const memberRoles = m.roleIds
+            const memberRoles = roleIdsOf(m)
               .map((id) => rolesById.get(id))
               .filter((r): r is ServerRole => !!r)
               .sort((a, b) => b.position - a.position);
@@ -309,20 +391,19 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                       <input
                         autoFocus
                         value={nickDraft}
-                        onChange={(e) => setNickDraft(e.target.value)}
+                        onChange={(e) => setNickDraft(clampLine(e.target.value, NICKNAME_MAX_BYTES))}
                         onKeyDown={(e) => {
                           if (e.key === "Escape") {
                             e.stopPropagation();
                             setNickOpen(null);
                           }
                         }}
-                        maxLength={32}
                         placeholder={m.username}
                         className="h-8 min-w-0 flex-1 rounded-sm border border-accent bg-bg-lighter px-2.5 text-[13px] text-text-primary shadow-ring outline-none"
                       />
                       <button
                         type="submit"
-                        disabled={pendingAction === `nick:${m.username}`}
+                        disabled={nickSaving}
                         aria-label="Save nickname"
                         className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50"
                       >
@@ -495,7 +576,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
             <SectionLabel>Roles</SectionLabel>
           </div>
           {assignableRoles.map((r) => {
-            const has = pickerMember.roleIds.includes(r.id);
+            const has = roleIdsOf(pickerMember).includes(r.id);
             return (
               <button
                 key={r.id}

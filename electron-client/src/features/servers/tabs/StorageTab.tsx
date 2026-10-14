@@ -5,6 +5,7 @@ import { EMPTY_LIST } from "../../../lib/empty";
 import { formatFileSize } from "../../chat/attachmentHelpers";
 import { toast } from "../../../stores/toastStore";
 import type { StorageInfoReceivedPayload } from "../../../types";
+import { useEchoSave } from "../saveEcho";
 
 const KIND_LABELS: Record<number, string> = {
   0: "Images",
@@ -28,7 +29,12 @@ export default function StorageTab({ serverId }: { serverId: string }) {
   const [error, setError] = useState<string | null>(null);
   // Headroom editor (in GB, so operators think in whole-ish numbers).
   const [minFreeGb, setMinFreeGb] = useState("");
-  const [savingMin, setSavingMin] = useState(false);
+  // The reply to a save is the echo: it carries the stored value (after
+  // the server's clamp). The wait only runs out if no reply comes.
+  const { saving: savingMin, start: startMin, stop: stopMin } = useEchoSave<null>(
+    () => false,
+    () => {},
+  );
 
   useEffect(() => {
     setLoading(true);
@@ -43,7 +49,7 @@ export default function StorageTab({ serverId }: { serverId: string }) {
       const p = event.payload;
       if (p.serverId !== serverId) return;
       setLoading(false);
-      setSavingMin(false);
+      stopMin();
       if (!p.success) {
         setError(p.message || "Couldn't load storage info.");
         return;
@@ -92,7 +98,7 @@ export default function StorageTab({ serverId }: { serverId: string }) {
     return () => {
       un.then((fn) => fn());
     };
-  }, [serverId]);
+  }, [serverId, stopMin]);
 
   const used = info ? Math.max(0, info.volumeTotalBytes - info.volumeAvailableBytes) : 0;
   const usedPct =
@@ -108,12 +114,12 @@ export default function StorageTab({ serverId }: { serverId: string }) {
       toast.error("Invalid value", "Enter a number of gigabytes (0 or more).");
       return;
     }
-    setSavingMin(true);
+    startMin(null);
     invoke("set_storage_min_free", {
       serverId,
       minFreeBytes: Math.round(gb * GIB),
     }).catch((err) => {
-      setSavingMin(false);
+      stopMin();
       toast.error("Couldn't update headroom", String(err));
     });
   };

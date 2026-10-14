@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, listen } from "../../../lib/ipc";
+import { clampLine } from "../../../lib/utf8";
 import { useChatStore } from "../../../stores/chatStore";
 import { EMPTY_LIST } from "../../../lib/empty";
 import { useAuthStore } from "../../../stores/authStore";
@@ -10,8 +11,12 @@ import { PERM, usePermission } from "../permissions";
 import Switch from "../../../components/Switch";
 import Select from "../../../components/Select";
 import { UserAvatar } from "../../../components/UserAvatar";
+import { useEchoSave } from "../saveEcho";
+import { SERVER_DESCRIPTION_MAX_BYTES, SERVER_NAME_MAX_BYTES } from "../limits";
 
 const MAX_BYTES = 1024 * 1024;
+
+type Meta = { name: string; description: string };
 
 /// Overview: server identity (name/description — editable with
 /// MANAGE_SERVER since the DB became the source of truth), picture
@@ -36,54 +41,50 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
   const serverName = meta?.name ?? server?.name ?? "Server";
   const serverDescription = meta?.description ?? server?.description ?? "";
 
-  // Identity editor (MANAGE_SERVER). Drafts reset whenever the server
-  // pushes new meta (our own save, or someone else's).
-  const [nameDraft, setNameDraft] = useState(serverName);
-  const [descDraft, setDescDraft] = useState(serverDescription);
-  const [savingMeta, setSavingMeta] = useState(false);
-  useEffect(() => {
-    setNameDraft(serverName);
-    setDescDraft(serverDescription);
-  }, [serverName, serverDescription]);
-  useEffect(() => {
-    const un = listen<{ serverId: string; success: boolean; message: string }>(
-      "server_update_responded",
-      (event) => {
-        if (event.payload.serverId !== serverId) return;
-        setSavingMeta(false);
-        if (!event.payload.success) {
-          toast.error("Couldn't update server", event.payload.message || "Unknown error.");
-        }
-      },
-    );
-    return () => {
-      un.then((fn) => fn());
-    };
-  }, [serverId]);
+  // Identity editor (MANAGE_SERVER). The draft follows the server until
+  // edited, so someone else's change shows and never drops your typing.
+  // After Save it stays until the server's meta push shows what was sent
+  // (saveEcho.ts).
+  const [draft, setDraft] = useState<Meta | null>(null);
+  useEffect(() => setDraft(null), [serverId]);
+  const nameDraft = draft?.name ?? serverName;
+  const descDraft = draft?.description ?? serverDescription;
+  const editMeta = (patch: Partial<Meta>) => setDraft({ name: nameDraft, description: descDraft, ...patch });
+  const { saving: savingMeta, start: startMeta, stop: stopMeta } = useEchoSave<Meta>(
+    (sent) => serverName === sent.name && serverDescription === sent.description,
+    // Edits made while the save was out stay.
+    (sent) => setDraft((d) => (d && (d.name.trim() !== sent.name || d.description.trim() !== sent.description) ? d : null)),
+  );
   const metaDirty =
     nameDraft.trim() !== serverName || descDraft.trim() !== serverDescription;
   const saveMeta = async () => {
-    if (!canManageServer || !metaDirty || !nameDraft.trim()) return;
-    setSavingMeta(true);
+    if (!canManageServer || !metaDirty || !nameDraft.trim() || savingMeta) return;
+    const sent = { name: nameDraft.trim(), description: descDraft.trim() };
+    startMeta(sent);
     try {
-      await invoke("update_server", {
-        serverId,
-        name: nameDraft.trim(),
-        description: descDraft.trim(),
-      });
+      await invoke("update_server", { serverId, ...sent });
     } catch (err) {
-      setSavingMeta(false);
+      stopMeta();
       toast.error("Couldn't update server", String(err));
     }
   };
 
   // Public listing (MANAGE_SERVER): discovery + invite-less join. Reflected
-  // from the store, which the server_meta_updated broadcast keeps live.
+  // from the store, which the server_meta_updated broadcast keeps live; a
+  // flip shows at once and holds until that push confirms it.
   const publicListing = useChatStore((s) => s.serverPublicListing[serverId] ?? false);
-  const [savingPublic, setSavingPublic] = useState(false);
+  const {
+    saving: savingPublic,
+    sent: sentPublic,
+    start: startPublic,
+    stop: stopPublic,
+  } = useEchoSave<boolean>(
+    (sent) => publicListing === sent,
+    () => {},
+  );
   const togglePublic = async () => {
     if (!canManageServer || savingPublic) return;
-    setSavingPublic(true);
+    startPublic(!publicListing);
     try {
       // Send the current authoritative name/description so flipping visibility
       // never commits an unsaved rename or blanks the name.
@@ -94,11 +95,27 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
         publicListing: !publicListing,
       });
     } catch (err) {
+      stopPublic();
       toast.error("Couldn't update visibility", String(err));
-    } finally {
-      setSavingPublic(false);
     }
   };
+
+  // A refusal ends both waits. Always listening, so a quick reply can't
+  // beat the listener.
+  useEffect(() => {
+    const un = listen<{ serverId: string; success: boolean; message: string }>(
+      "server_update_responded",
+      (event) => {
+        if (event.payload.serverId !== serverId || event.payload.success) return;
+        stopMeta();
+        stopPublic();
+        toast.error("Couldn't update server", event.payload.message || "Unknown error.");
+      },
+    );
+    return () => {
+      un.then((fn) => fn());
+    };
+  }, [serverId, stopMeta, stopPublic]);
 
   // Ownership transfer (owner only, typed confirmation).
   const [transferTarget, setTransferTarget] = useState("");
@@ -173,7 +190,7 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
                 <input
                   value={nameDraft}
                   maxLength={64}
-                  onChange={(e) => setNameDraft(e.target.value)}
+                  onChange={(e) => editMeta({ name: clampLine(e.target.value, SERVER_NAME_MAX_BYTES) })}
                   className="w-full rounded-md border border-border bg-bg-lighter px-3 py-2 text-[14px] font-medium text-text-primary outline-none transition-all focus:border-accent focus:shadow-ring"
                 />
               </div>
@@ -185,7 +202,7 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
                   value={descDraft}
                   maxLength={512}
                   rows={2}
-                  onChange={(e) => setDescDraft(e.target.value)}
+                  onChange={(e) => editMeta({ description: clampLine(e.target.value, SERVER_DESCRIPTION_MAX_BYTES) })}
                   className="w-full resize-none rounded-md border border-border bg-bg-lighter px-3 py-2 text-[13px] leading-[1.5] text-text-secondary outline-none transition-all focus:border-accent focus:shadow-ring"
                 />
               </div>
@@ -207,7 +224,7 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
                   </div>
                 </div>
                 <Switch
-                  checked={publicListing}
+                  checked={sentPublic ?? publicListing}
                   onToggle={togglePublic}
                   disabled={savingPublic}
                   label="Public listing"

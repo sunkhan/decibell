@@ -2201,3 +2201,37 @@ that look polished and match the other menus. They approved the proposal page
 before; no proto or server change. Verified: tsc web 0 / node 0; offscreen harness captures in all
 seven themes; save → echo and save → timeout driven through the real components with the outgoing
 calls checked. Pending: a live run against a community.
+
+**Client: settings saves settle on the server's echo (2026-10-14) ✅** — Owner asked for the channel
+settings save behaviour everywhere a settings tab saves. Before, most saves dropped the draft as
+soon as the request was sent. Fields flicked back to the old value for a round trip, and an edit the
+server refused just vanished.
+- **One helper:** `features/servers/saveEcho.ts` (`useEchoSave`). After Save the draft stays and the
+  bar reads "Saving…" until the store shows what was sent. A refusal ends the wait at once, and
+  otherwise it ends after 5 s. In both cases the draft stays for another try. Edits made while a save is
+  out survive the echo as a fresh draft. Reset is disabled while saving.
+- **Roles:** save and create both settle on the role-list push. A new role is selected by the id in the
+  create reply, not by matching its name.
+- **Overview:** the name / description draft follows the server until edited, so another admin's
+  change no longer wipes your typing. The Public listing switch shows the flip at once and holds it
+  until the meta push (it used to snap back for a round trip).
+- **Members:** the nickname field stays open until the member's record shows the new name. Role
+  toggles show at once and the next toggle builds on the pending set. Before, two quick toggles sent
+  the second set without the first, so a role was lost.
+- **Storage:** the headroom save already settled on its reply; it now gets the 5 s fallback too.
+- **Channel settings** moved onto the helper. A refused rename or overwrite now ends the wait at once.
+  A refused topic / slowmode / retention update (`channel_updated` failure, which nothing surfaced)
+  now shows its message.
+- **Byte caps typed, not truncated:** names, nickname and description clamp to the server's UTF-8
+  byte caps as you type (`lib/utf8.ts` `clampLine`, caps in `features/servers/limits.ts`). Line
+  breaks become spaces, as for topics. Otherwise a server-side clamp would never echo, and the draft
+  would linger after the wait.
+
+Renderer only; no proto or server change. Verified: tsc web 0. In the offscreen harness against the
+real components:
+- Roles: save → echo, refusal, timeout, typing during a save, and create → reply → list.
+- Overview: echo, refusal, Public listing echo and timeout, multi-line description.
+- Members: two quick role toggles (second call carries both), refusal, and nickname → echo.
+- Channel settings: save → echo, timeout and refusal.
+
+Pending: a live run against a community.
