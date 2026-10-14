@@ -2131,7 +2131,9 @@ empty-channel banner's three buttons did nothing. Design:
   MANAGE_CHANNELS, schema v13 (`channels.topic`, `invites.for_user`). One line of ≤ 1024 UTF-8 bytes,
   trimmed and clamped on a character boundary. It shows in the header after the name (truncated, with a
   tooltip). It is edited from the banner's Edit topic dialog or a new Channel topic field in channel
-  settings, and audited as `topic`.
+  settings, and audited as `topic`. Topics stay in the clear even in encrypted channels, like channel
+  names (owner decision). Both editors say "Topics aren't encrypted. The server host can read them." on
+  encrypted channels.
 - **Manage channel** (was "Set rules") opens channel settings. It shows for MANAGE_CHANNELS or
   MANAGE_ROLES, like the sidebar gear. The banner leaves out actions the user can't take.
 

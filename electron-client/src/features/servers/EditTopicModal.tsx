@@ -117,7 +117,15 @@ export default function EditTopicModal() {
         className="mt-4 w-full resize-none rounded-md border border-border bg-bg-light px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent"
       />
       <div className="mt-1.5 flex min-h-4 items-start justify-between gap-3 text-[11px] leading-4">
-        <span className="text-error">{error}</span>
+        {/* Topics are channel metadata, stored in the clear like the name
+            (owner decision) — say so where the lock badge sits beside it. */}
+        {error ? (
+          <span className="text-error">{error}</span>
+        ) : channel?.encrypted ? (
+          <span className="text-text-muted">Topics aren't encrypted. The server host can read them.</span>
+        ) : (
+          <span />
+        )}
         {remaining < 100 && <span className="shrink-0 text-text-muted">{remaining}</span>}
       </div>
     </ConfirmModal>

@@ -415,6 +415,12 @@ export default function ChannelSettingsModal() {
                 placeholder="Let everyone know what this channel is for"
                 className="w-full resize-none rounded-md border border-border bg-bg-light px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent"
               />
+              {/* Like the name, the topic stays in the clear (owner decision). */}
+              {encryptedDraft && (
+                <div className="mt-1.5 text-[11px] leading-4 text-text-muted">
+                  Topics aren't encrypted. The server host can read them.
+                </div>
+              )}
             </div>
           )}
 

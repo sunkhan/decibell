@@ -154,7 +154,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   it ships, must keep working for people who never open settings). Epoch keys escrowed to
   members as identity-sealed blobs on the community server (`e2ee/channel_keys.rs`), never MLS
   here (offline members, readable history, multi-device). The server enforces the wire format
-  both ways. Turning a channel off never decrypts its history. Design:
+  both ways. Turning a channel off never decrypts its history. Channel names and topics stay in
+  the clear, by owner decision (2026-10-14): they label the channel, not the conversation. The
+  topic editors say so for encrypted channels. Design:
   `2026-09-04-encrypted-text-channels-design.md`.
 - **User statuses are central's** (online / away / dnd / invisible; `users.presence_status`), shown
   to every signed-in user. Others see only `PRESENCE_DELTA` / snapshot entries; an invisible user is

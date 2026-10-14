@@ -51,6 +51,10 @@ Gate: CREATE_INVITE or MANAGE_INVITES, mirroring the server and the sidebar.
   settings. The `channel_updated` broadcast keeps everyone current, and audit details say `topic`.
 - `CHANNEL_UPDATE_REQ` still carries the full retention snapshot, so the Edit topic dialog sends the
   channel's own retention values.
+- Topics are **not encrypted**, even in encrypted channels: the server stores and sends them in the
+  clear, as it does channel names. Owner decision: they label the channel, not the conversation.
+  Both topic editors warn about this on encrypted channels ("Topics aren't encrypted. The server host
+  can read them."). See the encrypted-channels spec's accepted metadata.
 
 ## Manage channel
 
