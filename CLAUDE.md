@@ -189,7 +189,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   channels reported); senders match by uid; Discord-style UI (`features/search/`: header box + chips
   + results panel in the member list's place); a search covers every readable channel by default;
   below 1024 px the panel floats over the chat and Jump closes it; **no recent searches** — nothing
-  about a search is stored on the device.
+  about a search is stored on the device. The community server links its own pinned SQLite
+  (`cmake/DecibellSQLite.cmake`, 3.53.4 amalgamation with FTS5, fetched by CMake): the index needs
+  ≥ 3.43 and the Hetzner box's Debian 12 ships 3.40. Don't switch it back to the system library.
 - **Server-settings search runs on the community server** (owner decision): `MEMBER_SEARCH_REQ` for
   the Members tab / a role's holders / the add-members picker, `AuditLogRequest.query/actions` for the
   audit log, `RoleInfo.member_count` for role counts. Never filter only the loaded pages, and keep

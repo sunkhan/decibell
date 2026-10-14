@@ -2404,3 +2404,14 @@ proposal captured every state in all 7 themes.
 
 Pending: a community rebuild, then a live test, including results from an encrypted channel.
 
+**Community server: built-in SQLite (2026-10-14) ✅** — Search's index needs SQLite ≥ 3.43 (FTS5
+contentless_delete), and the Hetzner box runs Debian 12, which ships 3.40, where the server would
+switch search off. `cmake/DecibellSQLite.cmake` now fetches the SQLite 3.53.4 amalgamation (the
+version every search test and the benchmark ran on), checks its SHA-256, builds it with FTS5, and
+links it into `decibell_community` statically. `-DDECIBELL_SYSTEM_SQLITE=ON` uses the system
+library instead and fails at configure time below 3.43. Central is unchanged (Postgres). Verified: the
+module on its own (download, hash, FTS5 and contentless-delete calls) and the community server linked
+against that exact static library with e2e 507 passed. The full CMake configure needs the Hetzner
+box's libpqxx and jwt-cpp, so it runs there for the first time. Operators: a sqlite3 CLI older than
+3.43 can read the database but can't write to `messages`, because the index triggers fail.
+

@@ -52,9 +52,14 @@ resolved on the io thread at request time and checked again when the page is ass
   `contentless_delete=1`, tokenizer `unicode61 remove_diacritics 2`. Contentless means the index does
   not keep a second copy of the text. Contentless-delete means deleting a row is a tombstone by rowid,
   not a re-tokenisation of the old text. That was the cost that got the old FTS triggers dropped
-  (wipes, prunes and ban purges tokenised every deleted row). Needs SQLite ≥ 3.43; with an older
-  library or no FTS5 the server logs it and answers searches with "Search isn't available on this
-  server."
+  (wipes, prunes and ban purges tokenised every deleted row). Needs SQLite ≥ 3.43 with FTS5, so the
+  community server builds its own pinned copy (`cmake/DecibellSQLite.cmake`: the 3.53.4
+  amalgamation, hash-checked, FTS5 on, linked statically): Debian 12, which hosts the owner's
+  server, ships 3.40. `-DDECIBELL_SYSTEM_SQLITE=ON` links the system library instead and refuses
+  anything older than 3.43 at configure time. Should an older library ever be linked anyway, the
+  server drops the triggers, logs it and answers searches with "Search isn't available on this
+  server." An operator writing to the database by hand needs a sqlite3 CLI ≥ 3.43 too: an older one
+  can read it, but a write to `messages` fires the index triggers and fails.
 - Kept current by triggers, so every write path (send, edit, delete, wipe, channel delete, retention,
   ban purge) stays right without code in each:
   - insert of a plaintext row (`envelope IS NULL`) indexes its content;

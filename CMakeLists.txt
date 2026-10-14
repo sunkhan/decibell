@@ -15,7 +15,8 @@ find_package(PkgConfig REQUIRED)
 
 find_package(jwt-cpp REQUIRED)
 pkg_check_modules(LIBPQXX REQUIRED IMPORTED_TARGET libpqxx)
-find_package(SQLite3 REQUIRED)
+# Community server's SQLite: a pinned, built-in copy (search needs >= 3.43).
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/DecibellSQLite.cmake)
 
 find_package(nlohmann_json REQUIRED)
 
@@ -63,5 +64,5 @@ target_link_libraries(decibell_community PRIVATE
     OpenSSL::Crypto
     jwt-cpp::jwt-cpp
     nlohmann_json::nlohmann_json
-    SQLite::SQLite3
+    ${DECIBELL_SQLITE_TARGET}
 )
