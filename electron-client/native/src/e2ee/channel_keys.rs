@@ -183,7 +183,14 @@ async fn seal_blobs_for(
         let Some(wire) = e2ee::seal_outbound_raw(state, recipient, &content).await? else {
             return Ok(None);
         };
-        out.push(ChannelKeyBlob { epoch: *epoch, sender: String::new(), recipient: recipient.to_string(), blob: wire });
+        out.push(ChannelKeyBlob {
+            epoch: *epoch,
+            sender: String::new(),
+            recipient: recipient.to_string(),
+            blob: wire,
+            sender_uid: 0,
+            recipient_uid: 0,
+        });
     }
     Ok(Some(out))
 }

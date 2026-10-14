@@ -76,17 +76,31 @@ std::string sanitize_filename(const std::string& raw) {
     return out;
 }
 
+// The account a token names: its `uid` claim (users by uid — what every
+// check below keys on) and its `sub` (the name, for logs).
+struct TokenUser {
+    int64_t uid = 0;
+    std::string username;
+};
+
 // Validate an Ed25519 JWT with central's public key (same check as the
-// TCP layer). On success returns the `sub` claim (username).
-std::optional<std::string> verify_jwt(const std::string& token, const std::string& public_pem) {
+// TCP layer). Fails without a uid claim (every live token carries one).
+std::optional<TokenUser> verify_jwt(const std::string& token, const std::string& public_pem) {
     try {
         auto decoded = jwt::decode(token);
         jwt::verify()
             .allow_algorithm(jwt::algorithm::ed25519{public_pem, ""})
             .with_issuer("decibell_central_auth")
             .verify(decoded);
-        if (decoded.get_subject().empty()) return std::nullopt;
-        return decoded.get_subject();
+        TokenUser who;
+        who.username = decoded.get_subject();
+        if (decoded.has_payload_claim("uid")) {
+            const auto& c = decoded.get_payload_claim("uid");
+            if (c.get_type() == jwt::json::type::integer) who.uid = c.as_integer();
+            else if (c.get_type() == jwt::json::type::number) who.uid = static_cast<int64_t>(c.as_number());
+        }
+        if (who.uid <= 0 || who.username.empty()) return std::nullopt;
+        return who;
     } catch (const std::exception&) {
         return std::nullopt;
     }
@@ -320,7 +334,8 @@ private:
         if (req_.authorization_token.empty()) { send_error(401, "Unauthorized"); return; }
         auto who = verify_jwt(req_.authorization_token, jwt_secret_);
         if (!who) { send_error(401, "Unauthorized"); return; }
-        username_ = *who;
+        uid_ = who->uid;
+        username_ = who->username;
 
         // Route: match method + path. Paths carry a numeric id in the second
         // segment, so we parse it out where needed.
@@ -432,8 +447,8 @@ private:
         if (max_attachment_bytes_ > 0 && size > max_attachment_bytes_) {
             send_error(413, "Payload Too Large"); return;
         }
-        if (!db_.is_member(username_))      { send_error(403, "Forbidden"); return; }
-        if (!init_rate_limiter().allow(username_)) { send_error(429, "Too Many Requests"); return; }
+        if (!db_.is_member(uid_))      { send_error(403, "Forbidden"); return; }
+        if (!init_rate_limiter().allow(std::to_string(uid_))) { send_error(429, "Too Many Requests"); return; }
         // Category headers carry no messages — nothing can bind an
         // attachment uploaded against one, so refuse at init.
         auto target_channel = db_.get_channel(channel_id);
@@ -442,7 +457,7 @@ private:
         }
         // Permissions v2: uploading is "sending a message with a file".
         if (authz_) {
-            const chatproj::AuthCtx ctx{username_, channel_id, ""};
+            const chatproj::AuthCtx ctx{uid_, channel_id, 0};
             if (!authz_->check(chatproj::Action::SendMessage, ctx) ||
                 !authz_->check(chatproj::Action::AttachFiles, ctx)) {
                 send_error(403, "Forbidden"); return;
@@ -488,7 +503,7 @@ private:
         }
 
         const int64_t new_id = db_.insert_pending_attachment(
-            channel_id, kind, filename, mime, size, /*storage_path*/ "", username_,
+            channel_id, kind, filename, mime, size, /*storage_path*/ "", uid_,
             /*position*/ 0, width, height, duration_ms, placeholder, encrypted);
         if (new_id == 0) {
             std::cerr << "[AttachmentHttp] init: insert_pending_attachment "
@@ -531,8 +546,8 @@ private:
         auto att = db_.get_attachment(id);
         if (!att)                                { send_error(404, "Not Found"); return; }
         if (att->upload_status != "uploading")   { send_error(409, "Conflict"); return; }
-        if (att->uploader != username_)          { send_error(403, "Forbidden"); return; }
-        if (!db_.is_member(username_))            { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
+        if (att->uploader_uid != uid_)          { send_error(403, "Forbidden"); return; }
+        if (!db_.is_member(uid_))            { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
 
         int64_t offset = 0;
         try { offset = std::stoll(req_.header("upload-offset")); }
@@ -666,16 +681,16 @@ private:
     void handle_head_status(int64_t id) {
         auto att = db_.get_attachment(id);
         if (!att) { send_error(404, "Not Found"); return; }
-        if (att->upload_status == "uploading" && att->uploader != username_) {
+        if (att->upload_status == "uploading" && att->uploader_uid != uid_) {
             send_error(403, "Forbidden"); return;
         }
-        if (att->upload_status == "ready" && !db_.is_member(username_)) {
+        if (att->upload_status == "ready" && !db_.is_member(uid_)) {
             send_error(403, "Forbidden"); return;
         }
         // X4: a ready file in an overwrite-hidden channel must not be probed
         // for existence/size via HEAD either — mirror GET's VIEW_CHANNEL gate.
         if (att->upload_status == "ready" && authz_ && !att->channel_id.empty() &&
-            !authz_->check(chatproj::Action::ViewChannel, {username_, att->channel_id, ""})) {
+            !authz_->check(chatproj::Action::ViewChannel, {uid_, att->channel_id, 0})) {
             send_error(403, "Forbidden"); return;
         }
         int64_t offset = 0;
@@ -703,8 +718,8 @@ private:
         auto att = db_.get_attachment(id);
         if (!att)                              { send_error(404, "Not Found"); return; }
         if (att->upload_status != "uploading") { send_error(409, "Conflict"); return; }
-        if (att->uploader != username_)        { send_error(403, "Forbidden"); return; }
-        if (!db_.is_member(username_))          { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
+        if (att->uploader_uid != uid_)        { send_error(403, "Forbidden"); return; }
+        if (!db_.is_member(uid_))          { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
 
         const std::string partial = att->storage_path + ".partial";
         std::error_code ec;
@@ -744,11 +759,11 @@ private:
         if (!att)                               { send_error(404, "Not Found"); return; }
         if (att->upload_status != "ready")      { send_error(404, "Not Found"); return; }
         if (att->purged_at != 0)                { send_error(410, "Gone"); return; }
-        if (!db_.is_member(username_))          { send_error(403, "Forbidden"); return; }
+        if (!db_.is_member(uid_))          { send_error(403, "Forbidden"); return; }
         // Permissions v2: a private channel's files are private too.
         // Legacy rows (channel_id '') fall back to the membership check.
         if (authz_ && !att->channel_id.empty() &&
-            !authz_->check(chatproj::Action::ViewChannel, {username_, att->channel_id, ""})) {
+            !authz_->check(chatproj::Action::ViewChannel, {uid_, att->channel_id, 0})) {
             send_error(403, "Forbidden"); return;
         }
 
@@ -922,8 +937,8 @@ private:
         auto att = db_.get_attachment(id);
         if (!att)                            { send_error(404, "Not Found"); return; }
         if (att->upload_status != "ready")   { send_error(409, "Conflict"); return; }
-        if (att->uploader != username_)      { send_error(403, "Forbidden"); return; }
-        if (!db_.is_member(username_))        { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
+        if (att->uploader_uid != uid_)      { send_error(403, "Forbidden"); return; }
+        if (!db_.is_member(uid_))        { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
         if (req_.content_length <= 0 ||
             req_.content_length > MAX_THUMB_BYTES) {
             send_error(413, "Payload Too Large"); return;
@@ -1053,8 +1068,8 @@ private:
         auto att = db_.get_attachment(id);
         if (!att)                              { send_error(404, "Not Found"); return; }
         if (att->upload_status != "uploading") { send_error(409, "Conflict"); return; }
-        if (att->uploader != username_)        { send_error(403, "Forbidden"); return; }
-        if (!db_.is_member(username_))          { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
+        if (att->uploader_uid != uid_)        { send_error(403, "Forbidden"); return; }
+        if (!db_.is_member(uid_))          { send_error(403, "Forbidden"); return; }  // X3: kicked/banned mid-upload
 
         auto path = db_.abort_pending_attachment(id);
         if (!path) { send_error(500, "Internal Server Error"); return; }
@@ -1108,6 +1123,7 @@ private:
         // Reset per-request state; head_buf_ may already hold the start
         // of a pipelined next request, which async_read_until consumes.
         req_ = HttpRequest{};
+        uid_ = 0;
         username_.clear();
         body_.clear();
         patch_id_ = 0; patch_final_ = 0; patch_remain_ = 0; patch_fp_.reset(); patch_chunk_.clear();
@@ -1162,7 +1178,8 @@ private:
     // in read_head() still applies once the delimiter is found.
     boost::asio::streambuf head_buf_{16 * 1024};
     HttpRequest req_;
-    std::string username_;
+    int64_t uid_ = 0;          // the token's account: every check keys on it
+    std::string username_;     // its name, for logs
     bool keep_alive_ = false;
     bool force_close_ = false;
     std::vector<char> body_; // small-body JSON endpoints only

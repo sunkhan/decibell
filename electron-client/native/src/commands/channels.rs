@@ -127,6 +127,7 @@ pub async fn search_messages(args: SearchMessagesArgs) -> napi::Result<()> {
             offset: args.offset.unwrap_or(0),
             limit: args.limit.unwrap_or(0),
             match_within_words: args.match_within_words.unwrap_or(false),
+            author_uids: Vec::new(),
         }),
     )
     .await
@@ -368,6 +369,10 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
                 reply_to_envelope: Vec::new(),
                 // Server-set from the sender's EMBED_LINKS; ignored if sent.
                 suppress_embeds: false,
+                sender_uid: 0,
+                reply_to_sender_uid: 0,
+                sealed_sender: String::new(),
+                reply_to_sealed_sender: String::new(),
             }),
             Some(&client.jwt),
         );
@@ -588,6 +593,7 @@ pub async fn set_channel_overwrite(args: SetChannelOverwriteArgs) -> napi::Resul
                 target_id: args.target_id,
                 allow: args.allow.max(0) as u64,
                 deny: args.deny.max(0) as u64,
+                target_uid: 0,
             }),
         }),
     )

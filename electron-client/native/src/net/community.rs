@@ -253,6 +253,7 @@ impl CommunityClient {
             packet::Payload::WatchStreamReq(WatchStreamRequest {
                 channel_id: channel_id.into(),
                 target_username: target_username.into(),
+                target_uid: 0,
             }),
             Some(&self.jwt),
         );
@@ -269,6 +270,7 @@ impl CommunityClient {
             packet::Payload::StopWatchingReq(StopWatchingRequest {
                 channel_id: channel_id.into(),
                 target_username: target_username.into(),
+                target_uid: 0,
             }),
             Some(&self.jwt),
         );
@@ -293,6 +295,7 @@ impl CommunityClient {
                 channel_id: channel_id.into(),
                 owner_username: String::new(),
                 thumbnail_data: jpeg_data.to_vec(),
+                owner_uid: 0,
             }),
             Some(&self.jwt),
         );

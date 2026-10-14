@@ -714,6 +714,7 @@ pub async fn watch_stream(args: WatchStreamArgs) -> napi::Result<()> {
             packet::Payload::WatchStreamReq(WatchStreamRequest {
                 channel_id: args.channel_id,
                 target_username: args.target_username,
+                target_uid: 0,
             }),
             Some(&client.jwt),
         );
@@ -754,6 +755,7 @@ pub async fn stop_watching(args: StopWatchingArgs) -> napi::Result<()> {
             packet::Payload::StopWatchingReq(StopWatchingRequest {
                 channel_id: args.channel_id,
                 target_username: args.target_username,
+                target_uid: 0,
             }),
             Some(&client.jwt),
         );
@@ -811,6 +813,7 @@ pub async fn fetch_stream_thumbnail(
             packet::Type::FetchStreamThumbnailReq,
             packet::Payload::FetchStreamThumbnailReq(FetchStreamThumbnailReq {
                 owner_username: username.clone(),
+                owner_uid: 0,
             }),
             Some(&client.jwt),
         );

@@ -820,6 +820,7 @@ message CommunityAuthResponse {
   // joins. Only actionable by MANAGE_SERVER holders (the settings toggle),
   // but sent to everyone so the state is consistent.
   bool public_listing = 11;
+  int64 owner_uid = 12;   // users by uid (2026-10-15)
 }
 
 message ChannelMessage {
@@ -863,6 +864,13 @@ message ChannelMessage {
   // The sender lacked EMBED_LINKS in this channel when sending (or last
   // editing): clients render no link-preview / GIF media for it.
   bool suppress_embeds = 15;
+  // Users by uid (2026-10-15). `sender` is the current name; a row with an
+  // envelope also carries the name it was sealed under (a v1 envelope binds
+  // it), which can predate a rename.
+  int64 sender_uid = 16;
+  int64 reply_to_sender_uid = 17;
+  string sealed_sender = 18;
+  string reply_to_sealed_sender = 19;
 }
 
 message Attachment {
@@ -1001,6 +1009,7 @@ message ChannelReorderRequest {
 message SetNicknameRequest {
   string username = 1;
   string nickname = 2;
+  int64 uid = 3;   // preferred over username
 }
 
 // --- Per-channel permission overwrites ---
@@ -1016,6 +1025,9 @@ message ChannelOverwrite {
   string target_id = 3;
   uint64 allow = 4;
   uint64 deny = 5;
+  // Member rows: the member's uid (preferred in requests); target_id then
+  // carries their current name.
+  int64 target_uid = 6;
 }
 
 // Sets (or, with allow = deny = 0, removes) one overwrite. Requires
@@ -1158,6 +1170,7 @@ message ChannelWiped {
   // Wall-clock unix seconds when the wipe completed.
   int64 wiped_at = 2;
   string wiped_by = 3;
+  int64 wiped_by_uid = 4;
 }
 
 message JoinVoiceRequest {
@@ -1182,6 +1195,7 @@ message VoiceUserState {
   bool is_server_deafened = 5;
   // Lacks SPEAK in this channel: the relay drops their voice audio.
   bool is_suppressed = 6;
+  int64 uid = 7;
 }
 
 message VoicePresenceUpdate {
@@ -1191,6 +1205,7 @@ message VoicePresenceUpdate {
   // Parallel to user_states/active_users — same length, same order.
   // user_capabilities[i] belongs to active_users[i].
   repeated ClientCapabilities user_capabilities = 4;
+  repeated int64 active_uids = 5;   // parallel to active_users
 }
 
 message VoiceStateNotify {
@@ -1214,6 +1229,7 @@ message VideoStreamInfo {
   // server's stream_watchers_ set on each presence broadcast; defaults to 0 for
   // old clients/servers.
   uint32 watcher_count = 9;
+  int64 owner_uid = 10;
 }
 
 message StreamPresenceUpdate {
@@ -1244,17 +1260,20 @@ message StopStreamRequest {
 message WatchStreamRequest {
   string channel_id = 1;
   string target_username = 2;
+  int64 target_uid = 3;   // preferred over target_username
 }
 
 message StopWatchingRequest {
   string channel_id = 1;
   string target_username = 2;
+  int64 target_uid = 3;   // preferred over target_username
 }
 
 message StreamThumbnailUpdate {
   string channel_id = 1;
   string owner_username = 2;
   bytes thumbnail_data = 3;
+  int64 owner_uid = 4;
 }
 
 message DmPrivacySetting {
@@ -1293,6 +1312,8 @@ message InviteInfo {
   int32 uses = 6;
   // Personal invite: only this user can redeem it ("" = anyone).
   string for_user = 7;
+  int64 created_by_uid = 8;
+  int64 for_uid = 9;
 }
 
 message InviteCreateRequest {
@@ -1307,6 +1328,7 @@ message InviteCreateRequest {
   string for_user = 3;
   // Echoed on the response so the client can match it to this request.
   uint32 request_id = 4;
+  int64 for_uid = 5;   // preferred over for_user
 }
 
 message InviteCreateResponse {
@@ -1351,6 +1373,7 @@ message MemberInfo {
   // Unix seconds until which the member is timed out (can't send, join
   // voice or stream). 0 = not timed out.
   int64 timed_out_until = 7;
+  int64 uid = 8;
 }
 
 // --- Roster protocol ---
@@ -1474,6 +1497,7 @@ message MessageSearchRequest {
   // of the text rather than an index lookup, so it's slower on a big
   // server; RELEVANCE then sorts as NEWEST.
   bool match_within_words = 12;
+  repeated int64 author_uids = 13;   // preferred over authors (names, for senders who left)
 }
 
 message MessageSearchResponse {
@@ -1510,6 +1534,7 @@ message MemberUpsert {
 message MemberRemove {
   string username = 1;
   uint64 revision = 2;
+  int64 uid = 3;
 }
 
 message BanListRequest {}
@@ -1642,15 +1667,18 @@ message RoleActionResponse {
 message MemberRolesUpdateRequest {
   string username = 1;
   repeated int64 role_ids = 2;
+  int64 uid = 3;   // preferred over username
 }
 
 message UnbanMemberRequest {
   string username = 1;
+  int64 uid = 2;   // preferred over username
 }
 
 message KickMemberRequest {
   string username = 1;
   string reason = 2;
+  int64 uid = 3;   // preferred over username
 }
 
 message BanMemberRequest {
@@ -1662,6 +1690,7 @@ message BanMemberRequest {
   // (0 = none; clamped to 7 days). Each deletion is broadcast as
   // CHANNEL_MESSAGE_DELETED to the channel's viewers.
   int32 delete_message_seconds = 4;
+  int64 uid = 5;   // preferred over username
 }
 
 message BanInfo {
@@ -1670,6 +1699,8 @@ message BanInfo {
   string reason = 3;
   int64 banned_at = 4;
   int64 expires_at = 5;   // 0 = permanent
+  int64 uid = 6;
+  int64 banned_by_uid = 7;
 }
 
 message ModActionResponse {
@@ -1680,6 +1711,7 @@ message ModActionResponse {
   string username = 3;
   // "kick" | "ban" | "unban" | "leave"
   string action = 4;
+  int64 uid = 5;
 }
 
 message LeaveServerRequest {}
@@ -1689,6 +1721,7 @@ message ServerMetaUpdate {
   string server_description = 2;
   string owner_username = 3;
   bool public_listing = 4;
+  int64 owner_uid = 5;
 }
 
 message MembershipRevoked {
@@ -1698,6 +1731,7 @@ message MembershipRevoked {
   string actor = 3;
   // Bans only: when the ban lifts (0 = permanent).
   int64 expires_at = 4;
+  int64 actor_uid = 5;
 }
 
 // --- Server management + moderation ---
@@ -1730,6 +1764,8 @@ message AuditEntry {
   string target = 5;      // username, role name, invite code, … (may be empty)
   string channel_id = 6;  // when channel-scoped
   string details = 7;     // free-text summary ("reason: spam", "+Mod −Helper", …)
+  int64 actor_uid = 8;    // 0 on entries from before users by uid
+  int64 target_uid = 9;   // set when the target is a member
 }
 
 message AuditLogRequest {
@@ -1758,6 +1794,7 @@ message TimeoutMemberRequest {
   string username = 1;
   int64 until = 2;
   string reason = 3;
+  int64 uid = 4;   // preferred over username
 }
 
 message VoiceModRequest {
@@ -1776,6 +1813,7 @@ message VoiceModRequest {
   string username = 1;
   Action action = 2;
   string channel_id = 3;
+  int64 uid = 4;   // preferred over username
 }
 
 // Sent to the affected user only.
@@ -1784,10 +1822,12 @@ message VoiceForceNotify {
   Action action = 1;
   string channel_id = 2;   // MOVED: the new channel
   string actor = 3;
+  int64 actor_uid = 4;
 }
 
 message TransferOwnershipRequest {
   string new_owner = 1;
+  int64 new_owner_uid = 2;   // preferred over new_owner
 }
 
 // --- Storage (MANAGE_SERVER) ---
@@ -1892,6 +1932,7 @@ message StreamCodecChangedNotify {
     STREAMER_INITIATED = 3;
   }
   Reason reason = 7;
+  int64 streamer_uid = 8;
 }
 
 // Sent by a client mid-session when the user clicks "Refresh codec
@@ -1917,6 +1958,8 @@ message StreamWatcherNotify {
     LEFT = 2;
   }
   Action action = 4;
+  int64 streamer_uid = 5;
+  int64 watcher_uid = 6;
 }
 
 // --- Avatar Messages ---
@@ -1961,11 +2004,13 @@ message AvatarChanged {
 // no frame has arrived yet).
 message FetchStreamThumbnailReq {
   string owner_username = 1;
+  int64 owner_uid = 2;   // preferred over owner_username
 }
 
 message FetchStreamThumbnailRes {
   string owner_username = 1;
   bytes thumbnail_data = 2;  // empty when no thumbnail cached yet
+  int64 owner_uid = 3;
 }
 
 // --- Persistent DMs ---
@@ -2137,6 +2182,7 @@ message ChannelMessageDeleted {
   int64  deleted_at = 3;
   // For future audit-log surfacing; not consumed by current UI.
   string deleted_by = 4;
+  int64 deleted_by_uid = 5;
 }
 
 message MessageEditReq {
@@ -2161,6 +2207,7 @@ message ChannelMessageEdited {
   string editor = 5;    // the message's sender (who edited it)
   bytes  envelope = 6;  // encrypted channels
   bool   suppress_embeds = 7;  // re-evaluated at edit time (see ChannelMessage)
+  int64 editor_uid = 8;
 }
 
 // See Packet.CHANNEL_MSG_REJECTED.
@@ -2380,6 +2427,7 @@ message MlsCommitBroadcast {
   uint64 epoch = 2;
   string sender = 3;        // committer, server-stamped
   bytes  commit = 4;
+  int64 sender_uid = 5;
 }
 
 // --- Encrypted text channels ---
@@ -2395,10 +2443,14 @@ message ChannelKeyBlob {
   string sender = 2;      // who sealed it (server-stamped on publish)
   string recipient = 3;   // set in publish requests; empty in the caller's own list
   bytes  blob = 4;
+  // The names stay the ones it was sealed under (a v1 envelope binds them).
+  int64 sender_uid = 5;
+  int64 recipient_uid = 6;   // preferred over recipient in publish requests
 }
 message ChannelKeyNeed {
   string username = 1;
   repeated uint32 epochs = 2;   // epochs this viewer has no blob for
+  int64 uid = 3;
 }
 message ChannelKeysRes {
   string channel_id = 1;
@@ -2407,6 +2459,7 @@ message ChannelKeysRes {
   repeated ChannelKeyBlob blobs = 4;    // the caller's own blobs, every epoch
   repeated ChannelKeyNeed needs = 5;    // viewers missing blobs (capped)
   repeated string members = 6;          // everyone who can VIEW the channel (capped)
+  repeated int64 member_uids = 7;   // parallel to members
 }
 // epoch == current + 1 creates the epoch (≥ 1 blob); epoch <= current fills
 // gaps (only missing recipients are inserted). Blobs for non-viewers drop.
@@ -2429,6 +2482,7 @@ message ChannelKeysChanged {
   uint32 current_epoch = 2;
   string filler = 3;
   bool   rotate = 4;
+  int64 filler_uid = 5;   // users by uid (2026-10-15)
 }
 
 // --- Encrypted channel message body (client-only; opaque to every server) ---

@@ -14,6 +14,10 @@ HOST = "127.0.0.1"
 RUN = os.environ.get("DECIBELL_E2E_RUN", os.path.join(os.path.dirname(__file__), "run"))
 DB = os.path.join(RUN, "c.db")
 SERVER_BIN = os.environ.get("DECIBELL_E2E_SERVER", os.path.join(os.path.dirname(__file__), "community_server"))
+# Optional: the community binary from before a schema migration (built from
+# that commit with build.sh). When set, the v15 (users by uid) migration
+# check seeds a database with it.
+OLD_SERVER_BIN = os.environ.get("DECIBELL_E2E_SERVER_OLD", "")
 PASS, FAIL = [], []
 
 
@@ -156,7 +160,7 @@ class Client:
             pass
 
 
-def start_server(fresh=False, extra_env=None):
+def start_server(fresh=False, extra_env=None, binary=None):
     os.makedirs(RUN, exist_ok=True)
     if fresh:
         for f in ("c.db", "c.db-wal", "c.db-shm"):
@@ -173,7 +177,7 @@ def start_server(fresh=False, extra_env=None):
     if extra_env:
         env.update(extra_env)
     log = open(os.path.join(RUN, "server.log"), "ab")
-    proc = subprocess.Popen([SERVER_BIN], cwd=RUN, env=env, stdout=log, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen([binary or SERVER_BIN], cwd=RUN, env=env, stdout=log, stderr=subprocess.STDOUT)
     for _ in range(50):
         try:
             socket.create_connection((HOST, 8082), timeout=0.2).close()
@@ -952,7 +956,8 @@ def test_roster_deltas():
     now = int(time.time())
     c = sqlite3.connect(DB)
     for i in range(250):
-        c.execute("insert or ignore into members(username, joined_at, nickname) values(?, ?, '')", (f"zz{i:03d}", now))
+        c.execute("insert or ignore into members(uid, username, joined_at, nickname) values(?, ?, ?, '')",
+                  (uid_for(f"zz{i:03d}"), f"zz{i:03d}", now))
     c.commit(); c.close()
     owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(after="", limit=100))
     p1 = owner.wait(pb.Packet.MEMBER_LIST_RES, pred=lambda p: p.member_list_res.first_page)
@@ -1090,12 +1095,14 @@ def test_member_search_and_role_counts():
     owner.flush(0.5)
     now = int(time.time())
     for i in range(150):
-        sql("insert or ignore into members(username, joined_at, nickname) values(?, ?, '')", f"zq{i:03d}", now)
-    sql("insert or ignore into members(username, joined_at, nickname) values('quill', ?, 'Zqueen')", now)
+        sql("insert or ignore into members(uid, username, joined_at, nickname) values(?, ?, ?, '')",
+            uid_for(f"zq{i:03d}"), f"zq{i:03d}", now)
+    sql("insert or ignore into members(uid, username, joined_at, nickname) values(?, 'quill', ?, 'Zqueen')",
+        uid_for("quill"), now)
     owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="Searchers", color=0, permissions=0))
     role = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
     for u in ("zq001", "zq002", "quill"):
-        sql("insert into member_roles(username, role_id) values(?, ?)", u, role.id)
+        sql("insert into member_roles(uid, role_id) values(?, ?)", uid_for(u), role.id)
 
     def search(**kw):
         owner.send(pb.Packet.MEMBER_SEARCH_REQ, member_search_req=pb.MemberSearchRequest(**kw))
@@ -1135,7 +1142,7 @@ def test_member_search_and_role_counts():
     owner.send(pb.Packet.ROLE_DELETE_REQ, role_delete_req=pb.RoleDeleteRequest(role_id=role.id))
     owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "delete")
     sql("delete from members where username like 'zq%' or username = 'quill'")
-    sql("delete from member_roles where username like 'zq%' or username = 'quill'")
+    sql("delete from member_roles where uid in (select uid from members where username like 'zq%' or username = 'quill')")
     owner.close()
 
 
@@ -1147,7 +1154,8 @@ def test_audit_search():
     owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="Lanterns", color=0, permissions=0))
     lantern = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
     ch = sql("select id, name from channels where type = 0 order by position limit 1")[0]
-    sql("insert or ignore into members(username, joined_at, nickname) values('owl', ?, 'Night Owl')", now)
+    sql("insert or ignore into members(uid, username, joined_at, nickname) values(?, 'owl', ?, 'Night Owl')",
+        uid_for("owl"), now)
     rows = [
         ("auditor1", "kick", "victim1", "", "reason: 100%_off spam"),
         ("auditor1", "overwrite_set", f"role:{lantern.id}", ch[0], "allow 8192 deny 0"),
@@ -1155,7 +1163,8 @@ def test_audit_search():
         ("auditor1", "channel_update", "", ch[0], "slowmode 5s"),
     ]
     for actor, action, target, cid, details in rows:
-        sql("insert into audit_log(ts, actor, action, target, channel_id, details) values(?, ?, ?, ?, ?, ?)", now, actor, action, target, cid, details)
+        sql("insert into audit_log(ts, actor_uid, actor, action, target, channel_id, details) values(?, ?, ?, ?, ?, ?, ?)",
+            now, uid_for(actor), actor, action, target, cid, details)
 
     def search(seq, **kw):
         owner.send(pb.Packet.AUDIT_LOG_REQ, audit_log_req=pb.AuditLogRequest(limit=100, seq=seq, **kw))
@@ -1185,7 +1194,7 @@ def test_audit_search():
     owner.send(pb.Packet.ROLE_DELETE_REQ, role_delete_req=pb.RoleDeleteRequest(role_id=lantern.id))
     owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "delete")
     sql("delete from audit_log where actor in ('auditor1', 'owl')")
-    sql("delete from members where username = 'owl'")
+    sql("delete from members where uid = ?", uid_for("owl"))
     owner.close()
 
 
@@ -1468,11 +1477,19 @@ def test_message_search():
     bob.inbox.clear()
     time.sleep(6)
 
-    # Pre-Theme-A member: their uid-less messages are claimed on first auth.
-    sql("insert into members(username, joined_at, nickname, uid) values('lazy', ?, '', 0)", int(time.time()))
-    lm = put(ch_a, "lazy", "lazy message", 10, uid=0)
+    # A member from before uids reached the server sits under a placeholder
+    # (legacy_claims); their first token claims it — row, messages, roles.
+    sql("insert into members(uid, username, joined_at, nickname) values(-500, 'lazy', ?, 'Lazy')", int(time.time()))
+    sql("insert into legacy_claims(username, uid) values('lazy', -500)")
+    sql("insert into member_roles(uid, role_id) select -500, id from roles where is_default = 0 limit 1")
+    had_role = sql("select count(*) from member_roles where uid = -500")[0][0]
+    lm = put(ch_a, "lazy", "lazy message", 10, uid=-500)
     lazy = Client("lazy"); ok, _ = auth_ok(lazy)
-    check("pre-Theme-A member: messages back-filled with the uid on auth", ok and sql("select sender_uid from messages where id=?", lm) == [(uid_for("lazy"),)])
+    check("legacy member: claimed on first auth (member row by uid, nickname kept)",
+          ok and sql("select uid, nickname from members where username='lazy'") == [(uid_for("lazy"), "Lazy")])
+    check("legacy member: messages and roles follow", sql("select sender_uid from messages where id=?", lm) == [(uid_for("lazy"),)]
+          and sql("select count(*) from member_roles where uid=?", uid_for("lazy"))[0][0] == had_role
+          and sql("select count(*) from legacy_claims where username='lazy'") == [(0,)])
     lazy.close()
 
     # Ban purge by uid: a rename inside the window doesn't shield messages.
@@ -1570,7 +1587,10 @@ def test_v14_search_migration():
     sql("drop index if exists idx_messages_sender_uid")
     sql("alter table messages drop column sender_uid")
     sql("delete from server_meta where key in ('search_index_version', 'search_fts_v14', 'sender_uid_v14')")
-    sql("update members set uid=4242 where username='alice'")
+    # Whatever alice's row holds now (her uid, or the owner placeholder if
+    # she hasn't connected yet), restored at the end.
+    alice_uid = sql("select uid from members where username='alice'")[0][0]
+    sql("update members set uid=4242 where uid=?", alice_uid)
     now = int(time.time())
     plain = sql("insert into messages(channel_id, sender, content, timestamp) values('general','alice','zebra crossing',?) returning id", now)[0][0]
     sealed = sql("insert into messages(channel_id, sender, content, timestamp, envelope) values('general','alice','zebra placeholder',?, x'02') returning id", now)[0][0]
@@ -1585,7 +1605,7 @@ def test_v14_search_migration():
     check("... including bound file names", sql("select rowid from messages_fts where messages_fts match '\"okapi\"'") == [(plain,)])
     check("sender_uid back-filled from members by name", sql("select sender_uid from messages where id=?", plain) == [(4242,)])
     check("a name no member holds stays 0", sql("select sender_uid from messages where id=?", stranger) == [(0,)])
-    check("schema stamped 14", sql("select value from server_meta where key='schema_version'") == [("14",)])
+    check("schema stamped 15", sql("select value from server_meta where key='schema_version'") == [("15",)])
     check("index at version 2", sql("select value from server_meta where key='search_index_version'") == [("2",)])
     # Version 1 (ı kept as ı) is rebuilt once: a row added while the
     # triggers are gone shows up folded afterwards.
@@ -1604,8 +1624,8 @@ def test_v14_search_migration():
     sql("delete from attachments where id=?", att)
     sql("delete from messages where id in (?, ?, ?, ?)", plain, sealed, stranger, legacy)
     sql("delete from channels where id='v14-sealed'")
-    sql("update members set uid=0 where username='alice'")
-    sql("update messages set sender_uid=0 where sender_uid=4242")
+    sql("update members set uid=? where uid=4242", alice_uid)
+    sql("update messages set sender_uid=? where sender_uid=4242", alice_uid)
 
 
 def test_slowmode():
@@ -2176,24 +2196,217 @@ def test_theme_a_tokens_and_uid():
     c.send(pb.Packet.COMMUNITY_AUTH_REQ, community_auth_req=pb.CommunityAuthRequest(jwt_token=hs))
     ok, r = auth_ok(c)
     check("HS256 token rejected (no symmetric fallback)", not ok); c.close()
-    # uid-keyed bans: ban "gus" (uid 4242); "gus_renamed" with the same uid is still banned.
+    # uid-keyed bans: ban "tgus" (uid 4242) by uid; "tgus_renamed" with the same uid is still banned.
     owner = Client("alice"); assert auth_ok(owner)[0]
     code = make_invite(owner)
-    gus = Client("gus", invite=code, uid=4242); assert auth_ok(gus)[0]
-    check("member row stores uid", sql("select uid from members where username='gus'") == [(4242,)])
+    gus = Client("tgus", invite=code, uid=4242); assert auth_ok(gus)[0]
+    check("member row keyed by uid", sql("select uid from members where username='tgus'") == [(4242,)])
     owner.flush(0.5)
-    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="gus", reason="bye"))
-    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(uid=4242, reason="bye"))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
+    check("ban by uid", r is not None and r.mod_action_res.success and r.mod_action_res.uid == 4242
+          and r.mod_action_res.username == "tgus")
     gus.close()
     code = make_invite(owner)
-    c = Client("gus_renamed", invite=code, uid=4242); ok, r = auth_ok(c)
+    c = Client("tgus_renamed", invite=code, uid=4242); ok, r = auth_ok(c)
     check("renamed account with the banned uid is still banned", not ok and r.community_auth_res.error_code == "banned"); c.close()
     code = make_invite(owner)
-    c = Client("gus_renamed", invite=code, uid=4243); ok, r = auth_ok(c)
+    c = Client("tgus_renamed", invite=code, uid=4243); ok, r = auth_ok(c)
     check("different uid with the new name is admitted", ok); c.close()
-    owner.send(pb.Packet.UNBAN_MEMBER_REQ, unban_member_req=pb.UnbanMemberRequest(username="gus"))
-    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "unban")
+    owner.send(pb.Packet.UNBAN_MEMBER_REQ, unban_member_req=pb.UnbanMemberRequest(uid=4242))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "unban")
+    check("unban by uid", r is not None and r.mod_action_res.success)
     owner.close()
+
+
+
+def test_v15_uid_migration():
+    """Users by uid (docs/superpowers/specs/2026-10-15-uid-identity-design.md):
+    a v14 database the previous build filled — plus rows from before uids
+    reached the server — migrates to uid keys; legacy names get
+    placeholders that their first token claims."""
+    print("[v15] users by uid: migrating a v14 database")
+    old = start_server(fresh=True, binary=OLD_SERVER_BIN)
+    try:
+        owner = Client("alice"); assert auth_ok(owner)[0]
+        bob = join("bob", owner); carol = join("carol", owner); frank = join("frank", owner)
+        for c in (owner, bob, carol, frank): c.flush(0.4)
+        owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="Mods", color=0, permissions=0))
+        mods = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
+        owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="bob", role_ids=[mods.id]))
+        owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
+        set_overwrite(owner, "general", pb.ChannelOverwrite.MEMBER, "carol", deny=pb.PERM_SEND_MESSAGES)
+        owner.send(pb.Packet.INVITE_CREATE_REQ, invite_create_req=pb.InviteCreateRequest(for_user="dana", request_id=7))
+        dana_code = owner.wait(pb.Packet.INVITE_CREATE_RES).invite_create_res.invite.code
+        owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="eve", reason="never seen"))
+        owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
+        owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="frank", reason="seen"))
+        owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
+        bob.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="from v14", nonce="m1"))
+        bob_msg = bob.wait(pb.Packet.CHANNEL_MSG, pred=lambda p: p.channel_msg.content == "from v14").channel_msg.id
+        for c in (owner, bob, carol, frank): c.close()
+        # Rows from before uids reached this server: a member who never
+        # reconnected since, and everything they left behind.
+        now = int(time.time())
+        sql("insert into members(username, joined_at, nickname, uid) values('lazy2', ?, 'Lazybones', 0)", now)
+        sql("insert into member_roles(username, role_id) values('lazy2', ?)", mods.id)
+        sql("insert into channel_overwrites(channel_id, target_type, target_id, allow, deny) values('general', 1, 'lazy2', 0, ?)",
+            pb.PERM_ATTACH_FILES)
+        lazy_msg = sql("insert into messages(channel_id, sender, content, timestamp) values('general', 'lazy2', 'old words', ?) returning id", now)[0][0]
+        sql("insert into invites(code, created_by, created_at, expires_at, max_uses, uses) values('LAZYINV001', 'lazy2', ?, 0, 0, 0)", now)
+        sql("insert into attachments(message_id, kind, filename, mime, size_bytes, position, created_at, upload_status, uploader, channel_id) "
+            "values(0, 2, 'half.bin', 'application/octet-stream', 0, 0, ?, 'uploading', 'lazy2', 'general')", now)
+        sql("insert into channel_key_epochs(channel_id, epoch, created_by, created_at) values('general', 1, 'lazy2', ?)", now)
+        sql("insert into channel_key_blobs(channel_id, epoch, recipient, sender, blob, created_at) values('general', 1, 'bob', 'lazy2', x'01', ?)", now)
+        check("seeded as v14", sql("select value from server_meta where key='schema_version'") == [("14",)])
+    finally:
+        stop_server(old)
+
+    new = start_server()
+    stop_server(new)
+    U = uid_for
+    ph = dict(sql("select username, uid from legacy_claims"))
+    check("v15: schema stamped", sql("select value from server_meta where key='schema_version'") == [("15",)])
+    check("v15: placeholders for names with no uid", set(ph) == {"lazy2", "eve", "dana"} and all(v < 0 for v in ph.values()), str(ph))
+    check("v15: owner by uid", sql("select value from server_meta where key='owner_uid'") == [(str(U("alice")),)]
+          and sql("select count(*) from server_meta where key='owner'") == [(0,)])
+    check("v15: members keyed by uid", dict(sql("select username, uid from members"))
+          == {"alice": U("alice"), "bob": U("bob"), "carol": U("carol"), "lazy2": ph["lazy2"]})
+    check("v15: legacy member keeps their nickname", sql("select nickname from members where username='lazy2'") == [("Lazybones",)])
+    check("v15: roles by uid", sorted(sql("select uid from member_roles where role_id=?", mods.id)) == sorted([(U("bob"),), (ph["lazy2"],)]))
+    check("v15: member overwrites name the uid", sorted(sql("select target_id from channel_overwrites where target_type=1"))
+          == sorted([(str(U("carol")),), (str(ph["lazy2"]),)]))
+    check("v15: bans by uid; a name-only ban keeps its placeholder", dict(sql("select username, uid from bans"))
+          == {"eve": ph["eve"], "frank": U("frank")})
+    check("v15: personal invite for a never-seen name", sql("select created_by_uid, for_uid from invites where code=?", dana_code)
+          == [(U("alice"), ph["dana"])])
+    check("v15: invite and upload by the legacy member", sql("select created_by_uid from invites where code='LAZYINV001'") == [(ph["lazy2"],)]
+          and sql("select uploader_uid from attachments where filename='half.bin'") == [(ph["lazy2"],)])
+    check("v15: key escrow by uid, names kept", sql("select recipient_uid, recipient, sender_uid, sender from channel_key_blobs")
+          == [(U("bob"), "bob", ph["lazy2"], "lazy2")]
+          and sql("select created_by_uid from channel_key_epochs where channel_id='general'") == [(ph["lazy2"],)])
+    check("v15: senders by uid", sql("select sender_uid from messages where id=?", bob_msg) == [(U("bob"),)]
+          and sql("select sender_uid from messages where id=?", lazy_msg) == [(ph["lazy2"],)])
+    check("v15: audit actors by uid", sql("select count(*) from audit_log where actor='alice' and actor_uid=?", U("alice"))[0][0] > 0)
+
+    proc = start_server()
+    try:
+        owner = Client("alice"); ok, r = auth_ok(owner)
+        check("migrated: owner reported by uid", ok and r.community_auth_res.owner_uid == U("alice")
+              and r.community_auth_res.owner_username == "alice")
+        bob = Client("bob"); assert auth_ok(bob)[0]
+        carol = Client("carol"); assert auth_ok(carol)[0]
+        for c in (owner, bob, carol): c.flush(0.4)
+        carol.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="hi", nonce="c1"))
+        rej = carol.wait(pb.Packet.CHANNEL_MSG_REJECTED, timeout=2)
+        check("migrated: carol's member overwrite still applies", rej is not None)
+        owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(after="", limit=100))
+        ml = owner.wait(pb.Packet.MEMBER_LIST_RES, pred=lambda p: p.member_list_res.first_page)
+        bm = next((m for m in ml.member_list_res.members if m.username == "bob"), None) if ml else None
+        check("migrated: bob keeps his role, roster carries uids", bm is not None and bm.uid == U("bob") and list(bm.role_ids) == [mods.id])
+        e = Client("eve", invite=make_invite(owner)); ok, r = auth_ok(e)
+        check("migrated: the never-seen banned name is still banned", not ok and r.community_auth_res.error_code == "banned")
+        e.close()
+        check("... and the ban moved to her uid", dict(sql("select username, uid from bans")).get("eve") == U("eve"))
+        f = Client("frank", invite=make_invite(owner)); ok, r = auth_ok(f)
+        check("migrated: frank still banned", not ok and r.community_auth_res.error_code == "banned"); f.close()
+        d = Client("dana", invite=dana_code); ok, r = auth_ok(d)
+        check("migrated: the personal invite admits dana", ok, r.community_auth_res.error_code if r else None); d.close()
+        lz = Client("lazy2"); ok, r = auth_ok(lz)
+        check("migrated: the legacy member claims their placeholder", ok
+              and sql("select uid, nickname from members where username='lazy2'") == [(U("lazy2"), "Lazybones")])
+        check("... roles, overwrite, message, invite, upload and key blob follow",
+              sql("select count(*) from member_roles where uid=?", U("lazy2")) == [(1,)]
+              and sql("select count(*) from channel_overwrites where target_type=1 and target_id=?", str(U("lazy2"))) == [(1,)]
+              and sql("select sender_uid from messages where id=?", lazy_msg) == [(U("lazy2"),)]
+              and sql("select created_by_uid from invites where code='LAZYINV001'") == [(U("lazy2"),)]
+              and sql("select uploader_uid from attachments where filename='half.bin'") == [(U("lazy2"),)]
+              and sql("select sender_uid from channel_key_blobs") == [(U("lazy2"),)]
+              and sql("select count(*) from legacy_claims where username='lazy2'") == [(0,)])
+        lz.flush(0.3)
+        lz.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id="general", message_id=lazy_msg, content="new words"))
+        er = lz.wait(pb.Packet.MESSAGE_EDIT_RES)
+        check("... and they can edit their old message", er is not None and er.message_edit_res.success)
+        for c in (owner, bob, carol, lz): c.close()
+    finally:
+        stop_server(proc)
+    proc = start_server(); stop_server(proc)
+    check("v15 doesn't run twice", sql("select value from server_meta where key='schema_version'") == [("15",)]
+          and sql("select count(*) from members") == [(5,)])
+
+
+def test_uid_wire():
+    """Users by uid on the wire: payloads carry uids, requests target by uid."""
+    print("[uid] uids on the wire, requests by uid")
+    U = uid_for
+    owner = Client("alice"); ok, r = auth_ok(owner)
+    check("auth: owner by uid", ok and r.community_auth_res.owner_uid == U("alice"))
+    w1 = join("uidw1", owner); w2 = join("uidw2", owner)
+    for c in (owner, w1, w2): c.flush(0.4)
+    # Token without a uid claim: refused.
+    h = b64(json.dumps({"alg": "EdDSA", "typ": "JWS"}).encode())
+    now = int(time.time())
+    p = b64(json.dumps({"iss": "decibell_central_auth", "sub": "uidw1", "iat": now, "exp": now + 3600}).encode())
+    nouid = f"{h}.{p}.{b64(ed25519_sign(KEY_PEM, f'{h}.{p}'.encode()))}"
+    ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+    c = Client.__new__(Client)
+    c.s = ctx.wrap_socket(socket.create_connection((HOST, 8082), timeout=3)); c.username = "uidw1"; c.jwt = nouid; c.buf = b""; c.inbox = []; c.closed = False
+    c.send(pb.Packet.COMMUNITY_AUTH_REQ, community_auth_req=pb.CommunityAuthRequest(jwt_token=nouid))
+    ok, r = auth_ok(c)
+    check("a token without a uid is refused", not ok and r is not None and r.community_auth_res.error_code == "auth"); c.close()
+    # Messages carry the sender's uid; replies the parent's.
+    w1.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="uid one", nonce="u1"))
+    m1 = w2.wait(pb.Packet.CHANNEL_MSG, pred=lambda p: p.channel_msg.content == "uid one")
+    check("message carries sender_uid", m1 is not None and m1.channel_msg.sender_uid == U("uidw1") and m1.channel_msg.sender == "uidw1")
+    w2.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="uid two", nonce="u2",
+                                                                 reply_to=m1.channel_msg.id))
+    m2 = w1.wait(pb.Packet.CHANNEL_MSG, pred=lambda p: p.channel_msg.content == "uid two")
+    check("reply carries the parent's uid", m2 is not None and m2.channel_msg.reply_to_sender_uid == U("uidw1"))
+    w1.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", limit=5))
+    h1 = w1.wait(pb.Packet.CHANNEL_HISTORY_RES)
+    row = next((m for m in h1.channel_history_res.messages if m.id == m1.channel_msg.id), None) if h1 else None
+    check("history carries sender_uid", row is not None and row.sender_uid == U("uidw1") and row.sealed_sender == "")
+    # A renamed sender shows under the current name; the stored row keeps the old one.
+    sql("update members set username='uidw1x' where uid=?", U("uidw1"))
+    w1.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", limit=5))
+    h1 = w1.wait(pb.Packet.CHANNEL_HISTORY_RES)
+    row = next((m for m in h1.channel_history_res.messages if m.id == m1.channel_msg.id), None) if h1 else None
+    check("history shows the sender's current name", row is not None and row.sender == "uidw1x"
+          and sql("select sender from messages where id=?", m1.channel_msg.id) == [("uidw1",)])
+    sql("update members set username='uidw1' where uid=?", U("uidw1"))
+    # Moderation by uid: nickname, timeout, kick.
+    owner.send(pb.Packet.SET_NICKNAME_REQ, set_nickname_req=pb.SetNicknameRequest(uid=U("uidw2"), nickname="Two"))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "nickname")
+    check("nickname by uid", r is not None and r.mod_action_res.success and r.mod_action_res.uid == U("uidw2")
+          and sql("select nickname from members where uid=?", U("uidw2")) == [("Two",)])
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, pred=lambda p: p.member_upsert.member.uid == U("uidw2"))
+    check("member upsert carries the uid", up is not None and up.member_upsert.member.nickname == "Two")
+    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(uid=U("uidw2"), until=int(time.time()) + 600))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
+    check("timeout by uid", r is not None and r.mod_action_res.success)
+    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(uid=U("uidw2"), until=0))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
+    owner.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(uid=987654321))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "kick")
+    check("kick of an unknown uid", r is not None and not r.mod_action_res.success)
+    owner.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(uid=U("uidw2")))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "kick")
+    rm = owner.wait(pb.Packet.MEMBER_REMOVE, pred=lambda p: p.member_remove.uid == U("uidw2"))
+    check("kick by uid", r is not None and r.mod_action_res.success and rm is not None and rm.member_remove.username == "uidw2")
+    # Personal invite by uid.
+    owner.send(pb.Packet.INVITE_CREATE_REQ, invite_create_req=pb.InviteCreateRequest(for_uid=U("uidw3"), for_user="uidw3", request_id=9))
+    inv = owner.wait(pb.Packet.INVITE_CREATE_RES).invite_create_res.invite
+    check("personal invite by uid", inv.for_uid == U("uidw3") and inv.created_by_uid == U("alice"))
+    other = Client("uidw3", invite=inv.code, uid=U("uidw3") + 7); ok, _ = auth_ok(other)
+    check("... refuses another account with the same name", not ok); other.close()
+    w3 = Client("uidw3", invite=inv.code); ok, _ = auth_ok(w3)
+    check("... admits the account it was made for", ok); w3.close()
+    # Search by author uid.
+    sr = search_req(w1, 4100, author_uids=[U("uidw1")])
+    check("search by author uid", sr is not None and sr.success
+          and m1.channel_msg.id in [m.id for m in sr.messages]
+          and all(m.sender_uid == U("uidw1") for m in sr.messages))
+    for c in (owner, w1, w2): c.close()
 
 
 def test_auth_failure_closes():
@@ -2206,51 +2419,60 @@ def test_auth_failure_closes():
 
 
 def test_c2_username_reuse():
-    print("[C2] reused username must not inherit roles; a central rename keeps them")
+    print("[C2] users by uid: a reused username inherits nothing; a central rename keeps everything")
     owner = Client("alice"); assert auth_ok(owner)[0]
     owner.flush(0.5)
     owner.send(pb.Packet.ROLE_CREATE_REQ,
                role_create_req=pb.RoleCreateRequest(name="C2Marker", color=0, permissions=pb.PERM_MANAGE_CHANNELS))
     role = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
 
-    # A member joins and is granted the role.
+    # A member joins and is granted the role (addressed by uid).
     victim_uid = uid_for("c2victim")
     victim = join("c2victim", owner)
     owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ,
-               member_roles_update_req=pb.MemberRolesUpdateRequest(username="c2victim", role_ids=[role.id]))
+               member_roles_update_req=pb.MemberRolesUpdateRequest(uid=victim_uid, role_ids=[role.id]))
     owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
-    check("victim granted the role", sql("select role_id from member_roles where username='c2victim'") == [(role.id,)])
-    check("victim row stamped with its uid", sql("select uid from members where username='c2victim'") == [(victim_uid,)])
+    check("victim granted the role", sql("select role_id from member_roles where uid=?", victim_uid) == [(role.id,)])
+    check("victim row keyed by its uid", sql("select uid from members where username='c2victim'") == [(victim_uid,)])
     victim.close()
 
-    # A DIFFERENT central account (new uid) grabs the freed username and joins via invite.
-    impostor = Client("c2victim", invite=make_invite(owner), uid=victim_uid + 500000)
+    # A DIFFERENT central account (new uid) holds the name now and joins via invite.
+    impostor_uid = victim_uid + 500000
+    impostor = Client("c2victim", invite=make_invite(owner), uid=impostor_uid)
     ok, r = auth_ok(impostor)
     check("reused username admitted as a fresh member", ok, r.community_auth_res.error_code if r else None)
-    check("reused username inherited NO roles",
-          sql("select role_id from member_roles where username='c2victim'") == [])
-    check("member row now carries the new identity's uid",
-          sql("select uid from members where username='c2victim'") == [(victim_uid + 500000,)])
+    check("reused username inherited NO roles", sql("select role_id from member_roles where uid=?", impostor_uid) == [])
+    check("the original member keeps their row and role",
+          sql("select role_id from member_roles where uid=?", victim_uid) == [(role.id,)]
+          and sql("select count(*) from members where uid in (?, ?)", victim_uid, impostor_uid) == [(2,)])
     impostor.close()
+    owner.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(uid=impostor_uid))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "kick")
+    check("kick by uid removes only that account", sql("select uid from members where username='c2victim'") == [(victim_uid,)])
 
-    # Rename: same uid, new display name → membership + roles follow the identity.
+    # Rename: same uid, new name → same row, roles untouched; the roster
+    # retires the old name and upserts the new one.
     bob_uid = uid_for("c2bob")
     bob = join("c2bob", owner)
     owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ,
                member_roles_update_req=pb.MemberRolesUpdateRequest(username="c2bob", role_ids=[role.id]))
     owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
-    check("bob granted the role", sql("select role_id from member_roles where username='c2bob'") == [(role.id,)])
+    check("bob granted the role (by name, older clients)", sql("select role_id from member_roles where uid=?", bob_uid) == [(role.id,)])
     bob.close()
+    owner.flush(0.5)
 
     # Reconnect under a new name with the SAME uid — no invite needed (member by identity).
     renamed = Client("c2bob_renamed", uid=bob_uid)
     ok, r = auth_ok(renamed)
     check("renamed account admitted without an invite", ok, r.community_auth_res.error_code if r else None)
-    check("rename moved the row to the new name",
-          sql("select uid from members where username='c2bob_renamed'") == [(bob_uid,)])
-    check("old name no longer present", sql("select count(*) from members where username='c2bob'") == [(0,)])
-    check("renamed account kept its role",
-          sql("select role_id from member_roles where username='c2bob_renamed'") == [(role.id,)])
+    check("rename updated the name on the same row",
+          sql("select uid from members where username='c2bob_renamed'") == [(bob_uid,)]
+          and sql("select count(*) from members where username='c2bob'") == [(0,)])
+    check("renamed account kept its role", sql("select role_id from member_roles where uid=?", bob_uid) == [(role.id,)])
+    rm = owner.wait(pb.Packet.MEMBER_REMOVE, pred=lambda p: p.member_remove.username == "c2bob")
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, pred=lambda p: p.member_upsert.member.username == "c2bob_renamed")
+    check("roster: old name removed, new name upserted, same uid",
+          rm is not None and rm.member_remove.uid == bob_uid and up is not None and up.member_upsert.member.uid == bob_uid)
     renamed.close(); owner.close()
 
 
@@ -2761,7 +2983,7 @@ def test_v11_migration():
     proc = start_server(); stop_server(proc)
     check("v10 → v12: a category with rows stays a plain group", sql("select category_sync from channels where id='old-cat'") == [(0,)])
     check("...and its channel follows nothing", perm_synced("old-child") == 0)
-    check("schema at the latest (v14)", sql("select value from server_meta where key='schema_version'") == [("14",)])
+    check("schema at the latest (v15)", sql("select value from server_meta where key='schema_version'") == [("15",)])
     # A DB that ran v11 live keeps the categories whose rows were applying.
     sql("update channels set perm_synced=1 where id='old-child'")
     sql("update server_meta set value='11' where key='schema_version'")
@@ -3166,6 +3388,10 @@ def test_presence_follows_visibility():
 
 
 if __name__ == "__main__":
+    if OLD_SERVER_BIN:
+        test_v15_uid_migration()
+    else:
+        print("(DECIBELL_E2E_SERVER_OLD unset: v15 migration check skipped)")
     test_b1_seed_resurrection()
     test_v11_migration()
     test_v14_search_migration()
@@ -3228,6 +3454,7 @@ if __name__ == "__main__":
         test_storage()
         test_x3_upload_membership_recheck()
         test_theme_a_tokens_and_uid()
+        test_uid_wire()
     finally:
         stop_server(proc)
     test_b9_timeouts()

@@ -94,7 +94,7 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   (2026-10-14): every backend, central or community, keys stored rows, filters, ownership checks and
   purges on the account uid so a rename never breaks a feature; resolve names to uids at the request
   edge (e.g. `messages.sender_uid`). Flag username-keyed spots instead of leaving them. The migration
-  is staged in `docs/superpowers/specs/2026-10-15-uid-identity-design.md` (central done): every wire
+  is staged in `docs/superpowers/specs/2026-10-15-uid-identity-design.md` (central and community done): every wire
   user reference carries `*_uid` next to the name, requests prefer the uid (the name is the typed-name
   fallback), payload names are current names, and rows with an envelope also carry `sealed_*` names
   (what a v1 envelope binds). Never rewrite a stored sent-under name.

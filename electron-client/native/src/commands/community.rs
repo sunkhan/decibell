@@ -210,6 +210,7 @@ pub async fn timeout_member(args: TimeoutMemberArgs) -> napi::Result<()> {
             username: args.username,
             until: args.until,
             reason: args.reason.unwrap_or_default(),
+            uid: 0,
         }),
     )
     .await
@@ -248,6 +249,7 @@ pub async fn voice_mod(args: VoiceModArgs) -> napi::Result<()> {
             username: args.username,
             action: action as i32,
             channel_id: args.channel_id.unwrap_or_default(),
+            uid: 0,
         }),
     )
     .await
@@ -268,6 +270,7 @@ pub async fn transfer_ownership(args: TransferOwnershipArgs) -> napi::Result<()>
         packet::Type::TransferOwnershipReq,
         packet::Payload::TransferOwnershipReq(TransferOwnershipRequest {
             new_owner: args.new_owner,
+            new_owner_uid: 0,
         }),
     )
     .await
@@ -312,6 +315,7 @@ pub async fn kick_member(args: KickMemberArgs) -> napi::Result<()> {
         packet::Payload::KickMemberReq(KickMemberRequest {
             username,
             reason: reason.unwrap_or_default(),
+            uid: 0,
         }),
     )
     .await
@@ -346,6 +350,7 @@ pub async fn ban_member(args: BanMemberArgs) -> napi::Result<()> {
             reason: reason.unwrap_or_default(),
             expires_at: expires_at.unwrap_or(0),
             delete_message_seconds: delete_message_seconds.unwrap_or(0),
+            uid: 0,
         }),
     )
     .await
@@ -390,6 +395,7 @@ pub async fn create_invite(args: CreateInviteArgs) -> napi::Result<()> {
             max_uses: args.max_uses,
             for_user: args.for_user.unwrap_or_default(),
             request_id: args.request_id.unwrap_or(0),
+            for_uid: 0,
         }),
     )
     .await
@@ -537,6 +543,7 @@ pub async fn set_member_roles(args: SetMemberRolesArgs) -> napi::Result<()> {
         packet::Payload::MemberRolesUpdateReq(MemberRolesUpdateRequest {
             username: args.username,
             role_ids: args.role_ids,
+            uid: 0,
         }),
     )
     .await
@@ -555,6 +562,7 @@ pub async fn unban_member(args: UnbanMemberArgs) -> napi::Result<()> {
         packet::Type::UnbanMemberReq,
         packet::Payload::UnbanMemberReq(UnbanMemberRequest {
             username: args.username,
+            uid: 0,
         }),
     )
     .await
@@ -580,7 +588,7 @@ pub async fn set_nickname(args: SetNicknameArgs) -> napi::Result<()> {
     send_for_server(
         &server_id,
         packet::Type::SetNicknameReq,
-        packet::Payload::SetNicknameReq(SetNicknameRequest { username, nickname }),
+        packet::Payload::SetNicknameReq(SetNicknameRequest { username, nickname, uid: 0 }),
     )
     .await
 }

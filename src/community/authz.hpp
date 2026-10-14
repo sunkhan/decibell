@@ -63,10 +63,11 @@ enum class Action {
     ViewOverwrites,     // MANAGE_ROLES or MANAGE_CHANNELS in the channel
 };
 
+// Users by uid (docs/superpowers/specs/2026-10-15-uid-identity-design.md).
 struct AuthCtx {
-    std::string user;
+    int64_t user = 0;
     std::string channel_id;   // channel-scoped actions
-    std::string target;       // target username for moderation actions
+    int64_t target = 0;       // target's uid for moderation actions
 };
 
 struct AuthResult {
@@ -84,14 +85,14 @@ public:
     // `everyone` can't moderate each other even if `everyone` carries
     // KICK_MEMBERS — grant a real role. ADMINISTRATOR never bypasses this.
     // Used for the heavy actions: kick, ban, timeout, roles.
-    bool can_moderate(const std::string& actor, const std::string& target) const {
+    bool can_moderate(int64_t actor, int64_t target) const {
         return db_.member_level(actor) > db_.member_level(target);
     }
 
     // The light actions (nicknames, voice moderation) also work between
     // peers: members whose highest role is the same one, when that role
     // has "members can manage each other" on (v3).
-    bool can_manage(const std::string& actor, const std::string& target) const {
+    bool can_manage(int64_t actor, int64_t target) const {
         return can_moderate(actor, target) || db_.are_peers(actor, target);
     }
 
@@ -99,7 +100,7 @@ public:
     // attach, join voice or stream; everything else (reading, presence)
     // keeps working. The owner can't be timed out (can_moderate forbids
     // it) so no bypass is needed here.
-    int64_t timeout_until(const std::string& user) const {
+    int64_t timeout_until(int64_t user) const {
         auto m = db_.get_member(user);
         if (!m || m->timed_out_until == 0) return 0;
         const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
@@ -107,7 +108,7 @@ public:
         return m->timed_out_until > now ? m->timed_out_until : 0;
     }
 
-    uint64_t channel_permissions(const std::string& user, const std::string& channel_id) const {
+    uint64_t channel_permissions(int64_t user, const std::string& channel_id) const {
         return db_.channel_permissions(user, channel_id);
     }
 
@@ -116,7 +117,7 @@ public:
     // category hides its synced channels, and an empty hidden header
     // shouldn't linger). Never a hidden category with nothing under it,
     // so the client's "nearest category above" stays right.
-    std::vector<DbChannel> visible_channels(const std::string& user) const {
+    std::vector<DbChannel> visible_channels(int64_t user) const {
         std::vector<DbChannel> out;
         std::optional<DbChannel> pending_category;
         for (auto& ch : db_.list_channels()) {
@@ -184,7 +185,7 @@ public:
             case Action::TimeoutMember: {
                 auto r = base(ctx, perms::kModerateMembers, "You don't have permission to time out members.");
                 if (!r) return r;
-                if (ctx.target == db_.owner()) return deny("The server owner can't be timed out.");
+                if (ctx.target == db_.owner_uid()) return deny("The server owner can't be timed out.");
                 if (ctx.target == ctx.user) return deny("You can't time yourself out.");
                 if (!can_moderate(ctx.user, ctx.target)) {
                     return deny("You can't time out a member with an equal or higher role.");
@@ -198,7 +199,7 @@ public:
             case Action::MoveMember:
                 return voice_mod(ctx, perms::kMoveMembers, "You don't have permission to move members.");
             case Action::TransferOwnership:
-                return ctx.user == db_.owner() ? ok() : deny("Only the server owner can transfer ownership.");
+                return ctx.user == db_.owner_uid() ? ok() : deny("Only the server owner can transfer ownership.");
             case Action::KickMember: {
                 auto r = base(ctx, perms::kKickMembers, "You don't have permission to kick members.");
                 if (!r) return r;
@@ -287,14 +288,14 @@ private:
     AuthResult voice_mod(const AuthCtx& ctx, uint64_t bit, const char* why) const {
         auto r = ctx.channel_id.empty() ? base(ctx, bit, why) : channel(ctx, bit, why);
         if (!r) return r;
-        if (ctx.target == db_.owner()) return deny("The server owner can't be voice-moderated.");
+        if (ctx.target == db_.owner_uid()) return deny("The server owner can't be voice-moderated.");
         if (!can_manage(ctx.user, ctx.target)) {
             return deny("You can't voice-moderate a member with an equal or higher role.");
         }
         return ok();
     }
     AuthResult moderation_target(const AuthCtx& ctx, const char* verb) const {
-        if (ctx.target == db_.owner()) {
+        if (ctx.target == db_.owner_uid()) {
             return deny(verb[0] == 'k' ? "Cannot kick the server owner."
                                        : "Cannot ban the server owner.");
         }

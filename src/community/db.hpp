@@ -13,9 +13,14 @@ struct sqlite3;
 
 namespace chatproj {
 
+// Users are keyed by central's account uid (users by uid,
+// docs/superpowers/specs/2026-10-15-uid-identity-design.md). A negative uid
+// is a legacy placeholder: a name seen before uids reached this server,
+// rewritten to the real uid when a token with that name first
+// authenticates (claim_legacy). Names are the latest one seen.
 struct DbMember {
-    std::string username;
-    int64_t uid = 0;               // central's stable user id (0 = unknown / pre-Theme-A)
+    int64_t uid = 0;
+    std::string username;          // latest name seen (from the member's token)
     int64_t joined_at = 0;
     std::string nickname;
     int64_t timed_out_until = 0;   // unix seconds; 0 = not timed out
@@ -25,13 +30,15 @@ struct DbMember {
 
 struct DbInvite {
     std::string code;
-    std::string created_by;
+    int64_t created_by_uid = 0;
+    std::string created_by;   // current name ('' once they left)
     int64_t created_at = 0;
     int64_t expires_at = 0; // 0 = never
     int32_t max_uses = 0;   // 0 = unlimited
     int32_t uses = 0;
-    // Personal invite: only this username can redeem it ("" = anyone).
-    std::string for_user;
+    // Personal invite: only this account can redeem it (0 = anyone).
+    int64_t for_uid = 0;
+    std::string for_user;     // their name when the invite was made
 };
 
 struct DbChannel {
@@ -64,7 +71,9 @@ struct DbChannel {
 struct DbMessage {
     int64_t id = 0;
     std::string channel_id;
-    std::string sender;
+    int64_t sender_uid = 0;
+    std::string sender;        // current name (the member's), else sent_sender
+    std::string sent_sender;   // the name it was sent under (a v1 envelope binds it)
     std::string content;
     int64_t timestamp = 0;
     int64_t edited_at = 0;   // unix seconds; 0 = never edited
@@ -72,7 +81,9 @@ struct DbMessage {
     // Embedded parent preview, resolved by LEFT JOIN at fetch time so reply
     // previews render even when the parent is outside the client's loaded
     // window. Empty sender with reply_to>0 = parent was deleted.
-    std::string reply_to_sender;
+    int64_t reply_to_sender_uid = 0;
+    std::string reply_to_sender;        // current name
+    std::string reply_to_sent_sender;   // the name it was sent under
     std::string reply_to_content;
     // Attachment.Kind of each of the parent's attachments, position order —
     // labels an attachment-only parent ("Image", "Video", …) on the client.
@@ -85,9 +96,12 @@ struct DbMessage {
 };
 
 // One escrowed epoch key blob (opaque to the server).
+// The names are the ones it was sealed under (a v1 pairwise envelope binds them).
 struct DbChannelKeyBlob {
     uint32_t epoch = 0;
+    int64_t sender_uid = 0;
     std::string sender;
+    int64_t recipient_uid = 0;
     std::string recipient;
     std::string blob;
 };
@@ -109,7 +123,7 @@ struct DbAttachment {
     //                 bound to a message and downloaded
     std::string upload_status;
     int64_t expected_size = 0; // declared at init; used to validate final size
-    std::string uploader;      // username that POSTed /init
+    int64_t uploader_uid = 0;  // account that POSTed /init
     std::string channel_id;    // channel the upload was initiated for (VIEW gate on GET)
     // Intrinsic pixel dimensions; 0 if unknown (older row or non-image kind).
     // Populated from the uploader's init metadata.
@@ -146,8 +160,10 @@ struct PurgedAttachmentInfo {
 };
 
 struct DbBan {
-    std::string username;
+    int64_t uid = 0;           // negative: a name-only ban, matched by `username` until claimed
+    std::string username;      // their name when banned
     int64_t banned_at = 0;
+    int64_t banned_by_uid = 0;
     std::string banned_by;
     std::string reason;
     int64_t expires_at = 0;   // 0 = permanent
@@ -173,8 +189,10 @@ struct StorageUsage {
 struct DbAuditEntry {
     int64_t id = 0;
     int64_t timestamp = 0;
-    std::string actor;
+    int64_t actor_uid = 0;     // 0 for entries from before users by uid
+    std::string actor;         // the actor's name at the time
     std::string action;
+    int64_t target_uid = 0;    // set when the target is a member
     std::string target;
     std::string channel_id;
     std::string details;
@@ -290,7 +308,8 @@ constexpr size_t kMaxNicknameBytes    = 32;
 constexpr int64_t kDefaultMinFreeBytes = 2LL * 1024 * 1024 * 1024;
 
 // One per-channel permission overwrite (Discord model). target_type 0 =
-// role (target_id = role id as decimal text), 1 = member (username).
+// role (target_id = role id as decimal text), 1 = member (uid as decimal
+// text).
 struct DbOverwrite {
     std::string channel_id;
     int32_t target_type = 0;
@@ -323,14 +342,17 @@ public:
 
     // Opens/creates the DB file. If the file is freshly created, seeds
     // server_meta (owner/name/description), the default channels, and
-    // adds the owner to members. Returns false on unrecoverable errors.
+    // adds the owner to members — under a legacy placeholder uid, claimed
+    // when the owner's token first authenticates (the operator configures
+    // a name). Returns false on unrecoverable errors.
     bool open(const std::string& path,
               const std::string& owner_username,
               const std::string& server_name,
               const std::string& server_description);
 
     // --- server_meta ---
-    std::string owner() const;
+    // The owner's uid (negative until a fresh server's owner first connects).
+    int64_t owner_uid() const;
     std::string server_name() const;
     std::string server_description() const;
     // In-app server rename (MANAGE_SERVER). The DB is the source of truth;
@@ -344,7 +366,7 @@ public:
     void set_public_listing(bool on);
     // Ownership transfer: new owner must be a member. Invalidates all
     // permission caches (owner is resolved from server_meta).
-    bool transfer_ownership(const std::string& new_owner);
+    bool transfer_ownership(int64_t new_owner_uid);
 
     // --- auto-rejoin: cached central-assigned server_id ---
     // Survives community restarts so we don't depend on a fresh
@@ -357,24 +379,19 @@ public:
     void set_central_cert_fingerprint(const std::string& fp);
 
     // --- membership ---
-    bool is_member(const std::string& username) const;
-    // Records a new membership. If the username slot is held by a stale row
-    // of a DIFFERENT identity (previous holder renamed at central), that row
-    // and its roles/overwrites are evicted first so the newcomer never
-    // inherits them. Returns true only if a row was actually inserted.
-    bool add_member(const std::string& username, int64_t uid = 0);
-    // Back-fills the stable uid on a pre-Theme-A member row (one whose uid is
-    // still 0), and on the messages they sent under this name. Never
-    // overwrites an already-stamped uid — identity, once
-    // learned, is immutable; a different uid claiming the same name is a
-    // reused username, not an update.
-    void set_member_uid(const std::string& username, int64_t uid);
-    bool remove_member(const std::string& username);
-    // Moves a member's identity to a new display name (central renamed the
-    // account), carrying roles, overwrites and nickname. Any stale row under
-    // the target name is evicted first. Keyed by the caller having resolved
-    // identity via uid. False if the source row is missing or on DB error.
-    bool rename_member(const std::string& old_username, const std::string& new_username);
+    bool is_member(int64_t uid) const;
+    // Records a new membership. True only if a row was actually inserted.
+    bool add_member(int64_t uid, const std::string& username);
+    // A legacy placeholder for `username` (a name seen before uids reached
+    // this server, or a fresh server's configured owner) becomes `uid` in
+    // every table, in one transaction. Only when `uid` has no member row
+    // yet. True if a placeholder was claimed.
+    bool claim_legacy(int64_t uid, const std::string& username);
+    // The member's token carries another name than their row (renamed at
+    // central): store the new one. Returns the previous name, or nullopt
+    // when unchanged / not a member.
+    std::optional<std::string> refresh_member_name(int64_t uid, const std::string& username);
+    bool remove_member(int64_t uid);
     std::vector<DbMember> list_members() const;
 
     // --- Encrypted text channels (spec 2026-09-04) ---
@@ -384,59 +401,70 @@ public:
     uint32_t channel_key_current_epoch(const std::string& channel_id) const;
     // Create `epoch` (must be current + 1). False when the sequence is wrong.
     bool channel_key_create_epoch(const std::string& channel_id, uint32_t epoch,
-                                  const std::string& created_by, int64_t now);
+                                  int64_t created_by_uid, int64_t now);
+    // One blob to store: its recipient and the names it is sealed under.
+    struct KeyBlobIn {
+        int64_t recipient_uid = 0;
+        std::string recipient;
+        std::string blob;
+    };
     // Insert blobs that don't exist yet for (epoch, recipient); returns how many landed.
     int channel_key_insert_blobs(const std::string& channel_id, uint32_t epoch,
-                                 const std::string& sender,
-                                 const std::vector<std::pair<std::string, std::string>>& blobs,
+                                 int64_t sender_uid, const std::string& sender,
+                                 const std::vector<KeyBlobIn>& blobs,
                                  int64_t now);
-    // Every blob sealed to `recipient` for the channel (all epochs).
+    // Every blob sealed to `recipient_uid` for the channel (all epochs).
     std::vector<DbChannelKeyBlob> channel_key_blobs_for(const std::string& channel_id,
-                                                        const std::string& recipient) const;
-    // Epochs (1..=current) `username` has no blob for.
+                                                        int64_t recipient_uid) const;
+    // Epochs (1..=current) `uid` has no blob for.
     std::vector<uint32_t> channel_key_missing_epochs(const std::string& channel_id,
-                                                     const std::string& username) const;
-    // Usernames holding a blob for `epoch`.
-    std::vector<std::string> channel_key_holders(const std::string& channel_id, uint32_t epoch) const;
-    // Drop every blob sealed to `recipient` (member removed).
-    void channel_key_delete_recipient(const std::string& recipient);
+                                                     int64_t uid) const;
+    // Accounts holding a blob for `epoch`.
+    std::vector<int64_t> channel_key_holders(const std::string& channel_id, uint32_t epoch) const;
+    // Drop every blob sealed to `recipient_uid` (member removed).
+    void channel_key_delete_recipient(int64_t recipient_uid);
     // Text channels with a non-zero epoch (for removal-driven rotations).
     std::vector<std::string> channel_key_channels_with_epochs() const;
-    std::optional<DbMember> get_member(const std::string& username) const;
-    // Resolves a member by their stable central uid (the identity anchor),
-    // independent of the current display name. nullopt if uid <= 0 or no row.
-    std::optional<DbMember> get_member_by_uid(int64_t uid) const;
+    std::optional<DbMember> get_member(int64_t uid) const;
+    // The member currently known by `username` — for requests that name a
+    // target by name (older clients, typed names). Never an identity check.
+    std::optional<DbMember> find_member_by_name(const std::string& username) const;
     int64_t count_members() const;
     // Timeout (unix seconds; 0 clears). False if not a member.
-    bool set_timeout(const std::string& username, int64_t until);
+    bool set_timeout(int64_t uid, int64_t until);
     // Moderator voice flags, persisted across sessions.
-    bool set_server_voice_flags(const std::string& username, bool muted, bool deafened);
+    bool set_server_voice_flags(int64_t uid, bool muted, bool deafened);
 
     // --- bans ---
     // Expired bans (expires_at != 0 && <= now) count as not banned and are
-    // lazily deleted. A ban matches by username OR (when both sides know
-    // it) by the stable uid, so renaming an account at central doesn't
-    // lift it.
-    bool is_banned(const std::string& username, int64_t uid = 0) const;
-    std::optional<DbBan> get_ban(const std::string& username) const;
-    bool add_ban(const std::string& username,
-                 const std::string& banned_by,
+    // lazily deleted. A ban matches by uid; a name-only ban (negative uid:
+    // legacy, or a name never seen here) matches `username` until that
+    // name's first token claims it.
+    bool is_banned(int64_t uid, const std::string& username) const;
+    std::optional<DbBan> get_ban(int64_t uid) const;
+    // Removes the membership (roles, overwrites) and records the ban.
+    bool add_ban(int64_t uid, const std::string& username,
+                 int64_t banned_by_uid, const std::string& banned_by,
                  const std::string& reason,
                  int64_t expires_at = 0);
-    bool remove_ban(const std::string& username);
+    bool remove_ban(int64_t uid);
     std::vector<DbBan> list_bans() const;
+    // The placeholder uid for a name nobody here has a uid for yet (a ban
+    // of a never-seen name), allocated on first use.
+    int64_t placeholder_for_name(const std::string& username);
 
     // --- invites ---
     // Generates a code and inserts a new invite. Returns the created invite on
     // success, or std::nullopt on failure.
-    std::optional<DbInvite> create_invite(const std::string& created_by,
+    std::optional<DbInvite> create_invite(int64_t created_by_uid,
                                           int64_t expires_at,
                                           int32_t max_uses,
+                                          int64_t for_uid = 0,
                                           const std::string& for_user = "");
-    // A still-redeemable personal invite `created_by` made for `for_user`,
-    // so asking again hands out the same one instead of piling up more.
-    std::optional<DbInvite> find_personal_invite(const std::string& created_by,
-                                                 const std::string& for_user) const;
+    // A still-redeemable personal invite `created_by_uid` made for
+    // `for_uid`, so asking again hands out the same one instead of piling
+    // up more.
+    std::optional<DbInvite> find_personal_invite(int64_t created_by_uid, int64_t for_uid) const;
     std::vector<DbInvite> list_invites() const;
     bool revoke_invite(const std::string& code);
 
@@ -445,8 +473,8 @@ public:
     // redeeming user to members — the caller does that after the connection is
     // accepted.
     InviteResult redeem_invite(const std::string& code,
-                               const std::string& redeeming_user,
                                int64_t redeeming_uid,
+                               const std::string& redeeming_name,
                                DbInvite* out_invite);
 
     // --- roles + permissions ---
@@ -474,26 +502,25 @@ public:
     // the position gap. Returns false if missing/default/DB error.
     bool delete_role(int64_t role_id);
     // Assigned role ids for one member (default role not included).
-    std::vector<int64_t> get_member_role_ids(const std::string& username) const;
-    // username -> assigned role ids, for building member lists in one query.
-    std::vector<std::pair<std::string, int64_t>> list_all_member_roles() const;
+    std::vector<int64_t> get_member_role_ids(int64_t uid) const;
+    // (uid, assigned role id) pairs, for building member lists in one query.
+    std::vector<std::pair<int64_t, int64_t>> list_all_member_roles() const;
     // role id -> how many members hold it (roles nobody holds are absent).
     std::unordered_map<int64_t, int64_t> role_member_counts() const;
     // Replaces the member's role set. Caller validates hierarchy; this
     // only checks that every id references an existing non-default role.
-    bool set_member_roles(const std::string& username,
-                          const std::vector<int64_t>& role_ids);
+    bool set_member_roles(int64_t uid, const std::vector<int64_t>& role_ids);
     // OR of `everyone` + the member's roles. Owner → perms::kAll.
     // A set kAdministrator bit expands to perms::kAll.
-    uint64_t effective_permissions(const std::string& username) const;
-    bool has_permission(const std::string& username, uint64_t perm) const;
+    uint64_t effective_permissions(int64_t uid) const;
+    bool has_permission(int64_t uid, uint64_t perm) const;
     // Hierarchy level: highest assigned role position (0 with no roles).
     // Owner → INT32_MAX. Used for "can only act below yourself" checks.
-    int32_t member_level(const std::string& username) const;
+    int32_t member_level(int64_t uid) const;
     // Peers (permissions v3): both members' highest role is the same role
     // (same level — positions are unique; level 0 = `everyone`) and it has
     // manage_each_other set. Never true for the owner or for oneself.
-    bool are_peers(const std::string& a, const std::string& b) const;
+    bool are_peers(int64_t a, int64_t b) const;
 
     // --- permissions v2: per-channel overwrites ---
     // See docs/superpowers/specs/2026-08-22-permissions-v2-design.md.
@@ -539,20 +566,17 @@ public:
     // join holds VIEW_CHANNEL + CONNECT there while in it. Runtime only
     // (never persisted); the session layer grants on move and revokes
     // when the user's last session leaves the channel.
-    void grant_voice_pass(const std::string& username, const std::string& channel_id);
+    void grant_voice_pass(int64_t uid, const std::string& channel_id);
     // True if a pass was actually removed.
-    bool revoke_voice_pass(const std::string& username, const std::string& channel_id);
-    bool has_voice_pass(const std::string& username, const std::string& channel_id) const;
+    bool revoke_voice_pass(int64_t uid, const std::string& channel_id);
+    bool has_voice_pass(int64_t uid, const std::string& channel_id) const;
     // The user's resolved permissions in `channel_id`:
     //   base (effective_permissions) → everyone overwrite → OR of role
     //   overwrites → member overwrite; owner / ADMINISTRATOR bypass
     //   overwrites; a result without VIEW_CHANNEL collapses to 0.
     // Unknown channel → 0. Cached per (user, channel).
-    uint64_t channel_permissions(const std::string& username,
-                                 const std::string& channel_id) const;
-    bool has_channel_permission(const std::string& username,
-                                const std::string& channel_id,
-                                uint64_t perm) const;
+    uint64_t channel_permissions(int64_t uid, const std::string& channel_id) const;
+    bool has_channel_permission(int64_t uid, const std::string& channel_id, uint64_t perm) const;
 
     // --- channels ---
     std::vector<DbChannel> list_channels() const;
@@ -593,7 +617,7 @@ public:
 
     // --- nicknames ---
     // Sets (empty = clears) a member's nickname. False if not a member.
-    bool set_nickname(const std::string& username, const std::string& nickname);
+    bool set_nickname(int64_t uid, const std::string& nickname);
 
     // Update all five retention values at once. Returns false if the channel
     // doesn't exist or on DB error. Negative values are clamped to 0.
@@ -616,16 +640,16 @@ public:
     // Insert a new message, return its autoincrement id (0 on failure).
     // `reply_to` is the parent message id (0 = not a reply); it's stored only
     // if it points at an existing message in the same channel, else 0.
-    // `sender_uid` is the sender's central account id (the identity
-    // anchor search, edits, deletes and purges key on); 0 = unknown.
+    // `sender_uid` is the sender's account (what search, edits, deletes
+    // and purges key on); `sender` the name it is sent under.
     int64_t insert_message(const std::string& channel_id,
+                           int64_t sender_uid,
                            const std::string& sender,
                            const std::string& content,
                            int64_t timestamp,
                            int64_t reply_to = 0,
                            const std::string& envelope = std::string(),
-                           bool suppress_embeds = false,
-                           int64_t sender_uid = 0);
+                           bool suppress_embeds = false);
     // Newest-first page. `before_id = 0` means "most recent". Results are
     // ordered newest→oldest; caller reverses if they want oldest→newest.
     // `has_more` is set to true if more messages exist older than the page.
@@ -670,7 +694,7 @@ public:
                                       const std::string& mime,
                                       int64_t expected_size,
                                       const std::string& storage_path,
-                                      const std::string& uploader,
+                                      int64_t uploader_uid,
                                       int32_t position,
                                       int32_t width,
                                       int32_t height,
@@ -703,14 +727,14 @@ public:
                                        int32_t size_bit,
                                        int64_t bytes);
     // Bind previously-uploaded attachments to a message. Only attachments
-    // that are 'ready', owned by `uploader`, currently unbound (message_id=0),
-    // and belong to `channel_id` get bound. Returns the list of ids that
-    // were successfully bound.
+    // that are 'ready', uploaded by `uploader_uid`, currently unbound
+    // (message_id=0), and belong to `channel_id` get bound. Returns the
+    // list of ids that were successfully bound.
     std::vector<int64_t> bind_attachments(const std::vector<int64_t>& attachment_ids,
                                           int64_t message_id,
                                           const std::string& channel_id,
-                                          const std::string& uploader,
-                                        bool require_encrypted = false);
+                                          int64_t uploader_uid,
+                                          bool require_encrypted = false);
     // Unbound attachments (message_id=0) the retention sweep should clean
     // up, with a cutoff per lifecycle state (created_at in unix seconds):
     //   - 'uploading' rows idle since before `uploading_cutoff_ts` (no
@@ -752,23 +776,19 @@ public:
         std::vector<std::string> unlink_paths;
     };
 
-    /// The sender of the given message in this channel (the name it was
-    /// sent under + the account uid, 0 for rows nobody could be matched
-    /// to), or nullopt if no such row exists.
+    /// The sender of the given message in this channel (the account and
+    /// the name it was sent under), or nullopt if no such row exists.
     struct MessageSender {
-        std::string username;
         int64_t uid = 0;
-        // Same account as (username, uid)? By uid when the row has one,
-        // else by name — so a rename never loses ownership.
-        bool is(const std::string& name, int64_t user_uid) const {
-            return uid > 0 ? uid == user_uid : username == name;
-        }
+        std::string username;
     };
     std::optional<MessageSender> get_message_sender(
         const std::string& channel_id, int64_t message_id) const;
 
     struct MessagePreview {
-        std::string sender;
+        int64_t sender_uid = 0;
+        std::string sender;        // current name
+        std::string sent_sender;   // the name it was sent under
         std::string content;
         std::vector<int32_t> attachment_kinds;  // Attachment.Kind, position order
         std::string envelope;                   // encrypted channels
@@ -780,11 +800,11 @@ public:
         const std::string& channel_id, int64_t message_id) const;
 
     /// Edits a message's content in place, enforcing ownership in SQL (the
-    /// row's sender_uid must be `editor_uid`, or for a row without one, its
-    /// sender must be `editor`). Stamps edited_at. Returns true only if a
-    /// row was updated (exists, in this channel, owned by editor).
+    /// row's sender_uid must be `editor_uid`). Stamps edited_at. Returns
+    /// true only if a row was updated (exists, in this channel, owned by
+    /// editor).
     bool edit_message(const std::string& channel_id, int64_t message_id,
-                      const std::string& editor, int64_t editor_uid,
+                      int64_t editor_uid,
                       const std::string& content,
                       int64_t edited_at,
                       const std::string& envelope = std::string(),
@@ -796,9 +816,8 @@ public:
     DeleteMessageResult delete_message(
         const std::string& channel_id, int64_t message_id);
 
-    /// Forward-compat permission helper. owner() == username today;
-    /// extends with an OR clause when roles ship.
-    bool can_delete_others(const std::string& username) const;
+    /// Forward-compat permission helper: the owner today.
+    bool can_delete_others(int64_t uid) const;
     // Delete every message + attachment row for `channel_id`, returning
     // the counts and the storage paths whose blobs (and thumbnails) the
     // server should unlink. Wrapped in a transaction so a failure mid-way
@@ -807,16 +826,14 @@ public:
 
     // --- ban purge ---
     // Deletes every message the account posted since `since_ts` (plus
-    // their attachment rows): by `sender_uid` when known (> 0), so a rename
-    // can't shield them; by name only for rows without a uid. Returns (channel_id, message_id) pairs for
-    // CHANNEL_MESSAGE_DELETED broadcasts and blob paths to unlink.
+    // their attachment rows), by uid, so a rename can't shield them.
+    // Returns (channel_id, message_id) pairs for CHANNEL_MESSAGE_DELETED
+    // broadcasts and blob paths to unlink.
     struct PurgedMessages {
         std::vector<std::pair<std::string, int64_t>> messages;
         std::vector<std::string> unlink_paths;
     };
-    PurgedMessages delete_messages_by_sender_since(const std::string& sender,
-                                                   int64_t sender_uid,
-                                                   int64_t since_ts);
+    PurgedMessages delete_messages_by_sender_since(int64_t sender_uid, int64_t since_ts);
 
     // --- storage ---
     // Aggregates this community's attachment footprint from the DB.
@@ -832,9 +849,11 @@ public:
     int64_t set_min_free_bytes(int64_t bytes);
 
     // --- audit log ---
-    void add_audit(const std::string& actor, const std::string& action,
-                   const std::string& target, const std::string& channel_id,
-                   const std::string& details);
+    // `actor` / `target` are names at the time (kept as history); the uids
+    // are 0 when not a user (a role, an invite code, …).
+    void add_audit(int64_t actor_uid, const std::string& actor, const std::string& action,
+                   int64_t target_uid, const std::string& target,
+                   const std::string& channel_id, const std::string& details);
     // Newest first; `before_id` 0 = newest. Limit clamped to [1, 100].
     // `query` (empty = any) matches actor, target, action, details, the
     // channel's name, and the nickname or role name behind actor/target,
@@ -879,7 +898,7 @@ private:
     // Unlocked internals shared by the public role API (mutex_ held by caller).
     std::optional<DbRole> get_role_unlocked_(int64_t role_id) const;
     int32_t max_role_position_unlocked_() const;
-    uint64_t effective_permissions_unlocked_(const std::string& username) const;
+    uint64_t effective_permissions_unlocked_(int64_t uid) const;
     // Per-user (effective permissions, hierarchy level), computed once and
     // cached until any role / member-role / membership / owner change
     // (invalidate_perm_cache_ or targeted erase). has_permission() runs on
@@ -888,14 +907,14 @@ private:
     // manage_peers: the highest role (everyone at level 0) has
     // manage_each_other.
     struct PermEntry { uint64_t permissions = 0; int32_t level = 0; bool manage_peers = false; };
-    const PermEntry& perm_entry_unlocked_(const std::string& username) const;
+    const PermEntry& perm_entry_unlocked_(int64_t uid) const;
     void invalidate_perm_cache_();
     // Targeted: one user's server-wide + per-channel entries.
-    void invalidate_user_perms_(const std::string& username);
-    mutable std::unordered_map<std::string, PermEntry> perm_cache_;
+    void invalidate_user_perms_(int64_t uid);
+    mutable std::unordered_map<int64_t, PermEntry> perm_cache_;
     // (user, channel) → resolved channel permissions. Cleared with
     // perm_cache_ and on any overwrite / channel change.
-    mutable std::unordered_map<std::string,
+    mutable std::unordered_map<int64_t,
         std::unordered_map<std::string, uint64_t>> channel_perm_cache_;
     // channel → overwrites, loaded lazily; cleared on overwrite writes,
     // channel delete, role delete, member removal.
@@ -916,10 +935,9 @@ private:
     mutable std::unordered_map<std::string, std::string> parent_of_;   // channel → category ("" none)
     mutable std::unordered_map<std::string, bool> synced_of_;
     mutable std::unordered_map<std::string, bool> category_sync_of_;
-    // username → channels they hold a voice pass for.
-    std::unordered_map<std::string, std::set<std::string>> voice_passes_;
-    uint64_t channel_permissions_unlocked_(const std::string& username,
-                                           const std::string& channel_id) const;
+    // uid → channels they hold a voice pass for.
+    std::unordered_map<int64_t, std::set<std::string>> voice_passes_;
+    uint64_t channel_permissions_unlocked_(int64_t uid, const std::string& channel_id) const;
     void migrate_to_v6_overwrites_();
     void migrate_to_v7_moderation_();
     void migrate_to_v8_uid_();
@@ -929,11 +947,15 @@ private:
     void migrate_to_v12_category_sync_(int prior_version);
     void migrate_to_v13_topics_invites_();
     void migrate_to_v14_search_();
+    // Users by uid (2026-10-15-uid-identity-design.md).
+    void migrate_to_v15_uid_keys_();
+    // Next free placeholder (negative) uid; mutex held.
+    int64_t next_placeholder_unlocked_();
     // Creates messages_fts + its triggers and backfills it (once).
     bool create_search_index_();
     bool search_available_ = false;
-    // server_meta.owner, loaded at open() and kept in sync by set_meta_.
-    std::string owner_cache_;
+    // server_meta.owner_uid, loaded at open() and kept in sync by set_meta_.
+    int64_t owner_cache_ = 0;
     void seed_if_empty_(const std::string& owner,
                         const std::string& name,
                         const std::string& desc);

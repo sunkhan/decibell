@@ -105,6 +105,60 @@ the row counts it moved.
 - Name fields in payloads carry current names (DM history joins `users`).
 - A DM row's `sealed_*` fields are set when the row has an envelope.
 
-## Stages 2–5
+## Stage 2: community ✅
 
-Specified when each starts, in this file. The audit's community table is the checklist for stage 2.
+Done on the branch (see the review log). Verified by the community harness, 570 checks:
+- every pre-existing check, updated where it encoded the old name semantics;
+- migration v15 run on a database the previous build filled, plus rows from before uids reached the
+  server, with each placeholder then claimed by its name's token;
+- requests addressed by uid, and a uid-less token refused;
+- current names in history, and a rename retiring the old roster row.
+
+Still name-based on purpose until the client stage, because old clients parse them:
+- the media plane, where the relay stamps the sender's name into `sender_id` and keyframe / NACK
+  requests name the streamer (resolved to a uid among online sessions);
+- `VideoStreamInfo.stream_id` (`<name>_screen`);
+- member overwrites' `target_id`, which carries the current name next to `target_uid`.
+
+### Identity at auth
+
+- **Tokens must carry a uid.** Central has signed one into every token since 2026-08-22 (never 0 since
+  2081fb0), and tokens last 24 h, so a token without one is refused ("Sign in again").
+- The session keeps the uid and the token's name, which is the current name. All session state is
+  keyed by the uid.
+- **A changed name is learned at auth.** If the member row for the uid holds another name, the row is
+  updated. The roster gets a `MemberRemove` for the old name (older clients key rows by name) and an
+  upsert for the new one.
+
+### Schema (v15, one transaction)
+
+- Every user reference becomes a uid: `members` (uid primary key; `username` = the latest name seen),
+  `member_roles`, member overwrites (`target_id` = the uid in decimal, like role ids), `bans`,
+  `invites` (`created_by_uid`, `for_uid`), `attachments.uploader_uid`, `channel_key_epochs.created_by_uid`,
+  `channel_key_blobs` (`recipient_uid`, `sender_uid`) and `server_meta.owner_uid`.
+- `messages.sender_uid` already existed (v14). Rows still at 0 get mapped.
+- Names stay where they mean "the name at the time":
+  - message `sender` and key-blob `sender` / `recipient`, which a v1 envelope binds;
+  - `audit_log.actor` / `target`, as history. `actor_uid` / `target_uid` are added next to them.
+- **Legacy rows.** Members who haven't connected since 2026-08-22 have no uid, and neither do name-only
+  bans, the invites, uploads and key blobs they made, or a fresh server's configured owner.
+  - Each such name gets a negative placeholder uid, recorded in `legacy_claims (username, uid)`.
+  - When a token with that name first authenticates, the placeholder is rewritten to the real uid in
+    every table at once, and the claim row goes. That's the same trust today's name backfill uses.
+  - The owner of a fresh server (`DECIBELL_OWNER` is a name) is seeded the same way.
+  - Leftover risk: a placeholder that is never claimed could be claimed by whoever holds the name after
+    a rename (stage 5) and the 14-day reservation. Members claim theirs on their first connect after this
+    deploy, and the client connects to every membership at login, so that window is small.
+
+### Wire (additive)
+
+- Requests carry the target's uid, with the name as the fallback (resolved against `members.username`).
+- Payloads carry uids next to current names.
+- `ChannelMessage` gains `sender_uid`, `reply_to_sender_uid`, `sealed_sender` and
+  `reply_to_sealed_sender` (rule 4).
+- Key blobs keep the names they were sealed under, and carry the uids.
+- Membership sync to central sends the uid.
+
+## Stages 3–5
+
+Specified when each starts, in this file.

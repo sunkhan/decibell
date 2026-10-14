@@ -2505,3 +2505,51 @@ so a rename never breaks a feature. Design: `docs/superpowers/specs/2026-10-15-u
 
 Needs the Hetzner central rebuild; take a `pg_dump` first. Communities and clients need no change for
 this stage.
+
+**Users by uid, stage 2: community (2026-10-15) ✅** — The community server keys every user reference on
+the account uid (design: `docs/superpowers/specs/2026-10-15-uid-identity-design.md`).
+- **Auth.** Tokens must carry a uid; every live one does. The session's state is keyed by it.
+  - A changed name is learned at auth. The member row takes the new name, and the roster gets a
+    `MemberRemove` for the old one plus an upsert.
+  - `CLIENT_PING` is held to the per-packet membership check, so a removed member can't keep a session
+    alive on pings (from the audit).
+- **Schema v15** (one transaction):
+  - Primary keys move to the uid on members, member_roles, bans and key blobs. Member overwrites name
+    the uid in decimal.
+  - Uid columns are added to invites, uploads, key epochs and the audit log. `server_meta.owner` becomes
+    `owner_uid`.
+  - Names stay only as "the name at the time": message and key-blob senders (a v1 envelope binds them)
+    and audit actor / target.
+  - **Legacy rows.** A name with no uid gets a negative placeholder in `legacy_claims`: a member who
+    hasn't connected since uids arrived, a name-only ban, a personal invite for a never-seen name, or a
+    fresh server's configured owner. The first token with that name claims it, and every table is
+    rewritten at once. A member renamed onto a name never absorbs it.
+  - This replaces the old evict-by-name logic in `add_member` / `rename_member`, which could delete a
+    live member's roles (from the audit).
+- **Code.**
+  - `CommunityDb`, `Authorizer` and every SessionManager map are keyed by uid: sessions, streams,
+    watchers, thumbnails, keyframe throttle, slowmode, voice passes and permission caches.
+  - Attachment HTTP reads the token's uid for membership, uploader ownership and the rate limiter.
+  - Search filters senders by `author_uids`.
+  - Membership sync to central sends the uid.
+- **Wire** (additive):
+  - About 47 `*_uid` fields; requests prefer them, and names resolve against members' current names.
+  - Payloads carry current names. A sealed row also carries `sealed_sender`, the name it was sealed
+    under.
+  - The media plane and `stream_id` stay name-based for the client stage.
+- A pointer bug the type change surfaced: the stream-presence snapshot built `stream_id` as
+  `uid + "_screen"`, which compiles as pointer arithmetic once the key is an integer. Fixed; nothing
+  similar found.
+
+Verified:
+- community e2e 570 passed, including:
+  - v15 run on a database `main`'s binary filled, plus legacy rows, with every claim checked
+    (`DECIBELL_E2E_SERVER_OLD`);
+  - uid-addressed moderation, invites and search;
+  - current names in history after a rename;
+  - the C2 / Theme A checks rewritten for uid keys;
+- central e2e 123 passed after the proto change;
+- `cargo test --lib` 223 passed.
+
+Needs the community rebuild on the Hetzner box (back up `c.db` first). Clients need no change for this
+stage.
