@@ -67,6 +67,9 @@ pub struct AppState {
     pub central: Option<CentralClient>,
     pub communities: HashMap<String, CommunityClient>,
     pub username: Option<String>,
+    /// Our account uid (LoginResponse.uid; users by uid). 0 until login,
+    /// or against a central from before it was sent.
+    pub uid: i64,
     pub token: Option<String>,
     /// Stored login credentials so a dropped central connection can
     /// silently re-authenticate. Cleared on logout. Persisted (encrypted)
@@ -182,6 +185,7 @@ impl Default for AppState {
             central: None,
             communities: HashMap::new(),
             username: None,
+            uid: 0,
             token: None,
             credentials: None,
             pending_invite_resolves: HashMap::new(),

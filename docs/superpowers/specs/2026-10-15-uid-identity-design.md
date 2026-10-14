@@ -159,6 +159,23 @@ Still name-based on purpose until the client stage, because old clients parse th
 - Key blobs keep the names they were sealed under, and carry the uids.
 - Membership sync to central sends the uid.
 
-## Stages 3–5
+## Stage 3: client ✅
+
+- **Native.** Every event payload that names a user carries its uid, and `login_succeeded` carries ours
+  (also kept in `AppState.uid`). Every command that targets someone takes an optional uid and sends it,
+  so the server falls back to the name when it is absent.
+- **Renderer.** The payload types mirror the uids. `features/users/userDirectory.ts` keeps the latest
+  uid seen for each name, fed by every event that carries both. A request that targets someone sends
+  `uidOf(name)`: moderation, roles, nicknames, voice moderation, ownership, overwrites, invites, DMs,
+  friends, calls, streams and search senders.
+- **Stores stay keyed by name** (see "Why the client keeps name-keyed stores").
+- **What stays on names:**
+  - E2EE pins and the keystore move to uids in stage 4, with the binding.
+  - Voice volumes and local mutes follow the media plane, which names speakers. Stage 5 re-keys them on
+    a rename.
+  - Avatar fetches match the reply by name. Stage 5 refreshes them on a rename.
+  - Nothing else user-keyed is stored on the device.
+
+## Stages 4–5
 
 Specified when each starts, in this file.

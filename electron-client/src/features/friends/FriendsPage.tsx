@@ -18,6 +18,7 @@ import { StatusDot } from "../../components/StatusDot";
 import { STATUS_LABEL as PRESENCE_LABEL, usePresence, useStatusMessage } from "../../stores/presenceStore";
 import { StatusMessageText } from "../../components/StatusMessageText";
 import type { FriendInfo } from "../../types";
+import { uidOf } from "../users/userDirectory";
 
 // Mirrors FriendActionType in proto/messages.proto.
 const ACTION = { ADD: 0, REMOVE: 1, BLOCK: 2, ACCEPT: 3, REJECT: 4 } as const;
@@ -152,7 +153,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
   const message = useStatusMessage(username);
 
   const act = (action: number) => {
-    invoke("send_friend_action", { action, targetUsername: username }).catch(
+    invoke("send_friend_action", { action, targetUsername: username, targetUid: uidOf(username) }).catch(
       (e) => useFriendsStore.getState().setLastActionError(String(e)),
     );
   };

@@ -4,6 +4,7 @@ import { useE2eeStore } from "../../stores/e2eeStore";
 import { useDmStore } from "../../stores/dmStore";
 import { toast } from "../../stores/toastStore";
 import type { E2eePeerChangedPayload, E2eeStatusPayload } from "../../types";
+import { uidOf } from "../users/userDirectory";
 
 // Native decides the E2EE status for this account on this device (after
 // every LoginRes, and on setup / unlock / reset / a remote rotation of our
@@ -36,7 +37,7 @@ function reloadDms() {
   invoke("request_dm_conversations").catch(() => {});
   const peer = dm.activeDmUser;
   if (peer) {
-    invoke("request_dm_history", { peer, beforeId: 0, limit: 50 }).catch(() => {});
+    invoke("request_dm_history", { peer, peerUid: uidOf(peer), beforeId: 0, limit: 50 }).catch(() => {});
   }
 }
 

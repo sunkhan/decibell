@@ -5,6 +5,7 @@ import { EMPTY_LIST } from "../../../lib/empty";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { PERM, usePermission } from "../permissions";
 import { formatJoined } from "./helpers";
+import { uidOf } from "../../users/userDirectory";
 
 /// Bans: the ban list (only BAN_MEMBERS holders receive it from the
 /// server) with reason / moderator / expiry and unban. The list refresh
@@ -19,7 +20,7 @@ export default function BansTab({ serverId }: { serverId: string }) {
     setPendingAction(`unban:${username}`);
     setError(null);
     try {
-      await invoke("unban_member", { serverId, username });
+      await invoke("unban_member", { serverId, username, uid: uidOf(username) });
     } catch (err) {
       setError(String(err));
     } finally {

@@ -31,6 +31,7 @@ import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModa
 import EncryptionBadge from "../e2ee/EncryptionBadge";
 import DmEncryptionBanner from "../e2ee/DmEncryptionBanner";
 import type { Attachment, DmMessage, GifResult, Message } from "../../types";
+import { uidOf } from "../users/userDirectory";
 
 // Canonical reject strings the central server echoes back as a DM
 // from us-to-us. Pattern-matched here so we can render them as a
@@ -183,7 +184,7 @@ export default function DmChatPanel() {
 
     useDmStore.getState().snapshotAndRemoveDm(peer, messageId);
 
-    invoke("delete_dm_message", { peer, messageId }).catch((err) => {
+    invoke("delete_dm_message", { peer, peerUid: uidOf(peer), messageId }).catch((err) => {
       console.error("delete_dm_message:", err);
       useDmStore.getState().restorePendingDmDeletion(peer, messageId);
       toast.error("Failed to delete message", "Please try again.");
@@ -232,7 +233,7 @@ export default function DmChatPanel() {
     setEditingMessageId(null);
     if (!peer || typeof message.id !== "number" || message.id <= 0) return;
     if (content === message.content) return; // no change → skip
-    invoke("edit_dm_message", { peer, messageId: message.id, content }).catch((err) =>
+    invoke("edit_dm_message", { peer, peerUid: uidOf(peer), messageId: message.id, content }).catch((err) =>
       console.error("edit_dm_message:", err),
     );
   }, []);
@@ -331,6 +332,7 @@ export default function DmChatPanel() {
     if (conv?.historyLoaded) return;
     invoke("request_dm_history", {
       peer: activeDmUser,
+      peerUid: uidOf(activeDmUser),
       beforeId: 0,
       limit: 50,
     }).catch(console.error);
@@ -355,6 +357,7 @@ export default function DmChatPanel() {
     lastRequestedBeforeIdRef.current = beforeId;
     invoke("request_dm_history", {
       peer: activeDmUser,
+      peerUid: uidOf(activeDmUser),
       beforeId,
       limit: 50,
     })
@@ -389,6 +392,7 @@ export default function DmChatPanel() {
     lastRequestedAfterIdRef.current = afterId;
     invoke("request_dm_history", {
       peer: activeDmUser,
+      peerUid: uidOf(activeDmUser),
       beforeId: 0,
       afterId,
       limit: 50,
@@ -420,7 +424,7 @@ export default function DmChatPanel() {
     lastRequestedAfterIdRef.current = 0;
     setPresentLoading(true);
     useDmStore.getState().resetDmForJump(peer);
-    invoke("request_dm_history", { peer, beforeId: 0, limit: 50 }).catch((err) => {
+    invoke("request_dm_history", { peer, peerUid: uidOf(peer), beforeId: 0, limit: 50 }).catch((err) => {
       console.error(err);
       setPresentLoading(false);
     });
@@ -474,7 +478,7 @@ export default function DmChatPanel() {
     // they read those messages, mark them read. Server's GREATEST
     // upsert dedupes any extra fires in a burst.
     window.setTimeout(() => {
-      invoke("mark_dm_read", { peer, upToId }).catch(console.error);
+      invoke("mark_dm_read", { peer, peerUid: uidOf(peer), upToId }).catch(console.error);
     }, 250);
   }, [activeDmUser, messagesLenForMarkRead]);
 
@@ -537,6 +541,7 @@ export default function DmChatPanel() {
     const run = sendChainRef.current.then(() =>
       invoke("send_private_message", {
         recipient: peer,
+        recipientUid: uidOf(peer),
         message: content,
         replyTo: replyToId,
         nonce,
@@ -600,6 +605,7 @@ export default function DmChatPanel() {
     const run = sendChainRef.current.then(() =>
       invoke("send_private_message", {
         recipient: peer,
+        recipientUid: uidOf(peer),
         message: gif.url,
         replyTo: replyToId,
         nonce,
@@ -674,6 +680,7 @@ export default function DmChatPanel() {
       lastRequestedAfterIdRef.current = 0;
       invoke("request_dm_history", {
         peer,
+        peerUid: uidOf(peer),
         beforeId: 0,
         aroundId: id,
         limit: 25,

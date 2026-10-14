@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { invoke } from "../../lib/ipc";
 import { useVoiceStore } from "../../stores/voiceStore";
+import { uidOf } from "../users/userDirectory";
 
 /**
  * Keeps `voiceStore.streamThumbnails` filled for the voice view's stream
@@ -52,7 +53,7 @@ export function useStreamThumbnails() {
         const owner = stream.ownerUsername;
         if (s.streamThumbnails[owner] || requested.has(stream.streamId)) continue;
         requested.add(stream.streamId);
-        invoke("fetch_stream_thumbnail", { serverId, username: owner })
+        invoke("fetch_stream_thumbnail", { serverId, username: owner, uid: stream.ownerUid || uidOf(owner) })
           .then((res) => {
             const jpeg = (res as { jpeg?: Uint8Array } | null)?.jpeg;
             if (!jpeg || jpeg.byteLength === 0) return; // nothing cached yet — a push follows

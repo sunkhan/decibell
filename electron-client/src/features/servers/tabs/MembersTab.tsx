@@ -27,6 +27,7 @@ import {
 import { EmptyState } from "./AuditLogTab";
 import { ECHO_WAIT_MS, useEchoSave } from "../saveEcho";
 import { NICKNAME_MAX_BYTES } from "../limits";
+import { uidOf } from "../../users/userDirectory";
 
 /// Visible role chips per row before the rest fold into "+N".
 const MAX_CHIPS = 3;
@@ -196,7 +197,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
   };
 
   const runKick = (username: string) =>
-    run(`kick:${username}`, () => invoke("kick_member", { serverId, username, reason: reason.trim() })).then(() =>
+    run(`kick:${username}`, () => invoke("kick_member", { serverId, username, uid: uidOf(username), reason: reason.trim() })).then(() =>
       setConfirm(null),
     );
   const runBan = (username: string) =>
@@ -204,6 +205,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
       invoke("ban_member", {
         serverId,
         username,
+        uid: uidOf(username),
         reason: reason.trim(),
         expiresAt: banDurationSec > 0 ? Math.floor(Date.now() / 1000) + banDurationSec : 0,
         deleteMessageSeconds: purgeSec,
@@ -214,6 +216,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
       invoke("timeout_member", {
         serverId,
         username,
+        uid: uidOf(username),
         until: clear ? 0 : Math.floor(Date.now() / 1000) + timeoutSec,
         reason: clear ? "" : reason.trim(),
       }),
@@ -223,7 +226,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
     const nickname = nickDraft.trim();
     setError(null);
     startNick({ username, nickname });
-    invoke("set_nickname", { serverId, username, nickname }).catch((err) => {
+    invoke("set_nickname", { serverId, username, uid: uidOf(username), nickname }).catch((err) => {
       setError(String(err));
       stopNick();
     });
@@ -243,7 +246,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
       });
     setAssigning((cur) => new Map(cur).set(username, { roleIds, base: member.roleIds, until: Date.now() + ECHO_WAIT_MS }));
     run(`assign:${username}`, () =>
-      invoke("set_member_roles", { serverId, username, roleIds }).catch((err) => {
+      invoke("set_member_roles", { serverId, username, uid: uidOf(username), roleIds }).catch((err) => {
         drop();
         throw err;
       }),

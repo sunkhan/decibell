@@ -2553,3 +2553,24 @@ Verified:
 
 Needs the community rebuild on the Hetzner box (back up `c.db` first). Clients need no change for this
 stage.
+
+**Users by uid, stage 3: client (2026-10-15) ✅** — The client carries the uids the servers now send and
+targets people by them (design: `docs/superpowers/specs/2026-10-15-uid-identity-design.md`).
+- **Native.**
+  - About 40 payload fields gained uids: members, messages, DMs and conversations, friends, presence,
+    voice and stream presence, bans, invites, audit, mod results and calls.
+  - `login_succeeded` carries our own uid, also kept in `AppState.uid`.
+  - Every command that targets a person takes an optional uid.
+- **Renderer.**
+  - `features/users/userDirectory.ts` maps each name to the latest uid the servers sent with it.
+  - Requests send `uidOf(name)`, about 45 call sites: moderation, roles, nicknames, voice moderation,
+    ownership, overwrites, personal invites, DMs, friends, calls, streams and search senders. An
+    unknown name sends no uid, and the server resolves the name.
+  - Stores stay keyed by name, by design. E2EE and per-user voice settings are left for stages 4–5.
+
+Verified:
+- `tsc` 0 errors;
+- `napi build`, whose `index.d.ts` gains only the optional uid arguments;
+- `cargo test --lib` 223 passed.
+
+A live client test against the new servers is still pending.

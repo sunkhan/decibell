@@ -325,6 +325,7 @@ pub fn set_input_level_reporting(enabled: bool) {
 
 pub struct StreamThumbnail {
     pub owner_username: String,
+    pub owner_uid: i64,
     pub data: Vec<u8>,
 }
 
@@ -341,6 +342,9 @@ pub fn install_stream_thumbnail_bus(callback: JsFunction) -> Result<()> {
                 "ownerUsername",
                 env.create_string(&ctx.value.owner_username)?,
             )?;
+            // f64: a uid fits exactly, and the renderer gets a number, not
+            // a BigInt.
+            obj.set_named_property("ownerUid", env.create_double(ctx.value.owner_uid as f64)?)?;
             // Buffer::with_data hands V8 the Vec's backing allocation
             // directly — no copy on the way out.
             let data_buf = env.create_buffer_with_data(ctx.value.data)?;
@@ -479,6 +483,7 @@ pub struct ConnectionEventPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct LoginSucceededPayload {
     pub username: String,
+    pub uid: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -558,6 +563,7 @@ pub struct ChannelOverwritePayload {
     pub target_type: String,
     /// Role id (decimal string) or username.
     pub target_id: String,
+    pub target_uid: i64,
     pub allow: u64,
     pub deny: u64,
 }
@@ -617,6 +623,7 @@ pub struct AttachmentTombstonePayload {
 pub struct ChannelMessagePayload {
     pub id: i64,
     pub sender: String,
+    pub sender_uid: i64,
     pub channel_id: String,
     pub content: String,
     pub timestamp: i64,
@@ -627,6 +634,7 @@ pub struct ChannelMessagePayload {
     /// Embedded parent preview (server-resolved). Empty sender with
     /// reply_to>0 = parent was deleted.
     pub reply_to_sender: String,
+    pub reply_to_sender_uid: i64,
     pub reply_to_content: String,
     /// Attachment.Kind values of the parent's attachments (position order).
     pub reply_to_attachment_kinds: Vec<i32>,
@@ -669,8 +677,10 @@ pub struct MessageReceivedPayload {
     /// alone collide across servers (every server has a "general").
     pub server_id: String,
     pub sender: String,
+    pub sender_uid: i64,
     /// Populated for DMs, empty for channel messages.
     pub recipient: String,
+    pub recipient_uid: i64,
     pub content: String,
     pub timestamp: String,
     pub id: i64,
@@ -681,6 +691,7 @@ pub struct MessageReceivedPayload {
     /// Embedded parent preview (server-resolved). Empty sender with
     /// reply_to>0 = parent was deleted.
     pub reply_to_sender: String,
+    pub reply_to_sender_uid: i64,
     pub reply_to_content: String,
     /// Attachment.Kind values of the parent's attachments (position order).
     /// Always empty for DMs (no attachments there).
@@ -774,6 +785,7 @@ pub struct ChannelWipedPayload {
     pub channel_id: String,
     pub wiped_at: i64,
     pub wiped_by: String,
+    pub wiped_by_uid: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -794,6 +806,7 @@ pub struct CommunityAuthRespondedPayload {
     pub server_name: String,
     pub server_description: String,
     pub owner_username: String,
+    pub owner_uid: i64,
     pub attachment_port: i32,
     pub max_attachment_bytes: i64,
     pub public_listing: bool,
@@ -821,8 +834,8 @@ pub fn emit_connection_restored(server_type: &str, server_id: Option<String>) {
     );
 }
 
-pub fn emit_login_succeeded(username: String) {
-    send(LOGIN_SUCCEEDED, LoginSucceededPayload { username });
+pub fn emit_login_succeeded(username: String, uid: i64) {
+    send(LOGIN_SUCCEEDED, LoginSucceededPayload { username, uid });
 }
 
 pub fn emit_login_failed(message: String) {
@@ -888,6 +901,7 @@ pub struct UserListUpdatedPayload {
 #[serde(rename_all = "camelCase")]
 pub struct UserPresencePayload {
     pub username: String,
+    pub uid: i64,
     /// sha256-hex of the user's current avatar bytes; '' when no
     /// avatar set. avatarStore consumes this for cache invalidation
     /// (see docs/superpowers/specs/2026-05-12-custom-profile-pictures-design.md §7).
@@ -905,6 +919,7 @@ pub struct UserPresencePayload {
 #[serde(rename_all = "camelCase")]
 pub struct PresenceDeltaPayload {
     pub username: String,
+    pub uid: i64,
     pub online: bool,
     pub status: String,
     pub avatar_version: String,
@@ -932,6 +947,7 @@ pub struct OwnPresencePayload {
 #[serde(rename_all = "camelCase")]
 pub struct FriendInfoPayload {
     pub username: String,
+    pub uid: i64,
     /// "online" | "offline" | "pending_incoming" | "pending_outgoing" | "blocked"
     pub status: String,
     /// sha256-hex of the friend's current avatar bytes; '' when none.
@@ -978,6 +994,7 @@ pub fn emit_friend_action_responded(success: bool, message: String) {
 #[serde(rename_all = "camelCase")]
 pub struct MemberInfoPayload {
     pub username: String,
+    pub uid: i64,
     pub joined_at: i64,
     pub nickname: String,
     pub is_owner: bool,
@@ -1019,6 +1036,7 @@ pub struct MemberUpsertPayload {
 pub struct MemberRemovePayload {
     pub server_id: String,
     pub username: String,
+    pub uid: i64,
     pub revision: u64,
 }
 
@@ -1039,6 +1057,7 @@ pub struct ModActionRespondedPayload {
     pub success: bool,
     pub message: String,
     pub username: String,
+    pub uid: i64,
     /// "kick" | "ban" | "leave"
     pub action: String,
 }
@@ -1065,6 +1084,7 @@ pub struct MembershipRevokedPayload {
     pub action: String,
     pub reason: String,
     pub actor: String,
+    pub actor_uid: i64,
     /// Bans only: unix seconds when the ban lifts (0 = permanent).
     pub expires_at: i64,
 }
@@ -1076,6 +1096,7 @@ pub struct ServerMetaUpdatedPayload {
     pub server_name: String,
     pub server_description: String,
     pub owner_username: String,
+    pub owner_uid: i64,
     pub public_listing: bool,
 }
 
@@ -1093,8 +1114,10 @@ pub struct AuditEntryPayload {
     pub id: i64,
     pub timestamp: i64,
     pub actor: String,
+    pub actor_uid: i64,
     pub action: String,
     pub target: String,
+    pub target_uid: i64,
     pub channel_id: String,
     pub details: String,
 }
@@ -1202,13 +1225,16 @@ pub struct VoiceForceNotifyPayload {
     pub action: String,
     pub channel_id: String,
     pub actor: String,
+    pub actor_uid: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BanInfoPayload {
     pub username: String,
+    pub uid: i64,
     pub banned_by: String,
+    pub banned_by_uid: i64,
     pub reason: String,
     pub banned_at: i64,
     pub expires_at: i64,
@@ -1332,6 +1358,7 @@ pub fn emit_membership_revoked(payload: MembershipRevokedPayload) {
 pub struct InviteInfoPayload {
     pub code: String,
     pub created_by: String,
+    pub created_by_uid: i64,
     pub created_at: i64,
     /// Unix epoch seconds. 0 = never expires.
     pub expires_at: i64,
@@ -1340,6 +1367,7 @@ pub struct InviteInfoPayload {
     pub uses: i32,
     /// Personal invite: the only user who can redeem it ("" = anyone).
     pub for_user: String,
+    pub for_uid: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1391,6 +1419,7 @@ pub fn emit_invite_revoke_responded(payload: InviteRevokeRespondedPayload) {
 #[serde(rename_all = "camelCase")]
 pub struct VoiceUserStatePayload {
     pub username: String,
+    pub uid: i64,
     pub is_muted: bool,
     pub is_deafened: bool,
     /// Moderator-applied (persisted on the member).
@@ -1422,6 +1451,8 @@ pub struct VoicePresenceUpdatedPayload {
     pub server_id: String,
     pub channel_id: String,
     pub participants: Vec<String>,
+    /// Parallel to `participants` (users by uid).
+    pub participant_uids: Vec<i64>,
     pub user_states: Vec<VoiceUserStatePayload>,
     /// Parallel to `participants` — user_capabilities[i] belongs to
     /// participants[i]. Drives JS-side LCD evaluation, watch-button
@@ -1551,6 +1582,7 @@ pub fn emit_voice_error(message: String) {
 pub struct StreamInfoPayload {
     pub stream_id: String,
     pub owner_username: String,
+    pub owner_uid: i64,
     pub has_audio: bool,
     pub resolution_width: u32,
     pub resolution_height: u32,
@@ -1579,6 +1611,7 @@ pub struct StreamPresenceUpdatedPayload {
 pub struct StreamCodecChangedPayload {
     pub channel_id: String,
     pub streamer_username: String,
+    pub streamer_uid: i64,
     pub new_codec: i32,
     pub new_width: u32,
     pub new_height: u32,
@@ -1617,13 +1650,14 @@ pub fn emit_stream_presence_updated(
 /// Push a JPEG thumbnail to JS. Bytes ride the dedicated binary TSFN —
 /// no base64 encode, no JSON serialise, no data: URL wrapping. The
 /// renderer turns them into a blob: URL via `URL.createObjectURL`.
-pub fn emit_stream_thumbnail_updated(owner_username: String, thumbnail_data: Vec<u8>) {
+pub fn emit_stream_thumbnail_updated(owner_username: String, owner_uid: i64, thumbnail_data: Vec<u8>) {
     let Some(bus) = STREAM_THUMBNAIL_BUS.get() else {
         return;
     };
     bus.call(
         StreamThumbnail {
             owner_username,
+            owner_uid,
             data: thumbnail_data,
         },
         ThreadsafeFunctionCallMode::NonBlocking,
@@ -1652,8 +1686,10 @@ pub fn emit_caps_refreshed() {
 #[serde(rename_all = "camelCase")]
 pub struct DmConversationPreviewPayload {
     pub peer: String,
+    pub peer_uid: i64,
     pub last_message_content: String,
     pub last_message_sender: String,
+    pub last_message_sender_uid: i64,
     pub last_message_id: i64,
     pub last_timestamp: i64,
     pub unread_count: i64,
@@ -1673,6 +1709,7 @@ pub struct DmConversationsReceivedPayload {
 pub struct DmHistoryMessagePayload {
     pub id: i64,
     pub sender: String,
+    pub sender_uid: i64,
     pub content: String,
     pub timestamp: i64,
     pub edited_at: i64,
@@ -1680,6 +1717,7 @@ pub struct DmHistoryMessagePayload {
     /// Embedded parent preview (server-resolved). Empty sender with
     /// reply_to>0 = parent was deleted.
     pub reply_to_sender: String,
+    pub reply_to_sender_uid: i64,
     pub reply_to_content: String,
     /// See MessageReceivedPayload.encrypted / decrypt_error.
     pub encrypted: bool,
@@ -1690,6 +1728,7 @@ pub struct DmHistoryMessagePayload {
 #[serde(rename_all = "camelCase")]
 pub struct DmHistoryReceivedPayload {
     pub peer: String,
+    pub peer_uid: i64,
     pub messages: Vec<DmHistoryMessagePayload>,
     pub has_more: bool,
     pub has_more_after: bool,
@@ -1716,6 +1755,7 @@ pub struct DmMessageDeleteRespondedPayload {
     pub success: bool,
     pub message: String,
     pub peer: String,
+    pub peer_uid: i64,
     pub message_id: i64,
 }
 
@@ -1723,6 +1763,7 @@ pub struct DmMessageDeleteRespondedPayload {
 #[serde(rename_all = "camelCase")]
 pub struct DmMessageDeletedPayload {
     pub peer: String,
+    pub peer_uid: i64,
     pub message_id: i64,
     pub deleted_at: i64,
 }
@@ -1745,6 +1786,7 @@ pub struct ChannelMessageDeletedPayload {
     pub message_id: i64,
     pub deleted_at: i64,
     pub deleted_by: String,
+    pub deleted_by_uid: i64,
 }
 
 pub fn emit_dm_message_delete_responded(payload: DmMessageDeleteRespondedPayload) {
@@ -1771,6 +1813,7 @@ pub struct DmMessageEditRespondedPayload {
     pub success: bool,
     pub message: String,
     pub peer: String,
+    pub peer_uid: i64,
     pub message_id: i64,
 }
 
@@ -1778,6 +1821,7 @@ pub struct DmMessageEditRespondedPayload {
 #[serde(rename_all = "camelCase")]
 pub struct DmMessageEditedPayload {
     pub peer: String,
+    pub peer_uid: i64,
     pub message_id: i64,
     pub content: String,
     pub edited_at: i64,
@@ -1808,6 +1852,7 @@ pub struct E2eeStatusPayload {
 #[serde(rename_all = "camelCase")]
 pub struct E2eePeerChangedPayload {
     pub username: String,
+    pub uid: i64,
     pub key_id: u32,
     pub fingerprint: String,
 }
@@ -1858,6 +1903,7 @@ pub struct ChannelMessageEditedPayload {
     pub content: String,
     pub edited_at: i64,
     pub editor: String,
+    pub editor_uid: i64,
     pub encrypted: bool,
     pub decrypt_error: String,
     /// Encrypted channels: the real metadata + key of each attachment
@@ -1976,6 +2022,7 @@ pub struct CallSignalPayload {
     pub kind: String,
     pub call_id: String,
     pub from: String,
+    pub from_uid: i64,
     pub to: String,
     /// base64 of the 32-byte X25519 public key (INVITE / ACCEPT).
     pub pub_key: Option<String>,

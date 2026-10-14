@@ -12,6 +12,7 @@ import { usePresenceEvents } from "./features/presence/usePresenceEvents";
 import { useVoiceEvents } from "./features/voice/useVoiceEvents";
 import { useAudioDeviceSync } from "./hooks/useAudioDeviceSync";
 import { useAuthStore } from "./stores/authStore";
+import { useUserDirectory } from "./features/users/userDirectory";
 
 // HashRouter under both vite dev server (http://) and packaged
 // loadFile (file://). file:// has no real navigation history;
@@ -36,6 +37,7 @@ function SignedOutRoute({ children }: { children: ReactNode }) {
 // useNavigate. They mount once at app start and stay mounted across
 // route transitions.
 function AppRoutes() {
+  useUserDirectory();
   useAuthEvents();
   useServerEvents();
   useChatEvents();

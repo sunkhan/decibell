@@ -67,6 +67,8 @@ export interface CallStreamMetaArg {
 export interface SendCallSignalArgs {
   callId: string
   to: string
+  /** The peer's uid (users by uid; preferred over `to`). */
+  toUid?: number
   /** proto CallSignal.Kind name: "INVITE", "ACCEPT", "HANGUP", … */
   kind: string
   /** base64 X25519 public key — INVITE / ACCEPT only. */
@@ -130,8 +132,10 @@ export interface SearchMessagesArgs {
   query?: string
   /** Empty / absent = every text channel the user can read. */
   channelIds?: Array<string>
-  /** Usernames. */
+  /** Usernames — for senders who left; members go in `author_uids`. */
   authors?: Array<string>
+  /** Senders by account uid (every name they posted under). */
+  authorUids?: Array<number>
   /** Unix seconds; after inclusive, before exclusive. */
   after?: number
   before?: number
@@ -317,6 +321,8 @@ export interface SetChannelOverwriteArgs {
   targetType: string
   /** Role id (decimal string) or username. */
   targetId: string
+  /** Member targets: the member's uid (preferred over the name). */
+  targetUid?: number
   allow: number
   deny: number
 }
@@ -451,6 +457,11 @@ export declare function setStorageMinFree(args: SetStorageMinFreeArgs): Promise<
 export interface TimeoutMemberArgs {
   serverId: string
   username: string
+  /**
+   * The target's account uid (users by uid); the server falls back to
+   * `username` when it is absent.
+   */
+  uid?: number
   /** Unix seconds; 0 clears an active timeout. */
   until: number
   reason?: string
@@ -463,6 +474,11 @@ export declare function timeoutMember(args: TimeoutMemberArgs): Promise<void>
 export interface VoiceModArgs {
   serverId: string
   username: string
+  /**
+   * The target's account uid (users by uid); the server falls back to
+   * `username` when it is absent.
+   */
+  uid?: number
   /** "server_mute" | "server_unmute" | "server_deafen" | "server_undeafen" | "move" | "disconnect" */
   action: string
   /** "move" only. */
@@ -472,6 +488,8 @@ export declare function voiceMod(args: VoiceModArgs): Promise<void>
 export interface TransferOwnershipArgs {
   serverId: string
   newOwner: string
+  /** The new owner's uid (preferred over the name). */
+  newOwnerUid?: number
 }
 /**
  * Owner only. Response via mod_action_responded action="transfer";
@@ -487,6 +505,11 @@ export interface KickMemberArgs {
   serverId: string
   username: string
   /**
+   * The target's account uid (users by uid); the server falls back to
+   * `username` when it is absent.
+   */
+  uid?: number
+  /**
    * Optional — the UI doesn't collect a reason yet. A required
    * String here made napi reject every kick with "Missing field
    * 'reason'".
@@ -497,6 +520,11 @@ export declare function kickMember(args: KickMemberArgs): Promise<void>
 export interface BanMemberArgs {
   serverId: string
   username: string
+  /**
+   * The target's account uid (users by uid); the server falls back to
+   * `username` when it is absent.
+   */
+  uid?: number
   /** Optional — see KickMemberArgs. */
   reason?: string
   /** Unix seconds when the ban lifts; omit / 0 = permanent. */
@@ -520,6 +548,8 @@ export interface CreateInviteArgs {
    * server hands back their live one if it exists).
    */
   forUser?: string
+  /** The invitee's account uid (preferred over `for_user`). */
+  forUid?: number
   /** Echoed on invite_create_responded. */
   requestId?: number
 }
@@ -566,6 +596,11 @@ export declare function deleteRole(args: DeleteRoleArgs): Promise<void>
 export interface SetMemberRolesArgs {
   serverId: string
   username: string
+  /**
+   * The target's account uid (users by uid); the server falls back to
+   * `username` when it is absent.
+   */
+  uid?: number
   /** The member's full desired role set (default role implicit). */
   roleIds: Array<number>
 }
@@ -573,6 +608,11 @@ export declare function setMemberRoles(args: SetMemberRolesArgs): Promise<void>
 export interface UnbanMemberArgs {
   serverId: string
   username: string
+  /**
+   * The target's account uid (users by uid); the server falls back to
+   * `username` when it is absent.
+   */
+  uid?: number
 }
 export declare function unbanMember(args: UnbanMemberArgs): Promise<void>
 export interface SetNicknameArgs {
@@ -582,6 +622,11 @@ export interface SetNicknameArgs {
    * allowed; others need MANAGE_NICKNAMES + a strictly higher role).
    */
   username: string
+  /**
+   * The target's account uid (users by uid); the server falls back to
+   * `username` when it is absent.
+   */
+  uid?: number
   /** Empty clears the nickname. */
   nickname: string
 }
@@ -589,6 +634,8 @@ export declare function setNickname(args: SetNicknameArgs): Promise<void>
 export declare function requestDmConversations(): Promise<void>
 export interface RequestDmHistoryArgs {
   peer: string
+  /** The peer's uid (users by uid; preferred over `peer`). */
+  peerUid?: number
   beforeId: number
   limit: number
   /** >0: fetch a context window centered on this DM id (windowed jump). */
@@ -599,11 +646,15 @@ export interface RequestDmHistoryArgs {
 export declare function requestDmHistory(args: RequestDmHistoryArgs): Promise<void>
 export interface MarkDmReadArgs {
   peer: string
+  /** The peer's uid (users by uid; preferred over `peer`). */
+  peerUid?: number
   upToId: number
 }
 export declare function markDmRead(args: MarkDmReadArgs): Promise<void>
 export interface DeleteDmMessageArgs {
   peer: string
+  /** The peer's uid (users by uid; preferred over `peer`). */
+  peerUid?: number
   messageId: number
 }
 /**
@@ -615,6 +666,8 @@ export interface DeleteDmMessageArgs {
 export declare function deleteDmMessage(args: DeleteDmMessageArgs): Promise<void>
 export interface EditDmMessageArgs {
   peer: string
+  /** The peer's uid (users by uid; preferred over `peer`). */
+  peerUid?: number
   messageId: number
   content: string
 }
@@ -666,6 +719,11 @@ export interface SendFriendActionArgs {
    */
   action: number
   targetUsername: string
+  /**
+   * The target's uid (preferred over the name, which stays for names
+   * a person types).
+   */
+  targetUid?: number
 }
 export declare function sendFriendAction(args: SendFriendActionArgs): Promise<void>
 export interface HotkeyBindingArg {
@@ -727,6 +785,8 @@ export interface SetInputModeArgs {
 export declare function setInputMode(args: SetInputModeArgs): void
 export interface SendPrivateMessageArgs {
   recipient: string
+  /** The recipient's uid (users by uid; preferred over `recipient`). */
+  recipientUid?: number
   message: string
   /** Id of the DM being replied to (0/absent = not a reply). */
   replyTo?: number
@@ -1118,17 +1178,26 @@ export interface WatchStreamArgs {
   serverId: string
   channelId: string
   targetUsername: string
+  /**
+   * The streamer's uid (preferred by the server; the media plane still
+   * names streamers, so `target_username` stays required).
+   */
+  targetUid?: number
 }
 export declare function watchStream(args: WatchStreamArgs): Promise<void>
 export interface StopWatchingArgs {
   serverId: string
   channelId: string
   targetUsername: string
+  /** See WatchStreamArgs. */
+  targetUid?: number
 }
 export declare function stopWatching(args: StopWatchingArgs): Promise<void>
 export interface FetchStreamThumbnailArgs {
   serverId: string
   username: string
+  /** The streamer's uid (preferred by the server). */
+  uid?: number
 }
 export interface FetchStreamThumbnailResult {
   username: string

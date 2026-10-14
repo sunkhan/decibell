@@ -23,6 +23,7 @@ import { Icon, Popover, SearchField, SectionLabel, anchorBelow, type IconName } 
 import { useMemberSearch } from "../tabs/useMemberSearch";
 import { Notice } from "./ui";
 import { EmptyState } from "../tabs/AuditLogTab";
+import { uidOf } from "../../users/userDirectory";
 
 type TriState = "allow" | "inherit" | "deny";
 type Bits = { allow: number; deny: number };
@@ -106,6 +107,7 @@ export function usePermissionDraft(serverId: string, channel: ChannelInfo | unde
         channelId: channel.id,
         targetType,
         targetId,
+        targetUid: targetType === "member" ? uidOf(targetId) : undefined,
         allow: bits.allow,
         deny: bits.deny,
       });

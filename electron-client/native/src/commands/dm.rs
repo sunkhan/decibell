@@ -50,6 +50,8 @@ pub async fn request_dm_conversations() -> napi::Result<()> {
 #[napi(object)]
 pub struct RequestDmHistoryArgs {
     pub peer: String,
+    /// The peer's uid (users by uid; preferred over `peer`).
+    pub peer_uid: Option<i64>,
     pub before_id: i64,
     pub limit: i32,
     /// >0: fetch a context window centered on this DM id (windowed jump).
@@ -78,7 +80,7 @@ pub async fn request_dm_history(args: RequestDmHistoryArgs) -> napi::Result<()> 
                 limit: args.limit,
                 around_id: args.around_id.unwrap_or(0),
                 after_id: args.after_id.unwrap_or(0),
-                peer_uid: 0,
+                peer_uid: args.peer_uid.unwrap_or(0),
             }),
             token.as_deref(),
         );
@@ -97,6 +99,8 @@ pub async fn request_dm_history(args: RequestDmHistoryArgs) -> napi::Result<()> 
 #[napi(object)]
 pub struct MarkDmReadArgs {
     pub peer: String,
+    /// The peer's uid (users by uid; preferred over `peer`).
+    pub peer_uid: Option<i64>,
     pub up_to_id: i64,
 }
 
@@ -117,7 +121,7 @@ pub async fn mark_dm_read(args: MarkDmReadArgs) -> napi::Result<()> {
             packet::Payload::DmMarkReadReq(DmMarkReadReq {
                 peer: args.peer,
                 up_to_id: args.up_to_id,
-                peer_uid: 0,
+                peer_uid: args.peer_uid.unwrap_or(0),
             }),
             token.as_deref(),
         );
@@ -131,6 +135,8 @@ pub async fn mark_dm_read(args: MarkDmReadArgs) -> napi::Result<()> {
 #[napi(object)]
 pub struct DeleteDmMessageArgs {
     pub peer: String,
+    /// The peer's uid (users by uid; preferred over `peer`).
+    pub peer_uid: Option<i64>,
     pub message_id: i64,
 }
 
@@ -155,7 +161,7 @@ pub async fn delete_dm_message(args: DeleteDmMessageArgs) -> napi::Result<()> {
             packet::Payload::DmDeleteReq(DmDeleteReq {
                 peer: args.peer,
                 message_id: args.message_id,
-                peer_uid: 0,
+                peer_uid: args.peer_uid.unwrap_or(0),
             }),
             token.as_deref(),
         );
@@ -172,6 +178,8 @@ pub async fn delete_dm_message(args: DeleteDmMessageArgs) -> napi::Result<()> {
 #[napi(object)]
 pub struct EditDmMessageArgs {
     pub peer: String,
+    /// The peer's uid (users by uid; preferred over `peer`).
+    pub peer_uid: Option<i64>,
     pub message_id: i64,
     pub content: String,
 }
@@ -207,7 +215,7 @@ pub async fn edit_dm_message(args: EditDmMessageArgs) -> napi::Result<()> {
                 message_id: args.message_id,
                 content,
                 envelope,
-                peer_uid: 0,
+                peer_uid: args.peer_uid.unwrap_or(0),
             }),
             token.as_deref(),
         );

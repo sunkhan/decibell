@@ -9,6 +9,7 @@ import { useCallStore } from "../../stores/callStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
 import { endCall } from "../call/callActions";
+import { uidOf } from "../users/userDirectory";
 
 /// Mic button. Unmuting while deafened also undeafens (Discord's rule).
 export function toggleMute(): void {
@@ -60,6 +61,7 @@ export async function leaveVoiceChannel(): Promise<void> {
           serverId: connectedServerId,
           channelId: connectedChannelId,
           targetUsername: username,
+          targetUid: uidOf(username),
         }).catch(() => {});
       }
     }

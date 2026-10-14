@@ -278,12 +278,17 @@ impl CentralClient {
                     if resp.success {
                         let mut s = state.lock().await;
                         s.token = Some(resp.jwt_token.clone());
-                        let username = s
-                            .credentials
-                            .as_ref()
-                            .map(|(user, _)| user.clone())
-                            .unwrap_or_else(|| "unknown".to_string());
+                        // The name as central stores it, else the one we typed.
+                        let username = if !resp.username.is_empty() {
+                            resp.username.clone()
+                        } else {
+                            s.credentials
+                                .as_ref()
+                                .map(|(user, _)| user.clone())
+                                .unwrap_or_else(|| "unknown".to_string())
+                        };
                         s.username = Some(username.clone());
+                        s.uid = resp.uid;
                         // P2P DM calls: remember what this central offers
                         // before login_succeeded fires, so the renderer's
                         // get_call_config read on that event is race-free.
@@ -327,7 +332,7 @@ impl CentralClient {
                             status_emoji: resp.status_emoji.clone(),
                             status_clear_in: resp.status_clear_in.max(0) as f64,
                         });
-                        events::emit_login_succeeded(username);
+                        events::emit_login_succeeded(username, resp.uid);
                         tokio::spawn(crate::e2ee::session::bootstrap(state.clone()));
 
                         // Auto-rejoin: ship memberships to the renderer
@@ -412,6 +417,7 @@ impl CentralClient {
                         .into_iter()
                         .map(|u| events::UserPresencePayload {
                             username: u.username,
+                            uid: u.uid,
                             avatar_version: u.avatar_version,
                             status: crate::presence::status_name(u.status).to_string(),
                             status_text: u.status_text,
@@ -424,6 +430,7 @@ impl CentralClient {
                     let user = delta.user.unwrap_or_default();
                     events::emit_presence_delta(events::PresenceDeltaPayload {
                         username: user.username,
+                        uid: user.uid,
                         online: delta.online,
                         status: crate::presence::status_name(user.status).to_string(),
                         avatar_version: user.avatar_version,
@@ -437,6 +444,7 @@ impl CentralClient {
                         .into_iter()
                         .map(|f| events::FriendInfoPayload {
                             username: f.username,
+                            uid: f.uid,
                             status: match friend_info::Status::try_from(f.status) {
                                 Ok(friend_info::Status::Online) => "online",
                                 Ok(friend_info::Status::Offline) => "offline",
@@ -529,6 +537,7 @@ impl CentralClient {
                             success: resp.success,
                             message: resp.message,
                             peer: resp.peer,
+                            peer_uid: resp.peer_uid,
                             message_id: resp.message_id,
                         },
                     );
@@ -536,6 +545,7 @@ impl CentralClient {
                 Some(packet::Payload::DmMessageDeleted(b)) => {
                     events::emit_dm_message_deleted(events::DmMessageDeletedPayload {
                         peer: b.peer,
+                        peer_uid: b.peer_uid,
                         message_id: b.message_id,
                         deleted_at: b.deleted_at,
                     });
@@ -546,6 +556,7 @@ impl CentralClient {
                             success: resp.success,
                             message: resp.message,
                             peer: resp.peer,
+                            peer_uid: resp.peer_uid,
                             message_id: resp.message_id,
                         },
                     );
@@ -618,6 +629,7 @@ impl CentralClient {
                         kind,
                         call_id: sig.call_id,
                         from: sig.from,
+                        from_uid: sig.from_uid,
                         to: sig.to,
                         pub_key,
                         candidates,

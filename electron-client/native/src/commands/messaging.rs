@@ -15,6 +15,8 @@ use crate::state;
 #[napi(object)]
 pub struct SendPrivateMessageArgs {
     pub recipient: String,
+    /// The recipient's uid (users by uid; preferred over `recipient`).
+    pub recipient_uid: Option<i64>,
     pub message: String,
     /// Id of the DM being replied to (0/absent = not a reply).
     pub reply_to: Option<i64>,
@@ -76,8 +78,8 @@ pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<
                 nonce: args.nonce.unwrap_or_default(),
                 envelope,
                 reply_to_envelope: Vec::new(),
-                sender_uid: 0,
-                recipient_uid: 0,
+                sender_uid: 0, // central stamps it
+                recipient_uid: args.recipient_uid.unwrap_or(0),
                 reply_to_sender_uid: 0,
                 reply_to_sealed_sender: String::new(),
                 reply_to_sealed_recipient: String::new(),

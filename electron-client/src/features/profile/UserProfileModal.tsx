@@ -25,6 +25,7 @@ import { StatusMessageText } from "../../components/StatusMessageText";
 import { LockGlyph } from "../chat/MessageBubble";
 import { RoleChips } from "./RoleChips";
 import type { FriendInfo, ServerMember, ServerRole } from "../../types";
+import { uidOf } from "../users/userDirectory";
 
 // The full profile screen: a centred modal reached by clicking the avatar
 // in the anchored popup (UserProfilePopup), the way Discord's popout opens
@@ -285,7 +286,7 @@ function FriendActions({ username, friend }: { username: string; friend: FriendI
   const act = async (action: number) => {
     setBusy(true);
     try {
-      await invoke("send_friend_action", { action, targetUsername: username });
+      await invoke("send_friend_action", { action, targetUsername: username, targetUid: uidOf(username) });
     } catch (err) {
       toast.error("Friend request failed", String(err));
     } finally {

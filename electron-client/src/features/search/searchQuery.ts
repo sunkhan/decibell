@@ -143,6 +143,7 @@ export interface SearchMessagesArgs {
   query: string;
   channelIds: string[];
   authors: string[];
+  authorUids: number[];
   after: number;
   before: number;
   has: number;
@@ -159,14 +160,23 @@ export function toSearchArgs(
   sort: SearchSort,
   seq: number,
   page: { cursor?: number; offset?: number } = {},
+  /// The account behind a `from:` name (users by uid), when known.
+  uidOf: (username: string) => number | undefined = () => undefined,
 ): SearchMessagesArgs {
   const { after, before } = dateBounds(q.filters);
   let has = 0;
+  // Senders by account where we know it (every name they posted under);
+  // a name we have no uid for goes as a name (e.g. someone who left).
   const authors: string[] = [];
+  const authorUids: number[] = [];
   const channelIds: string[] = [];
   for (const f of q.filters) {
     if (f.kind === "has") has |= HAS_BIT[f.has];
-    else if (f.kind === "from") authors.push(f.username);
+    else if (f.kind === "from") {
+      const uid = uidOf(f.username);
+      if (uid) authorUids.push(uid);
+      else authors.push(f.username);
+    }
     else if (f.kind === "in") channelIds.push(f.channelId);
   }
   return {
@@ -175,6 +185,7 @@ export function toSearchArgs(
     query: q.text.trim(),
     channelIds,
     authors,
+    authorUids,
     after,
     before,
     has,

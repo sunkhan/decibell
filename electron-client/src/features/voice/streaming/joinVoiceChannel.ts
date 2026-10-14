@@ -30,6 +30,7 @@ import { applyVoicePrefs } from "./applyVoicePrefs";
 import { endCall } from "../../call/callActions";
 import { useE2eeStore } from "../../../stores/e2eeStore";
 import { toast } from "../../../stores/toastStore";
+import { uidOf } from "../../users/userDirectory";
 
 export async function joinVoiceChannel(
   serverId: string,
@@ -93,6 +94,7 @@ export async function joinVoiceChannel(
         serverId: prevServerId,
         channelId: prevChannelId,
         targetUsername: target,
+        targetUid: uidOf(target),
       }).catch(() => {});
     }
     useVoiceStore.setState({

@@ -690,6 +690,9 @@ pub struct WatchStreamArgs {
     pub server_id: String,
     pub channel_id: String,
     pub target_username: String,
+    /// The streamer's uid (preferred by the server; the media plane still
+    /// names streamers, so `target_username` stays required).
+    pub target_uid: Option<i64>,
 }
 
 #[napi]
@@ -714,7 +717,7 @@ pub async fn watch_stream(args: WatchStreamArgs) -> napi::Result<()> {
             packet::Payload::WatchStreamReq(WatchStreamRequest {
                 channel_id: args.channel_id,
                 target_username: args.target_username,
-                target_uid: 0,
+                target_uid: args.target_uid.unwrap_or(0),
             }),
             Some(&client.jwt),
         );
@@ -733,6 +736,8 @@ pub struct StopWatchingArgs {
     pub server_id: String,
     pub channel_id: String,
     pub target_username: String,
+    /// See WatchStreamArgs.
+    pub target_uid: Option<i64>,
 }
 
 #[napi]
@@ -755,7 +760,7 @@ pub async fn stop_watching(args: StopWatchingArgs) -> napi::Result<()> {
             packet::Payload::StopWatchingReq(StopWatchingRequest {
                 channel_id: args.channel_id,
                 target_username: args.target_username,
-                target_uid: 0,
+                target_uid: args.target_uid.unwrap_or(0),
             }),
             Some(&client.jwt),
         );
@@ -772,6 +777,8 @@ pub async fn stop_watching(args: StopWatchingArgs) -> napi::Result<()> {
 pub struct FetchStreamThumbnailArgs {
     pub server_id: String,
     pub username: String,
+    /// The streamer's uid (preferred by the server).
+    pub uid: Option<i64>,
 }
 
 #[napi(object)]
@@ -795,7 +802,7 @@ pub async fn fetch_stream_thumbnail(
 ) -> napi::Result<FetchStreamThumbnailResult> {
     use tokio::sync::oneshot;
 
-    let FetchStreamThumbnailArgs { server_id, username } = args;
+    let FetchStreamThumbnailArgs { server_id, username, uid } = args;
     let state_arc = state::shared();
 
     let (write_tx, data, rx) = {
@@ -813,7 +820,7 @@ pub async fn fetch_stream_thumbnail(
             packet::Type::FetchStreamThumbnailReq,
             packet::Payload::FetchStreamThumbnailReq(FetchStreamThumbnailReq {
                 owner_username: username.clone(),
-                owner_uid: 0,
+                owner_uid: uid.unwrap_or(0),
             }),
             Some(&client.jwt),
         );

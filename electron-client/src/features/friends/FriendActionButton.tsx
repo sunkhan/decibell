@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "../../lib/ipc";
+import { uidOf } from "../users/userDirectory";
 
 // Maps to protobuf FriendActionType enum
 const FRIEND_ACTIONS = {
@@ -33,6 +34,7 @@ export default function FriendActionButton({
       await invoke("send_friend_action", {
         action: FRIEND_ACTIONS[action],
         targetUsername,
+        targetUid: uidOf(targetUsername),
       });
     } catch (err) {
       setError(String(err));

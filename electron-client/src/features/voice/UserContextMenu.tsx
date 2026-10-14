@@ -21,6 +21,7 @@ import {
   formatDb,
   mediaSessionActive,
 } from "./userGain";
+import { uidOf } from "../users/userDirectory";
 
 export default function UserContextMenu() {
   const username = useUiStore((s) => s.contextMenuUser);
@@ -85,7 +86,7 @@ export default function UserContextMenu() {
   const runVoiceMod = useCallback(
     (action: string, channelId?: string) => {
       if (!username || !contextServerId) return;
-      invoke("voice_mod", { serverId: contextServerId, username, action, channelId }).catch((err) =>
+      invoke("voice_mod", { serverId: contextServerId, username, uid: uidOf(username), action, channelId }).catch((err) =>
         toast.error("Voice moderation failed", String(err)),
       );
       closeContextMenu();

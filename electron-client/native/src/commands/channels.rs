@@ -84,8 +84,10 @@ pub struct SearchMessagesArgs {
     pub query: Option<String>,
     /// Empty / absent = every text channel the user can read.
     pub channel_ids: Option<Vec<String>>,
-    /// Usernames.
+    /// Usernames — for senders who left; members go in `author_uids`.
     pub authors: Option<Vec<String>>,
+    /// Senders by account uid (every name they posted under).
+    pub author_uids: Option<Vec<i64>>,
     /// Unix seconds; after inclusive, before exclusive.
     pub after: Option<i64>,
     pub before: Option<i64>,
@@ -127,7 +129,7 @@ pub async fn search_messages(args: SearchMessagesArgs) -> napi::Result<()> {
             offset: args.offset.unwrap_or(0),
             limit: args.limit.unwrap_or(0),
             match_within_words: args.match_within_words.unwrap_or(false),
-            author_uids: Vec::new(),
+            author_uids: args.author_uids.unwrap_or_default(),
         }),
     )
     .await
@@ -568,6 +570,8 @@ pub struct SetChannelOverwriteArgs {
     pub target_type: String,
     /// Role id (decimal string) or username.
     pub target_id: String,
+    /// Member targets: the member's uid (preferred over the name).
+    pub target_uid: Option<i64>,
     pub allow: i64,
     pub deny: i64,
 }
@@ -593,7 +597,7 @@ pub async fn set_channel_overwrite(args: SetChannelOverwriteArgs) -> napi::Resul
                 target_id: args.target_id,
                 allow: args.allow.max(0) as u64,
                 deny: args.deny.max(0) as u64,
-                target_uid: 0,
+                target_uid: args.target_uid.unwrap_or(0),
             }),
         }),
     )

@@ -27,6 +27,7 @@ import { useMemberSearch } from "./useMemberSearch";
 import { useEchoSave } from "../saveEcho";
 import { useLeaveGuard } from "../leaveGuard";
 import { ROLE_NAME_MAX_BYTES } from "../limits";
+import { uidOf } from "../../users/userDirectory";
 
 /// The editable fields of a role. A new role is a draft with id null.
 interface RoleFields {
@@ -789,7 +790,12 @@ function MembersSection({
     else ids.delete(role.id);
     setBusy(m.username);
     try {
-      await invoke("set_member_roles", { serverId, username: m.username, roleIds: Array.from(ids) });
+      await invoke("set_member_roles", {
+        serverId,
+        username: m.username,
+        uid: m.uid || uidOf(m.username),
+        roleIds: Array.from(ids),
+      });
     } catch (err) {
       console.error("set_member_roles:", err);
     } finally {

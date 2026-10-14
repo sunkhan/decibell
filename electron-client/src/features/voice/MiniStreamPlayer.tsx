@@ -11,6 +11,7 @@ import {
   placeStreamPip,
   recordMiniRect,
 } from "./streamPipHost";
+import { uidOf } from "../users/userDirectory";
 
 type Corner = PipCorner;
 
@@ -448,6 +449,7 @@ export default function MiniStreamPlayer() {
         serverId: connectedServerId,
         channelId: connectedChannelId,
         targetUsername: user,
+        targetUid: uidOf(user),
       }).catch(() => {});
     }
     // removeWatching also clears pipStream/fullscreenStream when they match,

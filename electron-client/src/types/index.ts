@@ -32,6 +32,8 @@ export type ServerInfo = ServerInfoPayload;
 
 export interface FriendInfo {
   username: string;
+  /// The account (users by uid); 0/absent from servers that predate it.
+  uid?: number;
   status: "online" | "offline" | "pending_incoming" | "pending_outgoing" | "blocked";
   /// sha256-hex of this friend's current avatar bytes. '' when no
   /// avatar set. avatarStore consumes this for cache invalidation
@@ -45,6 +47,7 @@ export interface FriendInfo {
 /// uses this to invalidate its cache for non-friend peers too.
 export interface UserPresence {
   username: string;
+  uid?: number;
   avatarVersion: string;
   /// "online" | "away" | "dnd" — see stores/presenceStore.ts.
   status: string;
@@ -55,6 +58,7 @@ export interface UserPresence {
 
 export interface DmMessage {
   sender: string;
+  senderUid?: number;
   content: string;
   timestamp: string;
   /// Unix seconds of the last edit; 0/absent = never edited. Drives "(edited)".
@@ -65,6 +69,7 @@ export interface DmMessage {
   /// renders even when the parent isn't in the loaded window. Absent with
   /// replyTo>0 = parent was deleted (or a pre-embed server).
   replyToSender?: string;
+  replyToSenderUid?: number;
   replyToContent?: string;
   /// Server-assigned id from DirectMessage.id. Present on messages
   /// that came via DIRECT_MSG after the persistent-DMs feature
@@ -86,6 +91,8 @@ export interface DmMessage {
 
 export interface ServerMember {
   username: string;
+  /// The account (users by uid); what moderation requests target.
+  uid?: number;
   joinedAt: number;
   nickname: string;
   isOwner: boolean;
@@ -123,6 +130,7 @@ export interface ServerRole {
 export interface ServerInvite {
   code: string;
   createdBy: string;
+  createdByUid?: number;
   createdAt: number;
   expiresAt: number; // 0 = never
   maxUses: number; // 0 = unlimited
@@ -130,6 +138,7 @@ export interface ServerInvite {
   /// Personal invite (Invite friends): only this user can redeem it.
   /// "" = anyone; absent from servers that predate it.
   forUser?: string;
+  forUid?: number;
 }
 
 /// CHANNEL_MSG_REJECTED — the community refused one of our messages;
@@ -173,6 +182,7 @@ export interface ResolvedInvite {
 
 export interface VoiceParticipant {
   username: string;
+  uid?: number;
   isMuted: boolean;
   isDeafened: boolean;
   /// Moderator-applied (server mute/deafen), persisted on the member.
@@ -217,6 +227,7 @@ export interface ClientCapabilities {
 export interface StreamInfo {
   streamId: string;
   ownerUsername: string;
+  ownerUid?: number;
   hasAudio: boolean;
   resolutionWidth: number;
   resolutionHeight: number;
@@ -243,6 +254,7 @@ export type StreamCodecChangeReason =
 export interface StreamCodecChangedNotify {
   channelId: string;
   streamerUsername: string;
+  streamerUid?: number;
   newCodec: VideoCodec;
   newWidth: number;
   newHeight: number;
@@ -377,6 +389,7 @@ export interface Message {
   id: number;
   channelId: string;
   sender: string;
+  senderUid?: number;
   content: string;
   /// String rather than number to round-trip Rust's `i64` (timestamps
   /// can exceed 2^53 in theory, even if not in practice — the existing
@@ -399,6 +412,7 @@ export interface Message {
   /// renders even when the parent isn't in the loaded window. Absent with
   /// replyTo>0 = parent was deleted (or a pre-embed server).
   replyToSender?: string;
+  replyToSenderUid?: number;
   replyToContent?: string;
   /// Kinds of the parent's attachments (position order) — labels an
   /// attachment-only parent ("Image", "Video", …). Absent/empty = none.
@@ -460,6 +474,8 @@ export interface ChannelOverwrite {
   targetType: "role" | "member";
   /// Role id (decimal string) or username.
   targetId: string;
+  /// Member rows: the member's uid (targetId then carries their name).
+  targetUid?: number;
   allow: number;
   deny: number;
 }
@@ -496,12 +512,15 @@ export interface MemberUpsertPayload {
 export interface MemberRemovePayload {
   serverId: string;
   username: string;
+  uid?: number;
   revision: number;
 }
 
 export interface BanInfo {
   username: string;
+  uid?: number;
   bannedBy: string;
+  bannedByUid?: number;
   reason: string;
   bannedAt: number;
   expiresAt: number; // 0 = permanent
@@ -520,6 +539,7 @@ export interface ServerMetaUpdatedPayload {
   serverName: string;
   serverDescription: string;
   ownerUsername: string;
+  ownerUid?: number;
   publicListing: boolean;
 }
 
@@ -527,8 +547,10 @@ export interface AuditEntry {
   id: number;
   timestamp: number;
   actor: string;
+  actorUid?: number;
   action: string;
   target: string;
+  targetUid?: number;
   channelId: string;
   details: string;
 }
@@ -598,6 +620,7 @@ export interface VoiceForceNotifyPayload {
   action: "moved" | "disconnected";
   channelId: string;
   actor: string;
+  actorUid?: number;
 }
 
 export interface ChannelOverwritesReceivedPayload {
@@ -623,6 +646,7 @@ export interface CommunityAuthRespondedPayload {
   serverName: string;
   serverDescription: string;
   ownerUsername: string;
+  ownerUid?: number;
   attachmentPort: number;
   maxAttachmentBytes: number;
   publicListing: boolean;
@@ -642,7 +666,9 @@ export interface MessageReceivedPayload {
   /// message cache — channel ids alone collide across servers.
   serverId: string;
   sender: string;
+  senderUid?: number;
   recipient: string;
+  recipientUid?: number;
   content: string;
   timestamp: string;
   id: number;
@@ -652,6 +678,7 @@ export interface MessageReceivedPayload {
   replyTo: number;
   /// Server-embedded parent preview. Empty sender with replyTo>0 = deleted.
   replyToSender: string;
+  replyToSenderUid?: number;
   replyToContent: string;
   /// Attachment.Kind numbers of the parent's attachments (position order).
   replyToAttachmentKinds: number[];
@@ -680,6 +707,7 @@ export interface E2eeStatusPayload {
 
 export interface E2eePeerChangedPayload {
   username: string;
+  uid?: number;
   keyId: number;
   fingerprint: string;
 }
@@ -739,6 +767,7 @@ export interface ChannelHistoryReceivedPayload {
   messages: Array<{
     id: number;
     sender: string;
+    senderUid?: number;
     channelId: string;
     content: string;
     timestamp: number;
@@ -748,6 +777,7 @@ export interface ChannelHistoryReceivedPayload {
     replyTo: number;
     /// Server-embedded parent preview. Empty sender with replyTo>0 = deleted.
     replyToSender: string;
+    replyToSenderUid?: number;
     replyToContent: string;
     replyToAttachmentKinds: number[];
     encrypted?: boolean;
@@ -775,6 +805,7 @@ export interface ChannelWipedPayload {
   channelId: string;
   wipedAt: number;
   wipedBy: string;
+  wipedByUid?: number;
 }
 
 export interface ChannelUpdatedPayload {
@@ -918,6 +949,7 @@ export interface CallSignalPayload {
   /// Always the peer (central stamps it; PEER_OFFLINE / NOT_ALLOWED are
   /// written from our point of view too).
   from: string;
+  fromUid?: number;
   to: string;
   /// base64 X25519 public key — INVITE / ACCEPT only.
   pubKey: string | null;

@@ -318,6 +318,7 @@ pub async fn resolve_peer_current(
     if changed {
         events::emit_e2ee_peer_changed(events::E2eePeerChangedPayload {
             username: username.to_string(),
+            uid: 0,
             key_id: bundle.key_id,
             fingerprint: bundle.fingerprint(),
         });
@@ -979,7 +980,9 @@ async fn handle_direct(state: &Arc<Mutex<AppState>>, msg: DirectMessage) {
         context: "dm".to_string(),
         server_id: String::new(),
         sender: msg.sender,
+        sender_uid: msg.sender_uid,
         recipient: msg.recipient,
+        recipient_uid: msg.recipient_uid,
         content,
         timestamp: msg.timestamp.to_string(),
         id: msg.id,
@@ -988,6 +991,7 @@ async fn handle_direct(state: &Arc<Mutex<AppState>>, msg: DirectMessage) {
         edited_at: msg.edited_at,
         reply_to: msg.reply_to,
         reply_to_sender: msg.reply_to_sender,
+        reply_to_sender_uid: msg.reply_to_sender_uid,
         reply_to_content,
         reply_to_attachment_kinds: Vec::new(),
         encrypted,
@@ -1018,11 +1022,13 @@ async fn handle_history(state: &Arc<Mutex<AppState>>, res: DmHistoryRes) {
         messages.push(events::DmHistoryMessagePayload {
             id: m.id,
             sender: m.sender,
+            sender_uid: m.sender_uid,
             content,
             timestamp: m.timestamp,
             edited_at: m.edited_at,
             reply_to: m.reply_to,
             reply_to_sender: m.reply_to_sender,
+            reply_to_sender_uid: m.reply_to_sender_uid,
             reply_to_content,
             encrypted,
             decrypt_error: err,
@@ -1030,6 +1036,7 @@ async fn handle_history(state: &Arc<Mutex<AppState>>, res: DmHistoryRes) {
     }
     events::emit_dm_history_received(events::DmHistoryReceivedPayload {
         peer: res.peer,
+        peer_uid: res.peer_uid,
         messages,
         has_more: res.has_more,
         has_more_after: res.has_more_after,
@@ -1053,8 +1060,10 @@ async fn handle_conversations(state: &Arc<Mutex<AppState>>, res: DmConversations
         .await;
         conversations.push(events::DmConversationPreviewPayload {
             peer: c.peer,
+            peer_uid: c.peer_uid,
             last_message_content: content,
             last_message_sender: c.last_message_sender,
+            last_message_sender_uid: c.last_message_sender_uid,
             last_message_id: c.last_message_id,
             last_timestamp: c.last_timestamp,
             unread_count: c.unread_count,
@@ -1086,6 +1095,7 @@ async fn handle_edited(state: &Arc<Mutex<AppState>>, b: DmMessageEdited) {
     };
     events::emit_dm_message_edited(events::DmMessageEditedPayload {
         peer: b.peer,
+        peer_uid: b.peer_uid,
         message_id: b.message_id,
         content,
         edited_at: b.edited_at,

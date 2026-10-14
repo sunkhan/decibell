@@ -18,6 +18,7 @@ import { CodecBadge } from "../voice/CodecBadge";
 import { THUMBNAIL_INTERVAL_MS } from "../voice/thumbnailConfig";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { RoleChips } from "../profile/RoleChips";
+import { uidOf } from "../users/userDirectory";
 
 // Anchored profile popup. Triggered from anywhere a username is shown
 // (members list, message bubble click, etc.) by calling
@@ -102,6 +103,7 @@ export default function UserProfilePopup() {
         const result = (await invoke("fetch_stream_thumbnail", {
           serverId: serverIdForFetch,
           username,
+          uid: uidOf(username),
         })) as { username: string; jpeg: Uint8Array };
         if (cancelled) return;
         if (result.jpeg && result.jpeg.byteLength > 0) {
@@ -161,6 +163,7 @@ export default function UserProfilePopup() {
         serverId: targetServerId,
         channelId: targetChannelId,
         targetUsername: username,
+        targetUid: uidOf(username),
       });
       useVoiceStore.getState().addWatching(username);
       useVoiceStore.getState().setFullscreenStream(username);
@@ -223,6 +226,7 @@ export default function UserProfilePopup() {
     try {
       await invoke("send_private_message", {
         recipient: username,
+        recipientUid: uidOf(username),
         message: input.trim(),
       });
       setInput("");

@@ -50,6 +50,7 @@ fn channel_info_payload(c: ChannelInfo) -> events::ChannelInfoPayload {
 fn member_info_payload(m: MemberInfo) -> events::MemberInfoPayload {
     events::MemberInfoPayload {
         username: m.username,
+        uid: m.uid,
         joined_at: m.joined_at,
         nickname: m.nickname,
         is_owner: m.is_owner,
@@ -514,6 +515,7 @@ impl CommunityClient {
                         server_name: resp.server_name,
                         server_description: resp.server_description,
                         owner_username: resp.owner_username,
+                        owner_uid: resp.owner_uid,
                         attachment_port: resp.attachment_port,
                         max_attachment_bytes: resp.max_attachment_bytes,
                         public_listing: resp.public_listing,
@@ -592,6 +594,7 @@ impl CommunityClient {
                         channel_id: msg.channel_id,
                         wiped_at: msg.wiped_at,
                         wiped_by: msg.wiped_by,
+                        wiped_by_uid: msg.wiped_by_uid,
                     });
                 }
                 Some(packet::Payload::MessageDeleteRes(resp)) => {
@@ -613,6 +616,7 @@ impl CommunityClient {
                             message_id: b.message_id,
                             deleted_at: b.deleted_at,
                             deleted_by: b.deleted_by,
+                            deleted_by_uid: b.deleted_by_uid,
                         },
                     );
                 }
@@ -648,11 +652,13 @@ impl CommunityClient {
                     let invite = resp.invite.map(|i| events::InviteInfoPayload {
                         code: i.code,
                         created_by: i.created_by,
+                        created_by_uid: i.created_by_uid,
                         created_at: i.created_at,
                         expires_at: i.expires_at,
                         max_uses: i.max_uses,
                         uses: i.uses,
                         for_user: i.for_user,
+                        for_uid: i.for_uid,
                     });
                     events::emit_invite_create_responded(events::InviteCreateRespondedPayload {
                         server_id: server_id.clone(),
@@ -670,11 +676,13 @@ impl CommunityClient {
                         .map(|i| events::InviteInfoPayload {
                             code: i.code,
                             created_by: i.created_by,
+                            created_by_uid: i.created_by_uid,
                             created_at: i.created_at,
                             expires_at: i.expires_at,
                             max_uses: i.max_uses,
                             uses: i.uses,
                             for_user: i.for_user,
+                            for_uid: i.for_uid,
                         })
                         .collect();
                     events::emit_invite_list_received(events::InviteListReceivedPayload {
@@ -733,6 +741,7 @@ impl CommunityClient {
                     events::emit_member_remove(events::MemberRemovePayload {
                         server_id: server_id.clone(),
                         username: rm.username,
+                        uid: rm.uid,
                         revision: rm.revision,
                     });
                 }
@@ -742,7 +751,9 @@ impl CommunityClient {
                         .into_iter()
                         .map(|b| events::BanInfoPayload {
                             username: b.username,
+                            uid: b.uid,
                             banned_by: b.banned_by,
+                            banned_by_uid: b.banned_by_uid,
                             reason: b.reason,
                             banned_at: b.banned_at,
                             expires_at: b.expires_at,
@@ -762,6 +773,7 @@ impl CommunityClient {
                         server_name: m.server_name,
                         server_description: m.server_description,
                         owner_username: m.owner_username,
+                        owner_uid: m.owner_uid,
                         public_listing: m.public_listing,
                     });
                 }
@@ -780,8 +792,10 @@ impl CommunityClient {
                             id: e.id,
                             timestamp: e.timestamp,
                             actor: e.actor,
+                            actor_uid: e.actor_uid,
                             action: e.action,
                             target: e.target,
+                            target_uid: e.target_uid,
                             channel_id: e.channel_id,
                             details: e.details,
                         })
@@ -851,6 +865,7 @@ impl CommunityClient {
                         action: if moved { "moved" } else { "disconnected" }.to_string(),
                         channel_id: n.channel_id.clone(),
                         actor: n.actor,
+                        actor_uid: n.actor_uid,
                     });
                     // Rebind the MLS group here, not from the renderer, so
                     // the new channel's GroupInfo / commits that follow on
@@ -891,6 +906,7 @@ impl CommunityClient {
                         success: resp.success,
                         message: resp.message,
                         username: resp.username,
+                        uid: resp.uid,
                         action: resp.action,
                     });
                 }
@@ -906,6 +922,7 @@ impl CommunityClient {
                             }
                             .to_string(),
                             target_id: o.target_id,
+                            target_uid: o.target_uid,
                             allow: o.allow,
                             deny: o.deny,
                         })
@@ -966,6 +983,7 @@ impl CommunityClient {
                         action: rev.action,
                         reason: rev.reason,
                         actor: rev.actor,
+                        actor_uid: rev.actor_uid,
                         expires_at: rev.expires_at,
                     });
                 }
@@ -975,6 +993,7 @@ impl CommunityClient {
                         .into_iter()
                         .map(|s| events::VoiceUserStatePayload {
                             username: s.username,
+                            uid: s.uid,
                             is_muted: s.is_muted,
                             is_deafened: s.is_deafened,
                             is_server_muted: s.is_server_muted,
@@ -1029,6 +1048,7 @@ impl CommunityClient {
                         server_id: server_id.clone(),
                         channel_id: update.channel_id,
                         participants,
+                        participant_uids: update.active_uids,
                         user_states,
                         user_capabilities,
                     });
@@ -1078,6 +1098,7 @@ impl CommunityClient {
                         .map(|s| events::StreamInfoPayload {
                             stream_id: s.stream_id,
                             owner_username: s.owner_username,
+                            owner_uid: s.owner_uid,
                             has_audio: s.has_audio,
                             resolution_width: s.resolution_width,
                             resolution_height: s.resolution_height,
@@ -1096,6 +1117,7 @@ impl CommunityClient {
                 Some(packet::Payload::StreamThumbnailUpdate(thumb)) => {
                     events::emit_stream_thumbnail_updated(
                         thumb.owner_username,
+                        thumb.owner_uid,
                         thumb.thumbnail_data,
                     );
                 }
@@ -1113,6 +1135,7 @@ impl CommunityClient {
                     events::emit_stream_codec_changed(events::StreamCodecChangedPayload {
                         channel_id: notify.channel_id,
                         streamer_username: notify.streamer_username,
+                        streamer_uid: notify.streamer_uid,
                         new_codec: notify.new_codec,
                         new_width: notify.new_width,
                         new_height: notify.new_height,

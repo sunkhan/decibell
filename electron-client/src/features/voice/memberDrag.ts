@@ -12,6 +12,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useChatStore } from "../../stores/chatStore";
 import { toast } from "../../stores/toastStore";
 import { PERM, canManageMember, hasBits } from "../servers/permissions";
+import { uidOf } from "../users/userDirectory";
 
 const MIME = "application/x-decibell-voice-member";
 
@@ -110,7 +111,7 @@ export function memberDropHandlers(serverId: string, channelId: string) {
       e.preventDefault();
       e.stopPropagation();
       useMemberDragStore.setState({ drag: null, hover: null });
-      invoke("voice_mod", { serverId, username: drag.username, action: "move", channelId }).catch((err) =>
+      invoke("voice_mod", { serverId, username: drag.username, uid: uidOf(drag.username), action: "move", channelId }).catch((err) =>
         toast.error("Couldn't move member", String(err)),
       );
     },

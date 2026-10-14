@@ -27,6 +27,7 @@ import { loopSound, playSound } from "../../utils/sounds";
 import { flushSaveSettings } from "../settings/saveSettings";
 import { applySavedUserGains } from "../voice/userGain";
 import type { CallCandidate, CallSignalKind, CallStreamMeta, StreamInfo, VideoCodec } from "../../types";
+import { uidOf } from "../users/userDirectory";
 
 /// How long an unanswered call rings before the caller gives up / the
 /// callee's prompt goes away.
@@ -73,6 +74,7 @@ export function sendSignal(
   return invoke("send_call_signal", {
     callId,
     to,
+    toUid: uidOf(to),
     kind,
     pubKey: extra.pubKey,
     candidates: extra.candidates,

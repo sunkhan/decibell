@@ -41,6 +41,7 @@ import {
   SpeakerIcon,
   StatsIcon,
 } from "./stage/icons";
+import { uidOf } from "../users/userDirectory";
 
 // One handle for the panel's lifetime: getCurrentWindow() builds a fresh
 // object per call, which made the fullscreen callbacks (and the Escape /
@@ -347,6 +348,7 @@ function StreamViewPanel() {
           serverId: connectedServerId,
           channelId: connectedChannelId,
           targetUsername: displayUser,
+          targetUid: uidOf(displayUser),
         }).catch(() => {});
       }
     }

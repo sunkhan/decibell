@@ -15,6 +15,7 @@ import { useEchoSave } from "../saveEcho";
 import { useLeaveGuard } from "../leaveGuard";
 import { SaveBar } from "./settingsUi";
 import { SERVER_DESCRIPTION_MAX_BYTES, SERVER_NAME_MAX_BYTES } from "../limits";
+import { uidOf } from "../../users/userDirectory";
 
 const MAX_BYTES = 1024 * 1024;
 
@@ -130,7 +131,7 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
     if (!isOwner || !transferTarget || transferConfirm !== transferTarget) return;
     setTransferring(true);
     try {
-      await invoke("transfer_ownership", { serverId, newOwner: transferTarget });
+      await invoke("transfer_ownership", { serverId, newOwner: transferTarget, newOwnerUid: uidOf(transferTarget) });
       setTransferTarget("");
       setTransferConfirm("");
     } catch (err) {

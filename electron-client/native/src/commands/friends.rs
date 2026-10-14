@@ -42,6 +42,9 @@ pub struct SendFriendActionArgs {
     /// 0 = ADD, 1 = REMOVE, 2 = BLOCK, 3 = ACCEPT, 4 = REJECT.
     pub action: i32,
     pub target_username: String,
+    /// The target's uid (preferred over the name, which stays for names
+    /// a person types).
+    pub target_uid: Option<i64>,
 }
 
 #[napi]
@@ -63,7 +66,7 @@ pub async fn send_friend_action(args: SendFriendActionArgs) -> napi::Result<()> 
             packet::Payload::FriendActionReq(FriendActionReq {
                 action: args.action,
                 target_username: args.target_username,
-                target_uid: 0,
+                target_uid: args.target_uid.unwrap_or(0),
             }),
             token.as_deref(),
         );

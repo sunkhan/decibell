@@ -1,6 +1,7 @@
 import { invoke, listen } from "../../lib/ipc";
 import type { ServerInvite } from "../../types";
 import { buildInviteLink } from "./inviteLink";
+import { uidOf } from "../users/userDirectory";
 
 interface InviteCreateRespondedPayload {
   serverId: string;
@@ -66,6 +67,7 @@ export function createPersonalInvite(serverId: string, username: string): Promis
           expiresAt: 0,
           maxUses: 1,
           forUser: username,
+          forUid: uidOf(username),
           requestId,
         });
       })
@@ -79,6 +81,7 @@ export async function inviteFriend(serverId: string, username: string): Promise<
   const invite = await createPersonalInvite(serverId, username);
   await invoke("send_private_message", {
     recipient: username,
+    recipientUid: uidOf(username),
     message: buildInviteLink(invite.code),
   });
 }

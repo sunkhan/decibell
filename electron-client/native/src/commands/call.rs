@@ -94,6 +94,8 @@ pub struct CallStreamMetaArg {
 pub struct SendCallSignalArgs {
     pub call_id: String,
     pub to: String,
+    /// The peer's uid (users by uid; preferred over `to`).
+    pub to_uid: Option<i64>,
     /// proto CallSignal.Kind name: "INVITE", "ACCEPT", "HANGUP", …
     pub kind: String,
     /// base64 X25519 public key — INVITE / ACCEPT only.
@@ -174,8 +176,8 @@ pub async fn send_call_signal(args: SendCallSignalArgs) -> napi::Result<()> {
                 timestamp: 0,
                 pub_key_sig,
                 key_id,
-                from_uid: 0,
-                to_uid: 0,
+                from_uid: 0, // central stamps it
+                to_uid: args.to_uid.unwrap_or(0),
             }),
             token.as_deref(),
         );

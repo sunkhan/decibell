@@ -1,6 +1,7 @@
 import { invoke } from "../../../lib/ipc";
 import { useAuthStore } from "../../../stores/authStore";
 import { useVoiceStore } from "../../../stores/voiceStore";
+import { uidOf } from "../../users/userDirectory";
 
 // Stream watch actions for the community voice stage. They read the store at
 // call time, so memoized tiles need no callback props. Several streams can
@@ -17,7 +18,7 @@ function startWatching(username: string): boolean {
   if (!serverId || !channelId) return false;
   if (!v.watchingStreams.includes(username)) {
     if (username !== useAuthStore.getState().username) {
-      invoke("watch_stream", { serverId, channelId, targetUsername: username }).catch(() => {});
+      invoke("watch_stream", { serverId, channelId, targetUsername: username, targetUid: uidOf(username) }).catch(() => {});
     }
     v.addWatching(username);
   }
@@ -49,6 +50,7 @@ export function stopWatchingStream(username: string): void {
       serverId: v.connectedServerId,
       channelId: v.connectedChannelId,
       targetUsername: username,
+      targetUid: uidOf(username),
     }).catch(() => {});
   }
   v.removeWatching(username);
