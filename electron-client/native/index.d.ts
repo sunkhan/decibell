@@ -118,6 +118,37 @@ export interface RequestChannelHistoryArgs {
   afterId?: number
 }
 export declare function requestChannelHistory(args: RequestChannelHistoryArgs): Promise<void>
+/**
+ * Message search (spec 2026-10-14). Everything but `server_id` is
+ * optional; the answer arrives as `message_search_received` with `seq`.
+ */
+export interface SearchMessagesArgs {
+  serverId: string
+  /** Echoed back so the renderer can drop answers to superseded searches. */
+  seq?: number
+  /** Free text: words, "phrases", -excluded words. */
+  query?: string
+  /** Empty / absent = every text channel the user can read. */
+  channelIds?: Array<string>
+  /** Usernames. */
+  authors?: Array<string>
+  /** Unix seconds; after inclusive, before exclusive. */
+  after?: number
+  before?: number
+  /**
+   * MessageSearchRequest.Has bits (file 1, image 2, video 4, audio 8,
+   * document 16, link 32).
+   */
+  has?: number
+  /** "newest" (default) | "oldest" | "relevance" */
+  sort?: string
+  /** Newest / oldest paging: the previous page's nextCursor. */
+  cursor?: number
+  /** Relevance paging: the previous page's nextOffset. */
+  offset?: number
+  limit?: number
+}
+export declare function searchMessages(args: SearchMessagesArgs): Promise<void>
 export interface WipeChannelHistoryArgs {
   serverId: string
   channelId: string

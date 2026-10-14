@@ -1,5 +1,5 @@
-//! Channel-scoped commands: text-message send, history paging,
-//! retention edit, and owner-only history wipe.
+//! Channel-scoped commands: text-message send, history paging, message
+//! search, retention edit, and owner-only history wipe.
 //!
 //! Each command builds and queues a single TCP packet for the matching
 //! community connection. Responses arrive asynchronously as bus events
@@ -68,6 +68,61 @@ pub async fn request_channel_history(args: RequestChannelHistoryArgs) -> napi::R
             limit,
             around_id: around_id.unwrap_or(0),
             after_id: after_id.unwrap_or(0),
+        }),
+    )
+    .await
+}
+
+/// Message search (spec 2026-10-14). Everything but `server_id` is
+/// optional; the answer arrives as `message_search_received` with `seq`.
+#[napi(object)]
+pub struct SearchMessagesArgs {
+    pub server_id: String,
+    /// Echoed back so the renderer can drop answers to superseded searches.
+    pub seq: Option<u32>,
+    /// Free text: words, "phrases", -excluded words.
+    pub query: Option<String>,
+    /// Empty / absent = every text channel the user can read.
+    pub channel_ids: Option<Vec<String>>,
+    /// Usernames.
+    pub authors: Option<Vec<String>>,
+    /// Unix seconds; after inclusive, before exclusive.
+    pub after: Option<i64>,
+    pub before: Option<i64>,
+    /// MessageSearchRequest.Has bits (file 1, image 2, video 4, audio 8,
+    /// document 16, link 32).
+    pub has: Option<u32>,
+    /// "newest" (default) | "oldest" | "relevance"
+    pub sort: Option<String>,
+    /// Newest / oldest paging: the previous page's nextCursor.
+    pub cursor: Option<i64>,
+    /// Relevance paging: the previous page's nextOffset.
+    pub offset: Option<i32>,
+    pub limit: Option<i32>,
+}
+
+#[napi]
+pub async fn search_messages(args: SearchMessagesArgs) -> napi::Result<()> {
+    let sort = match args.sort.as_deref() {
+        Some("oldest") => message_search_request::Sort::Oldest,
+        Some("relevance") => message_search_request::Sort::Relevance,
+        _ => message_search_request::Sort::Newest,
+    };
+    send_for_server(
+        &args.server_id,
+        packet::Type::MessageSearchReq,
+        packet::Payload::MessageSearchReq(MessageSearchRequest {
+            seq: args.seq.unwrap_or(0),
+            query: args.query.unwrap_or_default(),
+            channel_ids: args.channel_ids.unwrap_or_default(),
+            authors: args.authors.unwrap_or_default(),
+            after: args.after.unwrap_or(0),
+            before: args.before.unwrap_or(0),
+            has: args.has.unwrap_or(0),
+            sort: sort as i32,
+            cursor: args.cursor.unwrap_or(0),
+            offset: args.offset.unwrap_or(0),
+            limit: args.limit.unwrap_or(0),
         }),
     )
     .await

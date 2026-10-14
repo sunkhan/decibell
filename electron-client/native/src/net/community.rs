@@ -534,6 +534,20 @@ impl CommunityClient {
                     )
                     .await;
                 }
+                // Search results: through the crypto worker only when some row
+                // is sealed, so a key fetch for another channel never holds up
+                // a plaintext page.
+                Some(packet::Payload::MessageSearchRes(resp)) => {
+                    if resp.messages.iter().any(|m| !m.envelope.is_empty() || !m.reply_to_envelope.is_empty()) {
+                        crate::e2ee::channel_keys::enqueue(
+                            &state,
+                            crate::e2ee::channel_keys::ChannelJob::Search(server_id.clone(), resp),
+                        )
+                        .await;
+                    } else {
+                        crate::e2ee::channel_keys::emit_search_plain(&server_id, resp);
+                    }
+                }
                 Some(packet::Payload::ChannelKeysRes(res)) => {
                     crate::e2ee::channel_keys::on_keys_res(&state, &server_id, res).await;
                 }

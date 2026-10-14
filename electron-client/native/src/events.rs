@@ -406,6 +406,7 @@ pub const SERVER_META_UPDATED: &str = "server_meta_updated";
 pub const SERVER_UPDATE_RESPONDED: &str = "server_update_responded";
 pub const AUDIT_LOG_RECEIVED: &str = "audit_log_received";
 pub const MEMBER_SEARCH_RECEIVED: &str = "member_search_received";
+pub const MESSAGE_SEARCH_RECEIVED: &str = "message_search_received";
 pub const STORAGE_INFO_RECEIVED: &str = "storage_info_received";
 pub const VOICE_FORCE_NOTIFY: &str = "voice_force_notify";
 pub const CHANNEL_OVERWRITES_RECEIVED: &str = "channel_overwrites_received";
@@ -1110,6 +1111,30 @@ pub struct AuditLogReceivedPayload {
     pub seq: u32,
 }
 
+/// One page of message-search results (spec 2026-10-14), opened like
+/// history: encrypted channels' rows arrive decrypted.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageSearchReceivedPayload {
+    pub server_id: String,
+    pub seq: u32,
+    pub success: bool,
+    pub message: String,
+    /// In sort order; each carries its own channel_id.
+    pub messages: Vec<ChannelMessagePayload>,
+    pub has_more: bool,
+    pub next_cursor: i64,
+    pub next_offset: i32,
+    /// First page only; -1 = not counted.
+    pub total: i64,
+    pub total_capped: bool,
+    /// Encrypted channels in scope whose text wasn't searched.
+    pub text_skipped_channel_ids: Vec<String>,
+    pub partial: bool,
+    pub retry_after_ms: i32,
+    pub first_page: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberSearchReceivedPayload {
@@ -1262,6 +1287,10 @@ pub fn emit_audit_log_received(payload: AuditLogReceivedPayload) {
 
 pub fn emit_member_search_received(payload: MemberSearchReceivedPayload) {
     send(MEMBER_SEARCH_RECEIVED, payload);
+}
+
+pub fn emit_message_search_received(payload: MessageSearchReceivedPayload) {
+    send(MESSAGE_SEARCH_RECEIVED, payload);
 }
 
 pub fn emit_storage_info_received(payload: StorageInfoReceivedPayload) {

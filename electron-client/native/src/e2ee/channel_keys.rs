@@ -576,6 +576,8 @@ pub enum ChannelJob {
     Msg(String, ChannelMessage),
     History(String, ChannelHistoryResponse),
     Edited(String, ChannelMessageEdited),
+    /// Message-search results: each row opens with its own channel.
+    Search(String, MessageSearchResponse),
 }
 
 pub async fn enqueue(state: &Arc<Mutex<AppState>>, job: ChannelJob) {
@@ -602,6 +604,7 @@ async fn run_worker(mut rx: mpsc::Receiver<ChannelJob>, state: Arc<Mutex<AppStat
             ChannelJob::Msg(sid, m) => handle_msg(&state, &sid, m).await,
             ChannelJob::History(sid, r) => handle_history(&state, &sid, r).await,
             ChannelJob::Edited(sid, b) => handle_edited(&state, &sid, b).await,
+            ChannelJob::Search(sid, r) => handle_search(&state, &sid, r).await,
         }
     }
 }
@@ -653,34 +656,58 @@ async fn handle_msg(state: &Arc<Mutex<AppState>>, server_id: &str, msg: ChannelM
     });
 }
 
+/// A stored message (history page, search result) for the renderer, with
+/// its body and reply preview already opened.
+fn message_payload(
+    m: ChannelMessage,
+    content: String,
+    encrypted: bool,
+    decrypt_error: String,
+    metas: Vec<events::EncryptedAttachmentMetaPayload>,
+    reply_to_content: String,
+) -> events::ChannelMessagePayload {
+    events::ChannelMessagePayload {
+        id: m.id,
+        sender: m.sender,
+        channel_id: m.channel_id,
+        content,
+        timestamp: m.timestamp,
+        attachments: m.attachments.into_iter().map(crate::net::community::map_attachment).collect(),
+        nonce: m.nonce,
+        edited_at: m.edited_at,
+        reply_to: m.reply_to,
+        reply_to_sender: m.reply_to_sender,
+        reply_to_content,
+        reply_to_attachment_kinds: m.reply_to_attachment_kinds,
+        encrypted,
+        decrypt_error,
+        encrypted_attachments: metas,
+        suppress_embeds: m.suppress_embeds,
+    }
+}
+
+/// Opens one stored message of `channel_id` (body + reply preview).
+async fn open_stored(
+    state: &Arc<Mutex<AppState>>,
+    server_id: &str,
+    channel_id: &str,
+    mut m: ChannelMessage,
+) -> events::ChannelMessagePayload {
+    let content = std::mem::take(&mut m.content);
+    let (content, encrypted, err, metas) = render(state, server_id, channel_id, &m.sender, content, &m.envelope).await;
+    let reply_to_content = if m.reply_to_envelope.is_empty() {
+        std::mem::take(&mut m.reply_to_content)
+    } else {
+        render(state, server_id, channel_id, &m.reply_to_sender, String::new(), &m.reply_to_envelope).await.0
+    };
+    message_payload(m, content, encrypted, err, metas, reply_to_content)
+}
+
 async fn handle_history(state: &Arc<Mutex<AppState>>, server_id: &str, resp: ChannelHistoryResponse) {
     let channel_id = resp.channel_id.clone();
     let mut messages = Vec::with_capacity(resp.messages.len());
     for m in resp.messages {
-        let (content, encrypted, err, metas) = render(state, server_id, &channel_id, &m.sender, m.content, &m.envelope).await;
-        let reply_to_content = if m.reply_to_envelope.is_empty() {
-            m.reply_to_content
-        } else {
-            render(state, server_id, &channel_id, &m.reply_to_sender, String::new(), &m.reply_to_envelope).await.0
-        };
-        messages.push(events::ChannelMessagePayload {
-            id: m.id,
-            sender: m.sender,
-            channel_id: m.channel_id,
-            content,
-            timestamp: m.timestamp,
-            attachments: m.attachments.into_iter().map(crate::net::community::map_attachment).collect(),
-            nonce: m.nonce,
-            edited_at: m.edited_at,
-            reply_to: m.reply_to,
-            reply_to_sender: m.reply_to_sender,
-            reply_to_content,
-            reply_to_attachment_kinds: m.reply_to_attachment_kinds,
-            encrypted,
-            decrypt_error: err,
-            encrypted_attachments: metas,
-            suppress_embeds: m.suppress_embeds,
-        });
+        messages.push(open_stored(state, server_id, &channel_id, m).await);
     }
     events::emit_channel_history_received(events::ChannelHistoryReceivedPayload {
         server_id: server_id.to_string(),
@@ -691,6 +718,52 @@ async fn handle_history(state: &Arc<Mutex<AppState>>, server_id: &str, resp: Cha
         around_id: resp.around_id,
         after_id: resp.after_id,
     });
+}
+
+fn search_payload(
+    server_id: &str,
+    resp: MessageSearchResponse,
+    messages: Vec<events::ChannelMessagePayload>,
+) -> events::MessageSearchReceivedPayload {
+    events::MessageSearchReceivedPayload {
+        server_id: server_id.to_string(),
+        seq: resp.seq,
+        success: resp.success,
+        message: resp.message,
+        messages,
+        has_more: resp.has_more,
+        next_cursor: resp.next_cursor,
+        next_offset: resp.next_offset,
+        total: resp.total,
+        total_capped: resp.total_capped,
+        text_skipped_channel_ids: resp.text_skipped_channel_ids,
+        partial: resp.partial,
+        retry_after_ms: resp.retry_after_ms,
+        first_page: resp.first_page,
+    }
+}
+
+async fn handle_search(state: &Arc<Mutex<AppState>>, server_id: &str, mut resp: MessageSearchResponse) {
+    let rows = std::mem::take(&mut resp.messages);
+    let mut messages = Vec::with_capacity(rows.len());
+    for m in rows {
+        let channel_id = m.channel_id.clone();
+        messages.push(open_stored(state, server_id, &channel_id, m).await);
+    }
+    events::emit_message_search_received(search_payload(server_id, resp, messages));
+}
+
+/// A search page with no sealed row: nothing to open, no queue to wait in.
+pub fn emit_search_plain(server_id: &str, mut resp: MessageSearchResponse) {
+    let messages = std::mem::take(&mut resp.messages)
+        .into_iter()
+        .map(|mut m| {
+            let content = std::mem::take(&mut m.content);
+            let reply = std::mem::take(&mut m.reply_to_content);
+            message_payload(m, content, false, String::new(), Vec::new(), reply)
+        })
+        .collect();
+    events::emit_message_search_received(search_payload(server_id, resp, messages));
 }
 
 async fn handle_edited(state: &Arc<Mutex<AppState>>, server_id: &str, b: ChannelMessageEdited) {
