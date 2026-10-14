@@ -18,6 +18,7 @@
 #include <set>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <chrono>
 #include <mutex>
 #include <thread>
@@ -154,6 +155,7 @@ void fill_channel_info(chatproj::ChannelInfo* info, const chatproj::DbChannel& c
     info->set_encrypted(ch.encrypted);
     info->set_permissions_synced(ch.type != 2 && ch.perm_synced);
     info->set_category_sync(ch.type == 2 && ch.category_sync);
+    info->set_topic(ch.topic);
 }
 
 /// Builds a CHANNEL_LIST_UPDATE packet for ONE recipient: only channels
@@ -1057,6 +1059,13 @@ private:
                             break;
                         case chatproj::InviteResult::Banned:
                             send_auth_response(false, "You are banned from this server.", "banned");
+                            manager_.leave(shared_from_this());
+                            close_after_flush();
+                            return;
+                        case chatproj::InviteResult::NotForYou:
+                            send_auth_response(false,
+                                "This invite was sent to someone else.",
+                                "invalid_invite");
                             manager_.leave(shared_from_this());
                             close_after_flush();
                             return;
@@ -1968,6 +1977,20 @@ private:
             if (ok && req.has_slowmode_seconds()) {
                 db->set_channel_slowmode(req.channel_id(), req.slowmode_seconds());
             }
+            // Topic (text channels): one line of plain text. Control
+            // characters go (clamp_utf8), surrounding blanks too.
+            bool topic_changed = false;
+            if (ok && req.has_topic()) {
+                std::string topic = chatproj::clamp_utf8(req.topic(), 1024);
+                const auto first = topic.find_first_not_of(' ');
+                topic = first == std::string::npos
+                            ? std::string()
+                            : topic.substr(first, topic.find_last_not_of(' ') - first + 1);
+                auto before = db->get_channel(req.channel_id());
+                if (before && before->type == 0 && before->topic != topic) {
+                    topic_changed = db->set_channel_topic(req.channel_id(), topic);
+                }
+            }
             // End-to-end encryption toggle (text channels). Switching on
             // seals from the next message; switching off leaves sealed
             // history sealed — the server never gets those keys.
@@ -1982,9 +2005,11 @@ private:
                 db->add_audit(username_, "channel_update", "", req.channel_id(),
                               encryption_changed
                                   ? std::string("encryption ") + (req.encrypted() ? "on" : "off")
-                                  : req.has_slowmode_seconds()
-                                        ? "slowmode " + std::to_string(req.slowmode_seconds()) + "s"
-                                        : "retention/bitrate");
+                                  : topic_changed
+                                        ? std::string("topic")
+                                        : req.has_slowmode_seconds()
+                                              ? "slowmode " + std::to_string(req.slowmode_seconds()) + "s"
+                                              : "retention/bitrate");
             }
             res->set_success(ok);
             res->set_message(ok ? "Channel updated." : "Channel not found.");
@@ -2286,25 +2311,47 @@ private:
         else if (packet.type() == chatproj::Packet::INVITE_CREATE_REQ) {
             auto* db = manager_.db();
             if (!db) return;
-            if (auto a = manager_.authz().check(chatproj::Action::CreateInvite, {username_, "", ""}); !a) {
-                send_simple_mod_res(chatproj::Packet::INVITE_CREATE_RES, false, a.reason, "", "");
-                return;
-            }
             const auto& req = packet.invite_create_req();
-            const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
-            if (req.expires_at() != 0 && req.expires_at() <= now_ts) {
-                send_simple_mod_res(chatproj::Packet::INVITE_CREATE_RES, false,
-                                    "Invite expiry is in the past.", "", "");
-                return;
-            }
-            // Negative max_uses used to be stored verbatim and read as
-            // "unlimited" by every `> 0` check — normalise to 0.
-            const int32_t max_uses = req.max_uses() < 0 ? 0 : req.max_uses();
-            auto created = db->create_invite(username_, req.expires_at(), max_uses);
-
             chatproj::Packet p;
             p.set_type(chatproj::Packet::INVITE_CREATE_RES);
             auto* res = p.mutable_invite_create_res();
+            res->set_request_id(req.request_id());
+            auto refuse = [&](const std::string& why) {
+                res->set_success(false);
+                res->set_message(why);
+                send_packet(p);
+            };
+            if (auto a = manager_.authz().check(chatproj::Action::CreateInvite, {username_, "", ""}); !a) {
+                refuse(a.reason);
+                return;
+            }
+            const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
+            if (req.expires_at() != 0 && req.expires_at() <= now_ts) {
+                refuse("Invite expiry is in the past.");
+                return;
+            }
+            // Personal invite (Invite friends): single-use, for one user.
+            const std::string& for_user = req.for_user();
+            if (!for_user.empty()) {
+                if (for_user.size() > 64 || for_user == username_) {
+                    refuse("Invalid invitee.");
+                    return;
+                }
+                if (db->is_member(for_user)) {
+                    refuse(for_user + " is already a member.");
+                    return;
+                }
+            }
+            // Negative max_uses used to be stored verbatim and read as
+            // "unlimited" by every `> 0` check — normalise to 0.
+            const int32_t max_uses = !for_user.empty() ? 1 : req.max_uses() < 0 ? 0 : req.max_uses();
+            // Inviting the same friend again re-sends their live invite
+            // rather than minting another one that never expires.
+            std::optional<chatproj::DbInvite> reused;
+            if (!for_user.empty()) reused = db->find_personal_invite(username_, for_user);
+            auto created = reused ? reused
+                                  : db->create_invite(username_, req.expires_at(), max_uses, for_user);
+
             if (created) {
                 res->set_success(true);
                 res->set_message("Invite created.");
@@ -2315,15 +2362,17 @@ private:
                 info->set_expires_at(created->expires_at);
                 info->set_max_uses(created->max_uses);
                 info->set_uses(created->uses);
+                info->set_for_user(created->for_user);
             } else {
                 res->set_success(false);
                 res->set_message("Failed to create invite.");
             }
             send_packet(p);
-            if (created) {
+            if (created && !reused) {
                 manager_.sync_invite_register(created->code, created->expires_at);
-                db->add_audit(username_, "invite_create", created->code, "",
-                              max_uses ? "max uses " + std::to_string(max_uses) : "unlimited");
+                std::string details = max_uses ? "max uses " + std::to_string(max_uses) : "unlimited";
+                if (!for_user.empty()) details += "; for " + for_user;
+                db->add_audit(username_, "invite_create", created->code, "", details);
             }
         }
 
@@ -2361,6 +2410,7 @@ private:
                 info->set_expires_at(inv.expires_at);
                 info->set_max_uses(inv.max_uses);
                 info->set_uses(inv.uses);
+                info->set_for_user(inv.for_user);
             }
             send_packet(p);
         }
@@ -4322,11 +4372,15 @@ void SessionManager::fill_member_search(const chatproj::MemberSearchRequest& req
               [](const chatproj::DbMember& a, const chatproj::DbMember& b) {
                   return a.username < b.username;
               });
+    // Exact-username filter ("which of these are members?"), capped.
+    std::unordered_set<std::string> only;
+    for (int i = 0; i < req.usernames_size() && i < 200; ++i) only.insert(req.usernames(i));
     int64_t total = 0;
     int32_t sent = 0;
     bool has_more = false;
     std::string next_after;
     for (const auto& m : members) {
+        if (!only.empty() && !only.count(m.username)) continue;
         auto rit = roles_by_user.find(m.username);
         const bool any_role = rit != roles_by_user.end() && !rit->second.empty();
         if (role_id == -1 && any_role) continue;

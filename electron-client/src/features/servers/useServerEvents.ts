@@ -538,11 +538,13 @@ export function useServerEvents() {
       success: boolean;
       message: string;
       invite: import("../../types").ServerInvite | null;
+      requestId?: number;
     }>("invite_create_responded", (event) => {
-      const { serverId, success, invite, message } = event.payload;
+      const { serverId, success, invite, message, requestId } = event.payload;
       if (success && invite) {
         useChatStore.getState().upsertInvite(serverId, invite);
-      } else if (!success) {
+      } else if (!success && !requestId) {
+        // A request with an id (a personal invite) reports to its caller.
         toast.error(message || "Failed to create invite");
       }
     });

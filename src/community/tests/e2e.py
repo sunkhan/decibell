@@ -1287,6 +1287,103 @@ def test_slowmode():
     cal.close(); owner.close()
 
 
+def test_channel_topic():
+    print("[topic] MANAGE_CHANNELS sets a text channel's topic; everyone who can see it gets it")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    tia = join("tia", owner); owner.flush(0.5); tia.flush(0.5)
+
+    def update(c, channel_id, **kw):
+        c.send(pb.Packet.CHANNEL_UPDATE_REQ, channel_update_req=pb.ChannelUpdateRequest(channel_id=channel_id, **kw))
+        return c.wait(pb.Packet.CHANNEL_UPDATE_RES)
+
+    r = update(owner, "general", topic="   Talk about anything   ")
+    check("topic set (trimmed) and echoed", r is not None and r.channel_update_res.success and
+          r.channel_update_res.channel.topic == "Talk about anything", str(r.channel_update_res.channel.topic) if r else None)
+    r = tia.wait(pb.Packet.CHANNEL_UPDATE_RES)
+    check("members get the new topic", r is not None and r.channel_update_res.channel.topic == "Talk about anything")
+    r = update(owner, "general", slowmode_seconds=0)
+    check("an update without a topic leaves it alone", r is not None and r.channel_update_res.channel.topic == "Talk about anything")
+    tia.flush(0.5)
+    r = update(tia, "general", topic="hijacked")
+    check("topic edit denied without MANAGE_CHANNELS", r is not None and not r.channel_update_res.success)
+    check("...and the topic is unchanged", sql("select topic from channels where id='general'") == [("Talk about anything",)])
+    r = update(owner, "general", topic="é" * 700)
+    check("topic clamped to 1024 bytes on a character boundary", r is not None and
+          r.channel_update_res.channel.topic == "é" * 512)
+    r = update(owner, "voice-lounge", topic="not here")
+    check("voice channels have no topic", r is not None and r.channel_update_res.channel.topic == "")
+    late = Client("tia")
+    ok, r = auth_ok(late)
+    lst = {ch.id: ch for ch in r.community_auth_res.channels} if ok else {}
+    check("the channel list at auth carries the topic", lst.get("general") is not None and lst["general"].topic == "é" * 512)
+    late.close()
+    owner.flush(0.5)
+    r = update(owner, "general", topic="")
+    check("an empty topic clears it", r is not None and r.channel_update_res.channel.topic == "")
+    check("audited as a topic change",
+          sql("select details from audit_log where action='channel_update' and channel_id='general' order by id desc limit 1") == [("topic",)])
+    tia.close(); owner.close()
+
+
+def test_personal_invites():
+    print("[invites] personal invites for Invite friends: single-use, bound, reused, request ids")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.flush(0.5)
+
+    def create(c, request_id, for_user="", expires_at=0, max_uses=0):
+        c.send(pb.Packet.INVITE_CREATE_REQ, invite_create_req=pb.InviteCreateRequest(
+            expires_at=expires_at, max_uses=max_uses, for_user=for_user, request_id=request_id))
+        return c.wait(pb.Packet.INVITE_CREATE_RES, pred=lambda p: p.invite_create_res.request_id == request_id)
+
+    r = create(owner, 41, for_user="pia", max_uses=0)
+    inv = r.invite_create_res.invite if r else None
+    check("personal invite created, request id echoed", r is not None and r.invite_create_res.success)
+    check("...single-use, never expires, bound to the invitee",
+          inv is not None and inv.max_uses == 1 and inv.expires_at == 0 and inv.for_user == "pia", str(inv))
+    r = create(owner, 42, for_user="pia")
+    check("asking again returns the same live invite",
+          r is not None and r.invite_create_res.success and r.invite_create_res.invite.code == inv.code)
+    check("...without minting another", sql("select count(*) from invites where for_user='pia'") == [(1,)])
+    owner.send(pb.Packet.INVITE_LIST_REQ, invite_list_req=pb.InviteListRequest())
+    r = owner.wait(pb.Packet.INVITE_LIST_RES)
+    check("the invite list names the invitee",
+          r is not None and any(i.code == inv.code and i.for_user == "pia" for i in r.invite_list_res.invites))
+
+    other = Client("quin", invite=inv.code)
+    ok, r = auth_ok(other)
+    check("someone else can't redeem it", not ok and r is not None and "someone else" in r.community_auth_res.message,
+          r.community_auth_res.message if r else None)
+    other.close()
+    check("...and doesn't spend it", sql("select uses from invites where code=?", inv.code) == [(0,)])
+    pia = Client("pia", invite=inv.code)
+    check("the invitee joins with it", auth_ok(pia)[0])
+    check("...which uses it up", sql("select count(*) from invites where code=?", inv.code) == [(0,)])
+    owner.flush(0.5); pia.flush(0.5)
+
+    r = create(owner, 43, for_user="pia")
+    check("no personal invite for an existing member",
+          r is not None and not r.invite_create_res.success and "already a member" in r.invite_create_res.message)
+    r = create(owner, 44, for_user="alice")
+    check("no personal invite for yourself", r is not None and not r.invite_create_res.success)
+    r = create(owner, 45, max_uses=3)
+    check("ordinary invites are unchanged", r is not None and r.invite_create_res.success and
+          r.invite_create_res.invite.max_uses == 3 and r.invite_create_res.invite.for_user == "")
+
+    set_everyone_perms(owner, ALL_MEMBER_BITS & ~pb.PERM_CREATE_INVITE)
+    pia.flush(0.5)
+    r = create(pia, 46, for_user="zed")
+    check("a refusal still echoes the request id", r is not None and not r.invite_create_res.success)
+    set_everyone_perms(owner, ALL_MEMBER_BITS)
+
+    owner.send(pb.Packet.MEMBER_SEARCH_REQ, member_search_req=pb.MemberSearchRequest(
+        seq=901, usernames=["pia", "nobody", "alice"]))
+    r = owner.wait(pb.Packet.MEMBER_SEARCH_RES, pred=lambda p: p.member_search_res.seq == 901)
+    check("member lookup by exact usernames returns only the members",
+          r is not None and sorted(m.username for m in r.member_search_res.members) == ["alice", "pia"],
+          str([m.username for m in r.member_search_res.members]) if r else None)
+    pia.close(); owner.close()
+
+
 def test_voice_moderation():
     print("[voice mod] server mute/deafen, move, disconnect")
     owner = Client("alice"); assert auth_ok(owner)[0]
@@ -2306,7 +2403,7 @@ def test_v11_migration():
     proc = start_server(); stop_server(proc)
     check("v10 → v12: a category with rows stays a plain group", sql("select category_sync from channels where id='old-cat'") == [(0,)])
     check("...and its channel follows nothing", perm_synced("old-child") == 0)
-    check("schema at v12", sql("select value from server_meta where key='schema_version'") == [("12",)])
+    check("schema at v13", sql("select value from server_meta where key='schema_version'") == [("13",)])
     # A DB that ran v11 live keeps the categories whose rows were applying.
     sql("update channels set perm_synced=1 where id='old-child'")
     sql("update server_meta set value='11' where key='schema_version'")
@@ -2316,6 +2413,15 @@ def test_v11_migration():
     check("...and its synced channel keeps following it", perm_synced("old-child") == 1)
     sql("delete from channel_overwrites where channel_id='old-cat'")
     sql("delete from channels where id in ('old-cat', 'old-child')")
+
+    # v13: channel topics + personal invites on an upgraded DB.
+    sql("alter table channels drop column topic")
+    sql("alter table invites drop column for_user")
+    sql("update server_meta set value='12' where key='schema_version'")
+    proc = start_server(); stop_server(proc)
+    check("v12 → v13: channels.topic + invites.for_user added",
+          sql("select count(*) from pragma_table_info('channels') where name='topic'") == [(1,)] and
+          sql("select count(*) from pragma_table_info('invites') where name='for_user'") == [(1,)])
 
 
 def test_v3_invites_and_nicknames():
@@ -2738,6 +2844,8 @@ if __name__ == "__main__":
         test_m1_m4_timeout()
         test_ban_expiry_and_purge()
         test_slowmode()
+        test_channel_topic()
+        test_personal_invites()
         test_m3_slowmode_per_user()
         test_m3_session_cap()
         test_voice_moderation()

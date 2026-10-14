@@ -8,6 +8,7 @@ import { PERM, useChannelPermission } from "./permissions";
 import { ChannelPermissionsSection, type ChannelPermissionsHandle } from "./ChannelPermissionsSection";
 import type { ChannelInfo } from "../../types";
 import Select from "../../components/Select";
+import { TOPIC_MAX_BYTES, normalizeTopicInput, topicBytes } from "./channelTopic";
 
 type RetentionField =
   | "retentionDaysText"
@@ -140,6 +141,7 @@ export default function ChannelSettingsModal() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState("");
+  const [topicDraft, setTopicDraft] = useState("");
   const [bitrateDraft, setBitrateDraft] = useState(0);
   const [slowmodeDraft, setSlowmodeDraft] = useState(0);
   const [encryptedDraft, setEncryptedDraft] = useState(false);
@@ -188,6 +190,7 @@ export default function ChannelSettingsModal() {
       retentionDaysAudio: presetValue(channel.retentionDaysAudio),
     });
     setNameDraft(channel.name);
+    setTopicDraft(channel.topic ?? "");
     setBitrateDraft(channel.voiceBitrateKbps);
     setSlowmodeDraft(channel.slowmodeSeconds ?? 0);
     setEncryptedDraft(channel.encrypted ?? false);
@@ -250,12 +253,15 @@ export default function ChannelSettingsModal() {
       draft.retentionDaysAudio !== channel.retentionDaysAudio);
   const nameDirty =
     !!channel && nameDraft.trim().length > 0 && nameDraft.trim() !== channel.name;
+  const isText = channel?.type === "text";
+  const topicDirty = !!channel && isText && topicDraft.trim() !== (channel.topic ?? "");
   const bitrateDirty = !!channel && isVoice && bitrateDraft !== channel.voiceBitrateKbps;
   const slowmodeDirty =
     !!channel && !isVoice && !isCategory && slowmodeDraft !== (channel.slowmodeSeconds ?? 0);
   const encryptedDirty =
     !!channel && !isVoice && !isCategory && encryptedDraft !== (channel.encrypted ?? false);
-  const dirty = retentionDirty || nameDirty || bitrateDirty || slowmodeDirty || encryptedDirty;
+  const dirty =
+    retentionDirty || nameDirty || topicDirty || bitrateDirty || slowmodeDirty || encryptedDirty;
   const settingsToSave = dirty && canManage;
   const canSave = settingsToSave || permsDirty;
 
@@ -271,7 +277,10 @@ export default function ChannelSettingsModal() {
           name: nameDraft.trim(),
         });
       }
-      if (settingsToSave && (retentionDirty || bitrateDirty || slowmodeDirty || encryptedDirty)) {
+      if (
+        settingsToSave &&
+        (retentionDirty || topicDirty || bitrateDirty || slowmodeDirty || encryptedDirty)
+      ) {
         await invoke("update_channel_retention", {
           serverId: activeServerId,
           channelId: channel.id,
@@ -284,6 +293,7 @@ export default function ChannelSettingsModal() {
           voiceBitrateKbps: isVoice ? bitrateDraft : undefined,
           slowmodeSeconds: slowmodeDirty ? slowmodeDraft : undefined,
           encrypted: encryptedDirty ? encryptedDraft : undefined,
+          topic: topicDirty ? topicDraft.trim() : undefined,
         });
       }
       if (permsDirty) await permsRef.current?.commit();
@@ -380,6 +390,30 @@ export default function ChannelSettingsModal() {
                 onChange={(e) => setNameDraft(e.target.value)}
                 maxLength={64}
                 className="w-full rounded-md border border-border bg-bg-light px-3 py-2 text-[13px] text-text-primary outline-none transition-colors focus:border-accent"
+              />
+            </div>
+          )}
+
+          {canManage && isText && (
+            <div className="mb-5">
+              <div className="mb-2 flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
+                Channel topic
+                {TOPIC_MAX_BYTES - topicBytes(topicDraft) < 100 && (
+                  <span className="font-normal normal-case tracking-normal">
+                    {TOPIC_MAX_BYTES - topicBytes(topicDraft)}
+                  </span>
+                )}
+              </div>
+              <textarea
+                value={topicDraft}
+                onChange={(e) => setTopicDraft(normalizeTopicInput(e.target.value))}
+                onKeyDown={(e) => {
+                  // One line: Enter would only become a space.
+                  if (e.key === "Enter") e.preventDefault();
+                }}
+                rows={2}
+                placeholder="Let everyone know what this channel is for"
+                className="w-full resize-none rounded-md border border-border bg-bg-light px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent"
               />
             </div>
           )}

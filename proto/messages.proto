@@ -750,6 +750,9 @@ message ChannelInfo {
   // CATEGORY rows: whether channels can follow this category's
   // overwrites. Off (the default) = the category only groups channels.
   bool category_sync = 14;
+  // Text channels: what the channel is for, shown next to its name in the
+  // header. Plain text, ≤ 1024 bytes, "" = none. MANAGE_CHANNELS edits it.
+  string topic = 15;
 }
 
 message CommunityAuthRequest {
@@ -1079,6 +1082,9 @@ message ChannelUpdateRequest {
   optional int32 slowmode_seconds = 8;
   // Text channels: end-to-end encryption on/off. Absent = leave unchanged.
   optional bool encrypted = 9;
+  // Text channels: the topic (clamped to 1024 bytes, "" clears it).
+  // Absent = leave unchanged.
+  optional string topic = 10;
 }
 
 message ChannelUpdateResponse {
@@ -1258,6 +1264,8 @@ message InviteInfo {
   int64 expires_at = 4;     // 0 = never
   int32 max_uses = 5;       // 0 = unlimited
   int32 uses = 6;
+  // Personal invite: only this user can redeem it ("" = anyone).
+  string for_user = 7;
 }
 
 message InviteCreateRequest {
@@ -1265,12 +1273,20 @@ message InviteCreateRequest {
   int64 expires_at = 1;
   // 0 means "unlimited"
   int32 max_uses = 2;
+  // Personal invite for one user (the welcome banner's "Invite friends").
+  // Always single-use; refused when they're already a member; a live
+  // personal invite from the same creator for the same user is returned
+  // instead of a new one.
+  string for_user = 3;
+  // Echoed on the response so the client can match it to this request.
+  uint32 request_id = 4;
 }
 
 message InviteCreateResponse {
   bool success = 1;
   string message = 2;
   InviteInfo invite = 3;
+  uint32 request_id = 4;
 }
 
 message InviteListRequest {}
@@ -1362,6 +1378,9 @@ message MemberSearchRequest {
   int32 limit = 4;
   // Echoed back so the client can drop answers to superseded searches.
   uint32 seq = 5;
+  // Non-empty: only these exact usernames (≤ 200; the rest ignored) —
+  // "which of these people are members?" (the Invite friends picker).
+  repeated string usernames = 6;
 }
 
 message MemberSearchResponse {

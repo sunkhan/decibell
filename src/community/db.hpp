@@ -30,6 +30,8 @@ struct DbInvite {
     int64_t expires_at = 0; // 0 = never
     int32_t max_uses = 0;   // 0 = unlimited
     int32_t uses = 0;
+    // Personal invite: only this username can redeem it ("" = anyone).
+    std::string for_user;
 };
 
 struct DbChannel {
@@ -55,6 +57,8 @@ struct DbChannel {
     // CATEGORY rows: channels may follow this category's overwrites.
     // Off (default) = the category only groups channels.
     bool category_sync = false;
+    // Text channels: what the channel is for ("" = none).
+    std::string topic;
 };
 
 struct DbMessage {
@@ -302,7 +306,8 @@ enum class InviteResult {
     Expired,
     Exhausted,
     Banned,
-    AlreadyMember
+    AlreadyMember,
+    NotForYou       // a personal invite for someone else
 };
 
 // Thin RAII wrapper around SQLite3 for the community server.
@@ -373,6 +378,8 @@ public:
 
     // --- Encrypted text channels (spec 2026-09-04) ---
     bool set_channel_encrypted(const std::string& channel_id, bool on);
+    // Text channels only; the caller clamps the length.
+    bool set_channel_topic(const std::string& channel_id, const std::string& topic);
     // Current epoch of a channel's key escrow; 0 = none yet.
     uint32_t channel_key_current_epoch(const std::string& channel_id) const;
     // Create `epoch` (must be current + 1). False when the sequence is wrong.
@@ -424,7 +431,12 @@ public:
     // success, or std::nullopt on failure.
     std::optional<DbInvite> create_invite(const std::string& created_by,
                                           int64_t expires_at,
-                                          int32_t max_uses);
+                                          int32_t max_uses,
+                                          const std::string& for_user = "");
+    // A still-redeemable personal invite `created_by` made for `for_user`,
+    // so asking again hands out the same one instead of piling up more.
+    std::optional<DbInvite> find_personal_invite(const std::string& created_by,
+                                                 const std::string& for_user) const;
     std::vector<DbInvite> list_invites() const;
     bool revoke_invite(const std::string& code);
 
@@ -890,6 +902,7 @@ private:
     void migrate_to_v10_upload_activity_();
     void migrate_to_v11_permissions_v3_();
     void migrate_to_v12_category_sync_(int prior_version);
+    void migrate_to_v13_topics_invites_();
     // server_meta.owner, loaded at open() and kept in sync by set_meta_.
     std::string owner_cache_;
     void seed_if_empty_(const std::string& owner,

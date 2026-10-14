@@ -2110,3 +2110,31 @@ Verified: tsc web 0.
 4. **Central for multi-operator:** S1 (per-community credential — do this before third parties onboard), S2/S3/S4/S5.
 5. **Client seam:** CL1 (voice keying), CL3 (reconnect teardown), CL2 (JWT refresh), CL4/CL5.
 6. **Then the new features** (the actual ask): categories already exist; next parity gaps are message edit/reply/pins/reactions/mentions/typing, per-channel read state, and richer roles UI — all sit on the D8/D9 design smells from the 2026-08-21 review (immutable message rows, slug-based channel ids).
+
+**Welcome banner actions: Invite friends, channel topics, Manage channel (2026-10-14) ✅** — Owner: the
+empty-channel banner's three buttons did nothing. Design:
+`docs/superpowers/specs/2026-10-14-welcome-banner-actions-design.md`.
+- **Invite friends** opens `InviteFriendsModal`, which lists accepted friends who aren't members. Invite
+  creates a *personal* invite and DMs its `decibell://invite/<CODE>` link, which renders as the usual
+  invite card. Personal invites (`InviteCreateRequest.for_user`) are always single-use and never expire
+  as sent. Only that user can redeem one; anyone else gets "This invite was sent to someone else."
+  without using it up. Asking again returns the creator's live personal invite instead of minting
+  another. The server refuses one for an existing member or for yourself. `request_id` is echoed on the
+  response so each reply reaches its caller, since rate-limited requests are dropped without an answer.
+  Membership comes from the server through `MemberSearchRequest.usernames` (≤ 200), because the roster
+  only holds online members plus the first offline page. Gate: CREATE_INVITE or MANAGE_INVITES.
+- **Channel topics:** `ChannelInfo.topic` / `ChannelUpdateRequest.topic` (optional), text channels,
+  MANAGE_CHANNELS, schema v13 (`channels.topic`, `invites.for_user`). One line of ≤ 1024 UTF-8 bytes,
+  trimmed and clamped on a character boundary. It shows in the header after the name (truncated, with a
+  tooltip). It is edited from the banner's Edit topic dialog or a new Channel topic field in channel
+  settings, and audited as `topic`.
+- **Manage channel** (was "Set rules") opens channel settings. It shows for MANAGE_CHANNELS or
+  MANAGE_ROLES, like the sidebar gear. The banner leaves out actions the user can't take.
+
+Verified: community e2e 448/0, with 25 new checks (topic set / trim / clamp / broadcast / denied / voice ignored /
+channel list / clear / audit; personal invite bound / reused / refused for members and self / wrong
+user can't redeem or spend it / request ids echoed on success and refusal / username lookup; v12 → v13
+migration); native napi build + `cargo test --lib` 223; tsc web 0.
+
+Pending: rebuild the community server with (or before) the client; a live two-account test of the
+invite DM → card → join, and of the header topic in every theme.

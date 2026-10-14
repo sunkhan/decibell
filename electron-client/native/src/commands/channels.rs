@@ -117,6 +117,8 @@ pub struct UpdateChannelRetentionArgs {
     pub slowmode_seconds: Option<i32>,
     /// Text channels: end-to-end encryption on/off. None = leave unchanged.
     pub encrypted: Option<bool>,
+    /// Text channels: the topic ("" clears it). None = leave unchanged.
+    pub topic: Option<String>,
 }
 
 /// MANAGE_CHANNELS edit. All five retention values are sent as a
@@ -135,6 +137,7 @@ pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi:
         voice_bitrate_kbps,
         slowmode_seconds,
         encrypted,
+        topic,
     } = args;
     send_for_server(
         &server_id,
@@ -149,6 +152,7 @@ pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi:
             voice_bitrate_kbps,
             slowmode_seconds,
             encrypted,
+            topic,
         }),
     )
     .await

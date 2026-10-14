@@ -18,6 +18,8 @@ import ImageContextMenu from "../components/ImageContextMenu";
 import MembershipRevokedToast from "../features/servers/MembershipRevokedToast";
 import ChannelSettingsModal from "../features/servers/ChannelSettingsModal";
 import InviteModal from "../features/servers/InviteModal";
+import InviteFriendsModal from "../features/servers/InviteFriendsModal";
+import EditTopicModal from "../features/servers/EditTopicModal";
 import DeepLinkJoinModal from "../features/servers/DeepLinkJoinModal";
 import PersistentAudioLayer from "../features/chat/PersistentAudioLayer";
 import PersistentVideoLayer from "../features/chat/PersistentVideoLayer";
@@ -174,6 +176,8 @@ export default function MainLayout() {
       <MembershipRevokedToast />
       <ChannelSettingsModal />
       <InviteModal />
+      <InviteFriendsModal />
+      <EditTopicModal />
       <DeepLinkJoinModal />
       <IncomingCallModal />
       <PassphraseModal />

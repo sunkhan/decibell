@@ -127,6 +127,9 @@ export interface ServerInvite {
   expiresAt: number; // 0 = never
   maxUses: number; // 0 = unlimited
   uses: number;
+  /// Personal invite (Invite friends): only this user can redeem it.
+  /// "" = anyone; absent from servers that predate it.
+  forUser?: string;
 }
 
 /// CHANNEL_MSG_REJECTED — the community refused one of our messages;
@@ -443,6 +446,9 @@ export interface ChannelInfo {
   /// only groups channels. Moves and switching it off never change what a
   /// channel allows; following starts only with an explicit sync.
   categorySync?: boolean;
+  /// Text channels: what the channel is for, shown next to its name in
+  /// the header. "" / absent = none. MANAGE_CHANNELS edits it.
+  topic?: string;
 }
 
 /// One per-channel permission overwrite (permissions v2).

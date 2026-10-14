@@ -31,7 +31,7 @@ import { chunkSourceFromPath } from "./chunkSource";
 import WelcomeState from "./WelcomeState";
 import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModal";
 import { useCanDeleteOthers } from "../servers/useCanDeleteOthers";
-import { PERM, useChannelPermission } from "../servers/permissions";
+import { PERM, useChannelPermission, usePermission } from "../servers/permissions";
 
 function formatRemaining(totalSec: number): string {
   const s = Math.max(0, Math.floor(totalSec));
@@ -114,6 +114,13 @@ export default function ChatPanel() {
   const canSend = useChannelPermission(activeServerId, activeChannelId, PERM.SEND_MESSAGES);
   const canAttach = useChannelPermission(activeServerId, activeChannelId, PERM.ATTACH_FILES);
   const canBypassSlowmode = useChannelPermission(activeServerId, activeChannelId, PERM.MANAGE_MESSAGES);
+  // Welcome banner actions, gated like the sidebar's: invites need CREATE_
+  // or MANAGE_INVITES; the topic is MANAGE_CHANNELS; channel settings open
+  // for MANAGE_CHANNELS or MANAGE_ROLES (its permissions section).
+  const canCreateInvite = usePermission(activeServerId, PERM.CREATE_INVITE);
+  const canManageInvites = usePermission(activeServerId, PERM.MANAGE_INVITES);
+  const canManageChannel = useChannelPermission(activeServerId, activeChannelId, PERM.MANAGE_CHANNELS);
+  const canManageChannelRoles = useChannelPermission(activeServerId, activeChannelId, PERM.MANAGE_ROLES);
   // Timed out (MODERATE_MEMBERS): the server rejects sends; show why.
   const ownUsername = useAuthStore((s) => s.username);
   const timedOutUntil = useChatStore((s) =>
@@ -1006,6 +1013,19 @@ export default function ChatPanel() {
             <ChannelEncryptionBadge />
           </span>
         ) : null}
+        {channel?.topic ? (
+          <>
+            <span aria-hidden className="mx-3 h-5 w-px shrink-0 bg-border-divider" />
+            {/* basis-0: the topic takes only what the name leaves; contained
+                so a long one never widens the panel's intrinsic size. */}
+            <span
+              title={channel.topic}
+              className="mr-3 min-w-0 flex-1 basis-0 truncate [contain:inline-size] font-channel text-[13px] font-normal tracking-normal text-text-muted"
+            >
+              {channel.topic}
+            </span>
+          </>
+        ) : null}
         <MembersPanelToggle />
       </div>
 
@@ -1016,7 +1036,18 @@ export default function ChatPanel() {
           </div>
         ) : messages.length === 0 ? (
           <div className="flex flex-1 items-center justify-center">
-            <WelcomeState channelName={channelName ?? "channel"} />
+            <WelcomeState
+              channelName={channelName ?? "channel"}
+              onInvite={canCreateInvite || canManageInvites ? () => openModal("invite-friends") : undefined}
+              onEditTopic={
+                canManageChannel ? () => useUiStore.getState().openEditTopic(activeChannelId) : undefined
+              }
+              onManageChannel={
+                canManageChannel || canManageChannelRoles
+                  ? () => useUiStore.getState().openChannelSettings(activeChannelId)
+                  : undefined
+              }
+            />
           </div>
         ) : (
           <RealMessageList

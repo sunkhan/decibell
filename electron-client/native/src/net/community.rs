@@ -43,6 +43,7 @@ fn channel_info_payload(c: ChannelInfo) -> events::ChannelInfoPayload {
         encrypted: c.encrypted,
         permissions_synced: c.permissions_synced,
         category_sync: c.category_sync,
+        topic: c.topic,
     }
 }
 
@@ -633,12 +634,14 @@ impl CommunityClient {
                         expires_at: i.expires_at,
                         max_uses: i.max_uses,
                         uses: i.uses,
+                        for_user: i.for_user,
                     });
                     events::emit_invite_create_responded(events::InviteCreateRespondedPayload {
                         server_id: server_id.clone(),
                         success: resp.success,
                         message: resp.message,
                         invite,
+                        request_id: resp.request_id,
                     });
                 }
                 Some(packet::Payload::InviteListRes(resp)) => {
@@ -652,6 +655,7 @@ impl CommunityClient {
                             expires_at: i.expires_at,
                             max_uses: i.max_uses,
                             uses: i.uses,
+                            for_user: i.for_user,
                         })
                         .collect();
                     events::emit_invite_list_received(events::InviteListReceivedPayload {

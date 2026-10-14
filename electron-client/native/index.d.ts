@@ -150,6 +150,8 @@ export interface UpdateChannelRetentionArgs {
   slowmodeSeconds?: number
   /** Text channels: end-to-end encryption on/off. None = leave unchanged. */
   encrypted?: boolean
+  /** Text channels: the topic ("" clears it). None = leave unchanged. */
+  topic?: string
 }
 /**
  * MANAGE_CHANNELS edit. All five retention values are sent as a
@@ -350,6 +352,8 @@ export interface SearchMembersArgs {
   limit?: number
   /** Echoed on member_search_received. */
   seq?: number
+  /** Only these exact usernames (≤ 200) — "which of these are members?". */
+  usernames?: Array<string>
 }
 /**
  * Server-settings member search across the whole membership (online or
@@ -474,6 +478,13 @@ export interface CreateInviteArgs {
   expiresAt: number
   /** 0 means "unlimited uses". */
   maxUses: number
+  /**
+   * Personal invite: only this user can redeem it (single-use; the
+   * server hands back their live one if it exists).
+   */
+  forUser?: string
+  /** Echoed on invite_create_responded. */
+  requestId?: number
 }
 export declare function createInvite(args: CreateInviteArgs): Promise<void>
 export interface ListInvitesArgs {

@@ -261,6 +261,17 @@ void CommunityDb::init_schema_() {
 
     // --- v12: per-category sync switch (off = visual grouping only) ---
     migrate_to_v12_category_sync_(prior_version);
+
+    // --- v13: channel topics + personal invites ---
+    migrate_to_v13_topics_invites_();
+}
+
+void CommunityDb::migrate_to_v13_topics_invites_() {
+    if (!column_exists(db_, "channels", "topic"))
+        exec_sql(db_, "ALTER TABLE channels ADD COLUMN topic TEXT NOT NULL DEFAULT '';");
+    if (!column_exists(db_, "invites", "for_user"))
+        exec_sql(db_, "ALTER TABLE invites ADD COLUMN for_user TEXT NOT NULL DEFAULT '';");
+    set_meta_("schema_version", "13");
 }
 
 void CommunityDb::migrate_to_v12_category_sync_(int prior_version) {
@@ -2052,7 +2063,8 @@ bool CommunityDb::has_channel_permission(const std::string& username,
 
 std::optional<DbInvite> CommunityDb::create_invite(const std::string& created_by,
                                                    int64_t expires_at,
-                                                   int32_t max_uses) {
+                                                   int32_t max_uses,
+                                                   const std::string& for_user) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Retry a handful of times on the astronomically unlikely event of a code
@@ -2065,16 +2077,18 @@ std::optional<DbInvite> CommunityDb::create_invite(const std::string& created_by
         inv.expires_at = expires_at;
         inv.max_uses = max_uses;
         inv.uses = 0;
+        inv.for_user = for_user;
 
         Stmt ins(db_,
-            "INSERT INTO invites(code, created_by, created_at, expires_at, max_uses, uses) "
-            "VALUES(?, ?, ?, ?, ?, 0);");
+            "INSERT INTO invites(code, created_by, created_at, expires_at, max_uses, uses, for_user) "
+            "VALUES(?, ?, ?, ?, ?, 0, ?);");
         if (!ins.s) return std::nullopt;
         ins.bind_text(1, inv.code);
         ins.bind_text(2, inv.created_by);
         ins.bind_int64(3, inv.created_at);
         ins.bind_int64(4, inv.expires_at);
         ins.bind_int(5, inv.max_uses);
+        ins.bind_text(6, inv.for_user);
         int rc = ins.step();
         if (rc == SQLITE_DONE) return inv;
         if (rc != SQLITE_CONSTRAINT) {
@@ -2087,11 +2101,35 @@ std::optional<DbInvite> CommunityDb::create_invite(const std::string& created_by
     return std::nullopt;
 }
 
+std::optional<DbInvite> CommunityDb::find_personal_invite(const std::string& created_by,
+                                                          const std::string& for_user) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_,
+        "SELECT code, created_by, created_at, expires_at, max_uses, uses, for_user "
+        "FROM invites WHERE created_by=? AND for_user=? "
+        "  AND (expires_at = 0 OR expires_at > ?) AND (max_uses = 0 OR uses < max_uses) "
+        "ORDER BY created_at DESC LIMIT 1;");
+    if (!q.s) return std::nullopt;
+    q.bind_text(1, created_by);
+    q.bind_text(2, for_user);
+    q.bind_int64(3, now_seconds());
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    DbInvite inv;
+    inv.code = q.col_text(0);
+    inv.created_by = q.col_text(1);
+    inv.created_at = q.col_int64(2);
+    inv.expires_at = q.col_int64(3);
+    inv.max_uses = q.col_int(4);
+    inv.uses = q.col_int(5);
+    inv.for_user = q.col_text(6);
+    return inv;
+}
+
 std::vector<DbInvite> CommunityDb::list_invites() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<DbInvite> out;
     Stmt q(db_,
-        "SELECT code, created_by, created_at, expires_at, max_uses, uses "
+        "SELECT code, created_by, created_at, expires_at, max_uses, uses, for_user "
         "FROM invites ORDER BY created_at DESC;");
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) {
@@ -2102,6 +2140,7 @@ std::vector<DbInvite> CommunityDb::list_invites() const {
         inv.expires_at = q.col_int64(3);
         inv.max_uses = q.col_int(4);
         inv.uses = q.col_int(5);
+        inv.for_user = q.col_text(6);
         out.push_back(std::move(inv));
     }
     return out;
@@ -2154,7 +2193,7 @@ InviteResult CommunityDb::redeem_invite(const std::string& code,
     DbInvite inv;
     {
         Stmt q(db_,
-            "SELECT code, created_by, created_at, expires_at, max_uses, uses "
+            "SELECT code, created_by, created_at, expires_at, max_uses, uses, for_user "
             "FROM invites WHERE code=?;");
         if (!q.s) { exec_sql(db_, "ROLLBACK;"); return InviteResult::Unknown; }
         q.bind_text(1, code);
@@ -2165,6 +2204,14 @@ InviteResult CommunityDb::redeem_invite(const std::string& code,
         inv.expires_at = q.col_int64(3);
         inv.max_uses = q.col_int(4);
         inv.uses = q.col_int(5);
+        inv.for_user = q.col_text(6);
+    }
+
+    // A personal invite only admits the user it was made for — and isn't
+    // spent by anyone else trying it.
+    if (!inv.for_user.empty() && inv.for_user != redeeming_user) {
+        exec_sql(db_, "ROLLBACK;");
+        return InviteResult::NotForYou;
     }
 
     int64_t now = now_seconds();
@@ -2209,7 +2256,7 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
         "SELECT id, name, type, position, voice_bitrate_kbps, "
         "  retention_days_text, retention_days_image, retention_days_video, "
         "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted, perm_synced, "
-        "  category_sync "
+        "  category_sync, topic "
         "FROM channels ORDER BY position ASC, id ASC;");
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) {
@@ -2228,6 +2275,7 @@ std::vector<DbChannel> CommunityDb::list_channels() const {
         c.encrypted               = q.col_int(11) != 0;
         c.perm_synced             = q.col_int(12) != 0;
         c.category_sync           = q.col_int(13) != 0;
+        c.topic                   = q.col_text(14);
         out.push_back(std::move(c));
     }
     return out;
@@ -2239,7 +2287,7 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
         "SELECT id, name, type, position, voice_bitrate_kbps, "
         "  retention_days_text, retention_days_image, retention_days_video, "
         "  retention_days_document, retention_days_audio, slowmode_seconds, encrypted, perm_synced, "
-        "  category_sync "
+        "  category_sync, topic "
         "FROM channels WHERE id=?;");
     if (!q.s) return std::nullopt;
     q.bind_text(1, channel_id);
@@ -2259,6 +2307,7 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
     c.encrypted               = q.col_int(11) != 0;
     c.perm_synced             = q.col_int(12) != 0;
     c.category_sync           = q.col_int(13) != 0;
+    c.topic                   = q.col_text(14);
     return c;
 }
 
@@ -2654,6 +2703,16 @@ bool CommunityDb::set_channel_slowmode(const std::string& channel_id, int32_t se
     Stmt q(db_, "UPDATE channels SET slowmode_seconds=? WHERE id=? AND type=0;");
     if (!q.s) return false;
     q.bind_int(1, seconds);
+    q.bind_text(2, channel_id);
+    if (q.step() != SQLITE_DONE) return false;
+    return sqlite3_changes(db_) > 0;
+}
+
+bool CommunityDb::set_channel_topic(const std::string& channel_id, const std::string& topic) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "UPDATE channels SET topic=? WHERE id=? AND type=0;");
+    if (!q.s) return false;
+    q.bind_text(1, topic);
     q.bind_text(2, channel_id);
     if (q.step() != SQLITE_DONE) return false;
     return sqlite3_changes(db_) > 0;

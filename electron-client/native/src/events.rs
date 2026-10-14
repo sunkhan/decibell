@@ -545,6 +545,8 @@ pub struct ChannelInfoPayload {
     /// Category rows: channels may follow its overwrites. Off = the
     /// category only groups channels.
     pub category_sync: bool,
+    /// Text channels: what the channel is for ("" = none).
+    pub topic: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1300,6 +1302,8 @@ pub struct InviteInfoPayload {
     /// 0 = unlimited uses.
     pub max_uses: i32,
     pub uses: i32,
+    /// Personal invite: the only user who can redeem it ("" = anyone).
+    pub for_user: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1318,6 +1322,8 @@ pub struct InviteCreateRespondedPayload {
     pub success: bool,
     pub message: String,
     pub invite: Option<InviteInfoPayload>,
+    /// Echo of the request's id (0 when it had none).
+    pub request_id: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]

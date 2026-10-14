@@ -332,6 +332,9 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
       if (d.startsWith("encryption ")) {
         out.icon = "lock";
         out.text = <>turned {d.endsWith("on") ? "on" : "off"} encryption in {ch}</>;
+      } else if (d === "topic") {
+        out.icon = "pencil";
+        out.text = <>changed the topic of {ch}</>;
       } else if (slow) {
         out.icon = "clock";
         out.text =
@@ -383,7 +386,11 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
       out.text = <>created the invite <code className="font-mono text-[12px] text-text-primary">{e.target}</code></>;
       for (const p of rest.splice(0))
         out.chips.push(
-          <Chip key={p} icon="users">{p === "unlimited" ? "Unlimited uses" : `Up to ${p.replace("max uses ", "")} uses`}</Chip>,
+          p.startsWith("for ") ? (
+            <Chip key={p} icon="userPlus">For {p.slice(4)}</Chip>
+          ) : (
+            <Chip key={p} icon="users">{p === "unlimited" ? "Unlimited uses" : `Up to ${p.replace("max uses ", "")} uses`}</Chip>
+          ),
         );
       break;
     case "invite_revoke":

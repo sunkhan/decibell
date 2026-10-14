@@ -73,6 +73,8 @@ pub struct SearchMembersArgs {
     pub limit: Option<i32>,
     /// Echoed on member_search_received.
     pub seq: Option<u32>,
+    /// Only these exact usernames (≤ 200) — "which of these are members?".
+    pub usernames: Option<Vec<String>>,
 }
 
 /// Server-settings member search across the whole membership (online or
@@ -89,6 +91,7 @@ pub async fn search_members(args: SearchMembersArgs) -> napi::Result<()> {
             after: args.after.unwrap_or_default(),
             limit: args.limit.unwrap_or(0),
             seq: args.seq.unwrap_or(0),
+            usernames: args.usernames.unwrap_or_default(),
         }),
     )
     .await
@@ -373,6 +376,11 @@ pub struct CreateInviteArgs {
     pub expires_at: i64,
     /// 0 means "unlimited uses".
     pub max_uses: i32,
+    /// Personal invite: only this user can redeem it (single-use; the
+    /// server hands back their live one if it exists).
+    pub for_user: Option<String>,
+    /// Echoed on invite_create_responded.
+    pub request_id: Option<u32>,
 }
 
 #[napi]
@@ -383,6 +391,8 @@ pub async fn create_invite(args: CreateInviteArgs) -> napi::Result<()> {
         packet::Payload::InviteCreateReq(InviteCreateRequest {
             expires_at: args.expires_at,
             max_uses: args.max_uses,
+            for_user: args.for_user.unwrap_or_default(),
+            request_id: args.request_id.unwrap_or(0),
         }),
     )
     .await

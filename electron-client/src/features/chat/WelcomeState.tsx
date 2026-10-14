@@ -1,18 +1,20 @@
 import React from "react";
-import { UserPlus, Pencil, Lock } from "lucide-react";
+import { UserPlus, Pencil, Settings } from "lucide-react";
 
+/// Each action renders only when its handler is passed — the caller leaves
+/// out the ones the user lacks the permission for.
 interface WelcomeStateProps {
   channelName?: string;
   onInvite?: () => void;
   onEditTopic?: () => void;
-  onSetRules?: () => void;
+  onManageChannel?: () => void;
 }
 
 const WelcomeState: React.FC<WelcomeStateProps> = ({
   channelName = "general",
   onInvite,
   onEditTopic,
-  onSetRules,
+  onManageChannel,
 }) => {
   return (
     <>
@@ -140,20 +142,28 @@ const WelcomeState: React.FC<WelcomeStateProps> = ({
           This is the start of the #{channelName} channel. Invite your squad and
           get the conversation going.
         </p>
-        <div className="welcome-actions">
-          <button className="welcome-btn primary" onClick={onInvite}>
-            <UserPlus size={15} />
-            Invite friends
-          </button>
-          <button className="welcome-btn secondary" onClick={onEditTopic}>
-            <Pencil size={15} />
-            Edit topic
-          </button>
-          <button className="welcome-btn secondary" onClick={onSetRules}>
-            <Lock size={15} />
-            Set rules
-          </button>
-        </div>
+        {(onInvite || onEditTopic || onManageChannel) && (
+          <div className="welcome-actions">
+            {onInvite && (
+              <button className="welcome-btn primary" onClick={onInvite}>
+                <UserPlus size={15} />
+                Invite friends
+              </button>
+            )}
+            {onEditTopic && (
+              <button className="welcome-btn secondary" onClick={onEditTopic}>
+                <Pencil size={15} />
+                Edit topic
+              </button>
+            )}
+            {onManageChannel && (
+              <button className="welcome-btn secondary" onClick={onManageChannel}>
+                <Settings size={15} />
+                Manage channel
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </>
   );
