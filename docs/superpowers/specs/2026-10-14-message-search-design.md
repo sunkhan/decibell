@@ -183,8 +183,9 @@ search results take the same path.
 ## Client UI
 
 - **Search box** (`features/search/SearchBox.tsx`) at the right end of every text channel's
-  header, after the members button: 228 px, the members list's 260 px less the header's 16 px
-  padding on each side, so it sits over that column (owner, 2026-10-14). The chips + text row
+  header, after the members button: 244 px, the members list's 260 px less the header's 16 px right
+  padding, so its left edge lines up with the list's border and the members button stays over the
+  chat (owner, 2026-10-14). The chips + text row
   scrolls sideways when it outgrows the box, with a fade at the left edge once scrolled. Ctrl+F / ⌘F
   focuses it from the server view. Filters are chips before the text. Typing `from:`, `in:`, `has:`,
   `before:`, `during:` or `after:` opens a picker: members (loaded roster plus `MEMBER_SEARCH_REQ`

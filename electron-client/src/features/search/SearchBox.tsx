@@ -329,10 +329,11 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
         }
       }}
       title="Search messages (Ctrl+F)"
-      // As wide as the members list (260 px) less the header's 16 px padding
-      // on each side, so it sits over that column (owner, 2026-10-14). Fixed:
-      // the menu under it is wider anyway.
-      className={`ml-2 flex h-8 w-[228px] shrink-0 cursor-text items-center gap-1 rounded-md border bg-bg-lighter pl-1.5 pr-1 font-sans text-[13px] font-normal tracking-normal ${
+      // The members list's 260 px less the header's 16 px right padding: its
+      // left edge lines up with the list's border, so the members toggle
+      // stays over the chat (owner, 2026-10-14). Fixed: the menu under it is
+      // wider anyway.
+      className={`ml-2 flex h-8 w-[244px] shrink-0 cursor-text items-center gap-1 rounded-md border bg-bg-lighter pl-1.5 pr-1 font-sans text-[13px] font-normal tracking-normal ${
         focused ? "border-accent shadow-ring" : "border-border hover:border-accent/40"
       }`}
     >
