@@ -2261,3 +2261,21 @@ in the role-delete and Leave Server confirms closes only the confirm; Storage ed
 Screenshots in nocturne and matinee.
 
 Pending: a live run against a community.
+
+**Client: settings windows keep still when a change arrives (2026-10-14) ✅** — Owner feedback on the
+settings windows:
+- **Empty space:** channel settings' Overview and Retention were capped at 672 px (`max-w-2xl`) and
+  left-aligned. Permissions fills the pane, so they left a wide empty strip on the right (at 1920 px
+  the pane is 1284 px wide). They now span the pane like Permissions and the Server Settings tabs.
+  The error banner lost the same cap.
+- **Scrollbar on the save bar's arrival:** the bar entered the flow when a change was made. When the
+  content almost filled the pane, it pushed the tab 44 px past it (1100×700, channel Overview). The
+  scrollbar that appeared took 10 px and narrowed everything above. Two changes:
+  - `SaveBar` now always holds its space wherever the draft can be edited (`show` prop). The bar
+    appears inside space that is already there, so the tab's height never changes.
+  - Both settings windows' scroll panes reserve the scrollbar gutter (`scrollbar-gutter: stable`), so
+    the content width doesn't change between a tab that scrolls and one that doesn't.
+
+Renderer only. Verified: tsc web 0. Harness at 1920×1080, 1280×800, 1100×700 and 1100×640: making a
+change in channel Overview, server Overview, Roles and Storage leaves the scroll height and content
+width unchanged, and the content width is the same on every tab. Screenshots in nocturne and matinee.

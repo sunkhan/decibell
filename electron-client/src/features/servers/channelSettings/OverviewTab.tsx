@@ -46,7 +46,7 @@ export default function OverviewTab({
   const isVoice = channel.type === "voice";
   const left = TOPIC_MAX_BYTES - topicBytes(draft.topic);
   return (
-    <div className="flex max-w-2xl flex-col gap-7">
+    <div className="flex flex-col gap-7">
       {!editable && (
         <Notice icon="lock">You need Manage Channels in this channel to change these.</Notice>
       )}

@@ -323,7 +323,7 @@ export default function ChannelSettingsModal() {
         </div>
 
         {/* Content */}
-        <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
+        <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin [scrollbar-gutter:stable]">
           <div className="flex items-center justify-between px-8 pt-7 pb-5">
             <h2 className="font-display text-[18px] font-semibold text-text-primary">{TABS[active].label}</h2>
             <button
@@ -336,7 +336,7 @@ export default function ChannelSettingsModal() {
           </div>
           <div className="flex-1 px-8 pb-7">
             {error && (
-              <div className="mb-6 flex max-w-2xl items-center gap-2 rounded-md border border-error/30 bg-error/10 px-3 py-2.5 text-[13px] text-error">
+              <div className="mb-6 flex items-center gap-2 rounded-md border border-error/30 bg-error/10 px-3 py-2.5 text-[13px] text-error">
                 <Icon name="alert" size={15} />
                 {error}
               </div>
@@ -357,8 +357,9 @@ export default function ChannelSettingsModal() {
               <PermissionsTab serverId={activeServerId} channel={channel} draft={perms} />
             )}
 
-            {dirty && (
+            {(canManage || canRoles) && (
               <SaveBar
+                show={dirty}
                 nudge={nudge}
                 saving={saving}
                 onReset={reset}

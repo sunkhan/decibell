@@ -281,7 +281,7 @@ export default function ServerSettingsModal({ serverId }: Props) {
         </div>
 
         {/* Content */}
-        <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
+        <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin [scrollbar-gutter:stable]">
           <div className="flex items-center justify-between px-8 pt-7 pb-5">
             <h2 className="font-display text-[18px] font-semibold text-text-primary">
               {activeTabDef.label}

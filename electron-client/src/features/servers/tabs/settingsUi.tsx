@@ -306,7 +306,11 @@ export function SectionLabel({ children, className = "" }: { children: ReactNode
 /// The floating save bar under a settings draft, shown while it has
 /// unsaved changes. `nudge` counts refused leaves (a role switch, closing
 /// the window): each one shakes the bar and swaps in `nudgeMessage`.
+/// Render it wherever the draft can be edited, shown or not: its space is
+/// always held, so the bar arriving never makes the tab taller (a new
+/// scrollbar would narrow everything above it).
 export function SaveBar({
+  show,
   nudge,
   saving,
   onReset,
@@ -317,6 +321,7 @@ export function SaveBar({
   saveLabel = "Save changes",
   saveDisabled = false,
 }: {
+  show: boolean;
   nudge: number;
   saving: boolean;
   onReset: () => void;
@@ -328,33 +333,35 @@ export function SaveBar({
   saveDisabled?: boolean;
 }) {
   return (
-    <div className="pointer-events-none sticky bottom-4 z-20 mt-8 flex justify-center">
-      <div
-        key={nudge}
-        className={`pointer-events-auto flex w-full items-center gap-2 rounded-lg border border-border bg-bg-darkest py-2.5 pl-4 pr-2.5 shadow-float ${
-          nudge ? "animate-[barNudge_0.36s_ease]" : "animate-[fadeUp_0.2s_ease]"
-        }`}
-      >
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
-          {nudge ? nudgeMessage : message}
-        </span>
-        <button
-          type="button"
-          onClick={onReset}
-          disabled={saving}
-          className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
+    <div className="pointer-events-none sticky bottom-4 z-20 mt-8 flex h-14 justify-center">
+      {show && (
+        <div
+          key={nudge}
+          className={`pointer-events-auto flex w-full items-center gap-2 rounded-lg border border-border bg-bg-darkest pl-4 pr-2.5 shadow-float ${
+            nudge ? "animate-[barNudge_0.36s_ease]" : "animate-[fadeUp_0.2s_ease]"
+          }`}
         >
-          {resetLabel}
-        </button>
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={saving || saveDisabled}
-          className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
-        >
-          {saving ? "Saving…" : saveLabel}
-        </button>
-      </div>
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
+            {nudge ? nudgeMessage : message}
+          </span>
+          <button
+            type="button"
+            onClick={onReset}
+            disabled={saving}
+            className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
+          >
+            {resetLabel}
+          </button>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving || saveDisabled}
+            className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
+          >
+            {saving ? "Saving…" : saveLabel}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

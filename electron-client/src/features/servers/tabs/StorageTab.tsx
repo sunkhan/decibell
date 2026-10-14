@@ -263,14 +263,13 @@ export default function StorageTab({ serverId }: { serverId: string }) {
           </section>
         )}
       </div>
-      {dirtyMinFree && (
-        <SaveBar
-          nudge={leaveNudge}
-          saving={savingMin}
-          onReset={() => setMinFreeGb((info.minFreeBytes / GIB).toFixed(1))}
-          onSave={saveMinFree}
-        />
-      )}
+      <SaveBar
+        show={dirtyMinFree}
+        nudge={leaveNudge}
+        saving={savingMin}
+        onReset={() => setMinFreeGb((info.minFreeBytes / GIB).toFixed(1))}
+        onSave={saveMinFree}
+      />
     </div>
   );
 }

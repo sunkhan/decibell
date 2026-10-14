@@ -374,8 +374,9 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
           />
         )}
       </div>
-      {metaDirty && (
+      {canManageServer && (
         <SaveBar
+          show={metaDirty}
           nudge={leaveNudge}
           saving={savingMeta}
           onReset={() => setDraft(null)}

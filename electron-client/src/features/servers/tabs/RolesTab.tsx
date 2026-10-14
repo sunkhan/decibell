@@ -459,19 +459,18 @@ export default function RolesTab({ serverId }: { serverId: string }) {
           )}
         </div>
 
-        {dirty && (
-          <SaveBar
-            nudge={nudge + leaveNudge}
-            saving={saving}
-            onReset={reset}
-            onSave={save}
-            message={isNew ? "This role doesn't exist until you create it." : undefined}
-            nudgeMessage={isNew ? "Create the role or cancel it first." : undefined}
-            resetLabel={isNew ? "Cancel" : "Reset"}
-            saveLabel={isNew ? "Create role" : "Save changes"}
-            saveDisabled={!role?.isDefault && !fields.name.trim()}
-          />
-        )}
+        <SaveBar
+          show={dirty}
+          nudge={nudge + leaveNudge}
+          saving={saving}
+          onReset={reset}
+          onSave={save}
+          message={isNew ? "This role doesn't exist until you create it." : undefined}
+          nudgeMessage={isNew ? "Create the role or cancel it first." : undefined}
+          resetLabel={isNew ? "Cancel" : "Reset"}
+          saveLabel={isNew ? "Create role" : "Save changes"}
+          saveDisabled={!role?.isDefault && !fields.name.trim()}
+        />
       </section>
 
       <ConfirmModal
