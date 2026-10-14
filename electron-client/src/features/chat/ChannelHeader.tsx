@@ -48,20 +48,19 @@ export default function ChannelHeader() {
 }
 
 /// Header button that shows / hides the members list beside a text
-/// channel — the twin of the friends toggle in a DM header (same icon,
-/// same states). Its own component so the toggle re-renders this button,
-/// not the header. Visibility is remembered per install by uiStore.
+/// channel (the friends toggle in a DM header uses the same icon). Its own
+/// component so the toggle re-renders this button, not the header.
+/// Visibility is remembered per install by uiStore. On looks the same as
+/// off (owner, 2026-10-14): the open list shows the state; aria-pressed
+/// still reports it.
 function MembersPanelToggle() {
   const visible = useUiStore((s) => s.membersPanelVisible);
   const toggle = useUiStore((s) => s.toggleMembersPanel);
   return (
     <button
       onClick={toggle}
-      className={`ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-sm transition-colors ${
-        visible
-          ? "text-text-secondary bg-surface-hover"
-          : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
-      }`}
+      aria-pressed={visible}
+      className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
       title={visible ? "Hide members" : "Show members"}
     >
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
