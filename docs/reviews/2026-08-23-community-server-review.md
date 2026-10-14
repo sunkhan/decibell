@@ -2334,3 +2334,48 @@ carries 0. In the harness, as a plain member: idle pill, a send before the echo 
 
 Needs the community server rebuilt for the countdown after a refusal. Until then the field arrives
 as 0, so the text still comes back but no countdown starts. Live test pending.
+
+**Message search, server + native (2026-10-14) ✅ — UI awaiting the owner's proposal OK** — Owner
+asked for search over text channels (threads later) with sender, date, content, file and channel
+filters, without heavy load on the server. Spec: `docs/superpowers/specs/2026-10-14-message-search-design.md`.
+Owner decisions: encrypted channels get filters only (their text isn't searched, and the results say
+which channels were skipped); a Discord-style flow (header box, filter chips, results panel); a
+proposal page before the UI is ported; backend identity is the uid.
+- **Index (schema v14):** FTS5 `messages_fts(content, files)`, contentless with `contentless_delete=1`
+  and `unicode61 remove_diacritics 2`. Triggers keep it current on send, edit, delete, wipe, channel
+  delete, retention, ban purge and attachment bind. Only plaintext rows of plaintext channels are
+  indexed. Deleting is a tombstone by rowid, so the cost that got the old triggers dropped
+  (re-tokenising every deleted row) is gone. It needs SQLite ≥ 3.43 with FTS5. Without that, the
+  triggers are removed and searches answer "isn't available".
+- **Search worker** (`src/community/search.{hpp,cpp}`): one thread with its own read-only connection
+  (WAL), never the DB mutex. The io thread only validates, resolves readable channels and senders, and
+  hydrates ≤ 50 rows by primary key. Every query walks an index in id order: FTS rowid, `(sender_uid, id)`,
+  attachments `message_id`, `(channel_id, id)`, or the primary key. Date bounds become id bounds by a
+  binary search over the primary key. Relevance ranks the newest 2,000 matches with bm25.
+- **Bounds:** 3 s per query (progress handler); counting stops at 10,000 or 250 ms past a full page
+  ("N+"); one query at a time server-wide with up to 32 queued; one per session (a new search
+  supersedes, a disconnect cancels); `search_bucket_` 6 burst / 1 per s, answered with
+  `retry_after_ms`, never dropped; pages cut at 1.5 MB.
+- **Wire:** `MESSAGE_SEARCH_REQ/RES` (156/157, payload 158/159). Community-only and client-first safe.
+- **uid, not username:** `messages.sender_uid` (back-filled from `members.uid`, set from the JWT on
+  every send, and back-filled for a pre-Theme-A member on first auth). The sender filter, editing and
+  deleting your own messages, and the ban purge now go by account. An encrypted message sent under an
+  earlier name can't be edited, since its envelope binds that name.
+- **Native:** `search_messages` → `message_search_received`. Pages with a sealed row go through the
+  crypto worker (`ChannelJob::Search`), which opens each row with its own channel; plaintext pages
+  skip the queue. The history and search paths share `open_stored`.
+- **Fixed alongside:** `AttachmentPayload` never carried `encrypted`, so the renderer never merged the
+  real metadata of an encrypted-channel attachment or registered its key (since be3f9d9).
+
+Measured on a synthetic 1M-message community, localhost round trips:
+- **Typical searches:** rare word 0.9 ms, common word 24 ms, relevance 51 ms (1,066 ms before the
+  newest-2,000 pool), date-only 1–2 ms (32–62 ms before a `min(id), max(id)` full scan was split).
+- **Slowest:** a common word plus one sender, 213 ms, nearly all of it the exact count.
+- **Index size:** +29% database (+66 MB on 230 MB), built in about 5 s.
+- **Send path:** 12 → 34 µs per insert.
+
+Verified: community build + e2e 507 passed (50 new search checks + 6 in a v14 migration test), napi
+build, cargo test --lib 223 passed, tsc web 0.
+
+Pending: the renderer UI (the proposal goes first), a community rebuild, and a live test. The encrypted
+attachment fix needs a live check in an encrypted channel.

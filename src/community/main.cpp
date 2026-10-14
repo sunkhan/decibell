@@ -18,6 +18,8 @@
 #include <set>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <thread>
@@ -38,6 +40,7 @@
 #include "rate_limit.hpp"
 #include "central_sync.hpp"
 #include "authz.hpp"
+#include "search.hpp"
 #include "../common/ed25519_keys.hpp"
 
 namespace ssl = boost::asio::ssl;
@@ -155,6 +158,47 @@ void fill_channel_info(chatproj::ChannelInfo* info, const chatproj::DbChannel& c
     info->set_permissions_synced(ch.type != 2 && ch.perm_synced);
     info->set_category_sync(ch.type == 2 && ch.category_sync);
     info->set_topic(ch.topic);
+}
+
+/// Copies a stored message and its attachments into a ChannelMessage —
+/// history pages and search results use the same shape.
+void fill_channel_message(chatproj::ChannelMessage* cm, const chatproj::DbMessage& m,
+                          const std::vector<const chatproj::DbAttachment*>* atts) {
+    cm->set_id(m.id);
+    cm->set_sender(m.sender);
+    cm->set_channel_id(m.channel_id);
+    cm->set_content(m.content);
+    cm->set_timestamp(m.timestamp);
+    cm->set_edited_at(m.edited_at);
+    cm->set_suppress_embeds(m.suppress_embeds);
+    cm->set_reply_to(m.reply_to);
+    cm->set_reply_to_sender(m.reply_to_sender);
+    cm->set_reply_to_content(m.reply_to_content);
+    if (!m.envelope.empty()) cm->set_envelope(m.envelope);
+    if (!m.reply_to_envelope.empty()) cm->set_reply_to_envelope(m.reply_to_envelope);
+    for (int32_t k : m.reply_to_attachment_kinds)
+        cm->add_reply_to_attachment_kinds(k);
+    if (!atts) return;
+    for (const auto* a : *atts) {
+        auto* proto_a = cm->add_attachments();
+        proto_a->set_id(a->id);
+        proto_a->set_message_id(a->message_id);
+        proto_a->set_kind(static_cast<chatproj::Attachment::Kind>(a->kind));
+        proto_a->set_filename(a->filename);
+        proto_a->set_mime(a->mime);
+        proto_a->set_size_bytes(a->size_bytes);
+        proto_a->set_url("/attachments/" + std::to_string(a->id));
+        proto_a->set_position(a->position);
+        proto_a->set_created_at(a->created_at);
+        proto_a->set_purged_at(a->purged_at);
+        proto_a->set_width(static_cast<uint32_t>(a->width));
+        proto_a->set_height(static_cast<uint32_t>(a->height));
+        proto_a->set_thumbnail_size_bytes(static_cast<uint32_t>(a->thumbnail_size_bytes));
+        proto_a->set_thumbnail_sizes_mask(static_cast<uint32_t>(a->thumbnail_sizes_mask));
+        proto_a->set_duration_ms(static_cast<uint32_t>(a->duration_ms));
+        proto_a->set_placeholder(a->placeholder);
+        proto_a->set_encrypted(a->encrypted);
+    }
 }
 
 /// Builds a CHANNEL_LIST_UPDATE packet for ONE recipient: only channels
@@ -446,6 +490,10 @@ public:
     chatproj::CommunityDb* db() { return db_; }
     void set_authz(const chatproj::Authorizer* a) { authz_ = a; }
     const chatproj::Authorizer& authz() const { return *authz_; }
+    // Message search worker (spec 2026-10-14); null = search unavailable.
+    void set_search(chatproj::SearchWorker* w) { search_ = w; }
+    chatproj::SearchWorker* search() { return search_; }
+    boost::asio::io_context* io() { return io_; }
 
     // Member count (authoritative from DB), used by the central-server heartbeat.
     size_t member_count();
@@ -613,6 +661,7 @@ private:
 
     chatproj::CommunityDb* db_ = nullptr;
     const chatproj::Authorizer* authz_ = nullptr;
+    chatproj::SearchWorker* search_ = nullptr;
 
     // Central-sync config (populated once at startup via set_central_sync).
     std::string central_host_;
@@ -745,6 +794,7 @@ public:
     std::string get_token() const { return token_; }
     std::string get_udp_key() const { return udp_key_; }
     bool is_authenticated() const { return authenticated_; }
+    uint64_t search_owner() const { return search_owner_; }
     /// Invisible on central: report this member offline in rosters even
     /// though connected (CommunityAuthRequest.presence_hidden at connect,
     /// PRESENCE_VISIBILITY after). See user_presence_visible().
@@ -1168,6 +1218,12 @@ private:
             }
             if (packet.type() == chatproj::Packet::CHANNEL_MSG) {
                 reject_channel_msg(packet.channel_msg(), "You're sending messages too fast.");
+            }
+            // Answered, not dropped: the client waits on this seq.
+            if (packet.type() == chatproj::Packet::MESSAGE_SEARCH_REQ) {
+                const auto& req = packet.message_search_req();
+                send_search_failure(req.seq(), req.cursor() == 0 && req.offset() == 0,
+                                    "You're searching too fast.", 1000);
             }
             return;
         }
@@ -1738,7 +1794,7 @@ private:
             if (auto* db = manager_.db()) {
                 new_id = db->insert_message(
                     msg->channel_id(), username_, msg->content(), now_ts, msg->reply_to(),
-                    msg->envelope(), msg->suppress_embeds());
+                    msg->envelope(), msg->suppress_embeds(), uid_);
                 if (new_id > 0) {
                     msg->set_id(new_id);
                     // insert_message drops an invalid reply_to (missing / wrong
@@ -1884,48 +1940,10 @@ private:
 
             // msgs is already oldest→newest (the fetch branches normalize it),
             // matching the order the client renders.
-            for (auto it = msgs.begin(); it != msgs.end(); ++it) {
-                auto* cm = res->add_messages();
-                cm->set_id(it->id);
-                cm->set_sender(it->sender);
-                cm->set_channel_id(it->channel_id);
-                cm->set_content(it->content);
-                cm->set_timestamp(it->timestamp);
-                cm->set_edited_at(it->edited_at);
-                cm->set_suppress_embeds(it->suppress_embeds);
-                cm->set_reply_to(it->reply_to);
-                cm->set_reply_to_sender(it->reply_to_sender);
-                cm->set_reply_to_content(it->reply_to_content);
-                if (!it->envelope.empty()) cm->set_envelope(it->envelope);
-                if (!it->reply_to_envelope.empty()) cm->set_reply_to_envelope(it->reply_to_envelope);
-                for (int32_t k : it->reply_to_attachment_kinds)
-                    cm->add_reply_to_attachment_kinds(k);
-                auto atts_it = by_msg.find(it->id);
-                if (atts_it != by_msg.end()) {
-                    for (const auto* a : atts_it->second) {
-                        auto* proto_a = cm->add_attachments();
-                        proto_a->set_id(a->id);
-                        proto_a->set_message_id(a->message_id);
-                        proto_a->set_kind(
-                            static_cast<chatproj::Attachment::Kind>(a->kind));
-                        proto_a->set_filename(a->filename);
-                        proto_a->set_mime(a->mime);
-                        proto_a->set_size_bytes(a->size_bytes);
-                        proto_a->set_url("/attachments/" + std::to_string(a->id));
-                        proto_a->set_position(a->position);
-                        proto_a->set_created_at(a->created_at);
-                        proto_a->set_purged_at(a->purged_at);
-                        proto_a->set_width(static_cast<uint32_t>(a->width));
-                        proto_a->set_height(static_cast<uint32_t>(a->height));
-                        proto_a->set_thumbnail_size_bytes(
-                            static_cast<uint32_t>(a->thumbnail_size_bytes));
-                        proto_a->set_thumbnail_sizes_mask(
-                            static_cast<uint32_t>(a->thumbnail_sizes_mask));
-                        proto_a->set_duration_ms(static_cast<uint32_t>(a->duration_ms));
-                        proto_a->set_placeholder(a->placeholder);
-                        proto_a->set_encrypted(a->encrypted);
-                    }
-                }
+            for (const auto& m : msgs) {
+                auto atts_it = by_msg.find(m.id);
+                fill_channel_message(res->add_messages(), m,
+                                     atts_it != by_msg.end() ? &atts_it->second : nullptr);
             }
             res->set_has_more(has_more);
             res->set_has_more_after(has_more_after);
@@ -2119,7 +2137,9 @@ private:
                 return;
             }
 
-            if (*sender != username_) {
+            // Own message by account (uid), so a rename doesn't lose it.
+            const bool own = sender->is(username_, uid_);
+            if (!own) {
                 if (auto a = manager_.authz().check(chatproj::Action::DeleteOthersMessage,
                                                     {username_, req.channel_id(), ""}); !a) {
                     res->set_success(false);
@@ -2140,8 +2160,8 @@ private:
             res->set_success(true);
             res->set_message("");
             send_packet(rsp);
-            if (*sender != username_) {
-                db->add_audit(username_, "message_delete", *sender, req.channel_id(),
+            if (!own) {
+                db->add_audit(username_, "message_delete", sender->username, req.channel_id(),
                               "message " + std::to_string(req.message_id()));
             }
 
@@ -2227,15 +2247,24 @@ private:
                         return;
                     }
                 }
+                // A sealed message binds the name it was sent under; an edit
+                // sealed under a newer name would be unreadable from history.
+                if (encrypted) {
+                    auto snd = db->get_message_sender(req.channel_id(), req.message_id());
+                    if (snd && snd->is(username_, uid_) && snd->username != username_) {
+                        fail("This encrypted message was sent under your previous username, so it can't be edited.");
+                        return;
+                    }
+                }
             }
 
             const int64_t edited_at = static_cast<int64_t>(std::time(nullptr));
             // EMBED_LINKS is re-evaluated at edit time (v3).
             const bool suppress_embeds =
                 !(manager_.authz().channel_permissions(username_, req.channel_id()) & chatproj::perms::kEmbedLinks);
-            // Ownership is enforced inside edit_message (sender must match).
-            if (!db->edit_message(req.channel_id(), req.message_id(), username_, content, edited_at, envelope,
-                                  suppress_embeds)) {
+            // Ownership is enforced inside edit_message (same account).
+            if (!db->edit_message(req.channel_id(), req.message_id(), username_, uid_, content, edited_at,
+                                  envelope, suppress_embeds)) {
                 fail("You can only edit your own messages.");
                 return;
             }
@@ -2471,6 +2500,11 @@ private:
             send_packet(p);
         }
 
+        // --- MESSAGE SEARCH (spec 2026-10-14) ---
+        else if (packet.type() == chatproj::Packet::MESSAGE_SEARCH_REQ) {
+            handle_message_search(packet.message_search_req());
+        }
+
         // --- BAN LIST ---
         else if (packet.type() == chatproj::Packet::BAN_LIST_REQ) {
             auto* db = manager_.db();
@@ -2544,6 +2578,10 @@ private:
             if (purge_seconds < 0) purge_seconds = 0;
             if (purge_seconds > 7 * 86400) purge_seconds = 7 * 86400;
 
+            // Their account, for the purge below (a rename inside the window
+            // mustn't shield messages). Read before the ban removes them.
+            int64_t target_uid = 0;
+            if (auto tm = db->get_member(target)) target_uid = tm->uid;
             bool ok = db->add_ban(target, username_, reason, expires_at);
             // Unconditional for the same reason as the kick path: the
             // target may be offline and force_disconnect would skip it.
@@ -2560,7 +2598,7 @@ private:
                 std::string details = reason.empty() ? "" : "reason: " + reason;
                 if (expires_at) details += (details.empty() ? "" : "; ") + std::string("until ") + format_utc(expires_at);
                 if (purge_seconds > 0) {
-                    auto purged = db->delete_messages_by_sender_since(target, now_ts - purge_seconds);
+                    auto purged = db->delete_messages_by_sender_since(target, target_uid, now_ts - purge_seconds);
                     for (const auto& path : purged.unlink_paths) {
                         std::error_code ec;
                         std::filesystem::remove(path, ec);
@@ -3670,6 +3708,208 @@ private:
     // ghost row anchored at its tail — followed by the legacy
     // MOD_ACTION_RES(action="message") for clients that predate it.
     // `retry_after` is the slowmode wait left, in seconds (0 otherwise).
+    // ---- Message search (docs/superpowers/specs/2026-10-14-message-search-design.md) ----
+
+    // What the answer needs once the worker is done.
+    struct SearchReply {
+        uint32_t seq = 0;
+        bool first_page = false;
+        bool relevance = false;
+        int32_t offset = 0;
+        int64_t cursor = 0;
+        std::vector<std::string> text_skipped;
+    };
+
+    void send_search_failure(uint32_t seq, bool first_page, const std::string& why,
+                             int32_t retry_after_ms = 0) {
+        chatproj::Packet p;
+        p.set_type(chatproj::Packet::MESSAGE_SEARCH_RES);
+        auto* res = p.mutable_message_search_res();
+        res->set_seq(seq);
+        res->set_first_page(first_page);
+        res->set_success(false);
+        res->set_message(why);
+        res->set_retry_after_ms(retry_after_ms);
+        send_packet(p);
+    }
+
+    // Validates on the io thread, resolves which channels the search may
+    // cover and who the senders are, then hands the query to the worker.
+    void handle_message_search(const chatproj::MessageSearchRequest& req) {
+        namespace has = chatproj::search_has;
+        SearchReply reply;
+        reply.seq = req.seq();
+        reply.first_page = req.cursor() == 0 && req.offset() == 0;
+        auto fail = [&](const std::string& why, int32_t retry_ms = 0) {
+            send_search_failure(reply.seq, reply.first_page, why, retry_ms);
+        };
+        auto* db = manager_.db();
+        auto* worker = manager_.search();
+        if (!db || !worker || !db->search_available()) {
+            fail("Search isn't available on this server.");
+            return;
+        }
+        if (req.query().size() > 512) { fail("That search is too long."); return; }
+        if (req.authors_size() > 10) { fail("Search for at most 10 people at once."); return; }
+        if (req.channel_ids_size() > 100) { fail("Search at most 100 channels at once."); return; }
+        if (req.after() < 0 || req.before() < 0 ||
+            (req.after() > 0 && req.before() > 0 && req.after() >= req.before())) {
+            fail("That date range is empty.");
+            return;
+        }
+
+        chatproj::SearchSpec spec;
+        spec.owner = search_owner_;
+        spec.has = req.has() & has::kKnown;
+        bool only_excluded = false;
+        const std::string words = chatproj::build_fts_query(req.query(), &only_excluded);
+        if (only_excluded) {
+            fail("Add a word to search for, not only words to leave out.");
+            return;
+        }
+        // HAS_LINK rides the index: rows with an http/https token, checked
+        // exactly afterwards.
+        static const std::string kLinkMatch = "content : (\"http\" OR \"https\")";
+        if (spec.has & has::kLink) spec.match = words.empty() ? kLinkMatch : "(" + words + ") AND " + kLinkMatch;
+        else spec.match = words;
+        if (words.empty() && req.authors_size() == 0 && spec.has == 0 && req.after() == 0 &&
+            req.before() == 0 && req.channel_ids_size() == 0) {
+            fail("Type a word to search for, or pick a filter.");
+            return;
+        }
+
+        // Scope: text channels the requester can read (VIEW + READ_HISTORY).
+        // Words can't match an encrypted channel's sealed text — those are
+        // reported, not searched (owner decision: filters only).
+        constexpr uint64_t kRead = chatproj::perms::kViewChannel | chatproj::perms::kReadHistory;
+        std::unordered_set<std::string> wanted(req.channel_ids().begin(), req.channel_ids().end());
+        for (const auto& ch : db->list_channels()) {
+            if (ch.type != 0) continue;
+            if (!wanted.empty() && !wanted.count(ch.id)) continue;
+            if ((manager_.authz().channel_permissions(username_, ch.id) & kRead) != kRead) continue;
+            if (!spec.match.empty() && ch.encrypted) {
+                reply.text_skipped.push_back(ch.id);
+                continue;
+            }
+            spec.channels.push_back(ch.id);
+        }
+
+        // Senders: a member by their account (every name they posted
+        // under); anyone else by the name on the messages.
+        std::unordered_set<std::string> seen_names;
+        for (const auto& name : req.authors()) {
+            if (name.empty() || !seen_names.insert(name).second) continue;
+            auto m = db->get_member(name);
+            if (m && m->uid > 0) spec.author_uids.push_back(m->uid);
+            else spec.author_names.push_back(name);
+        }
+        spec.after = req.after();
+        spec.before = req.before();
+        switch (req.sort()) {
+            case chatproj::MessageSearchRequest::OLDEST: spec.sort = chatproj::SearchSort::Oldest; break;
+            case chatproj::MessageSearchRequest::RELEVANCE: spec.sort = chatproj::SearchSort::Relevance; break;
+            default: spec.sort = chatproj::SearchSort::Newest; break;
+        }
+        reply.relevance = spec.sort == chatproj::SearchSort::Relevance && !spec.match.empty();
+        spec.cursor = std::max<int64_t>(0, req.cursor());
+        spec.offset = std::max<int32_t>(0, req.offset());
+        spec.limit = req.limit() <= 0 ? 25 : std::min<int32_t>(req.limit(), 50);
+        spec.count = reply.first_page;
+        reply.offset = spec.offset;
+        reply.cursor = spec.cursor;
+
+        if (spec.channels.empty()) {
+            // Nothing readable (or only encrypted channels for words): an
+            // empty answer, without a trip through the worker.
+            chatproj::SearchOutcome none;
+            none.ok = true;
+            none.total = reply.first_page ? 0 : -1;
+            finish_message_search(std::move(reply), std::move(none));
+            return;
+        }
+        std::weak_ptr<Session> weak = weak_from_this();
+        boost::asio::io_context* io = manager_.io();
+        auto done = [weak, io, reply](chatproj::SearchOutcome out) mutable {
+            // Worker thread → io thread: sessions are only touched there.
+            boost::asio::post(*io, [weak, reply = std::move(reply), out = std::move(out)]() mutable {
+                if (auto self = weak.lock()) self->finish_message_search(std::move(reply), std::move(out));
+            });
+        };
+        if (worker->submit(std::move(spec), std::move(done)) == chatproj::SearchWorker::Submit::Busy) {
+            fail("Search is busy. Try again in a moment.", 2000);
+        }
+    }
+
+    // Hydrates the page by primary key (≤ 50 rows) and answers.
+    void finish_message_search(SearchReply reply, chatproj::SearchOutcome out) {
+        if (closing_) return;
+        chatproj::Packet p;
+        p.set_type(chatproj::Packet::MESSAGE_SEARCH_RES);
+        auto* res = p.mutable_message_search_res();
+        res->set_seq(reply.seq);
+        res->set_first_page(reply.first_page);
+        for (const auto& c : reply.text_skipped) res->add_text_skipped_channel_ids(c);
+        auto* db = manager_.db();
+        if (!out.ok || !db) {
+            res->set_success(false);
+            res->set_message(out.ok ? "Search failed." : out.error);
+            send_packet(p);
+            return;
+        }
+        res->set_success(true);
+
+        auto msgs = db->fetch_messages_by_ids(out.ids);
+        // Re-checked: a role change may have hidden a channel meanwhile.
+        constexpr uint64_t kRead = chatproj::perms::kViewChannel | chatproj::perms::kReadHistory;
+        std::unordered_map<std::string, bool> readable;
+        std::unordered_map<int64_t, const chatproj::DbMessage*> by_id;
+        std::vector<int64_t> hydrated;
+        for (const auto& m : msgs) {
+            auto it = readable.find(m.channel_id);
+            if (it == readable.end()) {
+                const bool ok = (manager_.authz().channel_permissions(username_, m.channel_id) & kRead) == kRead;
+                it = readable.emplace(m.channel_id, ok).first;
+            }
+            if (!it->second) continue;
+            by_id.emplace(m.id, &m);
+            hydrated.push_back(m.id);
+        }
+        auto attachments = db->fetch_attachments_for_messages(hydrated);
+        std::unordered_map<int64_t, std::vector<const chatproj::DbAttachment*>> atts_by_msg;
+        for (const auto& a : attachments) atts_by_msg[a.message_id].push_back(&a);
+
+        // A message can be 64 KB: cut the page at 1.5 MB (frames cap at
+        // 2 MB) and let the next page pick up from there.
+        constexpr size_t kMaxPageBytes = 1536 * 1024;
+        size_t bytes = 0;
+        size_t consumed = 0;   // ids of the walk this page covers
+        bool cut = false;
+        for (; consumed < out.ids.size(); ++consumed) {
+            auto it = by_id.find(out.ids[consumed]);
+            if (it == by_id.end()) continue;   // deleted / hidden meanwhile
+            chatproj::ChannelMessage cm;
+            auto at = atts_by_msg.find(it->first);
+            fill_channel_message(&cm, *it->second, at != atts_by_msg.end() ? &at->second : nullptr);
+            const size_t size = cm.ByteSizeLong();
+            if (res->messages_size() > 0 && bytes + size > kMaxPageBytes) {
+                cut = true;
+                break;
+            }
+            bytes += size;
+            *res->add_messages() = std::move(cm);
+        }
+        res->set_has_more(out.has_more || cut);
+        if (reply.relevance) {
+            res->set_next_offset(reply.offset + static_cast<int32_t>(consumed));
+        } else {
+            res->set_next_cursor(consumed > 0 ? out.ids[consumed - 1] : reply.cursor);
+        }
+        res->set_total(out.total);
+        res->set_total_capped(out.total_capped);
+        res->set_partial(out.partial);
+        send_packet(p);
+    }
+
     void reject_channel_msg(const chatproj::ChannelMessage& msg, const std::string& reason,
                             int64_t retry_after = 0) {
         chatproj::Packet p;
@@ -3711,6 +3951,8 @@ private:
             case T::CHANNEL_KEYS_REQ:
             case T::CHANNEL_KEYS_PUBLISH_REQ:
                 return mls_bucket_.try_take();
+            case T::MESSAGE_SEARCH_REQ:
+                return search_bucket_.try_take();
             case T::CHANNEL_HISTORY_REQ:
             case T::MEMBER_LIST_REQ:
             case T::MEMBER_SEARCH_REQ:
@@ -3827,12 +4069,21 @@ private:
     chatproj::TokenBucket thumb_bucket_{3, 0.2};
     chatproj::TokenBucket presence_bucket_{10, 2.0};  // voice/stream signalling
     chatproj::TokenBucket query_bucket_{20, 4.0};     // history / list fetches
+    // Message search: each one is real work on the search worker. 6 burst /
+    // 1 per s covers a search plus quick scrolling through result pages.
+    chatproj::TokenBucket search_bucket_{6, 1.0};
     chatproj::TokenBucket admin_bucket_{20, 2.0};     // management + moderation
     chatproj::TokenBucket mls_bucket_{20, 5.0};       // MLS handshake relay
     chatproj::TokenBucket rate_limit_log_bucket_{3, 0.2};
     std::vector<uint8_t> inbound_body_;
 
     std::string jwt_public_pem_;
+    // Identifies this session's searches to the worker (supersede / cancel).
+    const uint64_t search_owner_ = next_search_owner();
+    static uint64_t next_search_owner() {
+        static std::atomic<uint64_t> next{0};
+        return ++next;
+    }
     bool authenticated_ = false;
     bool presence_hidden_ = false;
     int64_t uid_ = 0;
@@ -3866,6 +4117,8 @@ void SessionManager::join(std::shared_ptr<Session> session) {
 }
 
 void SessionManager::leave(std::shared_ptr<Session> session) {
+    // Nobody will read its answer. Idempotent, like the rest of leave().
+    if (search_) search_->cancel(session->search_owner());
     std::vector<std::string> affected_voice_channels;
     std::vector<std::string> affected_stream_channels;
     // Did THIS session own the user's live stream? Gates the streamer-side
@@ -6312,6 +6565,12 @@ int main() {
         manager.set_authz(&authz);
         manager.set_io_context(io_context);
         manager.set_timeouts(auth_timeout_s, idle_timeout_s);
+        // Message search (spec 2026-10-14): its own thread and read-only
+        // connection. Declared after `manager` so it stops (joins) first.
+        chatproj::SearchWorker search_worker(db_path);
+        if (db.search_available() && search_worker.start()) {
+            manager.set_search(&search_worker);
+        }
         // Auto-rejoin: hydrate the cached central server_id (learned
         // via SERVER_HEARTBEAT_RES on a previous run) so membership-
         // sync packets work as soon as the first user auths after

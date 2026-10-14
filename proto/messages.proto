@@ -281,6 +281,10 @@ message Packet {
     // search results never land in the member sidebar.
     MEMBER_SEARCH_REQ = 154;      // client→community (any member)
     MEMBER_SEARCH_RES = 155;      // community→requester
+    // Message search over the text channels the requester can read
+    // (docs/superpowers/specs/2026-10-14-message-search-design.md).
+    MESSAGE_SEARCH_REQ = 156;     // client→community (any member)
+    MESSAGE_SEARCH_RES = 157;     // community→requester
   }
 
   Type type = 1;
@@ -479,6 +483,8 @@ message Packet {
     SetStatusMessageRequest  set_status_message_req = 155;
     MemberSearchRequest      member_search_req      = 156;
     MemberSearchResponse     member_search_res      = 157;
+    MessageSearchRequest     message_search_req     = 158;
+    MessageSearchResponse    message_search_res     = 159;
   }
 }
 
@@ -1400,6 +1406,79 @@ message MemberSearchResponse {
   uint32 seq = 7;
   // True when the request's `after` was "".
   bool first_page = 8;
+}
+
+// Message search (spec 2026-10-14). Every filter that is set narrows the
+// results. At least one of query / authors / has / after / before /
+// channel_ids must be set. Text channels only; a future thread is a channel
+// of its own, so scoping stays a list of channel ids.
+message MessageSearchRequest {
+  // Echoed back so the client can drop answers to superseded searches.
+  uint32 seq = 1;
+  // Free text (<= 512 bytes): words, "exact phrases", -excluded words.
+  // Words of 3+ characters match as prefixes; case and accents are
+  // ignored; attachment file names match too. Encrypted channels' text is
+  // never searched (their ids come back in text_skipped_channel_ids).
+  string query = 2;
+  // Text channels to search; empty = every one the requester can read
+  // (VIEW_CHANNEL + READ_HISTORY). Others are dropped silently. <= 100.
+  repeated string channel_ids = 3;
+  // Usernames (<= 10). A member matches every message their account sent,
+  // under any earlier name (the server resolves them to uids); a
+  // non-member matches by the name on the messages.
+  repeated string authors = 4;
+  // Unix seconds: after is inclusive, before exclusive; 0 = unbounded.
+  int64 after = 5;
+  int64 before = 6;
+  // Each set bit must hold.
+  enum Has {
+    HAS_NONE = 0;
+    HAS_FILE = 1;       // any attachment
+    HAS_IMAGE = 2;
+    HAS_VIDEO = 4;
+    HAS_AUDIO = 8;
+    HAS_DOCUMENT = 16;
+    HAS_LINK = 32;      // an http(s) link in the text (plaintext channels)
+  }
+  uint32 has = 7;       // bitwise OR of Has values
+  enum Sort {
+    NEWEST = 0;
+    OLDEST = 1;
+    RELEVANCE = 2;      // needs query words; otherwise NEWEST
+  }
+  Sort sort = 8;
+  // NEWEST / OLDEST paging: next_cursor of the previous page; 0 = first.
+  int64 cursor = 9;
+  // RELEVANCE paging: next_offset of the previous page; 0 = first.
+  int32 offset = 10;
+  // Server clamps to [1, 50], default 25.
+  int32 limit = 11;
+}
+
+message MessageSearchResponse {
+  uint32 seq = 1;
+  bool success = 2;
+  // Why it failed (user-facing): rate limited, busy, too broad, …
+  string message = 3;
+  // The page, in sort order. Encrypted channels' rows carry their envelope
+  // as in history.
+  repeated ChannelMessage messages = 4;
+  bool has_more = 5;
+  int64 next_cursor = 6;
+  int32 next_offset = 7;
+  // First page only: matches counted; -1 = not counted.
+  int64 total = 8;
+  // More than `total` match (count cap or time budget reached).
+  bool total_capped = 9;
+  // Encrypted channels in scope whose text couldn't be searched (set when
+  // the request had words or HAS_LINK).
+  repeated string text_skipped_channel_ids = 10;
+  // The time budget ran out before the page filled; what was found so far.
+  bool partial = 11;
+  // Rate limited or busy: retry after this many milliseconds.
+  int32 retry_after_ms = 12;
+  // True when the request's cursor and offset were 0.
+  bool first_page = 13;
 }
 
 message MemberUpsert {

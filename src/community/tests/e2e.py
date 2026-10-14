@@ -1266,6 +1266,260 @@ def test_ban_expiry_and_purge():
     owner.close()
 
 
+def search_req(c, seq, **kw):
+    """MESSAGE_SEARCH round trip; waits out the per-session search bucket."""
+    for _ in range(12):
+        c.send(pb.Packet.MESSAGE_SEARCH_REQ, message_search_req=pb.MessageSearchRequest(seq=seq, **kw))
+        r = c.wait(pb.Packet.MESSAGE_SEARCH_RES, timeout=5, pred=lambda p: p.message_search_res.seq == seq)
+        if r is None:
+            return None
+        res = r.message_search_res
+        if not res.success and res.retry_after_ms > 0:
+            time.sleep(res.retry_after_ms / 1000.0)
+            continue
+        return res
+    return None
+
+
+def test_message_search():
+    """Message search (spec 2026-10-14): words / prefixes / accents / phrases /
+    exclusions / file names over the FTS index, sender by uid (rename-proof),
+    channel scope + access, has-filters, dates, sorts + paging, encrypted
+    channels (filters only), index upkeep on edit / delete / wipe, the
+    rate-limit answer, and the uid fixes to edit / delete / ban purge."""
+    print("[search] MESSAGE_SEARCH: FTS + filters + access + paging + upkeep")
+    H = pb.MessageSearchRequest
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    bob = join("sbob", owner); carol = join("scarol", owner)
+    ev = everyone_role(owner)
+    for c in (owner, bob, carol): c.flush(0.4)
+
+    def create(name, encrypted=False):
+        owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(
+            name=name, type=pb.ChannelInfo.TEXT, encrypted=encrypted))
+        r = owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "create")
+        return r.channel_action_res.channel.id
+    ch_a, ch_b, sealed, private = create("srch-a"), create("srch-b"), create("srch-sealed", True), create("srch-private")
+    r = set_overwrite(owner, private, pb.ChannelOverwrite.ROLE, ev.id, deny=pb.PERM_VIEW_CHANNEL)
+    check("private search channel set up", r is not None and r.channel_action_res.success)
+    for c in (owner, bob, carol): c.flush(0.4)
+
+    # Timestamps after everything already stored, an hour apart (server
+    # timestamps grow with ids; the date bounds rely on it).
+    t0 = max(int(time.time()), sql("select coalesce(max(timestamp), 0) from messages")[0][0]) + 10
+    H1 = 3600
+    def put(channel, sender, content, hour, uid=None, envelope=None):
+        return sql("insert into messages(channel_id, sender, content, timestamp, envelope, sender_uid) "
+                   "values(?,?,?,?,?,?) returning id", channel, sender, content, t0 + hour * H1, envelope,
+                   uid if uid is not None else uid_for(sender))[0][0]
+    def attach(mid, channel, kind, filename, encrypted=0):
+        aid = sql("insert into attachments(message_id, kind, filename, mime, size_bytes, position, created_at, "
+                  "upload_status, uploader, channel_id, encrypted) values(0,?,?,'application/octet-stream',10,0,?,"
+                  "'ready','sbob',?,?) returning id", kind, filename, t0, channel, encrypted)[0][0]
+        sql("update attachments set message_id=? where id=?", mid, aid)   # bind → re-index with the name
+        return aid
+    m1 = put(ch_a, "sbob", "The deployment finished on staging", 0)
+    m2 = put(ch_b, "scarol", "deploy again tomorrow", 1)
+    m3 = put(ch_a, "sbob", "Café crème brûlée recipe", 2)
+    m4 = put(ch_a, "alice", "deploy deploy deploy, see https://example.com/runbook", 3)
+    m5 = put(ch_b, "sbob_old", "notes from before my rename: deploy checklist", 4, uid=uid_for("sbob"))
+    m6 = put(ch_a, "ghost", "a departed member said deploy once", 5, uid=0)
+    m7 = put(ch_b, "scarol", "here is the file", 6); attach(m7, ch_b, 2, "Q3-runbook.pdf")
+    m8 = put(ch_a, "sbob", "screenshot", 7); attach(m8, ch_a, 0, "screen.png")
+    m9 = put(sealed, "sbob", "PLACEHOLDER deploy", 8, envelope=b"\x02SEALED")
+    attach(m9, sealed, 0, "encrypted", encrypted=1)
+    m10 = put(private, "alice", "deploy secret plans", 9)
+    # Plaintext left in an encrypted channel from before encryption became
+    # fixed at creation: its text is not searched either.
+    m11 = put(sealed, "sbob", "legacy plaintext deploy zanzibar", 9)
+    deploy_visible = [m6, m5, m4, m2, m1]   # newest first, what bob can see
+
+    seq = iter(range(100, 10000))
+    def ids(res):
+        return [m.id for m in res.messages] if res else None
+
+    r = search_req(bob, next(seq), query="deploy")
+    check("words: prefix match, newest first, bob's view", r is not None and r.success and ids(r) == deploy_visible, str(ids(r)) + (r.message if r else ""))
+    check("words: first page counted", r is not None and r.first_page and r.total == 5 and not r.total_capped and not r.has_more, f"{r.total if r else None}")
+    check("words: encrypted channel reported as skipped", r is not None and sealed in r.text_skipped_channel_ids, str(list(r.text_skipped_channel_ids)) if r else None)
+    check("words: the sealed row's placeholder never matches", r is not None and m9 not in ids(r))
+    r = search_req(owner, next(seq), query="zanzibar")
+    check("words: an encrypted channel's leftover plaintext isn't indexed", r is not None and r.success and ids(r) == [], str(ids(r)))
+    r = search_req(owner, next(seq), query="deploy")
+    check("owner also sees the private channel's match", r is not None and m10 in ids(r))
+    r = search_req(bob, next(seq), query="cafe")
+    check("accents fold (cafe → Café)", r is not None and ids(r) == [m3], str(ids(r)))
+    r = search_req(bob, next(seq), query='"deploy again"')
+    check("exact phrase", r is not None and ids(r) == [m2], str(ids(r)))
+    r = search_req(bob, next(seq), query="deploy -tomorrow -checklist")
+    check("excluded words", r is not None and ids(r) == [m6, m4, m1], str(ids(r)))
+    r = search_req(bob, next(seq), query="-deploy")
+    check("excluded words alone are refused", r is not None and not r.success and "leave out" in r.message, r.message if r else None)
+    r = search_req(bob, next(seq), query="!!! ???")
+    check("punctuation only, no filters: refused", r is not None and not r.success, r.message if r else None)
+    r = search_req(bob, next(seq), query="")
+    check("an empty search is refused", r is not None and not r.success)
+    r = search_req(bob, next(seq), query="runbook")
+    check("file names match (bound attachment re-indexed)", r is not None and m7 in ids(r), str(ids(r)))
+    r = search_req(bob, next(seq), query='deploy" OR "x NEAR(')
+    check("FTS syntax in the input is inert", r is not None and r.success, r.message if r else None)
+
+    # Senders: a member by account (every name they posted under), a
+    # non-member by the name on the messages.
+    mine = [ch_a, ch_b, sealed, private]
+    r = search_req(carol, next(seq), authors=["sbob"], channel_ids=mine)
+    got = ids(r) or []
+    check("from: member matches every row of their account, incl. pre-rename + encrypted", r is not None and set(got) == {m1, m3, m5, m8, m9, m11}, str(got))
+    sealed_row = next((m for m in r.messages if m.id == m9), None) if r else None
+    check("from: encrypted rows come with their envelope", sealed_row is not None and sealed_row.envelope == b"\x02SEALED")
+    r = search_req(carol, next(seq), authors=["ghost"])
+    check("from: non-member by name", r is not None and ids(r) == [m6], str(ids(r)))
+    r = search_req(carol, next(seq), query="deploy", authors=["sbob", "scarol"])
+    check("from: several people + words", r is not None and ids(r) == [m5, m2, m1], str(ids(r)))
+
+    # Channel scope and access.
+    r = search_req(bob, next(seq), query="deploy", channel_ids=[ch_b])
+    check("in: one channel", r is not None and ids(r) == [m5, m2], str(ids(r)))
+    r = search_req(bob, next(seq), query="deploy", channel_ids=[private])
+    check("in: an unreadable channel is dropped silently", r is not None and r.success and ids(r) == [], str(ids(r)))
+    r = search_req(bob, next(seq), channel_ids=[ch_a])
+    check("in: channel alone lists it", r is not None and ids(r)[:3] == [m8, m6, m4], str(ids(r)))
+
+    # Has-filters.
+    r = search_req(bob, next(seq), has=H.HAS_IMAGE, channel_ids=mine)
+    check("has: image (encrypted kinds count)", r is not None and set(ids(r)) == {m8, m9}, str(ids(r)))
+    r = search_req(bob, next(seq), has=H.HAS_DOCUMENT, channel_ids=mine)
+    check("has: document", r is not None and ids(r) == [m7], str(ids(r)))
+    r = search_req(bob, next(seq), has=H.HAS_FILE, channel_ids=[ch_a, ch_b])
+    check("has: any file", r is not None and ids(r) == [m8, m7], str(ids(r)))
+    r = search_req(bob, next(seq), has=H.HAS_LINK, channel_ids=mine)
+    check("has: link (plaintext only, sealed skipped)", r is not None and ids(r) == [m4] and list(r.text_skipped_channel_ids) == [sealed], str(ids(r)))
+    r = search_req(bob, next(seq), has=H.HAS_IMAGE | H.HAS_DOCUMENT, channel_ids=mine)
+    check("has: every bit must hold", r is not None and ids(r) == [], str(ids(r)))
+
+    # Dates (after inclusive, before exclusive).
+    r = search_req(bob, next(seq), query="deploy", after=t0 + 1 * H1, before=t0 + 4 * H1)
+    check("dates: window", r is not None and ids(r) == [m4, m2], str(ids(r)))
+    r = search_req(bob, next(seq), query="deploy", after=t0 + 100 * H1)
+    check("dates: nothing that recent", r is not None and r.success and ids(r) == [] and r.total == 0)
+    r = search_req(bob, next(seq), query="deploy", before=t0)
+    check("dates: before everything", r is not None and r.success and ids(r) == [], str(ids(r)))
+    r = search_req(bob, next(seq), after=t0 + 5, before=t0 + 2)
+    check("dates: an empty range is refused", r is not None and not r.success)
+
+    # Sorts + paging.
+    r = search_req(bob, next(seq), query="deploy", sort=H.OLDEST)
+    check("sort: oldest", r is not None and ids(r) == list(reversed(deploy_visible)), str(ids(r)))
+    p1 = search_req(bob, next(seq), query="deploy", limit=2)
+    p2 = search_req(bob, next(seq), query="deploy", limit=2, cursor=p1.next_cursor if p1 else 0)
+    p3 = search_req(bob, next(seq), query="deploy", limit=2, cursor=p2.next_cursor if p2 else 0)
+    check("paging: newest pages of 2 with cursors", p1 and p2 and p3 and ids(p1) + ids(p2) + ids(p3) == deploy_visible
+          and p1.has_more and p2.has_more and not p3.has_more, f"{ids(p1)} {ids(p2)} {ids(p3)}")
+    check("paging: only the first page counts", p1 is not None and p1.total == 5 and p2 is not None and p2.total == -1 and not p2.first_page)
+    q1 = search_req(bob, next(seq), query="deploy", sort=H.OLDEST, limit=3)
+    q2 = search_req(bob, next(seq), query="deploy", sort=H.OLDEST, limit=3, cursor=q1.next_cursor if q1 else 0)
+    check("paging: oldest", q1 and q2 and ids(q1) + ids(q2) == list(reversed(deploy_visible)) and not q2.has_more, f"{ids(q1)} {ids(q2)}")
+    r = search_req(bob, next(seq), query="deploy", sort=H.RELEVANCE)
+    check("sort: relevance puts the 3× match first", r is not None and ids(r)[0] == m4 and sorted(ids(r)) == sorted(deploy_visible), str(ids(r)))
+    a1 = search_req(bob, next(seq), query="deploy", sort=H.RELEVANCE, limit=3)
+    a2 = search_req(bob, next(seq), query="deploy", sort=H.RELEVANCE, limit=3, offset=a1.next_offset if a1 else 0)
+    check("paging: relevance by offset", a1 and a2 and a1.next_offset == 3 and ids(a1) + ids(a2) == ids(r) and not a2.has_more, f"{ids(a1)} {ids(a2)}")
+
+    # The index follows edits, deletes and wipes.
+    bob.flush(0.3)
+    bob.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id=ch_b, message_id=m5, content="renamed note about zeppelins"))
+    e = bob.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
+    check("edit a pre-rename message (ownership by uid)", e is not None and e.message_edit_res.success, e.message_edit_res.message if e else None)
+    r = search_req(bob, next(seq), query="zeppelin")
+    check("edit re-indexes the new text", r is not None and ids(r) == [m5], str(ids(r)))
+    r = search_req(bob, next(seq), query="checklist")
+    check("... and drops the old", r is not None and ids(r) == [])
+    carol.flush(0.3)
+    carol.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id=ch_b, message_id=m7, content="here is the updated file"))
+    carol.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
+    r = search_req(bob, next(seq), query="runbook")
+    check("an edit keeps the file names indexed", r is not None and ids(r) == [m7, m4], str(ids(r)))
+    bob.flush(0.3)
+    bob.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id=ch_b, message_id=m2, content="hijack"))
+    e = bob.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
+    check("someone else's message still can't be edited", e is not None and not e.message_edit_res.success)
+    bob.send(pb.Packet.MESSAGE_DELETE_REQ, message_delete_req=pb.MessageDeleteReq(channel_id=ch_b, message_id=m5))
+    d = bob.wait(pb.Packet.MESSAGE_DELETE_RES, timeout=2)
+    check("delete a pre-rename message (ownership by uid)", d is not None and d.message_delete_res.success, d.message_delete_res.message if d else None)
+    check("no audit entry for deleting your own", sql("select count(*) from audit_log where action='message_delete' and details=?", f"message {m5}") == [(0,)])
+    r = search_req(bob, next(seq), query="zeppelin")
+    check("delete drops it from the index", r is not None and ids(r) == [])
+    owner.flush(0.3)
+    owner.send(pb.Packet.CHANNEL_WIPE_REQ, channel_wipe_req=pb.ChannelWipeRequest(channel_id=ch_b))
+    owner.wait(pb.Packet.CHANNEL_WIPE_RES, timeout=3)
+    r = search_req(bob, next(seq), query="tomorrow")
+    check("wipe drops the channel from the index", r is not None and ids(r) == [])
+    check("FTS integrity-check passes", sql("insert into messages_fts(messages_fts) values('integrity-check')") == [])
+
+    # A refused search is answered, never dropped.
+    for c in (bob,): c.flush(0.3)
+    base = next(seq)
+    for i in range(10):
+        bob.send(pb.Packet.MESSAGE_SEARCH_REQ, message_search_req=pb.MessageSearchRequest(seq=base * 100 + i, query="deploy"))
+    bob.drain(3.0)
+    answers = [p.message_search_res for p in bob.inbox if p.type == pb.Packet.MESSAGE_SEARCH_RES]
+    limited = [a for a in answers if not a.success and a.retry_after_ms > 0]
+    check("a burst: refusals carry retry_after_ms", len(limited) >= 3, f"{len(answers)} answers, {len(limited)} limited")
+    bob.inbox.clear()
+    time.sleep(6)
+
+    # Pre-Theme-A member: their uid-less messages are claimed on first auth.
+    sql("insert into members(username, joined_at, nickname, uid) values('lazy', ?, '', 0)", int(time.time()))
+    lm = put(ch_a, "lazy", "lazy message", 10, uid=0)
+    lazy = Client("lazy"); ok, _ = auth_ok(lazy)
+    check("pre-Theme-A member: messages back-filled with the uid on auth", ok and sql("select sender_uid from messages where id=?", lm) == [(uid_for("lazy"),)])
+    lazy.close()
+
+    # Ban purge by uid: a rename inside the window doesn't shield messages.
+    cm = put(ch_a, "scarol_old", "spam under an older name", 11, uid=uid_for("scarol"))
+    cm2 = put(ch_a, "scarol", "spam", 11)
+    sql("update messages set timestamp=? where id in (?, ?)", int(time.time()) - 60, cm, cm2)
+    owner.flush(0.3)
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="scarol", reason="t", delete_message_seconds=3600))
+    owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
+    check("ban purge goes by uid (pre-rename row purged too)", sql("select count(*) from messages where id in (?, ?)", cm, cm2) == [(0,)])
+    sql("delete from bans where username='scarol'")
+    for c in (owner, bob, carol): c.close()
+
+
+def test_v14_search_migration():
+    print("[v14] search index + sender uids on an upgraded DB")
+    proc = start_server(); stop_server(proc)
+    # Back to the pre-v14 shape: no index, no triggers, no sender_uid.
+    for t in ("messages_fts_insert", "messages_fts_delete", "messages_fts_edit", "attachments_fts_bind"):
+        sql(f"drop trigger if exists {t}")
+    sql("drop table if exists messages_fts")
+    sql("drop index if exists idx_messages_sender_uid")
+    sql("alter table messages drop column sender_uid")
+    sql("delete from server_meta where key in ('search_fts_v14', 'sender_uid_v14')")
+    sql("update members set uid=4242 where username='alice'")
+    now = int(time.time())
+    plain = sql("insert into messages(channel_id, sender, content, timestamp) values('general','alice','zebra crossing',?) returning id", now)[0][0]
+    sealed = sql("insert into messages(channel_id, sender, content, timestamp, envelope) values('general','alice','zebra placeholder',?, x'02') returning id", now)[0][0]
+    stranger = sql("insert into messages(channel_id, sender, content, timestamp) values('general','nobody','hi',?) returning id", now)[0][0]
+    sql("insert into channels(id, name, type, position, encrypted) values('v14-sealed', 'v14-sealed', 0, 300, 1)")
+    legacy = sql("insert into messages(channel_id, sender, content, timestamp) values('v14-sealed','alice','quagga',?) returning id", now)[0][0]
+    att = sql("insert into attachments(message_id, kind, filename, mime, size_bytes, position, created_at, upload_status, uploader, channel_id) "
+              "values(?,2,'okapi-notes.txt','text/plain',1,0,?,'ready','alice','general') returning id", plain, now)[0][0]
+    proc = start_server(); stop_server(proc)
+    check("index rebuilt with the plaintext rows", sql("select rowid from messages_fts where messages_fts match '\"zebra\"'") == [(plain,)])
+    check("... but not plaintext left in an encrypted channel", sql("select rowid from messages_fts where messages_fts match '\"quagga\"'") == [])
+    check("... including bound file names", sql("select rowid from messages_fts where messages_fts match '\"okapi\"'") == [(plain,)])
+    check("sender_uid back-filled from members by name", sql("select sender_uid from messages where id=?", plain) == [(4242,)])
+    check("a name no member holds stays 0", sql("select sender_uid from messages where id=?", stranger) == [(0,)])
+    check("schema stamped 14", sql("select value from server_meta where key='schema_version'") == [("14",)])
+    sql("delete from attachments where id=?", att)
+    sql("delete from messages where id in (?, ?, ?, ?)", plain, sealed, stranger, legacy)
+    sql("delete from channels where id='v14-sealed'")
+    sql("update members set uid=0 where username='alice'")
+    sql("update messages set sender_uid=0 where sender_uid=4242")
+
+
 def test_slowmode():
     print("[slowmode] one message per N seconds unless MANAGE_MESSAGES")
     owner = Client("alice"); assert auth_ok(owner)[0]
@@ -1767,9 +2021,9 @@ def test_encrypted_channels():
 
 
 def test_http_keepalive_and_fts():
-    print("[http] keep-alive on the attachment listener; FTS dropped")
-    check("messages_fts table gone", sql("select count(*) from sqlite_master where name='messages_fts'") == [(0,)])
-    check("FTS triggers gone", sql("select count(*) from sqlite_master where type='trigger' and name like 'messages_a%'") == [(0,)])
+    print("[http] keep-alive on the attachment listener; the old FTS triggers stay gone")
+    check("old per-row FTS triggers gone", sql("select count(*) from sqlite_master where type='trigger' and name like 'messages_a%'") == [(0,)])
+    check("search index present (v14)", sql("select count(*) from sqlite_master where name='messages_fts'") == [(1,)])
     now = int(time.time())
     mid = sql("insert into messages(channel_id, sender, content, timestamp) values('general','alice','ka',?) returning id", now)[0][0]
     path = os.path.join(RUN, "att", "ka.bin"); os.makedirs(os.path.dirname(path), exist_ok=True); open(path, "wb").write(b"0123456789")
@@ -2419,7 +2673,7 @@ def test_v11_migration():
     proc = start_server(); stop_server(proc)
     check("v10 → v12: a category with rows stays a plain group", sql("select category_sync from channels where id='old-cat'") == [(0,)])
     check("...and its channel follows nothing", perm_synced("old-child") == 0)
-    check("schema at v13", sql("select value from server_meta where key='schema_version'") == [("13",)])
+    check("schema at the latest (v14)", sql("select value from server_meta where key='schema_version'") == [("14",)])
     # A DB that ran v11 live keeps the categories whose rows were applying.
     sql("update channels set perm_synced=1 where id='old-child'")
     sql("update server_meta set value='11' where key='schema_version'")
@@ -2826,6 +3080,7 @@ def test_presence_follows_visibility():
 if __name__ == "__main__":
     test_b1_seed_resurrection()
     test_v11_migration()
+    test_v14_search_migration()
     proc = start_server()
     try:
         test_auth_failure_closes()
@@ -2852,6 +3107,7 @@ if __name__ == "__main__":
         test_roster_deltas()
         test_member_search_and_role_counts()
         test_audit_search()
+        test_message_search()
         test_presence_hidden()
         test_public_join()
         test_server_update_and_transfer()

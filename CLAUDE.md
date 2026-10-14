@@ -85,7 +85,10 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   category) changes what a channel allows. Moves, switching sync off and deleting a category keep
   every channel's permissions.
 - No per-user storage quota; only the free-space headroom check before accepting uploads.
-- Backend identity is the **uid**, not the username, unless the username is the point.
+- Backend identity is the **uid**, not the username, unless the username is the point. Owner rule
+  (2026-10-14): every backend, central or community, keys stored rows, filters, ownership checks and
+  purges on the account uid so a rename never breaks a feature; resolve names to uids at the request
+  edge (e.g. `messages.sender_uid`). Flag username-keyed spots instead of leaving them.
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):
   no arbitrary px/shadows; radii via `rounded-*` so themes (e.g. console) can flatten them.
   Buttons copy the settings idiom: `rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover`.
@@ -178,6 +181,13 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   Design: `docs/superpowers/specs/2026-10-11-user-status-design.md`. Custom status messages (emoji + 128
   chars, clear-after) ride the same presence entries, so others see them only while the user is visible;
   DM list rows keep the last-message preview instead (`2026-10-12-status-messages-design.md`).
+- **Message search runs on the community server** (spec `2026-10-14-message-search-design.md`): an FTS5
+  contentless-delete index kept by triggers (plaintext channels only), queried on a dedicated worker
+  thread with its own read-only connection, never on the io thread. Every query walks an index in id
+  order under a 3 s budget; counts stop at 10,000 or 250 ms ("N+"); one search per session, a new
+  one supersedes. Owner decisions: encrypted channels get filters only (text never searched, skipped
+  channels reported); senders match by uid; Discord-style UI (header box + chips + results panel),
+  proposal page before it is ported.
 - **Server-settings search runs on the community server** (owner decision): `MEMBER_SEARCH_REQ` for
   the Members tab / a role's holders / the add-members picker, `AuditLogRequest.query/actions` for the
   audit log, `RoleInfo.member_count` for role counts. Never filter only the loaded pages, and keep

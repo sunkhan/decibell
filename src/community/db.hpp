@@ -364,7 +364,8 @@ public:
     // inherits them. Returns true only if a row was actually inserted.
     bool add_member(const std::string& username, int64_t uid = 0);
     // Back-fills the stable uid on a pre-Theme-A member row (one whose uid is
-    // still 0). Never overwrites an already-stamped uid — identity, once
+    // still 0), and on the messages they sent under this name. Never
+    // overwrites an already-stamped uid — identity, once
     // learned, is immutable; a different uid claiming the same name is a
     // reused username, not an update.
     void set_member_uid(const std::string& username, int64_t uid);
@@ -615,13 +616,16 @@ public:
     // Insert a new message, return its autoincrement id (0 on failure).
     // `reply_to` is the parent message id (0 = not a reply); it's stored only
     // if it points at an existing message in the same channel, else 0.
+    // `sender_uid` is the sender's central account id (the identity
+    // anchor search, edits, deletes and purges key on); 0 = unknown.
     int64_t insert_message(const std::string& channel_id,
                            const std::string& sender,
                            const std::string& content,
                            int64_t timestamp,
                            int64_t reply_to = 0,
                            const std::string& envelope = std::string(),
-                           bool suppress_embeds = false);
+                           bool suppress_embeds = false,
+                           int64_t sender_uid = 0);
     // Newest-first page. `before_id = 0` means "most recent". Results are
     // ordered newest→oldest; caller reverses if they want oldest→newest.
     // `has_more` is set to true if more messages exist older than the page.
@@ -644,6 +648,13 @@ public:
                                                 int64_t after_id,
                                                 int32_t limit,
                                                 bool* has_more_after) const;
+    // Message search: the rows behind a result page, in the order given.
+    // Ids that no longer exist are skipped. At most 200.
+    std::vector<DbMessage> fetch_messages_by_ids(const std::vector<int64_t>& ids) const;
+    // Message search (spec 2026-10-14): the FTS index exists and is kept
+    // current. False when the SQLite library lacks FTS5 / contentless-delete
+    // (< 3.43); searches then answer "isn't available".
+    bool search_available() const { return search_available_; }
     // Load all attachments belonging to any of the given message ids.
     // Ordered by (message_id ASC, position ASC).
     std::vector<DbAttachment> fetch_attachments_for_messages(
@@ -741,9 +752,19 @@ public:
         std::vector<std::string> unlink_paths;
     };
 
-    /// Returns the sender username of the given message in this channel,
-    /// or nullopt if no such row exists.
-    std::optional<std::string> get_message_sender(
+    /// The sender of the given message in this channel (the name it was
+    /// sent under + the account uid, 0 for rows nobody could be matched
+    /// to), or nullopt if no such row exists.
+    struct MessageSender {
+        std::string username;
+        int64_t uid = 0;
+        // Same account as (username, uid)? By uid when the row has one,
+        // else by name — so a rename never loses ownership.
+        bool is(const std::string& name, int64_t user_uid) const {
+            return uid > 0 ? uid == user_uid : username == name;
+        }
+    };
+    std::optional<MessageSender> get_message_sender(
         const std::string& channel_id, int64_t message_id) const;
 
     struct MessagePreview {
@@ -758,11 +779,13 @@ public:
     std::optional<MessagePreview> get_message_preview(
         const std::string& channel_id, int64_t message_id) const;
 
-    /// Edits a message's content in place, enforcing ownership in SQL
-    /// (sender must equal `editor`). Stamps edited_at. Returns true only if a
+    /// Edits a message's content in place, enforcing ownership in SQL (the
+    /// row's sender_uid must be `editor_uid`, or for a row without one, its
+    /// sender must be `editor`). Stamps edited_at. Returns true only if a
     /// row was updated (exists, in this channel, owned by editor).
     bool edit_message(const std::string& channel_id, int64_t message_id,
-                      const std::string& editor, const std::string& content,
+                      const std::string& editor, int64_t editor_uid,
+                      const std::string& content,
                       int64_t edited_at,
                       const std::string& envelope = std::string(),
                       bool suppress_embeds = false);
@@ -783,14 +806,16 @@ public:
     WipeChannelResult wipe_channel(const std::string& channel_id);
 
     // --- ban purge ---
-    // Deletes every message `sender` posted since `since_ts` (plus their
-    // attachment rows). Returns (channel_id, message_id) pairs for
+    // Deletes every message the account posted since `since_ts` (plus
+    // their attachment rows): by `sender_uid` when known (> 0), so a rename
+    // can't shield them; by name only for rows without a uid. Returns (channel_id, message_id) pairs for
     // CHANNEL_MESSAGE_DELETED broadcasts and blob paths to unlink.
     struct PurgedMessages {
         std::vector<std::pair<std::string, int64_t>> messages;
         std::vector<std::string> unlink_paths;
     };
     PurgedMessages delete_messages_by_sender_since(const std::string& sender,
+                                                   int64_t sender_uid,
                                                    int64_t since_ts);
 
     // --- storage ---
@@ -903,6 +928,10 @@ private:
     void migrate_to_v11_permissions_v3_();
     void migrate_to_v12_category_sync_(int prior_version);
     void migrate_to_v13_topics_invites_();
+    void migrate_to_v14_search_();
+    // Creates messages_fts + its triggers and backfills it (once).
+    bool create_search_index_();
+    bool search_available_ = false;
     // server_meta.owner, loaded at open() and kept in sync by set_meta_.
     std::string owner_cache_;
     void seed_if_empty_(const std::string& owner,

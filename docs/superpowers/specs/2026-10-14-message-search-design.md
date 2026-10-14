@@ -1,0 +1,156 @@
+# Message search
+
+2026-10-14. Owner's ask: a powerful search over text channels (later threads too) with filters for
+sender, date, content, files and channel, without putting heavy load on the server.
+
+Owner decisions (2026-10-14):
+
+- **Encrypted channels: filters only.** Sender, date, channel and file-type filters find their
+  messages (the server already knows those). Words in their text aren't searched, and the results
+  say which channels were skipped. This fits the earlier decision to keep channel encryption off by
+  default so server-side search works for everyone who never opens settings.
+- **Discord-style flow.** A search box in the channel header (Ctrl+F) with filter suggestions that
+  become chips, results in a right-hand panel with sorting, infinite scroll and Jump.
+- **Proposal page before the UI is ported.** Server and native ship first; the renderer is designed in
+  a scratch copy and captured in every theme for approval.
+- **Backend identity is the uid** (owner rule, restated while this was designed): the server keys
+  senders by account id, so a rename never drops someone's older messages from a sender filter.
+
+## What can be searched
+
+One request searches one community. Every filter narrows the results:
+
+| Filter | Wire | Meaning |
+|---|---|---|
+| Words | `query` | Free text. Words, `"exact phrases"`, `-excluded` words. Words of 3+ characters match as prefixes (`deploy` finds `deployment`; suits Turkish suffixes too). Accents fold (`cafe` = `café`), case is ignored. Also matches attachment file names. |
+| From | `authors` | Usernames. The server resolves each member to their uid and matches every message that account sent, under any earlier name. A non-member is matched by the name on their messages. |
+| In | `channel_ids` | Text channels. Empty = every text channel the requester can read. |
+| Date | `after` / `before` | Unix seconds, `after` inclusive, `before` exclusive. The client turns `before:`, `after:` and `during:` days into local-midnight bounds. |
+| Has | `has` bits | `FILE` (any attachment), `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`, `LINK`. Each one set must hold. |
+| Sort | `sort` | Newest (default), Oldest, Relevance (only with words; otherwise treated as Newest). Relevance ranks the newest 2,000 matches by `bm25`: scoring every match of a common word took ~1 s on 1M messages, 51 ms this way, and in chat the recent matches are the ones people look for. |
+
+A request needs at least one of: words, a sender, a has-filter, a date, or a channel. Searching
+"everything in every channel" is refused.
+
+There are no mentions, pins or threads in Decibell yet, so there are no `mentions:` / `pinned:`
+filters. **Threads, later**: a thread will be a channel whose parent is a text channel. Scoping stays a
+list of channel ids, so `in:#general` will expand to its threads on the server and results already
+carry their own `channel_id`. Nothing in the index is per-channel-type.
+
+## Access
+
+Only text channels where the requester has VIEW_CHANNEL and READ_HISTORY are searched. Requested
+channels outside that set are dropped silently (as an unreadable history page is empty). The set is
+resolved on the io thread at request time and checked again when the page is assembled.
+
+## Index (schema v14)
+
+- `messages_fts`: an FTS5 table with columns `content` and `files`, `content=''` with
+  `contentless_delete=1`, tokenizer `unicode61 remove_diacritics 2`. Contentless means the index does
+  not keep a second copy of the text. Contentless-delete means deleting a row is a tombstone by rowid,
+  not a re-tokenisation of the old text. That was the cost that got the old FTS triggers dropped
+  (wipes, prunes and ban purges tokenised every deleted row). Needs SQLite ≥ 3.43; with an older
+  library or no FTS5 the server logs it and answers searches with "Search isn't available on this
+  server."
+- Kept current by triggers, so every write path (send, edit, delete, wipe, channel delete, retention,
+  ban purge) stays right without code in each:
+  - insert of a plaintext row (`envelope IS NULL`) indexes its content;
+  - edit re-indexes content plus the current file names, or removes the row if it became sealed;
+  - delete removes it;
+  - binding an unencrypted attachment to a message (`message_id` 0 → id) re-indexes with file names.
+  Sealed rows, encrypted attachments and every row of an encrypted channel are never indexed: the
+  placeholder text of a sealed row can never match, and neither can plaintext left in a channel from
+  before its encryption was switched on (back when that was possible).
+- Backfill once, in the migration, inside one transaction.
+- `messages.sender_uid` (backfilled from `members.uid` by name, then set from the session's JWT uid on
+  every send; a pre-Theme-A member's rows are back-filled when they first authenticate with a uid),
+  indexed `(sender_uid, id)`. Rows whose sender no longer matches any member keep uid 0. They can only
+  be matched by name, never claimed by whoever holds that name now.
+
+The same column fixes three existing rename bugs: deleting your own message, editing it (except a
+sealed message in an encrypted channel, whose envelope binds the name it was sent under), and the ban
+"delete messages" purge now go by uid.
+
+## Keeping the load down
+
+- **Off the io thread.** One `SearchWorker` thread owns its own read-only SQLite connection. WAL lets
+  it read while the main connection writes, and it never takes the DB mutex. The io thread (which also
+  relays voice) only validates, resolves the channel set, and later hydrates at most one page (≤ 50
+  rows by primary key).
+- **Bounded work per query.** A progress handler aborts a query after 3 s. If the page filled, the
+  count stops there and reads "N+". If some results came in, they are returned with `partial`. If none
+  did, the answer is "This search is too broad. Add a filter."
+- **Bounded concurrency.** One query runs at a time server-wide, and at most 32 wait. A session has
+  at most one: a new search replaces its queued one and cancels its running one, and a disconnect
+  cancels too. A full queue answers "Search is busy" with a retry hint.
+- **Rate limit.** A per-session `search_bucket_` (6 burst, 1 per s). A refused request is answered
+  with `retry_after_ms`, not dropped, so the UI never hangs.
+- **Every query drives from an index, in id order, and stops at limit + 1.**
+  1. Words or LINK: the FTS index, walked by rowid (newest or oldest first), with the filters checked
+     per candidate by primary key. Relevance sorts by `bm25` (file names weigh less than text).
+  2. One or more members (uids): `(sender_uid, id)`.
+  3. Has-file kinds: the attachments `message_id` index, newest first.
+  4. A single channel: `(channel_id, id)`.
+  5. Otherwise: the primary key, walked newest first.
+  Date bounds are turned into id bounds by a binary search over the primary key (≈ 25 point lookups),
+  because server timestamps grow with ids. The timestamp checks stay in the query so the bounds are
+  exact.
+- **Counted once.** The first page keeps stepping the same statement to count matches, up to 10,000
+  and at most 250 ms more (then "N+"). Later pages don't count. Finding a page is cheap. An exact count
+  of a common word under a narrow filter is the expensive part, so it gets the tighter bound.
+- **Bounded answers.** 25 results by default (≤ 50), and the page is cut at 1.5 MB (a message can
+  be 64 KB). Cursor paging for Newest / Oldest. Offset paging for Relevance, capped at 1,000 results.
+- **Client side.** Searches run on Enter, never per keystroke. The filter suggestions come from the
+  loaded roster and channel list, with the existing debounced `MEMBER_SEARCH_REQ` for big servers.
+  Results already shown are kept while the next page loads.
+
+## Measured (1M messages, 30 channels, 300 senders, 62k attachments)
+
+Synthetic community (Zipf-distributed words, 2 years of history), round trips on localhost, median of 5:
+
+| Search | ms | Search | ms |
+|---|---|---|---|
+| rare word | 0.9 | common word (10,000+ results) | 24 |
+| mid-frequency word (3,972) | 4.5 | common word, relevance | 51 |
+| two words | 18 | 3-letter prefix | 27 |
+| from: busiest member | 4.6 | from: quietest member | 1.3 |
+| has:image | 18 | has:link | 15 |
+| one day a year ago | 1.0 | before: 18 months ago | 2.0 |
+| one channel, no words | 0.9 | rare word after a date | 0.7 |
+| common word + one sender (1,138, exact) | 213 | common word in one channel | 136 |
+
+The two slow rows are spent on the exact count, now capped at 250 ms. Index: +66 MB on a 230 MB
+database (+29%), built from scratch in about 5 s at startup. Send path: an insert with the index trigger
+costs 34 µs instead of 12 µs. FTS5 merge settings (automerge 0/8/16) made no measurable difference,
+so the defaults stay.
+
+## Wire
+
+`MESSAGE_SEARCH_REQ = 156` / `MESSAGE_SEARCH_RES = 157`, payload slots 158 / 159.
+`MessageSearchRequest { seq, query, channel_ids, authors, after, before, has, sort, cursor, offset,
+limit }` and `MessageSearchResponse { seq, success, message, messages (ChannelMessage, in sort
+order), has_more, next_cursor, next_offset, total, total_capped, text_skipped_channel_ids, partial,
+retry_after_ms, first_page }`. Community-only and client-first safe: an older server never answers,
+and the client's 8 s no-answer timer says the server needs updating.
+
+## Native
+
+`search_messages(args)` sends the request (every arg optional except `serverId`). The response goes
+straight to a `message_search_received` event unless a message carries an envelope. Then it goes
+through the ordered channel crypto worker (`ChannelJob::Search`), which opens each message with its
+own `channel_id` (history uses the response's single channel). Decrypted payloads have the same shape
+as history messages.
+
+Found while surveying: `AttachmentPayload` never carried `encrypted`, so the renderer never merged the
+real metadata of encrypted-channel attachments or registered their keys. Fixed alongside, since
+search results take the same path.
+
+## Not in this version
+
+- Text in encrypted channels (owner decision above). A later option: scan recently fetched history on
+  the device.
+- CJK word search: `unicode61` treats a run of CJK characters as one token. A trigram index would fix
+  it at about 3× the index size.
+- Showing a renamed member's older messages under their current name, and offering them Edit / Delete
+  on those messages. The server accepts both by uid now, but the client only knows usernames, so this
+  needs the uid on the wire.

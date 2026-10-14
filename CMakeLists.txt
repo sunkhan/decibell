@@ -53,6 +53,7 @@ add_executable(decibell_community
     src/community/main.cpp
     src/community/db.cpp
     src/community/attachment_http.cpp
+    src/community/search.cpp
 )
 target_link_libraries(decibell_community PRIVATE
     decibell_common

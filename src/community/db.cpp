@@ -264,6 +264,122 @@ void CommunityDb::init_schema_() {
 
     // --- v13: channel topics + personal invites ---
     migrate_to_v13_topics_invites_();
+
+    // --- v14: message search (FTS index) + sender uids ---
+    migrate_to_v14_search_();
+}
+
+void CommunityDb::migrate_to_v14_search_() {
+    // Senders by account uid (owner rule: backend identity is the uid, so
+    // a rename never drops someone's older messages from a filter, an
+    // edit, a delete or a ban purge). Existing rows are matched by the
+    // name they were sent under, once; rows nobody holds that name for
+    // stay 0 and are only ever matched by name.
+    if (!column_exists(db_, "messages", "sender_uid"))
+        exec_sql(db_, "ALTER TABLE messages ADD COLUMN sender_uid INTEGER NOT NULL DEFAULT 0;");
+    if (get_meta_("sender_uid_v14").empty()) {
+        exec_sql(db_,
+            "UPDATE messages SET sender_uid = "
+            "  COALESCE((SELECT uid FROM members WHERE members.username = messages.sender), 0) "
+            "WHERE sender_uid = 0;");
+        set_meta_("sender_uid_v14", "1");
+    }
+    exec_sql(db_, "CREATE INDEX IF NOT EXISTS idx_messages_sender_uid ON messages(sender_uid, id);");
+    search_available_ = create_search_index_();
+    set_meta_("schema_version", "14");
+}
+
+bool CommunityDb::create_search_index_() {
+    // Contentless-delete FTS5 (spec 2026-10-14): no second copy of the
+    // text, and a delete is a tombstone by rowid rather than a
+    // re-tokenisation of the old text (that cost is why the previous
+    // triggers were dropped — wipes, prunes and ban purges tokenised every
+    // deleted row). Needs SQLite >= 3.43.
+    bool fts5 = false;
+    if (sqlite3_libversion_number() >= 3043000) {
+        Stmt q(db_, "SELECT fts5_source_id();");
+        fts5 = q.s && q.step() == SQLITE_ROW;
+    }
+    if (!fts5) {
+        std::cerr << "[DB] message search disabled: SQLite " << sqlite3_libversion()
+                  << " lacks FTS5 or is older than 3.43 (contentless_delete)\n";
+        // A DB moved here from a host that had the index: its triggers
+        // would make every message write fail on a table this library
+        // can't open. Drop them and forget the index, so a later upgrade
+        // rebuilds it from scratch rather than trusting a stale one.
+        for (const char* t : { "messages_fts_insert", "messages_fts_delete",
+                               "messages_fts_edit", "attachments_fts_bind" }) {
+            exec_sql(db_, (std::string("DROP TRIGGER IF EXISTS ") + t + ";").c_str());
+        }
+        if (!get_meta_("search_fts_v14").empty()) set_meta_("search_fts_v14", "");
+        return false;
+    }
+    const bool fresh = get_meta_("search_fts_v14").empty();
+    if (!fresh) {
+        Stmt q(db_, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts';");
+        if (q.s && q.step() == SQLITE_ROW) return true;
+        // Flag set but the table is gone (dropped by hand): rebuild below.
+    }
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return false;   // DB1
+    bool ok =
+        exec_sql(db_, "DROP TABLE IF EXISTS messages_fts;") &&
+        exec_sql(db_,
+            "CREATE VIRTUAL TABLE messages_fts USING fts5("
+            "  content, files, content='', contentless_delete=1,"
+            "  tokenize='unicode61 remove_diacritics 2');") &&
+        // Only plaintext rows of plaintext channels: a sealed row's `content`
+        // is a placeholder for old clients and must never match, and an
+        // encrypted channel's text isn't searched (owner decision), not
+        // even the plaintext left from before its encryption was switched
+        // on (when that was still possible).
+        exec_sql(db_,
+            "CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages "
+            "WHEN new.envelope IS NULL "
+            "  AND NOT EXISTS (SELECT 1 FROM channels WHERE id = new.channel_id AND encrypted = 1) BEGIN "
+            "  INSERT INTO messages_fts(rowid, content, files) VALUES (new.id, new.content, ''); "
+            "END;") &&
+        exec_sql(db_,
+            "CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN "
+            "  DELETE FROM messages_fts WHERE rowid = old.id; "
+            "END;") &&
+        // An edit re-indexes the text with the current file names (or drops
+        // the row if it became sealed).
+        exec_sql(db_,
+            "CREATE TRIGGER IF NOT EXISTS messages_fts_edit AFTER UPDATE OF content, envelope ON messages BEGIN "
+            "  DELETE FROM messages_fts WHERE rowid = old.id; "
+            "  INSERT INTO messages_fts(rowid, content, files) "
+            "    SELECT new.id, new.content, COALESCE((SELECT group_concat(filename, ' ') FROM attachments "
+            "      WHERE message_id = new.id AND encrypted = 0), '') "
+            "    WHERE new.envelope IS NULL "
+            "      AND NOT EXISTS (SELECT 1 FROM channels WHERE id = new.channel_id AND encrypted = 1); "
+            "END;") &&
+        // Attachments bind after their message is inserted (CHANNEL_MSG →
+        // bind_attachments): fold the file names in then. Encrypted
+        // uploads carry stand-in names and are never indexed.
+        exec_sql(db_,
+            "CREATE TRIGGER IF NOT EXISTS attachments_fts_bind AFTER UPDATE OF message_id ON attachments "
+            "WHEN old.message_id = 0 AND new.message_id > 0 AND new.encrypted = 0 BEGIN "
+            "  INSERT OR REPLACE INTO messages_fts(rowid, content, files) "
+            "    SELECT m.id, m.content, COALESCE((SELECT group_concat(filename, ' ') FROM attachments "
+            "      WHERE message_id = m.id AND encrypted = 0), '') "
+            "    FROM messages m WHERE m.id = new.message_id AND m.envelope IS NULL "
+            "      AND NOT EXISTS (SELECT 1 FROM channels WHERE id = m.channel_id AND encrypted = 1); "
+            "END;") &&
+        exec_sql(db_,
+            "INSERT INTO messages_fts(rowid, content, files) "
+            "  SELECT m.id, m.content, COALESCE((SELECT group_concat(a.filename, ' ') FROM attachments a "
+            "    WHERE a.message_id = m.id AND a.encrypted = 0), '') "
+            "  FROM messages m WHERE m.envelope IS NULL "
+            "    AND m.channel_id NOT IN (SELECT id FROM channels WHERE encrypted = 1);");
+    if (ok) set_meta_("search_fts_v14", "1");
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    if (!ok) {
+        std::cerr << "[DB] message search disabled: could not create the FTS5 index "
+                     "(SQLite built without FTS5?)\n";
+        return false;
+    }
+    std::cout << "[DB] message search index built\n";
+    return true;
 }
 
 void CommunityDb::migrate_to_v13_topics_invites_() {
@@ -1034,7 +1150,16 @@ void CommunityDb::set_member_uid(const std::string& username, int64_t uid) {
     // Back-fill only: stamp identity onto a pre-Theme-A row (uid still 0),
     // never overwrite an already-known uid. Overwriting was the second half
     // of C2 — a reused username re-stamped the row and erased the evidence.
-    Stmt q(db_, "UPDATE members SET uid=? WHERE username=? AND uid=0;");
+    {
+        Stmt q(db_, "UPDATE members SET uid=? WHERE username=? AND uid=0;");
+        if (!q.s) return;
+        q.bind_int64(1, uid);
+        q.bind_text(2, username);
+        if (q.step() != SQLITE_DONE || sqlite3_changes(db_) == 0) return;
+    }
+    // The member row was this account's, so are the messages sent under
+    // it that the v14 backfill couldn't place (their uid was unknown then).
+    Stmt q(db_, "UPDATE messages SET sender_uid=? WHERE sender=? AND sender_uid=0;");
     if (!q.s) return;
     q.bind_int64(1, uid);
     q.bind_text(2, username);
@@ -2767,7 +2892,8 @@ int64_t CommunityDb::insert_message(const std::string& channel_id,
                                     int64_t timestamp,
                                     int64_t reply_to,
                                     const std::string& envelope,
-                                    bool suppress_embeds) {
+                                    bool suppress_embeds,
+                                    int64_t sender_uid) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Only accept a reply_to that points at a real message in THIS channel;
     // otherwise store 0 (ignore a stale/cross-channel/forged reference).
@@ -2782,8 +2908,8 @@ int64_t CommunityDb::insert_message(const std::string& channel_id,
         if (!ok) reply_to = 0;
     }
     Stmt q(db_,
-        "INSERT INTO messages(channel_id, sender, content, timestamp, reply_to, envelope, suppress_embeds) "
-        "VALUES(?, ?, ?, ?, ?, ?, ?);");
+        "INSERT INTO messages(channel_id, sender, content, timestamp, reply_to, envelope, suppress_embeds, sender_uid) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?);");
     if (!q.s) return 0;
     q.bind_text(1, channel_id);
     q.bind_text(2, sender);
@@ -2792,6 +2918,7 @@ int64_t CommunityDb::insert_message(const std::string& channel_id,
     q.bind_int64(5, reply_to);
     q.bind_blob_or_null(6, envelope);
     q.bind_int(7, suppress_embeds ? 1 : 0);
+    q.bind_int64(8, sender_uid > 0 ? sender_uid : 0);
     if (q.step() != SQLITE_DONE) return 0;
     return sqlite3_last_insert_rowid(db_);
 }
@@ -2964,6 +3091,36 @@ std::vector<DbMessage> CommunityDb::fetch_messages_after(const std::string& chan
     if (static_cast<int32_t>(out.size()) > limit) {
         out.pop_back();
         if (has_more_after) *has_more_after = true;
+    }
+    return out;
+}
+
+std::vector<DbMessage> CommunityDb::fetch_messages_by_ids(const std::vector<int64_t>& ids) const {
+    std::vector<DbMessage> out;
+    if (ids.empty()) return out;
+    const size_t n = std::min<size_t>(ids.size(), 200);
+    std::string placeholders;
+    placeholders.reserve(n * 2);
+    for (size_t i = 0; i < n; ++i) {
+        if (i > 0) placeholders.push_back(',');
+        placeholders.push_back('?');
+    }
+    const std::string sql = std::string(kMessageSelect) + "WHERE m.id IN (" + placeholders + ");";
+    std::unordered_map<int64_t, DbMessage> by_id;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        Stmt q(db_, sql.c_str());
+        if (!q.s) return out;
+        for (size_t i = 0; i < n; ++i) q.bind_int64(static_cast<int>(i + 1), ids[i]);
+        while (q.step() == SQLITE_ROW) {
+            DbMessage m = read_message_row(q);
+            by_id.emplace(m.id, std::move(m));
+        }
+    }
+    out.reserve(by_id.size());
+    for (size_t i = 0; i < n; ++i) {
+        auto it = by_id.find(ids[i]);
+        if (it != by_id.end()) out.push_back(std::move(it->second));
     }
     return out;
 }
@@ -3372,15 +3529,15 @@ CommunityDb::WipeChannelResult CommunityDb::wipe_channel(const std::string& chan
 // --- Per-message delete (see docs/superpowers/specs/
 //     2026-05-15-message-deletion-design.md) ---
 
-std::optional<std::string> CommunityDb::get_message_sender(
+std::optional<CommunityDb::MessageSender> CommunityDb::get_message_sender(
     const std::string& channel_id, int64_t message_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    Stmt q(db_, "SELECT sender FROM messages WHERE id=? AND channel_id=?;");
+    Stmt q(db_, "SELECT sender, sender_uid FROM messages WHERE id=? AND channel_id=?;");
     if (!q.s) return std::nullopt;
     q.bind_int64(1, message_id);
     q.bind_text(2, channel_id);
     if (q.step() == SQLITE_ROW) {
-        return q.col_text(0);
+        return MessageSender{q.col_text(0), q.col_int64(1)};
     }
     return std::nullopt;
 }
@@ -3410,17 +3567,20 @@ std::optional<CommunityDb::MessagePreview> CommunityDb::get_message_preview(
 }
 
 bool CommunityDb::edit_message(const std::string& channel_id, int64_t message_id,
-                               const std::string& editor, const std::string& content,
+                               const std::string& editor, int64_t editor_uid,
+                               const std::string& content,
                                int64_t edited_at, const std::string& envelope,
                                bool suppress_embeds) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Ownership is enforced in the WHERE: the row updates only if it exists in
-    // this channel AND was sent by `editor`. changes()==0 → not found or not
+    // this channel AND was sent by the editor's account (sender_uid; by name
+    // only for a row nobody could be matched to). changes()==0 → not found or not
     // the owner (indistinguishable to the caller, which is fine). The
     // envelope column is always rewritten (NULL for a plaintext edit).
     Stmt q(db_,
         "UPDATE messages SET content=?, edited_at=?, envelope=?, suppress_embeds=? "
-        "WHERE id=? AND channel_id=? AND sender=?;");
+        "WHERE id=? AND channel_id=? "
+        "  AND CASE WHEN sender_uid > 0 THEN sender_uid = ? ELSE sender = ? END;");
     if (!q.s) return false;
     q.bind_text(1, content);
     q.bind_int64(2, edited_at);
@@ -3428,7 +3588,8 @@ bool CommunityDb::edit_message(const std::string& channel_id, int64_t message_id
     q.bind_int(4, suppress_embeds ? 1 : 0);
     q.bind_int64(5, message_id);
     q.bind_text(6, channel_id);
-    q.bind_text(7, editor);
+    q.bind_int64(7, editor_uid);
+    q.bind_text(8, editor);
     if (q.step() != SQLITE_DONE) return false;
     return sqlite3_changes(db_) > 0;
 }
@@ -3612,40 +3773,46 @@ bool CommunityDb::can_delete_others(const std::string& username) const {
 }
 
 CommunityDb::PurgedMessages CommunityDb::delete_messages_by_sender_since(
-    const std::string& sender, int64_t since_ts) {
+    const std::string& sender, int64_t sender_uid, int64_t since_ts) {
     PurgedMessages out;
     std::lock_guard<std::mutex> lock(mutex_);
-    {
-        Stmt q(db_, "SELECT id, channel_id FROM messages WHERE sender=? AND timestamp>=?;");
-        if (!q.s) return out;
-        q.bind_text(1, sender);
+    // The account's rows by uid (a rename inside the window can't shield
+    // them); by name only for a sender with no known uid, and then only
+    // rows nobody could be matched to.
+    const bool by_uid = sender_uid > 0;
+    const std::string who = by_uid ? "sender_uid=?" : "sender_uid=0 AND sender=?";
+    auto bind_who = [&](Stmt& q) {
+        if (by_uid) q.bind_int64(1, sender_uid);
+        else q.bind_text(1, sender);
         q.bind_int64(2, since_ts);
+    };
+    {
+        Stmt q(db_, ("SELECT id, channel_id FROM messages WHERE " + who + " AND timestamp>=?;").c_str());
+        if (!q.s) return out;
+        bind_who(q);
         while (q.step() == SQLITE_ROW) {
             out.messages.emplace_back(q.col_text(1), q.col_int64(0));
         }
     }
     if (out.messages.empty()) return out;
     {
-        Stmt q(db_,
-            "SELECT storage_path FROM attachments "
-            "WHERE storage_path IS NOT NULL AND storage_path != '' AND message_id IN "
-            "  (SELECT id FROM messages WHERE sender=? AND timestamp>=?);");
+        Stmt q(db_, ("SELECT storage_path FROM attachments "
+                     "WHERE storage_path IS NOT NULL AND storage_path != '' AND message_id IN "
+                     "  (SELECT id FROM messages WHERE " + who + " AND timestamp>=?);").c_str());
         if (q.s) {
-            q.bind_text(1, sender);
-            q.bind_int64(2, since_ts);
+            bind_who(q);
             while (q.step() == SQLITE_ROW) out.unlink_paths.push_back(q.col_text(0));
         }
     }
     if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return {};   // DB1
     {
-        Stmt q(db_,
-            "DELETE FROM attachments WHERE message_id IN "
-            "  (SELECT id FROM messages WHERE sender=? AND timestamp>=?);");
-        if (q.s) { q.bind_text(1, sender); q.bind_int64(2, since_ts); q.step(); }
+        Stmt q(db_, ("DELETE FROM attachments WHERE message_id IN "
+                     "  (SELECT id FROM messages WHERE " + who + " AND timestamp>=?);").c_str());
+        if (q.s) { bind_who(q); q.step(); }
     }
     {
-        Stmt q(db_, "DELETE FROM messages WHERE sender=? AND timestamp>=?;");
-        if (q.s) { q.bind_text(1, sender); q.bind_int64(2, since_ts); q.step(); }
+        Stmt q(db_, ("DELETE FROM messages WHERE " + who + " AND timestamp>=?;").c_str());
+        if (q.s) { bind_who(q); q.step(); }
     }
     exec_sql(db_, "COMMIT;");
     return out;
