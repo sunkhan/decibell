@@ -328,7 +328,7 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
         }
       }}
       title="Search messages (Ctrl+F)"
-      className={`ml-auto flex h-8 shrink-0 cursor-text items-center gap-1 rounded-md border bg-bg-lighter pl-1.5 pr-1 font-sans text-[13px] font-normal tracking-normal transition-[width] duration-150 ${
+      className={`ml-2 flex h-8 shrink-0 cursor-text items-center gap-1 rounded-md border bg-bg-lighter pl-1.5 pr-1 font-sans text-[13px] font-normal tracking-normal transition-[width] duration-150 ${
         wide ? "w-[340px] max-lg:w-[260px]" : "w-[220px] max-lg:w-[160px]"
       } ${focused ? "border-accent shadow-ring" : "border-border hover:border-accent/40"}`}
     >

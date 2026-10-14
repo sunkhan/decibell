@@ -40,8 +40,9 @@ export default function ChannelHeader() {
           </span>
         </>
       ) : null}
-      <SearchBox serverId={activeServerId} channelId={activeChannelId} />
+      {/* The members toggle, then the search box at the right end. */}
       <MembersPanelToggle />
+      <SearchBox serverId={activeServerId} channelId={activeChannelId} />
     </div>
   );
 }
@@ -56,7 +57,7 @@ function MembersPanelToggle() {
   return (
     <button
       onClick={toggle}
-      className={`ml-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-sm transition-colors ${
+      className={`ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-sm transition-colors ${
         visible
           ? "text-text-secondary bg-surface-hover"
           : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"

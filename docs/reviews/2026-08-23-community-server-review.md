@@ -2443,6 +2443,8 @@ moved out of `ChatPanel` into `features/chat/ChannelHeader.tsx` (with the member
 now stacks it above a row of chat plus members or search results. Below 1024 px the floating search panel
 starts right under it (`top-0` of that row). The chat's media sizing no longer subtracts a header it
 doesn't contain: `chatViewSize` reads 780 × 682 at 1280 × 800, as before. The DM view is unchanged.
+Follow-up (owner): the members toggle sits left of the search box, and the box ends the header at the
+right edge.
 Verified: tsc web 0. Harness captures in Nocturne, Matinee, Graphite and Console Split with members,
 with search results, and at 1000 px.
 
