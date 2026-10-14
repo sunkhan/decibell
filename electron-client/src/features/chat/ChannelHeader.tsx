@@ -19,7 +19,9 @@ export default function ChannelHeader() {
   if (!activeServerId || !activeChannelId) return null;
   const channelName = channel?.name ?? activeChannelId;
   return (
-    <div className="flex h-12 shrink-0 items-center border-b border-border-divider px-4 font-display text-title font-emphasis tracking-title text-text-bright">
+    // pr-2: the search box at the right end is centred over the members
+    // list (see SearchBox), 8 px from either side of that column.
+    <div className="flex h-12 shrink-0 items-center border-b border-border-divider pl-4 pr-2 font-display text-title font-emphasis tracking-title text-text-bright">
       <span className="mr-1.5 text-text-muted">#</span>
       <span className="min-w-0 truncate">{channelName}</span>
       {channel?.encrypted ? (
