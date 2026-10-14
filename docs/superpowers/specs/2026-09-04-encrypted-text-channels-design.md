@@ -14,12 +14,12 @@ channels are the remaining plaintext content the host can read.
 
 | Question | Decision |
 |---|---|
-| Opt-in or default | **Per-channel toggle, default off** (user decision: people who never open settings must keep server-side search when it ships). MANAGE_CHANNELS flips it; a lock shows on encrypted channels everywhere. |
+| Opt-in or default | **Per-channel, default off** (user decision: people who never open settings must keep server-side search when it ships). **Chosen at creation and fixed** since 2026-10-14 (see below). A lock shows on encrypted channels everywhere. |
 | Protocol | **Channel epoch keys, escrowed to members.** Not MLS: members are mostly offline, history must stay readable to late joiners and on every device, and one identity per user would pin a channel to one device. |
 | Who holds keys | Members only. A member who has the keys seals them to each entitled member's static X25519 identity (the DM envelope, content tag `0x02`) and the server stores those blobs per recipient. The server never sees a key. |
 | Who is entitled | The server decides (it already decides who can VIEW a channel); members decide whether an identity is real (central's key directory + pins). Same split as voice. |
 | Rotation | A new epoch on every membership removal (kick / ban / leave), coalesced client-side. Joins don't rotate: late joiners read history by design. |
-| Enforcement | The server enforces the wire format: an encrypted channel refuses plaintext messages and binds only sealed uploads; a plaintext channel refuses envelopes and sealed uploads. Switching on seals from that message on; switching off leaves sealed history sealed forever. |
+| Enforcement | The server enforces the wire format: an encrypted channel refuses plaintext messages and binds only sealed uploads; a plaintext channel refuses envelopes and sealed uploads. A sealed message can never be edited into plaintext. |
 | Strict | No keys → placeholders and a prompt; no fallback. |
 
 ## Wire
@@ -124,6 +124,25 @@ permission-overwrite changes (a member who loses VIEW keeps the old epochs until
 the next removal-driven rotation); search (no server search exists yet; encrypted
 channels will need the local store); a batch key-fetch endpoint on central
 (fills are paced instead).
+
+**Creation-time only (2026-10-14, owner decision).** The flag used to be a
+MANAGE_CHANNELS switch on existing channels (`ChannelUpdateRequest.encrypted`,
+now `reserved 9`). Switching left a mixed history and broke in several ways:
+- Switching off let an edit of a sealed message go out in plaintext. The server
+  rewrote the envelope, which also erased the message's attachment keys forever.
+- After switching off, escrow stopped filling keys for new members
+  (`channel_keys_on_join` only walks encrypted channels), so they couldn't read
+  the sealed history.
+- Switching on kept the plaintext history under the lock badge and locked out
+  members without encryption mid-conversation.
+- At the moment of the switch, sends and uploads in flight bounced or were
+  silently dropped.
+
+Now `ChannelCreateRequest.encrypted` sets the flag for the channel's life (text
+channels only; audited as `channel_create` with `encrypted`). Channel settings
+shows it read-only. For channels toggled before this change, the server
+refuses a plaintext edit of a row that has an envelope, and the client doesn't
+offer Edit on such messages.
 
 Accepted metadata: the channel name and, since 2026-10-14, its topic stay
 in the clear on the server. This is an owner decision: they label the channel, not

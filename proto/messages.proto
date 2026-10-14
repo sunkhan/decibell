@@ -738,8 +738,9 @@ message ChannelInfo {
   // channel. 0 = off. MANAGE_MESSAGES holders bypass it.
   int32 slowmode_seconds = 11;
   // Text channels: end-to-end encrypted with member-held epoch keys. The
-  // server refuses plaintext here (and envelopes elsewhere). Off by
-  // default; MANAGE_CHANNELS flips it.
+  // server refuses plaintext here (and envelopes elsewhere). Chosen when
+  // the channel is created (ChannelCreateRequest.encrypted, default off)
+  // and fixed for its life, so a channel's history is never mixed.
   bool encrypted = 12;
   // Follows its category's overwrites (permissions v3). Only ever true
   // under a category with category_sync on. Editing the channel's own
@@ -929,6 +930,9 @@ message ChannelCreateRequest {
   // the uncategorized area (before the first category). Ignored when
   // creating a category — categories always append at the very end.
   string category_id = 4;
+  // Text channels: end-to-end encrypted for good (ChannelInfo.encrypted).
+  // Ignored for voice channels and categories.
+  bool encrypted = 5;
 }
 
 message ChannelDeleteRequest {
@@ -1080,8 +1084,9 @@ message ChannelUpdateRequest {
   // Text channels: slowmode in seconds (0 = off), clamped to [0, 21600].
   // Absent = leave unchanged.
   optional int32 slowmode_seconds = 8;
-  // Text channels: end-to-end encryption on/off. Absent = leave unchanged.
-  optional bool encrypted = 9;
+  // Was the encryption on/off switch. Encryption is chosen at creation
+  // (ChannelCreateRequest.encrypted) and can't change.
+  reserved 9;
   // Text channels: the topic (clamped to 1024 bytes, "" clears it).
   // Absent = leave unchanged.
   optional string topic = 10;

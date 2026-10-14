@@ -760,8 +760,11 @@ export default function ChatPanel() {
     if (!activeServerId || !activeChannelId || !username) return;
     const key = channelKey(activeServerId, activeChannelId);
     const list = byCh[key] ?? [];
+    const channelEncrypted = useChatStore
+      .getState()
+      .channelsByServer[activeServerId]?.find((c) => c.id === activeChannelId)?.encrypted;
     for (let i = list.length - 1; i >= 0; i--) {
-      if (list[i].sender === username && list[i].id > 0) {
+      if (list[i].sender === username && list[i].id > 0 && (channelEncrypted || !list[i].encrypted)) {
         setEditingMessageId(list[i].id);
         return;
       }
@@ -944,7 +947,11 @@ export default function ChatPanel() {
           canEdit={
             typeof message.id === "number" &&
             message.id > 0 &&
-            message.sender === username
+            message.sender === username &&
+            // A sealed message in a channel whose encryption was switched
+            // off (before it became fixed at creation) can't be edited: the
+            // server refuses to turn it into plaintext.
+            (!!channel?.encrypted || !message.encrypted)
           }
           editing={editingMessageId === message.id && message.id > 0}
           onStartEdit={startEdit}

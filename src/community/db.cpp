@@ -2342,7 +2342,8 @@ std::string slugify_channel_name(const std::string& name) {
 std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name,
                                                      int32_t type,
                                                      int32_t voice_bitrate_kbps,
-                                                     const std::string& category_id) {
+                                                     const std::string& category_id,
+                                                     bool encrypted) {
     const std::string name = clamp_utf8(raw_name, kMaxChannelNameBytes);
     if (name.empty() || (type != 0 && type != 1 && type != 2)) return std::nullopt;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -2421,8 +2422,8 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name
     const bool start_synced = type != 2 && cat_sync != category_sync_of_.end() && cat_sync->second;
     if (ok) {
         Stmt ins(db_,
-            "INSERT INTO channels(id, name, type, position, voice_bitrate_kbps, perm_synced) "
-            "VALUES(?, ?, ?, ?, ?, ?);");
+            "INSERT INTO channels(id, name, type, position, voice_bitrate_kbps, perm_synced, encrypted) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?);");
         ok = ins.s != nullptr;
         if (ok) {
             ins.bind_text(1, id);
@@ -2431,6 +2432,8 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name
             ins.bind_int(4, static_cast<int32_t>(idx));
             ins.bind_int(5, type == 1 ? voice_bitrate_kbps : 0);
             ins.bind_int(6, start_synced ? 1 : 0);
+            // Text channels only; fixed for the channel's life.
+            ins.bind_int(7, type == 0 && encrypted ? 1 : 0);
             ok = ins.step() == SQLITE_DONE;
         }
     }
@@ -2452,6 +2455,7 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name
     c.position = static_cast<int32_t>(idx);
     c.voice_bitrate_kbps = type == 1 ? voice_bitrate_kbps : 0;
     c.perm_synced = start_synced;
+    c.encrypted = type == 0 && encrypted;
     return c;
 }
 
@@ -2718,15 +2722,6 @@ bool CommunityDb::set_channel_topic(const std::string& channel_id, const std::st
     return sqlite3_changes(db_) > 0;
 }
 
-bool CommunityDb::set_channel_encrypted(const std::string& channel_id, bool on) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    Stmt q(db_, "UPDATE channels SET encrypted=? WHERE id=? AND type=0;");
-    if (!q.s) return false;
-    q.bind_int(1, on ? 1 : 0);
-    q.bind_text(2, channel_id);
-    if (q.step() != SQLITE_DONE) return false;
-    return sqlite3_changes(db_) > 0;
-}
 
 bool CommunityDb::set_channel_voice_bitrate(const std::string& channel_id,
                                             int32_t kbps) {

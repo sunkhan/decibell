@@ -144,7 +144,6 @@ export default function ChannelSettingsModal() {
   const [topicDraft, setTopicDraft] = useState("");
   const [bitrateDraft, setBitrateDraft] = useState(0);
   const [slowmodeDraft, setSlowmodeDraft] = useState(0);
-  const [encryptedDraft, setEncryptedDraft] = useState(false);
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
   const [wipeConfirmText, setWipeConfirmText] = useState("");
   const [wiping, setWiping] = useState(false);
@@ -193,7 +192,6 @@ export default function ChannelSettingsModal() {
     setTopicDraft(channel.topic ?? "");
     setBitrateDraft(channel.voiceBitrateKbps);
     setSlowmodeDraft(channel.slowmodeSeconds ?? 0);
-    setEncryptedDraft(channel.encrypted ?? false);
     setError(null);
     setSaving(false);
     setWipeConfirmOpen(false);
@@ -258,10 +256,8 @@ export default function ChannelSettingsModal() {
   const bitrateDirty = !!channel && isVoice && bitrateDraft !== channel.voiceBitrateKbps;
   const slowmodeDirty =
     !!channel && !isVoice && !isCategory && slowmodeDraft !== (channel.slowmodeSeconds ?? 0);
-  const encryptedDirty =
-    !!channel && !isVoice && !isCategory && encryptedDraft !== (channel.encrypted ?? false);
   const dirty =
-    retentionDirty || nameDirty || topicDirty || bitrateDirty || slowmodeDirty || encryptedDirty;
+    retentionDirty || nameDirty || topicDirty || bitrateDirty || slowmodeDirty;
   const settingsToSave = dirty && canManage;
   const canSave = settingsToSave || permsDirty;
 
@@ -279,7 +275,7 @@ export default function ChannelSettingsModal() {
       }
       if (
         settingsToSave &&
-        (retentionDirty || topicDirty || bitrateDirty || slowmodeDirty || encryptedDirty)
+        (retentionDirty || topicDirty || bitrateDirty || slowmodeDirty)
       ) {
         await invoke("update_channel_retention", {
           serverId: activeServerId,
@@ -292,7 +288,6 @@ export default function ChannelSettingsModal() {
           // Explicit presence on the wire: undefined = leave unchanged.
           voiceBitrateKbps: isVoice ? bitrateDraft : undefined,
           slowmodeSeconds: slowmodeDirty ? slowmodeDraft : undefined,
-          encrypted: encryptedDirty ? encryptedDraft : undefined,
           topic: topicDirty ? topicDraft.trim() : undefined,
         });
       }
@@ -416,7 +411,7 @@ export default function ChannelSettingsModal() {
                 className="w-full resize-none rounded-md border border-border bg-bg-light px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent"
               />
               {/* Like the name, the topic stays in the clear (owner decision). */}
-              {encryptedDraft && (
+              {channel.encrypted && (
                 <div className="mt-1.5 text-[11px] leading-4 text-text-muted">
                   Topics aren't encrypted. The server host can read them.
                 </div>
@@ -512,24 +507,19 @@ export default function ChannelSettingsModal() {
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
               End-to-end encryption
             </div>
-            <label className={`flex items-start justify-between gap-4 rounded-md border border-border-divider bg-bg-light px-4 py-3 ${canManage ? "cursor-pointer" : "opacity-60"}`}>
-              <div className="min-w-0">
-                <div className="text-[13px] font-medium text-text-primary">Encrypt messages in this channel</div>
-                <div className="mt-1 text-[12px] leading-[1.55] text-text-muted">
-                  Messages and attachments are sealed on members' devices with keys the server
-                  never holds. Members need encryption set up to read or write here, and
-                  server-side search can't cover encrypted messages. Turning it off later leaves
-                  earlier encrypted messages encrypted.
-                </div>
+            {/* Read-only: chosen when the channel is created and fixed for
+                its life, so its history is never half sealed. */}
+            <div className="rounded-md border border-border-divider bg-bg-light px-4 py-3">
+              <div className="text-[13px] font-medium text-text-primary">
+                {channel.encrypted ? "On" : "Off"}
               </div>
-              <input
-                type="checkbox"
-                checked={encryptedDraft}
-                disabled={!canManage}
-                onChange={(e) => setEncryptedDraft(e.target.checked)}
-                className="mt-1 h-4 w-4 shrink-0 accent-accent"
-              />
-            </label>
+              <div className="mt-1 text-[12px] leading-[1.55] text-text-muted">
+                {channel.encrypted
+                  ? "Messages and attachments are sealed on members' devices with keys the server never holds."
+                  : "Messages here are stored on the server as plain text."}{" "}
+                Encryption is chosen when a channel is created and can't be changed.
+              </div>
+            </div>
           </div>
           <div className="mb-5">
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">

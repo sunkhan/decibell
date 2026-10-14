@@ -502,7 +502,9 @@ Design: `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`. The short versio
   same reason as the DM worker: a missing epoch key is a round-trip whose reply lands on the
   router. `on_keys_changed` acts only when the server names us as filler. Blobs are DM envelopes
   (`envelope::seal_bytes`, content tag 0x02) so pins and key-change notices apply. Keyrings are
-  per session (`AppState.channel_keys`, dropped on disconnect / logout).
+  per session (`AppState.channel_keys`, dropped on disconnect / logout). Encryption is chosen when
+  a channel is created (`ChannelCreateRequest.encrypted`) and fixed for its life (since
+  2026-10-14). There is no on/off switch, so a channel's history is never half sealed.
 - **Attachments in encrypted channels** are sealed in the renderer before upload
   (`features/chat/attachmentCrypto.ts`: random key per file, 64 KiB AES-256-GCM chunks,
   sealed thumbnails; `uploadAttachment.ts` sends stand-in metadata + `encrypted: true` + the

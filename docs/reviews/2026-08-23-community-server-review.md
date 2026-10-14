@@ -2144,3 +2144,27 @@ refusal; v12 → v13 migration); native napi build + `cargo test --lib` 223; tsc
 
 Pending: rebuild the community server with (or before) the client; a live two-account test of the
 invite DM → card → join, and of the header topic in every theme.
+
+**Encrypted text channels: chosen at creation, fixed for life (2026-10-14) ✅** — Owner asked whether
+switching E2EE on an existing channel was fragile; it was:
+- **Switching off:** an edit of a sealed message went out in plaintext. `ChatPanel` sealed by the
+  channel's current flag, and `edit_message` rewrote the envelope, erasing the attachment keys stored
+  in it for good. Key escrow also stopped filling keys for new members, so they couldn't read the
+  sealed history.
+- **Switching on:** plaintext history stayed under the lock badge, and members without encryption
+  were locked out mid-conversation.
+- **Either way:** sends and uploads in flight at the moment of the switch bounced or were silently
+  dropped.
+
+Owner decision: encryption is chosen when a channel is created and is fixed for its life.
+- **Wire:** `ChannelCreateRequest.encrypted` (5), text channels only, audited as `channel_create`
+  with `encrypted`. `ChannelUpdateRequest.encrypted` was removed (`reserved 9`), along with the
+  server toggle and `set_channel_encrypted`.
+- **Client:** an "End-to-end encrypted" switch in the create-channel dialog (default off, "can't be
+  changed later"). Channel settings shows the state read-only.
+- **Legacy guard:** for channels toggled before this change, the server refuses a plaintext edit of
+  a row with an envelope, and the client doesn't offer Edit on those messages (including ArrowUp).
+
+Verified: community e2e 449/0 (the encrypted-channels test now runs on a channel created encrypted, plus
+checks for voice-ignores-the-flag, settings updates keeping it on, and the legacy edit guard); native
+napi build + `cargo test --lib` 223; tsc web 0.

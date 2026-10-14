@@ -148,8 +148,6 @@ export interface UpdateChannelRetentionArgs {
   voiceBitrateKbps?: number
   /** Text channels: slowmode seconds (0 = off). None = leave unchanged. */
   slowmodeSeconds?: number
-  /** Text channels: end-to-end encryption on/off. None = leave unchanged. */
-  encrypted?: boolean
   /** Text channels: the topic ("" clears it). None = leave unchanged. */
   topic?: string
 }
@@ -253,6 +251,11 @@ export interface CreateChannelArgs {
    * categories, which always append at the very end.
    */
   categoryId?: string
+  /**
+   * Text channels: end-to-end encrypted, for good — it can't be
+   * changed after creation.
+   */
+  encrypted?: boolean
 }
 export declare function createChannel(args: CreateChannelArgs): Promise<void>
 export interface ReorderChannelsArgs {

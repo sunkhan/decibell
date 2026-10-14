@@ -151,10 +151,15 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   thumbnails stay plaintext on purpose. Adding a media packet type? Add its sealed twin and
   teach the relay. Design: `2026-09-03-mls-voice-channel-encryption-design.md`.
 - **Text channels encrypt per channel, default off** (owner decision: server-side search, when
-  it ships, must keep working for people who never open settings). Epoch keys escrowed to
+  it ships, must keep working for people who never open settings). **Chosen at creation and fixed
+  for the channel's life** (owner decision 2026-10-14, `ChannelCreateRequest.encrypted`). Switching
+  an existing channel left mixed history. Switching off let an edit turn a sealed message into
+  plaintext (erasing its attachment keys) and stopped key escrow for new members. Don't bring the
+  switch back; a new channel is the workaround. The server still refuses a plaintext edit of a sealed
+  row, for channels toggled before. Epoch keys escrowed to
   members as identity-sealed blobs on the community server (`e2ee/channel_keys.rs`), never MLS
   here (offline members, readable history, multi-device). The server enforces the wire format
-  both ways. Turning a channel off never decrypts its history. Channel names and topics stay in
+  both ways. Channel names and topics stay in
   the clear, by owner decision (2026-10-14): they label the channel, not the conversation. The
   topic editors say so for encrypted channels. Design:
   `2026-09-04-encrypted-text-channels-design.md`.

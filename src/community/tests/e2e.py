@@ -1586,51 +1586,60 @@ def attachment_http(user, method, path, extra_headers="", body=b""):
 
 
 def test_encrypted_channels():
-    """Encrypted text channels: toggle + audit, wire-format enforcement both ways,
-    envelope through broadcast / history / edit / reply preview, key escrow
-    (create / fetch / needs / gap fill / stale epoch / viewer gating / CHANGED
-    on join and removal)."""
-    print("[e2ee] encrypted text channels: toggle, enforcement, envelopes, key escrow")
+    """Encrypted text channels: chosen at creation (+ audit), fixed for life,
+    wire-format enforcement both ways, envelope through broadcast / history /
+    edit / reply preview, key escrow (create / fetch / needs / gap fill / stale
+    epoch / viewer gating / CHANGED on join and removal), and the legacy guard:
+    a sealed message in a channel switched off before the switch was removed
+    can't be edited to plaintext."""
+    print("[e2ee] encrypted text channels: creation-time choice, enforcement, envelopes, key escrow")
     owner = Client("alice"); assert auth_ok(owner)[0]
     ed = join("edith", owner); fay = join("fay", owner)
     for c in (owner, ed, fay): c.flush(0.4)
-    # a plain member can't toggle; the owner can
-    ed.send(pb.Packet.CHANNEL_UPDATE_REQ, channel_update_req=pb.ChannelUpdateRequest(channel_id="general", encrypted=True))
-    r = ed.wait(pb.Packet.CHANNEL_UPDATE_RES, timeout=2)
-    check("member without MANAGE_CHANNELS can't toggle encryption", r is not None and not r.channel_update_res.success)
-    owner.send(pb.Packet.CHANNEL_UPDATE_REQ, channel_update_req=pb.ChannelUpdateRequest(channel_id="general", encrypted=True))
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(
+        name="sealed-room", type=pb.ChannelInfo.TEXT, encrypted=True))
+    cr = owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    check("created encrypted", cr is not None and cr.channel_action_res.success and cr.channel_action_res.channel.encrypted)
+    enc = cr.channel_action_res.channel.id if cr and cr.channel_action_res.success else "sealed-room"
+    check("channels row flagged", sql("select encrypted from channels where id=?", enc) == [(1,)])
+    check("audit row", sql("select details from audit_log where action='channel_create' and channel_id=?", enc) == [("encrypted",)])
+    lst = channel_list(ed)
+    check("members see it encrypted in the channel list", lst is not None and enc in lst and lst[enc].encrypted)
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(
+        name="sealed-voice", type=pb.ChannelInfo.VOICE, encrypted=True))
+    cr = owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    check("encrypted is ignored for voice channels", cr is not None and cr.channel_action_res.success and not cr.channel_action_res.channel.encrypted)
+    owner.send(pb.Packet.CHANNEL_UPDATE_REQ, channel_update_req=pb.ChannelUpdateRequest(channel_id=enc, slowmode_seconds=0))
     r = owner.wait(pb.Packet.CHANNEL_UPDATE_RES, timeout=2)
-    check("owner toggles encryption on", r is not None and r.channel_update_res.success and r.channel_update_res.channel.encrypted)
-    check("channels row flagged", sql("select encrypted from channels where id='general'") == [(1,)])
-    check("audit row", sql("select count(*) from audit_log where action='channel_update' and details='encryption on'") == [(1,)])
+    check("a settings update leaves it encrypted", r is not None and r.channel_update_res.success and r.channel_update_res.channel.encrypted)
     for c in (owner, ed, fay): c.flush(0.4)
     # enforcement: plaintext refused in an encrypted channel
-    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="plain", nonce="n1"))
+    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=enc, content="plain", nonce="n1"))
     rj = ed.wait(pb.Packet.CHANNEL_MSG_REJECTED, timeout=2, pred=lambda p: p.channel_msg_rejected.nonce == "n1")
     check("plaintext refused in encrypted channel", rj is not None)
     check("plaintext not persisted", sql("select count(*) from messages where content='plain'") == [(0,)])
     # envelope accepted; placeholder content; broadcast + history carry it
-    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="PLACEHOLDER", envelope=b"\x02ENV1", nonce="n2"))
+    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=enc, content="PLACEHOLDER", envelope=b"\x02ENV1", nonce="n2"))
     bc = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "n2")
     check("sealed message broadcast with envelope", bc is not None and bc.channel_msg.envelope == b"\x02ENV1" and bc.channel_msg.content == "PLACEHOLDER")
     mid = bc.channel_msg.id if bc else 0
     check("envelope persisted as blob", sql("select envelope from messages where id=?", mid) == [(b"\x02ENV1",)])
     ed.flush(0.3)
     # reply preview embeds the parent's envelope
-    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="PLACEHOLDER", envelope=b"\x02ENV2", nonce="n3", reply_to=mid))
+    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=enc, content="PLACEHOLDER", envelope=b"\x02ENV2", nonce="n3", reply_to=mid))
     bc2 = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "n3")
     check("reply carries the parent's envelope", bc2 is not None and bc2.channel_msg.reply_to == mid and bc2.channel_msg.reply_to_envelope == b"\x02ENV1")
     # history
     fay.flush(0.3)
-    fay.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", limit=50))
+    fay.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id=enc, limit=50))
     h = fay.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2)
     row = next((m for m in h.channel_history_res.messages if m.id == mid), None) if h else None
     check("history returns the envelope", row is not None and row.envelope == b"\x02ENV1")
     # edit: plaintext edit refused, sealed edit accepted + broadcast
-    ed.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id="general", message_id=mid, content="plain-edit"))
+    ed.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id=enc, message_id=mid, content="plain-edit"))
     r = ed.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
     check("plaintext edit refused in encrypted channel", r is not None and not r.message_edit_res.success)
-    ed.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id="general", message_id=mid, content="PLACEHOLDER", envelope=b"\x02ENV1b"))
+    ed.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id=enc, message_id=mid, content="PLACEHOLDER", envelope=b"\x02ENV1b"))
     r = ed.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
     check("sealed edit accepted", r is not None and r.message_edit_res.success, r.message_edit_res.message if r else None)
     e = owner.wait(pb.Packet.CHANNEL_MESSAGE_EDITED, timeout=2, pred=lambda p: p.channel_message_edited.message_id == mid)
@@ -1648,16 +1657,16 @@ def test_encrypted_channels():
     plain = {"filename": "p.bin", "mime": "application/octet-stream", "size": 2}
     sealed = {"filename": "encrypted", "mime": "image/png", "size": 2, "encrypted": True, "kind": 0,
               "width": 640, "height": 480, "durationMs": 7, "placeholder": "zzz"}
-    _, plain_aid = upload("edith", "general", plain)
-    head, enc_aid = upload("edith", "general", sealed)
+    _, plain_aid = upload("edith", enc, plain)
+    head, enc_aid = upload("edith", enc, sealed)
     check("sealed upload init accepted", enc_aid is not None, head[:40])
     check("sealed row keeps the declared kind and no metadata",
           sql("select encrypted, kind, width, height, duration_ms, coalesce(placeholder,''), mime from attachments where id=?", enc_aid)
           == [(1, 0, 0, 0, 0, "", "application/octet-stream")])
     head, _ = attachment_http("edith", "POST", "/attachments/init", "Content-Type: application/json\r\n",
-                              json.dumps(dict(sealed, channelId="general", kind=9)).encode())
+                              json.dumps(dict(sealed, channelId=enc, kind=9)).encode())
     check("sealed upload needs a valid kind", head.startswith(b"HTTP/1.1 400"), head[:40])
-    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="PLACEHOLDER", envelope=b"\x02ENV3", nonce="n4",
+    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=enc, content="PLACEHOLDER", envelope=b"\x02ENV3", nonce="n4",
                                                                  attachments=[pb.Attachment(id=plain_aid), pb.Attachment(id=enc_aid)]))
     bc3 = ed.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "n4")
     check("only the sealed upload binds in an encrypted channel", bc3 is not None and [a.id for a in bc3.channel_msg.attachments] == [enc_aid])
@@ -1666,7 +1675,7 @@ def test_encrypted_channels():
     check("plain upload left unbound", sql("select message_id from attachments where id=?", plain_aid) == [(0,)])
     mid4 = bc3.channel_msg.id if bc3 else 0
     ed.flush(0.3)
-    ed.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", limit=50))
+    ed.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id=enc, limit=50))
     h = ed.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2)
     hrow = next((m for m in h.channel_history_res.messages if m.id == mid4), None) if h else None
     check("history carries the encrypted flag", hrow is not None and len(hrow.attachments) == 1 and hrow.attachments[0].encrypted)
@@ -1674,7 +1683,7 @@ def test_encrypted_channels():
     # reshape the seeded channels)
     owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="plain-e2ee", type=pb.ChannelInfo.TEXT))
     cr = owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
-    plain_id = cr.channel_action_res.channel.id if cr and cr.channel_action_res.success else "general"
+    plain_id = cr.channel_action_res.channel.id if cr and cr.channel_action_res.success else "plain-e2ee"
     ed.flush(0.3)
     ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=plain_id, content="PLACEHOLDER", envelope=b"\x02ENVX", nonce="n5"))
     rj = ed.wait(pb.Packet.CHANNEL_MSG_REJECTED, timeout=2, pred=lambda p: p.channel_msg_rejected.nonce == "n5")
@@ -1687,35 +1696,35 @@ def test_encrypted_channels():
     for c in (owner, ed, fay): c.flush(0.3)
 
     # --- key escrow ---
-    ed.send(pb.Packet.CHANNEL_KEYS_REQ, channel_keys_req=pb.ChannelKeysReq(channel_id="general"))
+    ed.send(pb.Packet.CHANNEL_KEYS_REQ, channel_keys_req=pb.ChannelKeysReq(channel_id=enc))
     k = ed.wait(pb.Packet.CHANNEL_KEYS_RES, timeout=2)
     check("keys: no epoch yet, members listed", k is not None and k.channel_keys_res.encrypted and k.channel_keys_res.current_epoch == 0 and set(k.channel_keys_res.members) >= {"alice", "edith", "fay"})
     # gap-fill before any epoch is a stale epoch
-    ed.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id="general", epoch=2, blobs=[pb.ChannelKeyBlob(recipient="fay", blob=b"B")]))
+    ed.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=enc, epoch=2, blobs=[pb.ChannelKeyBlob(recipient="fay", blob=b"B")]))
     r = ed.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
     check("skipping an epoch is refused", r is not None and not r.channel_keys_publish_res.success and r.channel_keys_publish_res.message == "stale_epoch")
     # edith creates epoch 1 for herself + alice (not fay), plus a non-viewer that must be dropped
-    ed.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id="general", epoch=1, blobs=[
+    ed.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=enc, epoch=1, blobs=[
         pb.ChannelKeyBlob(recipient="edith", blob=b"E1-edith"), pb.ChannelKeyBlob(recipient="alice", blob=b"E1-alice"), pb.ChannelKeyBlob(recipient="nobody", blob=b"E1-x")]))
     r = ed.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
     check("epoch 1 created", r is not None and r.channel_keys_publish_res.success and r.channel_keys_publish_res.current_epoch == 1)
-    ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=2, pred=lambda p: p.channel_keys_changed.channel_id == "general")
+    ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=2, pred=lambda p: p.channel_keys_changed.channel_id == enc)
     check("CHANNEL_KEYS_CHANGED names an online holder as filler", ch is not None and ch.channel_keys_changed.current_epoch == 1 and ch.channel_keys_changed.filler in ("alice", "edith") and not ch.channel_keys_changed.rotate)
     check("blob for a non-viewer dropped", sql("select count(*) from channel_key_blobs where recipient='nobody'") == [(0,)])
-    owner.send(pb.Packet.CHANNEL_KEYS_REQ, channel_keys_req=pb.ChannelKeysReq(channel_id="general"))
+    owner.send(pb.Packet.CHANNEL_KEYS_REQ, channel_keys_req=pb.ChannelKeysReq(channel_id=enc))
     k = owner.wait(pb.Packet.CHANNEL_KEYS_RES, timeout=2)
     mine = [(b.epoch, b.sender, b.blob) for b in k.channel_keys_res.blobs] if k else []
     needs = {n.username: list(n.epochs) for n in k.channel_keys_res.needs} if k else {}
     check("owner gets her blob with the sealer stamped", mine == [(1, "edith", b"E1-alice")])
     check("needs lists fay for epoch 1", needs.get("fay") == [1] and "alice" not in needs)
     # gap fill: alice seals epoch 1 for fay; a duplicate for herself is ignored, not overwritten
-    owner.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id="general", epoch=1, blobs=[
+    owner.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=enc, epoch=1, blobs=[
         pb.ChannelKeyBlob(recipient="fay", blob=b"E1-fay"), pb.ChannelKeyBlob(recipient="alice", blob=b"OVERWRITE")]))
     r = owner.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
     check("gap fill accepted at the current epoch", r is not None and r.channel_keys_publish_res.success and r.channel_keys_publish_res.current_epoch == 1)
     check("existing blob never overwritten", sql("select blob from channel_key_blobs where recipient='alice' and epoch=1") == [(b"E1-alice",)])
     fay.flush(0.3)
-    fay.send(pb.Packet.CHANNEL_KEYS_REQ, channel_keys_req=pb.ChannelKeysReq(channel_id="general"))
+    fay.send(pb.Packet.CHANNEL_KEYS_REQ, channel_keys_req=pb.ChannelKeysReq(channel_id=enc))
     k = fay.wait(pb.Packet.CHANNEL_KEYS_RES, timeout=2)
     # (the shared test server carries members from earlier tests who lack
     # blobs, so `needs` isn't empty — only fay's entry must be gone)
@@ -1723,23 +1732,31 @@ def test_encrypted_channels():
     # a new member joining triggers CHANGED for a filler
     for c in (owner, ed, fay): c.flush(0.3)
     gus = join("gus", owner)
-    ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=3, pred=lambda p: p.channel_keys_changed.channel_id == "general")
+    ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=3, pred=lambda p: p.channel_keys_changed.channel_id == enc)
     check("new member → CHANGED with a filler, no rotation", ch is not None and not ch.channel_keys_changed.rotate and ch.channel_keys_changed.filler in ("alice", "edith", "fay"))
     # removal (leave) → blobs deleted + rotation requested
     for c in (owner, ed, fay): c.flush(0.3)
     fay.send(pb.Packet.LEAVE_SERVER_REQ, leave_server_req=pb.LeaveServerRequest())
-    ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=3, pred=lambda p: p.channel_keys_changed.channel_id == "general" and p.channel_keys_changed.rotate)
+    ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=3, pred=lambda p: p.channel_keys_changed.channel_id == enc and p.channel_keys_changed.rotate)
     check("removal → CHANGED with rotate", ch is not None and ch.channel_keys_changed.filler in ("alice", "edith"))
     check("removed member's blobs deleted", sql("select count(*) from channel_key_blobs where recipient='fay'") == [(0,)])
-    # toggle off: plaintext flows again, sealed rows untouched
-    owner.send(pb.Packet.CHANNEL_UPDATE_REQ, channel_update_req=pb.ChannelUpdateRequest(channel_id="general", encrypted=False))
-    r = owner.wait(pb.Packet.CHANNEL_UPDATE_RES, timeout=2)
-    check("owner toggles encryption off", r is not None and r.channel_update_res.success and not r.channel_update_res.channel.encrypted)
+    # Legacy: a channel switched off back when the switch existed. Its sealed
+    # rows can't be edited to plaintext (that would publish the text and drop
+    # the attachment keys in the envelope); new plaintext still flows.
+    sql("update channels set encrypted=0 where id=?", enc)
     owner.flush(0.3); ed.flush(0.3)
-    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="back to plain", nonce="n6"))
-    bc = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "n6")
-    check("plaintext accepted after toggling off", bc is not None and bc.channel_msg.content == "back to plain" and bc.channel_msg.envelope == b"")
-    check("earlier sealed row still sealed", sql("select envelope from messages where id=?", mid) == [(b"\x02ENV1b",)])
+    ed.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id=enc, message_id=mid, content="now public"))
+    r = ed.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
+    check("legacy: plaintext edit of a sealed message refused", r is not None and not r.message_edit_res.success
+          and "encrypted" in r.message_edit_res.message, r.message_edit_res.message if r else None)
+    check("legacy: the sealed row is untouched", sql("select envelope, content from messages where id=?", mid) == [(b"\x02ENV1b", "PLACEHOLDER")])
+    ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=enc, content="plain now", nonce="n7"))
+    bc = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "n7")
+    pmid = bc.channel_msg.id if bc else 0
+    ed.flush(0.3)
+    ed.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id=enc, message_id=pmid, content="plain edited"))
+    r = ed.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
+    check("legacy: plaintext messages there still edit", r is not None and r.message_edit_res.success)
     for c in (owner, ed, gus): c.close()
     fay.close()
 

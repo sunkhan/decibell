@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { toast } from "../../stores/toastStore";
 import { useEscapeToClose } from "../../hooks/useEscapeToClose";
+import Switch from "../../components/Switch";
 
 /// Create dialog for channels AND categories, opened from the
 /// category-header "+" and the channel-list context menu
@@ -30,6 +31,10 @@ export default function CreateChannelModal({
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [type, setType] = useState<"text" | "voice" | "category">(channelType);
+  // Text channels only, and only here: encryption is fixed for a channel's
+  // life so its history is never half sealed. Off by default (owner
+  // decision — server-side search keeps working unless someone opts in).
+  const [encrypted, setEncrypted] = useState(false);
 
   const isCategory = type === "category";
   const canCreate = name.trim().length > 0 && !creating;
@@ -44,6 +49,7 @@ export default function CreateChannelModal({
         channelType: type,
         voiceBitrateKbps: 0,
         categoryId: isCategory ? undefined : categoryId,
+        encrypted: type === "text" && encrypted,
       });
       onClose();
     } catch (err) {
@@ -104,6 +110,19 @@ export default function CreateChannelModal({
           }
           className="w-full rounded-md border border-border bg-bg-light px-3 py-2 text-[13px] text-text-primary outline-none transition-colors focus:border-accent"
         />
+        {type === "text" && (
+          <label className="mt-4 flex cursor-pointer items-start justify-between gap-4 rounded-md border border-border-divider bg-bg-light px-3 py-2.5">
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium text-text-primary">End-to-end encrypted</div>
+              <div className="mt-0.5 text-[12px] leading-[1.55] text-text-muted">
+                Messages and files are sealed on members' devices, so the server can't read them.
+                Members need encryption set up, and search won't cover it. You can't change this
+                later.
+              </div>
+            </div>
+            <Switch checked={encrypted} onToggle={() => setEncrypted((v) => !v)} />
+          </label>
+        )}
         <div className="mt-5 flex gap-2.5">
           <button
             onClick={onClose}

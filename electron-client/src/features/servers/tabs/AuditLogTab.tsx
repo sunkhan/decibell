@@ -322,6 +322,10 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
       break;
     case "channel_create":
       out.text = <>created {ch}</>;
+      if (rest[0] === "encrypted") {
+        rest.shift();
+        out.chips.push(<Chip key="enc" icon="lock">End-to-end encrypted</Chip>);
+      }
       break;
     case "channel_rename":
       out.text = <>renamed a channel to {ch}</>;
@@ -329,6 +333,7 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
     case "channel_update": {
       const d = rest.shift() ?? "";
       const slow = /^slowmode (\d+)s$/.exec(d);
+      // Entries from when encryption could be switched on an existing channel.
       if (d.startsWith("encryption ")) {
         out.icon = "lock";
         out.text = <>turned {d.endsWith("on") ? "on" : "off"} encryption in {ch}</>;

@@ -1990,25 +1990,14 @@ private:
                     topic_changed = db->set_channel_topic(req.channel_id(), topic);
                 }
             }
-            // End-to-end encryption toggle (text channels). Switching on
-            // seals from the next message; switching off leaves sealed
-            // history sealed — the server never gets those keys.
-            bool encryption_changed = false;
-            if (ok && req.has_encrypted()) {
-                auto before = db->get_channel(req.channel_id());
-                if (before && before->type == 0 && before->encrypted != req.encrypted()) {
-                    encryption_changed = db->set_channel_encrypted(req.channel_id(), req.encrypted());
-                }
-            }
+            // (Encryption isn't here: it's chosen at creation and fixed.)
             if (ok) {
                 db->add_audit(username_, "channel_update", "", req.channel_id(),
-                              encryption_changed
-                                  ? std::string("encryption ") + (req.encrypted() ? "on" : "off")
-                                  : topic_changed
-                                        ? std::string("topic")
-                                        : req.has_slowmode_seconds()
-                                              ? "slowmode " + std::to_string(req.slowmode_seconds()) + "s"
-                                              : "retention/bitrate");
+                              topic_changed
+                                  ? std::string("topic")
+                                  : req.has_slowmode_seconds()
+                                        ? "slowmode " + std::to_string(req.slowmode_seconds()) + "s"
+                                        : "retention/bitrate");
             }
             res->set_success(ok);
             res->set_message(ok ? "Channel updated." : "Channel not found.");
@@ -2226,6 +2215,18 @@ private:
                 const bool encrypted = ech && ech->encrypted;
                 if (encrypted && envelope.empty()) { fail("This channel is end-to-end encrypted."); return; }
                 if (!encrypted && !envelope.empty()) { fail("This channel isn't encrypted."); return; }
+                // A sealed message never becomes plaintext. Only a channel
+                // whose encryption was switched off (before it became fixed
+                // at creation) holds such rows; a plaintext edit would
+                // publish the new text and erase the attachment keys that
+                // live in the envelope.
+                if (!encrypted) {
+                    auto row = db->get_message_preview(req.channel_id(), req.message_id());
+                    if (row && !row->envelope.empty()) {
+                        fail("This message is encrypted and the channel no longer is, so it can't be edited.");
+                        return;
+                    }
+                }
             }
 
             const int64_t edited_at = static_cast<int64_t>(std::time(nullptr));
@@ -2929,15 +2930,17 @@ private:
                     return;
                 }
             }
+            const bool encrypted = type == 0 && req.encrypted();
             auto created = db->create_channel(name, type, bitrate,
-                                              type == 2 ? "" : req.category_id());
+                                              type == 2 ? "" : req.category_id(), encrypted);
             if (!created) { fail("Failed to create channel."); return; }
             res->set_success(true);
             fill_channel_info(res->mutable_channel(), *created);
             send_packet(p);
             std::cout << "[Community] Channel #" << created->id
                       << " created by " << username_ << "\n";
-            db->add_audit(username_, "channel_create", created->name, created->id, "");
+            db->add_audit(username_, "channel_create", created->name, created->id,
+                          encrypted ? "encrypted" : "");
             manager_.broadcast_channels();
         }
 

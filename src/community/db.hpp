@@ -377,7 +377,6 @@ public:
     std::vector<DbMember> list_members() const;
 
     // --- Encrypted text channels (spec 2026-09-04) ---
-    bool set_channel_encrypted(const std::string& channel_id, bool on);
     // Text channels only; the caller clamps the length.
     bool set_channel_topic(const std::string& channel_id, const std::string& topic);
     // Current epoch of a channel's key escrow; 0 = none yet.
@@ -573,7 +572,8 @@ public:
     std::optional<DbChannel> create_channel(const std::string& name,
                                             int32_t type,
                                             int32_t voice_bitrate_kbps,
-                                            const std::string& category_id);
+                                            const std::string& category_id,
+                                            bool encrypted = false);
     // Rewrites positions to match `ordered_ids` (0..N-1) in one
     // transaction. Fails without touching anything unless the id set
     // exactly matches the current channels table. The stored order is

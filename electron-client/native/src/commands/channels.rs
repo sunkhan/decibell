@@ -115,8 +115,6 @@ pub struct UpdateChannelRetentionArgs {
     pub voice_bitrate_kbps: Option<i32>,
     /// Text channels: slowmode seconds (0 = off). None = leave unchanged.
     pub slowmode_seconds: Option<i32>,
-    /// Text channels: end-to-end encryption on/off. None = leave unchanged.
-    pub encrypted: Option<bool>,
     /// Text channels: the topic ("" clears it). None = leave unchanged.
     pub topic: Option<String>,
 }
@@ -136,7 +134,6 @@ pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi:
         retention_days_audio,
         voice_bitrate_kbps,
         slowmode_seconds,
-        encrypted,
         topic,
     } = args;
     send_for_server(
@@ -151,7 +148,6 @@ pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi:
             retention_days_audio,
             voice_bitrate_kbps,
             slowmode_seconds,
-            encrypted,
             topic,
         }),
     )
@@ -421,6 +417,9 @@ pub struct CreateChannelArgs {
     /// None/empty = end of the uncategorized area. Ignored for
     /// categories, which always append at the very end.
     pub category_id: Option<String>,
+    /// Text channels: end-to-end encrypted, for good — it can't be
+    /// changed after creation.
+    pub encrypted: Option<bool>,
 }
 
 #[napi]
@@ -431,6 +430,7 @@ pub async fn create_channel(args: CreateChannelArgs) -> napi::Result<()> {
         channel_type,
         voice_bitrate_kbps,
         category_id,
+        encrypted,
     } = args;
     let r#type = match channel_type.as_str() {
         "voice" => channel_info::Type::Voice,
@@ -445,6 +445,7 @@ pub async fn create_channel(args: CreateChannelArgs) -> napi::Result<()> {
             r#type: r#type as i32,
             voice_bitrate_kbps,
             category_id: category_id.unwrap_or_default(),
+            encrypted: encrypted.unwrap_or(false),
         }),
     )
     .await
