@@ -413,6 +413,30 @@ private:
             }
             dmsg->clear_reply_to_envelope();
 
+            // The recipient must be an account. Otherwise a message would be
+            // stored for a name nobody holds yet, waiting for whoever
+            // registers it. Refused with the sender's nonce, like the
+            // friends-only refusal below.
+            const int64_t recipient_uid = auth_manager_.resolveUid(dmsg->recipient());
+            if (recipient_uid <= 0) {
+                chatproj::Packet error_packet;
+                error_packet.set_type(chatproj::Packet::DIRECT_MSG);
+                auto* err_msg = error_packet.mutable_direct_msg();
+                err_msg->set_sender(username_);
+                err_msg->set_recipient(dmsg->recipient());
+                err_msg->set_content(recipient_uid == 0
+                    ? "This user doesn't exist."
+                    : "The server couldn't deliver your message. Please try again.");
+                err_msg->set_timestamp(current_time);
+                err_msg->set_nonce(dmsg->nonce());
+
+                std::string serialized;
+                error_packet.SerializeToString(&serialized);
+                auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
+                deliver(framed);
+                return;
+            }
+
             if (!manager_.check_dm_allowed(username_, dmsg->recipient(), auth_manager_)) {
                 chatproj::Packet error_packet;
                 error_packet.set_type(chatproj::Packet::DIRECT_MSG);

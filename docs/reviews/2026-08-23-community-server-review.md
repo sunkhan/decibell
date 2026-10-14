@@ -2448,3 +2448,23 @@ right edge.
 Verified: tsc web 0. Harness captures in Nocturne, Matinee, Graphite and Console Split with members,
 with search results, and at 1000 px.
 
+**Central refuses unknown names and uid-less tokens (2026-10-15) ✅** — These are the two present-day issues
+from the uid audit (`docs/superpowers/specs/2026-10-14-uid-identity-audit.md`). The owner asked for them
+fixed first, before the uid refactor.
+- **Messages for names nobody holds.** DIRECT_MSG never checked that the recipient exists. The DM gate
+  allowed an unknown name and `insertDm` stored the message, so anyone could leave messages for a name
+  that whoever registers it later would find waiting.
+  - Now the recipient is resolved with `AuthManager::resolveUid` (> 0 found, 0 unknown, −1 DB error)
+    before the gate. An unknown name gets "This user doesn't exist." back with the sender's nonce; the
+    client withdraws the bubble and shows that text in a toast (`useDmEvents`, unchanged).
+  - `markDmRead` and `registerMembership` check that the account exists before writing, so a read cursor
+    or a server list can't be stored ahead of a registration either.
+  - Calls store nothing, and an INVITE to an unknown name was already answered PEER_OFFLINE.
+- **Tokens with uid 0.** `authenticateUser` read the uid in a second query, and on a DB error it signed the
+  JWT with uid 0, which sends communities down the name-only path. `getCredentials` now reads
+  `uid, password_hash` in one query, and no token is signed without a positive uid. The timing
+  equalization for unknown names is unchanged.
+
+Verified by inspection and a g++ `-fsyntax-only` build of `auth_manager.cpp` and `main.cpp` against a
+declaration-only pqxx stand-in (jwt-cpp, nlohmann, boost and the generated pb from the community deps).
+Needs the Hetzner central rebuild.

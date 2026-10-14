@@ -74,6 +74,11 @@ public:
     };
     std::optional<ResolvedInvite> resolveCommunityInvite(const std::string& code);
 
+    /// users.uid for a typed username: > 0 when the account exists, 0 when
+    /// no account has the name, -1 on a database error. Requests that name
+    /// another user resolve it here before writing anything under it.
+    int64_t resolveUid(const std::string& username);
+
     // Friend System
     std::string handleFriendAction(const std::string& requester, chatproj::FriendActionType action, const std::string& target);
     std::vector<chatproj::FriendInfo> getFriends(const std::string& username);
@@ -318,8 +323,10 @@ private:
     std::string db_conn_str_;
     std::string jwt_private_pem_;
     std::string jwt_public_pem_;
-    /// users.uid for a username (0 if unknown).
-    int64_t getUserId(const std::string& username);
+    struct StoredCredentials {
+        int64_t uid = 0;
+        std::string password_hash;
+    };
 
     void initializeDatabase();
 
@@ -330,5 +337,7 @@ private:
     // Database interaction stubs (to be replaced with PostgreSQL pool)
     bool userExists(const std::string& username, const std::string& email);
     bool insertUser(const std::string& username, const std::string& email, const std::string& hash);
-    std::optional<std::string> getPasswordHash(const std::string& username);
+    /// The uid and password hash from one read of the users row; nullopt
+    /// when no account has the name or the database errors.
+    std::optional<StoredCredentials> getCredentials(const std::string& username);
 };

@@ -281,9 +281,12 @@ std::string AuthManager::registerUser(const std::string& username, const std::st
 }
 
 std::optional<std::string> AuthManager::authenticateUser(const std::string& username, const std::string& password) {
-    auto stored_hash = getPasswordHash(username);
+    // The hash and the uid come from one row read, so a token is never
+    // signed with a uid fetched separately (a second query that failed
+    // used to mint uid 0, which sends communities down the name-only path).
+    auto stored = getCredentials(username);
 
-    if (!stored_hash) {
+    if (!stored) {
         // Equalize timing with the "user exists, wrong password" path so
         // login latency can't be used to enumerate valid usernames: run a
         // bcrypt hash at the same cost and discard it. Read the result
@@ -293,7 +296,11 @@ std::optional<std::string> AuthManager::authenticateUser(const std::string& user
         (void)keep;
         return std::nullopt;
     }
-    if (!verifyPassword(password, *stored_hash)) {
+    if (!verifyPassword(password, stored->password_hash)) {
+        return std::nullopt;
+    }
+    if (stored->uid <= 0) {
+        std::cerr << "[Auth] Refusing to sign a token without a uid for " << username << "\n";
         return std::nullopt;
     }
 
@@ -306,7 +313,7 @@ std::optional<std::string> AuthManager::authenticateUser(const std::string& user
             .set_issuer("decibell_central_auth")
             .set_type("JWS")
             .set_subject(username)
-            .set_payload_claim("uid", jwt::claim(nlohmann::json(getUserId(username))))
+            .set_payload_claim("uid", jwt::claim(nlohmann::json(stored->uid)))
             .set_issued_at(now)
             .set_expires_at(now + std::chrono::hours(24))
             .sign(jwt::algorithm::ed25519{jwt_public_pem_, jwt_private_pem_});
@@ -331,7 +338,7 @@ bool AuthManager::validateToken(const std::string& token) {
     }
 }
 
-int64_t AuthManager::getUserId(const std::string& username) {
+int64_t AuthManager::resolveUid(const std::string& username) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
@@ -339,8 +346,8 @@ int64_t AuthManager::getUserId(const std::string& username) {
         if (res.empty() || res[0][0].is_null()) return 0;
         return res[0][0].as<int64_t>();
     } catch (const std::exception& e) {
-        std::cerr << "[DB Error] getUserId: " << e.what() << "\n";
-        return 0;
+        std::cerr << "[DB Error] resolveUid: " << e.what() << "\n";
+        return -1;
     }
 }
 
@@ -378,18 +385,22 @@ bool AuthManager::insertUser(const std::string& username, const std::string& ema
     }
 }
 
-std::optional<std::string> AuthManager::getPasswordHash(const std::string& username) {
+std::optional<AuthManager::StoredCredentials> AuthManager::getCredentials(const std::string& username) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
-        pqxx::result res = txn.exec_params("SELECT password_hash FROM users WHERE username = $1", username);
-        
+        pqxx::result res = txn.exec_params(
+            "SELECT uid, password_hash FROM users WHERE username = $1", username);
+
         if (res.empty()) {
             return std::nullopt;
         }
-        return res[0][0].as<std::string>();
+        StoredCredentials creds;
+        creds.uid = res[0][0].is_null() ? 0 : res[0][0].as<int64_t>();
+        creds.password_hash = res[0][1].as<std::string>();
+        return creds;
     } catch (const std::exception& e) {
-        std::cerr << "[DB Error] getPasswordHash: " << e.what() << "\n";
+        std::cerr << "[DB Error] getCredentials: " << e.what() << "\n";
         return std::nullopt;
     }
 }
@@ -1183,6 +1194,11 @@ void AuthManager::markDmRead(const std::string& reader,
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
+        // Only for a peer that has an account: a cursor stored under an
+        // unregistered name would wait for whoever registers it.
+        if (txn.exec_params("SELECT 1 FROM users WHERE username = $1", peer).empty()) {
+            return;
+        }
         // Upsert with GREATEST so out-of-order or duplicate mark-read
         // calls never regress the read cursor.
         txn.exec_params(
@@ -1363,6 +1379,11 @@ void AuthManager::registerMembership(const std::string& username,
         pqxx::work txn(conn);
         auto now = std::chrono::system_clock::now();
         int64_t now_ts = std::chrono::system_clock::to_time_t(now);
+        // Only for an existing account, so a membership can't be stored
+        // ahead of whoever registers the name.
+        if (txn.exec_params("SELECT 1 FROM users WHERE username = $1", username).empty()) {
+            return;
+        }
         txn.exec_params(
             "INSERT INTO user_communities (username, server_id, joined_at) "
             "VALUES ($1, $2, $3) "

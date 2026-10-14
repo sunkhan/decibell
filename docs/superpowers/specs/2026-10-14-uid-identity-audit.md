@@ -3,7 +3,7 @@
 2026-10-14. Owner rule (CLAUDE.md): every backend keys users by the account uid, so a future username
 change can't break anything. This audit lists every place central and the community server still identify
 a user by name, what a rename would break, and the order to fix it in. Nothing here is implemented yet,
-except the items marked as already done.
+except the items marked as done (✅ or ✓).
 
 Two scenarios are used throughout. **R**: alice (uid 7) renames to alice2. **Q**: afterwards, a different
 person registers "alice". Under today's code, Q inherits whatever is keyed by the name. That is a security
@@ -34,17 +34,27 @@ problem, not just a lost setting.
 
 ## Problems that exist today, without any rename
 
-1. **Central accepts DMs, calls and read-state writes for names that don't exist.**
+Both fixed on 2026-10-15, ahead of the refactor (owner decision 3). Each item ends with what was done.
+
+1. **Central accepts DMs, calls and read-state writes for names that don't exist.** ✅
    - DIRECT_MSG has no existence check (`src/server/main.cpp:404-482`). `check_dm_allowed` answers
      "allowed" for an unknown name, and `insertDm` stores the message.
    - Anyone can therefore pre-seed messages for a name nobody holds yet. Whoever registers it later finds
      them waiting.
    - The same applies to DM_MARK_READ (any string becomes a read-state row) and CALL_SIGNAL.
    - Fix: resolve the recipient to a uid at the request edge and answer "User not found."
-2. **Central can mint a token without a uid.** `authenticateUser` reads the uid in a separate query and
-   signs the JWT even when `getUserId` returns 0 on a DB error (`auth_manager.cpp:283-318, 334-345`). A
-   uid-0 token sends communities down the legacy name-only path. Fix: read the uid and the hash in one
-   query, and refuse to mint without a uid.
+   - **Done:** DIRECT_MSG resolves the recipient with `AuthManager::resolveUid` before the DM gate. An
+     unknown name is refused with "This user doesn't exist." and the sender's nonce, so the client
+     withdraws the bubble and shows that text in a toast. `markDmRead` and `registerMembership` check that
+     the account exists before writing. CALL_SIGNAL stores nothing, and an INVITE to an unknown name was
+     already answered PEER_OFFLINE, because no session holds that name.
+2. **Central can mint a token without a uid.** ✅
+   - `authenticateUser` reads the uid in a separate query and signs the JWT even when `getUserId` returns 0
+     on a DB error (`auth_manager.cpp:283-318, 334-345`). A uid-0 token sends communities down the legacy
+     name-only path.
+   - Fix: read the uid and the hash in one query, and refuse to mint without a uid.
+   - **Done:** `getCredentials` reads `uid, password_hash` in one query, and `authenticateUser` refuses to
+     sign when the uid isn't positive. The timing equalization for unknown names is unchanged.
 
 ## Central (Postgres + sessions)
 
@@ -126,14 +136,12 @@ compatibility shims (memory: pre-1.0 has no back-compat constraint).
    - USER_RENAMED {uid, name} goes to friends, DM peers and communities.
    - Live sessions are updated and tokens refreshed.
 
-## Decisions for the owner
+## Owner decisions (2026-10-14)
 
-1. **Encryption after a rename.**
-   - Keep binding names: smaller, but every rename shows peers a "keys changed" warning and new safety
-     numbers.
-   - Move to a uid binding (v2): bundles, fingerprints, envelopes, call auth and MLS credentials all bind
-     the uid, so a rename is invisible to encryption. Old messages stay v1.
-   - Recommended: uid binding, since "renaming won't be an issue at all" is the goal.
-2. **Reusing old names.** When alice renames, can someone else take "alice": never, after a cooldown, or
-   at once? At least the 24 h token lifetime is required. Recommended: a 30-day reservation.
-3. **Order.** Fix today's two central issues now, on their own, ahead of the refactor. Recommended.
+1. **Encryption moves to a uid binding (v2).** Bundles, fingerprints / safety numbers, DM and channel
+   envelopes, call auth and MLS credentials will bind the uid, so a rename is invisible to encryption. The
+   one-time "keys changed" warning the switch causes is accepted ("we only have like 10 users"). Old
+   messages stay v1 and keep their sent-under names.
+2. **Old names can be taken by someone else after 14 days.** A renamed account's old name is reserved for
+   14 days (longer than the 24 h token lifetime), then freed.
+3. **The two present-day central issues are fixed first,** on their own, before the refactor.
