@@ -108,6 +108,9 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
   const boxRef = useRef<HTMLDivElement>(null);
   const [focused, setFocused] = useState(false);
   const [menu, setMenu] = useState(false);
+  // The chips + text row scrolls sideways when it outgrows the fixed-width
+  // box; its left edge fades once scrolled so a cut-off chip doesn't show.
+  const [scrolled, setScrolled] = useState(false);
   const [active, setActive] = useState(0);
   const token = trailingToken(draft.text);
   const dateOp = token && (DATE_OPS as string[]).includes(token.op) ? (token.op as DateOp) : null;
@@ -314,8 +317,6 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
   };
 
   const hasContent = draft.text.length > 0 || draft.filters.length > 0;
-  // Wide only while typing: a finished search shouldn't crowd the header.
-  const wide = focused;
 
   return (
     <div
@@ -328,11 +329,19 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
         }
       }}
       title="Search messages (Ctrl+F)"
-      className={`ml-2 flex h-8 shrink-0 cursor-text items-center gap-1 rounded-md border bg-bg-lighter pl-1.5 pr-1 font-sans text-[13px] font-normal tracking-normal transition-[width] duration-150 ${
-        wide ? "w-[340px] max-lg:w-[260px]" : "w-[220px] max-lg:w-[160px]"
-      } ${focused ? "border-accent shadow-ring" : "border-border hover:border-accent/40"}`}
+      // As wide as the members list (260 px) less the header's 16 px padding
+      // on each side, so it sits over that column (owner, 2026-10-14). Fixed:
+      // the menu under it is wider anyway.
+      className={`ml-2 flex h-8 w-[228px] shrink-0 cursor-text items-center gap-1 rounded-md border bg-bg-lighter pl-1.5 pr-1 font-sans text-[13px] font-normal tracking-normal ${
+        focused ? "border-accent shadow-ring" : "border-border hover:border-accent/40"
+      }`}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]">
+      <div
+        onScroll={(e) => setScrolled(e.currentTarget.scrollLeft > 0)}
+        className={`flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] ${
+          scrolled ? "[mask-image:linear-gradient(to_right,transparent,black_2.5rem)]" : ""
+        }`}
+      >
         {draft.filters.map((f, i) => (
           <Chip
             key={`${f.kind}-${i}`}

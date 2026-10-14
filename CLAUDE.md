@@ -97,7 +97,8 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
 - Server nicknames render through `useDisplayName(serverId, username)`; avatars/colors key
   on the real username.
 - The text channel header (`features/chat/ChannelHeader.tsx`: name, topic, members toggle, then the
-  search box at the right end — owner's order) spans the chat **and** the right panel (members list / search results), which start under it, as in
+  search box at the right end, 228 px so it sits over the 260 px members column — owner's order and
+  width) spans the chat **and** the right panel (members list / search results), which start under it, as in
   Discord (owner, 2026-10-14). MainLayout stacks it above both; it stays 48 px (h-12).
 - Message list: `features/chat/RealMessageList.tsx` (real-DOM sliding window, both panels;
   no virtualization — react-virtuoso is gone, don't bring it back). Invariants: measure with
